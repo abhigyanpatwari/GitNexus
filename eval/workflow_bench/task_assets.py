@@ -32,24 +32,20 @@ from .proposer_sandbox import (
     ReadOnlyMount,
     SandboxError,
     _prepare_clone_target,
-    _real_directory,
+    real_directory,
 )
 
-# The shipped index is roughly 428 MiB.  These are containment limits rather
-# than expected-size assertions: they admit normal growth while preventing a
-# task declaration from turning snapshot preparation into an unbounded walk.
+# These are containment limits rather than expected-size assertions: they
+# prevent a task declaration from turning snapshot preparation into an
+# unbounded walk.
 MAX_TASK_ASSET_ENTRIES = 100_000
 MAX_TASK_ASSET_PATH_BYTES = 4_096
 MAX_TASK_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 
-# The largest known real sandbox_copy asset in this harness is the shipped
-# index above (~428 MiB estimated, ~290 MiB measured); budget comfortably
-# above that so it can still materialize via buffered copy on a filesystem
-# that cannot reflink (ext4 CI runners, 9p-backed dev mounts), while staying
-# well below MAX_TASK_ASSET_BYTES so a genuinely oversized or malformed
-# declaration still fails closed instead of silently paying for a slow full
-# copy.
-MAX_BUFFERED_FALLBACK_BYTES = 512 * 1024 * 1024
+# Every accepted snapshot must also be materializable on filesystems without
+# reflinks. Use the existing hard capture ceiling, so buffered copies stay
+# bounded without imposing a filesystem-dependent acceptance limit.
+MAX_BUFFERED_FALLBACK_BYTES = MAX_TASK_ASSET_BYTES
 COPY_CHUNK_BYTES = 1024 * 1024
 
 # linux/fs.h: #define FICLONE _IOW(0x94, 9, int)
@@ -130,8 +126,8 @@ class TaskAssetSnapshot:
     def materialize(self, clone: Path) -> None:
         """Replace every declared ``sandbox_copy`` root with its exact snapshot tree."""
 
-        clone = _real_directory(clone, label="asset-staging clone")
-        snapshot_root = _real_directory(self.root / "sandbox-copy", label="task asset snapshot")
+        clone = real_directory(clone, label="asset-staging clone")
+        snapshot_root = real_directory(self.root / "sandbox-copy", label="task asset snapshot")
         staging = Path(tempfile.mkdtemp(prefix=".wfbench-assets-", dir=clone.parent))
         fallback_bytes = 0
         try:
@@ -160,8 +156,8 @@ class TaskAssetSnapshot:
     def dependency_mounts(self, clone: Path) -> list[ReadOnlyMount]:
         """Mount only immutable captured dependency roots into an arm clone."""
 
-        clone = _real_directory(clone, label="dependency clone")
-        snapshot_root = _real_directory(self.root, label="task asset snapshot")
+        clone = real_directory(clone, label="dependency clone")
+        snapshot_root = real_directory(self.root, label="task asset snapshot")
         mounts: list[ReadOnlyMount] = []
         for dependency in self.dependencies:
             source = snapshot_root / Path(*dependency.snapshot_path.parts)
@@ -219,7 +215,7 @@ class TaskAssetCache:
 
         if self._closed:
             raise SandboxError("task asset cache is already closed")
-        repo_identity = _real_directory(repo, label="task asset repository")
+        repo_identity = real_directory(repo, label="task asset repository")
         declarations, relative_paths = _sandbox_copy_declarations(task)
         dependency_declarations = _sandbox_dependency_declarations(task)
         dependency_identity = tuple((declaration.source, declaration.target) for declaration in dependency_declarations)
@@ -572,7 +568,7 @@ def _is_harness_sandbox_copy(relative: PurePosixPath) -> bool:
 
 
 def _harness_sandbox_copy_root() -> Path:
-    return _real_directory(runtime_mounts.HARNESS_ROOT, label="harness sandbox_copy root")
+    return real_directory(runtime_mounts.HARNESS_ROOT, label="harness sandbox_copy root")
 
 
 def _harness_sandbox_copy_identity(relative_paths: tuple[PurePosixPath, ...]) -> str:
@@ -1114,7 +1110,7 @@ def stage_task_assets(
     for containment tests and external callers.
     """
 
-    repo_identity = _real_directory(repo, label="task asset repository")
+    repo_identity = real_directory(repo, label="task asset repository")
     declarations, _ = _sandbox_copy_declarations(task)
     if snapshot is not None:
         if snapshot.repo_identity != repo_identity or snapshot.declarations != declarations:

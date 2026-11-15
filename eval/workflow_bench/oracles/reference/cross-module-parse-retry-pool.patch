@@ -1,0 +1,35 @@
+--- a/gitnexus/src/core/ingestion/workers/worker-pool.ts
++++ b/gitnexus/src/core/ingestion/workers/worker-pool.ts
+@@ -1461,6 +1461,7 @@
+       // no exclusion attribution, requeueRemainder quarantines items[0]
+       // as a best-guess culprit to break the death loop.
+       const unattributedJobDeaths: Map<number, number> = new Map();
++      const fileRetries = new Map<string, number>();
+       let completedFiles = 0;
+       let activeWorkers = 0;
+       let stopped = false;
+@@ -2045,10 +2046,20 @@
+         const recoverAndResume = async (reason: string, excludePaths: readonly string[]) => {
+           busySlots.delete(workerIndex);
+           inFlightProgress[workerIndex] = 0;
+-          requeueRemainder(job, excludePaths);
+-          // Keep recovery in flight so another slot finishing cannot settle
+-          // this dispatch before the replacement is ready for the next one.
+-          await handleWorkerDeath(workerIndex, reason, excludePaths);
++          const failedPath = excludePaths[0];
++          const transient = !/\bSyntaxError\b/.test(reason) &&
++            (/\bEAGAIN\b/.test(reason) || /exited with code 75\b/.test(reason));
++          const retries = failedPath ? fileRetries.get(failedPath) ?? 0 : 0;
++          const retry = !!failedPath && transient && retries < 2;
++          if (retry) fileRetries.set(failedPath, retries + 1);
++          else requeueRemainder(job, excludePaths);
++          // Do not quarantine a classified transient file until its budget is
++          // exhausted. Keep recovery active until replacement and backoff end.
++          await handleWorkerDeath(workerIndex, reason, retry ? [] : excludePaths);
++          if (retry && !stopped) {
++            await new Promise<void>((resolve) => setTimeout(resolve, 10 * 2 ** retries));
++            if (!stopped) jobs.unshift(job);
++          }
+           activeWorkers--;
+           if (stopped) return;
+           // Slot may have been dropped or respawned. Kick the current slot

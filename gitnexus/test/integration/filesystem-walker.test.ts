@@ -479,6 +479,212 @@ describe('filesystem-walker', () => {
     });
   });
 
+  describe('opt-in dot directories (GITNEXUS_INCLUDE_DOT_DIRS)', () => {
+    let dotDir: string;
+
+    beforeAll(async () => {
+      dotDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdirs-'));
+      const write = async (rel: string, content: string) => {
+        await fs.mkdir(path.dirname(path.join(dotDir, rel)), { recursive: true });
+        await fs.writeFile(path.join(dotDir, rel), content);
+      };
+      await write('src/index.ts', 'export const main = () => {}');
+      await write('.scallywag/root.ts', 'export const root = 1;');
+      await write('pkg/.scallywag/unit.ts', 'export const unit = 1;');
+      await write('pkg/.scallywag/nested/testing.ts', 'export const testing = 1;');
+      await write('pkg/.scallywag/.env.local', 'SECRET=1');
+      await write('pkg/.scallywag/.cache/blob.ts', 'export const cached = 1;');
+      await write('pkg/.scallywag/generated/out.ts', 'export const generated = 1;');
+      await write('pkg/.other/hidden.ts', 'export const other = 1;');
+      await write('.git/HEAD', 'ref: refs/heads/main');
+      await write('.gitnexusignore', 'pkg/.scallywag/generated/\n');
+    });
+
+    afterAll(async () => {
+      await fs.rm(dotDir, { recursive: true, force: true });
+    });
+
+    const walkPaths = async (includeDotDirs?: readonly string[]) =>
+      (await walkRepositoryPaths(dotDir, undefined, { includeDotDirs })).map((f) => f.path);
+
+    it('skips dot directories by default', async () => {
+      const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      try {
+        expect(await walkPaths()).toEqual(['src/index.ts']);
+      } finally {
+        if (original !== undefined) process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+      }
+    });
+
+    it('indexes a listed dot directory at any depth, keeping hidden files and other dot dirs out', async () => {
+      expect(await walkPaths(['.scallywag'])).toEqual([
+        '.scallywag/root.ts',
+        'pkg/.scallywag/nested/testing.ts',
+        'pkg/.scallywag/unit.ts',
+        'src/index.ts',
+      ]);
+    });
+
+    it('reads the list from GITNEXUS_INCLUDE_DOT_DIRS when no option is passed', async () => {
+      const original = process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+      process.env.GITNEXUS_INCLUDE_DOT_DIRS = '.other';
+      try {
+        expect(await walkPaths()).toEqual(['pkg/.other/hidden.ts', 'src/index.ts']);
+      } finally {
+        if (original === undefined) {
+          delete process.env.GITNEXUS_INCLUDE_DOT_DIRS;
+        } else {
+          process.env.GITNEXUS_INCLUDE_DOT_DIRS = original;
+        }
+      }
+    });
+
+    it('keeps a listed directory on the built-in ignore list out until .gitnexusignore negates it', async () => {
+      const ghDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-walker-dotdirs-github-'));
+      try {
+        await fs.mkdir(path.join(ghDir, '.github', 'scripts'), { recursive: true });
+        await fs.writeFile(path.join(ghDir, '.github', 'scripts', 'queue.mjs'), 'export {};');
+        await fs.writeFile(path.join(ghDir, 'index.ts'), 'export {};');
+        const walk = async () =>
+          (await walkRepositoryPaths(ghDir, undefined, { includeDotDirs: ['.github'] })).map(
+            (f) => f.path,
+          );
+
+        expect(await walk()).toEqual(['index.ts']);
+        await fs.writeFile(path.join(ghDir, '.gitnexusignore'), '!.github/\n');
+        expect(await walk()).toEqual(['.github/scripts/queue.mjs', 'index.ts']);
+      } finally {
+        await fs.rm(ghDir, { recursive: true, force: true });
+      }
+    });
+
+    it('treats a listed dot directory absent from the repo as empty, even in strict enumeration', async () => {
+      const discovered: string[] = [];
+      const paths = (
+        await walkRepositoryPaths(dotDir, undefined, {
+          includeDotDirs: ['.absent', '.scallywag'],
+          onPathsDiscovered: async (found) => {
+            discovered.push(...found);
+          },
+        })
+      ).map((f) => f.path);
+
+      expect(paths).toEqual([
+        '.scallywag/root.ts',
+        'pkg/.scallywag/nested/testing.ts',
+        'pkg/.scallywag/unit.ts',
+        'src/index.ts',
+      ]);
+      expect(discovered.length).toBeGreaterThan(0);
+    });
+
+    it('never indexes .git even when listed', async () => {
+      const cap = _captureLogger();
+      try {
+        expect(await walkPaths(['.git'])).toEqual(['src/index.ts']);
+      } finally {
+        cap.restore();
+      }
+    });
+
+    it('keeps credentials out even when ignore rules explicitly unignore them', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-credentials-'));
+      const blocked = [
+        '.GIT/private.ts',
+        '.aws/credentials',
+        '.ssh/id_rsa',
+        '.docker/config.json',
+        '.config/gcloud/application_default_credentials.json',
+        '.config/gh/hosts.yml',
+        '.source/credentials.json',
+        '.source/private.KEY',
+        '.source/secrets.yaml',
+        '.source/.env',
+        '.source/.npmrc',
+        '.source/.other/hidden.ts',
+      ];
+      const cap = _captureLogger();
+      try {
+        for (const rel of [...blocked, '.source/code.ts', '.config/tool/source.ts']) {
+          await fs.mkdir(path.dirname(path.join(root, rel)), { recursive: true });
+          await fs.writeFile(path.join(root, rel), 'SYNTHETIC_TEST_ONLY');
+        }
+        await fs.writeFile(path.join(root, '.gitnexusignore'), '!**\n');
+        const discovered: string[] = [];
+        const files = await walkRepositoryPaths(root, undefined, {
+          includeDotDirs: ['.GIT', '.aws', '.ssh', '.docker', '.config', '.source'],
+          onPathsDiscovered: async (paths) => {
+            discovered.push(...paths);
+          },
+        });
+        const expected = ['.config/tool/source.ts', '.source/code.ts'];
+        expect(files.map((file) => file.path)).toEqual(expected);
+        expect([...discovered].sort()).toEqual(expected);
+      } finally {
+        cap.restore();
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+
+    it('does not follow opted-in directory links or file aliases to hidden secrets', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-links-'));
+      const external = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-external-'));
+      try {
+        await fs.mkdir(path.join(root, '.source'));
+        await fs.writeFile(path.join(root, '.source', 'code.ts'), 'export const safe = 1;');
+        await fs.writeFile(path.join(root, '.source', '.env'), 'SYNTHETIC_TEST_ONLY');
+        await fs.writeFile(path.join(external, 'private.ts'), 'SYNTHETIC_TEST_ONLY');
+        await fs.symlink(
+          external,
+          path.join(root, '.linked'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        await fs.symlink(
+          external,
+          path.join(root, '.source', 'nested'),
+          process.platform === 'win32' ? 'junction' : 'dir',
+        );
+        // File symlinks require privileges on Windows; directory junctions above do not.
+        if (process.platform !== 'win32') {
+          await fs.symlink(
+            path.join(root, '.source', '.env'),
+            path.join(root, '.source', 'alias.ts'),
+          );
+        }
+        const discovered: string[] = [];
+        const files = await walkRepositoryPaths(root, undefined, {
+          includeDotDirs: ['.linked', '.source'],
+          onPathsDiscovered: async (paths) => {
+            discovered.push(...paths);
+          },
+        });
+        expect(files.map((file) => file.path)).toEqual(['.source/code.ts']);
+        expect(discovered).toEqual(['.source/code.ts']);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+        await fs.rm(external, { recursive: true, force: true });
+      }
+    });
+
+    it('treats a listed name that is a file as no directory, including nested names', async () => {
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-dotdirs-file-'));
+      try {
+        await fs.mkdir(path.join(root, 'pkg'));
+        await fs.writeFile(path.join(root, '.source'), 'SYNTHETIC_TEST_ONLY');
+        await fs.writeFile(path.join(root, 'pkg', '.source'), 'SYNTHETIC_TEST_ONLY');
+        await fs.writeFile(path.join(root, 'index.ts'), 'export {};');
+        const files = await walkRepositoryPaths(root, undefined, {
+          includeDotDirs: ['.source'],
+          onPathsDiscovered: async () => {},
+        });
+        expect(files.map((file) => file.path)).toEqual(['index.ts']);
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('readFileContents', () => {
     it('reads file contents by relative paths', async () => {
       const contents = await readFileContents(tmpDir, ['src/index.ts', 'src/utils.ts']);

@@ -1,0 +1,48 @@
+{
+  "language": "go",
+  "description": "Rename an exported field through Go implicit pointer dereferences across three typed receiver hops, preserving an unrelated field and local binding.",
+  "categories": ["public-field", "deep-chain", "pointer-receiver", "homonyms", "writes"],
+  "target": {
+    "name": "Value",
+    "kind": "Property",
+    "file": "model.go",
+    "startLine": 2
+  },
+  "newName": "Amount",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.go",
+        "startLine": 6
+      },
+      "to": {
+        "name": "Value",
+        "kind": "Property",
+        "file": "model.go",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "write",
+        "kind": "Function",
+        "file": "model.go",
+        "startLine": 9
+      },
+      "to": {
+        "name": "Value",
+        "kind": "Property",
+        "file": "model.go",
+        "startLine": 2
+      }
+    }
+  ]
+}

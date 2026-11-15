@@ -85,6 +85,11 @@ export const taintSummariesPhase: PipelinePhase<TaintSummariesOutput> = {
     const maxEdges = ctx.options?.pdgMaxInterprocEdges ?? DEFAULT_PDG_MAX_INTERPROC_EDGES;
 
     const solved = solveInterprocTaint(summaryMap, callEdges, { maxFindings, maxHops });
+    if (solved.refinementFallback) {
+      logger.warn(
+        '[taint-interproc] refinement memory budget exhausted; resumed conservative analysis',
+      );
+    }
     const emit = emitInterprocTaint(ctx.graph, solved.findings, { maxEdges }, (m) =>
       logger.warn(m),
     );

@@ -1,0 +1,23 @@
+{
+  "language": "typescript",
+  "description": "Refuse a receiver whose imported alias is reassigned in the same file; semantic resolution blocks the plan before provider occurrence checks.",
+  "categories": [
+    "cross-file-alias",
+    "constructor-proven-receiver",
+    "reassignment",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "render",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 1
+  },
+  "newName": "paint",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  }
+}

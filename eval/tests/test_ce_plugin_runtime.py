@@ -214,7 +214,7 @@ def _valid_cli_result() -> ManagedProcessResult:
     )
 
 
-def test_run_claude_passes_plugin_dir_explicitly_under_bare(monkeypatch, tmp_path: Path) -> None:
+def test_run_claude_passes_plugin_dir_explicitly(monkeypatch, tmp_path: Path) -> None:
     commands: list[list[str]] = []
 
     def fake_run(command, **_kwargs):
@@ -227,12 +227,10 @@ def test_run_claude_passes_plugin_dir_explicitly_under_bare(monkeypatch, tmp_pat
         tmp_path,
         claude_bin="claude",
         timeout=5,
-        bare=True,
         plugin_dirs=(SANDBOX_CE_PLUGIN,),
     )
-    runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5, bare=True)
+    runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5)
 
-    assert "--bare" in commands[0]
     assert commands[0][commands[0].index("--plugin-dir") + 1] == SANDBOX_CE_PLUGIN
     assert "--plugin-dir" not in commands[1]
 

@@ -3,34 +3,46 @@
   "grammars": {
     "c": {
       "name": "tree-sitter-c",
-      "upstream": { "npm": "tree-sitter-c" },
-      "hold": "ABI-pinned at 0.21.4 (#1242/#858) — needs a tree-sitter runtime upgrade before bumping"
+      "upstream": {
+        "github": "tree-sitter/tree-sitter-c"
+      }
     },
     "objc": {
       "name": "tree-sitter-objc",
-      "upstream": { "npm": "tree-sitter-objc" },
-      "hold": "Pinned at 3.0.2 for the Objective-C provider MVP; carries darwin/linux arm64+x64 prebuilds compatible with the current tree-sitter runtime (linux-arm64 built from vendored source because the upstream npm artifact is mislabeled)"
+      "upstream": {
+        "github": "tree-sitter-grammars/tree-sitter-objc"
+      }
     },
     "swift": {
       "name": "tree-sitter-swift",
-      "upstream": { "npm": "tree-sitter-swift" }
+      "upstream": {
+        "npm": "tree-sitter-swift"
+      },
+      "hold": "Pinned to upstream 0.7.2-with-generated-files (7b7909f2): 0.7.3 and 0.7.4 re-parent a later top-level declaration after split conditional function headers. Keep until the declaration-ownership regression tests pass; see gitnexus/vendor/README.md."
     },
     "kotlin": {
       "name": "tree-sitter-kotlin",
-      "upstream": { "npm": "tree-sitter-kotlin" },
-      "hold": "pinned to unreleased fwcd main commit c8ac3d26 for `fun interface` support (fwcd/tree-sitter-kotlin#169, closes #87) — npm latest (0.3.8) lacks the fix, so the monitor must NOT auto-revert (isNewer is strict-inequality: 0.3.8 != 0.4.0). Drop this hold and bump when upstream cuts a release that includes the fix"
+      "upstream": {
+        "github": "fwcd/tree-sitter-kotlin"
+      }
     },
     "dart": {
       "name": "tree-sitter-dart",
-      "upstream": { "github": "UserNobody14/tree-sitter-dart" }
+      "upstream": {
+        "github": "UserNobody14/tree-sitter-dart"
+      }
     },
     "proto": {
       "name": "tree-sitter-proto",
-      "upstream": { "github": "coder3101/tree-sitter-proto" }
+      "upstream": {
+        "github": "coder3101/tree-sitter-proto"
+      }
     },
     "zig": {
       "name": "tree-sitter-zig",
-      "upstream": { "npm": "@tree-sitter-grammars/tree-sitter-zig" }
+      "upstream": {
+        "github": "tree-sitter-grammars/tree-sitter-zig"
+      }
     }
   }
 }

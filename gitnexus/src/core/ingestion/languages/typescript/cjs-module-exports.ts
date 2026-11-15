@@ -39,7 +39,11 @@ import { defaultExportNameCollides } from './cjs-export-assignment.js';
  * resolve through it, and synthesizing a second binding would re-create the
  * ambiguity the shadow guard exists to prevent.
  */
-export function synthesizeCjsReExports(root: SyntaxNode, out: CaptureMatch[]): void {
+export function synthesizeCjsReExports(
+  root: SyntaxNode,
+  out: CaptureMatch[],
+  validRequireCalls?: ReadonlyMap<number, ReadonlySet<string>>,
+): void {
   // Namespace and named bindings introduced by require(), by local name.
   const namespaceSources = new Map<string, { source: string; node: SyntaxNode }>();
   const namedSources = new Map<string, { source: string; name: string; node: SyntaxNode }>();
@@ -51,6 +55,8 @@ export function synthesizeCjsReExports(root: SyntaxNode, out: CaptureMatch[]): v
       const value = declarator.childForFieldName('value');
       if (value === null || value.type !== 'call_expression') continue;
       if (value.childForFieldName('function')?.text !== 'require') continue;
+      if (validRequireCalls !== undefined && !validRequireCalls.has(value.id)) continue;
+      const blockedNames = validRequireCalls?.get(value.id);
       const arg = value.childForFieldName('arguments')?.namedChild(0);
       if (arg === undefined || arg === null || arg.type !== 'string') continue;
       const source = arg.namedChild(0)?.text ?? arg.text.slice(1, -1);
@@ -58,15 +64,22 @@ export function synthesizeCjsReExports(root: SyntaxNode, out: CaptureMatch[]): v
       const nameNode = declarator.childForFieldName('name');
       if (nameNode === null) continue;
       if (nameNode.type === 'identifier') {
+        if (blockedNames?.has(nameNode.text)) continue;
         namespaceSources.set(nameNode.text, { source, node: arg });
       } else if (nameNode.type === 'object_pattern') {
         for (const field of nameNode.namedChildren) {
           if (field.type === 'shorthand_property_identifier_pattern') {
+            if (blockedNames?.has(field.text)) continue;
             namedSources.set(field.text, { source, name: field.text, node: arg });
           } else if (field.type === 'pair_pattern') {
             const key = field.childForFieldName('key');
             const local = field.childForFieldName('value');
-            if (key !== null && local !== null && local.type === 'identifier')
+            if (
+              key !== null &&
+              local !== null &&
+              local.type === 'identifier' &&
+              !blockedNames?.has(local.text)
+            )
               namedSources.set(local.text, { source, name: key.text, node: arg });
           }
         }
@@ -190,7 +203,8 @@ export function synthesizeCjsModuleExports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
+  validRequireCalls?: ReadonlyMap<number, ReadonlySet<string>>,
 ): void {
-  synthesizeCjsReExports(root, out);
+  synthesizeCjsReExports(root, out, validRequireCalls);
   synthesizeCjsDefaultExport(root, filePath, out);
 }

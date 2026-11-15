@@ -128,7 +128,7 @@ vi.mock('fs/promises', async (importOriginal) => {
 describe('M7 — workspace-root scan: sorted readdir + a cap that warns (50,010-directory synthetic tree)', () => {
   it('trips the cap and warns, and the run still completes deterministically for a result outside the capped subtree', async () => {
     const { loadNodeWorkspacePackages, invalidateNodeWorkspacePackages } =
-      await import('../../src/core/ingestion/import-resolvers/node-workspace-packages.js');
+      await import('../../src/core/ingestion/languages/typescript/workspace-packages.js');
 
     const results: {
       warned: boolean;

@@ -3,6 +3,7 @@
  *
  * Type definitions for the embedding generation and semantic search system.
  */
+import type { AnalysisPhaseProgress } from '../analysis-progress.js';
 
 export const LABEL_FUNCTION = 'Function' as const;
 export const LABEL_METHOD = 'Method' as const;
@@ -206,7 +207,7 @@ export type EmbeddingPhase =
 /**
  * Progress information for the embedding pipeline
  */
-export interface EmbeddingProgress {
+export interface EmbeddingProgress extends AnalysisPhaseProgress {
   phase: EmbeddingPhase;
   percent: number;
   modelDownloadPercent?: number;
@@ -227,6 +228,8 @@ export interface EmbeddingConfig {
   batchSize: number;
   /** Number of chunks passed to one local/HTTP embedding call */
   subBatchSize: number;
+  /** Maximum UTF-16 characters in each fully generated embedding input. */
+  maxInputChars: number;
   /** Maximum ONNX Runtime CPU threads for local inference */
   threads: number;
   /** Embedding vector dimensions */
@@ -237,6 +240,8 @@ export interface EmbeddingConfig {
   maxSnippetLength: number;
   /** Maximum code chunk size in characters (for chunking long code) */
   chunkSize: number;
+  /** AST statement boundaries (default), or fixed character windows. */
+  chunkStrategy: 'ast' | 'fixed';
   /** Overlap between chunks in characters */
   overlap: number;
   /** Maximum description length in characters */
@@ -252,11 +257,13 @@ export const DEFAULT_EMBEDDING_CONFIG: EmbeddingConfig = {
   modelId: 'Snowflake/snowflake-arctic-embed-xs',
   batchSize: 16,
   subBatchSize: 8,
+  maxInputChars: 4096,
   threads: 2,
   dimensions: 384,
   device: 'auto',
   maxSnippetLength: 500,
   chunkSize: 1200,
+  chunkStrategy: 'ast',
   overlap: 120,
   maxDescriptionLength: 150,
 };
@@ -293,6 +300,8 @@ export interface EmbeddableNode {
   serverName?: string;
   methodNames?: string[];
   fieldNames?: string[];
+  /** Safe Class header, set only by structural projection; never raw source. */
+  classDeclaration?: string;
 }
 
 /**

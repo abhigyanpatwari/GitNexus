@@ -1,0 +1,985 @@
+{
+  "schemaVersion": 1,
+  "profiles": [
+    {
+      "name": "concurrency-2-reuse-1",
+      "concurrency": 2,
+      "maxTestRunnerReuse": 1
+    },
+    {
+      "name": "concurrency-1-reuse-unlimited",
+      "concurrency": 1,
+      "maxTestRunnerReuse": 0
+    }
+  ],
+  "scopes": [
+    {
+      "name": "main",
+      "testFiles": [
+        "static.case.ts",
+        "import-failure.case.ts",
+        "hooks.case.ts",
+        "runtime.case.ts",
+        "rows.case.ts"
+      ],
+      "mutate": [
+        "src/static-table.ts",
+        "src/boot.ts",
+        "src/hooks.ts",
+        "src/runtime.ts",
+        "src/counter.ts",
+        "src/rows.ts"
+      ],
+      "testIds": null,
+      "tests": [
+        {
+          "id": "hooks.case.ts#records loaded in beforeAll > loads one record",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "hooks.case.ts#records loaded in beforeAll > names the record",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "hooks.case.ts#a suite whose afterAll checks the connection > runs before the closing check",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "hooks.case.ts#runs outside every suite with hooks",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "import-failure.case.ts#boots in strict mode",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:0",
+          "skipped": false,
+          "notOracleValidated": true
+        },
+        {
+          "id": "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1",
+          "skipped": false,
+          "notOracleValidated": true
+        },
+        {
+          "id": "runtime.case.ts#doubles two",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "runtime.case.ts#doubles three",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "runtime.case.ts#reads the first character of nothing",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "runtime.case.ts#counts three items",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "runtime.case.ts#schedules no audit when quiet",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "runtime.case.ts#settles without waiting",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "runtime.case.ts#issues the first ticket",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "runtime.case.ts#runs while the feature is enabled",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "static.case.ts#reads the unit table",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "static.case.ts#a suite whose body calls production code > keeps the label computed during collection",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "static.case.ts#row alpha",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "static.case.ts#row beta",
+          "skipped": false,
+          "notOracleValidated": false
+        }
+      ]
+    },
+    {
+      "name": "retry",
+      "testFiles": [
+        "retry.case.ts"
+      ],
+      "mutate": [
+        "src/retry.ts"
+      ],
+      "testIds": null,
+      "tests": [
+        {
+          "id": "retry.case.ts#waits ten milliseconds per attempt",
+          "skipped": false,
+          "notOracleValidated": false
+        },
+        {
+          "id": "retry.case.ts#uses the linear policy",
+          "skipped": false,
+          "notOracleValidated": false
+        }
+      ]
+    },
+    {
+      "name": "selection",
+      "testFiles": [
+        "selection.case.ts"
+      ],
+      "mutate": [
+        "src/selection.ts"
+      ],
+      "testIds": [
+        "selection.case.ts#scaling > scales two"
+      ],
+      "tests": [
+        {
+          "id": "selection.case.ts#scaling > scales one",
+          "skipped": true,
+          "notOracleValidated": false
+        },
+        {
+          "id": "selection.case.ts#scaling > scales two",
+          "skipped": false,
+          "notOracleValidated": false
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "kind": "mutant",
+      "name": "static: a mutant in a module-level table is killed with the module re-imported fresh",
+      "scope": "main",
+      "mutant": {
+        "file": "src/static-table.ts",
+        "location": "7:62-7:76",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "Killed",
+        "static": true,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [],
+        "selected": "all",
+        "killedBy": [
+          "static.case.ts#reads the unit table"
+        ],
+        "assertionKilledBy": [
+          "static.case.ts#reads the unit table"
+        ],
+        "tests": {
+          "static.case.ts#reads the unit table": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "static: a mutant hit in a describe body during collection is static",
+      "scope": "main",
+      "mutant": {
+        "file": "src/static-table.ts",
+        "location": "12:10-12:21",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "Killed",
+        "static": true,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [],
+        "selected": "all",
+        "killedBy": [
+          "static.case.ts#a suite whose body calls production code > keeps the label computed during collection"
+        ],
+        "assertionKilledBy": [
+          "static.case.ts#a suite whose body calls production code > keeps the label computed during collection"
+        ],
+        "tests": {
+          "static.case.ts#a suite whose body calls production code > keeps the label computed during collection": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "static: a mutant hit in a production-computed it.each table is static, and its changed test set is invalid, not a non-kill",
+      "scope": "main",
+      "mutant": {
+        "file": "src/static-table.ts",
+        "location": "20:5-20:11",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "RuntimeError",
+        "static": true,
+        "outcome": "invalid",
+        "outcomeSource": "sidecar",
+        "coveredBy": [],
+        "selected": "all",
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {},
+        "outsideTest": [],
+        "reason": "has full name \"row \", the run manifest expects \"row beta\"",
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "hooks: a mutant executed only in a suite's beforeAll is attributed to every test of that suite",
+      "scope": "main",
+      "mutant": {
+        "file": "src/hooks.ts",
+        "location": "7:11-7:19",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "hooks.case.ts#records loaded in beforeAll > loads one record",
+          "hooks.case.ts#records loaded in beforeAll > names the record"
+        ],
+        "selected": [
+          "hooks.case.ts#records loaded in beforeAll > loads one record",
+          "hooks.case.ts#records loaded in beforeAll > names the record"
+        ],
+        "killedBy": [
+          "hooks.case.ts#records loaded in beforeAll > names the record"
+        ],
+        "assertionKilledBy": [
+          "hooks.case.ts#records loaded in beforeAll > names the record"
+        ],
+        "tests": {
+          "hooks.case.ts#records loaded in beforeAll > names the record": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [
+          "hooks.case.ts#records loaded in beforeAll > loads one record",
+          "hooks.case.ts#records loaded in beforeAll > names the record"
+        ],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "runtime: under disableBail two tests kill the same mutant and both are reported",
+      "scope": "main",
+      "mutant": {
+        "file": "src/runtime.ts",
+        "location": "7:10-7:19",
+        "mutatorName": "ArithmeticOperator",
+        "replacement": "value / 2"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#doubles three",
+          "runtime.case.ts#doubles two"
+        ],
+        "selected": [
+          "runtime.case.ts#doubles three",
+          "runtime.case.ts#doubles two"
+        ],
+        "killedBy": [
+          "runtime.case.ts#doubles three",
+          "runtime.case.ts#doubles two"
+        ],
+        "assertionKilledBy": [
+          "runtime.case.ts#doubles three",
+          "runtime.case.ts#doubles two"
+        ],
+        "tests": {
+          "runtime.case.ts#doubles three": "killed-by-test:assertion",
+          "runtime.case.ts#doubles two": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "rows: it.each rows whose titles truncate to one name keep distinct ids by row ordinal",
+      "scope": "main",
+      "mutant": {
+        "file": "src/rows.ts",
+        "location": "6:40-6:51",
+        "mutatorName": "ArithmeticOperator",
+        "replacement": "sum - value"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:0",
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1"
+        ],
+        "selected": [
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:0",
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1"
+        ],
+        "killedBy": [
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:0",
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1"
+        ],
+        "assertionKilledBy": [
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:0",
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1"
+        ],
+        "tests": {
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:0": "killed-by-test:assertion",
+          "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "runtime: a mutant that throws a TypeError is Killed in Stryker's report and runtime in the sidecar",
+      "scope": "main",
+      "mutant": {
+        "file": "src/runtime.ts",
+        "location": "13:10-13:22",
+        "mutatorName": "OptionalChaining",
+        "replacement": "text.charAt"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:runtime",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#reads the first character of nothing"
+        ],
+        "selected": [
+          "runtime.case.ts#reads the first character of nothing"
+        ],
+        "killedBy": [
+          "runtime.case.ts#reads the first character of nothing"
+        ],
+        "assertionKilledBy": [],
+        "tests": {
+          "runtime.case.ts#reads the first character of nothing": "killed-by-test:runtime"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "hooks: a failing beforeAll is killed-outside-test:hook, attributed to the suite's tests",
+      "scope": "main",
+      "mutant": {
+        "file": "src/hooks.ts",
+        "location": "13:7-13:12",
+        "mutatorName": "BooleanLiteral",
+        "replacement": "open"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-outside-test:hook",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check",
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check"
+        ],
+        "selected": [
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check",
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check"
+        ],
+        "killedBy": [
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check",
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check"
+        ],
+        "assertionKilledBy": [],
+        "tests": {
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check": "killed-outside-test:hook",
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check": "killed-outside-test:hook"
+        },
+        "outsideTest": [
+          {
+            "file": "hooks.case.ts",
+            "outcome": "killed-outside-test:hook",
+            "attributedTo": [
+              "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check",
+              "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check"
+            ]
+          }
+        ],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs a second test after the opening check",
+          "hooks.case.ts#a suite whose beforeAll checks the connection > runs after the opening check"
+        ],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "hooks: a failing afterAll leaves its tests passing and is killed-outside-test:hook",
+      "scope": "main",
+      "mutant": {
+        "file": "src/hooks.ts",
+        "location": "19:7-19:14",
+        "mutatorName": "BooleanLiteral",
+        "replacement": "closed"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-outside-test:hook",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "hooks.case.ts#a suite whose afterAll checks the connection > runs before the closing check"
+        ],
+        "selected": [
+          "hooks.case.ts#a suite whose afterAll checks the connection > runs before the closing check"
+        ],
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {},
+        "outsideTest": [
+          {
+            "file": "hooks.case.ts",
+            "outcome": "killed-outside-test:hook",
+            "attributedTo": []
+          }
+        ],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [
+          "hooks.case.ts#a suite whose afterAll checks the connection > runs before the closing check"
+        ],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "static: a mutant that makes a test file fail to import is killed-outside-test:collection, never invalid or Survived",
+      "scope": "main",
+      "mutant": {
+        "file": "src/boot.ts",
+        "location": "10:38-10:46",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "Killed",
+        "static": true,
+        "outcome": "killed-outside-test:collection",
+        "outcomeSource": "sidecar",
+        "coveredBy": [],
+        "selected": "all",
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {},
+        "outsideTest": [
+          {
+            "file": "import-failure.case.ts",
+            "outcome": "killed-outside-test:collection",
+            "attributedTo": []
+          }
+        ],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "runtime: an infinite loop whose try/catch swallows the hit-limit error is a timeout through the hit count",
+      "scope": "main",
+      "mutant": {
+        "file": "src/runtime.ts",
+        "location": "21:47-21:54",
+        "mutatorName": "UpdateOperator",
+        "replacement": "index--"
+      },
+      "expect": {
+        "status": "Timeout",
+        "static": false,
+        "outcome": "timeout",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#counts three items"
+        ],
+        "selected": [
+          "runtime.case.ts#counts three items"
+        ],
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {
+          "runtime.case.ts#counts three items": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": "Hit limit reached (301/300)",
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "runtime: an unhandled rejection during a mutant run is infrastructure",
+      "scope": "main",
+      "mutant": {
+        "file": "src/runtime.ts",
+        "location": "33:7-33:13",
+        "mutatorName": "BooleanLiteral",
+        "replacement": "quiet"
+      },
+      "expect": {
+        "status": "RuntimeError",
+        "static": false,
+        "outcome": "infrastructure",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#schedules no audit when quiet"
+        ],
+        "selected": [
+          "runtime.case.ts#schedules no audit when quiet"
+        ],
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {},
+        "outsideTest": [],
+        "reason": "unhandled error during the run: Error: runtime: the audit failed",
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "runtime: a mutant covered by no test is NoCoverage in Stryker and survived when normalised",
+      "scope": "main",
+      "mutant": {
+        "file": "src/runtime.ts",
+        "location": "52:10-52:21",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "NoCoverage",
+        "static": false,
+        "outcome": "survived",
+        "outcomeSource": "no-coverage",
+        "coveredBy": [],
+        "selected": null,
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": null,
+        "outsideTest": null,
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "runtime: a test failing with Vitest's own testTimeout error is class timeout",
+      "scope": "main",
+      "mutant": {
+        "file": "src/runtime.ts",
+        "location": "39:7-39:12",
+        "mutatorName": "BooleanLiteral",
+        "replacement": "fast"
+      },
+      "expect": {
+        "status": "Timeout",
+        "static": false,
+        "outcome": "timeout",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#settles without waiting"
+        ],
+        "selected": [
+          "runtime.case.ts#settles without waiting"
+        ],
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {
+          "runtime.case.ts#settles without waiting": "timeout"
+        },
+        "outsideTest": [],
+        "reason": "Test timed out in 2000ms",
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "state: the first of two consecutive mutants in one process is killed",
+      "scope": "main",
+      "mutant": {
+        "file": "src/counter.ts",
+        "location": "10:3-10:14",
+        "mutatorName": "AssignmentOperator",
+        "replacement": "issued -= 1"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#issues the first ticket"
+        ],
+        "selected": [
+          "runtime.case.ts#issues the first ticket"
+        ],
+        "killedBy": [
+          "runtime.case.ts#issues the first ticket"
+        ],
+        "assertionKilledBy": [
+          "runtime.case.ts#issues the first ticket"
+        ],
+        "tests": {
+          "runtime.case.ts#issues the first ticket": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "state: the second of two consecutive mutants shows no state from the first and survives",
+      "scope": "main",
+      "mutant": {
+        "file": "src/counter.ts",
+        "location": "12:15-12:33",
+        "mutatorName": "StringLiteral",
+        "replacement": "``"
+      },
+      "expect": {
+        "status": "Survived",
+        "static": false,
+        "outcome": "survived",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#issues the first ticket"
+        ],
+        "selected": [
+          "runtime.case.ts#issues the first ticket"
+        ],
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {},
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "runtime: a mutant run that selects tests but runs zero of them is invalid",
+      "scope": "main",
+      "mutant": {
+        "file": "src/runtime.ts",
+        "location": "46:10-46:15",
+        "mutatorName": "BooleanLiteral",
+        "replacement": "true"
+      },
+      "expect": {
+        "status": "RuntimeError",
+        "static": false,
+        "outcome": "invalid",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "runtime.case.ts#runs while the feature is enabled"
+        ],
+        "selected": [
+          "runtime.case.ts#runs while the feature is enabled"
+        ],
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {},
+        "outsideTest": [],
+        "reason": "did not run (state skipped); zero tests ran",
+        "flags": [
+          "zero-tests"
+        ],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "retry: a test with retry: 1 makes the run of a mutant it covers inconclusive",
+      "scope": "retry",
+      "mutant": {
+        "file": "src/retry.ts",
+        "location": "7:10-7:22",
+        "mutatorName": "ArithmeticOperator",
+        "replacement": "attempt / 10"
+      },
+      "expect": {
+        "status": "RuntimeError",
+        "static": false,
+        "outcome": "inconclusive",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "retry.case.ts#waits ten milliseconds per attempt"
+        ],
+        "selected": [
+          "retry.case.ts#waits ten milliseconds per attempt"
+        ],
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {
+          "retry.case.ts#waits ten milliseconds per attempt": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": "retry.case.ts#waits ten milliseconds per attempt has retry 1",
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "retry: a static mutant selects every test, the retry test too, so its run is inconclusive",
+      "scope": "retry",
+      "mutant": {
+        "file": "src/retry.ts",
+        "location": "11:29-11:37",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "RuntimeError",
+        "static": true,
+        "outcome": "inconclusive",
+        "outcomeSource": "sidecar",
+        "coveredBy": [],
+        "selected": "all",
+        "killedBy": [],
+        "assertionKilledBy": [],
+        "tests": {
+          "retry.case.ts#uses the linear policy": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": "retry.case.ts#waits ten milliseconds per attempt has retry 1",
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "selection: with testIds set to one of two covering tests, only the selected test covers, runs and kills the mutant",
+      "scope": "selection",
+      "mutant": {
+        "file": "src/selection.ts",
+        "location": "8:10-8:19",
+        "mutatorName": "ArithmeticOperator",
+        "replacement": "value / 3"
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "selected": "all",
+        "killedBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "assertionKilledBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "tests": {
+          "selection.case.ts#scaling > scales two": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "mutant",
+      "name": "selection: a mutant hit only in the suite beforeAll carries the hook marker for the selected test only",
+      "scope": "selection",
+      "mutant": {
+        "file": "src/selection.ts",
+        "location": "14:10-14:13",
+        "mutatorName": "StringLiteral",
+        "replacement": "\"\""
+      },
+      "expect": {
+        "status": "Killed",
+        "static": false,
+        "outcome": "killed-by-test:assertion",
+        "outcomeSource": "sidecar",
+        "coveredBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "selected": "all",
+        "killedBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "assertionKilledBy": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "tests": {
+          "selection.case.ts#scaling > scales two": "killed-by-test:assertion"
+        },
+        "outsideTest": [],
+        "reason": null,
+        "flags": [],
+        "hookAttributedTests": [
+          "selection.case.ts#scaling > scales two"
+        ],
+        "attemptsDisagree": false
+      }
+    },
+    {
+      "kind": "tests",
+      "name": "rows: it.each rows whose titles truncate to one name are flagged not oracle-validated",
+      "scope": "main",
+      "tests": [
+        {
+          "id": "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:0",
+          "skipped": false,
+          "notOracleValidated": true
+        },
+        {
+          "id": "rows.case.ts#totals a row label long enough for Vitest to t…:11:3:1",
+          "skipped": false,
+          "notOracleValidated": true
+        }
+      ]
+    },
+    {
+      "kind": "tests",
+      "name": "selection: a dry run with testIds runs the selected test and lists the other one as skipped",
+      "scope": "selection",
+      "tests": [
+        {
+          "id": "selection.case.ts#scaling > scales one",
+          "skipped": true,
+          "notOracleValidated": false
+        },
+        {
+          "id": "selection.case.ts#scaling > scales two",
+          "skipped": false,
+          "notOracleValidated": false
+        }
+      ]
+    },
+    {
+      "kind": "processes",
+      "name": "processes: mutants handled by processes that never ran the dry run still select the right tests through the run manifest",
+      "profile": "concurrency-2-reuse-1",
+      "rule": "one-mutant-run-per-process",
+      "consecutive": null
+    },
+    {
+      "kind": "processes",
+      "name": "processes: one runner process handles two consecutive mutants, and the second run shows no state from the first",
+      "profile": "concurrency-1-reuse-unlimited",
+      "rule": "every-run-in-the-dry-run-process",
+      "consecutive": [
+        "state: the first of two consecutive mutants in one process is killed",
+        "state: the second of two consecutive mutants shows no state from the first and survives"
+      ]
+    },
+    {
+      "kind": "environment",
+      "name": "environment: exporting __STRYKER_ACTIVE_MUTANT__ in the parent environment changes no result",
+      "profile": "concurrency-1-reuse-unlimited",
+      "activeMutantOf": "static: a mutant in a module-level table is killed with the module re-imported fresh",
+      "localId": "60"
+    }
+  ]
+}

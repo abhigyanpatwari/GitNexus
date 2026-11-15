@@ -2,9 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // Import the function we'll add in the next step
 import {
+  DEFAULT_MAX_COMPLETION_TOKENS,
   LLM_ALLOW_INSECURE_CONNECTION_ENV,
+  LLM_MAX_COMPLETION_TOKENS_ENV,
   MINIMAX_MODEL_IDS,
   MINIMAX_OPENAI_BASE_URLS,
+  callLLM,
   isAzureProvider,
   isReasoningModel,
   buildRequestUrl,
@@ -127,6 +130,97 @@ describe('resolveLLMConfig provider isolation', () => {
     expect(config.apiKey).toBe('');
     expect(config.apiVersion).toBeUndefined();
     expect(config.baseUrl).toBe('https://openrouter.ai/api/v1');
+  });
+});
+
+describe('resolveLLMConfig max completion tokens', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  async function mockSavedConfig(config: Record<string, unknown>) {
+    vi.spyOn(await import('../../src/storage/repo-manager.js'), 'loadCLIConfig').mockResolvedValue(
+      config,
+    );
+  }
+
+  it('keeps 16384 when the flag, env var, and config are unset', async () => {
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, '');
+    await mockSavedConfig({});
+
+    const config = await resolveLLMConfig();
+
+    expect(config.maxTokens).toBe(DEFAULT_MAX_COMPLETION_TOKENS);
+  });
+
+  it('uses maxCompletionTokens from ~/.gitnexus/config.json', async () => {
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, '');
+    await mockSavedConfig({ maxCompletionTokens: 131072 });
+
+    const config = await resolveLLMConfig();
+
+    expect(config.maxTokens).toBe(131072);
+  });
+
+  it('lets GITNEXUS_MAX_COMPLETION_TOKENS override the config file', async () => {
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, '65536');
+    await mockSavedConfig({ maxCompletionTokens: 131072 });
+
+    const config = await resolveLLMConfig();
+
+    expect(config.maxTokens).toBe(65536);
+  });
+
+  it('lets an explicit override beat the env var and the config file', async () => {
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, 'nope');
+    await mockSavedConfig({ maxCompletionTokens: 1.5 });
+
+    const config = await resolveLLMConfig({ maxTokens: 131072 });
+
+    expect(config.maxTokens).toBe(131072);
+  });
+
+  it('sends the env limit as max_completion_tokens', async () => {
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, '131072');
+    await mockSavedConfig({});
+    const fetchSpy = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: 'ok' } }], usage: {} }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const config = await resolveLLMConfig({
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-4o',
+      provider: 'openai',
+    });
+    await callLLM('test', config);
+
+    const body = JSON.parse((fetchSpy.mock.calls[0] as [string, RequestInit])[1].body as string);
+    expect(body.max_completion_tokens).toBe(131072);
+  });
+
+  it('rejects a non-integer env value', async () => {
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, 'nope');
+    await mockSavedConfig({});
+
+    await expect(resolveLLMConfig()).rejects.toThrow(
+      `${LLM_MAX_COMPLETION_TOKENS_ENV} must be a positive integer`,
+    );
+  });
+
+  it('rejects a non-integer config value', async () => {
+    vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, '');
+    await mockSavedConfig({ maxCompletionTokens: 1.5 });
+
+    await expect(resolveLLMConfig()).rejects.toThrow(
+      'maxCompletionTokens in ~/.gitnexus/config.json must be a positive integer',
+    );
   });
 });
 

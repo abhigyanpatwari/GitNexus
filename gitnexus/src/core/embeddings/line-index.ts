@@ -4,11 +4,15 @@ export interface ResolvedLineRange {
 }
 
 export const buildLineIndex = (content: string): Int32Array => {
-  const offsets: number[] = [0];
-  for (let i = 0; i < content.length; i++) {
-    if (content.charCodeAt(i) === 10) offsets.push(i + 1);
-  }
-  return new Int32Array(offsets);
+  // Allocate the final packed index directly; a temporary number[] costs much
+  // more than the source for files with millions of short lines.
+  let count = 1;
+  for (let i = content.indexOf('\n'); i >= 0; i = content.indexOf('\n', i + 1)) count++;
+  const offsets = new Int32Array(count);
+  let line = 1;
+  for (let i = content.indexOf('\n'); i >= 0; i = content.indexOf('\n', i + 1))
+    offsets[line++] = i + 1;
+  return offsets;
 };
 
 const clampOffset = (lineOffsets: Int32Array, charOffset: number): number => {

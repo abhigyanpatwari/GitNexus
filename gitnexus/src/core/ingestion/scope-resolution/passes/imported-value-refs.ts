@@ -29,6 +29,10 @@ import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { tryEmitEdge } from '../graph-bridge/edges.js';
 import { findValueBindingInScope } from '../scope/walkers.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
+import {
+  sourceBindingForDefinition,
+  type SourceBindingRecorder,
+} from '../source-binding-resolution.js';
 
 /**
  * Confidence for a reference resolved through a finalized import binding.
@@ -49,6 +53,7 @@ export function emitImportedValueReferences(
   nodeLookup: GraphNodeLookup,
   /** Sites an earlier pass already owns — never re-resolved here. */
   skipSites: ReadonlySet<string>,
+  recordSourceBinding?: SourceBindingRecorder,
 ): ImportedValueRefStats {
   let emitted = 0;
   const seen = new Set<string>();
@@ -62,7 +67,41 @@ export function emitImportedValueReferences(
       const siteKey = callableFlowSiteKey(parsed.filePath, site.atRange);
       if (skipSites.has(siteKey)) continue;
 
-      const def = findValueBindingInScope(site.inScope, site.name, indexes);
+      const def = findValueBindingInScope(
+        site.inScope,
+        site.name,
+        indexes,
+        recordSourceBinding === undefined
+          ? undefined
+          : (claim) => {
+              // The written import may name a callable or a type even when
+              // this pass cannot emit a value edge for that declaration kind.
+              const candidates = [
+                ...new Map(
+                  claim.bindings.map((binding) => [binding.def.nodeId, binding.def]),
+                ).values(),
+              ];
+              const first = candidates[0];
+              if (first === undefined || first.filePath === parsed.filePath) return;
+              const binding = sourceBindingForDefinition(
+                first,
+                'imported-value',
+                claim.bindings,
+                claim.scope?.id,
+              );
+              recordSourceBinding(
+                site,
+                candidates.length === 1
+                  ? binding
+                  : {
+                      ...binding,
+                      status: 'ambiguous',
+                      targetDefIds: candidates.map((candidate) => candidate.nodeId),
+                      candidatesComplete: true,
+                    },
+              );
+            },
+      );
       if (def === undefined) continue;
       // See the header: same-file hits are already resolved, and accepting
       // them here would start emitting edges to block-local values.

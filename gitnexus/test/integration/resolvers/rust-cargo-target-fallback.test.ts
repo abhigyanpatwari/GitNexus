@@ -7,6 +7,109 @@ import { loadRustCargoTargets } from '../../../src/core/ingestion/languages/rust
 
 describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
   it.each([
+    [
+      'renamed symbol',
+      {
+        'src/lib.rs':
+          'pub mod source; pub mod unrelated; pub mod wanted { pub use crate::source::actual as helper; }',
+        'src/source.rs': 'pub fn actual() {}',
+      },
+      'demo::wanted::helper',
+    ],
+    [
+      're-export cycle',
+      {
+        'src/lib.rs': 'pub mod a; pub mod b; pub mod unrelated;',
+        'src/a.rs': 'pub mod wanted { pub use crate::b::wanted::helper; }',
+        'src/b.rs': 'pub mod wanted { pub use crate::a::wanted::helper; }',
+      },
+      'demo::a::wanted::helper',
+    ],
+  ] as const)(
+    'abstains from an inline %s without exact binding identity',
+    async (_label, sources, imported) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-reexport-abstention-'));
+      try {
+        writeFixtureRepo(dir, {
+          'Cargo.toml': '[package]\nname="demo"\nedition="2021"\n',
+          ...sources,
+          'src/unrelated.rs': 'pub fn helper() {}',
+          'tests/caller.rs': `use ${imported}; pub fn caller() { helper(); }`,
+        });
+        const result = await runPipelineFromRepo(dir, () => {});
+        expect(
+          getRelationships(result, 'CALLS').filter((edge) => edge.source === 'caller'),
+        ).toEqual([]);
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    },
+  );
+
+  it.each(['other', 'wanted'] as const)(
+    'keeps named imports within the explicit re-export module: %s',
+    async (exportedFrom) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-reexport-identity-'));
+      try {
+        const reexport = 'pub use crate::source::helper;';
+        writeFixtureRepo(dir, {
+          'Cargo.toml': '[package]\nname="demo"\nedition="2021"\n',
+          'src/lib.rs': `pub mod source; pub mod other { ${exportedFrom === 'other' ? reexport : ''} } pub mod wanted { ${exportedFrom === 'wanted' ? reexport : ''} }`,
+          'src/source.rs': 'pub fn helper() {}',
+          'tests/caller.rs': 'use demo::wanted::helper; pub fn caller() { helper(); }',
+        });
+        const result = await runPipelineFromRepo(dir, () => {});
+        const calls = getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'caller' && edge.target === 'helper',
+        );
+        expect(calls.map((edge) => edge.targetFilePath)).toEqual(
+          exportedFrom === 'wanted' ? ['src/source.rs'] : [],
+        );
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    },
+  );
+
+  it('does not choose a same-file homonym when a named inline import cannot carry exact identity', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-inline-homonym-'));
+    try {
+      writeFixtureRepo(dir, {
+        'Cargo.toml': '[package]\nname="demo"\nedition="2021"\n',
+        'src/lib.rs': 'pub fn helper() {} pub mod nested { pub fn helper() {} }',
+        'tests/caller.rs': 'use demo::nested::helper; pub fn caller() { helper(); }',
+      });
+      const result = await runPipelineFromRepo(dir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'caller' && edge.target === 'helper',
+        ),
+      ).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it('does not bypass a local alias with a same-named Cargo library', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-named-shadow-'));
+    try {
+      writeFixtureRepo(dir, {
+        'Cargo.toml': '[package]\nname="demo"\nedition="2021"\n',
+        'src/lib.rs': 'pub fn helper() {}',
+        'tests/caller.rs': 'pub fn caller() { use missing as demo; use demo::helper; helper(); }',
+      });
+      const result = await runPipelineFromRepo(dir, () => {});
+      expect(
+        getRelationships(result, 'CALLS').filter(
+          (edge) => edge.source === 'caller' && edge.target === 'helper',
+        ),
+      ).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+    }
+  });
+
+  it.each([
     ['use demo::*;', false],
     ['use demo::helper;', false],
     ['use demo::nested::*;', true],
@@ -327,7 +430,7 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
       '[package]\nname="unknown"\nversion="0.1.0"\nedition="2021"\n',
       'extern crate self as api;',
     ],
-  ])('preserves a labeled guess with %s', async (_name, manifest, prefix) => {
+  ])('does not bypass an explicit unresolved import with %s', async (_name, manifest, prefix) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-rust-cargo-unknown-'));
     try {
       writeFixtureRepo(dir, {
@@ -340,9 +443,7 @@ describe('Rust Cargo target boundaries in name fallback (#3253)', () => {
       const calls = getRelationships(result, 'CALLS').filter(
         (edge) => edge.source === 'caller' && edge.target === 'helper',
       );
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.rel.reason).toBe('global-name-fallback');
-      expect(calls[0]!.rel.confidence).toBe(0.5);
+      expect(calls).toEqual([]);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
     }

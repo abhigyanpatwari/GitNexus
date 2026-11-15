@@ -64,8 +64,9 @@ type CorpusEntry = {
  * Fixtures chosen to reach a structural emitter that no other suite drives.
  *
  * The sentinels are the anti-vacuity anchor: each names an emitter that must
- * still fire. Two of them (`CodeElement|Property`, `Module|Namespace`) are also
- * the only pairs here that no generated rule can reach; the other nine are
+ * still fire. Six of them (`Constructor|CodeElement`, `CodeElement|Property`,
+ * `Module|Namespace`, `File|Impl`, `Impl|Function`, `File|Template`) are also
+ * the only pairs here that no generated rule can reach; the others are
  * rule-derived, and stay because a rule DECLARING a pair says nothing about
  * whether any emitter still PRODUCES it — which is the failure this corpus
  * exists to catch.
@@ -164,6 +165,25 @@ const NON_BRIDGE_CORPUS = [
     emitter: 'type-annotation USES',
     sentinels: ['Function|TypeAlias', 'Function|Interface'],
   },
+  {
+    // Rust inherent `impl` blocks: `@definition.impl` mints an `Impl` node the
+    // file DEFINES, and the owner lookup in `ast-helpers.ts` keys every method
+    // of the block to it, so HAS_METHOD runs FROM an `Impl`. Rust methods are
+    // labelled `Function`, which is why the member pair is `Impl|Function`,
+    // not `Impl|Method`. The only `Impl|*` row any emitter reaches (#2799).
+    fixture: 'rust-member-calls',
+    emitter: 'rust impl HAS_METHOD',
+    sentinels: ['File|Impl', 'Impl|Function'],
+  },
+  {
+    // C++ templates: `@definition.template` mints a `Template` node that only
+    // its file DEFINES. Calls and members attach to the `Function` / `Class`
+    // captured for the same declaration, not to the `Template` — see the
+    // second NOTE below the corpus.
+    fixture: 'cpp-template-partial-order-pointer',
+    emitter: 'cpp template DEFINES',
+    sentinels: ['File|Template'],
+  },
 ] as const satisfies readonly CorpusEntry[];
 
 /**
@@ -179,7 +199,7 @@ const OPTIONAL_GRAMMAR_CORPUS = [
     // MEMBER_OWNER_NODE_TYPES, so the definition phase emits HAS_PROPERTY /
     // HAS_METHOD FROM a `Union` node. Shipped once with `Union` off the
     // generated grid — every resolver test passed on the in-memory graph while
-    // a real `analyze` of THIS fixture aborted at `assertDeclaredPair`
+    // a real `analyze` of THIS fixture aborted at `checkDeclaredPair`
     // (`Union|Property`). `Union` is now in `LINKABLE_LABELS`; take it out and
     // both sentinels vanish from the DDL and this fails.
     fixture: 'zig-basic',
@@ -210,6 +230,34 @@ const OPTIONAL_GRAMMAR_CORPUS = [
  *      file, so it cannot remove that ~16s.
  */
 
+/*
+ * NOTE — the `Impl` and `Template` rows no emitter reaches (#2799):
+ *
+ * `STRUCTURAL_PAIR_DDL` declares 17 member rows FROM `Impl` or `Template`.
+ * Running this pipeline over every `rust-*` and `cpp-*` fixture (206 of them)
+ * emits exactly three pairs with either label on either side — `File|Impl`,
+ * `Impl|Function`, `File|Template`, all pinned above. The rest have no
+ * emitter, so no sentinel can name them:
+ *
+ *   - `Impl` comes only from Rust inherent `impl` blocks (the captures are
+ *     `!trait`, so a trait impl mints none). An `impl` body cannot hold a
+ *     struct, trait or nested impl, Rust has no constructors or fields there,
+ *     and its methods are `Function` nodes — so `Impl|{Method, Constructor,
+ *     Property, Struct, Trait, Impl}` cannot be produced by the current
+ *     extractor.
+ *   - A C++ template is captured twice, as `Template` and as the `Class` /
+ *     `Function` it declares, and every member, call and heritage edge lands
+ *     on the second. The `Template` node is a leaf, so none of the ten
+ *     `Template|*` rows fires.
+ *   - The reverse rows (`{Function, Class, Method, Constructor}|{Impl,
+ *     Template}`) are in the same state: the only edge INTO an `Impl` or
+ *     `Template` node is its file's DEFINES.
+ *
+ * They stay declared — an unemitted declared pair costs DDL width, an emitted
+ * undeclared one aborts `analyze`. An emitter that starts producing one of
+ * them needs a sentinel here.
+ */
+
 const DECLARED = parseRelationSchemaPairs(RELATION_SCHEMA);
 const VALID_TABLES = new Set<string>(NODE_TABLES);
 
@@ -225,7 +273,7 @@ afterAll(() => vi.unstubAllEnvs());
  *
  * Classifies through `relPairKeyFor` — the same call the emit path routes with
  * — so this guard and the router cannot disagree about which edges are skipped.
- * It keys off the node IDS, which is what `assertDeclaredPair` actually sees,
+ * It keys off the node IDS, which is what `checkDeclaredPair` actually sees,
  * not the node's `label` field.
  */
 const pairsEmittedBy = async (fixture: string): Promise<Set<string>> => {

@@ -15,6 +15,36 @@ import type { ParseWorkerResult } from '../../../src/core/ingestion/workers/pars
 
 const FILE = 'src/service.ts';
 
+describe('graph identifier disambiguator parsing', () => {
+  it('admits explicitly selected declaration labels without widening default edge lookup', () => {
+    const graph = createKnowledgeGraph();
+    const id = `Namespace:${FILE}:Program.Section`;
+    graph.addNode({
+      id,
+      label: 'Namespace',
+      properties: { name: 'Section', filePath: FILE, startLine: 3 },
+    });
+    const key = qualifiedKey(FILE, 'Namespace', 'Program.Section');
+    expect(buildGraphNodeLookup(graph).has(key)).toBe(false);
+    const selected = buildGraphNodeLookup(graph, new Set(['Namespace']));
+    expect(selected.get(key)).toBe(id);
+    expect(
+      resolveDefGraphId(FILE, { type: 'Namespace', qualifiedName: 'Program.Section' }, selected),
+    ).toBe(id);
+  });
+
+  it.each([
+    ['model.rs', 'Function', 'r#target', 'r#target'],
+    ['model.ts', 'Method', 'Owner.#target#0', 'Owner.#target'],
+    ['model.ts', 'Method', 'Owner.target#2', 'Owner.target'],
+  ] as const)('preserves written name hashes in %s %s %s', (filePath, label, suffix, qualified) => {
+    const graph = createKnowledgeGraph();
+    const id = `${label}:${filePath}:${suffix}`;
+    graph.addNode({ id, label, properties: { name: qualified, filePath, startLine: 0 } });
+    expect(buildGraphNodeLookup(graph).get(qualifiedKey(filePath, label, qualified))).toBe(id);
+  });
+});
+
 interface Candidate {
   id: string;
   label?: NodeLabel;

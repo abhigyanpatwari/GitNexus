@@ -3,6 +3,8 @@ import {
   generateEmbeddingText,
   truncateDescription,
   extractDeclarationOnly,
+  splitEmbeddingText,
+  withoutOverlappingContext,
 } from '../../src/core/embeddings/text-generator.js';
 import {
   CHUNKING_RULES,
@@ -22,6 +24,27 @@ const baseNode: EmbeddableNode = {
 };
 
 describe('text-generator', () => {
+  it('removes only the portion of preceding context already covered by a chunk', () => {
+    expect(withoutOverlappingContext('before shared', 100, 94)).toBe('before ');
+    expect(withoutOverlappingContext('shared', 100, 94)).toBe('');
+    expect(withoutOverlappingContext('shared', 100, 90)).toBe('');
+    expect(withoutOverlappingContext('before', 100, 100)).toBe('before');
+    expect(withoutOverlappingContext('before', 100, 101)).toBe('before');
+    expect(withoutOverlappingContext('before', undefined, 94)).toBe('before');
+    expect(withoutOverlappingContext('before', 100, undefined)).toBe('before');
+  });
+  it.each([2, 17, 4096])(
+    'preserves all final generated text within a %i character budget',
+    (budget) => {
+      const text = 'Header: 超长😀\n' + '中文😀abc'.repeat(3000);
+      const chunks = [...splitEmbeddingText(text, budget)];
+      expect(chunks.join('')).toBe(text);
+      expect(
+        chunks.every((chunk) => chunk.length <= budget && Buffer.from(chunk).toString() === chunk),
+      ).toBe(true);
+    },
+  );
+
   describe('generateEmbeddingText', () => {
     it('leads with name and code, dropping verbose metadata lines (#2333)', () => {
       const node: EmbeddableNode = {
@@ -302,7 +325,7 @@ describe('text-generator', () => {
       expect(text).toContain('readonly name: string;');
     });
 
-    it('includes chunk body for structural node chunks', () => {
+    it('includes only prepared Class fields, never unfiltered method source', () => {
       const node: EmbeddableNode = {
         ...baseNode,
         label: 'Class',
@@ -316,12 +339,17 @@ describe('text-generator', () => {
   validate() { return true; }
 }`,
       };
-      const chunkBody = `parseJSON(text: string) { return JSON.parse(text); }`;
-      const text = generateEmbeddingText(node, chunkBody);
+      const chunkBody = 'cache: Map<string, any>;';
+      const text = generateEmbeddingText(
+        { ...node, classDeclaration: 'class Parser {' },
+        chunkBody,
+      );
       expect(text).toContain('Class: Parser');
       expect(text).toContain('Methods: parseJSON, validate');
       expect(text).toContain('class Parser {');
-      expect(text).toContain('parseJSON(text: string) { return JSON.parse(text); }');
+      expect(text).toContain('cache: Map<string, any>;');
+      expect(text).not.toContain('return JSON.parse');
+      expect(generateEmbeddingText(node, node.content)).not.toContain('return JSON.parse');
     });
 
     it('generates Struct text with structural metadata', () => {
@@ -407,17 +435,74 @@ describe('text-generator', () => {
 }`,
       };
       const text = generateEmbeddingText(
-        node,
-        'validate() { return true; }',
+        { ...node, classDeclaration: 'class Parser {' },
+        'cache: Map<string, any>;',
         {},
         1,
         'parseJSON(text: string) { return JSON.parse(text); }',
       );
       expect(text).toContain('Class: Parser');
       expect(text).toContain('Container: class Parser {');
-      expect(text).toContain('[preceding context]: ...parseJSON(text: string)');
+      expect(text).not.toContain('[preceding context]:');
+      expect(text).not.toContain('return JSON.parse');
+      expect(text).toContain('cache: Map<string, any>;');
       expect(text).not.toContain('Methods: parseJSON, validate');
       expect(text).not.toContain('Properties: options, cache');
+    });
+
+    it.each([0, 1])(
+      'preserves Unicode at the compact container cutoff (chunk %i)',
+      (chunkIndex) => {
+        const prefix = 'export interface Handler { value: "';
+        const declaration = `${prefix}${'x'.repeat(199 - prefix.length)}😀"; }`;
+        const node = { ...baseNode, label: 'Interface', name: 'Handler', content: declaration };
+        const text = generateEmbeddingText(node, declaration, {}, chunkIndex);
+        expect(text).toContain('Container: export interface Handler');
+        expect(text).toContain('😀');
+        expect(Buffer.from(text).toString('utf8')).toBe(text);
+        const chunks = [...splitEmbeddingText(text, 200)];
+        expect(chunks.join('')).toBe(text);
+        expect(
+          chunks.every(
+            (chunk) => chunk.length <= 200 && Buffer.from(chunk).toString('utf8') === chunk,
+          ),
+        ).toBe(true);
+      },
+    );
+
+    it('keeps a declaration-aware container on decorated and blank-led later chunks', () => {
+      for (const prefix of ['\n\n', '@Component({\n selector: "app-root",\n})\n']) {
+        const node = {
+          ...baseNode,
+          label: 'Class',
+          name: 'Parser',
+          content: `${prefix}export class Parser {\n parse() { return 1; }\n}`,
+          classDeclaration: 'export class Parser {',
+        };
+        expect(generateEmbeddingText(node, 'field: string;', {}, 1)).toContain(
+          'Container: export class Parser {',
+        );
+      }
+    });
+
+    it.each([
+      `@Component({ description: "${'x'.repeat(500)}" })\n`,
+      `/* ${'comment '.repeat(80)} */\n`,
+      '\n'.repeat(250),
+    ])('uses graph identity after a long prefix (case %#)', (prefix) => {
+      const node = {
+        ...baseNode,
+        label: 'Class',
+        name: 'Parser',
+        content: `${prefix}export class Parser {\n parse() { return 1; }\n}`,
+        classDeclaration: 'export class Parser {',
+      };
+      expect(generateEmbeddingText(node, 'field: string;', {}, 0)).toContain(
+        'Container: export class Parser {',
+      );
+      expect(generateEmbeddingText(node, 'field: string;', {}, 1)).toContain(
+        'Container: export class Parser {',
+      );
     });
 
     it('adds preceding context to non-structural chunk text', () => {

@@ -2,8 +2,8 @@
  * The Dart scope-capture tree-sitter query (`DART_SCOPE_QUERY`) plus lazy
  * `Parser`/`Query` singletons. Mirror of `languages/swift/query.ts`.
  *
- * Verified against tree-sitter-dart 1.0.0 (UserNobody14, commit 80e23c07,
- * ABI 14) — every node type below also appears in the legacy `DART_QUERIES`,
+ * Verified against tree-sitter-dart 1.0.0-g0038280 (UserNobody14,
+ * ABI 15) — every node type below also appears in the legacy `DART_QUERIES`,
  * which is validated against the same grammar.
  *
  * NOTE: This query intentionally covers ONLY the constructs that map cleanly
@@ -39,6 +39,7 @@ const DART_SCOPE_QUERY = `
 (class_definition) @scope.class
 (mixin_declaration) @scope.class
 (extension_declaration) @scope.class
+(extension_type_declaration) @scope.class
 (enum_declaration) @scope.class
 
 ; ── Declarations — types ─────────────────────────────────────────────────────
@@ -53,6 +54,9 @@ const DART_SCOPE_QUERY = `
   (type_parameters)? @declaration.type-parameters) @declaration.class
 (mixin_declaration (identifier) @declaration.name) @declaration.trait
 (extension_declaration name: (identifier) @declaration.name) @declaration.class
+(extension_type_declaration
+  name: (identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
 (enum_declaration name: (identifier) @declaration.name) @declaration.enum
 
 ; ── Declarations — type aliases (old-style + new-style function typedefs) ────
@@ -152,12 +156,23 @@ const DART_SCOPE_QUERY = `
   name: (identifier) @declaration.name) @declaration.constructor
 
 ; ── Declarations — getters / setters (Property, like the legacy DAG) ─────────
+; \`@dart.accessor\` is private to captures.ts: it marks the inner signature so
+; the accessor's body opens its own Function scope (its parameters and locals
+; must not leak into the enclosing Module / Class scope), while the graph keeps
+; the declaration a Property. A class field never carries it — a field is not
+; callable and has no body.
+(program
+  (getter_signature
+    name: (identifier) @declaration.name) @declaration.property @dart.accessor)
+(program
+  (setter_signature
+    name: (identifier) @declaration.name) @declaration.property @dart.accessor)
 (method_signature
   (getter_signature
-    name: (identifier) @declaration.name)) @declaration.property
+    name: (identifier) @declaration.name) @dart.accessor) @declaration.property
 (method_signature
   (setter_signature
-    name: (identifier) @declaration.name)) @declaration.property
+    name: (identifier) @declaration.name) @dart.accessor) @declaration.property
 
 ; ── Declarations — class fields ──────────────────────────────────────────────
 (declaration
@@ -227,7 +242,24 @@ const DART_SCOPE_QUERY = `
 (import_or_export
   (library_import
     (import_specification
-      (configurable_uri) @import.source))) @import.statement
+      (configurable_uri) @import.source
+      (identifier)? @import.alias))) @import.statement
+; \`import 'x.dart' deferred as p;\` is the grammar's second
+; \`import_specification\` branch: a bare \`(uri)\` (no \`configurable_uri\`
+; wrapper), the anonymous \`deferred\`/\`as\` tokens, then the alias
+; \`(identifier)\`. The pattern above never matches it, so the statement
+; produced no import capture at all. The prefix is a namespace handle like
+; the non-deferred \`as p\` form, with one exception: the language adds an
+; implicit \`loadLibrary()\` to a deferred prefix and loads the library with
+; \`hide loadLibrary\`, so \`p.loadLibrary\` never names a declaration of the
+; imported library. \`@import.deferred\` marks the prefix so \`captures.ts\`
+; can drop those references.
+(import_or_export
+  (library_import
+    (import_specification
+      (uri) @import.source
+      "deferred" @import.deferred
+      (identifier) @import.alias))) @import.statement
 (import_or_export
   (library_export
     (configurable_uri) @import.source)) @import.statement

@@ -161,7 +161,7 @@ def _stub_provisioning(monkeypatch: pytest.MonkeyPatch) -> None:
             pytest.fail(f"{FULL_SWEEP_ENV}=1 but bubblewrap is absent")
         return
 
-    monkeypatch.setattr(runner, "trusted_gitnexus_runtime_mounts", lambda: ())
+    monkeypatch.setattr(runner, "trusted_gitnexus_runtime_mounts", lambda **_kwargs: ())
 
     def materialize(worktree, *, sanitized_head=None, **_kwargs):
         # The one-clone registry guard reads this before any session runs.

@@ -31,7 +31,8 @@ vi.mock('gitnexus-shared', async (importOriginal) => ({
   getLanguageFromFilename,
 }));
 
-import { chunkNode } from '../../src/core/embeddings/chunker.js';
+import { chunkNode, iterateNodeChunks } from '../../src/core/embeddings/chunker.js';
+import * as lineIndex from '../../src/core/embeddings/line-index.js';
 
 type FakeNode = {
   type: string;
@@ -219,7 +220,7 @@ describe('chunkNode', () => {
     expect(result[0].startOffset).toBe(0);
   });
 
-  it('splits a class by members instead of raw character windows', async () => {
+  it('projects class fields without duplicating method bodies', async () => {
     const content = [
       'class Parser {',
       '  options: ParserOptions;',
@@ -240,15 +241,46 @@ describe('chunkNode', () => {
 
     const result = await chunkNode('Class', content, 'test.ts', 1, 6, 90, 0);
 
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(1);
     expect(result[0].text).toContain('class Parser {');
     expect(result[0].text).toContain('options: ParserOptions;');
     expect(result[0].text).toContain('cache: Map<string, any>;');
-    expect(result[1].text).toContain('parseJSON()');
-    expect(result[1].text).toContain('validate()');
+    expect(result[0].text).not.toContain('parseJSON()');
+    expect(result[0].text).not.toContain('validate()');
     expect(result[0].startLine).toBe(1);
-    expect(result[1].startLine).toBe(4);
+    expect(result[0].endLine).toBe(3);
   });
+
+  it.each(['fixed', 'ast'] as const)(
+    'projects %s class chunks only as the consumer requests them',
+    async (strategy) => {
+      const fields = Array.from({ length: 20 }, (_, i) => `field${i}: string;`);
+      const content = ['class Sample {', ...fields, '}'].join('\n');
+      const tree = makeDeclarationTree('class_declaration', 'class_body', content, fields);
+      const expected = await chunkNode('Class', content, 'sample.ts', 10, 31, 40, 0, {
+        tree,
+        strategy,
+      });
+      expect(expected.length).toBeGreaterThan(3);
+      const lines = vi.spyOn(lineIndex, 'resolveChunkLines');
+      try {
+        const stream = iterateNodeChunks('Class', content, 'sample.ts', 10, 31, 40, 0, {
+          tree,
+          strategy,
+        });
+        expect(lines).not.toHaveBeenCalled();
+        const first = await stream.next();
+        expect(first.value).toEqual(expected[0]);
+        // AST packing also resolves the projected line range before mapping it.
+        expect(lines.mock.calls.length).toBeLessThanOrEqual(2);
+        const actual = [first.value];
+        for await (const chunk of stream) actual.push(chunk);
+        expect(actual).toEqual(expected);
+      } finally {
+        lines.mockRestore();
+      }
+    },
+  );
 
   it('preserves interface signatures via declaration-aware chunking', async () => {
     const content = [
@@ -373,7 +405,7 @@ describe('chunkNode', () => {
     const result = await chunkNode('Class', content, 'ParameterizedWorker.m', 1, 3, 40, 0);
 
     expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ParameterizedWorker.m');
-    expect(result[0].text).toContain('- (void)run');
+    expect(result.some((chunk) => chunk.text.includes('- (void)run;'))).toBe(true);
   });
 
   it('skips Objective-C generic argument lists as declaration members', async () => {
@@ -399,7 +431,7 @@ describe('chunkNode', () => {
     expect(result.some((chunk) => chunk.text === '(Tracing)')).toBe(false);
   });
 
-  it('chunks an Objective-C implementation at method boundaries', async () => {
+  it('excludes Objective-C method implementations from their Class input', async () => {
     const content = [
       '@implementation Worker',
       '- (void)first {}',
@@ -450,10 +482,10 @@ describe('chunkNode', () => {
     const result = await chunkNode('Class', content, 'ImplementationWorker.m', 1, 4, 48, 0);
 
     expect(createParserForLanguage).toHaveBeenCalledWith('objective-c', 'ImplementationWorker.m');
-    expect(result).toHaveLength(2);
-    expect(result[0].text).toContain(firstMethod);
-    expect(result[1].text).toContain(secondMethod);
-    expect(result[1].text).not.toContain(firstMethod);
+    expect(result).toHaveLength(1);
+    expect(result[0].text).toContain('@implementation Worker');
+    expect(result[0].text).not.toContain(firstMethod);
+    expect(result[0].text).not.toContain(secondMethod);
   });
 
   it('parses distinct Objective-C sources correctly through one cached parser', async () => {

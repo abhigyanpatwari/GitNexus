@@ -41,7 +41,9 @@ const rows = () => [
   },
 ];
 const queryFor = (functions: ReturnType<typeof rows>) =>
-  vi.fn(async (query: string) => (query.includes('(n:`Function`)') ? functions : []));
+  vi.fn(async (query: string, onRow: (row: ReturnType<typeof rows>[number]) => void) => {
+    if (query.includes('(n:`Function`)')) functions.forEach(onRow);
+  });
 
 describe('incremental identity reconciliation', () => {
   it('certifies every identity using one unfiltered query per label', async () => {

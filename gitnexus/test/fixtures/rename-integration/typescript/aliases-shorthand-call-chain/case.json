@@ -1,0 +1,49 @@
+{
+  "language": "typescript",
+  "description": "Rename an exported function across an explicit import alias and a direct import, preserving object keys and parameter shadows.",
+  "categories": [
+    "cross-file",
+    "alias",
+    "call-graph",
+    "shorthand",
+    "shadowing"
+  ],
+  "target": {
+    "name": "calculate",
+    "kind": "Function",
+    "file": "source.ts"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.ts"
+      },
+      "to": {
+        "name": "calculate",
+        "kind": "Function",
+        "file": "source.ts"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "entry.ts"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.ts"
+      }
+    }
+  ]
+}

@@ -22,7 +22,15 @@
  * scope-resolution. Net effect: the file is parsed exactly once (in a worker),
  * scope-resolution does ZERO parsing, and peak heap stays bounded.
  *
- * ## Shape
+ * ## Current packed store
+ *
+ * The default per-file cache pins packs into
+ * `<storagePath>/parsedfile-store/file-results/` and records selected scopes in
+ * `scopes.ndjson`. `loadParsedFilesForPaths` reads those sections alongside
+ * transient `.v8` shards used by raw worker fallbacks. Both paths preserve the
+ * worker's ParsedFiles without parsing again on the main thread.
+ *
+ * ## Legacy/transient shard shape
  *
  * `<storagePath>/parsedfile-store/<shardId>.v8` — one shard per parse chunk,
  * a V8 envelope of `ParsedFile[]` (Scope.bindings / Scope.typeBindings stay
@@ -30,7 +38,7 @@
  * scope-resolution consumes it, so it never lingers and never goes stale
  * across runs.
  *
- * ## Durable sibling store (`parsedfile-cache/`, warm-cache coverage)
+ * ## Legacy durable sibling store (`parsedfile-cache/`, compatibility helpers)
  *
  * The run-scoped store above is only populated when the parse workers actually
  * run. On a warm re-analyze where every chunk is a parse-cache HIT, no worker
@@ -41,7 +49,7 @@
  * that gap we ALSO write the worker's ParsedFiles to a second, CONTENT-ADDRESSED
  * store keyed by the parse chunk hash (`getDurableParsedFileDir`), which mirrors
  * the parse cache's lifecycle (persists across runs, pruned by `usedKeys`,
- * version-tied via `PARSE_CACHE_VERSION`). On a warm hit the chunk's immutable
+ * bound to the resolved base parser identity). On a warm hit the chunk's immutable
  * durable shards are hardlinked (or atomically copied) into the run store after
  * their envelope metadata proves complete coverage. That pins a stable snapshot
  * before workers are skipped, even when another branch refreshes the shared
@@ -63,7 +71,9 @@ import { isValidReceiverChain } from '../core/ingestion/utils/receiver-chain-cod
 import { logger } from '../core/logger.js';
 import { mapReviver } from './parse-cache.js';
 import { linkOrCopyFile } from './fs-atomic.js';
+import { loadPackedFileScopes } from './file-result-store.js';
 import {
+  type V8CacheLoad,
   inspectV8Cache,
   tryLoadV8Cache,
   writeV8CacheFile,
@@ -314,28 +324,26 @@ export const loadParsedFilesForPaths = async (
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   };
-  for (const shardFull of shardPaths) {
-    // Re-stat rather than trusting the name alone, then reuse this run's
-    // authenticated listing to skip without opening the file. A shard with no
-    // memoized listing — first pass, or an envelope whose listing did not
-    // validate — falls through to the full read, so this only ever removes
-    // work that a later pass had already proved unnecessary.
-    const st = await fs.stat(shardFull).catch(() => undefined);
-    const identity = st ? shardIdentity(shardFull, st.size, st.mtimeMs) : undefined;
-    const memoized = identity === undefined ? undefined : listings.get(identity);
-    if (memoized !== undefined && !memoized.some((p) => wantPaths.has(p))) {
-      bytesSinceGc += st?.size ?? 0;
-      await maybeYieldAndGc(bytesSinceGc >= parsedFileLoadGc.byteBudget);
-      continue;
+  async function* loadShards(): AsyncGenerator<V8CacheLoad | undefined> {
+    for (const shardFull of shardPaths) {
+      const st = await fs.stat(shardFull).catch(() => undefined);
+      const identity = st ? shardIdentity(shardFull, st.size, st.mtimeMs) : undefined;
+      const memoized = identity === undefined ? undefined : listings.get(identity);
+      if (memoized !== undefined && !memoized.some((p) => wantPaths.has(p))) {
+        yield { kind: 'skip', bytes: st?.size ?? 0, paths: memoized };
+        continue;
+      }
+      const loaded = await tryLoadV8Cache(shardFull, pool, wantPaths);
+      if (identity !== undefined && loaded?.paths !== undefined)
+        listings.set(identity, loaded.paths);
+      yield loaded;
     }
-
-    const loaded = await tryLoadV8Cache(shardFull, pool, wantPaths);
+    yield* loadPackedFileScopes(storagePath, wantPaths, pool);
+  }
+  for await (const loaded of loadShards()) {
     if (loaded === undefined) {
       await maybeYieldAndGc(false);
       continue;
-    }
-    if (identity !== undefined && loaded.paths !== undefined) {
-      listings.set(identity, loaded.paths);
     }
     if (loaded.kind === 'skip') {
       bytesSinceGc += loaded.bytes;
@@ -703,8 +711,9 @@ export const durableChunkHasShards = async (
   runStoragePath: string,
   chunkHash: string,
   expectedPaths: ReadonlySet<string>,
+  sourceStoragePath: string = runStoragePath,
 ): Promise<boolean> => {
-  const sourceDir = durableChunkDir(getDurableParsedFileDir(runStoragePath), chunkHash);
+  const sourceDir = durableChunkDir(getDurableParsedFileDir(sourceStoragePath), chunkHash);
   const shards = await listV8Shards(sourceDir);
   if (shards.length === 0 || expectedPaths.size === 0) return false;
 
@@ -872,10 +881,15 @@ export const mergeStagedDurableParsedFileStore = async (
   let stagedEntries: string[] = [];
   try {
     stagedEntries = await fs.readdir(stagedDir);
-  } catch {
+  } catch (err) {
+    // Only a missing staged store means there is no overlay. Other failures
+    // must preserve the old index's coverage instead of certifying partial
+    // live chunks whose staged repairs we could not enumerate.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
     return;
   }
+  const publicationKeys = new Set(keepKeys);
   for (const name of stagedEntries) {
     if (name === DURABLE_INDEX_FILENAME) continue;
     const from = path.join(stagedDir, name);
@@ -888,6 +902,9 @@ export const mergeStagedDurableParsedFileStore = async (
     try {
       await replaceDurableChunkDir(from, to);
     } catch (err) {
+      // A surviving old directory may have incomplete coverage. Exclude it
+      // from the index even if pruning cannot remove it.
+      publicationKeys.delete(name);
       logger.warn(
         { err, entry: name },
         'parsedfile-cache: could not publish a staged durable chunk; ' +
@@ -895,7 +912,7 @@ export const mergeStagedDurableParsedFileStore = async (
       );
     }
   }
-  await pruneAndSaveDurableParsedFileStore(liveDir, version, keepKeys);
+  await pruneAndSaveDurableParsedFileStore(liveDir, version, publicationKeys);
 };
 
 /** Move `from` onto `to` without deleting `to` until the new tree is in place. */

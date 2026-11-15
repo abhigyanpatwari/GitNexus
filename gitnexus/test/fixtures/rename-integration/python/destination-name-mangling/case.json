@@ -1,0 +1,22 @@
+{
+  "language": "python",
+  "description": "Refuse a public member renamed to a private spelling that class-body access would mangle.",
+  "categories": [
+    "name-mangling",
+    "destination-collision",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "__secret",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  }
+}

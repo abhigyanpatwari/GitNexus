@@ -123,7 +123,7 @@ describe('checkStalenessAsync', () => {
     expect(result.commitsBehind).toBe(0);
   });
 
-  it('parallel calls complete faster than sequential', async () => {
+  it('concurrent calls agree with the synchronous lookup', async () => {
     let headCommit: string;
     try {
       headCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
@@ -137,19 +137,11 @@ describe('checkStalenessAsync', () => {
     const cwd = process.cwd();
     const N = 10;
 
-    // Parallel
-    const t0 = performance.now();
-    await Promise.all(Array.from({ length: N }, () => checkStalenessAsync(cwd, headCommit)));
-    const parallelMs = performance.now() - t0;
-
-    // Sequential sync
-    const t1 = performance.now();
-    for (let i = 0; i < N; i++) checkStaleness(cwd, headCommit);
-    const sequentialMs = performance.now() - t1;
-
-    // Parallel should be meaningfully faster than sequential.
-    // Use a generous ratio to avoid flakiness on slow CI machines.
-    expect(parallelMs).toBeLessThan(sequentialMs * 1.5);
+    const expected = checkStaleness(cwd, headCommit);
+    const results = await Promise.all(
+      Array.from({ length: N }, () => checkStalenessAsync(cwd, headCommit)),
+    );
+    expect(results).toEqual(Array.from({ length: N }, () => expected));
   });
 });
 
@@ -215,11 +207,17 @@ describe('staleness status (#3256)', () => {
         });
       });
 
-      it('reports behind with the counted gap', async () => {
-        expect(await check(fixture.repo, fixture.c1)).toMatchObject({
+      it.each([
+        { commitsBehind: 1, commitKey: 'c2' as const, noun: 'commit' },
+        { commitsBehind: 2, commitKey: 'c1' as const, noun: 'commits' },
+      ])('reports $commitsBehind $noun behind with CLI guidance (#3524)', async (testCase) => {
+        expect(await check(fixture.repo, fixture[testCase.commitKey])).toEqual({
           status: 'behind',
           isStale: true,
-          commitsBehind: 2,
+          commitsBehind: testCase.commitsBehind,
+          hint:
+            `⚠️ Index is ${testCase.commitsBehind} ${testCase.noun} behind HEAD. ` +
+            'Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
         });
       });
 
@@ -229,6 +227,9 @@ describe('staleness status (#3256)', () => {
         // The hint claims only the uncountable gap, not that the commit left
         // history — every other `rev-list` failure reaches the same branch.
         expect(result.hint).toContain('could not be counted');
+        expect(result.hint).toContain(
+          'Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
+        );
         // The fail-open values the tests above pin are unchanged.
         expect(result).toMatchObject({ isStale: false, commitsBehind: 0 });
       });
@@ -372,6 +373,9 @@ describe('staleness when the checkout has regressed behind the indexed commit (#
         expect(result.isStale).toBe(true);
         expect(result.commitsBehind).toBe(0);
         expect(result.hint).toContain('not reachable from the checked-out commit');
+        expect(result.hint).toContain(
+          'Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
+        );
       });
 
       it('still reports current for the commit actually checked out', async () => {

@@ -1,0 +1,32 @@
+{
+  "language": "cobol",
+  "description": "Rename a program declaration and end marker across a static CALL literal while preserving an ordinary string of the same spelling.",
+  "categories": ["call-graph", "cross-file", "program-scope"],
+  "target": {
+    "name": "WORKER",
+    "kind": "Module",
+    "file": "worker.cbl"
+  },
+  "newName": "SERVICE",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "DRIVER",
+        "kind": "Module",
+        "file": "driver.cbl",
+        "startLine": 0
+      },
+      "to": {
+        "name": "WORKER",
+        "kind": "Module",
+        "file": "worker.cbl",
+        "startLine": 0
+      }
+    }
+  ]
+}

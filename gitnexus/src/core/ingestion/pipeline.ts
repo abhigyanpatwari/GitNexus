@@ -16,7 +16,10 @@
  */
 
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { createRelationshipIntegrityCollector } from '../graph/relationship-integrity.js';
+import { getProviderForFile } from './languages/index.js';
 import type { KnowledgeGraph } from '../graph/types.js';
+import type { RouteHookConfig } from './language-provider.js';
 import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
@@ -55,6 +58,8 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Cooperative cancellation checked between parser dispatch and graph phases. */
+  signal?: AbortSignal;
   /**
    * Skip MRO, community detection, and process extraction for faster test runs.
    * The `pruneLocalSymbols` phase still runs — it is graph construction (it cleans
@@ -224,13 +229,16 @@ export interface PipelineOptions {
    * call sites.
    */
   workerUrlForTest?: URL;
+  /** Worker entry selected while capturing parser identity, reused by the pool. */
+  parseWorkerUrl?: URL;
+  /** Run-owned transient ParsedFiles, also used when persistent caches are disabled. */
+  parsedFileStorePath?: string;
   /**
    * Incremental-indexing parse cache. When provided:
-   *   - The parse phase looks up each chunk's content hash in
-   *     `parseCache.entries`. On hit, it replays the cached
-   *     `ParseWorkerResult[]` instead of dispatching to workers.
-   *   - On miss, it runs the workers as today and stores the new
-   *     results in `parseCache.entries` keyed by chunk hash.
+   *   - Each file's path, content and parser identity select a complete pair
+   *     of cached facts and scopes, independently of chunk membership.
+   *   - Only misses go to the existing batched worker pool. Workers encode
+   *     file-local output into bounded packs staged for publication.
    * The caller (`run-analyze.ts`) is responsible for loading the cache
    * before the pipeline runs and persisting it after. Cache survives
    * `--force` because keys are content-addressed.
@@ -250,6 +258,8 @@ export interface PipelineOptions {
    * analyze invocations.
    */
   workerPoolSize?: number;
+  /** Admitted ceiling, separate from an explicit worker count so tiny repos retain auto-sizing. */
+  workerResources?: Readonly<{ workers: number; workerHeapMb: number }>;
   /**
    * Process-detection budget (#3313). Explicit `maxProcesses` replaces the
    * dynamic `symbols / 10` formula; the other three replace compiled defaults.
@@ -303,6 +313,13 @@ export interface PipelineOptions {
    * traced. Empty/undefined leaves behavior unchanged.
    */
   fetchWrappers?: readonly string[];
+  /**
+   * Declared router-framework aliases and handler-wrapper callees, threaded
+   * from `.gitnexusrc` / `GITNEXUS_RC`. Applied on the main thread by the
+   * provider route hooks — never sent to parse workers, so they never enter a
+   * parse-cache key. Empty/undefined leaves route extraction unchanged.
+   */
+  routeHookConfig?: RouteHookConfig;
 }
 
 // ── Phase registry ─────────────────────────────────────────────────────────
@@ -371,12 +388,25 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 
 // ── Pipeline orchestrator ─────────────────────────────────────────────────
 
+// The graph keeps this lookup callback alive. Give it its own closure scope so
+// retaining a graph cannot also retain the pipeline's phase results and context.
+const createPipelineGraph = (repoPath: string) => {
+  const integrity = createRelationshipIntegrityCollector(
+    repoPath,
+    (id) => graph.getNode(id),
+    (filePath, text) => getProviderForFile(filePath)?.referenceSourceText?.(text, filePath),
+  );
+  const graph: ReturnType<typeof createKnowledgeGraph> = createKnowledgeGraph(integrity.inspect);
+  return { graph, integrity };
+};
+
 export const runPipelineFromRepo = async (
   repoPath: string,
   onProgress: (progress: PipelineProgress) => void,
   options?: PipelineOptions,
 ): Promise<PipelineResult> => {
-  const graph = createKnowledgeGraph();
+  options?.signal?.throwIfAborted();
+  const { graph, integrity } = createPipelineGraph(repoPath);
   const pipelineStart = Date.now();
 
   // Streamed structural emit (#2680). The sink is a write-routing façade over
@@ -409,12 +439,14 @@ export const runPipelineFromRepo = async (
     options,
     pipelineStart,
     graphEmit: graphEmitSink,
+    recordSourceHash: integrity.recordSourceHash,
   };
 
   let graphEmitManifest: GraphEmitManifest | undefined;
   let results;
   try {
     results = await runPipeline(phases, ctx);
+    options?.signal?.throwIfAborted();
     graphEmitManifest = graphEmitSink?.finalize();
   } finally {
     // Release per-pair fds when the pipeline threw before finalize ran.
@@ -475,6 +507,7 @@ export const runPipelineFromRepo = async (
     },
   });
 
+  integrity.logSummary();
   const result: PipelineResult = {
     // The RAW graph, deliberately — NOT `graphEmitSink`. Phases above received
     // the sink so their reads are complete, but `loadGraphToLbug` feeds this to
@@ -498,6 +531,7 @@ export const runPipelineFromRepo = async (
     unavailableScopeLanguageFiles,
     pdgEmitManifest,
     propertyInference,
+    relationshipIntegrity: integrity.snapshot(),
   };
 
   // #3016: hand back a way to run the derived phases `skipDerivedGraphPhases`

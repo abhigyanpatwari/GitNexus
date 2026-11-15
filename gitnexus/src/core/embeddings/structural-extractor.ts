@@ -5,11 +5,10 @@
  * to extract method and field names for embedding text generation.
  */
 
-import { getProviderForFileContent } from '../ingestion/languages/index.js';
 import type { MethodExtractorContext, ExtractedMethods } from '../ingestion/method-types.js';
 import type { FieldExtractorContext, ExtractedFields } from '../ingestion/field-types.js';
 import type { LanguageProvider } from '../ingestion/language-provider.js';
-import { buildTypeEnv } from '../ingestion/type-env.js';
+import type { TypeEnvironment } from '../ingestion/type-env.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { ensureAndParse, findDeclarationNode } from './ast-utils.js';
 
@@ -17,6 +16,18 @@ export interface StructuralNames {
   methodNames: string[];
   fieldNames: string[];
 }
+
+// A field extractor consults its type environment only to resolve a field's
+// type. Embedding text keeps the names alone, so an empty environment yields
+// the same names without walking every method body of the class (#3870).
+const NO_TYPE_ENV: TypeEnvironment = {
+  lookup: () => undefined,
+  constructorBindings: [],
+  fileScope: () => new Map(),
+  allScopes: () => new Map(),
+  constructorTypeMap: new Map(),
+  flush: () => {},
+};
 
 const NOOP_SYMBOL_TABLE = {
   lookupExactAll: () => [],
@@ -31,21 +42,24 @@ const NOOP_SYMBOL_TABLE = {
 export const extractStructuralNames = async (
   content: string,
   filePath: string,
+  parsedTree?: Awaited<ReturnType<typeof ensureAndParse>>,
+  expectedName?: string,
 ): Promise<StructuralNames> => {
+  const { getProviderForFileContent } = await import('../ingestion/languages/index.js');
   const provider = getProviderForFileContent(filePath, content);
   if (!provider) return { methodNames: [], fieldNames: [] };
 
-  const tree = await ensureAndParse(content, filePath);
+  const tree = parsedTree === undefined ? await ensureAndParse(content, filePath) : parsedTree;
   if (!tree) return { methodNames: [], fieldNames: [] };
 
   // Parse node.content (a snippet) — find declaration directly, not by range
-  const classNode = findDeclarationNode(tree.rootNode);
+  const classNode = findDeclarationNode(tree.rootNode, expectedName);
   if (!classNode) return { methodNames: [], fieldNames: [] };
 
   const language = provider.id;
 
   const methodNames = extractMethodNames(classNode, provider, filePath, language);
-  const fieldNames = extractFieldNames(classNode, provider, tree, filePath, language);
+  const fieldNames = extractFieldNames(classNode, provider, filePath, language);
 
   return { methodNames, fieldNames };
 };
@@ -68,16 +82,13 @@ function extractMethodNames(
 function extractFieldNames(
   classNode: any,
   provider: LanguageProvider,
-  tree: any,
   filePath: string,
   language: SupportedLanguages,
 ): string[] {
   if (!provider.fieldExtractor) return [];
 
-  const typeEnv = buildTypeEnv(tree, language);
-
   const context: FieldExtractorContext = {
-    typeEnv,
+    typeEnv: NO_TYPE_ENV,
     symbolTable: NOOP_SYMBOL_TABLE,
     filePath,
     language,

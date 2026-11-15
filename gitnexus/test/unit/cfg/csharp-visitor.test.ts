@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createRequire } from 'node:module';
+import csGrammar from 'tree-sitter-c-sharp/bindings/node/index.js';
 import { createCsharpCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/csharp.js';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import {
@@ -21,12 +21,6 @@ import { computeControlDependence } from '../../../src/core/ingestion/cfg/contro
 // NOT snapshot-pinning). Each fixture's distinctive statement text (step(),
 // done(), handle(e), …) lets us locate the block for a region by text and assert
 // the control-flow topology around it.
-
-// tree-sitter-c-sharp declares `main: "bindings/node"` (no extension) — load the
-// explicit subpath, mirroring parser-loader.ts (#1013).
-const csGrammar = createRequire(import.meta.url)(
-  'tree-sitter-c-sharp/bindings/node/index.js',
-) as Parameters<typeof makeCfgHarness>[0];
 
 const cs: CfgHarness = makeCfgHarness(csGrammar, createCsharpCfgVisitor(), 'fixture.cs');
 

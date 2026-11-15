@@ -11,7 +11,8 @@
  * use an empty (initialized) DB — they prove the lock is taken regardless of
  * whether any rows match.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import lbug from '@ladybugdb/core';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { NODE_TABLES } from '../../src/core/lbug/schema.js';
 
@@ -40,6 +41,113 @@ import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
 const closeSpy = vi.mocked(closeQueryResults);
 
 withTestLbugDB('conn-serialization', () => {
+  describe('incremental identity cursor lifetime', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('reads real rows without getAll and releases the cursor after a visitor failure', async () => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const getAll = vi.spyOn(lbug.QueryResult.prototype, 'getAll');
+      const close = vi.spyOn(lbug.QueryResult.prototype, 'close');
+      const seen: number[] = [];
+      await adapter.forEachQueryRow('UNWIND [1, 2, 3] AS n RETURN n', (row) => {
+        seen.push(row.n);
+      });
+      expect(seen).toEqual([1, 2, 3]);
+      expect(getAll).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+      const error = new Error('bad identity');
+      await expect(
+        adapter.forEachQueryRow('RETURN 1 AS n', () => {
+          throw error;
+        }),
+      ).rejects.toBe(error);
+      expect(close).toHaveBeenCalledTimes(2);
+      await expect(adapter.executeQuery('RETURN 2 AS n')).resolves.toEqual([{ n: 2 }]);
+    });
+
+    it('yields while retaining the lock through the last row and cursor close', async () => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      let read = 0;
+      let visited = 0;
+      let yieldedAt = 0;
+      const close = vi.fn();
+      const cursor = {
+        hasNext: () => read < 2050,
+        getNextSync: () => {
+          expect(visited).toBe(read);
+          return { n: ++read };
+        },
+        close,
+      };
+      const query = vi.spyOn(lbug.Connection.prototype, 'query').mockImplementation(async (sql) => {
+        expect(sql).toBe('scan');
+        return cursor as any;
+      });
+      let checkpoint: Promise<unknown> | undefined;
+      // Schedule outside the reader's lock context, like the WAL driver timer.
+      setImmediate(() => {
+        yieldedAt = visited;
+        checkpoint = adapter.executeQuery('CHECKPOINT');
+      });
+      const prepare = vi.spyOn(lbug.Connection.prototype, 'prepare');
+      prepare.mockImplementation(async () => {
+        expect(visited).toBe(2050);
+        expect(close).toHaveBeenCalledTimes(1);
+        return { isSuccess: () => true } as any;
+      });
+      vi.spyOn(lbug.Connection.prototype, 'execute').mockResolvedValue({
+        getAll: async () => [],
+        close: () => {},
+      } as any);
+      await adapter.forEachQueryRow('scan', () => {
+        visited++;
+      });
+      await checkpoint;
+      expect(yieldedAt).toBeGreaterThan(0);
+      expect(yieldedAt).toBeLessThan(2050);
+      expect(query).toHaveBeenCalledTimes(1);
+      expect(prepare).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['none', 'multiple'] as const)(
+      'rejects %s result cursors and closes all returned cursors',
+      async (kind) => {
+        const { forEachQueryRow } = await import('../../src/core/lbug/lbug-adapter.js');
+        const close = vi.fn();
+        const cursors = kind === 'none' ? [] : [{ close }, { close }];
+        vi.spyOn(lbug.Connection.prototype, 'query').mockResolvedValue(cursors as any);
+        const visit = vi.fn();
+        await expect(forEachQueryRow('scan', visit)).rejects.toThrow('exactly one query result');
+        expect(visit).not.toHaveBeenCalled();
+        expect(close).toHaveBeenCalledTimes(cursors.length);
+      },
+    );
+
+    it.each(['read', 'null', 'close', 'read-and-close'] as const)(
+      'fails closed on %s failure',
+      async (stage) => {
+        const { forEachQueryRow } = await import('../../src/core/lbug/lbug-adapter.js');
+        const readError = new Error('native read failure');
+        const closeError = new Error('native close failure');
+        const close = vi.fn(() => {
+          if (stage.includes('close')) throw closeError;
+        });
+        vi.spyOn(lbug.Connection.prototype, 'query').mockResolvedValue({
+          hasNext: () => stage !== 'close',
+          getNextSync: () => {
+            if (stage === 'null') return null;
+            throw readError;
+          },
+          close,
+        } as any);
+        const outcome = forEachQueryRow('scan', vi.fn());
+        if (stage === 'null') await expect(outcome).rejects.toThrow('advertised next row');
+        else await expect(outcome).rejects.toBe(stage === 'close' ? closeError : readError);
+        expect(close).toHaveBeenCalledTimes(1);
+      },
+    );
+  });
+
   describe('singleton-conn helpers acquire withConnLock (P1 #2264)', () => {
     beforeEach(() => {
       // Setup (clear/seed/flush) already exercised the lock; reset so each

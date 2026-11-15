@@ -125,7 +125,7 @@ import {
  */
 
 /** Loaded lazily; null when the grammar binding isn't available. */
-let Kotlin: unknown | null = null;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
@@ -462,7 +462,7 @@ function enclosingAnnotationText(node: Parser.SyntaxNode): string {
  * the queries against a null grammar would throw at module load time
  * and abort the whole http-route-extractor module.
  */
-function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
+function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
   // ─── Provider: Spring class-level @RequestMapping prefix ──────────────
   // Two patterns mirror the Java plugin's positional vs named split:
   //   @RequestMapping("/api")          → value_argument has string_literal as its first named child

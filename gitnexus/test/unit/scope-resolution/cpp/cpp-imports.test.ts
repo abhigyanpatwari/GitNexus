@@ -11,6 +11,42 @@ import {
 import { interpretCppImport } from '../../../../src/core/ingestion/languages/cpp/interpret.js';
 import { resolveCppImportTarget } from '../../../../src/core/ingestion/languages/cpp/import-target.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
+import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
+import { cppScopeResolver } from '../../../../src/core/ingestion/languages/cpp/scope-resolver.js';
+import { finalizeScopeModel } from '../../../../src/core/ingestion/finalize-orchestrator.js';
+import { populateCppUsingBindings } from '../../../../src/core/ingestion/languages/cpp/using-bindings.js';
+import { findCallableBindingsAndAdlBlocker } from '../../../../src/core/ingestion/languages/cpp/callable-bindings.js';
+
+it('merges same-file local overloads with a named using at its declaration position', () => {
+  const parsed = extractParsedFile(
+    cppScopeResolver.languageProvider,
+    `namespace imported { void choose(int) {} }
+void choose(double) {}
+void before() { choose(1.0); }
+using imported::choose;
+void after() { choose(1.0); }
+void inner() { using imported::choose; choose(1.0); }
+`,
+    'overloads.cpp',
+  )!;
+  cppScopeResolver.populateOwners(parsed);
+  const indexes = finalizeScopeModel([parsed]);
+  populateCppUsingBindings([parsed], indexes);
+  for (const [line, expected] of [
+    [3, ['def:overloads.cpp#2:0:Function:choose']],
+    [5, ['def:overloads.cpp#1:21:Function:choose', 'def:overloads.cpp#2:0:Function:choose']],
+    [6, ['def:overloads.cpp#1:21:Function:choose']],
+  ] as const) {
+    const scope = parsed.scopes.find((s) => s.kind === 'Block' && s.range.startLine === line)!;
+    expect(
+      findCallableBindingsAndAdlBlocker(scope.id, 'choose', indexes, {
+        position: { startLine: line, startCol: line === 6 ? 40 : 16 },
+      })
+        .callables.map((def) => def.nodeId)
+        .sort(),
+    ).toEqual(expected);
+  }
+});
 
 function parseNode(src: string, type: string): SyntaxNode | null {
   const tree = getCppParser().parse(src);
@@ -64,6 +100,15 @@ describe('C++ include decomposition (splitCppInclude)', () => {
 // ── using declaration decomposition ─────────────────────────────────────────
 
 describe('C++ using declaration decomposition (splitCppUsingDecl)', () => {
+  it('keeps an inline method using-declaration separate from class member using', () => {
+    const node = parseNode(
+      'struct Worker { void run() { using helpers::work; work(); } };',
+      'using_declaration',
+    );
+    expect(node).not.toBeNull();
+    expect(splitCppUsingDecl(node!)?.['@import.name']?.text).toBe('work');
+  });
+
   it('does not treat a class-scope member using-declaration as an import', () => {
     const node = parseNode('struct Derived : Base { using Base::run; };', 'using_declaration');
     expect(node).not.toBeNull();
@@ -98,11 +143,28 @@ describe('C++ using declaration decomposition (splitCppUsingDecl)', () => {
     expect(match!['@import.kind'].text).toBe('wildcard');
     expect(match!['@import.source'].text).toBe('foo::bar');
   });
+
+  it('keeps every namespace segment in a qualified named using', () => {
+    const node = parseNode('using foo::bar::work;', 'using_declaration');
+    const match = splitCppUsingDecl(node!);
+    expect(match?.['@import.source']?.text).toBe('foo::bar');
+    expect(match?.['@import.name']?.text).toBe('work');
+  });
 });
 
 // ── Import interpretation ───────────────────────────────────────────────────
 
 describe('C++ import interpretation (interpretCppImport)', () => {
+  it.each(['using namespace helpers;', 'using helpers::work;'])(
+    'does not interpret %s as a header dependency',
+    (source) => {
+      const node = parseNode(source, 'using_declaration');
+      const captures = splitCppUsingDecl(node!);
+      expect(captures).not.toBeNull();
+      expect(interpretCppImport(captures!)).toBeNull();
+    },
+  );
+
   it('interprets local include as wildcard import', () => {
     const result = interpretCppImport({
       '@import.kind': capt('@import.kind', 'wildcard'),

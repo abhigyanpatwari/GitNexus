@@ -100,7 +100,7 @@ describe('inline Go provider handler resolves via real source-scan containment (
 
     const contracts = await new HttpRouteExtractor().extract(dbExecutor, repoDir, repo);
     const provider = contracts.find(
-      (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/health',
+      (c) => c.role === 'provider' && c.contractId === 'http::*::/api/health',
     );
 
     expect(provider).toBeDefined();

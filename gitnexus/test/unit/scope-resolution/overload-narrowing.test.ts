@@ -27,6 +27,37 @@ describe('narrowOverloadCandidates — empty input', () => {
   });
 });
 
+describe('narrowOverloadCandidates — definitive block declaration conversions', () => {
+  const prototype = mkDef({
+    nodeId: 'record:int',
+    type: 'Function',
+    parameterCount: 1,
+    requiredParameterCount: 1,
+    parameterTypes: ['int'],
+  });
+  const conversionRankFn = (argument: string, parameter: string) =>
+    argument === parameter ? 0 : Number.POSITIVE_INFINITY;
+
+  it('rejects a known incompatible local prototype only when requested', () => {
+    expect(narrowOverloadCandidates([prototype], 1, ['Event'], { conversionRankFn })).toEqual([
+      prototype,
+    ]);
+    expect(
+      narrowOverloadCandidates([prototype], 1, ['Event'], {
+        conversionRankFn,
+        incompatibleConversionsAreFinal: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it('preserves candidates when argument or parameter metadata is unknown', () => {
+    const unknown = { ...prototype, parameterTypes: undefined };
+    const hooks = { conversionRankFn, incompatibleConversionsAreFinal: true };
+    expect(narrowOverloadCandidates([prototype], 1, [''], hooks)).toEqual([prototype]);
+    expect(narrowOverloadCandidates([unknown], 1, ['Event'], hooks)).toEqual([unknown]);
+  });
+});
+
 describe('narrowOverloadCandidates — arity filtering', () => {
   const add1 = mkDef({ nodeId: 'add:1', parameterCount: 1, requiredParameterCount: 1 });
   const add2 = mkDef({ nodeId: 'add:2', parameterCount: 2, requiredParameterCount: 2 });
@@ -115,6 +146,56 @@ describe('narrowOverloadCandidates — type narrowing', () => {
     // Both candidates survive because "" is an unknown slot.
     expect(result.map((d) => d.nodeId).sort()).toEqual(['m:int', 'm:string']);
   });
+
+  it('retains an unknown parameter slot alongside an exact typed match', () => {
+    const unknown = { ...byInt, nodeId: 'm:unknown', parameterTypes: [''] };
+    const result = narrowOverloadCandidates([byInt, unknown, byString], 1, ['int']);
+    expect(result.map((d) => d.nodeId)).toEqual(['m:int', 'm:unknown']);
+  });
+
+  it('does not let an unknown parameter slot hide a viable conversion overload', () => {
+    const unknown = { ...byInt, nodeId: 'm:unknown', parameterTypes: [''] };
+    const byLong = { ...byInt, nodeId: 'm:long', parameterTypes: ['long'] };
+    const result = narrowOverloadCandidates([unknown, byLong], 1, ['int'], {
+      conversionRankFn: (argument, parameter) =>
+        argument === parameter ? 0 : argument === 'int' && parameter === 'long' ? 1 : Infinity,
+    });
+    expect(result.map((d) => d.nodeId)).toEqual(['m:unknown', 'm:long']);
+  });
+
+  it('keeps exact known-slot requirements when an exact overload exists', () => {
+    const exact = mkDef({
+      nodeId: 'm:exact',
+      parameterCount: 2,
+      requiredParameterCount: 2,
+      parameterTypes: ['int', 'long'],
+    });
+    const partial = { ...exact, nodeId: 'm:partial', parameterTypes: ['', 'double'] };
+    const result = narrowOverloadCandidates([exact, partial], 2, ['int', 'long'], {
+      conversionRankFn: (argument, parameter) =>
+        argument === parameter ? 0 : argument === 'long' && parameter === 'double' ? 1 : Infinity,
+    });
+    expect(result.map((d) => d.nodeId)).toEqual(['m:exact']);
+  });
+
+  it.each([
+    { parameterTypes: ['', 'bool'], expected: ['m:exact', 'm:partial'] },
+    { parameterTypes: ['', 'string'], expected: ['m:exact'] },
+    { parameterTypes: ['string', ''], expected: ['m:exact'] },
+  ])(
+    'keeps positional unknown slots without ignoring known mismatches: $parameterTypes',
+    ({ parameterTypes, expected }) => {
+      const exact = mkDef({
+        nodeId: 'm:exact',
+        parameterCount: 2,
+        requiredParameterCount: 2,
+        parameterTypes: ['int', 'bool'],
+      });
+      const partial = { ...exact, nodeId: 'm:partial', parameterTypes };
+      const result = narrowOverloadCandidates([exact, partial], 2, ['int', 'bool']);
+      expect(result.map((d) => d.nodeId)).toEqual(expected);
+    },
+  );
 
   it('falls through to arity-filtered candidates when type filter matches nothing', () => {
     const result = narrowOverloadCandidates([byInt, byString], 1, ['bool']);

@@ -44,7 +44,8 @@ import path from 'node:path';
 
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
-import { PARSE_CACHE_VERSION, type ParseCache } from '../../src/storage/parse-cache.js';
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
+import { type ParseCache } from '../../src/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
@@ -189,12 +190,14 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
   });
 
   it('cold run: folds qualified / FQN / concat paths from a non-*Constants class', async () => {
+    const identity = await runtimeParseIdentity();
     const files = writeFixture();
     const cache: ParseCache = {
-      version: PARSE_CACHE_VERSION,
+      identity,
       entries: new Map(),
       usedKeys: new Set(),
       storagePath: storageDir,
+      writeStoragePath: storageDir,
       onDiskKeys: new Set(),
     };
 
@@ -219,12 +222,14 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
   }, 120_000);
 
   it('warm run: parse-cache replay yields the identical folded route set', async () => {
+    const identity = await runtimeParseIdentity();
     const files = writeFixture();
     const cache: ParseCache = {
-      version: PARSE_CACHE_VERSION,
+      identity,
       entries: new Map(),
       usedKeys: new Set(),
       storagePath: storageDir,
+      writeStoragePath: storageDir,
       onDiskKeys: new Set(),
     };
 
@@ -240,14 +245,14 @@ maybeDescribe('#2980 provider-hook constant harvest — real pipeline (cold + wa
     expect(savedKeys.length).toBeGreaterThan(0);
     await pruneAndSaveDurableParsedFileStore(
       getDurableParsedFileDir(storageDir),
-      PARSE_CACHE_VERSION,
+      identity.base,
       new Set(savedKeys),
     );
 
     // Run #2 — warm: every chunk is a cache HIT, no worker spawn, the cached
     // ParseWorkerResult (moduleConstants included) is replayed from disk.
     const { loadParseCache } = await import('../../src/storage/parse-cache.js');
-    const warm = await loadParseCache(storageDir);
+    const warm = await loadParseCache(storageDir, identity, storageDir);
     expect(warm.onDiskKeys).toEqual(new Set(savedKeys));
     const run2 = await runPipeline(warm, files);
 

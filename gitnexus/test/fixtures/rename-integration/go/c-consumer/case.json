@@ -1,0 +1,21 @@
+{
+  "language": "go",
+  "description": "Refuse a Go function exported with cgo that an indexed C caller names, until the C binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "lib.go"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

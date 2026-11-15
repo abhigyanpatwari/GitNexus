@@ -74,6 +74,64 @@ const typeRef = (
 // ─── Tests ─────────────────────────────────────────────────────────────────
 
 describe('resolveTypeRef', () => {
+  it('resolves at the initializer position instead of a later alias use', () => {
+    const outerClass = mkDef({ nodeId: 'def:outerUser' });
+    const innerClass = mkDef({ nodeId: 'def:innerUser' });
+    const declaration = { startLine: 8, startCol: 0, endLine: 8, endCol: 20 };
+    const outer = mkScope('outer', null, { User: [mkBinding(outerClass, 'local')] });
+    const inner: Scope = {
+      ...mkScope('inner', outer.id, {
+        User: [{ ...mkBinding(innerClass, 'local'), declarationRange: declaration }],
+      }),
+      nameClaims: [
+        {
+          name: 'User',
+          kind: 'binding',
+          range: declaration,
+          availableFrom: { startLine: 9, startCol: 0 },
+          inactive: 'outer',
+        },
+      ],
+    };
+    const ctx = mkCtx([outer, inner], [outerClass, innerClass]);
+    expect(
+      resolveTypeRef(
+        { ...typeRef('User', inner.id), lookupPosition: { startLine: 3, startCol: 0 } },
+        ctx,
+      ),
+    ).toBe(outerClass);
+    expect(
+      resolveTypeRef(
+        { ...typeRef('User', inner.id), lookupPosition: { startLine: 12, startCol: 0 } },
+        ctx,
+      ),
+    ).toBe(innerClass);
+  });
+
+  it('keeps erased type declarations separate from a constructor runtime barrier', () => {
+    const klass = mkDef({ nodeId: 'def:User' });
+    const declaration = { startLine: 1, startCol: 0, endLine: 1, endCol: 20 };
+    const scope: Scope = {
+      ...mkScope('module', null, {
+        User: [{ ...mkBinding(klass, 'local'), declarationRange: declaration }],
+      }),
+      nameClaims: [
+        { name: 'User', kind: 'binding', purpose: 'type', range: declaration },
+        { name: 'User', kind: 'blocked', purpose: 'value', range: declaration },
+      ],
+    };
+    const ctx = mkCtx([scope], [klass]);
+    expect(resolveTypeRef({ ...typeRef('User', scope.id), lookupPurpose: 'type' }, ctx)).toBe(
+      klass,
+    );
+    expect(
+      resolveTypeRef(
+        { ...typeRef('User', scope.id, 'constructor-inferred'), lookupPurpose: 'value' },
+        ctx,
+      ),
+    ).toBeNull();
+  });
+
   describe('scope-chain walk', () => {
     it('resolves a local type defined in the same scope', () => {
       const userClass = mkDef({ nodeId: 'def:User', type: 'Class' });

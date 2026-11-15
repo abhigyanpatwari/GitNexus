@@ -1,0 +1,50 @@
+{
+  "language": "ruby",
+  "description": "Rename a required namespaced class across a two-hop call graph, preserving the same constant under a different namespace and constructor names.",
+  "categories": [
+    "cross-file",
+    "qualified-name",
+    "call-graph",
+    "constructor",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "Target",
+    "kind": "Class",
+    "file": "source.rb",
+    "startLine": 1
+  },
+  "newName": "Renamed",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Method",
+        "file": "middle.rb"
+      },
+      "to": {
+        "name": "build",
+        "kind": "Method",
+        "file": "middle.rb"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Method",
+        "file": "entry.rb"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Method",
+        "file": "middle.rb"
+      }
+    }
+  ]
+}

@@ -304,10 +304,21 @@ function isDirectChild(parent, child) {
 }
 
 // Mirror gitnexus/src/storage/shared-store.ts resolveGraphPath (#3352): a
-// shared-store checkout slot may read a commit graph in the same store
-// instead of owning <slot>/lbug. Any other recorded value is ignored.
+// slot may read an owned private generation; shared checkout slots may also
+// read a commit graph in the same store. Other recorded values are ignored.
 function resolveGraphPath(storagePath, metadata) {
   const own = path.join(storagePath, LBUG_DIRECTORY);
+  const recorded = metadata && metadata.graphPath;
+  if (typeof recorded === 'string' && /^lbug\.generation\.[a-f0-9]{32}$/.test(recorded)) {
+    const graph = path.join(storagePath, recorded);
+    try {
+      const stat = fs.lstatSync(graph);
+      if (!stat.isFile() || stat.isSymbolicLink()) return null;
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') return null;
+    }
+    return graph;
+  }
   const storesRoot = path.resolve(
     process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus'),
     'stores',
@@ -317,7 +328,6 @@ function resolveGraphPath(storagePath, metadata) {
   const root = path.dirname(checkoutsDir);
   if (path.basename(checkoutsDir) !== 'checkouts') return own;
   if (!isDirectChild(checkoutsDir, slot) || !isDirectChild(storesRoot, root)) return own;
-  const recorded = metadata && metadata.graphPath;
   if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return own;
   const graph = path.resolve(recorded);
   // Only a published `<commit>-<featureKey>` dir, never `.publish-*` staging.
@@ -353,11 +363,14 @@ function findLocalOwnedRepo(cwd) {
         const branchDir =
           branch != null ? path.join(storagePath, BRANCHES_DIRECTORY, branchSlug(branch)) : null;
         const indexDir = branchDir && hasLocalIndexSignal(branchDir) ? branchDir : storagePath;
+        const indexMetadata = indexDir === storagePath ? metadata : readIndexMetadata(indexDir);
+        const lbugPath = resolveGraphPath(indexDir, indexMetadata);
+        if (!lbugPath) return null;
         return {
           path: current,
           storagePath,
-          lbugPath: path.join(indexDir, LBUG_DIRECTORY),
-          metadata: indexDir === storagePath ? metadata : readIndexMetadata(indexDir),
+          lbugPath,
+          metadata: indexMetadata,
         };
       }
     }
@@ -412,15 +425,15 @@ function findRegisteredRepo(cwd) {
     const indexDir = branchIsIndexed
       ? path.join(storagePath, BRANCHES_DIRECTORY, branchSlug(branch))
       : storagePath;
+    const indexMetadata = branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata;
+    const lbugPath = resolveGraphPath(indexDir, indexMetadata);
     if (registeredPath.length > bestLen) {
       bestLen = registeredPath.length;
       best = {
         path: entry.path,
         storagePath,
-        lbugPath: branchIsIndexed
-          ? path.join(indexDir, LBUG_DIRECTORY)
-          : resolveGraphPath(storagePath, ownershipMetadata),
-        metadata: branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata,
+        lbugPath,
+        metadata: indexMetadata,
       };
     }
   }
@@ -429,7 +442,9 @@ function findRegisteredRepo(cwd) {
 
 /** Registry row wins (including persisted external storagePath); local owned is fallback. */
 function resolveHookRepo(cwd) {
-  return findRegisteredRepo(cwd) || findLocalOwnedRepo(cwd);
+  const repo = findRegisteredRepo(cwd) || findLocalOwnedRepo(cwd);
+  // A matching owned registry row blocks fallback even when its graph is invalid.
+  return repo && repo.lbugPath ? repo : null;
 }
 
 module.exports = {

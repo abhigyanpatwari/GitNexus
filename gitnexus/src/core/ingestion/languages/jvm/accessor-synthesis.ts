@@ -286,9 +286,9 @@ function capturesForPlannedAccessors(owners: readonly PlannedJvmAccessorOwner[])
       const identity = `${qualifiedName}#${arity}`;
       if (emitted.has(identity)) continue;
       emitted.add(identity);
-      captures.push({
-        '@scope.function': accessorCapture('@scope.function', acc, acc.name),
-      });
+      // Generated accessors have no lexical body. A getter and setter share
+      // the field anchor; function scopes there would nest and hide their
+      // bindings inside each other instead of exposing them on the class.
       captures.push({
         '@declaration.method': accessorCapture('@declaration.method', acc, acc.name),
         '@declaration.name': accessorCapture('@declaration.name', acc, acc.name),

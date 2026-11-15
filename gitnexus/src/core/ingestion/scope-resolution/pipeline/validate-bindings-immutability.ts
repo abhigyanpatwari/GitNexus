@@ -75,10 +75,10 @@ export function validateBindingsImmutability(
   }
 
   // Third channel: `workspaceFqnBindings` (scope-independent, shared map
-  // populated by language namespace-sibling hooks — PHP FQN keys, C#
-  // global-namespace simple names). Like bindingAugmentations its inner
-  // arrays are mutable by contract (hooks `push()` directly), so freezing
-  // one is the same defect as freezing an augmentation bucket.
+  // populated by language namespace-sibling hooks — e.g. PHP FQN keys). Like
+  // bindingAugmentations its inner arrays are mutable by contract (hooks
+  // `push()` directly), so freezing one is the same defect as freezing an
+  // augmentation bucket.
   for (const [name, bucket] of indexes.workspaceFqnBindings) {
     if (Object.isFrozen(bucket)) {
       onWarn(

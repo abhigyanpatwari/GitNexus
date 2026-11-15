@@ -1,0 +1,55 @@
+{
+  "language": "typescript",
+  "description": "Refuse an open structural parameter whose runtime owner cannot be proven, preserving every file.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "unrelated-owner",
+    "structural-typing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "render",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 1
+  },
+  "newName": "paint",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.ts",
+        "startLine": 4
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.ts",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "Child",
+        "kind": "Class",
+        "file": "model.ts"
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.ts",
+        "startLine": 4
+      }
+    }
+  ]
+}

@@ -35,6 +35,7 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import {
   setJavaClassAnnotationFacts,
+  setJavaImportUses,
   setJavaSpringAopFacts,
   setJavaSpringConfigConsumerFacts,
   setJavaSpringConditionalFacts,
@@ -63,6 +64,8 @@ import {
 } from './spring-non-http-handlers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
 import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
+import { captureJavaOverloadFacts, setJavaOverloadFacts } from './overload-argument-facts.js';
+import { captureJavaImportUses } from './import-use-facts.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -113,19 +116,17 @@ function javaLocalTypeVisibilityScope(node: SyntaxNode): CaptureMatch | undefine
   };
 }
 
-/** Suppress read.member emissions when the field_access is already
- *  covered by a method_invocation (object of a call) or an
- *  assignment_expression (write target). */
-function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
-  const parent = memberNode.parent;
-  if (parent === null) return true;
-
-  switch (parent.type) {
-    case 'assignment_expression':
-      return parent.childForFieldName('left')?.id !== memberNode.id;
-    default:
-      return true;
+/** Ids of the nodes an assignment writes (its `left`), from one native search.
+ *  A read.member on such a field_access is already covered by the write. Asking
+ *  each member for its native `parent` instead costs that member's depth, which
+ *  is quadratic over a left-deep chain of member reads. */
+function assignmentTargetIds(root: SyntaxNode): ReadonlySet<number> {
+  const ids = new Set<number>();
+  for (const assignment of root.descendantsOfType('assignment_expression')) {
+    const left = assignment.childForFieldName('left');
+    if (left !== null) ids.add(left.id);
   }
+  return ids;
 }
 
 export function emitJavaScopeCaptures(
@@ -143,6 +144,9 @@ export function emitJavaScopeCaptures(
     recordCacheHit();
   }
   captureJavaPackageFact(filePath, tree.rootNode);
+  setJavaImportUses(filePath, captureJavaImportUses(tree.rootNode));
+  const accessorCaptures = synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode);
+  setJavaOverloadFacts(filePath, captureJavaOverloadFacts(tree.rootNode, accessorCaptures));
 
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
@@ -156,6 +160,7 @@ export function emitJavaScopeCaptures(
   const springDynamicLookupFacts: SpringDynamicLookupFact[] = [];
   const springMessageProducerFacts: SpringMessageProducerFact[] = [];
   const springMemberCallNodeIds = new Set<number>();
+  let writeTargets: ReadonlySet<number> | undefined;
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -217,6 +222,7 @@ export function emitJavaScopeCaptures(
 
     const typeDeclaration = [
       nodeMap['@declaration.class'],
+      nodeMap['@declaration.annotation'],
       nodeMap['@declaration.enum'],
       nodeMap['@declaration.record'],
       nodeMap['@declaration.interface'],
@@ -263,12 +269,12 @@ export function emitJavaScopeCaptures(
     // matches ALL method_invocations as @reference.call.free (without
     // negation) because tree-sitter-java's query engine drops !object
     // patterns when a positive object: pattern exists for the same node
-    // type. Filter here: if the match has @reference.call.free but also
-    // has @reference.receiver, it's a member call — skip the free match
+    // type. The free pattern has no receiver capture, so inspect its AST
+    // object field instead. A qualified call belongs only to the member match
     // (the separate @reference.call.member match covers it).
     if (
       grouped['@reference.call.free'] !== undefined &&
-      grouped['@reference.receiver'] !== undefined
+      nodeMap['@reference.call.free']?.childForFieldName('object')
     ) {
       continue;
     }
@@ -296,13 +302,13 @@ export function emitJavaScopeCaptures(
       }
     }
 
-    // Filter read.member when it's a child of method_invocation or assignment.
+    // Filter read.member when the field_access is an assignment's write target.
     // `@reference.read.member` is captured directly on the `field_access` node.
     if (grouped['@reference.read.member'] !== undefined) {
       const memberNode = nodeIfType(nodeMap['@reference.read.member'], 'field_access');
-      if (memberNode === null || !shouldEmitReadMember(memberNode)) {
-        continue;
-      }
+      if (memberNode === null) continue;
+      writeTargets ??= assignmentTargetIds(tree.rootNode);
+      if (writeTargets.has(memberNode.id)) continue;
     }
 
     // Synthesize `this` / `super` receiver type-bindings on every
@@ -332,6 +338,14 @@ export function emitJavaScopeCaptures(
       // directly on the method/constructor node.
       const fnNode = findFunctionNode(nodeMap[declTag]);
       if (fnNode !== null) {
+        const returnType = fnNode.childForFieldName('type');
+        if (returnType !== null && fnNode.type === 'method_declaration') {
+          grouped['@declaration.return-type'] = syntheticCapture(
+            '@declaration.return-type',
+            fnNode,
+            returnType.text + (fnNode.childForFieldName('dimensions')?.text ?? ''),
+          );
+        }
         const arity = computeJavaArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
           grouped['@declaration.parameter-count'] = syntheticCapture(
@@ -391,6 +405,30 @@ export function emitJavaScopeCaptures(
         'object_creation_expression',
       );
       if (callNode !== null) {
+        if (callNode.type === 'method_invocation') {
+          let initializer = callNode;
+          while (initializer.parent?.type === 'parenthesized_expression')
+            initializer = initializer.parent;
+          const declarator = initializer.parent;
+          const declaration = declarator?.parent;
+          const name = declarator?.childForFieldName('name');
+          if (
+            declarator?.type === 'variable_declarator' &&
+            declaration?.type === 'local_variable_declaration' &&
+            declaration.childForFieldName('type')?.text === 'var' &&
+            declarator.childForFieldName('value')?.id === initializer.id &&
+            name !== null &&
+            name !== undefined
+          ) {
+            out.push({
+              '@call-result-assignment.call': nodeToCapture(
+                '@call-result-assignment.call',
+                callNode,
+              ),
+              '@call-result-assignment.lhs': nodeToCapture('@call-result-assignment.lhs', name),
+            });
+          }
+        }
         const argList = callNode.childForFieldName('arguments');
         // Exclude interleaved comments — tree-sitter-java emits `block_comment` /
         // `line_comment` as named children of argument_list, which would inflate
@@ -451,7 +489,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
-    ...synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode),
+    ...accessorCaptures,
     ...synthesizeLombokAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];

@@ -6,6 +6,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { swiftRenameProvider } from './swift/rename.js';
 import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { swiftClassConfig } from '../class-extractors/configs/swift.js';
@@ -13,8 +14,6 @@ import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { swiftExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { swiftImportConfig } from '../import-resolvers/configs/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
@@ -177,6 +176,7 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 ]);
 
 export const swiftProvider = defineLanguage({
+  rename: swiftRenameProvider,
   id: SupportedLanguages.Swift,
   extensions: ['.swift'],
   preprocessSource: preprocessSwiftConditionalDirectives,
@@ -237,7 +237,9 @@ export const swiftProvider = defineLanguage({
   treeSitterQueries: SWIFT_QUERIES,
   typeConfig: swiftConfig,
   exportChecker: swiftExportChecker,
-  importResolver: createImportResolver(swiftImportConfig),
+  // `swiftExportChecker` returns false only for `private` / `fileprivate`,
+  // both file-scoped; the module-wide default (`internal`) is recorded true.
+  notExportedIsFilePrivate: true,
   callExtractor: createCallExtractor(swiftCallConfig),
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
   methodExtractor: createMethodExtractor({

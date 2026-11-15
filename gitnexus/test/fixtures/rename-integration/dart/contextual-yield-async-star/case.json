@@ -1,0 +1,20 @@
+{
+  "language": "dart",
+  "description": "Refuse contextual or reserved identifier yield without modifying sources.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Function",
+    "file": "model.dart",
+    "startLine": 0
+  },
+  "newName": "yield",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

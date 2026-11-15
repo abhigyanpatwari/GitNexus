@@ -1,9 +1,17 @@
+import '../helpers/mock-analysis-host.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
+}));
+
+// Flag validation must not install the optional runtime from the npm registry.
+// Runtime readiness and installation have their own analyze-local-embedding-error tests.
+vi.mock('../../src/core/embeddings/runtime-support.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-support.js')>()),
+  assessLocalEmbeddingRuntime: () => ({ status: 'ready' }),
 }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
@@ -13,7 +21,12 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
+  loadMeta: vi.fn(async () => null),
+  getStoragePaths: vi.fn(() => ({
+    storagePath: '.gitnexus',
+    lbugPath: '.gitnexus/lbug',
+    metaPath: '.gitnexus/gitnexus.json',
+  })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},

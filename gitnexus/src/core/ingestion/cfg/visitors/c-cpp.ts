@@ -73,7 +73,7 @@ const C_FUNCTION_TYPES = new Set(['function_definition']);
 const CPP_FUNCTION_TYPES = new Set(['function_definition', 'lambda_expression']);
 
 /** Statement node types that break a basic block (everything else coalesces). */
-const C_CONTROL_FLOW_TYPES = new Set([
+export const C_CONTROL_FLOW_TYPES = new Set([
   'if_statement',
   'while_statement',
   'do_statement',
@@ -127,7 +127,7 @@ interface JumpFrame {
  * protected {@link visitStmt} override hook, so C++ adds its node types without
  * any language conditional in the C core.
  */
-class CCfgWalk {
+export class CCfgWalk {
   protected readonly jumps: JumpFrame[] = [];
   /** Stack of exception-handler entry blocks (catch) a `throw` jumps to. */
   protected readonly handlers: number[] = [];
@@ -140,7 +140,10 @@ class CCfgWalk {
 
   constructor(
     protected readonly builder: CfgBuilder,
-    protected readonly harvest: CCppHarvester,
+    protected readonly harvest: Pick<
+      CCppHarvester,
+      'facts' | 'factsConditional' | 'forRangeHeadFacts' | 'catchParamFacts'
+    >,
     controlFlowTypes: ReadonlySet<string>,
   ) {
     this.controlFlowTypes = controlFlowTypes;
@@ -270,22 +273,27 @@ class CCfgWalk {
       'normal',
       this.harvest.facts(stmt),
     );
-    this.builder.edge(idx, this.builder.exitIndex, 'return');
+    this.routeJump(idx, this.builder.exitIndex, 'return');
     return { entry: idx, exits: [] };
   }
 
   protected visitBreak(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
     const target = this.nearestBreakTarget();
-    this.builder.edge(idx, target ?? this.builder.exitIndex, 'break');
+    this.routeJump(idx, target ?? this.builder.exitIndex, 'break');
     return { entry: idx, exits: [] };
   }
 
   protected visitContinue(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(startLineOf(stmt), endLineOf(stmt), stmt.text);
     const target = this.nearestContinueTarget();
-    this.builder.edge(idx, target ?? this.builder.exitIndex, 'continue');
+    this.routeJump(idx, target ?? this.builder.exitIndex, 'continue');
     return { entry: idx, exits: [] };
+  }
+
+  /** Dialects with finalizers can thread abrupt completion through them. */
+  protected routeJump(from: number, target: number, kind: 'return' | 'break' | 'continue'): void {
+    this.builder.edge(from, target, kind);
   }
 
   /** Nearest enclosing loop/switch `break` target, or undefined (→ EXIT). */

@@ -19,6 +19,7 @@
  */
 
 import { execSync } from 'child_process';
+import { mkdir, stat } from 'fs/promises';
 import path from 'path';
 import { pathToFileURL } from 'url';
 import { describe, it, expect } from 'vitest';
@@ -29,6 +30,7 @@ import {
   schemaFingerprintMismatch,
 } from '../../src/core/lbug/schema.js';
 import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import { resolveParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import {
   getStoragePaths,
@@ -95,7 +97,7 @@ describe('embeddingDimsMismatch (#2798)', () => {
  * Seed a git repo whose index is up to date at HEAD, so the `alreadyUpToDate`
  * fast path is reachable and ONLY the guard under test can stop it. Every
  * other force-rebuild guard is satisfied: current fingerprint, current runner
- * identity, current analysis features, no dirty flag, clean tree, and an
+ * and parser identities, current analysis features, no dirty flag, clean tree, and an
  * absent `cjkSegmentation` that defaults to the resolved 'none'.
  */
 async function seedIndexedRepo(
@@ -103,30 +105,56 @@ async function seedIndexedRepo(
   embeddingDims: number | undefined,
 ): Promise<{ repo: TestDBHandle; home: TestDBHandle; storagePath: string }> {
   const repo = await createTempDir(prefix);
-  const home = await createTempDir(`${prefix}home-`);
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
-  execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
-    cwd: repo.dbPath,
-    stdio: 'pipe',
-  });
-  const lastCommit = execSync('git rev-parse HEAD', {
-    cwd: repo.dbPath,
-    encoding: 'utf-8',
-  }).trim();
-  const { storagePath } = getStoragePaths(repo.dbPath);
-  const meta: RepoMeta = {
-    repoPath: repo.dbPath,
-    lastCommit,
-    indexedAt: new Date().toISOString(),
-    schemaFingerprint: SCHEMA_FINGERPRINT,
-    analysisFeatures: CURRENT_ANALYSIS_FEATURES,
-    runnerIdentity: resolveAnalyzerRunnerIdentity(
-      pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
-    ),
-    embeddingDims,
-  };
-  await saveMeta(storagePath, meta);
-  return { repo, home, storagePath };
+  let home: TestDBHandle | undefined;
+  try {
+    home = await createTempDir(`${prefix}home-`);
+    execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+    execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+      cwd: repo.dbPath,
+      stdio: 'pipe',
+    });
+    const lastCommit = execSync('git rev-parse HEAD', {
+      cwd: repo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+    const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+    // A current compaction receipt and real graph keep the storage guard from
+    // masking the independent embedding-width decision under test.
+    await mkdir(storagePath, { recursive: true });
+    const { initLbug, closeLbug } = await import('../../src/core/lbug/lbug-adapter.js');
+    try {
+      await initLbug(lbugPath, { skipFts: true });
+    } finally {
+      await closeLbug();
+    }
+    const runAnalyzeUrl = pathToFileURL(
+      path.resolve(__dirname, '../../src/core/run-analyze.ts'),
+    ).href;
+    const parseIdentity = resolveParseCacheIdentity(runAnalyzeUrl);
+    if (parseIdentity.ok === false) {
+      throw new Error(`Cannot verify test parser artifacts: ${parseIdentity.reason}`);
+    }
+    const meta: RepoMeta = {
+      repoPath: repo.dbPath,
+      lastCommit,
+      indexedAt: new Date().toISOString(),
+      schemaFingerprint: SCHEMA_FINGERPRINT,
+      analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+      runnerIdentity: resolveAnalyzerRunnerIdentity(runAnalyzeUrl),
+      parseCacheIdentity: { base: parseIdentity.identity.base },
+      embeddingDims,
+      graphCompaction: {
+        version: 1,
+        compactBytes: (await stat(lbugPath)).size,
+        incrementalWrites: 0,
+      },
+    };
+    await saveMeta(storagePath, meta);
+    return { repo, home, storagePath };
+  } catch (error) {
+    await Promise.all([repo.cleanup(), home?.cleanup()]);
+    throw error;
+  }
 }
 
 describe('run-analyze embedding-dims guard (#2798)', () => {

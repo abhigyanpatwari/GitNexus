@@ -1,0 +1,48 @@
+{
+  "language": "rust",
+  "description": "Resolve a public field through nested owners under shared and mutable borrows; preserve unrelated fields and shadowing parameters.",
+  "categories": ["public-field", "deep-chain", "borrowed-receiver", "homonyms", "writes"],
+  "target": {
+    "name": "value",
+    "kind": "Property",
+    "file": "model.rs",
+    "startLine": 0
+  },
+  "newName": "amount",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "model.rs",
+        "startLine": 4
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.rs",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "write",
+        "kind": "Function",
+        "file": "model.rs",
+        "startLine": 7
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.rs",
+        "startLine": 0
+      }
+    }
+  ]
+}

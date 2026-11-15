@@ -1,0 +1,39 @@
+{
+  "language": "dart",
+  "description": "Rename a Dart exported function through a prefixed import and tear-offs while preserving the prefix, local shadow and another class.",
+  "categories": [
+    "import-alias",
+    "call-graph",
+    "function-value",
+    "shadowing",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "encode",
+    "kind": "Function",
+    "file": "encoder.dart",
+    "startLine": 0
+  },
+  "newName": "serialize",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "encoder.dart",
+        "startLine": 5
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "encoder.dart",
+        "startLine": 1
+      }
+    }
+  ]
+}

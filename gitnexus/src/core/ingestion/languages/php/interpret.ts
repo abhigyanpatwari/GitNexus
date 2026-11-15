@@ -94,6 +94,10 @@ export function interpretPhpImport(captures: CaptureMatch): ParsedImport | null 
 
 // ─── interpretTypeBinding ─────────────────────────────────────────────────
 
+/** A qualified or relative callee path: `Ns\f`, `\Ns\f`, `namespace\f`. */
+const PHP_CALLEE_PATH_RE =
+  /^\\?(?:[A-Za-z_\u0080-\u{10FFFF}][A-Za-z0-9_\u0080-\u{10FFFF}]*\\)*[A-Za-z_\u0080-\u{10FFFF}][A-Za-z0-9_\u0080-\u{10FFFF}]*$/u;
+
 export function interpretPhpTypeBinding(captures: CaptureMatch): ParsedTypeBinding | null {
   const nameCap = captures['@type-binding.name'];
   const typeCap = captures['@type-binding.type'];
@@ -113,6 +117,7 @@ export function interpretPhpTypeBinding(captures: CaptureMatch): ParsedTypeBindi
     // `@type-binding.alias` captures cover several assignment RHS shapes:
     //   - `$alias = $u`               → rawType = '$u'   (variable alias)
     //   - `$u = getUser()`            → rawType = 'getUser' (callable alias)
+    //   - `$u = rp\getUser()`         → rawType = 'rp\getUser()' (qualified call result)
     //   - `$u = new User()`           → rawType = 'User' (constructor — via @type-binding.constructor; handled below)
     //   - `$role = UserRole::Viewer`  → rawType = 'UserRole' (enum/class constant)
     //
@@ -121,7 +126,16 @@ export function interpretPhpTypeBinding(captures: CaptureMatch): ParsedTypeBindi
     // so `followChainedRef` can walk the chain `$alias → $u → User`.
     // For callable/class names, `normalizePhpType` strips qualifiers correctly.
     const rawText = typeCap.text.trim();
-    if (rawText.startsWith('$')) {
+    if (captures['@type-binding.qualified-callee'] !== undefined) {
+      // `$u = rp\make()`: preserve the callee path for the provider's
+      // `resolveQualifiedCallee` (#3498). `normalizePhpType` would strip the
+      // `\` that makes `\App\make` absolute, leaving the relative `App\make`.
+      // A function and class may share this path. Keep call-result provenance
+      // so class lookup cannot consume the callee as an annotation.
+      // Non-ASCII whitespace can be part of a PHP identifier.
+      const callee = typeCap.text.replace(/^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g, '');
+      rawType = PHP_CALLEE_PATH_RE.test(callee) ? `${callee}()` : null;
+    } else if (rawText.startsWith('$')) {
       // Variable alias: keep as-is for chain-following.
       rawType = rawText;
     } else {

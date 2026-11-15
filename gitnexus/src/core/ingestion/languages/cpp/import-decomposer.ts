@@ -77,6 +77,7 @@ export function splitCppUsingDecl(node: SyntaxNode): CaptureMatch | null {
   // lookup set; it is not a namespace import. The C++ member-lookup sidecar
   // captures it separately, so suppress import decomposition here.
   for (let parent = node.parent; parent !== null; parent = parent.parent) {
+    if (parent.type === 'function_definition' || parent.type === 'lambda_expression') break;
     if (parent.type === 'class_specifier' || parent.type === 'struct_specifier') return null;
   }
 
@@ -109,6 +110,7 @@ export function splitCppUsingDecl(node: SyntaxNode): CaptureMatch | null {
       '@import.kind': syntheticCapture('@import.kind', node, 'wildcard'),
       '@import.source': syntheticCapture('@import.source', node, namespaceName),
       '@import.using-namespace': syntheticCapture('@import.using-namespace', node, 'true'),
+      '@import.using-decl': nodeToCapture('@import.using-decl', node),
     };
   }
 
@@ -124,16 +126,18 @@ export function splitCppUsingDecl(node: SyntaxNode): CaptureMatch | null {
   if (qualId === null) return null;
 
   // Extract the imported name (last identifier) and source (namespace part)
-  const nameNode = qualId.childForFieldName?.('name') ?? null;
-  const scopeNode = qualId.childForFieldName?.('scope') ?? null;
-
-  const importedName = nameNode?.text ?? qualId.text.split('::').pop() ?? '';
-  const source = scopeNode?.text ?? qualId.text.replace(new RegExp('::' + importedName + '$'), '');
+  // Qualified identifiers nest on their name side in tree-sitter-cpp. Taking
+  // only the outer `scope` loses intermediate namespaces in a::b::member.
+  const separator = qualId.text.lastIndexOf('::');
+  if (separator < 0) return null;
+  const importedName = qualId.text.slice(separator + 2).trim();
+  const source = qualId.text.slice(0, separator).trim() || '::';
 
   return {
     '@import.statement': nodeToCapture('@import.statement', node),
     '@import.kind': syntheticCapture('@import.kind', node, 'named'),
     '@import.source': syntheticCapture('@import.source', node, source),
     '@import.name': syntheticCapture('@import.name', node, importedName),
+    '@import.using-decl': nodeToCapture('@import.using-decl', node),
   };
 }

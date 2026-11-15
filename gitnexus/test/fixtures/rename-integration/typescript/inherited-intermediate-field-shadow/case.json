@@ -1,0 +1,64 @@
+{
+  "language": "typescript",
+  "description": "Refuse a field rename through an inherited method when a descendant replaces the intermediate receiver field with a different constructor.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "inheritance",
+    "unsafe-intermediate-receiver"
+  ],
+  "target": {
+    "name": "value",
+    "kind": "Property",
+    "file": "model.ts",
+    "startLine": 0
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "EXTENDS",
+      "from": {
+        "name": "Derived",
+        "kind": "Class",
+        "file": "model.ts"
+      },
+      "to": {
+        "name": "Base",
+        "kind": "Class",
+        "file": "model.ts"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "model.ts"
+      },
+      "to": {
+        "name": "read",
+        "kind": "Method",
+        "file": "model.ts"
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Method",
+        "file": "model.ts"
+      },
+      "to": {
+        "name": "value",
+        "kind": "Property",
+        "file": "model.ts",
+        "startLine": 0
+      }
+    }
+  ]
+}

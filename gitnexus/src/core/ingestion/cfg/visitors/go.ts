@@ -185,11 +185,18 @@ class GoCfgWalk {
   /** Wire a sequence of statements, coalescing straight-line runs into blocks. */
   visitSeq(stmts: SyntaxNode[]): SeqResult {
     return this.builder.withNesting(() => {
+      // Go 0.25 wraps block and case bodies in statement_list. Unwrap at the
+      // sequence boundary so control statements retain their own CFG edges.
+      const statements = stmts.flatMap((stmt) =>
+        stmt.type === 'statement_list'
+          ? stmt.namedChildren.filter((child) => child.type !== 'comment')
+          : [stmt],
+      );
       let entry: number | undefined;
       let dangling: number[] = [];
       let openSimple: number | undefined;
 
-      for (const stmt of stmts) {
+      for (const stmt of statements) {
         if (CONTROL_FLOW_TYPES.has(stmt.type)) {
           openSimple = undefined; // close any open straight-line block
           const res = this.visitStmt(stmt);

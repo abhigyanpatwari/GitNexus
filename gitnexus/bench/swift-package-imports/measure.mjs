@@ -37,7 +37,7 @@
  *   rows on the unique query set. Catches a target-set change that leaves
  *   the counts intact.
  *
- * - `resolve_scaling_ratio` / `strategy_scaling_ratio` / `parse_scaling_ratio`
+ * - `resolve_scaling_ratio` / `parse_scaling_ratio`
  *   — the only timing arms, RATIOS not millisecond ceilings.
  *   `(t_4n / t_n) / 4` divides the machine out; ~1.0 is linear.
  *   Files-per-target is FIXED while target count (and therefore files and
@@ -54,7 +54,6 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import { parseSwiftPackageManifest } from '../../src/core/ingestion/language-config.ts';
-import { swiftPackageStrategy } from '../../src/core/ingestion/import-resolvers/configs/swift.ts';
 import { resolveSwiftImportTarget } from '../../src/core/ingestion/languages/swift/import-target.ts';
 import { groupSwiftFilesByModule } from '../../src/core/ingestion/languages/swift/target-grouping.ts';
 
@@ -173,37 +172,11 @@ function resolveOne(query, allFilePaths, config, parsedFiles) {
   });
 }
 
-function strategyCtx(files, config) {
-  return {
-    allFilePaths: new Set(files),
-    allFileList: files,
-    normalizedFileList: files.map((p) => p.replace(/\\/g, '/')),
-    index: {},
-    resolveCache: new Map(),
-    configs: {
-      tsconfigPaths: null,
-      goModule: null,
-      composerConfig: null,
-      swiftPackageConfig: config,
-      csharpConfigs: [],
-    },
-  };
-}
-
 function resolvePass(corpus) {
   const allFilePaths = new Set(corpus.files);
   let resolved = 0;
   for (const query of corpus.queries) {
     if (resolveOne(query, allFilePaths, corpus.config, corpus.parsedFiles) != null) resolved++;
-  }
-  return resolved;
-}
-
-function strategyPass(corpus) {
-  const ctx = strategyCtx(corpus.files, corpus.config);
-  let resolved = 0;
-  for (const query of corpus.queries) {
-    if (swiftPackageStrategy(query.raw, query.from, ctx) != null) resolved++;
   }
   return resolved;
 }
@@ -327,10 +300,6 @@ const smallResolveMs = fastest(() => resolvePass(small), REPS);
 const largeResolveMs = fastest(() => resolvePass(large), REPS);
 const resolveScaling = largeResolveMs / smallResolveMs / SCALE;
 
-const smallStrategyMs = fastest(() => strategyPass(small), REPS);
-const largeStrategyMs = fastest(() => strategyPass(large), REPS);
-const strategyScaling = largeStrategyMs / smallStrategyMs / SCALE;
-
 const parseSmallSrc = manifestFor(PARSE_TARGETS);
 const parseLargeSrc = manifestFor(PARSE_TARGETS * SCALE);
 const parseSmall = parseSwiftPackageManifest(parseSmallSrc);
@@ -377,13 +346,10 @@ console.log(
   `resolve_scaling_ratio  : ${resolveScaling.toFixed(3)}  (budget <= ${baselines.resolve_scaling_budget}; ~1.0 is linear)`,
 );
 console.log(
-  `strategy_scaling_ratio : ${strategyScaling.toFixed(3)}  (budget <= ${baselines.strategy_scaling_budget}; ~1.0 is linear)`,
-);
-console.log(
   `parse_scaling_ratio    : ${parseScaling.toFixed(3)}  (budget <= ${baselines.parse_scaling_budget}; ~1.0 is linear)`,
 );
 console.log(
-  `reps                   : ${REPS}   resolve ${smallResolveMs.toFixed(2)}ms / 4x ${largeResolveMs.toFixed(2)}ms   strategy ${smallStrategyMs.toFixed(2)}ms / 4x ${largeStrategyMs.toFixed(2)}ms   parse ${smallParseMs.toFixed(2)}ms / 4x ${largeParseMs.toFixed(2)}ms`,
+  `reps                   : ${REPS}   resolve ${smallResolveMs.toFixed(2)}ms / 4x ${largeResolveMs.toFixed(2)}ms   parse ${smallParseMs.toFixed(2)}ms / 4x ${largeParseMs.toFixed(2)}ms`,
 );
 console.log(
   `parse_scale_shape      : ${parseSmall.targets.size} -> ${parseLarge.targets.size} targets (expect ${PARSE_TARGETS} -> ${PARSE_TARGETS * SCALE})`,
@@ -454,16 +420,6 @@ if (process.argv.includes('--check')) {
         `  resolveSwiftImportTarget grew superlinearly in file+import count — a\n` +
         `  per-import scan of allFilePaths scores ~4 here. Re-run on an idle\n` +
         `  machine before investigating, and check \`reps\` first.`,
-    );
-  }
-
-  if (strategyScaling > baselines.strategy_scaling_budget) {
-    failed = true;
-    console.error(
-      `\nFAIL strategy_scaling_ratio: ${strategyScaling.toFixed(3)} exceeds ` +
-        `${baselines.strategy_scaling_budget} (~1.0 is linear).\n` +
-        `  swiftPackageStrategy grew superlinearly — usually the WeakMap target\n` +
-        `  index falling back to O(imports × files). Re-run idle; check \`reps\`.`,
     );
   }
 

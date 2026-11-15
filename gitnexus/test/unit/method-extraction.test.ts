@@ -25,7 +25,7 @@ import { methodInfoKey } from '../../src/core/ingestion/utils/method-props.js';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import Go from 'tree-sitter-go';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import CPP from 'tree-sitter-cpp';
 import TypeScript from 'tree-sitter-typescript';
 import JavaScript from 'tree-sitter-javascript';
@@ -37,14 +37,14 @@ import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
 // Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
-let Kotlin: unknown;
+let Kotlin: Parser.Language | null = null;
 try {
   Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not be installed
 }
 
-let Dart: unknown;
+let Dart: Parser.Language | null = null;
 try {
   Dart = requireVendoredGrammar('tree-sitter-dart');
   // Verify the grammar actually works with the installed tree-sitter version
@@ -54,7 +54,7 @@ try {
   Dart = null;
 }
 
-let Swift: unknown;
+let Swift: Parser.Language | null = null;
 try {
   Swift = requireVendoredGrammar('tree-sitter-swift');
   // Verify the grammar actually works with the installed tree-sitter version

@@ -1,0 +1,116 @@
+--- a/gitnexus/src/core/ingestion/parsing-processor.ts
++++ b/gitnexus/src/core/ingestion/parsing-processor.ts
+@@ -1,3 +1,4 @@
++import { setTimeout as delay } from 'node:timers/promises';
+ import type { NodeLabel } from 'gitnexus-shared';
+ import { KnowledgeGraph } from '../graph/types.js';
+ import type { SymbolTableWriter } from './model/index.js';
+@@ -268,12 +269,32 @@
+   const total = groups.reduce((sum, group) => sum + group.items.length, 0);
+   if (dispatchGroups.every((group) => group.items.length === 0)) return groups.map(() => []);
+ 
+-  const perGroup = await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(
+-    dispatchGroups,
+-    (filesProcessed) => {
+-      onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
+-    },
+-  );
++  const perGroup: ParseWorkerResult[][] = dispatchGroups.map(() => []);
++  const inputPaths = new Set(dispatchGroups.flatMap((group) => group.items.map((item) => item.path)));
++  const retries = new Map<string, number>();
++  let pendingGroups = dispatchGroups;
++  for (;;) {
++    const attemptResults = await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(
++      pendingGroups,
++      (filesProcessed) => {
++        onFileProgress?.(Math.min(filesProcessed, total), total, 'Parsing...');
++      },
++    );
++    attemptResults.forEach((results, index) => perGroup[index].push(...results));
++    const retryPaths = (workerPool.getRetryablePaths?.() ?? []).filter(
++      (p) => inputPaths.has(p) && (retries.get(p) ?? 0) < 2,
++    );
++    if (retryPaths.length === 0 || !workerPool.resumeRetryablePaths) break;
++    const attempt = Math.max(...retryPaths.map((p) => retries.get(p) ?? 0));
++    await delay(10 * 2 ** attempt);
++    for (const p of retryPaths) retries.set(p, (retries.get(p) ?? 0) + 1);
++    workerPool.resumeRetryablePaths(retryPaths);
++    const retrySet = new Set(retryPaths);
++    pendingGroups = dispatchGroups.map((group) => ({
++      ...group,
++      items: group.items.filter((item) => retrySet.has(item.path)),
++    }));
++  }
+   const chunkResults = perGroup.flat();
+ 
+   // Skipped-language telemetry (worker output, independent of the merge).
+--- a/gitnexus/src/core/ingestion/workers/worker-pool.ts
++++ b/gitnexus/src/core/ingestion/workers/worker-pool.ts
+@@ -173,6 +173,10 @@
+    * absence gracefully.
+    */
+   getQuarantinedPaths?(): readonly string[];
++
++  /** Classified transient failures that a caller may retry after backoff. */
++  getRetryablePaths?(): readonly string[];
++  resumeRetryablePaths?(paths: readonly string[]): void;
+ 
+   /**
+    * Throughput / health snapshot for operator observability. Surfaced at
+@@ -1143,6 +1147,7 @@
+   // 1100+ LOC of pool plumbing. Public worker-pool API is unchanged —
+   // `getQuarantinedPaths()` still returns the same defensive copy.
+   const quarantine = createQuarantine();
++  const retryablePaths = new Set<string>();
+   const initialReadinessFailures: string[] = [];
+   // Per-slot consecutive-failure counter (F6): replaces the prior pool-wide
+   // scalar so a chronically-failing slot trips the breaker on its own
+@@ -1764,8 +1769,13 @@
+       ) => {
+         if (stopped) return;
+         consecutiveFailuresPerSlot[workerIndex]++;
++        const transient = !/\bSyntaxError\b/.test(reason) &&
++          (/\bEAGAIN\b/.test(reason) || /exited with code 75\b/.test(reason));
+         for (const p of excludePaths) {
+-          if (p) quarantine.add(p);
++          if (!p) continue;
++          quarantine.add(p);
++          if (transient) retryablePaths.add(p);
++          else retryablePaths.delete(p);
+         }
+         if (consecutiveFailuresPerSlot[workerIndex] >= poolOptions.consecutiveFailureThreshold) {
+           tripBreaker(
+@@ -2435,6 +2445,12 @@
+     terminate,
+     size,
+     getQuarantinedPaths: () => quarantine.snapshot(),
++    getRetryablePaths: () => [...retryablePaths].filter((p) => quarantine.has(p)),
++    resumeRetryablePaths: (paths) => {
++      for (const p of paths) {
++        if (retryablePaths.delete(p)) quarantine.remove(p);
++      }
++    },
+     getStats: () => ({
+       size,
+       activeSlots: activeSlots.size,
+--- a/gitnexus/src/core/ingestion/workers/quarantine.ts
++++ b/gitnexus/src/core/ingestion/workers/quarantine.ts
+@@ -28,6 +28,8 @@
+ export interface Quarantine {
+   /** Mark `path` as known-bad for the remainder of this pool's life. */
+   add(path: string): void;
++  /** Release a classified transient failure for a caller-controlled retry. */
++  remove(path: string): void;
+   /** Whether `path` has been quarantined. */
+   has(path: string): boolean;
+   /** Defensive copy of every quarantined path. */
+@@ -50,6 +52,9 @@
+     add: (path) => {
+       paths.add(path);
+     },
++    remove: (path) => {
++      paths.delete(path);
++    },
+     has: (path) => paths.has(path),
+     snapshot: () => Array.from(paths),
+     get size() {

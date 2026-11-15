@@ -1,0 +1,38 @@
+{
+  "language": "javascript",
+  "description": "Refuse an unproven object or destructuring member key, preserving all source bytes.",
+  "categories": [
+    "member-keys",
+    "call-graph",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "close",
+    "kind": "Method",
+    "file": "model.js",
+    "startLine": 1
+  },
+  "newName": "finish",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "model.js"
+      },
+      "to": {
+        "name": "close",
+        "kind": "Method",
+        "file": "model.js",
+        "startLine": 1
+      }
+    }
+  ]
+}

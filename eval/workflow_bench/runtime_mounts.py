@@ -197,6 +197,7 @@ def _validated_runtime_component(
     *,
     directory: bool,
     allow_primary_worktree_symlink: bool = False,
+    checkout_root: Path | None = None,
 ) -> ReadOnlyMount:
     """Validate one direct runtime component before exposing only that path."""
 
@@ -208,7 +209,7 @@ def _validated_runtime_component(
     except OSError as exc:
         raise SandboxError(f"pinned GitNexus runtime component is unavailable: {source}: {exc}") from exc
     if stat.S_ISLNK(mode) and allow_primary_worktree_symlink and directory:
-        primary = _primary_checkout_root(HARNESS_ROOT)
+        primary = _primary_checkout_root(checkout_root if checkout_root is not None else HARNESS_ROOT)
         if primary is None:
             raise SandboxError(f"pinned GitNexus runtime component must be a real {kind}: {source}")
         expected = primary / "gitnexus" / relative
@@ -235,15 +236,16 @@ def _validated_runtime_component(
     return ReadOnlyMount(source=source, target=target)
 
 
-def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
+def trusted_gitnexus_runtime_mounts(*, root: Path | None = None) -> tuple[ReadOnlyMount, ...]:
     """Expose only the files needed by the pinned CLI and linked shared package."""
 
+    checkout = _validated_runtime_root(root if root is not None else HARNESS_ROOT, label="pinned GitNexus checkout")
     runtime = _validated_runtime_root(
-        HARNESS_ROOT / "gitnexus",
+        checkout / "gitnexus",
         label="pinned GitNexus runtime",
     )
     shared = _validated_runtime_root(
-        HARNESS_ROOT / "gitnexus-shared",
+        checkout / "gitnexus-shared",
         label="pinned GitNexus shared runtime",
     )
     node_modules = _validated_runtime_component(
@@ -252,8 +254,9 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
         f"{SANDBOX_GITNEXUS}/node_modules",
         directory=True,
         allow_primary_worktree_symlink=True,
+        checkout_root=checkout,
     )
-    primary = _primary_checkout_root(HARNESS_ROOT)
+    primary = _primary_checkout_root(checkout)
     if primary is not None:
         try:
             primary_shared = _validated_runtime_root(

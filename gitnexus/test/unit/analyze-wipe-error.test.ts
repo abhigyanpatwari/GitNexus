@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 /**
  * Tests for the LadybugDB wipe-failure path in the `analyzeCommand` CLI
  * (#2409, tri-review 4669518496 P2-4).
@@ -48,7 +49,12 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => ({
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
+  loadMeta: vi.fn(async () => null),
+  getStoragePaths: vi.fn(() => ({
+    storagePath: '.gitnexus',
+    lbugPath: '.gitnexus/lbug',
+    metaPath: '.gitnexus/gitnexus.json',
+  })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},

@@ -264,6 +264,10 @@ const CPP_SCOPE_QUERY = `
 (type_definition
   declarator: (type_identifier) @declaration.name) @declaration.typedef
 
+(namespace_alias_definition
+  name: (namespace_identifier) @import.name
+  . (_) @import.source) @import.namespace-alias @import.statement
+
 ;; ─── Declarations — type alias (using Name = Type) ──────────────────
 (alias_declaration
   name: (type_identifier) @declaration.name) @declaration.typedef
@@ -383,10 +387,28 @@ const CPP_SCOPE_QUERY = `
   type: (template_type) @type-binding.type
   declarator: (identifier) @type-binding.name) @type-binding.annotation
 
+;; Covers: rp::C x; std::vector<User> users;
+;; A QUALIFIED type is a qualified_identifier wrapping the type_identifier or
+;; template_type, so the two rules above never matched it and rp::C x; bound
+;; nothing — the receiver of x.m() was untyped. Matched on the OUTER node, one
+;; pattern per declarator shape like the qualified field rules below (depth- and
+;; genericity-agnostic, no alternation). The spelling is kept as written and
+;; resolved by the qualifier-aware route (resolveQualifiedTypeSpellings).
+(declaration
+  type: (qualified_identifier) @type-binding.type
+  declarator: (identifier) @type-binding.name) @type-binding.annotation
+
 ;; ─── Type bindings — pointer variable declaration ───────────────────
 ;; Covers: User* ptr = new User()
 (declaration
   type: (type_identifier) @type-binding.type
+  declarator: (init_declarator
+    declarator: (pointer_declarator
+      declarator: (identifier) @type-binding.name))) @type-binding.annotation
+
+;; Covers: rp::C* ptr = nullptr; (the qualified twin of the rule above)
+(declaration
+  type: (qualified_identifier) @type-binding.type
   declarator: (init_declarator
     declarator: (pointer_declarator
       declarator: (identifier) @type-binding.name))) @type-binding.annotation
@@ -414,13 +436,18 @@ const CPP_SCOPE_QUERY = `
 ;; ─── Type bindings — auto + scoped brace-init (qualified) ───────────
 ;; Covers: auto client = ns::HttpClient{}
 ;; AST: compound_literal_expression > qualified_identifier > type_identifier
+;; The WHOLE qualified spelling is captured, not its tail: \`ns::HttpClient\` is
+;; resolved by the qualifier-aware route (\`resolveQualifiedTypeSpellings\`),
+;; while the tail \`HttpClient\` bound whichever same-named class was nearer — a
+;; global one through another include, or the enclosing namespace's own
+;; (\`auto x = a::Config{}\` inside a \`namespace b\` declaring Config). Matching
+;; the outer node is also depth-agnostic (\`a::b::T{}\`).
 (declaration
   type: (placeholder_type_specifier)
   declarator: (init_declarator
     declarator: (identifier) @type-binding.name
     value: (compound_literal_expression
-      type: (qualified_identifier
-        name: (type_identifier) @type-binding.type)))) @type-binding.constructor
+      type: (qualified_identifier) @type-binding.type))) @type-binding.constructor
 
 ;; ─── Type bindings — auto + new expression ──────────────────────────
 ;; Covers: auto user = new User(name)
@@ -488,20 +515,43 @@ const CPP_SCOPE_QUERY = `
 ;; Covers: User getUser() { ... }
 ;; AST: function_definition > type_identifier + function_declarator > identifier
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (identifier) @type-binding.name)) @type-binding.return
 
 ;; Return type — out-of-class method: User Class::getUser() { ... }
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (qualified_identifier
       name: (identifier) @type-binding.name))) @type-binding.return
 
 ;; Return type — pointer return: User* getUser() { ... }
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
+  declarator: (pointer_declarator
+    declarator: (function_declarator
+      declarator: (identifier) @type-binding.name))) @type-binding.return
+
+;; ─── Type bindings — free-function PROTOTYPE return type ─────────────
+;; Covers: D makeD();  D* makeDp();  namespace rp { C make(); }
+;; The usual layout is "header declares, .cpp defines", and a .cpp is never
+;; included — so the header prototype is the only return-type fact an includer
+;; can see. Only definitions carried one, which left \`auto x = makeD(); x.m()\`
+;; and \`makeD().m()\` untyped in every file that merely includes the header.
+;; Inside a function body the same syntax declares a BLOCK-scope function (the
+;; most vexing parse, \`D x();\`), whose binding would be hoisted to the module
+;; like any return type; captures.ts keeps only the matches at namespace scope
+;; (isCppNamespaceScopeDeclaration). A reference return (\`D& f();\`) has no
+;; rule here because such a function is not declared as a Function at all.
+(declaration
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
+  declarator: (function_declarator
+    declarator: (identifier) @type-binding.name)) @type-binding.return
+
+;; Prototype pointer return: D* makeDp();
+(declaration
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (identifier) @type-binding.name))) @type-binding.return
@@ -509,13 +559,13 @@ const CPP_SCOPE_QUERY = `
 ;; ─── Type bindings — inline method return type ──────────────────────
 ;; Covers: class Foo { User getUser() { ... } };
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (field_identifier) @type-binding.name)) @type-binding.return
 
 ;; Inline method pointer return type: class Foo { User* lookup(int) { ... } };
 (function_definition
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (field_identifier) @type-binding.name))) @type-binding.return
@@ -524,13 +574,13 @@ const CPP_SCOPE_QUERY = `
 ;; Covers: class User { User* lookup(int); std::string getName(); };
 ;; AST: field_declaration > function_declarator > field_identifier
 (field_declaration
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (function_declarator
     declarator: (field_identifier) @type-binding.name)) @type-binding.return
 
 ;; Method prototype pointer return type: User* lookup(int id);
 (field_declaration
-  type: (type_identifier) @type-binding.type
+  type: [(type_identifier) (qualified_identifier)] @type-binding.type
   declarator: (pointer_declarator
     declarator: (function_declarator
       declarator: (field_identifier) @type-binding.name))) @type-binding.return
@@ -599,18 +649,16 @@ const CPP_SCOPE_QUERY = `
 ;; a single node type in the field position, not an alternation — the
 ;; tree-sitter 0.21 hazard this repo has been bitten by before.
 ;;
-;; The QUALIFIER IS THEN DROPPED, by cppQualifiedTail in interpret.ts, not
-;; here — and dropping it was measured rather than assumed. Recording
-;; ns::Repo<User> resolves to NOTHING: findClassBindingInScope's dotted-tail
-;; fallback splits on "." and C++ writes "::", and resolveClassBindingForName's
-;; generic branch then looks up the base ns::Repo, which is not a key either
-;; because C++ emits no @declaration.qualified_name and indexes ns::Repo under
-;; Repo. Reducing to the tail lands on exactly the path the BARE spelling
-;; already takes — one class-like match or decline — so a qualified member field
-;; behaves like the bare one instead of like nothing. A tail that names no
-;; workspace class (std::string with no "class string" in the repo) binds
-;; nothing and emits nothing, which is why this is a miss-closing change rather
-;; than an edge-fabricating one.
+;; For a GENERIC member the QUALIFIER IS THEN DROPPED, by cppQualifiedTail in
+;; interpret.ts, not here. resolveClassBindingForName's template-argument match
+;; (the one that prefers a Repo<User> specialization over the primary Repo<T>)
+;; looks up the BASE name, and C++ indexes ns::Repo under Repo, so only the tail
+;; reaches it. A NON-GENERIC member keeps its qualifier and resolves through the
+;; qualifier-aware route (ScopeResolver.resolveQualifiedTypeSpellings): its tail
+;; bound the NEAREST same-named class, which inside a namespace declaring its
+;; own Config made a::Config cfg; type cfg as that one. A qualified spelling
+;; that names no workspace class (std::string with no namespace std in the
+;; repo) binds nothing and emits nothing.
 ;;
 ;; Like the six above, each requires the declarator to reach the field_identifier
 ;; DIRECTLY, so a method whose return type is qualified (ns::Thing method();)

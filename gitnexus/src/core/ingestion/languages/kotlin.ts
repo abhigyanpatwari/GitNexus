@@ -8,6 +8,7 @@
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import { kotlinRenameProvider } from './kotlin/rename.js';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
@@ -15,9 +16,7 @@ import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
-import { createImportResolver } from '../import-resolvers/resolver-factory.js';
-import { kotlinImportConfig } from '../import-resolvers/configs/jvm.js';
-import { appendKotlinWildcard } from '../import-resolvers/jvm.js';
+import { appendKotlinWildcard } from './kotlin/import-wildcard.js';
 import { KOTLIN_QUERIES } from '../tree-sitter-queries.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
@@ -129,7 +128,24 @@ const BUILT_INS: ReadonlySet<string> = new Set([
   'step',
 ]);
 
+/**
+ * Program-boundary names for `LanguageProvider.externalReceiverNames`.
+ *
+ * `System` is `java.lang.System`, which Kotlin/JVM imports by default, so
+ * `System.out.println(...)` reaches the JDK. `java` and `kotlin` are package
+ * roots no program can declare into — the JVM refuses `java.*`, and the
+ * compiler reserves `kotlin.*` for the standard library — so a fully qualified
+ * `java.util.UUID.randomUUID()` is rooted outside too. A name counts only where
+ * the program binds nothing by it, so an `object System` still wins.
+ */
+const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set(['System', 'java', 'kotlin']);
+
+/** Imports from those same reserved roots can never resolve in-workspace. */
+const isKotlinPlatformModule = (specifier: string): boolean =>
+  /^(?:java|kotlin)(?:\.|$)/.test(specifier);
+
 export const kotlinProvider = defineLanguage({
+  rename: kotlinRenameProvider,
   id: SupportedLanguages.Kotlin,
   extensions: ['.kt', '.kts'],
   entryPointPatterns: [
@@ -176,7 +192,6 @@ export const kotlinProvider = defineLanguage({
   treeSitterQueries: KOTLIN_QUERIES,
   typeConfig: kotlinTypeConfig,
   exportChecker: kotlinExportChecker,
-  importResolver: createImportResolver(kotlinImportConfig),
   importPathPreprocessor: appendKotlinWildcard,
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(kotlinCallConfig),
@@ -185,6 +200,8 @@ export const kotlinProvider = defineLanguage({
   variableExtractor: createVariableExtractor(kotlinVariableConfig),
   classExtractor: createClassExtractor(kotlinClassConfig),
   builtInNames: BUILT_INS,
+  externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
+  isExternalModuleSpecifier: isKotlinPlatformModule,
 
   // ── KDoc → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),

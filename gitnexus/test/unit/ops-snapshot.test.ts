@@ -5,8 +5,38 @@ import {
   isGitNexusVercelOrigin,
   serializeOpsJob,
   summarizeOpsLane,
+  publicOpsProgress,
 } from '../../src/server/ops-snapshot.js';
 import { publicRepoId } from '../../src/server/public-repo-id.js';
+import type { AnalyzeJobProgress } from '../../src/server/analyze-job.js';
+
+it('copies only enumerated phases and finite numeric progress fields', () => {
+  const input = {
+    phase: 'embedding',
+    percent: 90,
+    message: 'Embedding',
+    graphPhase: '/private/path',
+    modelDownloadPercent: Infinity,
+    embeddingProgress: {
+      phase: 'embedding',
+      totalUnits: 'secret',
+      completedUnits: -1,
+      reusedUnits: NaN,
+      failedUnits: 1.5,
+      pendingUnits: 2,
+      activeUnit: '/secret',
+      chunks: 7,
+      identity: 'hidden',
+      endpoint: 'https://secret',
+    },
+  } as unknown as AnalyzeJobProgress;
+  expect(publicOpsProgress(input)).toEqual({
+    phase: 'embedding',
+    percent: 90,
+    message: 'Embedding',
+    embeddingProgress: { phase: 'embedding', pendingUnits: 2, chunks: 7 },
+  });
+});
 
 describe('serializeOpsJob / summarizeOpsLane', () => {
   let manager: JobManager;

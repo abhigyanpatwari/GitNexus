@@ -1,0 +1,245 @@
+{
+  "schemaVersion": 1,
+  "kind": "gitnexus-mutation-controls",
+  "description": "Gate 4 positive controls (U8, KTD19): Stryker mutants of the scopes, named by global id. In every determinism profile each must be killed with an assertion by exactly its expected killers, and every listed covering non-killer must run with it and pass. Regenerate with `reselect` when a control or test goes missing (tools/mutation/controls/run-controls.ts).",
+  "reselect": "npm run test:mutation:controls -- --select --work <dir outside the checkout>",
+  "profiles": [
+    {
+      "name": "A",
+      "concurrency": 1,
+      "maxTestRunnerReuse": 0
+    },
+    {
+      "name": "B",
+      "concurrency": 3,
+      "maxTestRunnerReuse": 1
+    }
+  ],
+  "timeoutMS": 10000,
+  "selection": {
+    "seed": "u8-gate4-1",
+    "perScope": 3,
+    "maxKillers": 3,
+    "maxNonKillers": 3,
+    "selectedFrom": [
+      "A"
+    ]
+  },
+  "scopes": [
+    {
+      "name": "shared",
+      "scope": {
+        "testFiles": [
+          "test/unit/shared-type-extractors.test.ts",
+          "test/unit/extract-element-type-from-string.test.ts"
+        ],
+        "mutate": [
+          "gitnexus/src/core/ingestion/type-extractors/shared.ts:729-904"
+        ]
+      },
+      "mutants": 199,
+      "tests": 143,
+      "controls": [
+        {
+          "id": "gitnexus/src/core/ingestion/type-extractors/shared.ts@02e17f5524a110b2:849:23-849:43:Regex:5e06ba59d5c022fc",
+          "tags": [],
+          "static": false,
+          "expectedKillers": [
+            "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > strips Rust mutable reference prefix: &mut User → User"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > returns base type for non-wrapper generic: List<User> → List",
+              "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > returns undefined for bare wrapper: Option",
+              "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > returns undefined for primitive \"int\""
+            ],
+            "notRun": [
+              "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Go slice prefix > []string → string",
+              "test/unit/shared-type-extractors.test.ts#getContainerDescriptor > descriptor for Vec has get in valueMethods",
+              "test/unit/shared-type-extractors.test.ts#methodToTypeArgPosition > returns last for get on Map (value method)"
+            ]
+          }
+        },
+        {
+          "id": "gitnexus/src/core/ingestion/type-extractors/shared.ts@02e17f5524a110b2:856:19-861:8:MethodExpression:16c687aaf4579f1a",
+          "tags": [],
+          "static": false,
+          "expectedKillers": [
+            "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > strips nullable union: User | null → User"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > returns undefined for genuine union: User | Repo"
+            ],
+            "notRun": [
+              "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > cross-bracket nesting (bracket depth fix) > Dict[str, List[int]] → str (pos=first: key arg)",
+              "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases — return undefined > empty array suffix → undefined",
+              "test/unit/shared-type-extractors.test.ts#methodToTypeArgPosition > returns last for non-key method with no container"
+            ]
+          }
+        },
+        {
+          "id": "gitnexus/src/core/ingestion/type-extractors/shared.ts@02e17f5524a110b2:862:9-862:27:ConditionalExpression:b5bea41b6c623f7c",
+          "tags": [],
+          "static": false,
+          "expectedKillers": [
+            "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > returns undefined for genuine union: User | Repo"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > strips nullable union: User | null → User"
+            ],
+            "notRun": [
+              "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for just brackets: []",
+              "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > returns undefined for primitive \"void\"",
+              "test/unit/shared-type-extractors.test.ts#extractReturnTypeName > skips Rust lifetime parameters in Result: Result<'_, User, Error> is unusual but lifetime in first pos is skipped"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "schema-constants",
+      "scope": {
+        "testFiles": [
+          "test/unit/schema.test.ts"
+        ],
+        "mutate": [
+          "gitnexus-shared/src/lbug/schema-constants.ts"
+        ]
+      },
+      "mutants": 72,
+      "tests": 42,
+      "controls": [
+        {
+          "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:12:3-12:9:StringLiteral:12ae32cb1ec02d01",
+          "tags": [
+            "relocated-shared",
+            "as-const"
+          ],
+          "static": true,
+          "expectedKillers": [
+            "test/unit/schema.test.ts#LadybugDB Schema > NODE_TABLES > includes all core node types"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/schema.test.ts#LadybugDB Schema > embedding schema > creates CodeEmbedding table",
+              "test/unit/schema.test.ts#LadybugDB Schema > node schema DDL > FILE_SCHEMA contains CREATE NODE TABLE for \nCREATE NODE TABLE File (\n  id STRING,\n  name STRING,\n  filePath STRING,\n  content STRING,\n  PRIMARY KEY (id)\n)",
+              "test/unit/schema.test.ts#LadybugDB Schema > node schema DDL > Function schema has startLine and endLine"
+            ],
+            "notRun": []
+          }
+        },
+        {
+          "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:40:3-40:16:StringLiteral:12ae32cb1ec02d01",
+          "tags": [
+            "relocated-shared",
+            "as-const"
+          ],
+          "static": true,
+          "expectedKillers": [
+            "test/unit/schema.test.ts#LadybugDB Schema > NODE_TABLES > includes multi-language node types"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/schema.test.ts#LadybugDB Schema > REL_TYPES > includes the DI collection-injection edge type (#2200)",
+              "test/unit/schema.test.ts#LadybugDB Schema > relation schema > has type, confidence, reason, step properties",
+              "test/unit/schema.test.ts#LadybugDB Schema > schema query ordering > NODE_SCHEMA_QUERIES has correct count"
+            ],
+            "notRun": []
+          }
+        },
+        {
+          "id": "gitnexus-shared/src/lbug/schema-constants.ts@edf2130f7f8f5f90:95:3-95:18:StringLiteral:12ae32cb1ec02d01",
+          "tags": [
+            "relocated-shared",
+            "as-const"
+          ],
+          "static": true,
+          "expectedKillers": [
+            "test/unit/schema.test.ts#LadybugDB Schema > REL_TYPES > includes the control-dependence edge types (issue #2085 M5)"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/schema.test.ts#LadybugDB Schema > node schema DDL > INTERFACE_SCHEMA contains CREATE NODE TABLE for \nCREATE NODE TABLE Interface (\n  id STRING,\n  name STRING,\n  filePath STRING,\n  startLine INT64,\n  endLine INT64,\n  isExported BOOLEAN,\n  content STRING,\n  description STRING,\n  PRIMARY KEY (id)\n)",
+              "test/unit/schema.test.ts#LadybugDB Schema > node schema DDL > Property schema preserves declaredType",
+              "test/unit/schema.test.ts#LadybugDB Schema > relation schema > connects Function to Function (CALLS)"
+            ],
+            "notRun": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "middleware",
+      "scope": {
+        "testFiles": [
+          "test/unit/middleware-public-origin.test.ts"
+        ],
+        "mutate": [
+          "gitnexus/src/server/middleware.ts"
+        ]
+      },
+      "mutants": 302,
+      "tests": 31,
+      "controls": [
+        {
+          "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:14:10-14:35:ConditionalExpression:fcbcf165908dd18a",
+          "tags": [],
+          "static": false,
+          "expectedKillers": [
+            "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > treats an elided default port as that port"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > rejects the bound host on the default port when it is not the bound one"
+            ],
+            "notRun": [
+              "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > is a no-op when no public origin is configured",
+              "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > names the variable and the value in the failure, and points at both remedies",
+              "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits an exact scheme/host/port match on a wildcard bind"
+            ]
+          }
+        },
+        {
+          "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:51:33-51:58:MethodExpression:faa1c3dbc55de26e",
+          "tags": [],
+          "static": false,
+          "expectedKillers": [
+            "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits a bracketed IPv6 literal, on any port when configured without one"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/middleware-public-origin.test.ts#logOriginPolicy > still warns on a wildcard bind with a valid public origin, and names it"
+            ],
+            "notRun": [
+              "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > treats a blank value (\"\") as unset",
+              "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > keeps loopback port-agnostic — the dev UI runs on its own port",
+              "test/unit/middleware-public-origin.test.ts#logOriginPolicy > names the resolved hostname at info when a public origin is configured"
+            ]
+          }
+        },
+        {
+          "id": "gitnexus/src/server/middleware.ts@424f95b28e60eab6:93:18-93:35:Regex:0d604fc840a74414",
+          "tags": [],
+          "static": false,
+          "expectedKillers": [
+            "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits http for a bare host only when http:// is spelled out"
+          ],
+          "expectedNonKillers": {
+            "ran": [
+              "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > admits nothing extra when the configured value is not one reachable host",
+              "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — public origin is matched on its port > leaves the Origin-less passthrough alone — the CLI sends no Origin",
+              "test/unit/middleware-public-origin.test.ts#logOriginPolicy > does not report a trailing-dot hostname as a working origin"
+            ],
+            "notRun": [
+              "test/unit/middleware-public-origin.test.ts#assertServeAuthForPublicOrigin > treats a blank value (\"   \") as unset",
+              "test/unit/middleware-public-origin.test.ts#createWriteOriginGuard — bound host is matched on its port > matches any port when no bound port is given",
+              "test/unit/middleware-public-origin.test.ts#logOriginPolicy > warns on a wildcard bind with no public origin, pointing at both remedies"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,108 @@
+{
+  "language": "objective-c",
+  "description": "Rename a protocol selector and its conforming implementation and inherited override, including protocol, self and super sends.",
+  "categories": ["polymorphism", "call-graph", "receiver-isolation"],
+  "target": {
+    "name": "run",
+    "kind": "Method",
+    "file": "Worker.m",
+    "startLine": 1
+  },
+  "newName": "execute",
+  "expect": {
+    "status": "success",
+    "edits": 8
+  },
+  "edges": [
+    {
+      "type": "USES",
+      "from": {
+        "name": "[id<Runnable> run] protocol implementers",
+        "kind": "CodeElement",
+        "file": "Worker.m",
+        "startLine": 0
+      },
+      "to": {
+        "name": "run",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 7
+      }
+    },
+    {
+      "type": "USES",
+      "from": {
+        "name": "[id<Runnable> run] protocol implementers",
+        "kind": "CodeElement",
+        "file": "Worker.m",
+        "startLine": 0
+      },
+      "to": {
+        "name": "run",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 4
+      }
+    },
+    {
+      "type": "USES",
+      "from": {
+        "name": "dispatch:",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 11
+      },
+      "to": {
+        "name": "[id<Runnable> run] protocol implementers",
+        "kind": "CodeElement",
+        "file": "Worker.m",
+        "startLine": 0
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "dispatch:",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 11
+      },
+      "to": {
+        "name": "run",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 7
+      },
+      "to": {
+        "name": "run",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 4
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 7
+      },
+      "to": {
+        "name": "run",
+        "kind": "Method",
+        "file": "Worker.m",
+        "startLine": 7
+      }
+    }
+  ]
+}

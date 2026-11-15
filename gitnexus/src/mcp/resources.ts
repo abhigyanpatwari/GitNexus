@@ -9,7 +9,9 @@ import type { LocalBackend } from './local/local-backend.js';
 import { checkStaleness } from './staleness.js';
 import { loadMeta } from '../storage/repo-manager.js';
 import { ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION } from '../core/analyzer-identity.js';
-import { getIndexIncompleteReasons } from '../core/index-freshness.js';
+import { getIndexIncompleteReasons, getGraphIncompleteReasons } from '../core/index-freshness.js';
+import { readEmbeddingJobProgress } from '../storage/embedding-job-progress.js';
+import { readIndexCapabilities } from '../storage/index-capabilities.js';
 import {
   checkoutIsDirectory,
   contentRetentionFromMeta,
@@ -381,6 +383,11 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push(`  source_available: ${JSON.stringify(sourceAvailable)}`);
   lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
   lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
+  lines.push(`  graph_incomplete_reasons: ${JSON.stringify(getGraphIncompleteReasons(freshMeta))}`);
+  const embeddingProgress = await readEmbeddingJobProgress(repo.storagePath, freshMeta);
+  if (embeddingProgress) lines.push(`  embedding_progress: ${JSON.stringify(embeddingProgress)}`);
+  const capabilities = await readIndexCapabilities(repo.storagePath, freshMeta);
+  if (capabilities) lines.push(`  capabilities: ${JSON.stringify(capabilities)}`);
   lines.push(`  spring_actuator: ${JSON.stringify(freshMeta?.springActuator ?? null)}`);
   // Surfaced beside the Actuator flag, and it matters more than that one does:
   // Actuator only annotates nodes the source pass already found, whereas
@@ -415,7 +422,9 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
     '  - explain: Persisted taint findings — source→sink data flows with per-hop variables (requires analyze --pdg)',
   );
   lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
-  lines.push('  - rename: Multi-file coordinated rename with confidence tags');
+  lines.push(
+    '  - rename: Semantic rename; previews by default (dry_run omitted/true), dry_run: false with the preview plan_token applies its exact reviewed edits in the selected project',
+  );
   lines.push('  - cypher: Raw graph queries');
   lines.push('  - list_repos: Discover all indexed repositories');
   lines.push('');
@@ -700,7 +709,7 @@ async function getSetupResource(backend: LocalBackend): Promise<string> {
       '| `context` | 360-degree symbol view — categorized refs, processes it participates in |',
       '| `impact` | Symbol blast radius — what breaks at depth 1/2/3 with confidence |',
       '| `detect_changes` | Git-diff impact — what do your current changes affect |',
-      '| `rename` | Multi-file coordinated rename with confidence-tagged edits |',
+      '| `rename` | Semantic rename: previews by default (dry_run omitted/true), dry_run: false with the preview plan_token applies its exact reviewed edits in the selected project |',
       '| `cypher` | Raw graph queries |',
       '| `list_repos` | Discover indexed repos |',
       '',

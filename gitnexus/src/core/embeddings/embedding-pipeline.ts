@@ -17,9 +17,14 @@ import {
   embeddingToArray,
   isEmbedderReady,
 } from './embedder.js';
-import { isHttpMode } from './http-client.js';
-import { generateEmbeddingText } from './text-generator.js';
-import { chunkNode, characterChunk } from './chunker.js';
+import { isHttpMode, HttpEmbeddingError } from './http-client.js';
+import {
+  generateEmbeddingText,
+  splitEmbeddingText,
+  withoutOverlappingContext,
+} from './text-generator.js';
+import { chunkNode, characterChunk, type EmbeddingChunk } from './chunker.js';
+import { ensureAndParse } from './ast-utils.js';
 import { extractStructuralNames } from './structural-extractor.js';
 import {
   type EmbeddingProgress,
@@ -32,11 +37,15 @@ import {
   LABEL_METHOD,
   LABELS_WITH_EXPORTED,
   STRUCTURAL_LABELS,
+  DEFAULT_EMBEDDING_CONFIG,
+  CHUNKING_RULES,
+  CHUNK_MODE_AST_FUNCTION,
   collectBestChunks,
 } from './types.js';
 import {
   DEFAULT_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
+  LocalEmbeddingDimensionError,
   resolveEmbeddingConfig,
 } from './config.js';
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
@@ -47,6 +56,16 @@ import { escapeCypherString } from '../lbug/cypher-escape.js';
 import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
+import { assertValidGraphNodeId } from '../graph/node-identity.js';
+import { assertUniqueEmbeddingKeys } from './embedding-keys.js';
+import { isNotebookPath } from '../ingestion/ipynb-extractor.js';
+import {
+  EmbeddingSourceReader,
+  indexedSourceHash,
+  needsEmbeddingSource,
+  type EmbeddingSourceContext,
+} from './source-reader.js';
+import type { VectorSearchSnapshot } from './vector-generation-search.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -82,7 +101,7 @@ const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
  * invalidate existing vectors, such as metadata/header shape changes,
  * structural container context changes, or preceding-context formatting rules.
  */
-export const EMBEDDING_TEXT_VERSION = 'v5';
+export const EMBEDDING_TEXT_VERSION = 'v7';
 
 /**
  * Compute a stable content fingerprint for an embeddable node.
@@ -93,18 +112,155 @@ export const EMBEDDING_TEXT_VERSION = 'v5';
 export const contentHashForNode = (
   node: EmbeddableNode,
   config: Partial<EmbeddingConfig> = {},
+  source?: EmbeddingSourceContext,
 ): string => {
   // Hash must be deterministic across runs, so exclude methodNames/fieldNames
   // which are populated during the batch loop via AST extraction.
-  // Using only node.content ensures the hash stays stable.
   // NOTE: A change to extractStructuralNames behavior requires bumping EMBEDDING_TEXT_VERSION.
-  const text = generateEmbeddingText(
-    { ...node, methodNames: undefined, fieldNames: undefined },
-    node.content,
-    config,
-  );
-  return createHash('sha1').update(EMBEDDING_TEXT_VERSION).update('\n').update(text).digest('hex');
+  const hashNode = { ...node, methodNames: undefined, fieldNames: undefined };
+  if (node.label === 'Class') hashNode.classDeclaration = undefined;
+  const text = generateEmbeddingText(hashNode, node.content, config);
+  let version = EMBEDDING_TEXT_VERSION;
+  // Preserve v7 fingerprints where the generated input is unchanged. Layout
+  // policy matters only for labels that chunk and content that can be split.
+  const chunkSize = config.chunkSize ?? DEFAULT_EMBEDDING_CONFIG.chunkSize;
+  const strategy = config.chunkStrategy ?? DEFAULT_EMBEDDING_CONFIG.chunkStrategy;
+  if (node.label === 'Class') {
+    // Class projection has its own revision; unchanged short callables keep v7.
+    // Raw source makes this deterministic before and after AST preparation.
+    version += '\nclass-projection:v4';
+  }
+  if (
+    strategy === 'ast' &&
+    // Original source can exceed a custom budget even when the retained snippet fits.
+    (node.content.length > chunkSize ||
+      (source?.contentRetention === 'full' && needsEmbeddingSource(node, config))) &&
+    CHUNKING_RULES[node.label]?.mode === CHUNK_MODE_AST_FUNCTION
+  ) {
+    version += '\nnested-statement-layout:v2';
+  }
+  if (
+    !isShortLabel(node.label) &&
+    node.content.length > Math.min(chunkSize, DEFAULT_EMBEDDING_CONFIG.chunkSize)
+  ) {
+    version += '\nchunk-context:v1';
+    const overlap = config.overlap ?? DEFAULT_EMBEDDING_CONFIG.overlap;
+    if (
+      chunkSize !== DEFAULT_EMBEDDING_CONFIG.chunkSize ||
+      overlap !== DEFAULT_EMBEDDING_CONFIG.overlap ||
+      strategy !== DEFAULT_EMBEDDING_CONFIG.chunkStrategy
+    ) {
+      version += `\nchunk-policy:v1:${chunkSize}:${overlap}:${strategy}`;
+    }
+  }
+  const hash = createHash('sha1')
+    .update(version)
+    .update(`\n${config.maxInputChars ?? DEFAULT_EMBEDDING_CONFIG.maxInputChars}\n`);
+  // Only a non-default model joins the hash, so default-model hashes stay unchanged.
+  if (config.modelId !== undefined && config.modelId !== DEFAULT_EMBEDDING_CONFIG.modelId) {
+    hash.update(`model:${config.modelId}\n`);
+  }
+  hash.update(text);
+  if (node.label === 'Class') hash.update(node.content);
+  if (source && needsEmbeddingSource(node, config)) {
+    // The stored snippet may omit a changed tail. Indexed metadata lets the
+    // fresh filter detect that without reading or parsing the checkout.
+    hash.update(
+      JSON.stringify([
+        'original-source:v1',
+        source.contentRetention,
+        indexedSourceHash(source, node.filePath) ?? 'missing',
+        node.startLine,
+        node.endLine,
+        chunkSize,
+        config.overlap ?? DEFAULT_EMBEDDING_CONFIG.overlap,
+        strategy,
+      ]),
+    );
+  }
+  return hash.digest('hex');
 };
+
+export const isInputRejection = (error: unknown): boolean =>
+  error instanceof HttpEmbeddingError &&
+  (error.status === 400 || error.status === 413 || error.status === 422);
+
+type EmbeddedRange = { start: number; end: number } & (
+  | { embeddings: Float32Array[] }
+  | { error: unknown }
+);
+
+/** Bisect only input rejections, with at most 2n-1 requests per sub-batch.
+ * Authentication, throttling, transport and cancellation retain their existing
+ * bounded retry/failure policy instead of multiplying requests. */
+export async function* embedInputRanges(
+  texts: string[],
+  subBatchSize: number,
+  signal?: AbortSignal,
+  provider: typeof embedBatch = embedBatch,
+  concurrency = 1,
+): AsyncGenerator<EmbeddedRange> {
+  const controller = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  async function* request(start: number, end: number): AsyncGenerator<EmbeddedRange> {
+    try {
+      requestSignal.throwIfAborted();
+      const embeddings = await provider(texts.slice(start, end), { signal: requestSignal });
+      yield { start, end, embeddings };
+    } catch (error) {
+      if (requestSignal.aborted || isCancellationError(error)) throw error;
+      if (isInputRejection(error) && end - start > 1) {
+        const middle = start + Math.floor((end - start) / 2);
+        yield* request(start, middle);
+        yield* request(middle, end);
+      } else {
+        yield { start, end, error };
+      }
+    }
+  }
+  if (concurrency > 1) {
+    // A bounded window of sub-batches is in flight at once. Results still
+    // leave in input order, so a node's chunks reach the store contiguously.
+    const advance = (iterator: AsyncGenerator<EmbeddedRange>) => {
+      const next = iterator.next();
+      // Every in-flight outcome is observed, even when the consumer stops early.
+      void next.catch(() => undefined);
+      return next;
+    };
+    const pending: Array<{
+      iterator: AsyncGenerator<EmbeddedRange>;
+      next: Promise<IteratorResult<EmbeddedRange>>;
+    }> = [];
+    let next = 0;
+    try {
+      for (;;) {
+        while (next < texts.length && pending.length < concurrency) {
+          const iterator = request(next, Math.min(next + subBatchSize, texts.length));
+          pending.push({ iterator, next: advance(iterator) });
+          next += subBatchSize;
+        }
+        const head = pending[0];
+        if (!head) return;
+        const result = await head.next;
+        if (result.done) {
+          pending.shift();
+          continue;
+        }
+        // Pull one bisected range at a time so the consumer's rejection guard
+        // can stop the window without exhausting every neighbour's bisections.
+        yield result.value;
+        head.next = advance(head.iterator);
+      }
+    } finally {
+      controller.abort();
+      await Promise.allSettled(pending.map((entry) => entry.next));
+      await Promise.allSettled(pending.map((entry) => entry.iterator.return(undefined)));
+    }
+  }
+  for (let start = 0; start < texts.length; start += subBatchSize) {
+    yield* request(start, Math.min(start + subBatchSize, texts.length));
+  }
+}
 
 /**
  * Progress callback type
@@ -157,8 +313,10 @@ const queryEmbeddableNodes = async (
       const rows = await executeQuery(query);
       for (const row of rows) {
         const hasExportedColumn = label === LABEL_METHOD || LABELS_WITH_EXPORTED.has(label);
+        const nodeId = row.id ?? row[0];
+        assertValidGraphNodeId(nodeId, `Embedding ${label}`);
         allNodes.push({
-          id: row.id ?? row[0],
+          id: nodeId,
           name: row.name ?? row[1],
           label: row.label ?? row[2],
           filePath: row.filePath ?? row[3],
@@ -176,11 +334,11 @@ const queryEmbeddableNodes = async (
         });
       }
     } catch (error) {
-      if (isDev) {
-        // `err` is pino's standard serializer key — an arbitrary key serializes an
-        // Error to `{}`, losing the message and stack (#2114).
-        logger.warn({ err: error }, `Query for ${label} nodes failed:`);
-      }
+      // A failed label read is unresolved embedding work, never an empty table.
+      throw new Error(
+        `Cannot read ${label} nodes for embedding: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
     }
   }
 
@@ -205,8 +363,10 @@ const queryFallbackFileNodes = async (
     return rows
       .map((row) => {
         const content = row.content ?? row[4] ?? '';
+        const nodeId = row.id ?? row[0];
+        assertValidGraphNodeId(nodeId, 'Embedding File');
         return {
-          id: row.id ?? row[0],
+          id: nodeId,
           name: row.name ?? row[1],
           label: row.label ?? row[2] ?? 'File',
           filePath: row.filePath ?? row[3],
@@ -217,17 +377,15 @@ const queryFallbackFileNodes = async (
       })
       .filter(
         (node) =>
-          node.id &&
           node.filePath &&
           node.content.trim() &&
           node.content !== '[Binary file - content not stored]',
       );
   } catch (error) {
-    if (isDev) {
-      // `err`, not `error` — see the serializer note above (#2114).
-      logger.warn({ err: error }, 'Fallback File-node embedding query failed:');
-    }
-    return [];
+    throw new Error(
+      `Cannot read File nodes for embedding: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
 };
 
@@ -248,15 +406,21 @@ export const batchInsertEmbeddings = async (
     contentHash?: string;
   }>,
 ): Promise<void> => {
-  const paramsList = updates.map((u) => ({
-    id: `${u.nodeId}:${u.chunkIndex}`,
-    nodeId: u.nodeId,
-    chunkIndex: u.chunkIndex,
-    startLine: u.startLine,
-    endLine: u.endLine,
-    embedding: u.embedding,
-    contentHash: u.contentHash ?? STALE_HASH_SENTINEL,
-  }));
+  // Validate the whole pending batch before DELETE can replace any valid row.
+  // Existing-row retries and duplicate keys within one batch are distinct.
+  assertUniqueEmbeddingKeys(updates, 'Embedding write');
+  const paramsList = updates.map((u) => {
+    const id = `${u.nodeId}:${u.chunkIndex}`;
+    return {
+      id,
+      nodeId: u.nodeId,
+      chunkIndex: u.chunkIndex,
+      startLine: u.startLine,
+      endLine: u.endLine,
+      embedding: u.embedding,
+      contentHash: u.contentHash ?? STALE_HASH_SENTINEL,
+    };
+  });
   if (paramsList.length === 0) return;
 
   await executeWithReusedStatement(
@@ -471,6 +635,7 @@ export interface EmbeddingPipelineCheckpointWindow extends EmbeddingPipelineChec
 }
 
 export interface EmbeddingPipelineOptions {
+  source?: EmbeddingSourceContext;
   signal?: AbortSignal;
   checkpointEveryNodes?: number;
   forceReembedNodeIds?: ReadonlySet<string>;
@@ -548,6 +713,20 @@ export const runEmbeddingPipeline = async (
 
   try {
     throwIfCancelled();
+    // Check the graph before model initialization, endpoint work, or stale-row
+    // deletion. Reuse this set for pending-node cleanup instead of allocating
+    // a second identity index later.
+    let nodes = await queryEmbeddableNodes(executeQuery);
+    const embeddableNodeIds = new Set<string>();
+    for (const node of nodes) {
+      if (embeddableNodeIds.has(node.id)) {
+        throw new Error(
+          `Embedding read: duplicate graph node identity ${JSON.stringify(node.id.slice(0, 160))}. Rebuild with analyze --force.`,
+        );
+      }
+      embeddableNodeIds.add(node.id);
+    }
+    throwIfCancelled();
     const vectorAvailable = await ensureVectorExtensionAvailable();
     throwIfCancelled();
     if (!vectorAvailable) {
@@ -579,15 +758,6 @@ export const runEmbeddingPipeline = async (
       modelDownloadPercent: 100,
     });
 
-    if (isDev) {
-      logger.info('🔍 Querying embeddable nodes...');
-    }
-
-    // Phase 2: Query embeddable nodes
-    let nodes = await queryEmbeddableNodes(executeQuery);
-    throwIfCancelled();
-    const embeddableNodeIds = new Set(nodes.map((node) => node.id));
-
     // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
     // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them
     // (avoids double computation).
@@ -608,8 +778,12 @@ export const runEmbeddingPipeline = async (
           // New node — needs embedding
           return true;
         }
-        const currentHash = contentHashForNode(n, finalConfig);
-        if (currentHash !== existingHash || forceReembedNodeIds?.has(n.id)) {
+        const currentHash = contentHashForNode(n, finalConfig, pipelineOptions.source);
+        const matchesSnapshot =
+          currentHash === existingHash ||
+          (existingHash.startsWith(`${currentHash}:`) &&
+            /^[0-9a-f]{40}:[0-9a-f]{40}$/.test(existingHash));
+        if (!matchesSnapshot || forceReembedNodeIds?.has(n.id)) {
           // Content changed — cache hash for reuse during insert, mark for DELETE + re-embed
           computedStaleHashes.set(n.id, currentHash);
           staleNodeIds.add(n.id);
@@ -666,6 +840,7 @@ export const runEmbeddingPipeline = async (
     const batchSize = finalConfig.batchSize;
     const chunkSize = finalConfig.chunkSize;
     const overlap = finalConfig.overlap;
+    const chunkOptions = { strategy: finalConfig.chunkStrategy };
     const checkpointWindowNodeCount = Math.max(
       batchSize,
       Math.ceil(checkpointEveryNodes / batchSize) * batchSize,
@@ -684,6 +859,8 @@ export const runEmbeddingPipeline = async (
     // counter's reset-on-success blinds it to.
     let subBatchesAttempted = 0;
     let subBatchFailures = 0;
+    const rejectedNodesSinceSuccess = new Set<string>();
+    let firstInputRejection: { err: unknown } | undefined;
     // Sized from this run's own node set AND its configured sub-batch size, not
     // a flat constant, so a resume run (whose node set is only the pending ids)
     // and an operator-tuned `subBatchSize` both still arm the guard — see
@@ -712,6 +889,7 @@ export const runEmbeddingPipeline = async (
       totalBatches: Math.ceil(totalNodes / batchSize),
     });
 
+    let sourceReader: EmbeddingSourceReader | undefined;
     // Process in batches of nodes
     for (let batchIndex = 0; batchIndex < totalNodes; batchIndex += batchSize) {
       throwIfCancelled();
@@ -730,6 +908,7 @@ export const runEmbeddingPipeline = async (
 
       // Chunk each node and generate text
       const allTexts: string[] = [];
+      const reusedHashes: Array<{ nodeId: string; contentHash: string }> = [];
       const allUpdates: Array<{
         nodeId: string;
         chunkIndex: number;
@@ -738,15 +917,42 @@ export const runEmbeddingPipeline = async (
         contentHash: string;
       }> = [];
 
-      for (const node of batch) {
+      for (const indexedNode of batch) {
+        // Bind identity before replacing the FTS snippet with original source.
+        const hash =
+          computedStaleHashes.get(indexedNode.id) ??
+          contentHashForNode(indexedNode, finalConfig, pipelineOptions.source);
+        const source = pipelineOptions.source;
+        const hydrate =
+          source?.contentRetention === 'full' && needsEmbeddingSource(indexedNode, finalConfig);
+        const node = hydrate
+          ? {
+              ...indexedNode,
+              content: await (sourceReader ??= new EmbeddingSourceReader(source)).read(indexedNode),
+            }
+          : indexedNode;
+        throwIfCancelled();
         const isShort = isShortLabel(node.label);
         const startLine = node.startLine ?? 0;
         const endLine = node.endLine ?? 0;
+        let classTree: Awaited<ReturnType<typeof ensureAndParse>> | undefined;
+        if (node.label === 'Class') {
+          try {
+            classTree = await ensureAndParse(node.content, node.filePath);
+          } catch {
+            classTree = null;
+          }
+        }
 
         // Extract structural names for class-like nodes via AST extractors
         if (!isShort && STRUCTURAL_LABELS.has(node.label)) {
           try {
-            const names = await extractStructuralNames(node.content, node.filePath);
+            const names = await extractStructuralNames(
+              node.content,
+              node.filePath,
+              classTree,
+              node.label === 'Class' ? node.name : undefined,
+            );
             node.methodNames = names.methodNames;
             node.fieldNames = names.fieldNames;
           } catch {
@@ -754,10 +960,13 @@ export const runEmbeddingPipeline = async (
           }
         }
 
-        // Compute content hash once per node (re-use cached value for stale nodes)
-        const hash = computedStaleHashes.get(node.id) ?? contentHashForNode(node, finalConfig);
-
-        let chunks: Array<{ text: string; chunkIndex: number; startLine: number; endLine: number }>;
+        let chunks: Array<
+          Pick<
+            EmbeddingChunk,
+            'text' | 'chunkIndex' | 'startLine' | 'endLine' | 'classDeclaration'
+          > &
+            Partial<Pick<EmbeddingChunk, 'startOffset' | 'endOffset'>>
+        >;
         if (isShort) {
           chunks = [{ text: node.content, chunkIndex: 0, startLine, endLine }];
         } else {
@@ -770,6 +979,10 @@ export const runEmbeddingPipeline = async (
               endLine,
               chunkSize,
               overlap,
+              classTree === undefined &&
+                (finalConfig.chunkStrategy === 'fixed' || node.content.length <= chunkSize)
+                ? chunkOptions
+                : { ...chunkOptions, name: node.name, tree: classTree },
             );
           } catch (chunkErr) {
             if (isDev) {
@@ -778,29 +991,84 @@ export const runEmbeddingPipeline = async (
                 `⚠️ AST chunking failed for ${node.label} "${node.name}" (${node.filePath}), falling back to character-based chunking:`,
               );
             }
-            chunks = characterChunk(node.content, startLine, endLine, chunkSize, overlap);
+            chunks =
+              node.label === 'Class'
+                ? [{ text: '', chunkIndex: 0, startLine, endLine, classDeclaration: '' }]
+                : characterChunk(node.content, startLine, endLine, chunkSize, overlap);
           }
         }
 
+        node.classDeclaration = chunks[0]?.classDeclaration;
+        const conservativeRange =
+          source && (source.contentRetention !== 'full' || isNotebookPath(node.filePath));
         let prevTail = '';
+        let previousEndOffset: number | undefined;
+        let inputIndex = 0;
+        const inputStart = allTexts.length;
         for (const chunk of chunks) {
           const text = generateEmbeddingText(
             node,
             chunk.text,
             finalConfig,
             chunk.chunkIndex,
-            prevTail,
+            withoutOverlappingContext(prevTail, previousEndOffset, chunk.startOffset),
           );
-          allTexts.push(text);
-          allUpdates.push({
-            nodeId: node.id,
-            chunkIndex: chunk.chunkIndex,
-            startLine: chunk.startLine,
-            endLine: chunk.endLine,
-            contentHash: hash,
-          });
+          for (const input of splitEmbeddingText(text, finalConfig.maxInputChars)) {
+            allTexts.push(input);
+            allUpdates.push({
+              nodeId: node.id,
+              chunkIndex: inputIndex++,
+              // Retained FTS snippets and notebook Python do not have linear
+              // source-line coordinates. Keep the honest enclosing range.
+              startLine: conservativeRange ? startLine : chunk.startLine,
+              endLine: conservativeRange ? endLine : chunk.endLine,
+              contentHash: hash,
+            });
+          }
           prevTail = overlap > 0 ? chunk.text.slice(-overlap) : '';
+          previousEndOffset = chunk.endOffset;
         }
+
+        if (hydrate) {
+          // The snapshot hash gives unchanged files a read-free fast path.
+          // A second digest lets a changed file reuse an unchanged sibling's
+          // vectors after verifying its model, exact inputs and persisted ranges.
+          const inputsHash = createHash('sha1')
+            .update('embedding-inputs:v1\n')
+            .update(JSON.stringify(finalConfig.modelId));
+          for (let i = inputStart; i < allTexts.length; i++) {
+            inputsHash.update(
+              JSON.stringify([allTexts[i], allUpdates[i].startLine, allUpdates[i].endLine]),
+            );
+          }
+          const inputsDigest = inputsHash.digest('hex');
+          const storedHash = `${hash}:${inputsDigest}`;
+          const previousHash = existingEmbeddings?.get(node.id);
+          if (
+            !forceReembedNodeIds?.has(node.id) &&
+            previousHash?.endsWith(`:${inputsDigest}`) &&
+            /^[0-9a-f]{40}:[0-9a-f]{40}$/.test(previousHash)
+          ) {
+            allTexts.length = inputStart;
+            allUpdates.length = inputStart;
+            staleNodeIds.delete(node.id);
+            reusedHashes.push({ nodeId: node.id, contentHash: storedHash });
+          } else {
+            for (let i = inputStart; i < allUpdates.length; i++)
+              allUpdates[i].contentHash = storedHash;
+          }
+        }
+      }
+
+      // Validate every source in the batch before mutating even cache metadata.
+      // Updating only the hash preserves complete rows and their vector index.
+      if (reusedHashes.length > 0) {
+        throwIfCancelled();
+        await executeWithReusedStatement(
+          'MATCH (e:CodeEmbedding) WHERE e.nodeId = $nodeId SET e.contentHash = $contentHash',
+          reusedHashes,
+        );
+        throwIfCancelled();
       }
 
       // U6 / KTD7: delete this batch's stale rows immediately before its inserts,
@@ -821,14 +1089,26 @@ export const runEmbeddingPipeline = async (
       // Carries EITHER abort reason — the consecutive-ceiling rethrow or the
       // cumulative-ratio abort — hence the reason-neutral name.
       let abortError: { err: unknown } | undefined;
-      for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
-        const subTexts = allTexts.slice(si, si + EMBED_SUB_BATCH);
-        const subUpdates = allUpdates.slice(si, si + EMBED_SUB_BATCH);
-        subBatchesAttempted += 1;
+      let lastAttemptedSubBatch = -1;
+      let lastFailedSubBatch = -1;
+      for await (const result of embedInputRanges(
+        allTexts,
+        EMBED_SUB_BATCH,
+        pipelineOptions.signal,
+      )) {
+        const subTexts = allTexts.slice(result.start, result.end);
+        const subUpdates = allUpdates.slice(result.start, result.end);
+        // Bisection must not multiply the denominator of the outage guard.
+        const subBatch = Math.floor(result.start / EMBED_SUB_BATCH);
+        if (subBatch !== lastAttemptedSubBatch) {
+          subBatchesAttempted += 1;
+          lastAttemptedSubBatch = subBatch;
+        }
 
         let embeddings: Float32Array[];
         try {
-          embeddings = await embedBatch(subTexts, { signal: pipelineOptions.signal });
+          if ('error' in result) throw result.error;
+          embeddings = result.embeddings;
         } catch (embedErr) {
           // Never swallow a cancel as a "tolerable" failure — the operator asked
           // us to stop, and the run has no business continuing (or deleting rows).
@@ -839,8 +1119,27 @@ export const runEmbeddingPipeline = async (
           // keep going; the cleanup DELETE after this loop makes the drop safe.
           const droppedNodeIds = new Set(subUpdates.map((u) => u.nodeId));
           for (const nodeId of droppedNodeIds) batchFailedNodeIds.add(nodeId);
+          // A wrong vector width is configuration: every later sub-batch would fail the same way.
+          if (embedErr instanceof LocalEmbeddingDimensionError) {
+            abortError = { err: embedErr };
+            break;
+          }
+          if (isInputRejection(embedErr)) {
+            // Bad inputs are pending work, not evidence of an endpoint outage.
+            // Do not let many rejected chunks starve later healthy nodes.
+            for (const nodeId of droppedNodeIds) rejectedNodesSinceSuccess.add(nodeId);
+            firstInputRejection ??= { err: embedErr };
+            logger.warn(
+              { err: embedErr },
+              `Embedding input rejected; ${droppedNodeIds.size} node(s) remain pending`,
+            );
+            continue;
+          }
           consecutiveSubBatchFailures += 1;
-          subBatchFailures += 1;
+          if (subBatch !== lastFailedSubBatch) {
+            subBatchFailures += 1;
+            lastFailedSubBatch = subBatch;
+          }
           const streakError = (streakFirstError ??= { err: embedErr });
           // Log under `err` so pino's standard serializer keeps the message and
           // stack — the previous `{ embedErr }` key serialized to `{}` (#2114).
@@ -875,6 +1174,8 @@ export const runEmbeddingPipeline = async (
         }
         consecutiveSubBatchFailures = 0;
         streakFirstError = undefined;
+        rejectedNodesSinceSuccess.clear();
+        firstInputRejection = undefined;
 
         const dbUpdates = subUpdates.map((u, i) => ({
           ...u,
@@ -883,6 +1184,20 @@ export const runEmbeddingPipeline = async (
 
         await batchInsertEmbeddings(executeWithReusedStatement, dbUpdates);
         throwIfCancelled();
+      }
+
+      // Finish this batch before judging a rejecting endpoint: one large bad
+      // node must not prevent a healthy sibling from being attempted. Count
+      // distinct nodes, not its chunks, and retain later batches on total failure.
+      if (!abortError && rejectedNodesSinceSuccess.size >= MAX_CONSECUTIVE_SUB_BATCH_FAILURES) {
+        const cause = firstInputRejection?.err;
+        abortError = {
+          err: new Error(
+            `[embed] Aborting after input rejections for ${rejectedNodesSinceSuccess.size} nodes without a successful input; ` +
+              `check the endpoint model and input budget. ${cause instanceof Error ? cause.message : String(cause)}`,
+            { cause },
+          ),
+        };
       }
 
       // A failed sub-batch leaves the node HALF embedded, and half is worse than
@@ -1009,34 +1324,45 @@ export const semanticSearch = async (
   query: string,
   k: number = 10,
   maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
+  snapshot?: VectorSearchSnapshot,
+  embedQuery?: (text: string) => Promise<readonly number[]>,
 ): Promise<SemanticSearchResult[]> => {
-  // determinism: probe — existence only. Only `exists.length` is read; which
-  // row LIMIT 1 returns cannot change whether the table is empty.
-  const exists = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN 1 AS ok LIMIT 1`);
-  if (!exists.length) {
-    return [];
-  }
-
-  if (!isEmbedderReady()) {
-    throw new Error('Embedding model not initialized. Run embedding pipeline first.');
-  }
-
-  const queryEmbedding = await embedText(query);
-  const queryVec = embeddingToArray(queryEmbedding);
-  const queryVecStr = `[${queryVec.join(',')}]`;
-
+  const queryVector = async (): Promise<number[]> => {
+    if (embedQuery) return [...(await embedQuery(query))];
+    if (!isEmbedderReady())
+      throw new Error('Embedding model not initialized. Run embedding pipeline first.');
+    return embeddingToArray(await embedText(query));
+  };
   let bestChunks = new Map<
     string,
     { distance: number; chunkIndex: number; startLine: number; endLine: number }
   >();
-  // Query/read path: NEVER spawn a network INSTALL on a user query. If the
-  // VECTOR extension was not pre-installed, fall back to exact scan rather than
-  // blocking the query on a download (offline-first; see extension-loader.ts
-  // "load-only" — used by all serve/MCP query paths).
-  if (await loadVectorExtension(undefined, { policy: 'load-only' })) {
-    try {
-      bestChunks = await collectBestChunks(k, async (fetchLimit) => {
-        const vectorQuery = `
+  let generationSelected = false;
+  if (snapshot) {
+    const { searchVectorGeneration } = await import('./vector-generation-search.js');
+    const chunks = await searchVectorGeneration(snapshot, queryVector, k, maxDistance);
+    generationSelected = chunks !== null;
+    if (chunks) bestChunks = new Map(chunks.map(({ nodeId, ...chunk }) => [nodeId, chunk]));
+  }
+  if (!generationSelected) {
+    // determinism: probe — existence only. Only `exists.length` is read; which
+    // row LIMIT 1 returns cannot change whether the table is empty.
+    const exists = await executeQuery(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN 1 AS ok LIMIT 1`);
+    if (!exists.length) {
+      return [];
+    }
+
+    const queryVec = await queryVector();
+    const queryVecStr = `[${queryVec.join(',')}]`;
+
+    // Query/read path: NEVER spawn a network INSTALL on a user query. If the
+    // VECTOR extension was not pre-installed, fall back to exact scan rather than
+    // blocking the query on a download (offline-first; see extension-loader.ts
+    // "load-only" — used by all serve/MCP query paths).
+    if (await loadVectorExtension(undefined, { policy: 'load-only' })) {
+      try {
+        bestChunks = await collectBestChunks(k, async (fetchLimit) => {
+          const vectorQuery = `
           CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
             CAST(${queryVecStr} AS FLOAT[${queryVec.length}]), ${fetchLimit})
           YIELD node AS emb, distance
@@ -1047,54 +1373,54 @@ export const semanticSearch = async (
           ORDER BY distance
         `;
 
-        const embResults = await executeQuery(vectorQuery);
-        return embResults.map((row) => ({
-          nodeId: row.nodeId ?? row[0],
-          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-          startLine: row.startLine ?? row[2] ?? 0,
-          endLine: row.endLine ?? row[3] ?? 0,
-          distance: row.distance ?? row[4],
-        }));
-      });
-    } catch {
-      bestChunks = new Map();
+          const embResults = await executeQuery(vectorQuery);
+          return embResults.map((row) => ({
+            nodeId: row.nodeId ?? row[0],
+            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+            startLine: row.startLine ?? row[2] ?? 0,
+            endLine: row.endLine ?? row[3] ?? 0,
+            distance: row.distance ?? row[4],
+          }));
+        });
+      } catch {
+        bestChunks = new Map();
+      }
     }
-  }
 
-  if (bestChunks.size === 0) {
-    // NOT `measurePersistedEmbeddingCount`: its tri-state exists so a publisher
-    // never writes a fabricated 0, whereas here `?? 0` is the right answer —
-    // an unknown count simply skips the exact scan.
-    const countRows = await executeQuery(EMBEDDING_COUNT_CYPHER);
-    const embeddingCount = Number(countRows[0]?.cnt ?? countRows[0]?.[0] ?? 0);
-    const exactLimit = getExactScanLimit();
-    if (embeddingCount > 0 && embeddingCount <= exactLimit) {
-      const rows = await executeQuery(`
+    if (bestChunks.size === 0) {
+      // NOT `measurePersistedEmbeddingCount`: its tri-state exists so a publisher
+      // never writes a fabricated 0, whereas here `?? 0` is the right answer —
+      // an unknown count simply skips the exact scan.
+      const countRows = await executeQuery(EMBEDDING_COUNT_CYPHER);
+      const embeddingCount = Number(countRows[0]?.cnt ?? countRows[0]?.[0] ?? 0);
+      const exactLimit = getExactScanLimit();
+      if (embeddingCount > 0 && embeddingCount <= exactLimit) {
+        const rows = await executeQuery(`
         MATCH (e:${EMBEDDING_TABLE_NAME})
         RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex,
                e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding
       `);
-      const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
-        nodeId: row.nodeId ?? row[0],
-        chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-        startLine: row.startLine ?? row[2] ?? 0,
-        endLine: row.endLine ?? row[3] ?? 0,
-        embedding: row.embedding ?? row[4] ?? [],
-      }));
-      bestChunks = new Map(
-        rankExactEmbeddingRows(exactRows, queryVec, k, maxDistance).map((row) => [
-          row.nodeId,
-          {
-            distance: row.distance,
-            chunkIndex: row.chunkIndex,
-            startLine: row.startLine,
-            endLine: row.endLine,
-          },
-        ]),
-      );
+        const exactRows: ExactEmbeddingRow[] = rows.map((row) => ({
+          nodeId: row.nodeId ?? row[0],
+          chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+          startLine: row.startLine ?? row[2] ?? 0,
+          endLine: row.endLine ?? row[3] ?? 0,
+          embedding: row.embedding ?? row[4] ?? [],
+        }));
+        bestChunks = new Map(
+          rankExactEmbeddingRows(exactRows, queryVec, k, maxDistance).map((row) => [
+            row.nodeId,
+            {
+              distance: row.distance,
+              chunkIndex: row.chunkIndex,
+              startLine: row.startLine,
+              endLine: row.endLine,
+            },
+          ]),
+        );
+      }
     }
   }
-
   if (bestChunks.size === 0) {
     return [];
   }
@@ -1160,8 +1486,9 @@ export const semanticSearchWithContext = async (
   query: string,
   k: number = 5,
   _hops: number = 1,
+  snapshot?: VectorSearchSnapshot,
 ): Promise<any[]> => {
-  const results = await semanticSearch(executeQuery, query, k);
+  const results = await semanticSearch(executeQuery, query, k, undefined, snapshot);
 
   return results.map((r) => ({
     matchId: r.nodeId,

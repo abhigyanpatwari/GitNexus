@@ -85,6 +85,23 @@ function indexesForScopeLookup(
 }
 
 describe('lookupBindingsAt', () => {
+  it('retains ambiguity within the winning namespace tier and hides later tiers', () => {
+    const indexes: ScopeResolutionIndexes = {
+      ...indexesWith({}),
+      accessibleNamespacesByScope: new Map([[SCOPE, ['first', 'second', 'outer']]]),
+      namespaceLookupTiersByScope: new Map([[SCOPE, [['first', 'second'], ['outer']]]]),
+      namespaceFqnBindings: new Map([
+        ['first', new Map([['name', [ref('A', 'namespace')]]])],
+        ['second', new Map([['name', [ref('B', 'namespace')]]])],
+        ['outer', new Map([['name', [ref('C', 'namespace')]]])],
+      ]),
+    };
+    expect(lookupBindingsAt(SCOPE, 'name', indexes).map((binding) => binding.def.nodeId)).toEqual([
+      'A',
+      'B',
+    ]);
+  });
+
   it('returns the finalized bucket when augmentations are absent', () => {
     const finalized = [ref('A'), ref('B')];
     const out = lookupBindingsAt(SCOPE, 'name', indexesWith({ finalized }));

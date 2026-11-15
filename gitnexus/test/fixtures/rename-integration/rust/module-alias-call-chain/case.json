@@ -1,0 +1,43 @@
+{
+  "language": "rust",
+  "description": "Rename a public module function through an explicit use alias, retaining the local alias and its call chain.",
+  "categories": ["cross-file", "call-graph", "import-alias", "shadowing"],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "operations.rs"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "lib.rs"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "operations.rs"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "outer",
+        "kind": "Function",
+        "file": "lib.rs"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "lib.rs"
+      }
+    }
+  ]
+}

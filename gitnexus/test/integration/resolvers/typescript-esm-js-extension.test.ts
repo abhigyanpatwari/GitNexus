@@ -1,7 +1,7 @@
 /**
  * Integration test: TypeScript ESM .js extension imports produce CALLS edges.
  *
- * Verifies the full pipeline: .js import → resolveImportPath strips .js →
+ * Verifies the full pipeline: .js import → import-target resolution strips .js →
  * resolves to .ts → scope-resolver emits CALLS edge.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';

@@ -66,9 +66,9 @@ const source = (file) => import(pathToFileURL(join(ROOT, file)).href);
       await adapter.tryFlushWAL();
       const samples = [];
       let calls = 0;
-      const query = async (sql) => {
+      const query = async (sql, onRow) => {
         calls++;
-        return adapter.executeQuery(sql);
+        await adapter.forEachQueryRow(sql, onRow);
       };
       for (let run = 0; run < 9; run++) {
         calls = 0;
@@ -80,17 +80,18 @@ const source = (file) => import(pathToFileURL(join(ROOT, file)).href);
         if (run >= 2) samples.push(elapsed);
       }
       const first = graph.iterNodes().next().value;
-      const alteredQuery = async (sql) => {
-        const rows = await adapter.executeQuery(sql);
-        if (sql.includes('(n:`Function`)')) rows.find((r) => r.id === first.id).startLine++;
-        return rows;
+      const alteredQuery = async (sql, onRow) => {
+        await adapter.forEachQueryRow(sql, (row) => {
+          if (sql.includes('(n:`Function`)') && row.id === first.id) row.startLine++;
+          onRow(row);
+        });
       };
       await assert.rejects(
         reconcileGraphNodeIdentities(graph, alteredQuery, 'negative-control'),
         /startLine/,
       );
       await assert.rejects(
-        reconcileGraphNodeIdentities(graph, async () => [], 'negative-control'),
+        reconcileGraphNodeIdentities(graph, async () => {}, 'negative-control'),
         /missing ID/,
       );
 
@@ -124,12 +125,12 @@ const source = (file) => import(pathToFileURL(join(ROOT, file)).href);
           rows.length !== size.nodes || mismatched > 0 || actual.size !== wanted.size;
         if (rejected) {
           await assert.rejects(
-            reconcileGraphNodeIdentities(graph, adapter.executeQuery, phase),
+            reconcileGraphNodeIdentities(graph, adapter.forEachQueryRow, phase),
             /Graph identity reconciliation/,
           );
         } else {
           assert.equal(
-            (await reconcileGraphNodeIdentities(graph, adapter.executeQuery, phase)).nodes,
+            (await reconcileGraphNodeIdentities(graph, adapter.forEachQueryRow, phase)).nodes,
             size.nodes,
           );
         }

@@ -72,12 +72,12 @@ const RUBY_SCOPE_QUERY = `
 ;; ── Declarations — method (instance) ─────────────────────────────────────
 
 (method
-  name: (identifier) @declaration.name) @declaration.function
+  name: [(identifier) (setter)] @declaration.name) @declaration.function
 
 ;; ── Declarations — singleton method (class-level: def self.foo) ──────────
 
 (singleton_method
-  name: (identifier) @declaration.name) @declaration.function
+  name: [(identifier) (setter)] @declaration.name) @declaration.function
 
 ;; ── Declarations — closure bound to a local ──────────────────────────────
 ;;

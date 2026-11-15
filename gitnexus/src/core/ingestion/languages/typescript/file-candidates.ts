@@ -4,7 +4,7 @@
  * Shared by `module-resolution.ts` and the package-manifest resolver so both
  * try the same three shapes — exact path, extension, directory index — and, as
  * importantly, the same NARROW extension list. The repo-wide `EXTENSIONS` in
- * `import-resolvers/utils.ts` carries ~39 entries spanning every language the
+ * `languages/import-candidates.ts` carries ~39 entries spanning every language the
  * indexer supports; a TypeScript import cannot resolve to a `.py` or `.rb`
  * file, and letting it try was part of how the old suffix matcher found files
  * that had nothing to do with the import.

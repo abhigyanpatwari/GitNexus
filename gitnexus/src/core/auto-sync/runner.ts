@@ -273,15 +273,19 @@ export async function runAutoSyncOnce(
             if (options.signal?.aborted) throw err;
             analyzeStatus = 'failed';
             lastAnalyzeError = shortErrorMessage(err);
+            // The persisted summary stays short, but the log is the only place the
+            // failure diagnosis appended to the message (#3530) reaches an operator.
+            // That diagnosis is the message tail, so an oversized message keeps its tail.
+            const loggedError = loggedErrorMessage(err);
             if (isAbandonedAnalyzeWorkerError(err)) abandonedAnalysisWorker = true;
             if (isRetryableAnalyzeContention(err)) {
               logger.error(
-                `[auto-sync] Analysis failed for ${targetDir}; retryable leftover-worker or index-lock wait (not counted toward threshold): ${lastAnalyzeError}`,
+                `[auto-sync] Analysis failed for ${targetDir}; retryable leftover-worker or index-lock wait (not counted toward threshold): ${loggedError}`,
               );
             } else {
               analyzeConsecutiveFailures += 1;
               logger.error(
-                `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${lastAnalyzeError}`,
+                `[auto-sync] Analysis failed for ${targetDir}; consecutive failures ${analyzeConsecutiveFailures}/${config.analyzeFailureThreshold}: ${loggedError}`,
               );
             }
           }
@@ -466,9 +470,48 @@ export async function runAutoSyncOnce(
   return result;
 }
 
-function shortErrorMessage(err: unknown): string {
+const ANALYZE_FAILURE_LOG_LIMIT = 2000;
+const LOG_ELLIPSIS = ' … ';
+
+function flattenErrorMessage(err: unknown): string {
   const message = err instanceof Error ? err.message : String(err);
-  return message.replace(/\s+/g, ' ').slice(0, 240);
+  return message.replace(/\s+/g, ' ');
+}
+
+function shortErrorMessage(err: unknown): string {
+  return flattenErrorMessage(err).slice(0, 240);
+}
+
+// run-analyze appends the failure diagnosis (#3530) as a remedy line followed by
+// lines carrying this prefix.
+const FAILURE_EVIDENCE_LINE_PREFIX = 'Failure evidence — ';
+// The native head an oversized message keeps at least: the persisted summary's length.
+const MIN_LOGGED_NATIVE_HEAD = 240;
+
+/**
+ * Log variant: the failure diagnosis (#3530) is appended after the native error, so
+ * an oversized message keeps its head AND its tail rather than the head alone. The
+ * tail covers the whole diagnosis — remedy line included — whenever it fits beside
+ * a {@link MIN_LOGGED_NATIVE_HEAD}-character head; the native head gets the rest.
+ */
+function loggedErrorMessage(err: unknown): string {
+  const message = flattenErrorMessage(err);
+  if (message.length <= ANALYZE_FAILURE_LOG_LIMIT) return message;
+  const lines = (err instanceof Error ? err.message : String(err)).split('\n');
+  const firstEvidence = lines.findIndex((line) => line.startsWith(FAILURE_EVIDENCE_LINE_PREFIX));
+  const diagnosisLength =
+    firstEvidence > 0
+      ? lines
+          .slice(firstEvidence - 1)
+          .join(' ')
+          .replace(/\s+/g, ' ').length
+      : 0;
+  const budget = ANALYZE_FAILURE_LOG_LIMIT - LOG_ELLIPSIS.length;
+  const tail = Math.min(
+    budget - MIN_LOGGED_NATIVE_HEAD,
+    Math.max(Math.floor(budget / 2), diagnosisLength),
+  );
+  return `${message.slice(0, budget - tail)}${LOG_ELLIPSIS}${message.slice(-tail)}`;
 }
 
 const ABANDONED_WORKER_MARKER = 'it was left running so its native work is not interrupted';

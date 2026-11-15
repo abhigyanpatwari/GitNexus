@@ -1,0 +1,33 @@
+{
+  "language": "zig",
+  "description": "Rename a field while preserving @hasField checks of the old and destination spellings on a proven different container.",
+  "categories": ["reflection", "has-field", "unrelated-owner", "receiver-isolation"],
+  "target": {
+    "name": "target",
+    "kind": "Property",
+    "file": "model.zig",
+    "startLine": 0
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 2
+      },
+      "to": {
+        "name": "target",
+        "kind": "Property",
+        "file": "model.zig",
+        "startLine": 0
+      }
+    }
+  ]
+}

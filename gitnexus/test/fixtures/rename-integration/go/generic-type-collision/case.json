@@ -1,0 +1,16 @@
+{
+  "language": "go",
+  "description": "Reject a package type rename that would capture annotations under a function type parameter.",
+  "categories": ["generics", "type-shadowing", "collision-refusal"],
+  "target": {
+    "name": "Target",
+    "kind": "Struct",
+    "file": "model.go"
+  },
+  "newName": "Element",
+  "expect": {
+    "status": "error",
+    "code": "name_collision",
+    "planningStatus": "blocked"
+  }
+}

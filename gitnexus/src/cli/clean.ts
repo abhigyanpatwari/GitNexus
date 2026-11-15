@@ -34,6 +34,7 @@ import {
 } from '../core/lbug/sidecar-recovery.js';
 import { t } from './i18n/index.js';
 import { getGlobalDir } from '../storage/global-dir.js';
+import { BRANCHES_DIR, branchSlug } from '../storage/branch-index.js';
 import { STORES_DIR } from '../storage/shared-store.js';
 import {
   findLegacyLocalIndex,
@@ -271,8 +272,8 @@ export const cleanCommand = async (options?: {
       console.log(t('clean.branchNotIndexed', { branch: options.branch }));
       return;
     }
-    const { lbugPath } = getStoragePaths(repo.repoPath, summary.branch, storagePath);
-    const branchDir = path.dirname(lbugPath);
+    // Cleanup targets the owned slot, even when its graph pointer is damaged.
+    const branchDir = path.join(storagePath, BRANCHES_DIR, branchSlug(summary.branch));
     if (!isContainedBranchDir(storagePath, branchDir)) {
       logger.error(
         `Refusing to clean branch index outside the validated storage slot: ${branchDir}`,

@@ -10,3 +10,6 @@ export const populateJavaPackageSiblings = javaPackageSiblingVisibility.populate
 
 export const isJavaPackageSiblingVisibilityIncomplete =
   javaPackageSiblingVisibility.isVisibilityIncomplete;
+
+export const resolveJavaSamePackageBase =
+  javaPackageSiblingVisibility.resolveImplicitInheritanceBase;

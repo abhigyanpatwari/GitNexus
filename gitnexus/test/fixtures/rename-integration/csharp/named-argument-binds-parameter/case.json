@@ -1,0 +1,19 @@
+{
+  "language": "csharp",
+  "description": "A C# named argument binds the constructor parameter, so renaming the property it initializes leaves the label unchanged.",
+  "categories": [
+    "named-argument",
+    "unrelated-name"
+  ],
+  "target": {
+    "name": "Count",
+    "kind": "Property",
+    "file": "Counter.cs",
+    "startLine": 2
+  },
+  "newName": "Total",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

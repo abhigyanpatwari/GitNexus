@@ -1,70 +1,6 @@
-/**
- * U20 — Integration regression test for chunk-cache corruption on
- * worker quarantine.
- *
- * Pins the fix for the Codex adversarial review finding on PR #1693
- * (`docs/plans/2026-05-20-002-fix-chunk-cache-corruption-on-worker-quarantine-plan.md`):
- *
- *   The chunk hash is computed from every file in the chunk, but the
- *   worker pool's Layer 3 quarantine filters quarantined files out of
- *   dispatch. Before the fix, the chunk-loop would cache the partial
- *   worker results under the full-coverage chunk hash, locking in
- *   silent corruption that the next analyze would replay.
- *
- * Runs with REAL `worker_threads` + `createWorkerPool`. Injects a
- * custom worker script via `workerUrlForTest` that:
- *   1. Implements the U17/U19 IPC protocol (decode Buffer or hybrid
- *      envelope/contents shape, decode header + JSON payload).
- *   2. Emits a `{type:'ready'}` handshake so the pool's
- *      `waitForWorkerReady` resolves promptly.
- *   3. On a sub-batch containing `poison.ts`, emits a starting-file
- *      and exits with code 134 — deterministic worker death the pool
- *      attributes to `poison.ts` via the in-flight signal, then
- *      adds to its session-scoped quarantine.
- *   4. On a sub-batch without poison, synthesizes a minimal valid
- *      ParseWorkerResult with a Function node per file (no
- *      tree-sitter dependency in the test worker — the synthesized
- *      nodes give the merge step deterministic content to add to the
- *      graph).
- *
- * U20 design pivot — no sequential fallback. The U1 sequential
- * reparse for quarantined chunk files was removed: relying on the
- * worker pool's resilience layers (respawn budget, circuit breaker,
- * quarantine, slot-attribution, cumulative timeout) as the SOLE
- * contract avoids re-triggering tree-sitter native crashes on the
- * main thread and gives operators a clear hard signal when workers
- * exhaust. Quarantined files are missing from this run's graph;
- * they're surfaced in the per-chunk warn log; U2's cache-skip keeps
- * the chunk uncached so the next analyze with a fresh pool retries.
- *
- * Assertions exercised here:
- *   - Worker-path runs and produces results for surviving files
- *     (good_a, good_c) via the synthesized worker output.
- *   - The quarantined file (poison.ts) is NOT in the graph — no
- *     sequential reparse fired.
- *   - U2 (cache-write suppression): `parseCache.entries` does NOT
- *     contain the chunk hash after the run. `parseCache.usedKeys`
- *     DOES contain it (chunk was processed; the cache write was
- *     specifically skipped). A cross-run scenario verifies that a
- *     subsequent dispatch with a fresh pool re-attempts the chunk
- *     (cache miss) and the cache stays empty for that chunk.
- *
- * Why integration over unit:
- *   - The fix lives at the boundary between processParsing
- *     (`parsing-processor.ts`) and the chunk-loop
- *     (`pipeline-phases/parse-impl.ts`) under a real
- *     workerPool. Unit-mocking the worker-pool import bypasses the
- *     structured-clone boundary, the dispatch lifecycle, and the
- *     actual quarantine flow — it verifies the test setup rather
- *     than the contract. The real worker thread executing the test
- *     script through the U17/U19 IPC protocol IS the load-bearing
- *     surface; this test exercises it end-to-end.
- *   - The `writeReadyWorker` pattern from `worker-pool.test.ts` is
- *     reused inline here (the READY_PREAMBLE + test-worker script
- *     composition).
- *
- * Wall-clock budget: well under 5 s under normal CI conditions.
- */
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
+/** Real worker quarantine must exclude the failed file from cache while keeping
+ * complete neighbours reusable. A fresh pool must retry the failed file. */
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { tmpdir } from 'node:os';
 import { mkdtempSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
@@ -73,111 +9,13 @@ import { pathToFileURL } from 'node:url';
 
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
-import {
-  computeChunkHash,
-  fileContentHash,
-  packParseCacheChunks,
-} from '../../src/storage/parse-cache.js';
+import { computeChunkHash, fileContentHash } from '../../src/storage/parse-cache.js';
 import type { ParseCache } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 
-/**
- * Inline READY preamble + IPC decode wrapper (mirrors
- * `test/integration/worker-pool.test.ts`'s READY_PREAMBLE). Lets the
- * test worker script below speak the production U17/U19 IPC protocol
- * without importing dist/protocol.js (the script runs as a standalone
- * CJS file at a temp path, so it can't resolve dist/ via relative
- * paths reliably).
- */
-const READY_PREAMBLE = `
-const { parentPort: __pp } = require('node:worker_threads');
-const __decoder = new TextDecoder('utf-8');
-const __decodeFrame = (raw) => {
-  if (
-    raw && typeof raw === 'object' &&
-    raw.type === 'sub-batch' &&
-    Array.isArray(raw.files)
-  ) {
-    return {
-      type: 'sub-batch',
-      files: raw.files.map((f) => ({
-        path: f.path,
-        content: typeof f.content === 'string' ? f.content : __decoder.decode(f.content),
-      })),
-    };
-  }
-  return raw;
-};
-const __origOn = __pp.on.bind(__pp);
-__pp.on = (event, handler) => {
-  if (event !== 'message') return __origOn(event, handler);
-  return __origOn(event, (raw) => handler(__decodeFrame(raw)));
-};
-__pp.postMessage({ type: 'ready' });
-`;
+import { writeFileResultWorker } from '../helpers/file-result-worker.js';
 
-/**
- * Test worker script. Synthesizes minimal ParseWorkerResult entries for
- * non-poison files; deterministically crashes on poison.ts via
- * `process.exit(134)`. Accumulates across sub-batches; emits the
- * accumulated result on `flush`.
- */
-const TEST_WORKER_SCRIPT = `
-const { parentPort } = require('node:worker_threads');
-const accumulated = {
-  nodes: [],
-  relationships: [],
-  symbols: [],
-  imports: [],
-  calls: [],
-  assignments: [],
-  heritage: [],
-  routes: [],
-  fetchCalls: [],
-  fetchWrapperDefs: [],
-  decoratorRoutes: [],
-  routerIncludes: [],
-  routerImports: [],
-  toolDefs: [],
-  ormQueries: [],
-  constructorBindings: [],
-  fileScopeBindings: [],
-  parsedFiles: [],
-  skippedLanguages: {},
-  fileCount: 0,
-};
-parentPort.on('message', (msg) => {
-  if (msg && msg.type === 'sub-batch') {
-    const poison = msg.files.find((f) => f.path.endsWith('poison.ts'));
-    if (poison) {
-      parentPort.postMessage({ type: 'starting-file', path: poison.path });
-      process.exit(134);
-    }
-    for (const file of msg.files) {
-      const baseName = file.path.split('/').pop().replace(/\\.ts$/, '');
-      accumulated.nodes.push({
-        id: 'func:' + file.path,
-        label: 'Function',
-        properties: {
-          name: baseName,
-          filePath: file.path,
-          startLine: 1,
-          endLine: 1,
-          language: 'typescript',
-          isExported: true,
-        },
-      });
-      accumulated.fileCount++;
-    }
-    parentPort.postMessage({ type: 'progress', filesProcessed: accumulated.fileCount });
-    parentPort.postMessage({ type: 'sub-batch-done' });
-    return;
-  }
-  if (msg && msg.type === 'flush') {
-    parentPort.postMessage({ type: 'result', data: accumulated });
-  }
-});
-`;
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE_FILES = {
   'src/good_a.ts': 'export function good_a() { return 1; }\n',
@@ -186,41 +24,26 @@ const FIXTURE_FILES = {
 };
 
 const POISON_PATH = 'src/poison.ts';
-const DEFAULT_TEST_CHUNK_BUDGET = 2 * 1024 * 1024;
-
-const resolveTestChunkByteBudget = (): number => {
-  const env = Number(process.env.GITNEXUS_CHUNK_BYTE_BUDGET);
-  if (Number.isFinite(env) && env > 0) return env;
-  return DEFAULT_TEST_CHUNK_BUDGET;
-};
-
-const hashPacks = (
+const hashFiles = (
   scanned: { path: string; size: number }[],
 ): { poison: string; others: string[] } => {
-  const packs = packParseCacheChunks(
-    scanned.map((file) => ({
-      path: file.path,
-      size: file.size,
-      language: 'typescript',
-    })),
-    resolveTestChunkByteBudget(),
-  );
-  const hashOf = (pack: string[]) =>
+  const key = (p: string) =>
     computeChunkHash(
-      pack.map((p) => ({
-        filePath: p,
-        contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
-      })),
+      [
+        {
+          filePath: p,
+          contentHash: fileContentHash(FIXTURE_FILES[p as keyof typeof FIXTURE_FILES]),
+        },
+      ],
+      parseIdentity,
     );
-  const poisonPack = packs.find((paths) => paths.includes(POISON_PATH));
-  if (!poisonPack) throw new Error('poison.ts was not packed');
   return {
-    poison: hashOf(poisonPack),
-    others: packs.filter((paths) => !paths.includes(POISON_PATH)).map(hashOf),
+    poison: key(POISON_PATH),
+    others: scanned.filter((f) => f.path !== POISON_PATH).map((f) => key(f.path)),
   };
 };
 
-describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex finding)', () => {
+describe('U20: parse-impl quarantine + file-cache integration (PR #1693 Codex finding)', () => {
   let tempDir: string;
   let repoDir: string;
   let workerPath: string;
@@ -242,24 +65,24 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
     // collide with anything else. The READY preamble + test script
     // share one .js file the pool spawns via `new Worker(URL)`.
     workerPath = path.join(tempDir, 'test-quarantine-worker.js');
-    writeFileSync(workerPath, READY_PREAMBLE + TEST_WORKER_SCRIPT);
+    writeFileResultWorker(workerPath, path.join(tempDir, 'spawned'), { crashPaths: [POISON_PATH] });
   });
 
   afterEach(() => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('worker quarantine leaves poison.ts out of the graph AND suppresses chunk-cache write', async () => {
+  it('worker quarantine leaves poison.ts out of the graph AND suppresses file-cache write', async () => {
     const filePaths = Object.keys(FIXTURE_FILES);
     const scanned = filePaths.map((rel) => ({
       path: rel,
       size: statSync(path.join(repoDir, rel)).size,
     }));
 
-    const expectedChunkHash = hashPacks(scanned).poison;
+    const expectedFileKey = hashFiles(scanned).poison;
 
     const parseCache: ParseCache = {
-      version: 'test',
+      identity: parseIdentity,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };
@@ -315,35 +138,35 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
       ),
     ).toBe(true);
 
-    // U2 assertion: chunk-cache write was suppressed. The chunk hash
+    // U2 assertion: file-cache write was suppressed. The file key
     // is in usedKeys (chunk WAS processed) but absent from entries
     // (cache write skipped because of the quarantine intersection).
     // This is the load-bearing cross-run protection: a future analyze
-    // with unchanged content will re-derive the same chunkHash, miss
+    // with unchanged content will re-derive the same fileKey, miss
     // the cache, and re-dispatch — giving the file another chance
     // against a fresh-quarantine pool.
-    expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
-    expect(parseCache.usedKeys.has(expectedChunkHash)).toBe(true);
+    expect(parseCache.fileResults?.memory.has(expectedFileKey)).toBe(false);
+    expect(parseCache.usedKeys.has(expectedFileKey)).toBe(true);
     // #3204: `usedKeys` alone would let `saveParseCache` copy a pre-existing
     // shard forward, so the skipped chunk is also retired from the save.
-    expect(parseCache.staleKeys?.has(expectedChunkHash)).toBe(true);
-    for (const hash of hashPacks(scanned).others) {
-      expect(parseCache.entries.has(hash)).toBe(true);
+    expect(parseCache.staleKeys?.has(expectedFileKey)).toBe(true);
+    for (const hash of hashFiles(scanned).others) {
+      expect(parseCache.fileResults?.memory.has(hash)).toBe(true);
     }
   });
 
-  it('cross-run: unchanged fixture re-dispatches the poison pack because that pack was not cached', async () => {
-    // First pass: same setup as the previous test. The poison pack is not
+  it('cross-run: unchanged fixture re-dispatches the poison file because that pack was not cached', async () => {
+    // First pass: same setup as the previous test. The poison file is not
     // cached; other packs may be.
     const filePaths = Object.keys(FIXTURE_FILES);
     const scanned = filePaths.map((rel) => ({
       path: rel,
       size: statSync(path.join(repoDir, rel)).size,
     }));
-    const expectedChunkHash = hashPacks(scanned).poison;
+    const expectedFileKey = hashFiles(scanned).poison;
 
     const parseCache: ParseCache = {
-      version: 'test',
+      identity: parseIdentity,
       entries: new Map<string, ParseWorkerResult[]>(),
       usedKeys: new Set<string>(),
     };
@@ -367,8 +190,8 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
         },
       );
       // Confirm the precondition for the second-pass test: cache is
-      // empty for this chunk hash.
-      expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
+      // empty for this file key.
+      expect(parseCache.fileResults?.memory.has(expectedFileKey)).toBe(false);
     }
 
     // SECOND PASS — same content, same parseCache, fresh worker pool
@@ -396,12 +219,12 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
         },
       );
 
-      // Cache stayed empty (still no entry for this chunk hash) — the
+      // Cache stayed empty (still no entry for this file key) — the
       // load-bearing cross-run protection.
-      expect(parseCache.entries.has(expectedChunkHash)).toBe(false);
-      expect(parseCache.usedKeys.has(expectedChunkHash)).toBe(true);
-      for (const hash of hashPacks(scanned).others) {
-        expect(parseCache.entries.has(hash)).toBe(true);
+      expect(parseCache.fileResults?.memory.has(expectedFileKey)).toBe(false);
+      expect(parseCache.usedKeys.has(expectedFileKey)).toBe(true);
+      for (const hash of hashFiles(scanned).others) {
+        expect(parseCache.fileResults?.memory.has(hash)).toBe(true);
       }
       // Worker path ran again; surviving files in the graph; poison
       // still absent per the U20 contract (workers are the sole

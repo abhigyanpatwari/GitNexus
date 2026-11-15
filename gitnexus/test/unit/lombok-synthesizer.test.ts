@@ -109,7 +109,7 @@ public class Order {
       expect(setter.parameterTypes).toEqual(['String']);
     });
 
-    it('uses unique scope ranges for multi-declarator getters and setters', () => {
+    it('emits bodyless declarations for multi-declarator getters and setters', () => {
       const tree = parse(`
 import lombok.Data;
 @Data
@@ -128,14 +128,14 @@ public class Pair {
         'setFirst',
         'setSecond',
       ]);
-      const scopes = synthesizeLombokAccessorCaptures(tree.rootNode)
-        .map((m) => m['@scope.function'])
-        .filter((c): c is NonNullable<typeof c> => c !== undefined)
-        .map(
-          (c) => `${c.range.startLine}:${c.range.startCol}-${c.range.endLine}:${c.range.endCol}`,
-        );
-      expect(scopes).toHaveLength(4);
-      expect(new Set(scopes).size).toBe(4);
+      const captures = synthesizeLombokAccessorCaptures(tree.rootNode);
+      expect(captures.some((match) => match['@scope.function'] !== undefined)).toBe(false);
+      expect(captures.map((match) => match['@declaration.qualified_name']?.text).sort()).toEqual([
+        'Pair.getFirst',
+        'Pair.getSecond',
+        'Pair.setFirst',
+        'Pair.setSecond',
+      ]);
     });
 
     it('creates HAS_METHOD relationships linking to the class', () => {

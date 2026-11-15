@@ -159,6 +159,7 @@ function moduleWithClass(
     {
       id: moduleId,
       kind: 'Module',
+      bindings: new Map(),
       typeBindings: new Map(moduleTypeBindings ?? []),
       ownedDefs: [],
     },
@@ -168,6 +169,7 @@ function moduleWithClass(
       id: `class:${index}`,
       kind: 'Class',
       parent: moduleId,
+      bindings: new Map(),
       typeBindings: new Map(),
       ownedDefs: [def],
     });

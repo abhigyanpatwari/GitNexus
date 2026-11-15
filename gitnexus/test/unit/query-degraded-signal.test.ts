@@ -83,6 +83,29 @@ describe('query: degraded-enrichment signal', () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.unstubAllEnvs());
 
+  it('drains semantic search before returning a BM25 failure', async () => {
+    const b = makeBackend(true);
+    let finishSemantic!: () => void;
+    const semanticPending = new Promise<void>((resolve) => {
+      finishSemantic = resolve;
+    });
+    (b.backend as any).bm25Search = vi.fn().mockRejectedValue(new Error('invalid symbol row'));
+    (b.backend as any).semanticSearch = vi.fn().mockImplementation(async () => {
+      await semanticPending;
+      return [];
+    });
+
+    let querySettled = false;
+    const query = runQuery(b).finally(() => {
+      querySettled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(querySettled).toBe(false);
+    finishSemantic();
+    await expect(query).rejects.toThrow('invalid symbol row');
+  });
+
   it('a REAL enrichment failure surfaces warning + partial, and still returns the symbol', async () => {
     const b = makeBackend(true);
     executeParameterizedMock.mockImplementation(async (_repo: string, query: string) => {

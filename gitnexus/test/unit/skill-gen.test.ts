@@ -469,9 +469,9 @@ describe('generateSkillFiles — return values', () => {
     expect(pipeline.communityResult?.communities).toEqual([]);
     expect(pipeline.communityResult?.memberships).toEqual([]);
     expect(pipeline.communityResult?.rawMemberships).toEqual([
-      { nodeId: 'fn:alpha', communityId: 'comm_0' },
-      { nodeId: 'fn:beta', communityId: 'comm_1' },
-      { nodeId: 'fn:gamma', communityId: 'comm_2' },
+      { nodeId: 'fn:alpha', communityId: 'comm_705f4b38ed1f' },
+      { nodeId: 'fn:beta', communityId: 'comm_1f5e2b7fe2e0' },
+      { nodeId: 'fn:gamma', communityId: 'comm_3bb8a2bdbe1a' },
     ]);
     expect([...graph.iterRelationships()].filter((rel) => rel.type === 'MEMBER_OF')).toEqual([]);
     const content = await fs.readFile(

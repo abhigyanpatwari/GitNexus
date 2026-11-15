@@ -42,6 +42,7 @@ import { FUNCTION_NODE_TYPES as TS_FUNCTION_NODE_TYPES } from '../../src/core/in
 import { FUNCTION_NODE_TYPES as JS_FUNCTION_NODE_TYPES } from '../../src/core/ingestion/languages/javascript/captures.js';
 import { THIS_REBINDING_BOUNDARY_TYPES } from '../../src/core/ingestion/languages/typescript/receiver-binding.js';
 import { THIS_BOUNDARY_NODE_TYPES } from '../../src/core/ingestion/type-extractors/typescript.js';
+import { LEXICAL_FUNCTION_TYPES } from '../../src/core/ingestion/route-extractors/lexical-bindings.js';
 
 /**
  * Node types of every single-line `(node_type) @capture …` pattern in a query
@@ -78,6 +79,13 @@ describe('the @scope.function patterns and FUNCTION_NODE_TYPES agree', () => {
 
     expect(fromQuery.size).toBeGreaterThan(0);
     expect(sorted(fromQuery)).toEqual(sorted(JS_FUNCTION_NODE_TYPES));
+  });
+
+  it('HTTP lexical bindings use the TypeScript function scopes, which cover JavaScript', () => {
+    expect(sorted(LEXICAL_FUNCTION_TYPES)).toEqual(sorted(TS_FUNCTION_NODE_TYPES));
+    expect([...JS_FUNCTION_NODE_TYPES].filter((type) => !LEXICAL_FUNCTION_TYPES.has(type))).toEqual(
+      [],
+    );
   });
 });
 

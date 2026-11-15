@@ -18,6 +18,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { pythonMethodConfig } from '../../method-extractors/configs/python.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface PythonArityMetadata {
   readonly parameterCount: number | undefined;
@@ -31,11 +32,10 @@ export function computePythonArityMetadata(fnNode: SyntaxNode): PythonArityMetad
 
   let hasVariadic = false;
   let optionalCount = 0;
-  const types: string[] = [];
+  const types = declarationParameterTypes(params);
   for (const p of params) {
     if (p.isVariadic) hasVariadic = true;
     else if (p.isOptional) optionalCount++;
-    if (p.type !== null) types.push(p.type);
   }
 
   const total = params.length;

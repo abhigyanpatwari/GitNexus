@@ -10,6 +10,7 @@ import {
 } from '../../../../src/core/ingestion/language-config.js';
 import {
   loadPhpComposerConfig,
+  resolvePhpImportBinding,
   resolvePhpImportTargetInternal,
 } from '../../../../src/core/ingestion/languages/php/import-target.js';
 
@@ -41,6 +42,39 @@ const functionImport: ParsedImport = {
 };
 
 describe('resolvePhpImportTargetInternal declaration selection', () => {
+  it('resolves import spelling against each current source snapshot', () => {
+    const imported: ParsedImport = {
+      kind: 'alias',
+      localName: 'local',
+      alias: 'local',
+      importedName: 'target',
+      targetRaw: 'Source\\Target',
+      importedSymbolKind: 'function',
+    };
+    const resolve = (source: string) =>
+      resolvePhpImportBinding(
+        imported,
+        () => ['Source/functions.php'],
+        () => source,
+      );
+    expect(resolve('<?php function Target() {}')).toMatchObject({
+      importedName: 'Target',
+      localName: 'local',
+    });
+    expect(resolve('<?php function TARGET() {}')).toMatchObject({
+      importedName: 'TARGET',
+      localName: 'local',
+    });
+    expect(resolve('<?php function Target() {} function TARGET() {}')).toBe(imported);
+    const constant: ParsedImport = { ...imported, importedSymbolKind: 'const' };
+    expect(
+      resolvePhpImportBinding(
+        constant,
+        () => ['Source/functions.php'],
+        () => '<?php const Target = 1;',
+      ),
+    ).toBe(constant);
+  });
   it('rejects namespaces outside an authoritative PSR-4 map', () => {
     const files = new Set(['app/Models/User.php', 'lib/Legacy/Missing.php']);
 

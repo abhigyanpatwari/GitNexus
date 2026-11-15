@@ -34,7 +34,7 @@ import {
 } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import type { CaptureMatch } from 'gitnexus-shared';
-import { preprocessDartExtensionTypes } from '../../../src/core/ingestion/languages/dart/extension-type-preprocess.js';
+import { getDartParser } from '../../../src/core/ingestion/languages/dart/query.js';
 
 let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
 if (dartAvailable) {
@@ -146,18 +146,35 @@ describe.skipIf(!dartAvailable)('F28 — Dart typedef capture (scope layer)', ()
 // ---------------------------------------------------------------------------
 
 describe.skipIf(!dartAvailable)('Dart extension type declarations (scope layer)', () => {
-  it('rewrites extension type headers without changing source length or line count', () => {
-    const rewritten = preprocessDartExtensionTypes(EXTENSION_TYPES);
-    expect(rewritten).toHaveLength(EXTENSION_TYPES.length);
-    expect(rewritten.split('\n')).toHaveLength(EXTENSION_TYPES.split('\n').length);
-    for (const name of ['UserId', 'EmptyId', 'Celsius', 'Box', 'Pair']) {
-      expect(rewritten.indexOf(name)).toBe(EXTENSION_TYPES.indexOf(name));
+  it('parses native extension types without errors and preserves declaration positions', () => {
+    const tree = getDartParser().parse(EXTENSION_TYPES);
+    expect(tree.rootNode.hasError).toBe(false);
+    const matches = emitDartScopeCaptures(EXTENSION_TYPES, 'test.dart', tree);
+    const declarations = matches.filter((match) => match['@declaration.class']);
+    for (const name of ['UserId', 'EmptyId', 'Celsius', 'Box', 'Pair', 'Fancy']) {
+      const declaration = declarations.find((match) => match['@declaration.name']?.text === name);
+      const precedingLines = EXTENSION_TYPES.slice(0, EXTENSION_TYPES.indexOf(name)).split('\n');
+      expect(declaration?.['@declaration.name']?.range).toMatchObject({
+        startLine: precedingLines.length,
+        startCol: precedingLines.at(-1)?.length,
+      });
     }
-    expect(rewritten).toContain('UserId on String');
-    expect(rewritten).toContain('EmptyId on String');
-    expect(rewritten).toContain('Celsius on double');
-    expect(rewritten).toContain('Box<T> on List<T>');
-    expect(rewritten).toContain('Pair on String');
+  });
+
+  it('captures generic extension type parameters', () => {
+    const matches = emitDartScopeCaptures(EXTENSION_TYPES, 'test.dart');
+    const box = matches.find((match) => match['@declaration.name']?.text === 'Box');
+    expect(box?.['@declaration.type-parameters']?.text).toBe('<T>');
+  });
+
+  it('binds this inside extension type methods to the owning type', () => {
+    const matches = emitDartScopeCaptures(EXTENSION_TYPES, 'test.dart');
+    const receivers = matches
+      .filter((match) => match['@type-binding.name']?.text === 'this')
+      .map((match) => match['@type-binding.type']?.text);
+    expect(receivers).toEqual(
+      expect.arrayContaining(['UserId', 'Celsius', 'Box', 'Pair', 'Fancy']),
+    );
   });
 
   it('captures extension types as class-like declarations', () => {
@@ -177,6 +194,16 @@ describe.skipIf(!dartAvailable)('Dart extension type declarations (scope layer)'
       ]),
     );
     expect(imports).not.toContain('__heritage__:implements:int:Pair');
+  });
+
+  it('captures implements clauses after named-record representation types', () => {
+    const imports = heritageImports(
+      'extension type RecordId(({String id}) value) implements Identifiable, Comparator<String, int> {}',
+    );
+    expect(imports).toEqual([
+      '__heritage__:implements:Identifiable:RecordId',
+      '__heritage__:implements:Comparator:RecordId',
+    ]);
   });
 });
 

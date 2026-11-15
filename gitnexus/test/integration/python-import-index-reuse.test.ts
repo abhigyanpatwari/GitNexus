@@ -2,7 +2,7 @@
  * Production-path regression guard for PR #1918 review finding P1.
  *
  * The Python file index (`getPythonFileIndex` in
- * `import-resolvers/python-file-index.ts`) is
+ * `languages/python/import-file-index.ts`) is
  * memoized on the `allFilePaths` Set identity via a WeakMap. The registry-
  * primary path reaches it through `pythonScopeResolver.resolveImportTarget`
  * (the orchestrator adapter) — NOT by calling `resolvePythonImportTarget`

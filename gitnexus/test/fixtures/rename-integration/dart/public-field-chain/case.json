@@ -1,0 +1,53 @@
+{
+  "language": "dart",
+  "description": "Rename a Dart public field through three-hop reads and writes while preserving a shadow parameter and unrelated class.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "shadowing",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "badge",
+    "kind": "Property",
+    "file": "profile.dart",
+    "startLine": 1
+  },
+  "newName": "displayBadge",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "read",
+        "kind": "Function",
+        "file": "profile.dart",
+        "startLine": 9
+      },
+      "to": {
+        "name": "badge",
+        "kind": "Property",
+        "file": "profile.dart",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "update",
+        "kind": "Function",
+        "file": "profile.dart",
+        "startLine": 10
+      },
+      "to": {
+        "name": "badge",
+        "kind": "Property",
+        "file": "profile.dart",
+        "startLine": 1
+      }
+    }
+  ]
+}

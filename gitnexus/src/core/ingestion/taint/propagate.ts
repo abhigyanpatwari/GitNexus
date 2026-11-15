@@ -96,6 +96,8 @@
  * bypassed sanitizer (`exec(x + escape(x))`) killed nothing.
  */
 
+import { createFunctionRefinement, type FunctionRefinement } from './guard-refinement.js';
+import { applyValueEffect, provesInertCommand, UNKNOWN_VALUE } from './value-refinement.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
 import { pointKey } from '../cfg/reaching-defs.js';
 import type { DefUseFact, FunctionDefUse, ProgramPoint } from '../cfg/reaching-defs.js';
@@ -294,11 +296,13 @@ interface TaintState {
  * Compute taint flows for one function. See the module doc for the two-rule
  * model, the kind-set exclusion semantics, and the precision floor.
  */
+
 export function computeTaintFlows(
   cfg: FunctionCfg,
   defUse: FunctionDefUse,
   matches: FunctionSiteMatches,
   limits?: TaintLimits,
+  refinement: FunctionRefinement = createFunctionRefinement(cfg),
 ): FunctionTaintResult {
   if (defUse.status !== 'computed') {
     return {
@@ -311,6 +315,22 @@ export function computeTaintFlows(
   }
 
   const bindings = defUse.bindings;
+  const guardProvesSink = (
+    block: number,
+    statement: number,
+    site: number,
+    argument: number,
+    prefixes: readonly string[] | undefined,
+  ): boolean =>
+    argument === 0 &&
+    prefixes !== undefined &&
+    refinement.defaultShell(block, statement, site) &&
+    cfg.blocks[block]?.statements?.[statement]?.sites?.[site]?.spread === undefined &&
+    !cfg.blocks[block]?.statements?.[statement]?.sites?.[site]?.template &&
+    provesInertCommand(
+      applyValueEffect(refinement.argument(block, statement, site, argument), UNKNOWN_VALUE),
+      prefixes,
+    );
 
   // ── per-statement context (built lazily; statements revisit often) ────────
   const matchByPoint = new Map<string, StatementMatches>();
@@ -766,6 +786,17 @@ export function computeTaintFlows(
         for (const sink of ctx.sinksBySite.get(siteIndex) ?? []) {
           if (!sink.argPositions.includes(argPos)) continue;
           const kind = sink.entry.kind;
+          if (
+            kind === 'command-injection' &&
+            guardProvesSink(
+              ctx.point.blockIndex,
+              ctx.point.stmtIndex,
+              siteIndex,
+              argPos,
+              sink.entry.inertCommandPrefixes,
+            )
+          )
+            continue;
           if (!sofar.kinds.has(kind)) {
             recordFinding(
               kind,
@@ -847,6 +878,17 @@ export function computeTaintFlows(
         for (const sink of sinks) {
           const kind = sink.entry.kind;
           for (const argPos of sink.argPositions) {
+            if (
+              kind === 'command-injection' &&
+              guardProvesSink(
+                ctx.point.blockIndex,
+                ctx.point.stmtIndex,
+                siteIndex,
+                argPos,
+                sink.entry.inertCommandPrefixes,
+              )
+            )
+              continue;
             const paths = pathsIntoPosition(ctx, b, siteIndex, argPos);
             if (paths.length === 0) continue;
             if (E.has(kind)) continue; // suppressed at def time; kill already recorded

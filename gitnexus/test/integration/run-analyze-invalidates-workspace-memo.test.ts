@@ -13,14 +13,14 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 type Workspace =
-  typeof import('../../src/core/ingestion/import-resolvers/node-workspace-packages.js');
+  typeof import('../../src/core/ingestion/languages/typescript/workspace-packages.js');
 type Lock = typeof import('../../src/storage/index-lock.js');
 const ctx = vi.hoisted(() => ({
   invalidate: vi.fn(),
   acquire: vi.fn(),
 }));
 vi.mock(
-  '../../src/core/ingestion/import-resolvers/node-workspace-packages.js',
+  '../../src/core/ingestion/languages/typescript/workspace-packages.js',
   async (importOriginal) => {
     const actual = await importOriginal<Workspace>();
     ctx.invalidate.mockImplementation(actual.invalidateNodeWorkspacePackages);

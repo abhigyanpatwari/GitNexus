@@ -63,7 +63,9 @@
 
 import type { FunctionCfg, SiteRecord } from '../cfg/types.js';
 import { pointKey, type FunctionDefUse, type ProgramPoint } from '../cfg/reaching-defs.js';
-import type { FunctionSiteMatches } from './match.js';
+import type { FunctionSiteMatches, MatchedSinkCall } from './match.js';
+import { createFunctionRefinement, type FunctionRefinement } from './guard-refinement.js';
+import { valueEffectKey } from './value-refinement.js';
 import { sinkKindRank, sortSinkKinds, type SinkKind } from './source-sink-config.js';
 import type {
   CallResult,
@@ -129,6 +131,7 @@ export function harvestFunctionSummary(
   cfg: FunctionCfg,
   defUse: FunctionDefUse,
   matches: FunctionSiteMatches,
+  refinement: FunctionRefinement = createFunctionRefinement(cfg),
 ): HarvestResult {
   if (defUse.status !== 'computed') {
     return { status: 'coverage-gap', gapReason: defUse.status, facts: EMPTY_FACTS };
@@ -144,6 +147,25 @@ export function harvestFunctionSummary(
   const paramIndexOf = new Map<number, number>();
   paramBindings.forEach((e, paramIdx) => paramIndexOf.set(e.idx, paramIdx));
   const paramCount = paramBindings.length;
+  // Legacy flattened ports cannot carry a new proof across an ambiguous formal.
+  const precisePorts = paramBindings.every((entry, index) => entry.b.formalIndex === index);
+  const effectAt = (
+    block: number,
+    statement: number,
+    site: number,
+    argument: number,
+    param?: number,
+  ) => {
+    if (!precisePorts) return undefined;
+    const effect = refinement.argument(
+      block,
+      statement,
+      site,
+      argument,
+      param === undefined ? undefined : paramBindings[param]?.idx,
+    );
+    return effect?.kind === 'unknown' ? undefined : effect;
+  };
 
   // ── return points: source block of every `return` CFG edge ────────────────
   // The M2 edge-kind invariant: a `return` edge's SOURCE block terminates in
@@ -166,8 +188,13 @@ export function harvestFunctionSummary(
   // call-result seed (#2084 review P1-1): their result semantics are already
   // modelled (a sanitizer's result rides U2 exclusions; a sink returns void).
   const modeledSites = new Set<string>();
+  const matchedSinks = new Map<string, Map<number, MatchedSinkCall[]>>();
   for (const sm of matches.statements) {
     const stmtKey = `${sm.blockIndex}:${sm.statementIndex}`;
+    const siteSinks = new Map<number, MatchedSinkCall[]>();
+    for (const sink of sm.sinks)
+      siteSinks.set(sink.siteIndex, [...(siteSinks.get(sink.siteIndex) ?? []), sink]);
+    matchedSinks.set(stmtKey, siteSinks);
     for (const s of sm.sinks) modeledSites.add(`${stmtKey}:${s.siteIndex}`);
     for (const s of sm.sanitizers) modeledSites.add(`${stmtKey}:${s.siteIndex}`);
     if (sm.sinks.length > 0) {
@@ -433,6 +460,7 @@ export function harvestFunctionSummary(
       const sinkBySite = sinkPosBySite.get(useKey);
       const kindBySite = sinkKindByEntry.get(useKey);
       useStmt.sites?.forEach((site, siteIndex) => {
+        if (refinement.isPredicate(fact.use.blockIndex, fact.use.stmtIndex, siteIndex)) return;
         const argHits = occurrencesInArgs(site, b);
         for (const argPos of argHits) {
           const callLine = useStmt.line;
@@ -445,13 +473,21 @@ export function harvestFunctionSummary(
               dest: { to: 'callArg', ...(tail ? { toCallee: tail } : {}), argIndex: argPos },
             });
           } else if (t.seedId >= 0) {
-            const caKey = `${t.seedId}:${callLine}:${argPos}:${tail ?? ''}`;
+            const valueEffect = effectAt(
+              fact.use.blockIndex,
+              fact.use.stmtIndex,
+              siteIndex,
+              argPos,
+              t.seedId,
+            );
+            const caKey = `${t.seedId}:${callLine}:${argPos}:${tail ?? ''}:${valueEffectKey(valueEffect)}`;
             if (!paramCallArg.has(caKey)) {
               paramCallArg.set(caKey, {
                 param: t.seedId,
                 callLine,
                 argIndex: argPos,
                 ...(tail ? { calleeName: tail } : {}),
+                ...(valueEffect ? { valueEffect } : {}),
               });
             }
             // Carry the sanitizer exclusions on the path INTO this call arg,
@@ -461,13 +497,20 @@ export function harvestFunctionSummary(
             // Source-seeded: a generated source flowing into a call argument is
             // a fixpoint SEED (it taints the callee's param). One source kind
             // today ('remote-input'); when more exist the seed must carry it.
-            const scKey = `${callLine}:${argPos}:${tail ?? ''}`;
+            const valueEffect = effectAt(
+              fact.use.blockIndex,
+              fact.use.stmtIndex,
+              siteIndex,
+              argPos,
+            );
+            const scKey = `${callLine}:${argPos}:${tail ?? ''}:${valueEffectKey(valueEffect)}`;
             if (!sourceCallArg.has(scKey)) {
               sourceCallArg.set(scKey, {
                 sourceKind: 'remote-input',
                 callLine,
                 argIndex: argPos,
                 ...(tail ? { calleeName: tail } : {}),
+                ...(valueEffect ? { valueEffect } : {}),
               });
             }
             intersectKinds(sourceCallArgKinds, scKey, t.exclusions);
@@ -484,10 +527,37 @@ export function harvestFunctionSummary(
                   dest: { to: 'sink', sinkKind: kind },
                 });
               } else if (t.seedId >= 0) {
-                const sKey = `${t.seedId}:${kind}`;
+                const sinkEntries = (matchedSinks.get(useKey)?.get(siteIndex) ?? []).filter(
+                  (sink) => sink.entry.kind === kind && sink.argPositions.includes(argPos),
+                );
+                const canRefine =
+                  kind === 'command-injection' &&
+                  argPos === 0 &&
+                  site.spread === undefined &&
+                  !site.template &&
+                  refinement.defaultShell(fact.use.blockIndex, fact.use.stmtIndex, siteIndex) &&
+                  sinkEntries.length > 0 &&
+                  sinkEntries.every((sink) => sink.entry.inertCommandPrefixes);
+                const prefixes = canRefine
+                  ? sinkEntries[0].entry.inertCommandPrefixes!.filter((prefix) =>
+                      sinkEntries.every((sink) =>
+                        sink.entry.inertCommandPrefixes!.includes(prefix),
+                      ),
+                    )
+                  : undefined;
+                const valueEffect = prefixes?.length
+                  ? effectAt(fact.use.blockIndex, fact.use.stmtIndex, siteIndex, argPos, t.seedId)
+                  : undefined;
+                const sKey = `${t.seedId}:${kind}:${valueEffectKey(valueEffect)}:${JSON.stringify(prefixes ?? [])}`;
                 if (!paramSink.has(sKey)) {
                   paramSink.add(sKey);
-                  paramSinkOut.push({ param: t.seedId, sinkKind: kind });
+                  paramSinkOut.push({
+                    param: t.seedId,
+                    sinkKind: kind,
+                    ...(valueEffect && prefixes?.length
+                      ? { valueEffect, inertCommandPrefixes: prefixes }
+                      : {}),
+                  });
                 }
               }
             }
@@ -539,7 +609,10 @@ export function harvestFunctionSummary(
     );
 
   const paramToSink = paramSinkOut.sort(
-    (a, b) => a.param - b.param || sinkKindRank(a.sinkKind) - sinkKindRank(b.sinkKind),
+    (a, b) =>
+      a.param - b.param ||
+      sinkKindRank(a.sinkKind) - sinkKindRank(b.sinkKind) ||
+      valueEffectKey(a.valueEffect).localeCompare(valueEffectKey(b.valueEffect)),
   );
 
   const sourceToReturn: SourceToReturn[] =

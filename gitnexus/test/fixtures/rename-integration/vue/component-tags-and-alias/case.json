@@ -1,0 +1,22 @@
+{
+  "language": "vue",
+  "description": "Rename imported component bindings in opening and closing tags while preserving an explicit alias, attributes, text and custom blocks.",
+  "categories": [
+    "cross-file",
+    "component",
+    "alias",
+    "template",
+    "opaque-content"
+  ],
+  "target": {
+    "name": "Card",
+    "kind": "Class",
+    "file": "components.ts"
+  },
+  "newName": "Panel",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": []
+}

@@ -78,11 +78,14 @@ describe('PdgEmitSink — routing', () => {
     sink.finalize();
   });
 
-  it('throws rather than silently dropping an undeclared endpoint-label pair (#2769)', () => {
+  it('fails at finalize instead of throwing from addRelationship on an undeclared pair (#2769, #2797)', () => {
     // PDG edges are always BasicBlock|BasicBlock in production, but the sink
     // applies no declared-pair gate of its own — this pins that the shared
-    // `assertDeclaredPair` guard (also wired into GraphEmitSink) still fires
-    // here rather than reaching COPY and silently dropping the edge.
+    // `checkDeclaredPair` guard (also wired into GraphEmitSink) still fails the
+    // run rather than reaching COPY and silently dropping the edge. It must not
+    // throw from addRelationship: the PDG emit loop in scope-resolution wraps
+    // each file in a try/catch that only warns, so a throw there used to cost
+    // that file's CFG and let the run succeed.
     const real = createKnowledgeGraph();
     const sink = new PdgEmitSink(real, path.join(tmpRoot, 'pdg-csv'));
 
@@ -94,7 +97,8 @@ describe('PdgEmitSink — routing', () => {
       confidence: 1,
       reason: 'seq',
     };
-    expect(() => sink.addRelationship(undeclared)).toThrow(
+    expect(() => sink.addRelationship(undeclared)).not.toThrow();
+    expect(() => sink.finalize()).toThrow(
       /Relationship label pair Static → Static is not declared/,
     );
   });

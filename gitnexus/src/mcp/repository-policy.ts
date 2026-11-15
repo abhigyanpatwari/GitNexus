@@ -1,6 +1,7 @@
 import path from 'node:path';
-import type { LocalBackend, RepoListing } from './local/local-backend.js';
+import type { LocalBackend, McpToolCallContext, RepoListing } from './local/local-backend.js';
 import { parseListReposPagination } from './local/local-backend.js';
+import { parseQueryRepositories } from './local/multi-repo-query.js';
 import { scrubGroupDescription } from './read-only-policy.js';
 import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from './tools.js';
 import type { GITNEXUS_TOOLS } from './tools.js';
@@ -158,6 +159,13 @@ export class McpRepositoryPolicy {
   ): Record<string, unknown> | undefined {
     if (!this.configured) return args;
     if (!this.restricted && args?.repo !== undefined) return args;
+    if (Array.isArray(args?.repo)) {
+      // Authorize every entry before the raw backend can start any member search.
+      const repos = parseQueryRepositories(args.repo).map(
+        (repo) => this.resolveRuntimeRepo(repo).path,
+      );
+      return { ...args, repo: repos };
+    }
     const selected = this.repoForArgs(args);
     if (!selected) return args;
     return { ...(args ?? {}), repo: selected.path };
@@ -258,13 +266,17 @@ export class McpRepositoryPolicy {
     backend: LocalBackend,
     method: string,
     params: Record<string, unknown> | undefined,
+    ...context: [McpToolCallContext?]
   ): Promise<unknown> {
-    if (!this.configured) return backend.callTool(method, params);
+    if (Array.isArray(params?.repo) && method !== 'query' && method !== 'search') {
+      throw new Error('Repository arrays are supported only by query (and legacy search).');
+    }
+    if (!this.configured) return backend.callTool(method, params, ...context);
     if (method === 'list_repos') return this.listReposPage(backend, params);
     if (this.restricted && method.startsWith('group_')) {
       throw new Error('Group tools are unavailable when an MCP repository allowlist is set.');
     }
-    return backend.callTool(method, this.normalizeToolArgs(params));
+    return backend.callTool(method, this.normalizeToolArgs(params), ...context);
   }
 
   private async resolveRepo(
@@ -333,18 +345,33 @@ export class McpRepositoryPolicy {
   }
 
   toolForMcp(tool: GitNexusTool): GitNexusTool {
-    if (!this.restricted) return tool;
+    const defaultRepo =
+      this.defaultRepo ??
+      (this.restricted && this.allowed.length === 1 ? this.allowed[0] : undefined);
+    if (!this.restricted && !defaultRepo) return tool;
     const properties = { ...tool.inputSchema.properties };
     const repo = properties.repo;
     if (repo && typeof repo === 'object') {
+      const description = this.restricted
+        ? tool.name === 'query'
+          ? 'Allowed indexed repository name or path, or a list of allowed repositories. Group-mode values are unavailable.'
+          : 'Allowed indexed repository name or path. Group-mode values are unavailable.'
+        : repo.description;
       properties.repo = {
         ...repo,
-        description: 'Allowed indexed repository name or path. Group-mode values are unavailable.',
+        description: defaultRepo
+          ? `${description} Default repository: ${JSON.stringify(defaultRepo.name)}.`
+          : description,
+        ...(defaultRepo ? { default: defaultRepo.path } : {}),
       };
     }
-    delete properties.subgroup;
-    delete properties.crossDepth;
-    const description = scrubGroupDescription(tool.description);
+    if (this.restricted) {
+      delete properties.subgroup;
+      delete properties.crossDepth;
+    }
+    const description = this.restricted
+      ? scrubGroupDescription(tool.description)
+      : tool.description;
     return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   }
 
@@ -353,8 +380,11 @@ export class McpRepositoryPolicy {
     return new Proxy(backend, {
       get(target, property, receiver) {
         if (property === 'callTool') {
-          return (method: string, params: Record<string, unknown> | undefined) =>
-            policy.callTool(target, method, params);
+          return (
+            method: string,
+            params: Record<string, unknown> | undefined,
+            ...context: [McpToolCallContext?]
+          ) => policy.callTool(target, method, params, ...context);
         }
         if (property === 'listRepos') return () => policy.listAllowedRepos(target);
         if (property === 'resolveRepo') {

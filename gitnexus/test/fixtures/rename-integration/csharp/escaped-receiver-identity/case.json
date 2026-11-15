@@ -1,0 +1,37 @@
+{
+  "language": "csharp",
+  "description": "Preserve member calls through matching escaped type and local receiver spellings while renaming the member.",
+  "categories": [
+    "escaped-identifier",
+    "receiver",
+    "call-graph"
+  ],
+  "target": {
+    "name": "Read",
+    "kind": "Method",
+    "file": "Worker.cs",
+    "startLine": 1
+  },
+  "newName": "ReadValue",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "Run",
+        "kind": "Method",
+        "file": "Worker.cs",
+        "startLine": 4
+      },
+      "to": {
+        "name": "Read",
+        "kind": "Method",
+        "file": "Worker.cs",
+        "startLine": 1
+      }
+    }
+  ]
+}

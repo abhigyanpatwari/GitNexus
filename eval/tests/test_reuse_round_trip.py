@@ -214,7 +214,7 @@ def _expectation(**overrides: Any) -> ComparatorReuseExpectation:
 
     binding = TaskReuseBinding(
         task_base_sha=SHA,
-        task_prompt_digest=runner.hashlib.sha256(b"review it").hexdigest(),
+        task_prompt_digest=runner.task_prompt_digest({"prompt": "review it"}),
         oracle_digest="oracle-content",
         oracle_command_digest="oracle-command",
         oracle_manifest_digest="oracle-manifest",
@@ -258,7 +258,7 @@ def test_a_changed_binding_rejects_the_same_emitted_row(
 
     binding = TaskReuseBinding(
         task_base_sha=SHA,
-        task_prompt_digest=runner.hashlib.sha256(b"review it").hexdigest(),
+        task_prompt_digest=runner.task_prompt_digest({"prompt": "review it"}),
         oracle_digest="oracle-content",
         oracle_command_digest="oracle-command",
         oracle_manifest_digest="oracle-manifest",
@@ -266,3 +266,14 @@ def test_a_changed_binding_rejects_the_same_emitted_row(
         sandbox_dependency_manifest_digest="DIFFERENT-dependencies",
     )
     assert row_is_reusable_comparator(row, _expectation(tasks={TASK_ID: binding})) is False
+
+
+def test_old_prompt_identity_cannot_reuse_a_row_without_the_environment_instruction(emitted_row):
+    legacy = {**emitted_row, "task_prompt_digest": runner.hashlib.sha256(b"review it").hexdigest()}
+    assert not row_is_reusable_comparator(legacy, _expectation())
+
+
+def test_changed_environment_instruction_invalidates_a_previously_matching_row(emitted_row, monkeypatch):
+    assert row_is_reusable_comparator(emitted_row, _expectation())
+    monkeypatch.setattr(runner, "MCP_REPOSITORY_PROMPT", runner.MCP_REPOSITORY_PROMPT + " Changed instruction.")
+    assert not row_is_reusable_comparator(emitted_row, _expectation())

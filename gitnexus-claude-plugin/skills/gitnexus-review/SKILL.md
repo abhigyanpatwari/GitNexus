@@ -125,12 +125,14 @@ and do not claim a complete graph-backed review.
    from `NODE_SCHEMA_QUERIES` + `REL_SCHEMA_QUERIES` and moves on its own;
    the check there is whether the diff changed any string in those arrays,
    and, if it added a new DDL array, whether that array was folded into the
-   fingerprint. The hand-maintained ritual still applies where no
-   declarative artifact describes the invalidated set: the parse-store
-   `SCHEMA_BUMP` and both bench fingerprint sets still need an explicit
-   bump, re-checked against the base branch right before merge. Semantic
-   changes that leave the DDL untouched are outside the fingerprint; they
-   rely on the analyzer runner-identity receipt in the index metadata.
+   fingerprint. Parser compatibility is also automatic: review the base/PDG
+   ownership boundaries in `gitnexus/src/core/parse-cache-identity.ts`, the
+   import/asset coverage audit, and real cold → warm replay tests. New parser
+   dependencies outside those boundaries need explicit coverage; contributors
+   do not allocate a semantic counter. Both benchmark fingerprint sets still
+   need deliberate review before re-baselining: automatic invalidation does
+   not establish semantic correctness. Other semantic changes that leave DDL
+   untouched rely on the analyzer runner-identity receipt in index metadata.
 
 ## Expert lenses
 

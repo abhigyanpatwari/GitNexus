@@ -1,0 +1,40 @@
+{
+  "language": "typescript",
+  "description": "Refuse an intermediate field whose structural annotation hides an unrelated constructor; preserve every file.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "read-write",
+    "cross-file",
+    "constructor-proven-receiver",
+    "unsafe-intermediate-receiver"
+  ],
+  "target": {
+    "name": "score",
+    "kind": "Property",
+    "file": "model.ts",
+    "startLine": 1
+  },
+  "newName": "points",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  },
+  "edges": [
+    {
+      "type": "ACCESSES",
+      "from": {
+        "name": "update",
+        "kind": "Function",
+        "file": "caller.ts"
+      },
+      "to": {
+        "name": "score",
+        "kind": "Property",
+        "file": "model.ts",
+        "startLine": 1
+      }
+    }
+  ]
+}

@@ -51,6 +51,22 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('TestProject');
   });
 
+  it('tells agents to preview with rename dry_run, not a separate rename_preview tool', async () => {
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', {
+      nodes: 50,
+      edges: 100,
+      processes: 5,
+    });
+
+    for (const file of ['CLAUDE.md', 'AGENTS.md']) {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf-8');
+      expect(content).toContain(
+        'use `rename` with `dry_run: true`, review semantic spans and coverage, then apply with `dry_run: false` and its `plan_token`',
+      );
+      expect(content).not.toContain('rename_preview');
+    }
+  });
+
   it('omits volatile counts when noStats option is set (#1477)', async () => {
     // Distinct subdir per case so we can assert on a clean slate.
     const subDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-no-stats-test-'));
@@ -175,8 +191,13 @@ describe('generateAIContextFiles', () => {
         );
         expect(content).toContain('detect_changes({scope: "all"})');
         expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
-        expect(content).toContain('detect_changes({scope: "compare", base_ref: "develop"})');
-        expect(content).toContain('--scope compare --base-ref "develop" --repo .');
+        expect(content).toContain('target branch "develop"');
+        expect(content).toContain('target branch "develop" from its remote');
+        expect(content).toContain('compute its merge base with the reviewed HEAD');
+        expect(content).toContain(
+          'detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})',
+        );
+        expect(content).toContain('--scope compare --base-ref "<merge-base SHA>" --repo .');
         expect(content).toContain('Never substitute grep for graph analysis');
         expect(content).not.toContain('gitnexus impact --target');
       }
@@ -383,6 +404,208 @@ describe('generateAIContextFiles', () => {
     // Should only have one gitnexus section
     const starts = (content.match(/gitnexus:start/g) || []).length;
     expect(starts).toBe(1);
+  });
+
+  describe('line endings (#3688)', () => {
+    const crlf = (lines: string[]) => lines.join('\r\n') + '\r\n';
+    const stats = { nodes: 10, edges: 20, processes: 3 };
+
+    async function withRepo(run: (dir: string, storage: string) => Promise<void>) {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-crlf-'));
+      const storage = path.join(dir, '.gitnexus');
+      await fs.mkdir(storage, { recursive: true });
+      try {
+        await run(dir, storage);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    }
+
+    const loneLfCount = (content: string) => content.replace(/\r\n/g, '').split('\n').length - 1;
+
+    it('writes the block in CRLF when it replaces a section in a CRLF file', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(
+          file,
+          crlf([
+            '# Hand-written guide',
+            '',
+            'Keep this paragraph.',
+            '',
+            '<!-- gitnexus:start -->',
+            'old block',
+            '<!-- gitnexus:end -->',
+            '',
+            'And this one.',
+          ]),
+          'utf-8',
+        );
+
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+
+        const content = await fs.readFile(file, 'utf-8');
+        expect(content).toContain('Keep this paragraph.\r\n');
+        expect(content).toContain('And this one.');
+        expect(content).toContain('<!-- gitnexus:start -->\r\n');
+        expect(content).toContain('CrlfProject');
+        expect(content).not.toContain('old block');
+        expect(loneLfCount(content)).toBe(0);
+      });
+    });
+
+    it('appends the block in CRLF to a CRLF file that has no section yet', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'AGENTS.md');
+        await fs.writeFile(file, crlf(['# Agents', '', 'Hand-written.']), 'utf-8');
+
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+
+        const content = await fs.readFile(file, 'utf-8');
+        expect(content.startsWith('# Agents\r\n')).toBe(true);
+        expect(content).toContain('<!-- gitnexus:end -->');
+        expect(loneLfCount(content)).toBe(0);
+      });
+    });
+
+    it('leaves a CRLF file alone when only the counts moved', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(file, crlf(['# Guide', '', 'Hand-written.']), 'utf-8');
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats);
+        // As git hands the file back on a CRLF checkout: block included.
+        const committed = (await fs.readFile(file, 'utf-8')).replace(/\r?\n/g, '\r\n');
+        await fs.writeFile(file, committed, 'utf-8');
+
+        await generateAIContextFiles(dir, storage, 'CrlfProject', {
+          nodes: 11,
+          edges: 21,
+          processes: 4,
+        });
+
+        expect(await fs.readFile(file, 'utf-8')).toBe(committed);
+      });
+    });
+
+    it.each([false, true])('repairs mixed endings once with noStats=%s', async (noStats) => {
+      await withRepo(async (dir, storage) => {
+        // Build the block as the previous writer wrote it: LF, inside CRLF prose.
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(file, '# Guide\n', 'utf-8');
+        const options = { noStats, skipSkills: true };
+        await generateAIContextFiles(dir, storage, 'CrlfProject', stats, undefined, options);
+        const lfFile = await fs.readFile(file, 'utf-8');
+        const block = lfFile.slice(lfFile.indexOf('<!-- gitnexus:start -->'));
+        const mixed = crlf(['# Guide', '', 'Hand-written, kept as is.', '']) + block;
+        await fs.writeFile(file, mixed, 'utf-8');
+        expect(mixed).toContain('\r\n');
+        expect(mixed.replace(/\r\n/g, '')).toContain('\n');
+
+        // Counts moved, so the block itself is left alone: the file is still
+        // written once, uniformly in its own ending.
+        const first = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          { nodes: 11, edges: 21, processes: 4 },
+          undefined,
+          options,
+        );
+        const repaired = await fs.readFile(file, 'utf-8');
+        expect(first.files).toContain('CLAUDE.md (updated)');
+        expect(loneLfCount(repaired)).toBe(0);
+        expect(repaired).toContain('Hand-written, kept as is.\r\n');
+        expect(repaired.replace(/\r\n/g, '\n')).toBe(mixed.replace(/\r\n/g, '\n'));
+
+        // A fixed old mtime proves the repeat does not rewrite identical bytes.
+        const oldTime = new Date('2000-01-01T00:00:00Z');
+        await fs.utimes(file, oldTime, oldTime);
+        const beforeRepeat = await fs.stat(file);
+        const second = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          { nodes: 12, edges: 22, processes: 5 },
+          undefined,
+          options,
+        );
+        expect(second.files).toContain('CLAUDE.md (preserved)');
+        expect(await fs.readFile(file, 'utf-8')).toBe(repaired);
+        expect((await fs.stat(file)).mtimeMs).toBe(beforeRepeat.mtimeMs);
+      });
+    });
+
+    it.each([
+      {
+        name: 'count-only change',
+        line: 'Indexed as **CrlfProject** (1 symbols, 2 relationships, 3 execution flows). Custom.',
+        noStats: false,
+      },
+      {
+        name: 'no stats line',
+        line: 'A custom block without a generated stats line.',
+        noStats: false,
+      },
+      { name: 'count-free stats line', line: 'Indexed as **CrlfProject**. Custom.', noStats: true },
+    ])('repairs a mixed keep block once: $name', async ({ line, noStats }) => {
+      await withRepo(async (dir, storage) => {
+        const block = [
+          '<!-- gitnexus:start -->',
+          '<!-- gitnexus:keep -->',
+          line,
+          '| query | Find flows |',
+          '<!-- gitnexus:end -->',
+          '',
+        ].join('\n');
+        const mixed =
+          crlf(['# Guide', '', 'Keep this prose.', '']) + block + crlf(['', 'Keep this footer.']);
+        const expected = mixed.replace(/\r?\n/g, '\r\n');
+        const files = ['AGENTS.md', 'CLAUDE.md'];
+        for (const name of files) await fs.writeFile(path.join(dir, name), mixed, 'utf-8');
+        const options = { noStats, skipSkills: true };
+        const first = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          stats,
+          undefined,
+          options,
+        );
+        for (const name of files) {
+          expect(first.files).toContain(`${name} (updated)`);
+          expect(await fs.readFile(path.join(dir, name), 'utf-8')).toBe(expected);
+        }
+        const oldTime = new Date('2000-01-01T00:00:00Z');
+        for (const name of files) await fs.utimes(path.join(dir, name), oldTime, oldTime);
+        const mtimes = await Promise.all(
+          files.map(async (name) => (await fs.stat(path.join(dir, name))).mtimeMs),
+        );
+        const second = await generateAIContextFiles(
+          dir,
+          storage,
+          'CrlfProject',
+          { nodes: 11, edges: 21, processes: 4 },
+          undefined,
+          options,
+        );
+        for (const [i, name] of files.entries()) {
+          expect(second.files).toContain(`${name} (preserved)`);
+          expect(await fs.readFile(path.join(dir, name), 'utf-8')).toBe(expected);
+          expect((await fs.stat(path.join(dir, name))).mtimeMs).toBe(mtimes[i]);
+        }
+      });
+    });
+
+    it('keeps an LF file in LF', async () => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        await fs.writeFile(file, '# Guide\n\nHand-written.\n', 'utf-8');
+
+        await generateAIContextFiles(dir, storage, 'LfProject', stats);
+
+        expect(await fs.readFile(file, 'utf-8')).not.toContain('\r');
+      });
+    });
   });
 
   it('preserves custom section when gitnexus:keep is present', async () => {
@@ -1249,36 +1472,47 @@ Indexed as **Idem** (1 symbols, 2 relationships, 3 execution flows). Custom.
     }
   });
 
-  it('CRLF file with keep marker: stats line updates without corrupting content (#1508 review F5)', async () => {
-    // upsertGitNexusSection writes with .trim() + '\n', so the saved file uses LF
-    // line endings throughout — CRLF in the seed input is not preserved.
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-crlf-'));
-    try {
-      const claudePath = path.join(dir, 'CLAUDE.md');
-      const crlfContent =
-        '# Project\r\n' +
-        '\r\n' +
-        '<!-- gitnexus:start -->\r\n' +
-        '<!-- gitnexus:keep -->\r\n' +
-        'Indexed as **CRLFOldName** (5 symbols, 6 relationships, 7 execution flows). Custom CRLF.\r\n' +
-        '<!-- gitnexus:end -->\r\n';
-      await fs.writeFile(claudePath, crlfContent, 'utf-8');
+  it.each([false, true])(
+    'CRLF keep block updates preserve endings with noStats=%s (#1508)',
+    async (noStats) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-crlf-'));
+      try {
+        const claudePath = path.join(dir, 'CLAUDE.md');
+        const crlfContent =
+          '# Project\r\n' +
+          '\r\n' +
+          '<!-- gitnexus:start -->\r\n' +
+          '<!-- gitnexus:keep -->\r\n' +
+          'Indexed as **CRLFOldName** (5 symbols, 6 relationships, 7 execution flows). Custom CRLF.\r\n' +
+          '<!-- gitnexus:end -->\r\n';
+        await fs.writeFile(claudePath, crlfContent, 'utf-8');
 
-      const stats = { nodes: 50, edges: 60, processes: 7 };
-      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'CRLFTest', stats);
+        const stats = { nodes: 50, edges: 60, processes: 7 };
+        const generated = await generateAIContextFiles(
+          dir,
+          path.join(dir, '.gitnexus'),
+          'CRLFTest',
+          stats,
+          undefined,
+          { noStats, skipSkills: true },
+        );
 
-      const result = await fs.readFile(claudePath, 'utf-8');
-      // Stats updated correctly
-      expect(result).toContain('50 symbols');
-      expect(result).toContain('60 relationships');
-      // Custom prose preserved
-      expect(result).toContain('Custom CRLF');
-      // No verbose template injected
-      expect(result).not.toContain('## Always Do');
-    } finally {
-      await fs.rm(dir, { recursive: true, force: true });
-    }
-  });
+        const result = await fs.readFile(claudePath, 'utf-8');
+        const statsLine = noStats
+          ? 'Indexed as **CRLFTest**'
+          : 'Indexed as **CRLFTest** (50 symbols, 60 relationships, 7 execution flows)';
+        expect(generated.files).toContain('CLAUDE.md (updated)');
+        expect(result).toBe(
+          crlfContent.replace(
+            'Indexed as **CRLFOldName** (5 symbols, 6 relationships, 7 execution flows)',
+            statsLine,
+          ),
+        );
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it('noStats + keep marker: stats line drops the volatile counts (#1706)', async () => {
     // #1706: --no-stats must win in the keep-marker path too. A lean block
@@ -1458,19 +1692,30 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
   });
 
   // ──────────────────────────────────────────────────────────────────
-  // Configurable default branch in the regression example (#243)
+  // Configurable review target and exact merge-base guidance (#243, #3509)
   // ──────────────────────────────────────────────────────────────────
 
-  it('generated regression-compare example uses the configured default branch (#243)', () => {
+  it('uses the configured branch only as a review target, never as base_ref (#243, #3509)', () => {
     const stats = { nodes: 50, edges: 100, processes: 5 };
     const develop = generateGitNexusContent('P', stats, { defaultBranch: 'develop' });
-    expect(develop).toContain('base_ref: "develop"');
-    expect(develop).not.toContain('base_ref: "main"');
+    expect(develop).toContain('target branch "develop" from its remote');
+    expect(develop).toContain('compute its merge base with the reviewed HEAD');
+    expect(develop).not.toContain('GitHub');
+    expect(develop).not.toContain('PR base/head');
+    expect(develop).not.toContain('git fetch origin');
+    expect(develop).toContain('base_ref: "<merge-base SHA>"');
+    expect(develop).not.toContain('base_ref: "develop"');
   });
 
-  it('defaults the regression-compare example to "main" when no branch is configured (#243)', () => {
+  it('defaults the review target to main without comparing to the main tip (#243, #3509)', () => {
     const content = generateGitNexusContent('P', { nodes: 50, edges: 100, processes: 5 });
-    expect(content).toContain('base_ref: "main"');
+    expect(content).toContain('target branch "main" from its remote');
+    expect(content).toContain('compute its merge base with the reviewed HEAD');
+    expect(content).not.toContain('GitHub');
+    expect(content).not.toContain('PR base/head');
+    expect(content).not.toContain('git fetch origin');
+    expect(content).toContain('base_ref: "<merge-base SHA>"');
+    expect(content).not.toContain('base_ref: "main"');
   });
 
   it('references MCP tools by their registered (unprefixed) names (#2059)', () => {
@@ -1492,23 +1737,24 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     // A branch name with a double-quote must be JSON-escaped, not concatenated
     // raw, so it stays inside the inline code span.
     const content = generateGitNexusContent('P', { nodes: 1 }, { defaultBranch: 'we"ird' });
-    expect(content).toContain('base_ref: "we\\"ird"');
-    expect(content).toContain('--base-ref "we\\"ird" --repo .');
+    expect(content).toContain('target branch "we\\"ird"');
+    expect(content).toContain('--base-ref "<merge-base SHA>" --repo .');
   });
 
   it('a backtick branch cannot break the generated Markdown code span (#1996 P1)', () => {
     // The branch is embedded inside a backtick inline-code span; a stray
     // backtick would close it early. markdownSafeBranch strips it at the sink.
     const content = generateGitNexusContent('P', { nodes: 1 }, { defaultBranch: 'main`evil' });
-    const line = content.split('\n').find((l) => l.includes('base_ref'))!;
+    const line = content.split('\n').find((l) => l.includes('target branch'))!;
     // Even backtick count ⇒ every span is balanced (the regression line opens
     // and closes exactly one).
     expect((line.match(/`/g) || []).length % 2).toBe(0);
     expect(line).not.toContain('main`evil');
+    expect(line).toContain('target branch "mainevil" from its remote');
     expect(markdownSafeBranch('a`b`c')).toBe('abc');
   });
 
-  it('refreshBaseRefLine updates base_ref in place, preserving the rest of the block (#1996 P2)', async () => {
+  it('refreshBaseRefLine migrates legacy guidance and preserves the rest of the block (#1996 P2, #3509)', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-baseref-'));
     try {
       // Seed a realistic block: a configured base_ref "main" plus a community
@@ -1518,7 +1764,7 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-- run \`detect_changes({scope: "compare", base_ref: "main"})\`.
+For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\` or \`.gitnexus/run.cjs detect-changes --scope compare --base-ref "main" --repo .\`.
 
 | Task | Read this skill file |
 |------|---------------------|
@@ -1534,7 +1780,11 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
 
       for (const f of ['AGENTS.md', 'CLAUDE.md']) {
         const after = await fs.readFile(path.join(dir, f), 'utf-8');
-        expect(after).toContain('base_ref: "develop"');
+        expect(after).toContain('target branch "develop"');
+        expect(after).toContain('compute its merge base with the reviewed HEAD');
+        expect(after).toContain('target branch "develop" from its remote');
+        expect(after).toContain('base_ref: "<merge-base SHA>"');
+        expect(after).not.toContain('base_ref: "develop"');
         expect(after).not.toContain('base_ref: "main"');
         // The community-skill row (and everything else) is preserved.
         expect(after).toContain('.claude/skills/gitnexus-area-auth/SKILL.md');
@@ -1548,14 +1798,14 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
       const skipped = await refreshBaseRefLine(dir, 'master', { skipAgentsMd: true });
       expect(skipped.files).toEqual([]);
       expect(await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8')).toContain(
-        'base_ref: "develop"',
+        'target branch "develop"',
       );
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
   });
 
-  it('refreshBaseRefLine is a no-op when there is no base_ref line or no file (#1996 P2)', async () => {
+  it('refreshBaseRefLine is a no-op when there is no generated review line or no file (#1996 P2)', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-baseref-noop-'));
     try {
       // No AGENTS.md/CLAUDE.md at all → no files updated, no throw.
@@ -1569,6 +1819,150 @@ Indexed as **P**. Custom.
       await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
       expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
       expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(seed);
+
+      const custom = `<!-- gitnexus:start -->
+Custom target branch "main" and base_ref: "main" notes.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), custom, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
+      expect(await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8')).toBe(custom);
+
+      // A user-authored compare instruction is not generated migration state,
+      // even though it contains the same tool call and base_ref shape.
+      const compareInstruction = `<!-- gitnexus:start -->
+Before release, run \`detect_changes({scope: "compare", base_ref: "main"})\` and inspect every returned flow.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), compareInstruction, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toBe(compareInstruction);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshBaseRefLine updates current merge-base guidance idempotently (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-target-'));
+    try {
+      const seed = generateGitNexusContent('P', { nodes: 1 }, { defaultBranch: 'main' });
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
+
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['CLAUDE.md']);
+      const after = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(after).toContain('target branch "develop"');
+      expect(after).toContain('base_ref: "<merge-base SHA>"');
+      expect(after).not.toContain('base_ref: "develop"');
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves a custom runner path while migrating legacy guidance (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-runner-'));
+    try {
+      const seed = `<!-- gitnexus:start -->
+For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\` or \`.external-index/run.cjs detect-changes --scope compare --base-ref "main" --repo .\`.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed, 'utf-8');
+
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['CLAUDE.md']);
+      const after = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(after).toContain('`.external-index/run.cjs detect-changes');
+      expect(after).not.toContain('`.gitnexus/run.cjs detect-changes');
+      expect(after).toContain('base_ref: "<merge-base SHA>"');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves same-line custom text after legacy guidance (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-suffix-'));
+    try {
+      const seed = `<!-- gitnexus:start -->
+For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`. Always inspect src/security.ts before release.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
+
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
+      const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+      expect(after).toContain('target branch "develop"');
+      expect(after).toContain('Always inspect src/security.ts before release.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['PR GitHub `baseRefOid`/`headRefOid`', 'exact PR base/head commits from host metadata'])(
+    'migrates provider-specific guidance (%s) without losing custom text',
+    async (source) => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-host-neutral-'));
+      try {
+        const seed =
+          '<!-- gitnexus:start -->\n' +
+          `Regression base: ${source}; target branch "main" via tracking remote. Fetch both; pass merge-base SHA to ` +
+          '`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})`. Keep this instruction.\n' +
+          '<!-- gitnexus:end -->\n';
+        await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
+        expect((await refreshBaseRefLine(dir, 'main')).files).toEqual(['AGENTS.md']);
+        const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+        expect(after).toContain('fetch target branch "main" from its remote');
+        expect(after).toContain('compute its merge base with the reviewed HEAD');
+        expect(after).not.toContain(source);
+        expect(after).toContain('Keep this instruction.');
+        expect((await refreshBaseRefLine(dir, 'main')).files).toEqual([]);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('preserves same-line custom text when refreshing current guidance (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-current-suffix-'));
+    try {
+      const current = generateGitNexusContent('P', { nodes: 1, edges: 1, processes: 0 });
+      const seed = current.replace(
+        /(For regression review,[^\n]*\.)/,
+        '$1 Always inspect src/security.ts before release.',
+      );
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), seed, 'utf-8');
+
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
+      const after = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+      expect(after).toContain('target branch "develop"');
+      expect(after).toContain('compute its merge base with the reviewed HEAD');
+      expect(after).toContain('Always inspect src/security.ts before release.');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps MCP-only legacy guidance MCP-only and migrates the compact shape (#3509)', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-review-mcp-only-'));
+    try {
+      const prose = `<!-- gitnexus:start -->
+For regression review: \`detect_changes({scope: "compare", base_ref: "main"})\`.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'AGENTS.md'), prose, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'develop')).files).toEqual(['AGENTS.md']);
+      const afterProse = await fs.readFile(path.join(dir, 'AGENTS.md'), 'utf-8');
+      expect(afterProse).toContain('target branch "develop"');
+      expect(afterProse).not.toContain('.gitnexus/run.cjs');
+      await fs.rm(path.join(dir, 'AGENTS.md'));
+
+      const compact = `<!-- gitnexus:start -->
+- run detect_changes({scope: "compare", base_ref: "main"})
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), compact, 'utf-8');
+      expect((await refreshBaseRefLine(dir, 'release')).files).toEqual(['CLAUDE.md']);
+      const afterCompact = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(afterCompact).toContain('target branch "release"');
+      expect(afterCompact).toContain('merge-base SHA');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
@@ -1585,8 +1979,9 @@ Indexed as **P**. Custom.
       });
       for (const f of ['CLAUDE.md', 'AGENTS.md']) {
         const content = await fs.readFile(path.join(subDir, f), 'utf-8');
-        expect(content).toContain('base_ref: "release/1.0"');
-        expect(content).not.toContain('base_ref: "main"');
+        expect(content).toContain('target branch "release/1.0"');
+        expect(content).toContain('base_ref: "<merge-base SHA>"');
+        expect(content).not.toContain('base_ref: "release/1.0"');
       }
     } finally {
       await fs.rm(subDir, { recursive: true, force: true });
@@ -1721,5 +2116,352 @@ Indexed as **${name}**${counts}. Lean block.
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('preserves the existing stats-line prefix when updating a keep marker', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-prefix-'));
+    const storage = path.join(dir, '.gitnexus');
+    try {
+      await fs.mkdir(storage, { recursive: true });
+      const original = `# Guide
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+indexed by GitNexus as **OldName** (10 symbols, 20 relationships, 3 execution flows). Custom.
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), original, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'Repo$1Name', {
+        nodes: 55,
+        edges: 66,
+        processes: 7,
+      });
+
+      expect(result.files).toContain('CLAUDE.md (updated)');
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8')).toContain(
+        'indexed by GitNexus as **Repo$1Name** (55 symbols, 66 relationships, 7 execution flows). Custom.',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('block heading levels follow the file (#2774)', () => {
+  const stats = { nodes: 10, edges: 20, processes: 3 };
+
+  async function withRepo(run: (dir: string, storage: string) => Promise<void>) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-2774-'));
+    const storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    try {
+      await run(dir, storage);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** ATX heading lines outside fenced code, as `level text`. */
+  const headings = (content: string): string[] => {
+    const out: string[] = [];
+    let inFence = false;
+    for (const line of content.split(/\r?\n/)) {
+      if (/^```/.test(line)) inFence = !inFence;
+      const match = !inFence && /^(#{1,6}) (.*)$/.exec(line);
+      if (match) out.push(`${match[1].length} ${match[2]}`);
+    }
+    return out;
+  };
+  const levelOne = (content: string) => headings(content).filter((h) => h.startsWith('1 '));
+
+  it('keeps the level-1 title in a file GitNexus creates', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(content.startsWith('<!-- gitnexus:start -->\n# GitNexus — Code Intelligence\n')).toBe(
+        true,
+      );
+      expect(headings(content)).toContain('2 Always Do');
+    });
+  });
+
+  it('nests the block under a file that already has a title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '# CLAUDE.md\n\n## Project Overview\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual(['1 CLAUDE.md']);
+      expect(headings(content)).toEqual([
+        '1 CLAUDE.md',
+        '2 Project Overview',
+        '2 GitNexus — Code Intelligence',
+        '3 Always Do',
+        '3 Never Do',
+        '3 Resources',
+        '3 CLI',
+      ]);
+    });
+  });
+
+  it('nests a block an earlier version wrote at level 1, once', async () => {
+    await withRepo(async (dir, storage) => {
+      // A block-only file is what earlier versions created; putting a title
+      // above it gives the two-H1 file the issue reports.
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'AGENTS.md');
+      const legacy = '# AGENTS.md\n\n' + (await fs.readFile(file, 'utf-8'));
+      await fs.writeFile(file, legacy, 'utf-8');
+      expect(levelOne(legacy)).toHaveLength(2);
+
+      const first = await generateAIContextFiles(dir, storage, 'P', stats);
+      const migrated = await fs.readFile(file, 'utf-8');
+      expect(first.files).toContain('AGENTS.md (updated)');
+      expect(levelOne(migrated)).toEqual(['1 AGENTS.md']);
+      expect(migrated).toContain('\n## GitNexus — Code Intelligence\n');
+
+      const second = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(second.files).toContain('AGENTS.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(migrated);
+    });
+  });
+
+  it('nests a block when the only title sits below it', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'AGENTS.md');
+      await fs.appendFile(file, '\n# Appendix\n', 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('AGENTS.md (updated)');
+      expect(await fs.readFile(file, 'utf-8')).toContain(
+        '<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n',
+      );
+    });
+  });
+
+  it('leaves a block-only file at level 1 without rewriting it', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'CLAUDE.md');
+      const created = await fs.readFile(file, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(created);
+    });
+  });
+
+  it('treats a setext title as the file title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, 'Project Guide\n=============\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual([]);
+      expect(headings(content)).toContain('2 GitNexus — Code Intelligence');
+    });
+  });
+
+  it('does not take a # line inside fenced code for a title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, 'Notes.\n\n```sh\n# install\nnpm ci\n```\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual(['1 GitNexus — Code Intelligence']);
+    });
+  });
+
+  it.each([
+    ['an HTML comment with an ATX heading', '<!--\n# Example\n-->\n'],
+    ['an HTML comment with a setext heading', '<!--\nExample\n=======\n-->\n'],
+    ['YAML front matter', '---\nexample: |\n  # Example\n---\n'],
+    ['a tilde fence', '~~~md\n# Example\n~~~\n'],
+    ['a longer backtick fence', '````md\n```\n# Example\n````\n'],
+    ['a fence with a false closing line', '```md\n``` text\n# Example\n```\n'],
+    ['an ATX subheading followed by equals signs', '## Details\n===\n'],
+    ['a four-space-indented # line', 'Notes.\n\n    # Example\n'],
+    ['equals signs after a blank line', 'Notes.\n\n===\n'],
+    ['an indented fence', 'Notes.\n\n  ```sh\n# Example\n  ```\n'],
+    ['a fence closed by the other fence character', 'Notes.\n\n```\n~~~\n# Example\n```\n'],
+    ['an indented HTML comment', 'Notes.\n\n  <!--\n# Example\n-->\n'],
+    ['equals signs under a thematic break', '---\n===\n'],
+    ['equals signs under a list item', '- item\n===\n'],
+    ['equals signs under a block quote', '> quote\n===\n'],
+    ['a fence opened on a list item line', '- ```sh\n  # Example\n  ```\n- Next.\n'],
+  ])('does not nest under %s', async (_name, original) => {
+    await withRepo(async (dir, storage) => {
+      for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+        await fs.writeFile(path.join(dir, name), original, 'utf-8');
+      }
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(dir, name), 'utf-8');
+        expect(content.startsWith(original)).toBe(true);
+        expect(content).toContain('<!-- gitnexus:start -->\n# GitNexus — Code Intelligence\n');
+      }
+    });
+  });
+
+  it.each([
+    ['an invalid backtick fence opener', '```example`\n\n# Guide\n'],
+    ['an unclosed front matter delimiter', '---\n# Guide\n...\n'],
+    ['a comment containing fence delimiters', '<!--\n```md\n-->\n\n# Guide\n'],
+    ['a code sample containing a comment opener', '```html\n<!--\n```\n\n# Guide\n'],
+    ['YAML front matter containing fence delimiters', '---\nexample: |\n  ```md\n---\n\n# Guide\n'],
+    ['a UTF-8 byte-order mark', '\uFEFF# Guide\n'],
+    ['a setext title starting with a literal hash', '#Guide\n======\n'],
+    ['a lone hash', '#\n'],
+    ['a tab after the hash', '#\tGuide\n'],
+    ['a fence left open inside a list item', '- ```sh\n  npm ci\n\n# Guide\n'],
+  ])('recognizes a title after %s', async (_name, original) => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, original, 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n');
+      const repeated = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(repeated.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(content);
+    });
+  });
+
+  it('preserves a nested block when only the counts change', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'AGENTS.md');
+      await fs.writeFile(file, '# Guide\n', 'utf-8');
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const original = await fs.readFile(file, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', {
+        nodes: 100,
+        edges: 200,
+        processes: 30,
+      });
+
+      expect(original).toContain('\n## GitNexus — Code Intelligence\n');
+      expect(result.files).toContain('AGENTS.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(original);
+    });
+  });
+
+  it('nests the block in a CRLF file with a title and keeps CRLF', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '# Guide\r\n\r\nNotes.\r\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('\r\n## GitNexus — Code Intelligence\r\n');
+      expect(content.replace(/\r\n/g, '').includes('\n')).toBe(false);
+    });
+  });
+
+  it('leaves a keep-marker block as the user wrote it', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      const original = `# Guide
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+# Code graph
+indexed by GitNexus as **P** (10 symbols, 20 relationships, 3 execution flows).
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(file, original, 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(await fs.readFile(file, 'utf-8')).toBe(original);
+    });
+  });
+
+  it('nests under a front-matter title, which MD025 counts as the file title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '---\ntitle: Guide\n---\n\n## Overview\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n');
+      expect(levelOne(content)).toEqual([]);
+      const repeated = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(repeated.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(content);
+    });
+  });
+
+  // The writer trims the file, which can change what its first lines are. The
+  // level is chosen for the text as written, so the next run agrees with it.
+  it.each([
+    ['a blank line before front matter', '\n---\nname: x\n# yaml comment\n---\n\nNotes.\n', '#'],
+    ['an indented first line', '    # install deps\n    npm ci\n\nNotes.\n', '##'],
+  ])('settles the heading level in one write for %s', async (_name, original, level) => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, original, 'utf-8');
+
+      const first = await generateAIContextFiles(dir, storage, 'P', stats);
+      const written = await fs.readFile(file, 'utf-8');
+      const second = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(first.files).toContain('CLAUDE.md (appended)');
+      expect(written).toContain(`<!-- gitnexus:start -->\n${level} GitNexus — Code Intelligence\n`);
+      expect(second.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(written);
+    });
+  });
+
+  it('keeps an existing block when blank lines precede front matter', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '---\nname: x\n# yaml comment\n---\n\nNotes.\n', 'utf-8');
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const padded = '\n' + (await fs.readFile(file, 'utf-8'));
+      await fs.writeFile(file, padded, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(padded);
+    });
+  });
+
+  // Nesting shifts every block line that starts with `#`, so the template must
+  // not gain one that is not a heading (a `# comment` in a fenced example).
+  it('starts no block line with # other than its headings', () => {
+    const block = generateGitNexusContent('P', stats, {
+      generatedSkills: [{ name: 'auth', label: 'Auth', symbolCount: 5, fileCount: 2 }],
+      groupNames: ['platform'],
+      hasPdg: true,
+      hasSpringActuator: true,
+    });
+
+    expect(block.split('\n').filter((line) => line.startsWith('#'))).toEqual([
+      '# GitNexus — Code Intelligence',
+      '## Always Do',
+      '## Never Do',
+      '## Resources',
+      '## Cross-Repo Groups',
+      '## CLI',
+    ]);
   });
 });

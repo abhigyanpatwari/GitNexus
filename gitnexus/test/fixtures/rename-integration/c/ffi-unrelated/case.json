@@ -1,0 +1,19 @@
+{
+  "language": "c",
+  "description": "Rust, Go, Zig and Swift comments, strings and unrelated names do not block a proven C rename.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.c"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

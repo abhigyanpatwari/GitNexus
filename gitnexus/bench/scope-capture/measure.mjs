@@ -255,11 +255,17 @@ const LANGS = [
     // both heritage paths and the postfix-chain reference walk run at scale.
     header:
       'class Base {\n  String ping() { return "base"; }\n}\n\nabstract class Marker {\n  String mark();\n}\n\n',
+    // Each entity also carries one awaited call-result local (`final e =
+    // await load()`), so the per-body binder census behind that inference
+    // (`dartBodyCensus`) is exercised at scale: a per-initializer re-walk
+    // made it quadratic in the number of awaited locals (DART-04 review).
     unit: (n) =>
       `class Entity${n} extends Base implements Marker {\n` +
       `  int id = 0;\n  String name = '';\n` +
       `  int getId() { return this.id; }\n` +
-      `  String mark() { return this.name; }\n}\n\n`,
+      `  String mark() { return this.name; }\n` +
+      `  Future<Entity${n}> load() async { return this; }\n` +
+      `  Future<int> use() async { final e = await load(); return e.getId(); }\n}\n\n`,
   },
   {
     name: 'java',
@@ -293,6 +299,17 @@ const LANGS = [
       `new Local().value(); }\n` +
       `    Marker marker${n} = new Marker() {};\n`,
     footer: '  }\n}\n',
+  },
+  {
+    // One left-deep expression in a wildcard importer: each operand adds an
+    // ancestor level. Guards against walking to the root for every name (#3875).
+    name: 'java-deep-chain',
+    emit: emitJavaScopeCaptures,
+    exts: ['.java'],
+    file: 'bench-chain.java',
+    header: 'import models.*; class Chain { int sum() { return 0',
+    unit: (n) => ` + Label.F${n}`,
+    footer: '; } }',
   },
   {
     name: 'typescript',
@@ -366,7 +383,11 @@ function median(xs) {
 }
 
 function timeEmit(emit, src, file, reps) {
-  emit(src, `warmup-${file}`); // warm parser/query JIT (not counted)
+  // Stabilize parser/query JIT before collecting each size's samples.
+  // Keep sizes in separate batches so large allocations cannot bias small runs.
+  for (let i = 0; i < WARMUP_REPS; i++) {
+    emit(src, `warmup-${file}`);
+  }
   const samples = [];
   let count = 0;
   for (let i = 0; i < reps; i++) {
@@ -380,7 +401,8 @@ function timeEmit(emit, src, file, reps) {
 
 const SMALL = 250;
 const LARGE = 800;
-const REPS = 7;
+const WARMUP_REPS = 7;
+const REPS = 21;
 
 function measureLang(lang) {
   // Correctness fingerprint over the fixture corpus + a fixed 20-entity source.
@@ -389,7 +411,8 @@ function measureLang(lang) {
   const fixtures =
     lang.fixturePrefix === undefined ? [] : collectFixtures(lang.fixturePrefix, lang.exts);
   for (const { key, absPath } of fixtures) {
-    const matches = lang.emit(fs.readFileSync(absPath, 'utf8'), absPath);
+    // Scope policies contain file identities; hash stable fixture paths.
+    const matches = lang.emit(fs.readFileSync(absPath, 'utf8'), key);
     groups += matches.length;
     perFixture.push(`${key}\t${matches.length}\t${digestCaptures(matches)}`);
   }
@@ -422,7 +445,13 @@ function measureLang(lang) {
 // ---- run ----
 
 const CHECK = process.argv.includes('--check');
-const results = LANGS.map(measureLang);
+const results = [];
+for (const lang of LANGS) {
+  results.push(measureLang(lang));
+  // Let native tree/node finalizers run between languages. Longer sampling
+  // otherwise retains their allocations for the entire synchronous batch.
+  await new Promise(setImmediate);
+}
 
 if (!CHECK) {
   for (const r of results) process.stdout.write(JSON.stringify(r) + '\n');

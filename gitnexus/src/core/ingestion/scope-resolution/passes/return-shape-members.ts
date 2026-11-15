@@ -38,9 +38,11 @@
 
 import type { CallableFlowOperand, ParsedFile, Scope, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { answeredSiteKey } from '../resolution-outcome.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
+import { referenceEdgeKey } from '../graph-bridge/edges.js';
 import {
   findCallableBindingInScope,
   findClassBindingInScope,
@@ -284,7 +286,9 @@ function buildParameterProducers(
 
       // Resolve the callee from the CALL SITE, so the formal is looked up in the
       // file that actually declares the function rather than the one calling it.
-      const calleeDef = findCallableBindingInScope(flow.source.inScope, callee, indexes);
+      const calleeDef = findCallableBindingInScope(flow.source.inScope, callee, indexes, {
+        position: flow.source.atRange,
+      });
       if (calleeDef?.filePath === undefined) continue;
 
       const binding = formals.get(
@@ -326,6 +330,13 @@ export function emitReturnShapeMemberAccesses(
   propertyNameIndex: PropertyNameIndex,
   /** Sites this pass resolves, so the name fallback leaves them alone. */
   handledSink: Set<string>,
+  /**
+   * Receives the {@link answeredSiteKey} of every site this pass emitted an edge
+   * for. Narrower than `handledSink`, which also claims a site the producer's
+   * shape DISPROVED — that site is settled, but it has no edge, so a drop
+   * recorded for it must stand.
+   */
+  answeredSink?: Set<string>,
 ): ReturnShapeMemberStats {
   let emitted = 0;
   let memberNotOnShape = 0;
@@ -358,7 +369,9 @@ export function emitReturnShapeMemberAccesses(
       // The receiver's binding names the PRODUCER, not a class. That is the
       // whole point: `formatSpikeAlert` is a function, and before R3-4 there
       // was nothing named after it to look a member up on.
-      const typeRef = findReceiverTypeBinding(site.inScope, receiver, indexes);
+      const typeRef = findReceiverTypeBinding(site.inScope, receiver, indexes, {
+        position: site.atRange,
+      });
       let producerRef = typeRef?.rawName;
 
       // W2-2. A receiver with no binding of its own may still be a PARAMETER
@@ -411,7 +424,12 @@ export function emitReturnShapeMemberAccesses(
       //                  resolve into another language with its members
       //                  legitimately in that same file. File equality passes
       //                  there; only the language restriction closes it.
-      const producerDef = findCallableBindingInScope(site.inScope, producerRef, indexes);
+      const producerDef = findCallableBindingInScope(
+        typeRef?.declaredAtScope ?? site.inScope,
+        producerRef,
+        indexes,
+        { position: typeRef?.lookupPosition ?? site.atRange },
+      );
       let producerFile = producerDef?.filePath;
 
       // MEMBER-CALL PRODUCERS (W2-1). Tried only where the callable lookup above
@@ -476,11 +494,16 @@ export function emitReturnShapeMemberAccesses(
       }
       const target = owned[0]!;
 
-      const callerGraphId = resolveCallerGraphId(site.inScope, indexes, nodeLookup, site.atRange);
+      const callerGraphId = resolveCallerGraphId(
+        site.callerScope ?? site.inScope,
+        indexes,
+        nodeLookup,
+        site.atRange,
+      );
       if (callerGraphId === undefined) continue;
       if (callerGraphId === target.id) continue;
 
-      const dedupKey = `ACCESSES:${callerGraphId}->${target.id}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      const dedupKey = referenceEdgeKey('ACCESSES', callerGraphId, target.id, site);
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 
@@ -495,6 +518,7 @@ export function emitReturnShapeMemberAccesses(
       });
       // Claim the site so the name fallback cannot re-answer it differently.
       handledSink.add(siteKey);
+      answeredSink?.add(answeredSiteKey(parsed.filePath, site.atRange, site.kind, site.name));
       emitted++;
     }
   }

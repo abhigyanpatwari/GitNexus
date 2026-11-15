@@ -1,7 +1,8 @@
 import type { ScopeId } from 'gitnexus-shared';
 
 /**
- * Per-file set of `ScopeId`s that came from a `companion_object` AST node
+ * Per-file `ScopeId`s from `companion_object` AST nodes, with a positive
+ * proof when the header has no supertypes
  * (issue #1756 / U4 remediation).
  *
  * Populated during `emitKotlinScopeCaptures` from the `@scope.companion`
@@ -38,21 +39,30 @@ import type { ScopeId } from 'gitnexus-shared';
  * owners modules directly may still need to call `clearCompanionScopes`
  * themselves (see `test/unit/kotlin-static-marker.test.ts`).
  */
-const companionScopesByFile = new Map<string, Set<ScopeId>>();
+const companionScopesByFile = new Map<string, Map<ScopeId, boolean>>();
 
-/** Record a scope id as a companion-object scope for the given file. */
-export function markCompanionScope(filePath: string, scopeId: ScopeId): void {
+/** Record companion identity; omitted header proof remains unknown. */
+export function markCompanionScope(
+  filePath: string,
+  scopeId: ScopeId,
+  hasNoSupertypes = false,
+): void {
   let scopes = companionScopesByFile.get(filePath);
   if (scopes === undefined) {
-    scopes = new Set<ScopeId>();
+    scopes = new Map<ScopeId, boolean>();
     companionScopesByFile.set(filePath, scopes);
   }
-  scopes.add(scopeId);
+  scopes.set(scopeId, hasNoSupertypes);
 }
 
 /** Check whether `scopeId` belongs to a companion-object scope in `filePath`. */
 export function isCompanionScope(filePath: string, scopeId: ScopeId): boolean {
   return companionScopesByFile.get(filePath)?.has(scopeId) ?? false;
+}
+
+/** Only a captured header can prove that a companion has no inherited members. */
+export function companionHasNoSupertypes(filePath: string, scopeId: ScopeId): boolean {
+  return companionScopesByFile.get(filePath)?.get(scopeId) === true;
 }
 
 /**
@@ -63,7 +73,15 @@ export function isCompanionScope(filePath: string, scopeId: ScopeId): boolean {
  */
 export function getCompanionScopesForFile(filePath: string): ScopeId[] {
   const scopes = companionScopesByFile.get(filePath);
-  return scopes === undefined ? [] : [...scopes];
+  return scopes === undefined ? [] : [...scopes.keys()];
+}
+
+/** Positive header proofs carried through worker and cache serialization. */
+export function getCompanionScopesWithoutSupertypesForFile(filePath: string): ScopeId[] {
+  const scopes = companionScopesByFile.get(filePath);
+  return scopes === undefined
+    ? []
+    : [...scopes].filter(([, hasNoSupertypes]) => hasNoSupertypes).map(([scopeId]) => scopeId);
 }
 
 /** Clear all tracked companion scopes (for testing). */

@@ -153,7 +153,7 @@ describe('Cargo review regressions (#3294)', () => {
     },
   );
 
-  it('keeps uncertainty for an unknown macro that can share both files', async () => {
+  it('keeps an explicit unresolved import blocked when a macro makes membership unknown', async () => {
     const { calls } = await check(
       {
         'src/lib.rs': 'use crate::helper; pub fn caller() { helper(); }',
@@ -161,10 +161,10 @@ describe('Cargo review regressions (#3294)', () => {
         'src/main.rs':
           'macro_rules! share { () => { include!("../tests/helper.rs"); #[path="lib.rs"] mod library; } } share!(); fn main() {}',
       },
-      1,
+      0,
       false,
     );
-    expect(calls[0]?.rel).toMatchObject({ reason: 'global-name-fallback', confidence: 0.5 });
+    expect(calls).toEqual([]);
   });
 
   it('preserves a labeled guess for an unmodeled extern-crate alias, not an alias-resolution claim', async () => {

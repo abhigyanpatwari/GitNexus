@@ -21,17 +21,15 @@ export function cppBindingScopeFor(
   innermost: Scope,
   tree: ScopeTree,
 ): ScopeId | null {
-  // Hoist return-type bindings to Module scope so:
-  // 1. propagateImportedReturnTypes can mirror them across files
-  // 2. compound-receiver can find method return types via hoistTypeBindingsToModule
+  // Keep each callable's return fact with its declaring owner. In particular,
+  // a free prototype must not overwrite a same-name method's return type.
   if (decl['@type-binding.return'] !== undefined) {
-    let cur: Scope | undefined = innermost;
-    while (cur !== undefined && cur.kind !== 'Module') {
-      const parentId: ScopeId | null = cur.parent ?? null;
-      if (parentId === null) break;
-      cur = tree.getScope(parentId);
+    let current: Scope | undefined = innermost;
+    while (current !== undefined) {
+      if (current.kind === 'Class' || current.kind === 'Namespace' || current.kind === 'Module')
+        return current.id;
+      current = current.parent === null ? undefined : tree.getScope(current.parent);
     }
-    if (cur !== undefined && cur.kind === 'Module') return cur.id;
   }
   return null; // default auto-hoist for other bindings
 }

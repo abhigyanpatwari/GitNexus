@@ -1,0 +1,38 @@
+{
+  "language": "typescript",
+  "description": "Rename an explicit implementation family through a constructor-proven exported const and its imported alias.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "constructor-proven-receiver",
+    "cross-file-alias",
+    "exported-value"
+  ],
+  "target": {
+    "name": "render",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 1
+  },
+  "newName": "paint",
+  "expect": {
+    "status": "success",
+    "edits": 6
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "entry.ts"
+      },
+      "to": {
+        "name": "render",
+        "kind": "Method",
+        "file": "model.ts",
+        "startLine": 1
+      }
+    }
+  ]
+}

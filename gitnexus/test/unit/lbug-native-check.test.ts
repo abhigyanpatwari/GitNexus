@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import os from 'os';
 import path from 'path';
 import fs from 'fs/promises';
-import { checkLbugNative, glibcTooOldMessage } from '../../src/core/lbug/native-check.js';
+import {
+  checkLbugNative,
+  glibcTooOldMessage,
+  prepareLbugNativeBinary,
+} from '../../src/core/lbug/native-check.js';
 
 describe('checkLbugNative', () => {
   it('returns ok:true when the real @ladybugdb/core binary is present', () => {
@@ -71,6 +75,24 @@ describe('checkLbugNative', () => {
     await fs.writeFile(path.join(subPkgDir, 'package.json'), '{"name":"sub"}');
     return { root, pkgDir, subPkgDir };
   }
+
+  it('prepares a skipped lifecycle copy without loading the binary before identity capture', async () => {
+    const { root, pkgDir, subPkgDir } = await prebuiltFixture('lbug-prepare-');
+    try {
+      // Deliberately not a native addon: preparation must only copy bytes.
+      const bytes = Buffer.from('prebuilt fixture');
+      await fs.writeFile(path.join(subPkgDir, 'lbugjs.node'), bytes);
+      expect(() => prepareLbugNativeBinary(pkgDir)).not.toThrow();
+      expect(await fs.readFile(path.join(pkgDir, 'lbugjs.node'))).toEqual(bytes);
+
+      // An installed binary must not be replaced on a later preparation pass.
+      await fs.writeFile(path.join(subPkgDir, 'lbugjs.node'), 'different prebuilt');
+      prepareLbugNativeBinary(pkgDir);
+      expect(await fs.readFile(path.join(pkgDir, 'lbugjs.node'))).toEqual(bytes);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
 
   it('restores a missing lbugjs.node from the prebuilt platform sub-package', async () => {
     // The "install lifecycle script was skipped" case is recoverable without a

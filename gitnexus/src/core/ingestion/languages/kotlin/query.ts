@@ -80,6 +80,12 @@ const KOTLIN_SCOPE_QUERY = `
 ;; without the auto-hoist semantics of Function scopes.
 (lambda_literal) @scope.block
 
+;; Catch bindings and property-accessor implicit names are not yet retained as
+;; lexical values. Their bodies cannot prove a package-qualified head absent.
+(catch_block) @scope.block
+(getter) @scope.block
+(setter) @scope.block
+
 ;; Declarations — types
 ;; The Kotlin grammar puts NO named fields on \`class_declaration\`, so the
 ;; parameter list is matched positionally as an optional unnamed child, exactly

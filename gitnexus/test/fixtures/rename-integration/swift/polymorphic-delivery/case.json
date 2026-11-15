@@ -1,0 +1,68 @@
+{
+  "language": "swift",
+  "description": "Rename a Swift protocol requirement through its implementation, override, super call and typed receivers.",
+  "categories": [
+    "polymorphism",
+    "call-graph",
+    "unrelated-owner",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "dispatch",
+    "kind": "Method",
+    "file": "delivery.swift",
+    "startLine": 1
+  },
+  "newName": "deliver",
+  "expect": {
+    "status": "success",
+    "edits": 7
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "dispatch",
+        "kind": "Function",
+        "file": "delivery.swift",
+        "startLine": 4
+      },
+      "to": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "delivery.swift",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "METHOD_OVERRIDES",
+      "from": {
+        "name": "ExpressCourier",
+        "kind": "Class",
+        "file": "delivery.swift",
+        "startLine": 6
+      },
+      "to": {
+        "name": "dispatch",
+        "kind": "Function",
+        "file": "delivery.swift",
+        "startLine": 4
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "send",
+        "kind": "Function",
+        "file": "delivery.swift",
+        "startLine": 9
+      },
+      "to": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "delivery.swift",
+        "startLine": 1
+      }
+    }
+  ]
+}

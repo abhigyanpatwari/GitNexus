@@ -9,6 +9,7 @@ import {
   readFtsArtifactManifest,
   resolveFtsVersionPair,
   resolveVendoredFtsPath,
+  resolveVendoredVectorPath,
   isUnsupportedFtsTuple,
   validateVendoredExtensionPath,
 } from '../../src/core/lbug/vendored-extension-path.js';
@@ -74,6 +75,28 @@ describe('resolveVendoredFtsPath', () => {
     writeFileSync(evil, 'placeholder');
     expect(isPathInsideRoot(vendorRoot, evil)).toBe(false);
     expect(validateVendoredExtensionPath(evil, vendorRoot)).toBeNull();
+  });
+});
+
+describe('resolveVendoredVectorPath', () => {
+  it('resolves only the requested platform artifact', () => {
+    const vendorRoot = makeVendorRoot();
+    const dir = join(vendorRoot, 'lbug-vector', 'prebuilds', 'linux-x64');
+    mkdirSync(dir, { recursive: true });
+    const artifact = join(dir, 'libvector.lbug_extension');
+    writeFileSync(artifact, 'placeholder');
+
+    expect(resolveVendoredVectorPath({ vendorRoot, tuple: 'linux-x64' })).toBe(artifact);
+    expect(resolveVendoredVectorPath({ vendorRoot, tuple: 'win32-arm64' })).toBeNull();
+  });
+
+  it('rejects a tuple that escapes the vendor root', () => {
+    const parent = makeVendorRoot();
+    const vendorRoot = join(parent, 'vendor');
+    mkdirSync(vendorRoot);
+    writeFileSync(join(parent, 'libvector.lbug_extension'), 'outside');
+
+    expect(resolveVendoredVectorPath({ vendorRoot, tuple: '../../..' })).toBeNull();
   });
 });
 

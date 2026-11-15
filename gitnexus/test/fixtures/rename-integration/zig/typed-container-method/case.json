@@ -1,0 +1,78 @@
+{
+  "language": "zig",
+  "description": "Rename a public container method through self and typed receivers, leaving another container method unchanged.",
+  "categories": ["call-graph", "typed-container", "receiver-isolation"],
+  "target": {
+    "name": "process",
+    "kind": "Method",
+    "file": "model.zig",
+    "startLine": 1
+  },
+  "newName": "execute",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "model.zig",
+        "startLine": 2
+      },
+      "to": {
+        "name": "process",
+        "kind": "Method",
+        "file": "model.zig",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 5
+      },
+      "to": {
+        "name": "process",
+        "kind": "Method",
+        "file": "model.zig",
+        "startLine": 1
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 5
+      },
+      "to": {
+        "name": "dispatch",
+        "kind": "Method",
+        "file": "model.zig",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.zig",
+        "startLine": 5
+      },
+      "to": {
+        "name": "process",
+        "kind": "Method",
+        "file": "model.zig",
+        "startLine": 4
+      }
+    }
+  ]
+}

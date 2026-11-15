@@ -5,8 +5,9 @@ import path from 'path';
 import os from 'os';
 import {
   RelPairRouter,
+  UndeclaredPairCollector,
   UndeclaredRelationPairError,
-  assertDeclaredPair,
+  checkDeclaredPair,
   createRelationPairMatcher,
   findUndeclaredRelationPairError,
   getNodeLabel,
@@ -215,45 +216,61 @@ describe('createRelationPairMatcher', () => {
   });
 });
 
-describe('assertDeclaredPair', () => {
+describe('checkDeclaredPair', () => {
   const DECLARED_ONE = new Set<string>(['Function|Function']);
 
-  it('passes a declared pair through and throws a typed error for an undeclared one', () => {
+  /** Run one undeclared edge through the guard and return what the collector throws. */
+  const failOnce = (
+    pairKey: string,
+    relationType: string,
+    fromId: string,
+    toId: string,
+  ): unknown => {
+    const undeclared = new UndeclaredPairCollector();
+    checkDeclaredPair(pairKey, DECLARED_ONE, undeclared, relationType, fromId, toId);
+    try {
+      undeclared.throwIfAny();
+      return undefined;
+    } catch (err) {
+      return err;
+    }
+  };
+
+  it('passes a declared pair and records an undeclared one instead of throwing', () => {
+    const undeclared = new UndeclaredPairCollector();
     expect(
-      assertDeclaredPair(
+      checkDeclaredPair(
         'Function|Function',
         DECLARED_ONE,
+        undeclared,
         'CALLS',
         'Function:src/a.ts:f:1',
         'Function:src/a.ts:g:2',
       ),
-    ).toBeUndefined();
-    expect(() =>
-      assertDeclaredPair(
+    ).toBe(true);
+    expect(() => undeclared.throwIfAny()).not.toThrow();
+
+    expect(
+      checkDeclaredPair(
         'Method|Annotation',
         DECLARED_ONE,
+        undeclared,
         'ANNOTATED_BY',
         'Method:src/app/Config.java:Config.dataSource#12',
         'Annotation:src/app/Config.java:ConditionalOnMissingBean',
       ),
-    ).toThrow(UndeclaredRelationPairError);
+    ).toBe(false);
+    expect(undeclared.size).toBe(1);
+    expect(() => undeclared.throwIfAny()).toThrow(UndeclaredRelationPairError);
   });
 
   it('carries the pair, relationship type, both node ids and the source file (#2789)', () => {
-    const thrown = (() => {
-      try {
-        assertDeclaredPair(
-          'Method|Annotation',
-          DECLARED_ONE,
-          'ANNOTATED_BY',
-          'Method:src/app/Config.java:Config.dataSource#12',
-          'Annotation:src/app/Config.java:ConditionalOnMissingBean',
-        );
-        return undefined;
-      } catch (err) {
-        return err;
-      }
-    })();
+    const thrown = failOnce(
+      'Method|Annotation',
+      'ANNOTATED_BY',
+      'Method:src/app/Config.java:Config.dataSource#12',
+      'Annotation:src/app/Config.java:ConditionalOnMissingBean',
+    );
 
     expect(thrown).toBeInstanceOf(UndeclaredRelationPairError);
     expect(thrown).toMatchObject({
@@ -285,6 +302,100 @@ describe('assertDeclaredPair', () => {
       're-running the analysis will fail in exactly the same place',
     ];
     expect(required.filter((needle) => !message.includes(needle))).toEqual([]);
+    expect(message).not.toContain('other files may contain the same pairs');
+  });
+
+  it('warns about unlisted files when a single pair occurs more than once', () => {
+    const undeclared = new UndeclaredPairCollector();
+    for (const file of ['Config.java', 'Other.kt']) {
+      undeclared.record(
+        'Method|Annotation',
+        'ANNOTATED_BY',
+        `Method:src/app/${file}:configure#12`,
+        `Annotation:src/app/${file}:Bean`,
+      );
+    }
+
+    let thrown: unknown;
+    try {
+      undeclared.throwIfAny();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(UndeclaredRelationPairError);
+    const err = thrown as UndeclaredRelationPairError;
+    expect(err.pairs).toHaveLength(1);
+    expect(err.pairs[0]).toMatchObject({ pairKey: 'Method|Annotation', edges: 2 });
+    expect(err.message).toContain('Only the first edge of each pair is shown');
+    expect(err.message).toContain(
+      'other files may contain the same pairs and need to be excluded too',
+    );
+    expect(err.message).not.toContain('To finish indexing the rest');
+    expect(err.message).toContain('src/app/Config.java');
+    expect(err.message).not.toContain('Other.kt');
+  });
+
+  it('reports every undeclared pair of the emit in one error (#2797)', () => {
+    const undeclared = new UndeclaredPairCollector();
+    const edges: Array<[string, string, string, string]> = [
+      [
+        'Method|Annotation',
+        'ANNOTATED_BY',
+        'Method:src/app/Config.java:Config.dataSource#12',
+        'Annotation:src/app/Config.java:ConditionalOnMissingBean',
+      ],
+      ['Method|File', 'CALLS', 'Method:src/App.vue:App.onSave#3', 'File:src/Child.vue'],
+      [
+        'Method|Annotation',
+        'ANNOTATED_BY',
+        'Method:src/app/Other.kt:Other.cache#7',
+        'Annotation:src/app/Other.kt:Bean',
+      ],
+      ['Class|Tool', 'DEFINES', 'Class:tools/search.py:Search', 'Tool:tools/search.py:search'],
+    ];
+    for (const [pairKey, type, from, to] of edges) {
+      expect(checkDeclaredPair(pairKey, DECLARED_ONE, undeclared, type, from, to)).toBe(false);
+    }
+
+    let thrown: unknown;
+    try {
+      undeclared.throwIfAny();
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(UndeclaredRelationPairError);
+    const err = thrown as UndeclaredRelationPairError;
+    // The top-level fields stay those of the first pair, so existing consumers
+    // (the CLI's machine-readable fields) keep their meaning.
+    expect(err).toMatchObject({
+      pairKey: 'Method|Annotation',
+      relationType: 'ANNOTATED_BY',
+      sourceFile: 'src/app/Config.java',
+    });
+    expect(err.pairs.map((pair) => [pair.pairKey, pair.edges])).toEqual([
+      ['Method|Annotation', 2],
+      ['Method|File', 1],
+      ['Class|Tool', 1],
+    ]);
+    const required = [
+      '3 relationship label pairs are not declared',
+      'Method → Annotation (2 edges, first one below)',
+      'Method → File (1 edge, first one below)',
+      'Class → Tool (1 edge, first one below)',
+      'Method:src/app/Config.java:Config.dataSource#12',
+      'src/App.vue',
+      'tools/search.py',
+      'Report the missing pairs',
+      'adding the example files (or their directories)',
+      'Only the first edge of each pair is shown',
+      'other files may contain the same pairs and need to be excluded too',
+      'https://github.com/abhigyanpatwari/GitNexus/issues/new',
+      're-running the analysis will fail in exactly the same place',
+    ];
+    expect(required.filter((needle) => !err.message.includes(needle))).toEqual([]);
+    expect(err.message).not.toContain('To finish indexing the rest');
+    // The second Method→Annotation edge is counted, not listed.
+    expect(err.message).not.toContain('Other.kt');
   });
 
   it('reports no source file for synthetic community/process ids instead of guessing', () => {
@@ -341,27 +452,38 @@ describe('RelPairRouter', () => {
     expect(streams.every((s) => s.ended)).toBe(true);
   });
 
-  it('rejects a valid-label pair that is absent from the relation schema', () => {
+  it('skips every valid-label pair absent from the relation schema and rejects at close with all of them', async () => {
     const streams: MockWriteStream[] = [];
     const router = new RelPairRouter(tmpDir, HEADER, VALID, DECLARED, mockFactory(streams));
 
-    const route = () =>
-      router.route(
-        'File:src/a.ts',
-        'Community:1',
-        row('File:src/a.ts', 'Community:1', 'DEFINES'),
-        'DEFINES',
-      );
-    expect(route).toThrow('File → Community is not declared in the LadybugDB relation schema');
+    const route = async (from: string, to: string, type: string) => {
+      const p = router.route(from, to, row(from, to, type), type);
+      if (p) await p;
+    };
+    // Routing does not throw on an undeclared pair: it keeps going so the
+    // later ones are found in the same run.
+    await route('File:src/a.ts', 'Community:1', 'DEFINES');
+    await route('File:src/a.ts', 'Function:src/a.ts:f:1', 'DEFINES');
+    await route('Function:src/b.ts:g:2', 'Process:3', 'STEP_IN_PROCESS');
+    await route('File:src/c.ts', 'Community:4', 'DEFINES');
+
+    const closing = router.close();
+    await expect(closing).rejects.toThrow(UndeclaredRelationPairError);
+    const err = (await closing.catch((e: unknown) => e)) as UndeclaredRelationPairError;
     // The row is already CSV-escaped here, so the router must forward the edge
-    // context itself — otherwise the crash names only the abstract label pair.
-    expect(route).toThrow(UndeclaredRelationPairError);
-    expect(route).toThrow(/DEFINES/);
-    expect(route).toThrow(/File:src\/a\.ts/);
-    expect(route).toThrow(/Community:1/);
-    expect(streams).toHaveLength(0);
+    // context itself — otherwise the error names only the abstract label pair.
+    expect(err.pairs.map((pair) => [pair.pairKey, pair.relationType, pair.edges])).toEqual([
+      ['File|Community', 'DEFINES', 2],
+      ['Function|Process', 'STEP_IN_PROCESS', 1],
+    ]);
+    expect(err.message).toContain('File → Community (2 edges, first one below)');
+    expect(err.message).toContain('Function:src/b.ts:g:2');
+    // Only the declared edge reached a pair file; undeclared ones are not
+    // counted as skipped (that counter is for invalid node labels).
+    expect([...router.byPair.keys()]).toEqual(['File|Function']);
+    expect(router.total).toBe(1);
     expect(router.skipped).toBe(0);
-    expect(router.total).toBe(0);
+    expect(streams.every((s) => s.ended)).toBe(true);
   });
 
   it('returns a drain promise under backpressure and completes once unblocked', async () => {

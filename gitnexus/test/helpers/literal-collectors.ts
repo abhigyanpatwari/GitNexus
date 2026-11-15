@@ -79,6 +79,7 @@ const DIR_LANG: Record<string, SupportedLanguages> = {
   java: SupportedLanguages.Java,
   c: SupportedLanguages.C,
   cpp: SupportedLanguages.CPlusPlus,
+  'objective-c': SupportedLanguages.ObjectiveC,
   csharp: SupportedLanguages.CSharp,
   go: SupportedLanguages.Go,
   ruby: SupportedLanguages.Ruby,
@@ -94,6 +95,7 @@ const DIR_LANG: Record<string, SupportedLanguages> = {
 /** Basename (no .ts) → language set, for extractor files that name a language. */
 const BASENAME_LANGS: Record<string, SupportedLanguages[]> = {
   'c-cpp': [SupportedLanguages.C, SupportedLanguages.CPlusPlus],
+  'objective-c': [SupportedLanguages.ObjectiveC],
   jvm: [SupportedLanguages.Java, SupportedLanguages.Kotlin],
   'typescript-javascript': [SupportedLanguages.TypeScript, SupportedLanguages.JavaScript],
   csharp: [SupportedLanguages.CSharp],
@@ -142,8 +144,9 @@ function fileLanguages(relPath: string): SupportedLanguages[] {
   }
   const base = relPath.replace(/\.ts$/, '').split('/').pop() ?? '';
   if (BASENAME_LANGS[base]) return BASENAME_LANGS[base];
-  // A `<lang>-harvest.ts` CFG def/use harvester is validated against the SAME
-  // grammar(s) as its `<lang>.ts` CFG visitor (go-harvest → Go, c-cpp-harvest →
+  // A `<lang>-harvest.ts` CFG def/use harvester or `<lang>-ast.ts` helper is
+  // validated against the SAME grammar(s) as its `<lang>.ts` CFG visitor
+  // (go-harvest → Go, c-cpp-harvest →
   // C+C++, typescript-harvest → TS, …) — strip the suffix and reuse the visitor
   // basename map. The two genuinely language-agnostic harvesters —
   // call-site-harvest.ts (pure taint-site mechanism) and scope-tree-harvest.ts
@@ -151,7 +154,7 @@ function fileLanguages(relPath: string): SupportedLanguages[] {
   // (`call-site`, `scope-tree`) misses BASENAME_LANGS and they fall through to
   // the valid-if-any ALL_LANGS bucket below (correct: they pin no per-grammar
   // literal).
-  const harvestBase = base.replace(/-harvest$/, '');
+  const harvestBase = base.replace(/-(?:harvest|ast)$/, '');
   if (harvestBase !== base && BASENAME_LANGS[harvestBase]) return BASENAME_LANGS[harvestBase];
   // generic / shared / cross-language helpers → any grammar (valid-if-any)
   return [...ALL_LANGS];

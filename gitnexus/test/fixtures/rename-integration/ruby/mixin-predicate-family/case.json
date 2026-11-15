@@ -1,0 +1,39 @@
+{
+  "language": "ruby",
+  "description": "Rename a predicate shared by an included module and overriding class while keeping an unrelated owner and block parameter.",
+  "categories": [
+    "polymorphism",
+    "mixin",
+    "punctuation-method",
+    "unrelated-owner",
+    "shadowing"
+  ],
+  "target": {
+    "name": "ready?",
+    "kind": "Method",
+    "file": "model.rb",
+    "startLine": 1
+  },
+  "newName": "available?",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "ready?",
+        "kind": "Method",
+        "file": "model.rb",
+        "startLine": 7
+      },
+      "to": {
+        "name": "ready?",
+        "kind": "Method",
+        "file": "model.rb",
+        "startLine": 1
+      }
+    }
+  ]
+}

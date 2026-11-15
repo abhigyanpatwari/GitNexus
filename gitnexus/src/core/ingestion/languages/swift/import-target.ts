@@ -19,7 +19,7 @@
  */
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import {
   coerceDeclaredSwiftTargets,
   swiftDeclaredTargetPrefix,

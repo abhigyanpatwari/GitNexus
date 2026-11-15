@@ -3,7 +3,6 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateGoOwners, populateGoWorkspaceOwners } from './method-owners.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
-import { loadGoModulePath } from '../../language-config.js';
 import { goProvider } from '../go.js';
 import {
   goArityCompatibility,
@@ -15,9 +14,12 @@ import {
 import { detectGoInterfaceImplementations } from './interface-impls.js';
 import { populateGoRangeBindings } from './range-binding.js';
 import { expandGoWildcardNames } from './expand-wildcards.js';
-import { goMapValueType } from './interpret.js';
+import { goMapValueType, goQualifiedTypeLookupSpelling } from './interpret.js';
 import { goIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
+import { goIsNamespaceMemberVisible } from './namespace-member-visibility.js';
 import { resolveGoImportBinding } from './import-binding.js';
+import { captureGoWorkspaceConfig, loadGoWorkspaceConfig } from './workspace-config.js';
+import { emitMethodOwnerEdges } from '../../scope-resolution/graph-bridge/ownership.js';
 
 /** Slice `[]T` and array `[N]T` / `[...]T` → the element spelling. Hoisted —
  *  a literal inside the hook would mint a fresh RegExp per folded subscript. */
@@ -28,7 +30,13 @@ export const goScopeResolver: ScopeResolver = {
   languageProvider: goProvider,
   importEdgeReason: 'go-scope: import',
 
-  loadResolutionConfig: (repoPath: string) => loadGoModulePath(repoPath),
+  // Every go.mod / go.work, not only the root's: modules nest, sit in
+  // directories named unlike their paths, and a repo may have no root module.
+  // Captured from the scan's path list during analyze; a rename refresh is
+  // handed only source paths, so it rescans for the manifests instead.
+  loadResolutionConfig: loadGoWorkspaceConfig,
+  captureResolutionConfig: captureGoWorkspaceConfig,
+  refreshResolutionConfig: (repoPath: string) => loadGoWorkspaceConfig(repoPath),
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
     resolveGoImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
@@ -52,6 +60,11 @@ export const goScopeResolver: ScopeResolver = {
   // purpose for `method-owners.ts`.)
   stripTypePreservingDecoration: (typeName) =>
     typeName.startsWith('*') ? typeName.slice(1).trim() : undefined,
+
+  // `normalizeGoTypeName` drops the package qualifier from every binding but a
+  // return type, so `models.User` and `api.User` both arrive as `User`. This
+  // recovers `models.User` from the written spelling for receiver typing.
+  qualifiedTypeLookupSpelling: goQualifiedTypeLookupSpelling,
 
   // The subscript counterpart of the stripper above, and the reason the two are
   // separate hooks: `*` is safe to strip at any class lookup, `[]` / `map[K]`
@@ -82,6 +95,7 @@ export const goScopeResolver: ScopeResolver = {
 
   populateOwners: (parsed: ParsedFile) => populateGoOwners(parsed),
   populateWorkspaceOwners: (parsedFiles, ctx) => populateGoWorkspaceOwners(parsedFiles, ctx),
+  emitPostResolutionEdges: emitMethodOwnerEdges,
 
   isSuperReceiver: () => false,
 
@@ -90,6 +104,7 @@ export const goScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
   allowGlobalFreeCallFallback: true,
   isGlobalNameFallbackPlausible: goIsGlobalNameFallbackPlausible,
+  isNamespaceMemberVisible: goIsNamespaceMemberVisible,
 
   populateNamespaceSiblings: populateGoPackageSiblings,
   mirrorNamespaceTypeBindings: mirrorGoNamespaceTypeBindings,

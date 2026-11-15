@@ -23,6 +23,7 @@ import {
   buildClassRegistry,
   buildFieldRegistry,
   buildMethodRegistry,
+  buildMacroRegistry,
   buildDefIndex,
   buildMethodDispatchIndex,
   buildModuleScopeIndex,
@@ -588,6 +589,39 @@ describe('Step 3: owner-scoped contributor', () => {
 // ─── Step 2: type-binding / MRO walk ───────────────────────────────────────
 
 describe('Step 2: type-binding + MRO walk', () => {
+  it('stops the receiver type walk at a nearer scope that binds the name without a type (DART-11)', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const saveMethod = mkDef({
+      nodeId: 'def:User.save',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      ownerId: 'def:User',
+    });
+    const mod = mkScope({
+      id: 'scope:m',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:m') },
+    });
+    const fn = mkScope({
+      id: 'scope:fn',
+      parent: 'scope:m',
+      kind: 'Function',
+      range: r(2, 0, 9, 0),
+    });
+    const lookup = (inner: Scope) =>
+      buildMethodRegistry(makeCtx([mod, inner], [userClass, saveMethod])).lookup(
+        'save',
+        'scope:fn',
+        { explicitReceiver: { name: 'user' } },
+      );
+
+    // Control: nothing nearer binds `user`, so the module's `User` types it.
+    expect(lookup(fn).map((res) => res.def)).toEqual([saveMethod]);
+    // An untyped parameter `user` of the function owns the name; the module's
+    // type is not this receiver's type.
+    expect(lookup({ ...fn, lexicalNames: new Set(['user']) })).toEqual([]);
+  });
+
   it('uses ownedMembersByOwner before falling back to defs scans', () => {
     const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
     const saveMethod = mkDef({
@@ -974,5 +1008,27 @@ describe('lookupCore direct invocation', () => {
       ctx,
     );
     expect(results).toEqual([]);
+  });
+});
+
+describe('independent kind namespaces', () => {
+  it('keeps macros visible through a same-named runtime parameter claim', () => {
+    const macro = mkDef({ nodeId: 'macro:emit', type: 'Macro' });
+    const module = mkScope({
+      id: 'module',
+      parent: null,
+      bindings: { emit: [mkBinding(macro, 'local')] },
+    });
+    const fn: Scope = {
+      ...mkScope({ id: 'fn', parent: module.id, kind: 'Function' }),
+      nameClaims: [{ name: 'emit', kind: 'binding', range: r(2, 0, 2, 8), purpose: 'value' }],
+    };
+    const ctx = makeCtx([module, fn], [macro]);
+    expect(
+      buildMacroRegistry(ctx)
+        .lookup('emit', fn.id)
+        .map((hit) => hit.def.nodeId),
+    ).toEqual([macro.nodeId]);
+    expect(buildMethodRegistry(ctx).lookup('emit', fn.id)).toEqual([]);
   });
 });

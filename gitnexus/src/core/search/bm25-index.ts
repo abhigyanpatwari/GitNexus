@@ -14,11 +14,22 @@
 // for the identical `QUERY_FTS_INDEX` cypher call. `buildFtsQueryCypher` is
 // that identical call itself — shared for the same reason, so the two paths
 // can no longer drift apart the way they had to be edited in lockstep before.
-import { queryFTS, classifyFtsQueryError, buildFtsQueryCypher } from '../lbug/lbug-adapter.js';
+import {
+  queryFTS,
+  classifyFtsQueryError,
+  buildFtsQueryCypher,
+  executeQuery,
+} from '../lbug/lbug-adapter.js';
+import {
+  assertSymbolIdentity,
+  assertIdentityFields,
+  rethrowSymbolIdentityError,
+} from '../lbug/query-result-integrity.js';
 import { normalizeFtsText } from '../lbug/csv-generator.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { redactPaths } from './fts-indexes.js';
 import { FTS_INDEXES } from './fts-schema.js';
+import { readEmptyFtsTables } from './fts-table-state.js';
 import type { FtsDisabledReason } from './fts-policy.js';
 import {
   applyCjkSegmentationIfEnabled,
@@ -34,7 +45,7 @@ export interface BM25SearchResult {
 
 export interface FTSSearchResponse {
   results: BM25SearchResult[];
-  /** True when at least one FTS index query succeeded (index exists). */
+  /** True when an index query succeeded, or every searchable table is proven empty. */
   ftsAvailable: boolean;
   /**
    * Redacted (via {@link redactPaths}) message(s) from per-table
@@ -85,7 +96,9 @@ async function queryFTSViaExecutor(
     const rows = await executor(cypher, { query });
     return {
       rows: rows.map((row: any) => {
-        const node = row.node || row[0] || {};
+        const node = row.node ?? row[0] ?? {};
+        assertSymbolIdentity(node.nodeId ?? node.id);
+        assertIdentityFields(node.name, node.filePath);
         const score = row.score ?? row[1] ?? 0;
         return {
           filePath: node.filePath || '',
@@ -95,6 +108,7 @@ async function queryFTSViaExecutor(
       }),
     };
   } catch (e) {
+    rethrowSymbolIdentityError(e);
     const message = e instanceof Error ? e.message : String(e);
     return { benign: classifyFtsQueryError(message) === 'missing-index', message };
   }
@@ -143,6 +157,7 @@ export const searchFTSFromLbug = async (
   );
   const resultsByIndex: any[][] = [];
   let queriesSucceeded = 0;
+  let allTablesEmpty = false;
   const nonBenignErrors: string[] = [];
   const missingIndexes: string[] = [];
 
@@ -168,8 +183,11 @@ export const searchFTSFromLbug = async (
     const { executeParameterized } = poolMod;
     const executor = (cypher: string, params: Record<string, any>) =>
       executeParameterized(repoId, cypher, params);
+    const emptyTables = await readEmptyFtsTables((cypher) => executor(cypher, {}));
+    allTablesEmpty = FTS_INDEXES.every((index) => emptyTables.has(index.table));
 
     for (const { table, indexName } of FTS_INDEXES) {
+      if (emptyTables.has(table)) continue;
       const outcome = await queryFTSViaExecutor(executor, table, indexName, searchQuery, limit);
       if (outcome.rows) {
         queriesSucceeded++;
@@ -184,7 +202,10 @@ export const searchFTSFromLbug = async (
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
     // Opt into missing-index propagation so absent indexes cannot masquerade
     // as successful zero-match queries. Keep core/pool classification identical.
+    const emptyTables = await readEmptyFtsTables(executeQuery);
+    allTablesEmpty = FTS_INDEXES.every((index) => emptyTables.has(index.table));
     for (const { table, indexName } of FTS_INDEXES) {
+      if (emptyTables.has(table)) continue;
       try {
         const result = await queryFTS(table, indexName, searchQuery, limit, false, 'throw');
         queriesSucceeded++;
@@ -200,13 +221,15 @@ export const searchFTSFromLbug = async (
     }
   }
 
-  const ftsAvailable = queriesSucceeded > 0;
+  const ftsAvailable = queriesSucceeded > 0 || allTablesEmpty;
 
   // Collect all node scores per filePath to track which nodes actually matched
   const fileNodeScores = new Map<string, Array<{ score: number; nodeId: string }>>();
 
   const addResults = (results: any[]) => {
     for (const r of results) {
+      assertSymbolIdentity(r.nodeId);
+      assertIdentityFields(r.name, r.filePath);
       if (!fileNodeScores.has(r.filePath)) fileNodeScores.set(r.filePath, []);
       fileNodeScores.get(r.filePath)!.push({ score: r.score, nodeId: r.nodeId });
     }

@@ -1,0 +1,37 @@
+{
+  "language": "typescript",
+  "description": "Preserve keys whose constructor receiver or contextual annotation proves an unrelated member owner.",
+  "categories": [
+    "member-keys",
+    "call-graph",
+    "unrelated-owner",
+    "constructor-proven-receiver"
+  ],
+  "target": {
+    "name": "close",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 1
+  },
+  "newName": "finish",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "model.ts"
+      },
+      "to": {
+        "name": "close",
+        "kind": "Method",
+        "file": "model.ts",
+        "startLine": 1
+      }
+    }
+  ]
+}

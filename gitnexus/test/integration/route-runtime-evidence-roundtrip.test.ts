@@ -31,6 +31,7 @@ withTestLbugDB('route-runtime-evidence-roundtrip', (handle) => {
           runtimeConfirmed: true,
           runtimeSource: 'spring-actuator',
           runtimeStatus: 'runtime-confirmed',
+          unverifiedConsumers: 3,
         },
       },
     ]);
@@ -41,7 +42,9 @@ withTestLbugDB('route-runtime-evidence-roundtrip', (handle) => {
     await streamAllCSVsToDisk(graph, repoDir, csvDir);
 
     const routeCsv = await fs.readFile(path.join(csvDir, 'route.csv'), 'utf8');
-    expect(routeCsv.split('\n')[0]).toContain('runtimeConfirmed,runtimeSource,runtimeStatus');
+    expect(routeCsv.split('\n')[0]).toContain(
+      'runtimeConfirmed,runtimeSource,runtimeStatus,unverifiedConsumers',
+    );
     expect(routeCsv).toContain('spring-actuator');
 
     const routeCsvPath = path.join(csvDir, 'route.csv').replace(/\\/g, '/');
@@ -59,5 +62,10 @@ withTestLbugDB('route-runtime-evidence-roundtrip', (handle) => {
         runtimeStatus: 'runtime-confirmed',
       }),
     );
+    expect(
+      await adapter.executeQuery(
+        `MATCH (n:Route) WHERE n.id = '${ROUTE_ID}' RETURN n.unverifiedConsumers AS unverifiedConsumers`,
+      ),
+    ).toEqual([{ unverifiedConsumers: 3 }]);
   });
 });

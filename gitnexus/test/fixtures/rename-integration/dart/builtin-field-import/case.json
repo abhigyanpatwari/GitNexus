@@ -1,0 +1,19 @@
+{
+  "language": "dart",
+  "description": "Allow import as a public field name across reads and writes while preserving a shadow parameter.",
+  "categories": [
+    "identifier-rules",
+    "contextual-identifiers"
+  ],
+  "target": {
+    "name": "value",
+    "kind": "Property",
+    "file": "report.dart",
+    "startLine": 1
+  },
+  "newName": "import",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  }
+}

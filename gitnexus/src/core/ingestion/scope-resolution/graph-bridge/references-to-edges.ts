@@ -22,7 +22,7 @@ import type { Reference, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
-import { mapReferenceKindToEdgeType } from '../graph-bridge/edges.js';
+import { mapReferenceKindToEdgeType, referenceEdgeKey } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
@@ -174,7 +174,7 @@ export function emitReferencesViaLookup(
         calleeIdSink.add(fromFilePath, ref.atRange.startLine, ref.atRange.startCol, targetGraphId);
       }
 
-      const dedupKey = `${edgeType}:${callerGraphId}->${targetGraphId}:${ref.atRange.startLine}:${ref.atRange.startCol}`;
+      const dedupKey = referenceEdgeKey(edgeType, callerGraphId, targetGraphId, ref);
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 

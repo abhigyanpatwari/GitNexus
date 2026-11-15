@@ -249,6 +249,38 @@ export function resolveNativeSafeStorageDir(storagePath: string, subdir: string)
  * call site agrees on the same ceilings and behaviour.
  */
 
+const DEFAULT_LBUG_MAX_DB_SIZE = 16 * 1024 * 1024 * 1024;
+
+export interface ParsedMaxDbSize {
+  /** The effective value handed to the native open. */
+  value: number;
+  /** The integer the operator value floors to, present only when `value` is a round-up of it. */
+  roundedFrom?: number;
+}
+
+export const parseMaxDbSize = (raw: string | undefined): ParsedMaxDbSize => {
+  if (!raw) return { value: DEFAULT_LBUG_MAX_DB_SIZE };
+  const parsed = Math.floor(Number(raw));
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return { value: DEFAULT_LBUG_MAX_DB_SIZE };
+  // Powers of two are exact in a double and `parsed` is a safe integer, so the
+  // doubling loop is exact — unlike `2 ** Math.ceil(Math.log2(parsed))`, which
+  // can under-round a value just above a large power of two.
+  let value = 1;
+  while (value < parsed) value *= 2;
+  return value === parsed ? { value } : { value, roundedFrom: parsed };
+};
+
+export const resolveMaxDbSize = (raw: string | undefined): number => {
+  const { value, roundedFrom } = parseMaxDbSize(raw);
+  if (roundedFrom !== undefined) {
+    logger.warn(
+      { rawValue: raw, effective: value },
+      `GITNEXUS_LBUG_MAX_DB_SIZE=${raw} is not a power of two; using ${value}.`,
+    );
+  }
+  return value;
+};
+
 /**
  * Upper bound for any single GitNexus LadybugDB file (graph index, group
  * bridge, install scratch, test fixture). 16 GiB is intentionally generous
@@ -256,17 +288,12 @@ export function resolveNativeSafeStorageDir(storagePath: string, subdir: string)
  * remaining far below any 64-bit OS mmap ceiling.
  *
  * Override with the `GITNEXUS_LBUG_MAX_DB_SIZE` environment variable when
- * indexing genuinely huge monorepos. Values are coerced to a positive
- * integer; anything invalid falls back to the default.
+ * indexing genuinely huge monorepos. The native buffer manager rejects any
+ * value that is not a power of two ("The given max db size should be a power
+ * of 2"), so a positive safe integer is rounded UP to the next power of two
+ * (#3529); anything invalid falls back to the default.
  */
-export const LBUG_MAX_DB_SIZE: number = (() => {
-  const raw = process.env.GITNEXUS_LBUG_MAX_DB_SIZE;
-  if (raw) {
-    const parsed = Number(raw);
-    if (Number.isFinite(parsed) && parsed > 0) return Math.floor(parsed);
-  }
-  return 16 * 1024 * 1024 * 1024;
-})();
+export const LBUG_MAX_DB_SIZE: number = resolveMaxDbSize(process.env.GITNEXUS_LBUG_MAX_DB_SIZE);
 
 export const parseWalCheckpointThreshold = (raw: string | undefined): number | undefined => {
   if (raw === undefined) return undefined;
@@ -550,6 +577,81 @@ export const bufferPoolExhaustionRemedy = (
   );
 };
 
+/**
+ * Where a failing analyze run was writing, which decides the wording of its
+ * remedy (#3529, #3530). `in-place`: the live index itself. `staged-rebuild`: a
+ * staging copy for a full rebuild or the escalation to one — both stage
+ * regardless of `GITNEXUS_ATOMIC_INCREMENTAL`, so naming the off-switch there
+ * would point at a knob with no effect. `staged-incremental`: a staging copy
+ * for an atomic-incremental write, the only staged build that off-switch changes.
+ * Either staged mode means the live index was never written.
+ */
+export type StagedBuildMode = 'in-place' | 'staged-rebuild' | 'staged-incremental';
+
+const MAX_DB_SIZE_REACHED_RE = /Maximum database size of (\d+) bytes has been reached/i;
+// `0(?!\d)` so a count such as `04096` is not read as zero bytes.
+const PAST_EOF_READ_RE = /Cannot read from file[\s\S]*?numBytesRead:\s*0(?!\d)/i;
+const EOF_POSITION_RE = /position:\s*(\d+)/i;
+
+const stagedBuildNote = (mode: StagedBuildMode): string =>
+  mode !== 'in-place'
+    ? ' The live index is untouched; a retry may reuse complete embeddings that a recovery generation retained.'
+    : '';
+
+const offSwitchNote = (mode: StagedBuildMode): string =>
+  mode === 'staged-incremental'
+    ? ' Setting GITNEXUS_ATOMIC_INCREMENTAL=0 writes in place instead of into a staged copy;' +
+      ' a failed in-place write can leave the live index partly written, and the next run then rebuilds it in full.'
+    : '';
+
+/**
+ * Remedy for the engine's `Maximum database size of N bytes has been reached`
+ * failure (#3529), or undefined when `message` is not that failure. `N` is
+ * labelled as the limit the ENGINE reported — whether it equals the configured
+ * value is not established, so this text never says so (the configured value
+ * is logged separately as evidence). Likewise it asserts no cause for why the
+ * ceiling was reached.
+ */
+export const maxDbSizeReachedRemedy = (
+  message: string,
+  mode: StagedBuildMode,
+): string | undefined => {
+  const match = MAX_DB_SIZE_REACHED_RE.exec(message);
+  if (!match) return undefined;
+  return (
+    `The LadybugDB address-space ceiling was reached: the engine reported a limit of ${match[1]} bytes. ` +
+    `That is an mmap budget, not disk usage, so a small index on disk does not rule it out. ` +
+    `GITNEXUS_LBUG_MAX_DB_SIZE sets the ceiling; a value that is not a power of 2 is rounded up to the next one (for example 300000000000 becomes ${2 ** 39}); ` +
+    `raise it if the index needs more room, then retry analyze.` +
+    stagedBuildNote(mode) +
+    offSwitchNote(mode)
+  );
+};
+
+/**
+ * Remedy for a native read that returned zero bytes (`numBytesRead: 0`) during
+ * analyze (#3530), or undefined when `message` is not that failure. A staged
+ * build is a throwaway copy, so the live index is intact; the same read on an
+ * in-place build means the index file itself is shorter than the engine
+ * expected. Asserts no cause for why the file was short.
+ */
+export const pastEofReadRemedy = (message: string, mode: StagedBuildMode): string | undefined => {
+  if (!PAST_EOF_READ_RE.test(message)) return undefined;
+  const position = EOF_POSITION_RE.exec(message);
+  const at = position ? ` at position ${position[1]}` : '';
+  if (mode === 'in-place') {
+    return (
+      `A read reached end-of-file${at} in the live index file, before the engine expected it to end: ` +
+      'the index may be damaged or truncated. Run `gitnexus analyze --force` to rebuild it.'
+    );
+  }
+  return (
+    `A read reached end-of-file${at} in the staged copy of the index.` +
+    stagedBuildNote(mode) +
+    offSwitchNote(mode)
+  );
+};
+
 /** Matches WAL corruption errors from the LadybugDB engine. */
 const WAL_CORRUPTION_RE = /corrupt(ed)?\s+wal|invalid\s+wal\s+record|wal.*corrupt|checksum.*wal/i;
 
@@ -745,11 +847,69 @@ type LbugModule = typeof lbug;
 export interface LbugDatabaseOptions {
   readOnly?: boolean;
   throwOnWalReplayFailure?: boolean;
+  /** Explicit per-handle reservation; omitted preserves the existing policy. */
+  bufferPoolBytes?: number;
+  threads?: number;
 }
 
 export interface LbugConnectionHandle {
   db: lbug.Database;
   conn: lbug.Connection;
+}
+
+interface NativeRelease {
+  db: lbug.Database;
+  conn?: lbug.Connection;
+  databasePath?: string;
+  connectionClosed: boolean;
+  databaseClosed: boolean;
+  pending?: Promise<void>;
+}
+
+// Only closing/failed handles are held strongly. A rejected close is not proof
+// that its native pool was released, including failed connection construction.
+const nativeReleases = new Map<lbug.Database, NativeRelease>();
+const reservedHandlePaths = new WeakMap<LbugConnectionHandle, string>();
+
+function releaseNativeResources(
+  handle: Pick<LbugConnectionHandle, 'db'> & Partial<Pick<LbugConnectionHandle, 'conn'>>,
+  databasePath?: string,
+): Promise<void> {
+  let release = nativeReleases.get(handle.db);
+  if (!release) {
+    release = { ...handle, databasePath, connectionClosed: !handle.conn, databaseClosed: false };
+    nativeReleases.set(handle.db, release);
+  }
+  if (release.pending) return release.pending;
+  const state = release;
+  state.pending = (async () => {
+    if (!state.connectionClosed) {
+      if (state.conn) await state.conn.close();
+      state.connectionClosed = true;
+    }
+    if (!state.databaseClosed) {
+      await state.db.close();
+      state.databaseClosed = true;
+    }
+    if (
+      process.platform === 'win32' &&
+      state.databasePath &&
+      !(await waitForWindowsHandleRelease(state.databasePath))
+    )
+      throw new Error('LadybugDB native resource reservation has not been released');
+    nativeReleases.delete(state.db);
+  })().finally(() => {
+    state.pending = undefined;
+  });
+  return state.pending;
+}
+
+/** Before admitting another analysis phase, retry only previously requested
+ * closes. Active readers/writers are never closed or interrupted here. */
+export async function drainLbugResourceReleases(): Promise<void> {
+  for (const release of nativeReleases.values()) {
+    await releaseNativeResources(release, release.databasePath);
+  }
 }
 
 /**
@@ -844,10 +1004,15 @@ export function createLbugDatabase(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): lbug.Database {
+  if (
+    options.bufferPoolBytes !== undefined &&
+    (!Number.isSafeInteger(options.bufferPoolBytes) || options.bufferPoolBytes < 0)
+  )
+    throw new Error('Explicit LadybugDB buffer pool must be a nonnegative byte count');
   // .d.ts declares fewer args than the native constructor accepts.
   return new (lbugModule.Database as any)(
     databasePath,
-    resolveBufferManagerSize(), // bufferManagerSize (#2557: default min(2 GiB, 80% RAM); GITNEXUS_LBUG_BUFFER_POOL_SIZE overrides; 0 restores the native 80%-of-RAM default)
+    options.bufferPoolBytes ?? resolveBufferManagerSize(), // Existing callers retain the environment/default policy.
     false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
@@ -1043,18 +1208,50 @@ export async function openLbugConnection(
   databasePath: string,
   options: LbugDatabaseOptions = {},
 ): Promise<LbugConnectionHandle> {
+  if (
+    options.threads !== undefined &&
+    (!Number.isSafeInteger(options.threads) || options.threads < 1)
+  )
+    throw new Error('LadybugDB threads must be a positive integer');
+  const reserved = options.bufferPoolBytes !== undefined || options.threads !== undefined;
+  if (reserved) await drainLbugResourceReleases();
   const safePath = toNativeSafePath(databasePath);
   let db: lbug.Database | undefined;
   try {
     db = await openWithLockRetry(() => createLbugDatabase(lbugModule, safePath, options), safePath);
-    return { db, conn: new lbugModule.Connection(db) };
+    const conn =
+      options.threads === undefined
+        ? new lbugModule.Connection(db)
+        : new lbugModule.Connection(db, options.threads);
+    const handle = { db, conn };
+    if (reserved) reservedHandlePaths.set(handle, safePath);
+    return handle;
   } catch (err) {
-    if (db) await db.close().catch(() => {});
+    if (db) {
+      if (reserved) {
+        try {
+          await releaseNativeResources({ db }, safePath);
+        } catch (releaseError) {
+          throw new AggregateError(
+            [err, releaseError],
+            'LadybugDB open failed and resource release is unverified',
+            { cause: err },
+          );
+        }
+      } else await db.close().catch(() => {});
+    }
     throw err;
   }
 }
 
-export async function closeLbugConnection(handle: LbugConnectionHandle): Promise<void> {
+export async function closeLbugConnection(
+  handle: LbugConnectionHandle,
+  options: { strict?: boolean; databasePath?: string } = {},
+): Promise<void> {
+  if (options.strict || reservedHandlePaths.has(handle) || nativeReleases.has(handle.db)) {
+    await releaseNativeResources(handle, options.databasePath ?? reservedHandlePaths.get(handle));
+    return;
+  }
   await handle.conn.close().catch(() => {});
   await handle.db.close().catch(() => {});
 }

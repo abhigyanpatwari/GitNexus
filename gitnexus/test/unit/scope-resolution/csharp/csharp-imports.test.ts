@@ -18,7 +18,7 @@ import { getMaxFileSizeBytes } from '../../../../src/core/ingestion/utils/max-fi
 import {
   csharpSuffixFallbackAllowed,
   importAlignsWithDeclaredNamespaces,
-} from '../../../../src/core/ingestion/csharp-namespace-gate.js';
+} from '../../../../src/core/ingestion/languages/csharp/namespace-gate.js';
 import { csharpScopeResolver } from '../../../../src/core/ingestion/languages/csharp/scope-resolver.js';
 import type { CSharpProjectConfig } from '../../../../src/core/ingestion/language-config.js';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';

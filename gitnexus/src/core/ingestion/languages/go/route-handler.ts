@@ -1,8 +1,8 @@
 import type { SymbolDefinition } from 'gitnexus-shared';
-import { generateId } from '../../../../lib/utils.js';
 import type { RouteHandlerResolutionHookContext } from '../../language-provider.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ExtractedDecoratorRoute } from '../../workers/parse-worker.js';
+import { logger } from '../../../logger.js';
 import { goPackageDir } from './package-clause.js';
 
 /**
@@ -15,16 +15,16 @@ import { goPackageDir } from './package-clause.js';
  * with the router and the handlers in different packages, a same-named method
  * in the router's own directory belongs to an unrelated type.
  *
- * Runs at the end of the parse phase, before scope resolution, so a Method's
- * `ownerId` is still the worker's `Struct:<methodFile>:<Receiver>` id — keyed on
- * the METHOD's file, which is not the struct's node id when the struct is
- * declared in another file of the package. Ownership is therefore matched on
- * either id.
+ * Runs before workspace ownership resolution. Deferred Method symbols retain
+ * their receiver-qualified names, so handlers can be matched without inventing
+ * an owner id from the method's file.
  */
 export function resolveGoRouteHandler(
   route: ExtractedDecoratorRoute,
   context: RouteHandlerResolutionHookContext,
 ): string | undefined {
+  const unwrapped = unwrapConfiguredHandler(route, context);
+  if (unwrapped !== route) return unwrapped && resolveGoRouteHandler(unwrapped, context);
   const designator = route.handlerName;
   if (!designator) return undefined;
   const parts = designator.split('.');
@@ -48,6 +48,43 @@ export function resolveGoRouteHandler(
   return constructor && owner
     ? methodOfType(context, goPackageDir(constructor.filePath), owner, member)
     : undefined;
+}
+
+/** Wrapper callees already reported as unconfigured, so the debug line fires once each. */
+const reportedWrappers = new WeakMap<RouteHandlerResolutionHookContext, Set<string>>();
+
+/**
+ * A route whose handler slot was `wrap(inner)`: the route re-addressed to
+ * `inner` when `wrap` is a configured handler wrapper, `undefined` when it is
+ * not, and the route itself when nothing was wrapped.
+ */
+function unwrapConfiguredHandler(
+  route: ExtractedDecoratorRoute,
+  context: RouteHandlerResolutionHookContext,
+): ExtractedDecoratorRoute | undefined {
+  const wrapper = route.handlerWrapper;
+  if (route.handlerName || !wrapper) return route;
+  if (context.routeHookConfig?.routeHandlerWrappers?.includes(wrapper.callee)) {
+    return {
+      ...route,
+      handlerName: wrapper.handlerName,
+      handlerReceiver: wrapper.handlerReceiver,
+      handlerWrapper: undefined,
+    };
+  }
+  let reported = reportedWrappers.get(context);
+  if (!reported) {
+    reported = new Set();
+    reportedWrappers.set(context, reported);
+  }
+  if (!reported.has(wrapper.callee)) {
+    reported.add(wrapper.callee);
+    logger.debug(
+      { callee: wrapper.callee, file: route.filePath, line: route.lineNumber },
+      'go routes: handler is wrapped by an unconfigured function; add it to goHandlerWrappers to resolve it',
+    );
+  }
+  return undefined;
 }
 
 type DefinitionBuckets = Map<string, SymbolDefinition[]>;
@@ -109,12 +146,14 @@ class GoRouteHandlerIndex {
     let index = this.methods.get(member);
     if (!index) {
       index = new Map();
-      for (const def of this.model.methods.lookupMethodByName(member)) {
-        if (def.filePath.endsWith('_test.go') || def.ownerId === undefined) continue;
+      // Ownerless methods are retained in the callable index until semantic
+      // reconciliation registers the resolved owner in MethodRegistry.
+      for (const def of this.model.symbols.lookupCallableByName(member)) {
+        if (def.type !== 'Method' || def.filePath.endsWith('_test.go')) continue;
         const packageDir = goPackageDir(def.filePath);
-        const prefix = generateId('Struct', `${def.filePath}:`);
-        if (def.ownerId.startsWith(prefix)) {
-          append(index, bucketKey(packageDir, def.ownerId.slice(prefix.length)), def);
+        const suffix = `.${member}`;
+        if (def.qualifiedName?.endsWith(suffix)) {
+          append(index, bucketKey(packageDir, def.qualifiedName.slice(0, -suffix.length)), def);
         }
       }
       this.methods.set(member, index);

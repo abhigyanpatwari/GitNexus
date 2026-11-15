@@ -16,7 +16,7 @@
  * MCP wiring, which is what made this file cost ~25s to import (#2790 review).
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { JobManager } from '../../src/server/analyze-job.js';
+import type { JobManager, AnalyzeJobProgress } from '../../src/server/analyze-job.js';
 import { publicRepoId } from '../../src/server/public-repo-id.js';
 import { startSSEHarness, terminalFrame, type SSEHarness } from '../helpers/sse-harness.js';
 
@@ -36,6 +36,47 @@ describe('mountSSEProgress terminal payload', () => {
   });
 
   afterEach(() => harness.close());
+
+  it('keeps graph-ready nonterminal, forwards safe counts, and reports the eventual vector failure once', async () => {
+    const job = manager.createJob({ repoPath: REPO_PATH });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const response = await fetch(`${baseUrl}/api/analyze/${job.id}/progress`);
+    manager.updateJob(job.id, {
+      progress: {
+        phase: 'graph-ready',
+        percent: 90,
+        message: 'Graph available',
+        graphPhase: 'ready',
+        embeddingProgress: {
+          phase: 'embedding',
+          totalUnits: 3,
+          completedUnits: 1,
+          reusedUnits: 0,
+          pendingUnits: 2,
+          failedUnits: 0,
+          activeUnit: 1,
+          sourcePath: '/private/source',
+          identity: 'private-key',
+        },
+        modelDownloadPercent: 100,
+        secret: 'hidden-token',
+      } as AnalyzeJobProgress,
+    });
+    expect(manager.getJob(job.id)?.status).toBe('analyzing');
+    manager.updateJob(job.id, { status: 'failed', error: 'Embedding endpoint unavailable' });
+    const body = await response.text();
+    expect(body).toContain('"graphPhase":"ready"');
+    expect(body).toContain('"activeUnit":1');
+    expect(body).toContain('"pendingUnits":2');
+    expect(body).toContain('"modelDownloadPercent":100');
+    expect(body).not.toMatch(/private|hidden-token|sourcePath|identity/);
+    expect(body.match(/event: failed/g)).toHaveLength(1);
+    expect(body).not.toContain('event: complete');
+    expect(terminalFrame(body, 'failed')).toEqual({
+      repoName: 'reels',
+      error: 'Embedding endpoint unavailable',
+    });
+  });
 
   it('already-terminal replay includes repoName and omits repoPath', async () => {
     const job = manager.createJob({ repoPath: REPO_PATH });

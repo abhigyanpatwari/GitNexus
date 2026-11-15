@@ -1,0 +1,22 @@
+{
+  "language": "kotlin",
+  "description": "Refuse a primary-constructor property whose named argument label binds the constructor parameter.",
+  "categories": [
+    "named-argument",
+    "synthesized-constructor",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "first",
+    "kind": "Property",
+    "file": "Model.kt",
+    "startLine": 0
+  },
+  "newName": "head",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  }
+}

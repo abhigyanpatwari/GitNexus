@@ -1,0 +1,35 @@
+{
+  "language": "typescript",
+  "description": "Bind an escaped import to an ordinarily spelled local call before and after rename.",
+  "categories": [
+    "escaped-identifier",
+    "cross-file",
+    "call-graph"
+  ],
+  "target": {
+    "name": "calculate",
+    "kind": "Function",
+    "file": "source.ts"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "entry.ts"
+      },
+      "to": {
+        "name": "calculate",
+        "kind": "Function",
+        "file": "source.ts"
+      }
+    }
+  ],
+  "exactOutgoing": true
+}

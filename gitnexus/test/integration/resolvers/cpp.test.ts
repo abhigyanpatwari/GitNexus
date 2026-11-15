@@ -2888,7 +2888,7 @@ describe('C++ ADL — base-class associated namespaces', () => {
     expect(logCalls.length).toBe(1);
     expect(logCalls[0].targetFilePath).toContain('base_lib.h');
     const targetNode = result.graph.getNode(logCalls[0].rel.targetId);
-    expect(logCalls[0].rel.targetId).toBe('Function:base_lib.h:log');
+    expect(logCalls[0].rel.targetId).toBe('Function:base_lib.h:log#1~Base');
     expect(targetNode?.properties.parameterTypes).toEqual(['Base']);
   });
 
@@ -2898,7 +2898,7 @@ describe('C++ ADL — base-class associated namespaces', () => {
     expect(traceCalls.length).toBe(1);
     expect(traceCalls[0].targetFilePath).toContain('base_lib.h');
     const targetNode = result.graph.getNode(traceCalls[0].rel.targetId);
-    expect(traceCalls[0].rel.targetId).toBe('Function:base_lib.h:trace');
+    expect(traceCalls[0].rel.targetId).toBe('Function:base_lib.h:trace#1~Root');
     expect(targetNode?.properties.parameterTypes).toEqual(['Root']);
   });
 
@@ -2908,7 +2908,7 @@ describe('C++ ADL — base-class associated namespaces', () => {
     expect(pingCalls.length).toBe(1);
     expect(pingCalls[0].targetFilePath).toContain('base_lib.h');
     const targetNode = result.graph.getNode(pingCalls[0].rel.targetId);
-    expect(pingCalls[0].rel.targetId).toBe('Function:base_lib.h:ping');
+    expect(pingCalls[0].rel.targetId).toBe('Function:base_lib.h:ping#1~DiamondBase');
     expect(targetNode?.properties.parameterTypes).toEqual(['DiamondBase']);
   });
 });

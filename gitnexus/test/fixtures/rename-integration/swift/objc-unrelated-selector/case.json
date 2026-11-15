@@ -1,0 +1,19 @@
+{
+  "language": "swift",
+  "description": "An indexed Objective-C source whose selectors share only a later piece with the Swift method does not block a proven Swift rename.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "greet",
+    "kind": "Function",
+    "file": "Greeter.swift"
+  },
+  "newName": "welcome",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

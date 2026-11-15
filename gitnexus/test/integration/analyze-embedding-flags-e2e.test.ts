@@ -23,7 +23,7 @@ import path from 'path';
 import fs from 'fs';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 let cwd: string;
 
@@ -38,14 +38,10 @@ afterAll(() => {
 
 function runAnalyze(args: string[]) {
   // Strip any ambient GITNEXUS_EMBEDDING_* so the flag is the sole input.
-  const env = { ...process.env } as Record<string, string | undefined>;
+  const env = cliAnalysisEnv();
   for (const k of Object.keys(env)) {
     if (k.startsWith('GITNEXUS_EMBEDDING_')) delete env[k];
   }
-  // Pre-set the heap cap so analyzeCommand's ensureHeap() wouldn't re-exec
-  // (would drop the tsx loader). Irrelevant on the invalid-dims path since the
-  // hook exits first, but harmless and matches the cli-e2e harness.
-  env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim();
   return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', ...args], {
     cwd,
     encoding: 'utf8',

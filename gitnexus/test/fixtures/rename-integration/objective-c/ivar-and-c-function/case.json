@@ -1,0 +1,44 @@
+{
+  "language": "objective-c",
+  "description": "Rename an instance ivar through implicit self and explicit typed receivers while preserving same-name C function calls in class methods, free functions, and parameter shadows.",
+  "categories": ["public-fields", "lexical-shadowing", "class-instance-distinction"],
+  "target": {
+    "name": "compute",
+    "kind": "Variable",
+    "file": "Worker.m",
+    "startLine": 3
+  },
+  "newName": "total",
+  "expect": {
+    "status": "success",
+    "edits": 3
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "callHelper",
+        "kind": "Method",
+        "file": "Worker.m"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "Worker.m"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "outside",
+        "kind": "Function",
+        "file": "Worker.m"
+      },
+      "to": {
+        "name": "compute",
+        "kind": "Function",
+        "file": "Worker.m"
+      }
+    }
+  ]
+}

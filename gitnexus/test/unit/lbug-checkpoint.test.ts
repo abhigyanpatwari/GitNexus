@@ -56,7 +56,7 @@ describe('flushWAL / safeClose — consolidation guard (#1376)', () => {
   it('closeLbug delegates to safeClose instead of inlining conn.close/db.close', () => {
     // Match `closeLbug =` precisely so we don't prefix-match `closeLbugBeforeExit`.
     const closeLbugBody = adapterSource.slice(adapterSource.indexOf('export const closeLbug ='));
-    expect(closeLbugBody).toMatch(/await safeClose\(\)/);
+    expect(closeLbugBody).toMatch(/await safeClose\(options\)/);
     // closeLbug must NOT contain its own conn.close() or db.close() — those
     // live exclusively inside safeClose now.
     const closeLbugBlock = closeLbugBody.slice(0, closeLbugBody.indexOf('export const', 1) >>> 0);

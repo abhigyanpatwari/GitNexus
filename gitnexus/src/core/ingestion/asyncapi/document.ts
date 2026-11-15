@@ -60,7 +60,7 @@ import path from 'node:path';
 import { brokerForBindingKey, brokerForProtocol, isNonDestinationBroker } from './protocol.js';
 
 // `js-yaml` is CJS; the rest of this repository reaches it the same way
-// (`pipeline-phases/spring-config.ts`, `import-resolvers/node-workspace-packages.ts`).
+// (`pipeline-phases/spring-config.ts`, `languages/typescript/workspace-packages.ts`).
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
 

@@ -546,6 +546,36 @@ describe('multi-source identity — distinct sources do not merge at one def', (
 // ── kind-set exclusion model (real built-in model) ──────────────────────────
 
 describe('kind-set exclusions — sanitizers neutralize their kinds only', () => {
+  it.each([
+    ['direct alias', 'const command = "git show " + ref;', 'command', 0],
+    [
+      'transitive alias',
+      'const args = "show " + ref; const command = "git " + args;',
+      'command',
+      0,
+    ],
+    ['template alias', 'const command = `git show ${ref}`;', 'command', 0],
+    ['unsafe template', 'const command = `git show ;${ref}`;', 'command', 1],
+    ['bypassed guard', 'const command = "git show " + ref;', 'command', 1],
+    ['mutated subject', 'ref = req.query.other; const command = "git show " + ref;', 'command', 1],
+    ['mutated alias', 'let command = "git show " + ref; command = req.query.other;', 'command', 1],
+  ])('keeps certificate semantics across blocks: %s', (name, definition, argument, findings) => {
+    const guard = 'if (!/^[0-9a-f]{7,40}$/.test(ref)) return;';
+    const r = analyze(
+      `import {execSync} from 'node:child_process';
+function f(req: any, log: boolean) {
+  ${name === 'mutated subject' ? 'let' : 'const'} ref: string = req.query.ref;
+  ${name === 'bypassed guard' ? `if (log) { ${guard} }` : guard}
+  ${definition}
+  if (log) console.log('validated');
+  execSync(${argument});
+}`,
+      { spec: TS_JS_TAINT_MODEL },
+    );
+    expect(r.status).toBe('computed');
+    expect(r.findings).toHaveLength(findings);
+  });
+
   it('built-in model catches argv-form child_process command sinks', () => {
     const r = analyze(
       `import { execFileSync } from 'node:child_process';

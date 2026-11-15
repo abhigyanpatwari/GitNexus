@@ -77,7 +77,7 @@ const JAVA_SCOPE_QUERY = `
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.record
 
 (annotation_type_declaration
-  name: (identifier) @declaration.name) @declaration.class
+  name: (identifier) @declaration.name) @declaration.annotation
 
 ;; Class annotation syntax is carried to post-resolution enrichment. Keeping
 ;; this in the existing scope query avoids a second AST build/traversal.
@@ -125,6 +125,11 @@ const JAVA_SCOPE_QUERY = `
 
 (formal_parameter
   type: (scoped_type_identifier) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+;; Primitive parameters own their lexical name even though they have no class target.
+(formal_parameter
+  type: [(integral_type) (floating_point_type) (boolean_type)] @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.parameter
 
 ;; Type bindings — local variable annotations: User u = new User();

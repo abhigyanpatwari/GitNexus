@@ -13,6 +13,7 @@ import {
 } from './analyze-job.js';
 import { publicRepoId } from './public-repo-id.js';
 import { escapeRegExp } from './validation.js';
+import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
 
 export interface OpsJobView {
   id: string;
@@ -227,11 +228,14 @@ export const redactPublicText = (text: string, known?: Array<string | undefined>
 export const publicOpsProgress = (
   progress: AnalyzeJobProgress,
   known?: Array<string | undefined>,
-): AnalyzeJobProgress => ({
-  phase: progress.phase,
-  percent: progress.percent,
-  message: redactPublicText(progress.message, known),
-});
+): AnalyzeJobProgress => {
+  return {
+    phase: progress.phase,
+    percent: progress.percent,
+    message: redactPublicText(progress.message, known),
+    ...projectAnalysisPhaseProgress(progress),
+  };
+};
 
 export const serializeOpsJob = (
   job: AnalyzeJob,

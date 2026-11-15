@@ -100,7 +100,13 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
-import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
+import {
+  buildPositionIndex,
+  buildScopeTree,
+  canParentScope,
+  lookupLexicalName,
+  makeScopeId,
+} from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
 import { isValidReceiverChain } from './utils/receiver-chain-codec.js';
 import {
@@ -109,6 +115,7 @@ import {
   typeApplicationArguments,
 } from './utils/template-arguments.js';
 import { parseTypeParameterList } from './utils/type-parameters.js';
+import { followedStep, type AwaitedFollow } from './utils/type-ref-chain.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -131,9 +138,11 @@ export type ScopeExtractorHooks = Pick<
   | 'scopeOwnsReceivers'
   | 'bindingScopeFor'
   | 'interpretImport'
+  | 'importOwningScope'
   | 'importsExecuteWhereWritten'
   | 'interpretTypeBinding'
   | 'classifyCallForm'
+  | 'elementTypeOf'
 >;
 
 // ─── Public entry point ─────────────────────────────────────────────────────
@@ -178,6 +187,8 @@ export function extract(
         d.filePath,
         d.ownsReceivers,
         d.lexicalNames,
+        d.nameClaims,
+        d.lookupPolicy,
       );
     }
   }
@@ -382,6 +393,8 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+  readonly nameClaims?: readonly import('gitnexus-shared').NameClaim[];
+  readonly lookupPolicy?: import('gitnexus-shared').ScopeLookupPolicy;
   readonly lexicalNames?: ReadonlySet<string>;
   /** See `Scope.ownsReceivers` — set once at pass 1, never mutated. */
   readonly ownsReceivers?: ReadonlySet<string>;
@@ -441,6 +454,8 @@ function draftToScope(draft: ScopeDraft): Scope {
     imports: Object.freeze(draft.imports.slice()),
     typeBindings: new Map(draft.typeBindings),
     lexicalNames: draft.lexicalNames,
+    nameClaims: draft.nameClaims,
+    lookupPolicy: draft.lookupPolicy,
     ownsReceivers: draft.ownsReceivers,
   };
 }
@@ -519,6 +534,8 @@ function pass1BuildScopes(
         filePath,
         provider.scopeOwnsReceivers?.(cand.match),
         parseScopeLexicalNames(cand.match),
+        parseJsonCapture(cand.match['@scope.name-claims']) as ScopeDraft['nameClaims'],
+        parseJsonCapture(cand.match['@scope.lookup-policy']) as ScopeDraft['lookupPolicy'],
       ),
     );
     stack.push(cand);
@@ -566,6 +583,8 @@ function makeDraft(
   filePath: string,
   ownsReceivers?: ReadonlySet<string>,
   lexicalNames?: ReadonlySet<string>,
+  nameClaims?: ScopeDraft['nameClaims'],
+  lookupPolicy?: ScopeDraft['lookupPolicy'],
 ): ScopeDraft {
   return {
     id,
@@ -578,6 +597,8 @@ function makeDraft(
     imports: [],
     typeBindings: new Map(),
     lexicalNames,
+    nameClaims,
+    lookupPolicy,
     ownsReceivers,
   };
 }
@@ -706,7 +727,7 @@ function pass2AttachDeclarations(
     if (nameKey === undefined) continue;
 
     const existing = bindingHost.bindings.get(nameKey) ?? [];
-    existing.push({ def, origin: 'local' });
+    existing.push({ def, origin: 'local', declarationRange: anchor.range });
     bindingHost.bindings.set(nameKey, existing);
   }
 }
@@ -757,11 +778,17 @@ function buildDefFromDeclarationMatch(
   // emits the marker, and both `true` and `false` are verdicts (see
   // `SymbolDefinition.isExported`). Absent stays absent.
   const isExported = parseBooleanCapture(match['@declaration.is-exported']);
+  const graphPosition = match['@declaration.graph-position']?.range;
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
+    nameRange: nameCap.range,
+    declarationRange: anchor.range,
     filePath,
     type,
+    ...(graphPosition !== undefined
+      ? { graphPosition: { startLine: graphPosition.startLine, startCol: graphPosition.startCol } }
+      : {}),
     ...(qualifiedName !== undefined ? { qualifiedName } : { qualifiedName: nameCap.text }),
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
@@ -872,8 +899,11 @@ function parseJsonStringArrayCapture(
 }
 
 function deriveDeclarationName(match: CaptureMatch, def: SymbolDefinition): string | undefined {
+  // An explicit empty binding override retains the declaration's graph identity
+  // without inventing a source-level name (for example, an anonymous callable).
+  const bindingName = match['@declaration.binding-name'];
+  if (bindingName !== undefined) return bindingName.text || undefined;
   const nameCap =
-    match['@declaration.binding-name'] ??
     match['@declaration.name'] ??
     match[
       Object.keys(match).find((k) => k.startsWith('@declaration.') && k.endsWith('.name')) ?? ''
@@ -1110,9 +1140,16 @@ function pass3CollectImports(
     );
     const deferred =
       positionCanDefer && inScopeId !== undefined && runsOnlyWhenCalled(scopeTree, inScopeId);
+    const innermost = inScopeId === undefined ? undefined : scopeTree.getScope(inScopeId);
+    const owner =
+      parsed.declaredAtScope ??
+      (innermost === undefined
+        ? undefined
+        : (provider.importOwningScope?.(parsed, innermost, scopeTree) ?? inScopeId));
     parsedImports.push({
       ...parsed,
-      ...(inScopeId !== undefined ? { declaredAtScope: inScopeId } : {}),
+      atRange: parsed.atRange ?? anchor.range,
+      ...(owner !== undefined ? { declaredAtScope: owner } : {}),
       ...(deferred ? { runsOnlyWhenCalled: true } : {}),
     });
   }
@@ -1191,17 +1228,34 @@ function pass4CollectTypeBindings(
       writtenType !== parsed.rawTypeName
         ? writtenType
         : undefined;
+    // The binding holds the AWAITED result of the callee it names — a generic
+    // sub-tag any emitter may set; see `TypeRef.awaited`.
+    const awaited = match['@type-binding.awaited'] !== undefined;
     const typeRef: TypeRef =
       declaredSpelling === undefined
         ? {
             rawName: parsed.rawTypeName,
-            declaredAtScope: host.id,
+            ...(awaited ? { awaited: true as const } : {}),
+            bindingRange: anchor.range,
+            declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
+            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            lookupPurpose:
+              parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
+                ? 'value'
+                : 'type',
             source: parsed.source,
           }
         : {
             rawName: parsed.rawTypeName,
             declaredSpelling,
-            declaredAtScope: host.id,
+            ...(awaited ? { awaited: true as const } : {}),
+            bindingRange: anchor.range,
+            declaredAtScope: match['@type.lookup-scope']?.text ?? host.id,
+            lookupPosition: { startLine: anchor.range.startLine, startCol: anchor.range.startCol },
+            lookupPurpose:
+              parsed.source === 'constructor-inferred' || parsed.source === 'assignment-inferred'
+                ? 'value'
+                : 'type',
             source: parsed.source,
           };
     // Prefer stronger sources when multiple matches fire for the same
@@ -1226,9 +1280,19 @@ function pass4CollectTypeBindings(
   // class type — not at another local variable name. Without this,
   // `resolveTypeRef` hits the chained name, sees it's a local Variable
   // (non-type kind), and strict-returns null.
+  // An awaited binding takes what the followed return type yields under
+  // `await` — the provider's route, bound here; see `followedStep`. No
+  // `resolveQualified`: imports are not finalized here, so a qualified yield
+  // (`models.User`) is left for the post-finalize follow, which can read the
+  // producer's import.
+  const elementTypeOf = provider.elementTypeOf;
+  const awaited: AwaitedFollow | undefined =
+    elementTypeOf === undefined
+      ? undefined
+      : { yields: (type) => elementTypeOf(type, { kind: 'await' }) };
   for (const draft of drafts) {
     for (const [name, ref] of draft.typeBindings) {
-      const resolved = followChainedRef(ref, draftById);
+      const resolved = followChainedRef(ref, draftById, awaited);
       if (resolved !== ref) draft.typeBindings.set(name, resolved);
     }
   }
@@ -1243,7 +1307,11 @@ const CHAIN_MAX_DEPTH = 16;
  * lookups in the declaring scope and its ancestors. Returns the terminal
  * TypeRef (or the original if the chain dead-ends or cycles).
  */
-function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeDraft>): TypeRef {
+function followChainedRef(
+  start: TypeRef,
+  draftById: ReadonlyMap<ScopeId, ScopeDraft>,
+  awaited?: AwaitedFollow,
+): TypeRef {
   let current = start;
   const visited = new Set<string>();
   for (let depth = 0; depth < CHAIN_MAX_DEPTH; depth++) {
@@ -1251,23 +1319,22 @@ function followChainedRef(start: TypeRef, draftById: ReadonlyMap<ScopeId, ScopeD
     // `QualifiedNameIndex` at resolution time — don't follow it here.
     if (current.rawName.includes('.')) return current;
 
-    // Look up the current rawName in the declaring scope and walk up
-    // the chain until we hit a scope that has a binding for it.
-    let scopeId: ScopeId | null = current.declaredAtScope;
-    let next: TypeRef | undefined;
-    while (scopeId !== null) {
-      const scope = draftById.get(scopeId);
-      if (scope === undefined) break;
-      next = scope.typeBindings.get(current.rawName);
-      if (next !== undefined) break;
-      scopeId = scope.parent;
-    }
+    const claim = lookupLexicalName(
+      current.declaredAtScope,
+      current.rawName,
+      {
+        scopes: { getScope: (id) => draftById.get(id) },
+      },
+      { position: current.lookupPosition, purpose: current.lookupPurpose },
+    );
+    const next = claim.typeBinding;
 
     if (next === undefined) return current; // dead end — nothing to chain to
     if (next === current) return current; // self-ref
     if (visited.has(next.rawName)) return current; // cycle guard
     visited.add(next.rawName);
-    current = next;
+    // The await hop is the FIRST step only: callee → its awaited result.
+    current = followedStep(start, next, depth === 0 ? awaited : undefined);
   }
   return current;
 }
@@ -1383,8 +1450,20 @@ function pass5CollectReferences(
 
     const site: ReferenceSite = {
       name: nameCap.text,
+      nameRange: nameCap.range,
       atRange: anchor.range,
-      inScope: inScopeId,
+      ...(match['@reference.lookup-purpose']?.text === 'type' ||
+      match['@reference.lookup-purpose']?.text === 'value'
+        ? { lookupPurpose: match['@reference.lookup-purpose'].text as 'type' | 'value' }
+        : {}),
+      inScope:
+        kind === 'inherits' ? inScopeId : (match['@reference.lookup-scope']?.text ?? inScopeId),
+      ...(kind === 'inherits' && match['@reference.lookup-scope'] !== undefined
+        ? { lookupScope: match['@reference.lookup-scope'].text }
+        : {}),
+      ...(match['@reference.caller-scope'] !== undefined
+        ? { callerScope: match['@reference.caller-scope'].text }
+        : {}),
       kind,
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
@@ -1866,7 +1945,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
   '@declaration.name',
   '@declaration.qualified_name',
+  '@declaration.graph-position',
   '@declaration.is-synthetic',
+  '@declaration.global',
+  '@declaration.lexical-method',
   '@import.name',
   '@import.source',
   '@import.alias',
@@ -1876,6 +1958,8 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@import.publishes',
   '@type-binding.name',
   '@type-binding.type',
+  '@type-binding.nullable-field',
+  '@type-binding.awaited',
   '@reference.name',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's

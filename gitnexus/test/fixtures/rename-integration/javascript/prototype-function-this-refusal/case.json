@@ -1,0 +1,17 @@
+{
+  "language": "javascript",
+  "description": "Refuse an ordinary function whose `this` is bound by the call site; the written member call is not provably unrelated, so every file must stay unchanged.",
+  "categories": ["receiver", "this-binding", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "closeWriter",
+    "kind": "Method",
+    "file": "model.js",
+    "startLine": 1
+  },
+  "newName": "shutdown",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  }
+}

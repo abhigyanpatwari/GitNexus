@@ -1,0 +1,24 @@
+{
+  "language": "typescript",
+  "description": "Refuse an intermediate-field mutation hidden by an unrelated structural annotation on an alias; preserve every file.",
+  "categories": [
+    "public-field",
+    "deep-chain",
+    "cross-file",
+    "alias",
+    "structural-type",
+    "unsafe-intermediate-receiver"
+  ],
+  "target": {
+    "name": "score",
+    "kind": "Property",
+    "file": "model.ts",
+    "startLine": 0
+  },
+  "newName": "points",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "unsupported"
+  }
+}

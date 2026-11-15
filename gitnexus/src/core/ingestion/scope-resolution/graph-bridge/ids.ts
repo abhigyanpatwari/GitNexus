@@ -17,7 +17,14 @@
  * migrate.
  */
 
-import type { NodeLabel, ParameterTypeClass, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type {
+  NodeLabel,
+  ParameterTypeClass,
+  ScopeId,
+  ScopeLookupPolicy,
+  SourcePosition,
+  SymbolDefinition,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
 import {
@@ -36,6 +43,7 @@ import {
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
+import { cachedCallerChildren, cachedCallerLookupStart } from '../scope/name-lookup-cache.js';
 
 const defGraphIdMemoByLookup = new WeakMap<GraphNodeLookup, Map<string, string | undefined>>();
 
@@ -50,6 +58,7 @@ const defGraphIdMemoKey = (
   filePath: string,
   def: {
     nodeId?: string;
+    graphPosition?: SourcePosition;
     qualifiedName?: string;
     type?: NodeLabel;
     parameterTypes?: readonly string[];
@@ -60,7 +69,7 @@ const defGraphIdMemoKey = (
     namespacePrefix?: string;
   },
 ): string =>
-  `${filePath}\0${def.nodeId ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${(def.parameterTypeClasses ?? []).join(',')}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
+  `${filePath}\0${def.nodeId ?? ''}\0${def.graphPosition?.startLine ?? ''}:${def.graphPosition?.startCol ?? ''}\0${def.type ?? ''}\0${def.qualifiedName ?? ''}\0${def.parameterCount ?? ''}\0${(def.parameterTypes ?? []).join(',')}\0${(def.parameterTypeClasses ?? []).join(',')}\0${def.namespacePrefix ?? ''}\0${(def.templateArguments ?? []).join(',')}\0${templateConstraintsIdTag(def.templateConstraints)}`;
 
 /**
  * Labels that may legitimately ANCHOR a CALLS/ACCESSES edge as the
@@ -144,14 +153,18 @@ function scopeIsCallableBody(
 function pickCallerCallableDef(
   scope: {
     readonly id: ScopeId;
+    readonly kind: string;
+    readonly lookupPolicy?: ScopeLookupPolicy;
     readonly range: { startLine: number; startCol: number; endLine: number; endCol: number };
     readonly ownedDefs: readonly SymbolDefinition[];
   },
   scopes: ScopeResolutionIndexes,
   atRange?: { startLine: number; startCol: number },
 ): { def: SymbolDefinition; fromChildScope: boolean } | undefined {
-  if (atRange !== undefined) {
-    for (const childId of scopes.scopeTree.getChildren(scope.id)) {
+  // A provider can place default arguments and similar expressions in the
+  // scope that evaluates them, outside their physical declaration container.
+  if (atRange !== undefined && scope.lookupPolicy?.callerScopeIsAuthoritative !== true) {
+    for (const childId of cachedCallerChildren(scope.id, scopes)) {
       const child = scopes.scopeTree.getScope(childId);
       if (child === undefined) continue;
       if (!rangeContainsPoint(child.range, atRange)) continue;
@@ -176,7 +189,15 @@ function pickCallerCallableDef(
       }
     }
   }
-  const own = scope.ownedDefs.find(isCallableDef);
+  // Owning a declaration is not the same as being its executable body: a
+  // block may own a function prototype or a nested declaration while the
+  // current statement still belongs to the surrounding callable.
+  const own = scope.ownedDefs.find(
+    (def) =>
+      isCallableDef(def) &&
+      (scope.kind === 'Function' ||
+        (scope.kind === 'Block' && scopeIsCallableBody(scope.range, def))),
+  );
   return own === undefined ? undefined : { def: own, fromChildScope: false };
 }
 
@@ -247,6 +268,8 @@ export function resolveDefGraphId(
   def: {
     /** Scope-resolution def id — carries the declaration position (#2699). */
     nodeId?: string;
+    /** Graph position when the provider parses an embedded source buffer. */
+    graphPosition?: SourcePosition;
     qualifiedName?: string;
     type?: NodeLabel;
     parameterTypes?: readonly string[];
@@ -280,6 +303,7 @@ function resolveDefGraphIdUncached(
   filePath: string,
   def: {
     nodeId?: string;
+    graphPosition?: SourcePosition;
     qualifiedName?: string;
     type?: NodeLabel;
     parameterTypes?: readonly string[];
@@ -309,7 +333,10 @@ function resolveDefGraphIdUncached(
     // AST nodes (outer wrapper vs inner callable), but the graph node's
     // `startLine` follows the initializer (#2735) so this join matches even
     // when the binding is split across lines.
-    const definitionPosition = definitionIdPosition(def.nodeId, filePath);
+    const definitionPosition =
+      def.graphPosition !== undefined
+        ? { line: def.graphPosition.startLine, column: def.graphPosition.startCol }
+        : definitionIdPosition(def.nodeId, filePath);
     const line = definitionPosition?.line;
     if (line !== undefined && isPositionQualifiedLocalLabel(def.type)) {
       const simple = simpleNameOf(qn);
@@ -369,8 +396,8 @@ function resolveDefGraphIdUncached(
       // edge is the correct failure direction for a graph whose consumers include
       // `impact`; a fabricated caller is not. Gated on `localNameKey` so this ONLY
       // fires where the collision is real — a file with no such local keeps its
-      // previous fallback behaviour, which is what preserves legitimate anchor
-      // differences such as a Vue SFC's `lineOffset`.
+      // previous fallback behaviour for legitimate differences in query anchors.
+      // Embedded source offsets are explicit graphPosition facts joined above.
       //
       // Multi-line closure bindings are NOT this case anymore (#2735): their graph
       // `startLine` follows the initializer, so the position key above hits.
@@ -549,7 +576,7 @@ export function resolveCallerGraphId(
   nodeLookup: GraphNodeLookup,
   atRange?: { startLine: number; startCol: number },
 ): string | undefined {
-  let current: ScopeId | null = startScope;
+  let current: ScopeId | null = cachedCallerLookupStart(startScope, scopes);
   const visited = new Set<ScopeId>();
   let lastFilePath: string | undefined;
   while (current !== null) {
@@ -591,7 +618,7 @@ export function resolveCallerGraphId(
       // function that does not make it. Fail closed instead.
       return undefined;
     }
-    const classDef = scope.ownedDefs.find((d) => isCallerAnchorLabel(d.type));
+    const classDef = scope.ownedDefs.find((d) => isCallerAnchorLabel(d.type) && !isCallableDef(d));
     if (classDef !== undefined) {
       const id = resolveDefGraphId(scope.filePath, classDef, nodeLookup);
       if (id !== undefined) return id;

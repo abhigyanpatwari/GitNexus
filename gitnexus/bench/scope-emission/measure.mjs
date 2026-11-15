@@ -24,7 +24,8 @@
  * `blockDeclaresBinding` and its own `BLOCK_BINDING_CHILD_TYPES` — so a
  * TypeScript-only bench would let a JavaScript-only regression ship green.
  *
- * On this corpus the two currently agree exactly (2 blocks per module, 2200
+ * Loop and catch environments also carry lexical ownership. On this corpus
+ * the two currently agree exactly (4 blocks per module, 2600
  * scopes). That is a measured result, not a required invariant: the fixtures
  * are structurally parallel and the TS-only syntax they drop carries no extra
  * scopes. Each language is still gated against its OWN baseline, because the
@@ -54,7 +55,8 @@ const { emitJsScopeCaptures } =
  *
  * Deliberately mixes the shapes the filters discriminate between:
  *   - function/method/arrow bodies      → block scope must be SUPPRESSED
- *   - `if`/`else`/`for`/`while`/`try`   → suppressed when they declare nothing
+ *   - empty `if`/`else`/`while`/`try`   → suppressed
+ *   - lexical `for` and `catch`        → environment scope REQUIRED
  *   - blocks declaring `let`/`const`    → block scope REQUIRED (shadowing)
  *   - a block declaring only `var`      → suppressed (`var` hoists past it)
  */
@@ -164,6 +166,8 @@ const measure = ({ ext, emit, moduleSource }) => {
     for (const { path, source } of corpus) {
       for (const match of emit(source, path)) {
         for (const key of Object.keys(match)) {
+          // These decorate an existing scope; they do not create scopes.
+          if (key === '@scope.lookup-policy' || key === '@scope.name-claims') continue;
           if (key.startsWith('@scope.')) counts.set(key, (counts.get(key) ?? 0) + 1);
         }
       }

@@ -1,0 +1,21 @@
+{
+  "language": "python",
+  "description": "Refuse an incomplete private-name family before writing either the source spelling or its externally mangled spelling.",
+  "categories": [
+    "name-mangling",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "__read",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "__load",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_symbol_family",
+    "planningStatus": "unsupported"
+  }
+}

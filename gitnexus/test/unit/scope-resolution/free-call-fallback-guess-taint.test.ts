@@ -36,6 +36,7 @@ import {
   summarizeNameFallback,
 } from '../../../src/core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const CALLER_FILE = 'caller.ts';
 const TARGET_FILE = 'target.ts';
@@ -144,7 +145,7 @@ function run(sites: readonly ReferenceSite[]) {
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindings: new Map(),
     bindingAugmentations: new Map(),
     workspaceFqnBindings: new Map(),
@@ -168,6 +169,7 @@ function run(sites: readonly ReferenceSite[]) {
   fnNode(graph, 'fn:main', 'main', CALLER_FILE);
   fnNode(graph, 'fn:helper', 'helper', TARGET_FILE);
   const outcomes: ResolutionOutcome[] = [];
+  const bindings = new Map<ReferenceSite, { status: string; targetDefIds: readonly string[] }>();
   emitFreeCallFallback(
     graph,
     indexes,
@@ -177,13 +179,33 @@ function run(sites: readonly ReferenceSite[]) {
     new Set<string>(),
     createSemanticModel(),
     buildWorkspaceResolutionIndex([callerParsed, targetParsed]),
-    { allowGlobalFallback: true, recordResolutionOutcome: (o) => outcomes.push(o) },
+    {
+      allowGlobalFallback: true,
+      recordResolutionOutcome: (o) => outcomes.push(o),
+      recordSourceBinding: (site, binding) => bindings.set(site, binding),
+    },
   );
   const calls = graph.relationships.filter((r) => r.type === 'CALLS');
-  return { calls, outcomes };
+  return { calls, outcomes, bindings };
 }
 
 describe('free-call dedup: the label is decided from every collapsed site, never by order', () => {
+  it('retains each written binding before edge collapse, excluding the name guess', () => {
+    const guessed = guessedSite(3);
+    const first = preciseSite(4);
+    const second = preciseSite(5);
+    const { calls, bindings } = run([guessed, first, second]);
+    expect(calls).toHaveLength(1);
+    expect(bindings.get(guessed)).toMatchObject({ status: 'unresolved' });
+    expect(bindings.get(first)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [targetDef.nodeId],
+    });
+    expect(bindings.get(second)).toMatchObject({
+      status: 'resolved',
+      targetDefIds: [targetDef.nodeId],
+    });
+  });
   it('control — a lone precise site is import-resolved at 0.85', () => {
     const { calls } = run([preciseSite(3)]);
     expect(calls).toHaveLength(1);
@@ -316,25 +338,27 @@ function runConstructor(
       computeMro: () => [],
       implementsOf: () => [],
     }),
-    imports: new Map(
-      options.importTargetFile !== undefined
-        ? [
-            [
-              'scope:caller-mod',
+    imports: createEagerImportVisibility(
+      new Map(
+        options.importTargetFile !== undefined
+          ? [
               [
-                {
-                  localName: options.importExportedName ?? 'UniqueWidget',
-                  targetFile: options.importTargetFile,
-                  targetExportedName: options.importExportedName ?? 'UniqueWidget',
-                  ...(options.importTargetDefId !== undefined
-                    ? { targetDefId: options.importTargetDefId }
-                    : {}),
-                  kind: 'named' as const,
-                },
+                'scope:caller-mod',
+                [
+                  {
+                    localName: options.importExportedName ?? 'UniqueWidget',
+                    targetFile: options.importTargetFile,
+                    targetExportedName: options.importExportedName ?? 'UniqueWidget',
+                    ...(options.importTargetDefId !== undefined
+                      ? { targetDefId: options.importTargetDefId }
+                      : {}),
+                    kind: 'named' as const,
+                  },
+                ],
               ],
-            ],
-          ]
-        : [],
+            ]
+          : [],
+      ),
     ),
     bindings: new Map(
       options.bindImportedClass === true

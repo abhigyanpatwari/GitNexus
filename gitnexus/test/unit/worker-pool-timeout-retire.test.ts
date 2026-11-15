@@ -94,6 +94,212 @@ afterEach(() => {
 });
 
 describe('worker pool timeout retirement', () => {
+  it('retains a live worker when its shutdown termination request rejects', async () => {
+    let live!: TimeoutThenHealthyWorker;
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      workerFactory: () => {
+        live = new TimeoutThenHealthyWorker();
+        live.terminate = async () => {
+          live.terminateCalls++;
+          throw new Error('termination rejected');
+        };
+        return live as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    try {
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      expect(live.terminateCalls).toBe(1);
+      live.emit('exit', 0);
+      await expect(pool.terminate()).resolves.toBeUndefined();
+    } finally {
+      live.emit('exit', 0);
+      await pool.terminate();
+    }
+  });
+  it('retains a rejected termination reservation until physical exit, then releases it', async () => {
+    let broken: TimeoutThenHealthyWorker | undefined;
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      shutdownDrainMs: 20,
+      workerFactory: () => {
+        const worker = new TimeoutThenHealthyWorker();
+        if (worker.id === 0) {
+          broken = worker;
+          worker.postMessage = (message: unknown) => {
+            if ((message as { type?: string })?.type === 'sub-batch')
+              queueMicrotask(() => worker.emit('error', new Error('worker failed')));
+          };
+          worker.terminate = async () => {
+            worker.terminateCalls++;
+            throw new Error('termination rejected');
+          };
+        }
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    try {
+      await expect(pool.dispatch([{ path: 'src/error.ts', content: '' }])).rejects.toThrow();
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(1);
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      broken!.emit('exit', 1);
+      await expect(pool.terminate()).resolves.toBeUndefined();
+    } finally {
+      broken?.emit('exit', 1);
+      await pool.terminate().catch(() => {});
+    }
+  });
+
+  it('keeps an errored retired worker reserved until its physical exit', async () => {
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      subBatchIdleTimeoutMs: 10,
+      maxTimeoutRetries: 1,
+      shutdownDrainMs: 20,
+      workerFactory: () => {
+        const worker = new TimeoutThenHealthyWorker();
+        worker.terminate = async () => {
+          worker.terminateCalls++;
+          throw new Error('termination rejected');
+        };
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    try {
+      await expect(pool.dispatch([{ path: 'src/stalled.ts', content: '' }])).rejects.toThrow();
+      const retired = TimeoutThenHealthyWorker.instances[0];
+      retired.emit('error', new Error('error before exit'));
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(1);
+      retired.emit('exit', 1);
+      await expect(pool.terminate()).resolves.toBeUndefined();
+    } finally {
+      TimeoutThenHealthyWorker.instances[0]?.emit('exit', 1);
+      await pool.terminate().catch(() => {});
+    }
+  });
+
+  it('refuses replacement and phase handoff while a budgeted native worker has not drained', async () => {
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      heapLimitMb: 512,
+      subBatchIdleTimeoutMs: 10,
+      maxTimeoutRetries: 1,
+      shutdownDrainMs: 20,
+      workerFactory: () =>
+        new TimeoutThenHealthyWorker() as unknown as import('node:worker_threads').Worker,
+    });
+    try {
+      await expect(
+        pool.dispatch([{ path: 'src/stalled.ts', content: 'const x = 1;' }]),
+      ).rejects.toThrow();
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(1);
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
+      await expect(pool.terminate()).rejects.toThrow('native resource reservation');
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
+    } finally {
+      TimeoutThenHealthyWorker.instances[0].emit('message', { type: 'sub-batch-done' });
+      await waitFor(
+        () => TimeoutThenHealthyWorker.instances[0].terminateCalls === 1,
+        'Worker did not retire',
+      );
+      await pool.terminate();
+    }
+  });
+
+  it('replaces a budgeted worker only after its safe point and native termination complete', async () => {
+    TimeoutThenHealthyWorker.firstWorkerBehavior = 'delayed-safe-return';
+    TimeoutThenHealthyWorker.safeReturnDelayMs = 40;
+    let completeTermination: (() => void) | undefined;
+    const pool = createWorkerPool(workerUrl, 1, {
+      requireDrain: true,
+      subBatchIdleTimeoutMs: 10,
+      maxTimeoutRetries: 1,
+      shutdownDrainMs: 500,
+      workerFactory: () => {
+        const worker = new TimeoutThenHealthyWorker();
+        if (worker.id === 0)
+          worker.terminate = () => {
+            worker.terminateCalls++;
+            return new Promise<number>((resolve) => {
+              completeTermination = () => {
+                worker.emit('exit', 0);
+                resolve(0);
+              };
+            });
+          };
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    try {
+      const result = pool.dispatch([{ path: 'src/delayed.ts', content: '' }]);
+      await waitFor(() => completeTermination !== undefined, 'Missing safe termination');
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(1);
+      completeTermination!();
+      await expect(result).resolves.toEqual([{ paths: ['src/delayed.ts'] }]);
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(2);
+    } finally {
+      completeTermination?.();
+      await pool.terminate();
+    }
+  });
+
+  it('replaces a released slot while another slot still awaits physical exit', async () => {
+    const release: Array<() => void> = [];
+    const dispatched = new Set<number>();
+    const pool = createWorkerPool(workerUrl, 2, {
+      requireDrain: true,
+      shutdownDrainMs: 500,
+      subBatchIdleTimeoutMs: 2000,
+      workerFactory: () => {
+        const worker = new TimeoutThenHealthyWorker();
+        if (worker.id < 2) {
+          worker.postMessage = (message: unknown) => {
+            if ((message as { type?: string })?.type === 'sub-batch') dispatched.add(worker.id);
+          };
+          worker.terminate = () =>
+            new Promise<number>((resolve) => {
+              release[worker.id] = () => {
+                worker.emit('exit', 1);
+                resolve(1);
+              };
+            });
+        }
+        return worker as unknown as import('node:worker_threads').Worker;
+      },
+    });
+    const result = pool.dispatch([
+      { path: 'a.ts', content: '' },
+      { path: 'b.ts', content: '' },
+    ]);
+    try {
+      await waitFor(() => dispatched.size === 2, 'Both slots did not dispatch');
+      TimeoutThenHealthyWorker.instances[0].emit('error', new Error('slot zero failed'));
+      TimeoutThenHealthyWorker.instances[1].emit('error', new Error('slot one failed'));
+      await waitFor(() => release.filter(Boolean).length === 2, 'Missing termination requests');
+      release[0]();
+      await waitFor(
+        () => TimeoutThenHealthyWorker.instances.length === 3,
+        'Released slot was blocked by the other slot',
+      );
+      release[1]();
+      await result; // Failed inputs are quarantined; both replacement slots remain usable.
+      expect(TimeoutThenHealthyWorker.instances).toHaveLength(4);
+      const results = await pool.dispatch([
+        { path: 'healthy-a.ts', content: '' },
+        { path: 'healthy-b.ts', content: '' },
+      ]);
+      expect(results).toEqual(
+        expect.arrayContaining([{ paths: ['healthy-a.ts'] }, { paths: ['healthy-b.ts'] }]),
+      );
+    } finally {
+      for (const finish of release) finish?.();
+      await result.catch(() => undefined);
+      await pool.terminate();
+    }
+  });
+
   it('does not immediately terminate a worker that timed out inside native parsing', async () => {
     const pool = createWorkerPool(workerUrl, 1, {
       subBatchIdleTimeoutMs: 20,

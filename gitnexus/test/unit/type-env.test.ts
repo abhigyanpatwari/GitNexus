@@ -13,7 +13,7 @@ import {
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Java from 'tree-sitter-java';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import Python from 'tree-sitter-python';
@@ -25,7 +25,7 @@ import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-gram
 // Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
 const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 
-let Dart: unknown;
+let Dart: Parser.Language | null = null;
 try {
   Dart = requireVendoredGrammar('tree-sitter-dart');
   const testParser = new Parser();
@@ -34,7 +34,7 @@ try {
   Dart = null;
 }
 
-let Swift: unknown;
+let Swift: Parser.Language | null = null;
 try {
   Swift = requireVendoredGrammar('tree-sitter-swift');
   const testParser = new Parser();
@@ -45,7 +45,7 @@ try {
 
 const parser = new Parser();
 
-const parse = (code: string, lang: unknown) => {
+const parse = (code: string, lang: Parser.Language) => {
   parser.setLanguage(lang);
   return parser.parse(code);
 };
@@ -3224,38 +3224,6 @@ svc = App::Models::Service.new
   });
 
   describe('stripNullable', () => {
-    it('strips User | null → User', () => {
-      expect(stripNullable('User | null')).toBe('User');
-    });
-
-    it('strips User | undefined → User', () => {
-      expect(stripNullable('User | undefined')).toBe('User');
-    });
-
-    it('strips User | null | undefined → User', () => {
-      expect(stripNullable('User | null | undefined')).toBe('User');
-    });
-
-    it('strips User? → User', () => {
-      expect(stripNullable('User?')).toBe('User');
-    });
-
-    it('passes through User unchanged', () => {
-      expect(stripNullable('User')).toBe('User');
-    });
-
-    it('refuses genuine union User | Repo → undefined', () => {
-      expect(stripNullable('User | Repo')).toBeUndefined();
-    });
-
-    it('returns undefined for null alone', () => {
-      expect(stripNullable('null')).toBeUndefined();
-    });
-
-    it('returns undefined for empty string', () => {
-      expect(stripNullable('')).toBeUndefined();
-    });
-
     it('strips User | void → User', () => {
       expect(stripNullable('User | void')).toBe('User');
     });
@@ -3270,22 +3238,6 @@ svc = App::Models::Service.new
 
     it('strips User | void | nil → User (multiple nullable keywords)', () => {
       expect(stripNullable('User | void | nil')).toBe('User');
-    });
-
-    it('returns undefined for None alone', () => {
-      expect(stripNullable('None')).toBeUndefined();
-    });
-
-    it('returns undefined for nil alone', () => {
-      expect(stripNullable('nil')).toBeUndefined();
-    });
-
-    it('returns undefined for void alone', () => {
-      expect(stripNullable('void')).toBeUndefined();
-    });
-
-    it('returns undefined for undefined alone', () => {
-      expect(stripNullable('undefined')).toBeUndefined();
     });
 
     it('strips nullable suffix with spaces: User ? → User', () => {

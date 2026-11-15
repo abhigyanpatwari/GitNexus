@@ -1,3 +1,4 @@
+import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
 import { beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -7,7 +8,6 @@ import type { PipelineResult } from '../../src/types/pipeline.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../../src/core/ingestion/route-extractors/data-route-table.js';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -16,6 +16,8 @@ import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
 } from '../../src/storage/parsedfile-store.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 const FIXTURE = path.resolve(__dirname, '..', 'fixtures', 'data-route-table-app');
 
@@ -221,10 +223,11 @@ for (const route of routes) {
     const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-route-table-warm-'));
     try {
       const cold: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set<string>(),
         storagePath: storageDir,
+        writeStoragePath: storageDir,
         onDiskKeys: new Set<string>(),
       };
       const coldResult = await runPipelineFromRepo(FIXTURE, () => {}, {
@@ -237,10 +240,10 @@ for (const route of routes) {
       const savedKeys = await saveParseCache(storageDir, cold);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storageDir),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
-      const warm = await loadParseCache(storageDir);
+      const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(warm).not.toBeNull();
 
       const replay = await runPipelineFromRepo(FIXTURE, () => {}, {

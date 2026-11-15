@@ -1,0 +1,19 @@
+{
+  "language": "dart",
+  "description": "Rename a field beside a named argument label that binds another function's parameter.",
+  "categories": [
+    "named-argument",
+    "unrelated-name"
+  ],
+  "target": {
+    "name": "x",
+    "kind": "Property",
+    "file": "point.dart",
+    "startLine": 1
+  },
+  "newName": "px",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

@@ -66,6 +66,8 @@ export interface TaintCallableMatcher<K extends string = string> {
  *   names (`res.send` / `res.write`); exactly `<receiver>.<name>`, name-based.
  */
 export interface TaintSinkEntry extends TaintCallableMatcher<SinkKind> {
+  /** Reviewed fixed-operation prefixes with one inert data-word argument. */
+  readonly inertCommandPrefixes?: readonly string[];
   readonly module?: string;
   readonly global?: boolean;
   /** Only meaningful with `global`: match `new <name>(…)` sites only. */
@@ -117,6 +119,7 @@ export interface TaintMemberSourceEntry {
 export interface TaintCallResultSourceEntry {
   readonly type: 'call-result';
   readonly kind: SourceKind;
+  /** Exact conventional receiver paths, e.g. `request` or `ctx.request`. */
   readonly receivers: readonly string[];
   readonly methods: readonly string[];
 }

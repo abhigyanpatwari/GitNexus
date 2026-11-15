@@ -53,17 +53,22 @@ export function makeCfgHarness(
   };
 
   const cfgOf = (code: string, index = 0): FunctionCfg => {
-    const fn = collectFunctions(parse(code))[index];
+    const root = parse(code);
+    const bound = visitor.forFile?.(root, filePath) ?? visitor;
+    const fn = collectFunctions(root)[index];
     if (!fn) throw new Error(`no function at index ${index}`);
-    const cfg = visitor.buildFunctionCfg(fn, filePath);
+    const cfg = bound.buildFunctionCfg(fn, filePath);
     if (!cfg) throw new Error('buildFunctionCfg returned undefined');
     return cfg;
   };
 
-  const cfgsOf = (code: string): FunctionCfg[] =>
-    collectFunctions(parse(code))
-      .map((fn) => visitor.buildFunctionCfg(fn, filePath))
+  const cfgsOf = (code: string): FunctionCfg[] => {
+    const root = parse(code);
+    const bound = visitor.forFile?.(root, filePath) ?? visitor;
+    return collectFunctions(root)
+      .map((fn) => bound.buildFunctionCfg(fn, filePath))
       .filter((c): c is FunctionCfg => c !== undefined);
+  };
 
   return { parse, collectFunctions, cfgOf, cfgsOf };
 }

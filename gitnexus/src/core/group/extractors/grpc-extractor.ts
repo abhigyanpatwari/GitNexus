@@ -135,9 +135,8 @@ function extractServiceBlocks(content: string): Array<{ name: string; body: stri
   const results: Array<{ name: string; body: string }> = [];
   // Sanitize comments and string literals so braces inside them don't
   // throw off the depth counter. The sanitized copy has the same length
-  // and offsets as the original, so we use it ONLY to scan for service
-  // headers and braces; the service body we return is sliced from the
-  // ORIGINAL content to preserve exact source text for downstream use.
+  // and offsets as the original. Return sanitized bodies too, so downstream
+  // RPC matching cannot mistake commented-out declarations or strings for code.
   const sanitized = stripProtoCommentsAndStrings(content);
   const headerRe = /service\s+(\w+)\s*\{/g;
   let headerMatch: RegExpExecArray | null;
@@ -159,7 +158,7 @@ function extractServiceBlocks(content: string): Array<{ name: string; body: stri
     if (depth !== 0) continue;
 
     // body is between opening { (consumed by regex) and closing } (pos is one past it)
-    const body = content.slice(bodyStart, pos - 1);
+    const body = sanitized.slice(bodyStart, pos - 1);
     results.push({ name: serviceName, body });
   }
 
@@ -655,7 +654,13 @@ export class GrpcExtractor implements ContractExtractor {
 
     // Steps 4 + 5: legacy per-repo proto map resolution (no import).
     const candidates = protoMap.get(d.serviceName) ?? [];
-    const proto = resolveProtoConflict(d.serviceName, filePath, candidates);
+    // A proto detection already knows its defining file; the directory
+    // heuristic is only for sources that name the service by short name.
+    const ownProto =
+      d.source === 'proto'
+        ? candidates.find((c) => c.protoPath === normalizeProtoPath(filePath))
+        : undefined;
+    const proto = ownProto ?? resolveProtoConflict(d.serviceName, filePath, candidates);
     // If there were proto candidates but resolution was ambiguous, skip
     // contract emission rather than fabricating a package-qualified id from
     // an arbitrary candidate. resolveProtoConflict already warned.

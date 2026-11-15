@@ -1,0 +1,20 @@
+{
+  "language": "c",
+  "description": "Refuse an indexed Objective-C macro replacement containing the C target name, without treating token text as edit proof.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "macro-boundary"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.c"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

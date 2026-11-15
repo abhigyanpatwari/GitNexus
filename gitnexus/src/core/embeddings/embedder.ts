@@ -20,6 +20,11 @@ import {
 } from './http-client.js';
 import { assessLocalEmbeddingRuntime, getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
 import {
+  LocalEmbeddingDimensionError,
+  resolveLocalEmbeddingDimensions,
+  resolveLocalEmbeddingModelId,
+} from './config.js';
+import {
   ensureEmbeddingSidecar,
   getSidecarDevice,
   reapEmbeddingSidecarAndWait,
@@ -83,7 +88,19 @@ export const getEmbeddingDimensions = (): number => {
   if (isHttpMode()) {
     return getHttpDimensions() ?? DEFAULT_EMBEDDING_CONFIG.dimensions;
   }
-  return DEFAULT_EMBEDDING_CONFIG.dimensions;
+  return resolveLocalEmbeddingDimensions();
+};
+
+// A custom model fails before a wrong-width vector reaches the FLOAT[N] column, like the HTTP client.
+const assertLocalDimensions = (vectors: Float32Array[]): Float32Array[] => {
+  const modelId = resolveLocalEmbeddingModelId();
+  if (modelId === DEFAULT_EMBEDDING_CONFIG.modelId) return vectors;
+  const expected = resolveLocalEmbeddingDimensions();
+  const wrong = vectors.find((vec) => vec.length !== expected);
+  if (wrong) {
+    throw new LocalEmbeddingDimensionError(modelId, wrong.length, expected);
+  }
+  return vectors;
 };
 
 export const embedText = async (
@@ -101,7 +118,7 @@ export const embedText = async (
     throw new Error(runtimeBlocker);
   }
 
-  const [vec] = await sidecarEmbedBatch([text], options);
+  const [vec] = assertLocalDimensions(await sidecarEmbedBatch([text], options));
   return vec;
 };
 
@@ -123,7 +140,7 @@ export const embedBatch = async (
     throw new Error(runtimeBlocker);
   }
 
-  return sidecarEmbedBatch(texts, options);
+  return assertLocalDimensions(await sidecarEmbedBatch(texts, options));
 };
 
 export const embeddingToArray = (embedding: Float32Array): number[] => {

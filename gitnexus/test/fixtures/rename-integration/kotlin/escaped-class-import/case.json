@@ -1,0 +1,36 @@
+{
+  "language": "kotlin",
+  "description": "Keep escaped semantic keys aligned through persisted indexing, cached reload, and exact rename.",
+  "categories": [
+    "escaped-identifier",
+    "call-graph",
+    "cross-file"
+  ],
+  "target": {
+    "name": "read",
+    "kind": "Method",
+    "file": "models/Models.kt"
+  },
+  "newName": "fetch",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "app/Main.kt"
+      },
+      "to": {
+        "name": "read",
+        "kind": "Method",
+        "file": "models/Models.kt"
+      }
+    }
+  ],
+  "exactOutgoing": true,
+  "warmParseCache": true
+}

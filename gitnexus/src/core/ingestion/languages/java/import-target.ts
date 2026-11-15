@@ -27,6 +27,10 @@
  *    which the previous header documented at length as being decided by "a
  *    property of the file list, not of the import". It now answers with every
  *    file declaring that package, which is what the import actually names.
+ *    That answer is about visibility: any of those files may supply a name.
+ *    Which of them become a File→File IMPORTS edge is decided at emission, by
+ *    scope-bound AST uses (`javaOnDemandImportTargets`, #3695) — an
+ *    edge per package file was importers × package size.
  *  - a file's location and its package were assumed to agree. They need not:
  *    `weird/path/User.java` declaring `package com.example;` is importable as
  *    `com.example.User`, and `com/example/User.java` declaring nothing is in
@@ -40,7 +44,7 @@
  */
 
 import type { ParsedFile, ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { getJavaPackageFact } from './package-facts.js';
 import {
   buildJavaPackageIndex,
@@ -90,7 +94,7 @@ export function resolveJavaImportTarget(
   const parsedFiles = ctx.parsedFiles;
   if (parsedFiles === undefined || parsedFiles.length === 0) return null;
 
-  return resolveJavaModule(parsedImport.targetRaw, getJavaPackageIndex(parsedFiles));
+  return resolveJavaModule(parsedImport.targetRaw, getJavaPackageIndex(parsedFiles), ctx.fromFile);
 }
 
 /**

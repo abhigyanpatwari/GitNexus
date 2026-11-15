@@ -24,6 +24,8 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import {
   findReceiverTypeBinding,
+  findUntypedReceiverBinder,
+  isReceiverOwnedButUnbound,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -39,8 +41,14 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { phpProvider } from '../php.js';
 import { phpArityCompatibility, phpMergeBindings } from './index.js';
-import { resolvePhpImportTargetInternal, loadPhpComposerConfig } from './import-target.js';
+import {
+  resolvePhpImportTargetInternal,
+  resolvePhpImportBinding,
+  clearPhpImportSpellings,
+  loadPhpComposerConfig,
+} from './import-target.js';
 import { populatePhpNamespaceSiblings, getPhpNamespaceForFile } from './namespace-siblings.js';
+import { resolvePhpQualifiedCallee, resolvePhpQualifiedFreeCall } from './qualified-function.js';
 
 /**
  * PHP MRO builder — extends the generic EXTENDS-only MRO with trait-use
@@ -249,9 +257,11 @@ function collectTransitiveTraits(
  * name lookup: when exactly one def in the workspace matches the called
  * method name, emit the CALLS edge.
  *
- * Only fires for sites that are NOT already in `handledSites` and whose
- * receiver has no type binding in the scope chain. Unique-name-match
- * constraint avoids false positives for common method names.
+ * Only fires for sites that are NOT already in `handledSites`, whose
+ * receiver is not owned-but-unbound (`isReceiverOwnedButUnbound`), has no
+ * type binding in the scope chain, and whose walk did not stop at an untyped
+ * binder (`findUntypedReceiverBinder`). Unique-name-match constraint avoids
+ * false positives for common method names.
  */
 function phpEmitUnresolvedReceiverEdges(
   graph: KnowledgeGraph,
@@ -272,10 +282,30 @@ function phpEmitUnresolvedReceiverEdges(
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
       if (handledSites.has(siteKey)) continue;
 
+      // A scope that owns the receiver but has no type for it has said "no
+      // type here" (a declined PHPDoc `@param`, see `phpScopeOwnsReceivers`):
+      // a definitive negative, not a missing binding. The receiver pass
+      // suppresses such a site and marks it handled; check it here too, so
+      // this fallback does not depend on that pass having run first.
+      const receiverBase = site.explicitReceiver.name.split('.', 1)[0]!;
+      if (isReceiverOwnedButUnbound(site.inScope, receiverBase, scopes)) continue;
+
       // Only proceed when the receiver has NO type binding — it's unresolvable
       // by the generic pass. This is the `mixed` / unannotated case.
       const typeRef = findReceiverTypeBinding(site.inScope, site.explicitReceiver.name, scopes);
       if (typeRef !== undefined) continue;
+      // No type is not the same as an unknown receiver. When a nearer scope
+      // binds the name WITHOUT a type, the walk stopped there on purpose
+      // (DART-11): that binder owns the receiver, so a workspace-unique method
+      // name says nothing about what it holds. The receiver pass only records
+      // that decline; it does not claim the site, so the stop is read here.
+      if (
+        findUntypedReceiverBinder(site.inScope, site.explicitReceiver.name, scopes, {
+          position: site.atRange,
+        }) !== undefined
+      ) {
+        continue;
+      }
 
       // Workspace-wide lookup: collect all methods matching the called name.
       // Filter out defs with no qualifiedName (legacy parse stubs without full
@@ -350,14 +380,36 @@ function phpEmitUnresolvedReceiverEdges(
 }
 
 const phpScopeResolver: ScopeResolver = {
+  // PHP has separate method and property namespaces. A same-spelled
+  // method must never satisfy `$object->property`, or vice versa.
+  resolveReceiverMember(owner, name, site, indexes, model) {
+    if (!['call', 'read', 'write'].includes(site.kind)) return undefined;
+    const members = site.kind === 'call' ? model.methods : model.fields;
+    for (const ownerId of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
+      const candidates = members.lookupAllByOwner(ownerId, name);
+      if (!candidates.length) continue;
+      const compatible =
+        site.kind === 'call'
+          ? narrowOverloadCandidates(candidates, site.arity, site.argumentTypes)
+          : candidates;
+      return compatible.length === 1
+        ? { kind: 'resolved', definition: compatible[0]! }
+        : { kind: 'ambiguous', candidateIds: compatible.map((def) => def.nodeId) };
+    }
+    return { kind: 'ambiguous', candidateIds: [] };
+  },
   language: SupportedLanguages.PHP,
   languageProvider: phpProvider,
   importEdgeReason: 'php-scope: use',
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) =>
     resolvePhpImportTargetInternal(targetRaw, fromFile, allFilePaths, resolutionConfig, context),
+  resolveImportBinding: resolvePhpImportBinding,
 
-  loadResolutionConfig: (repoPath) => loadPhpComposerConfig(repoPath),
+  loadResolutionConfig: (repoPath) => {
+    clearPhpImportSpellings();
+    return loadPhpComposerConfig(repoPath);
+  },
 
   // PHP LEGB-like precedence: local > import/namespace/reexport > wildcard.
   // The per-scope id is unused by phpMergeBindings (tier ordering computed
@@ -381,6 +433,16 @@ const phpScopeResolver: ScopeResolver = {
   // function name. Same-namespace and global-namespace candidates pass
   // unchanged.
   isCallableVisibleFromCaller: phpIsCallableVisibleFromCaller,
+
+  // PHP namespaced-function callees (`rp\make()`, `\App\make()`,
+  // `namespace\make()`): expanded through the calling file's namespace and
+  // `use` table to one function by fully qualified name, for both the call's
+  // CALLS edge and its result type (#3498).
+  resolveQualifiedFreeCall: resolvePhpQualifiedFreeCall,
+  resolveQualifiedCallee: (callee, inScope, scopes, _workspace, _files, argumentsText) =>
+    argumentsText === undefined && !callee.endsWith('()')
+      ? undefined
+      : resolvePhpQualifiedCallee(callee, inScope, scopes, argumentsText),
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

@@ -4,7 +4,32 @@ const path = require('path');
 
 const HOOK_LOCK_SUBDIR = '.hook-locks';
 const HOOK_LOCK_MAX_INFLIGHT = 3;
-const HOOK_LOCK_STALE_MS = 30000;
+// How long the PID recorded in a slot file is still trusted to identify the
+// process that wrote it. Age is the final arbiter ONLY as a defense against
+// PID reuse on long-abandoned slots, so this bound must exceed the LONGEST
+// hook lifetime that legitimately holds a slot.
+//
+// Every adapter copy of this file shares ONE `.hook-locks` directory per
+// repo (the key is the repo's storage path), so the bound has to cover the
+// longest lifetime of ANY adapter — not just the one reading the slot:
+//
+//   cursor integration : the npx fallback may hold its slot for
+//                        CURSOR_NPX_MAX_BUDGET_MS (45s) + the spawnSync
+//                        teardown allowance (2s) + the guard self-test (3s)
+//                        ≈ 50s — the longest of the four.
+//   claude CJS / plugin: the DB-owner probe plus the augment child ≈ 18s.
+//   factory plugin    : a 10s host window.
+//
+// The previous 30s bound was sized for the claude adapter's 7s child and is
+// SHORTER than the cursor adapter's npx fallback: a healthy cold-start hook
+// therefore lost its slot to a concurrent hook while its child was still
+// running, defeating the per-repo concurrency cap exactly during the slow
+// installs the npx fallback exists to support.
+//
+// 60s covers the ≈50s worst case with ~10s of slack for a loaded host, and
+// still bounds how long an orphaned slot (one whose owner was killed before
+// it could release) blocks a slot.
+const HOOK_LOCK_STALE_MS = 60000;
 
 // An evictor's claim marker older than this belongs to a crashed evictor.
 // The critical section it guards is a few syscalls (token read, lstat,
@@ -218,8 +243,9 @@ function acquireHookSlot(gitNexusDir) {
         // For slots younger than HOOK_LOCK_STALE_MS, PID-liveness wins —
         // a slow-but-alive hook is never wrongly evicted. For older slots,
         // age is the final arbiter as a defense against PID reuse on long-
-        // abandoned slots. 30s >> the 7s augment timeout, so a healthy run
-        // never crosses this threshold.
+        // abandoned slots. HOOK_LOCK_STALE_MS exceeds the longest hook
+        // lifetime that legitimately holds a slot (see its definition), so a
+        // healthy run never crosses this threshold.
         if (isLive && Date.now() - mtimeMs > HOOK_LOCK_STALE_MS) {
           isLive = false;
         }

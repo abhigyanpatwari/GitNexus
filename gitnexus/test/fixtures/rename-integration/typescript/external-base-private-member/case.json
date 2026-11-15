@@ -1,0 +1,36 @@
+{
+  "language": "typescript",
+  "description": "Provider-private methods remain renameable despite an unindexed base.",
+  "categories": [
+    "polymorphism",
+    "external-base",
+    "private-member",
+    "call-graph"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.ts",
+    "startLine": 3
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "invoke",
+        "kind": "Method",
+        "file": "model.ts"
+      },
+      "to": {
+        "name": "target",
+        "kind": "Method",
+        "file": "model.ts"
+      }
+    }
+  ]
+}

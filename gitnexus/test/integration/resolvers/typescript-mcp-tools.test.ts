@@ -1,10 +1,10 @@
+import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 import { beforeAll, describe, expect, it } from 'vitest';
 import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import {
   loadParseCache,
-  PARSE_CACHE_VERSION,
   pruneCache,
   saveParseCache,
   type ParseCache,
@@ -22,6 +22,8 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+const parseIdentity = await runtimeParseIdentity();
 
 describe('JavaScript and TypeScript SDK tool registrations', () => {
   let result: PipelineResult;
@@ -86,10 +88,11 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
       `,
         );
         const cache: ParseCache = {
-          version: PARSE_CACHE_VERSION,
+          identity: parseIdentity,
           entries: new Map(),
           usedKeys: new Set(),
           storagePath: storageDir,
+          writeStoragePath: storageDir,
           onDiskKeys: new Set(),
         };
         const cold = await runPipelineFromRepo(repo, () => {}, {
@@ -101,10 +104,10 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
         const keys = await saveParseCache(storageDir, cache);
         await pruneAndSaveDurableParsedFileStore(
           getDurableParsedFileDir(storageDir),
-          PARSE_CACHE_VERSION,
+          parseIdentity.base,
           new Set(keys),
         );
-        const warmCache = await loadParseCache(storageDir);
+        const warmCache = await loadParseCache(storageDir, parseIdentity, storageDir);
         expect(warmCache).not.toBeNull();
         const warm = await runPipelineFromRepo(repo, () => {}, {
           parseCache: warmCache!,
@@ -225,10 +228,11 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
     const storageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-mcp-tools-cache-'));
     try {
       const cold: ParseCache = {
-        version: PARSE_CACHE_VERSION,
+        identity: parseIdentity,
         entries: new Map(),
         usedKeys: new Set(),
         storagePath: storageDir,
+        writeStoragePath: storageDir,
         onDiskKeys: new Set(),
       };
       const fixture = path.join(FIXTURES, 'typescript-mcp-tools');
@@ -241,10 +245,10 @@ describe('JavaScript and TypeScript SDK tool registrations', () => {
       const savedKeys = await saveParseCache(storageDir, cold);
       await pruneAndSaveDurableParsedFileStore(
         getDurableParsedFileDir(storageDir),
-        PARSE_CACHE_VERSION,
+        parseIdentity.base,
         new Set(savedKeys),
       );
-      const warm = await loadParseCache(storageDir);
+      const warm = await loadParseCache(storageDir, parseIdentity, storageDir);
       expect(warm).not.toBeNull();
       const replay = await runPipelineFromRepo(fixture, () => {}, {
         parseCache: warm!,

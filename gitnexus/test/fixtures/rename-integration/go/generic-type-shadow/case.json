@@ -1,0 +1,30 @@
+{
+  "language": "go",
+  "description": "Rename a package type while preserving a same-spelled function type parameter and its uses.",
+  "categories": ["generics", "type-shadowing", "call-graph", "comments-and-strings"],
+  "target": {
+    "name": "Target",
+    "kind": "Struct",
+    "file": "model.go"
+  },
+  "newName": "Renamed",
+  "expect": {
+    "status": "success",
+    "edits": 5
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "caller",
+        "kind": "Function",
+        "file": "model.go"
+      },
+      "to": {
+        "name": "concrete",
+        "kind": "Function",
+        "file": "model.go"
+      }
+    }
+  ]
+}

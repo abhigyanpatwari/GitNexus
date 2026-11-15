@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import type Parser from 'tree-sitter';
 import { VENDOR_ROOT } from '../vendor-root.js';
 
 const _require = createRequire(import.meta.url);
@@ -45,7 +46,7 @@ export const vendoredGrammarDir = (packageName: string): string =>
  * no `node_modules` copy. (`node-gyp-build` itself IS an npm dependency and
  * resolves normally from the grammar directory.)
  */
-export const requireVendoredGrammar = (packageName: string): unknown => {
+export const requireVendoredGrammar = (packageName: string): Parser.Language => {
   // Fail loudly on a name that isn't actually vendored — a typo or a list that
   // drifted out of sync (VENDORED_GRAMMAR_PACKAGES vs the CLI probe vs the build
   // registry) would otherwise surface as a confusing absolute-path require miss.

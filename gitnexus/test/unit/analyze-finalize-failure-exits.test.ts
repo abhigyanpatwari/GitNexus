@@ -32,6 +32,15 @@ import {
   type MockInstance,
 } from 'vitest';
 
+vi.mock('node:v8', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:v8')>();
+  const mocked = {
+    ...actual,
+    getHeapStatistics: () => ({ ...actual.getHeapStatistics(), heap_size_limit: 1024 ** 3 }),
+  };
+  return { ...mocked, default: mocked };
+});
+
 const {
   runFullAnalysisMock,
   assertAnalysisFinalizedMock,
@@ -62,7 +71,12 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   isLbugReady: isLbugReadyMock,
 }));
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
+  loadMeta: vi.fn(async () => null),
+  getStoragePaths: vi.fn(() => ({
+    storagePath: '.gitnexus',
+    lbugPath: '.gitnexus/lbug',
+    metaPath: '.gitnexus/gitnexus.json',
+  })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   AnalysisNotFinalizedError,
@@ -91,13 +105,6 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
   let savedNodeOptions: string | undefined;
 
   beforeAll(() => {
-    // analyzeCommand calls ensureHeap(), which RE-EXECS the process — spawning
-    // `node <heap-flags> <argv>` where argv is vitest's, killing the forked
-    // worker — UNLESS NODE_OPTIONS already carries a heap cap (analyze.ts:498).
-    // Locally a high V8 heap-size-limit also short-circuits it (analyze.ts:501),
-    // which is why this only crashed on the memory-constrained CI runner. Pre-set
-    // the cap so ensureHeap returns early — the same workaround cli-e2e uses
-    // (#2264 CI). Restored in afterAll so a reused worker's later files are clean.
     savedNodeOptions = process.env.NODE_OPTIONS;
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
     // Mock process.exit for the WHOLE file — a fatal handler firing between tests

@@ -635,6 +635,172 @@ describe('runWildcardMatch', () => {
   });
 });
 
+describe('manifest consumers match only the provider repo their link names (#1188)', () => {
+  const route = (role: 'provider' | 'consumer', repo: string, meta: Record<string, unknown> = {}) =>
+    ({
+      contractId: 'http::POST::/import',
+      type: 'http',
+      role,
+      symbolUid: `uid-${repo}`,
+      symbolRef: { filePath: `src/${repo}.ts`, name: `import-${repo}` },
+      symbolName: `import-${repo}`,
+      confidence: 0.9,
+      meta,
+      repo,
+    }) satisfies StoredContract;
+  const declared = (providerRepo: string) => ({ source: 'manifest', providerRepo });
+  const targets = (links: { to: { repo: string } }[]) => links.map((l) => l.to.repo).sort();
+
+  it('a manifest consumer does not match a same-id provider in another repo', () => {
+    const consumer = route('consumer', 'gen-question', declared('learning'));
+    const { matched, unmatched } = runExactMatch([
+      consumer,
+      route('provider', 'learning'),
+      route('provider', 'user-service'),
+    ]);
+
+    expect(targets(matched)).toEqual(['learning']);
+    expect(unmatched.map((c) => c.repo)).toEqual(['user-service']);
+  });
+
+  it('a manifest consumer whose declared repo exposes nothing stays unmatched', () => {
+    const consumer = route('consumer', 'gen-question', declared('learning'));
+    const { matched, unmatched } = runExactMatch([consumer, route('provider', 'user-service')]);
+
+    expect(matched).toEqual([]);
+    expect(unmatched).toContain(consumer);
+  });
+
+  it('an extracted consumer still matches every repo that exposes the contract', () => {
+    const { matched } = runExactMatch([
+      route('consumer', 'gen-question'),
+      route('provider', 'learning'),
+      route('provider', 'user-service'),
+    ]);
+
+    expect(targets(matched)).toEqual(['learning', 'user-service']);
+  });
+
+  it('a manifest consumer without providerRepo keeps the group-wide match', () => {
+    const { matched } = runExactMatch([
+      route('consumer', 'gen-question', { source: 'manifest' }),
+      route('provider', 'learning'),
+      route('provider', 'user-service'),
+    ]);
+
+    expect(targets(matched)).toEqual(['learning', 'user-service']);
+  });
+
+  it('a manifest gRPC service wildcard matches only the declared repo', () => {
+    const consumer = makeGrpcContract('grpc::auth.AuthService/*', 'consumer', 'orders', {
+      meta: declared('auth'),
+    });
+    const providerIndex = buildProviderIndex([
+      makeGrpcContract('grpc::auth.AuthService/Login', 'provider', 'auth'),
+      makeGrpcContract('grpc::auth.AuthService/Login', 'provider', 'legacy-auth'),
+    ]);
+
+    const { matched } = runWildcardMatch([consumer], providerIndex);
+
+    expect(targets(matched)).toEqual(['auth']);
+  });
+
+  it('a same-named thrift service in an undeclared repo does not make a bare wildcard ambiguous', () => {
+    const consumer = makeThriftContract('thrift::OrderService/*', 'consumer', 'frontend', {
+      meta: declared('billing'),
+    });
+    const providerIndex = buildProviderIndex([
+      makeThriftContract('thrift::billing.v1.OrderService/PlaceOrder', 'provider', 'billing'),
+      makeThriftContract('thrift::sales.v1.OrderService/PlaceOrder', 'provider', 'sales'),
+    ]);
+
+    const { matched, remaining } = runWildcardMatch([consumer], providerIndex);
+
+    expect(targets(matched)).toEqual(['billing']);
+    expect(remaining).toEqual([]);
+  });
+
+  it('a declared repo whose name another repo starts with is not confused with it', () => {
+    const { matched } = runExactMatch([
+      route('consumer', 'gen-question', declared('learning')),
+      route('provider', 'learning'),
+      route('provider', 'learning-v2'),
+    ]);
+
+    expect(targets(matched)).toEqual(['learning']);
+  });
+
+  const contractOf = (
+    contractId: string,
+    role: 'provider' | 'consumer',
+    repo: string,
+    meta: Record<string, unknown> = {},
+  ): StoredContract => ({
+    contractId,
+    type: contractId.slice(0, contractId.indexOf('::')) as StoredContract['type'],
+    role,
+    symbolUid: `uid-${repo}-${role}`,
+    symbolRef: { filePath: `src/${repo}.ts`, name: `${role}-${repo}` },
+    symbolName: `${role}-${repo}`,
+    confidence: 0.9,
+    meta,
+    repo,
+  });
+
+  it.each([
+    ['a topic', 'topic::orders.created', 'topic::orders.created'],
+    ['a lib', 'lib::shared-utils', 'lib::shared-utils'],
+    [
+      'a thrift method',
+      'thrift::billing.OrderService/PlaceOrder',
+      'thrift::billing.OrderService/PlaceOrder',
+    ],
+    ['a method-agnostic http link', 'http::*::/import', 'http::POST::/import'],
+    ['a method-agnostic http provider', 'http::POST::/import', 'http::*::/import'],
+  ])('the exact pass applies the declared repo to %s', (_label, consumerId, providerId) => {
+    const { matched } = runExactMatch([
+      contractOf(consumerId, 'consumer', 'frontend', declared('billing')),
+      contractOf(providerId, 'provider', 'billing'),
+      contractOf(providerId, 'provider', 'sales'),
+    ]);
+
+    expect(targets(matched)).toEqual(['billing']);
+  });
+
+  it('a manifest consumer the exact pass could not place stays unmatched when a consumer with the same repo and id matched', () => {
+    // Both consumers share `gen-question::http::POST::/import`. The extracted
+    // one matches user-service; the link consumer may only match learning,
+    // which serves nothing here.
+    const linkConsumer = route('consumer', 'gen-question', declared('learning'));
+    const extractedConsumer = route('consumer', 'gen-question');
+    const { matched, unmatched } = runExactMatch([
+      linkConsumer,
+      extractedConsumer,
+      route('provider', 'user-service'),
+    ]);
+
+    expect(targets(matched)).toEqual(['user-service']);
+    expect(unmatched).toEqual([linkConsumer]);
+  });
+
+  it('a manifest wildcard consumer the wildcard pass could not place stays in remaining when its twin matched', () => {
+    const toAuth = makeGrpcContract('grpc::auth.AuthService/*', 'consumer', 'orders', {
+      meta: declared('auth'),
+    });
+    const toGone = makeGrpcContract('grpc::auth.AuthService/*', 'consumer', 'orders', {
+      meta: declared('gone'),
+    });
+    const providerIndex = buildProviderIndex([
+      makeGrpcContract('grpc::auth.AuthService/Login', 'provider', 'auth'),
+    ]);
+
+    const { matched, remaining } = runWildcardMatch([toAuth, toGone], providerIndex);
+
+    expect(targets(matched)).toEqual(['auth']);
+    expect(remaining).toEqual([toGone]);
+  });
+});
+
 describe('buildNoisyContractFilter (via runExactMatch)', () => {
   const makeContract = (
     id: string,

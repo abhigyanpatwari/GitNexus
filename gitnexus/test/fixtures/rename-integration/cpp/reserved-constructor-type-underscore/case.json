@@ -1,0 +1,21 @@
+{
+  "language": "cpp",
+  "description": "Selecting a constructor must validate the reserved identifier against the coupled global type declaration.",
+  "categories": [
+    "identifier-rules",
+    "reserved-words",
+    "constructor-family"
+  ],
+  "target": {
+    "name": "Target",
+    "kind": "Method",
+    "file": "model.cpp",
+    "startLine": 1
+  },
+  "newName": "_value",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

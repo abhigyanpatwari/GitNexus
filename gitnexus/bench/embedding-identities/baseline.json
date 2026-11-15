@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "linear_scaling_budget": 2,
+  "sizes": [1024, 4096],
+  "dimensions": 8,
+  "batch_size": 128,
+  "results": [
+    {
+      "nodes": 1024,
+      "copy_ms": 85.39003699999012,
+      "replace_ms": 23018.108886999995
+    },
+    {
+      "nodes": 4096,
+      "copy_ms": 94.20082500006538,
+      "replace_ms": 95806.77968499996
+    }
+  ],
+  "runtime": {
+    "node": "v24.19.0",
+    "platform": "linux",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K"
+  },
+  "regression_budget": 1.3
+}

@@ -1,0 +1,22 @@
+{
+  "language": "csharp",
+  "description": "Refuse a positional record property that its named argument label and parameter also spell.",
+  "categories": [
+    "named-argument",
+    "positional-record",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "First",
+    "kind": "Property",
+    "file": "Pair.cs",
+    "startLine": 2
+  },
+  "newName": "Head",
+  "expect": {
+    "status": "error",
+    "code": "incomplete_semantics",
+    "planningStatus": "blocked"
+  }
+}

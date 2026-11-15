@@ -115,6 +115,44 @@ afterEach(() => {
 });
 
 describe('status freshness from per-file drift (#3077)', () => {
+  it('checks graph content despite pending embeddings and preserves the aggregate incomplete verdict', async () => {
+    vi.mocked(loadMeta).mockResolvedValue({
+      ...repoWithCoverage.meta,
+      graphGeneration: { version: 1, id: 'b'.repeat(32), coveredContent: 'c'.repeat(64) },
+      embeddingJob: { version: 1, identity: 'a'.repeat(64), graphGeneration: 'b'.repeat(32) },
+    });
+    vi.mocked(detectIndexContentDrift).mockResolvedValue({ kind: 'current', coveredFileCount: 1 });
+    await statusCommand({ json: true });
+    expect(detectIndexContentDrift).toHaveBeenCalled();
+    expect(JSON.parse(output())).toMatchObject({
+      status: 'stale',
+      index: {
+        graphStatus: 'up-to-date',
+        graphIncompleteReasons: [],
+        incompleteReasons: ['embedding-job-pending'],
+        embeddingProgress: { phase: 'unverified' },
+      },
+    });
+  });
+
+  it('does not certify a drifted graph while embeddings are pending', async () => {
+    vi.mocked(loadMeta).mockResolvedValue({
+      ...repoWithCoverage.meta,
+      embeddingJob: { version: 1, identity: 'a'.repeat(64), graphGeneration: 'b'.repeat(32) },
+    });
+    vi.mocked(detectIndexContentDrift).mockResolvedValue({
+      kind: 'drifted',
+      changed: ['a.js'],
+      added: [],
+      deleted: [],
+    });
+    await statusCommand({ json: true });
+    expect(JSON.parse(output())).toMatchObject({
+      status: 'stale',
+      index: { graphStatus: 'stale' },
+      contentDrift: { status: 'drifted' },
+    });
+  });
   it('is up-to-date when every covered file matches, despite a dirty working tree', async () => {
     // The reported case: one modified file outside the index's coverage. The
     // old repo-wide check called this stale and `analyze` could not clear it.

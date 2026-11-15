@@ -6,8 +6,10 @@
  * end-to-end against seeded graph data with FTS indexes.
  */
 import fs from 'fs/promises';
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import path from 'path';
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
+import { renameSymbol } from '../../src/mcp/local/rename/rename-plan.js';
 import { listRegisteredRepos, saveMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import {
@@ -26,6 +28,13 @@ vi.mock('../../src/storage/repo-manager.js', async (importActual) => ({
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
   findSiblingClones: vi.fn().mockResolvedValue([]),
 }));
+
+// Pass-through spy: rename still plans for real, the test just reads the inventory
+// LocalBackend.rename hands to the planner.
+vi.mock('../../src/mcp/local/rename/rename-plan.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/mcp/local/rename/rename-plan.js')>();
+  return { ...actual, renameSymbol: vi.fn(actual.renameSymbol) };
+});
 
 // ─── Block 2: callTool dispatch tests ────────────────────────────────
 
@@ -1045,6 +1054,103 @@ withTestLbugDB(
           indexedAt: new Date().toISOString(),
           lastCommit: 'abc123',
           stats: { files: 2, nodes: 4, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as typeof handle & { _backend: LocalBackend })._backend = backend;
+    },
+  },
+);
+
+// ─── rename node inventory on a --pdg index (PR #3557 review) ─────────────
+// A --pdg index stores one BasicBlock row per CFG block, and BasicBlock has a
+// filePath column, so an unlabelled `MATCH (n) WHERE n.filePath ...` inventory
+// would hand every block to the planner, which adds each one to every fresh
+// scope-resolution graph. The real database must answer the label predicate:
+// the BasicBlock rows are dropped while File and declaration rows still arrive.
+const INVENTORY_FILE = 'target.ts';
+const INVENTORY_FILE_ID = `File:${INVENTORY_FILE}`;
+const INVENTORY_FUNCTION_ID = `Function:${INVENTORY_FILE}:target`;
+const INVENTORY_BLOCK_IDS = [
+  `BasicBlock:${INVENTORY_FILE}:0:0`,
+  `BasicBlock:${INVENTORY_FILE}:0:1`,
+];
+const INVENTORY_SOURCE = 'function target() {}\ntarget();\n';
+const INVENTORY_PROBE =
+  "MATCH (n) WHERE n.filePath IS NOT NULL AND n.filePath <> '' RETURN n.id AS id ORDER BY n.id";
+
+withTestLbugDB(
+  'rename-node-inventory-pdg',
+  (handle) => {
+    describe('rename node inventory with persisted BasicBlock rows', () => {
+      let backend: LocalBackend;
+
+      beforeAll(async () => {
+        const ext = handle as typeof handle & { _backend?: LocalBackend };
+        if (!ext._backend) throw new Error('LocalBackend not initialized in afterSetup');
+        backend = ext._backend;
+        // The planner lazily imports every language provider on first use (~30s
+        // cold); pay that under the hook timeout, not the per-test one.
+        await import('../../src/mcp/local/rename/graph-rename.js');
+      });
+
+      beforeEach(() => {
+        vi.mocked(renameSymbol).mockClear();
+      });
+
+      it('seeds BasicBlock rows that the unlabelled filePath scan would return', async () => {
+        const result = await backend.callTool('cypher', { query: INVENTORY_PROBE });
+        const ids = (result.markdown as string).split('\n').join(' ');
+        for (const id of [INVENTORY_FILE_ID, INVENTORY_FUNCTION_ID, ...INVENTORY_BLOCK_IDS]) {
+          expect(ids).toContain(id);
+        }
+      });
+
+      it('hands the planner File and declaration rows but no BasicBlock rows', async () => {
+        const result = await backend.callTool('rename', {
+          symbol_uid: INVENTORY_FUNCTION_ID,
+          new_name: 'renamed',
+          dry_run: true,
+        });
+        expect(result.status).toBe('success');
+        expect(result.applied).toBe(false);
+        // The declaration and its one call site: unchanged by the inventory filter.
+        expect(result.total_edits).toBe(2);
+        const calls = vi.mocked(renameSymbol).mock.calls;
+        expect(calls).toHaveLength(1);
+        const inventoryIds = calls[0][3].map((node) => node.id).sort();
+        expect(inventoryIds).toEqual([INVENTORY_FILE_ID, INVENTORY_FUNCTION_ID].sort());
+      });
+    });
+  },
+  {
+    seed: [
+      `CREATE (:File {id: '${INVENTORY_FILE_ID}', name: '${INVENTORY_FILE}', filePath: '${INVENTORY_FILE}'})`,
+      `CREATE (:Function {id: '${INVENTORY_FUNCTION_ID}', name: 'target', filePath: '${INVENTORY_FILE}', startLine: 0, endLine: 0})`,
+      ...INVENTORY_BLOCK_IDS.map(
+        (id, index) =>
+          `CREATE (:BasicBlock {id: '${id}', filePath: '${INVENTORY_FILE}', startLine: ${index}, endLine: ${index}, text: 'target()', callees: '', calleeIds: '', ownerId: '${INVENTORY_FUNCTION_ID}'})`,
+      ),
+    ],
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const checkout = path.join(handle.tmpHandle.dbPath, 'checkout');
+      await fs.mkdir(checkout, { recursive: true });
+      await fs.writeFile(path.join(checkout, INVENTORY_FILE), INVENTORY_SOURCE);
+      const indexedAt = new Date().toISOString();
+      await fs.writeFile(
+        path.join(handle.tmpHandle.dbPath, 'gitnexus.json'),
+        JSON.stringify({ contentRetention: 'full', indexedAt }),
+      );
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'rename-inventory-repo',
+          path: checkout,
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt,
+          lastCommit: 'abc123',
+          stats: { files: 1, nodes: 4, communities: 0, processes: 0 },
         },
       ]);
       const backend = new LocalBackend();

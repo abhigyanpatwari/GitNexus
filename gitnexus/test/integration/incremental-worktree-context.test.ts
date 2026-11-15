@@ -150,6 +150,8 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
         git(main, 'worktree', 'add', '-q', '-b', 'lookup-refresh', worktree);
         expect((await fs.stat(path.join(worktree, '.git'))).isFile()).toBe(true);
         expect(git(worktree, 'rev-parse', 'HEAD')).toBe(git(main, 'rev-parse', 'HEAD'));
+        // Preserve the checkout's actual bytes, including CRLF on Windows.
+        const swiftBefore = await fs.readFile(path.join(worktree, SWIFT_PATH));
 
         const { storagePath, lbugPath } = getStoragePaths(worktree);
         expect(storagePath).toBe(path.join(worktree, '.gitnexus'));
@@ -256,22 +258,19 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Swift))(
         );
         expect(writePaths).not.toContain(SWIFT_PATH);
         expect((await loadMeta(storagePath))?.runnerIdentity).toEqual(baselineMeta?.runnerIdentity);
-        expect(await fs.readFile(path.join(worktree, SWIFT_PATH), 'utf8')).toBe(SWIFT_SOURCE);
+        expect(await fs.readFile(path.join(worktree, SWIFT_PATH))).toEqual(swiftBefore);
         await readPublicContexts();
         expectCurrentStatus();
         expect(await readPropertyFts()).toEqual(propertyBefore);
 
         deleteNodes.mockClear();
         const noop = await runFullAnalysis(worktree, options, callbacks);
-        // The edit remains uncommitted, so clean-porcelain early return is
-        // unavailable. Identical content instead takes a zero-file refresh.
-        expect(noop.incrementalStats).toMatchObject({
-          changedFiles: 0,
-          affectedDependents: 0,
-          deletedFiles: 0,
-          writeMode: 'incremental',
-        });
-        expect(deleteNodes.mock.calls.flatMap(([filePaths]) => filePaths)).toEqual([]);
+        // The uncommitted edit is already indexed: verify freshness without
+        // running the pipeline or touching the persisted graph.
+        expect(noop.alreadyUpToDate).toBe(true);
+        expect(noop.pipelineResult).toBeUndefined();
+        expect(noop.incrementalStats).toBeUndefined();
+        expect(deleteNodes).not.toHaveBeenCalled();
         expect((await loadMeta(storagePath))?.runnerIdentity).toEqual(baselineMeta?.runnerIdentity);
         await readPublicContexts();
         expectCurrentStatus();

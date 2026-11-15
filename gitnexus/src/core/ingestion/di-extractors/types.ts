@@ -9,8 +9,6 @@
  * consumers of the registry read them off its results; `DiResolver` is not
  * re-exported, since only implementations need it and they import it from here
  * directly.
- *
- * Mirrors the `import-resolvers/types.ts` split of contract from registry.
  */
 
 import type { GraphNode } from 'gitnexus-shared';

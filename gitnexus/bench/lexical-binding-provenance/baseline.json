@@ -1,0 +1,14 @@
+{
+  "protocol": "duration-calibrated-v2",
+  "targetIterationMs": 500,
+  "pilotConfirmationBatches": 3,
+  "maxPilotIterations": 64,
+  "maxInvocationsPerIteration": 1048576,
+  "warmup": 5,
+  "repetitions": 15,
+  "sizes": [128, 256, 512],
+  "lookupSizes": [2000, 4000, 8000],
+  "closureSizes": [1000, 2000, 4000],
+  "deepHelperSizes": [32, 64, 128],
+  "linearScalingBudget": 1.8
+}

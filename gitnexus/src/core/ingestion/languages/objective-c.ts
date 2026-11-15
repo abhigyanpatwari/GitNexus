@@ -7,11 +7,12 @@ import {
 } from 'gitnexus-shared';
 import Parser from 'tree-sitter';
 import { defineLanguage } from '../language-provider.js';
-import type { ImportResolverFn } from '../import-resolvers/types.js';
+import { createObjectiveCCfgVisitor } from '../cfg/visitors/objective-c.js';
 import { getLanguageGrammar } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { preprocessObjectiveCMacroMarkers } from './objective-c/macro-marker-preprocess.js';
+import { objectiveCRenameProvider } from './objective-c/rename.js';
 import {
   buildObjectiveCSemanticGraph,
   buildObjectiveCScopeCaptures,
@@ -28,8 +29,6 @@ const EMPTY_TYPE_CONFIG = {
   extractDeclaration: () => null,
   extractParameter: () => null,
 };
-
-const noImportResolution: ImportResolverFn = () => null;
 
 function normalizedExt(filePath: string): string {
   return path.extname(filePath).toLowerCase();
@@ -316,10 +315,11 @@ export const objectiveCProvider = defineLanguage({
   treeSitterQueries: OBJECTIVE_C_SCOPE_QUERY,
   typeConfig: EMPTY_TYPE_CONFIG,
   exportChecker: () => true,
-  importResolver: noImportResolution,
   classifyFileContent: classifyObjectiveCFileContent,
   shouldClassifyFileContent: isHeaderPath,
   preprocessSource: preprocessObjectiveCMacroMarkers,
+  cfgVisitor: createObjectiveCCfgVisitor(),
+  rename: objectiveCRenameProvider,
   importsExecuteWhereWritten: false,
 
   emitScopeCaptures: (sourceText, filePath, cachedTree): readonly CaptureMatch[] => {

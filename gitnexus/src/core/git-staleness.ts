@@ -24,14 +24,14 @@ const execFileAsync = promisify(execFile);
 const STALENESS_TIMEOUT_MS = 5_000;
 
 const behindHint = (n: number): string =>
-  `⚠️ Index is ${n} commit${n > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`;
+  `⚠️ Index is ${n} commit${n > 1 ? 's' : ''} behind HEAD. Run the CLI command \`npx gitnexus analyze\` from the repository directory to update.`;
 
 // Says only what a failed count plus a resolved HEAD establish: the index is not
 // at HEAD and the gap is uncountable. Reaching here does NOT prove the indexed
 // commit left history — that is the usual cause (a pruned `fetch --depth 1`),
 // but any other `rev-list` failure lands here too, so the cause is hedged.
 const DIVERGED_HINT =
-  "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run analyze tool to update.";
+  "⚠️ Index is not at HEAD and the commit gap could not be counted — the recorded commit may no longer be in this clone's history. Run the CLI command `npx gitnexus analyze` from the repository directory to update.";
 
 // `rev-list --count lastCommit..HEAD` answering 0 does NOT mean "HEAD is the
 // indexed commit" — it means "HEAD has no commits lastCommit lacks", which is
@@ -39,7 +39,7 @@ const DIVERGED_HINT =
 // out an older commit than the one indexed, or switched to a line of history
 // behind it). That read a rollback as `current` until this hint existed.
 const REGRESSED_HINT =
-  '⚠️ Index is not at HEAD — the indexed commit is not reachable from the checked-out commit (the working tree may have checked out an older commit, or a different line of history). Run analyze tool to update.';
+  '⚠️ Index is not at HEAD — the indexed commit is not reachable from the checked-out commit (the working tree may have checked out an older commit, or a different line of history). Run the CLI command `npx gitnexus analyze` from the repository directory to update.';
 
 const unknown = (): StalenessInfo => ({ isStale: false, commitsBehind: 0, status: 'unknown' });
 

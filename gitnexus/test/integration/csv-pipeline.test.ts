@@ -75,6 +75,33 @@ afterAll(async () => {
 });
 
 describe('streamAllCSVsToDisk', () => {
+  it('rejects malformed identities before opening CSV streams and permits a corrected retry', async () => {
+    const target = path.join(tmpHandle.dbPath, 'invalid-identity-csv');
+    await fs.mkdir(target);
+    const graph = buildTestGraph([
+      { id: 'Function:healthy', label: 'Function', name: 'healthy', filePath: 'src/index.ts' },
+    ]);
+    const invalidId = 'Function:bad\0id';
+    graph.addNode({
+      id: invalidId,
+      label: 'Function',
+      properties: { name: 'bad', filePath: 'src/index.ts' },
+    });
+    const listeners = process.getMaxListeners();
+
+    await expect(streamAllCSVsToDisk(graph, repoDir, target)).rejects.toThrow(
+      /invalid graph node ID/,
+    );
+    expect(await fs.readdir(target)).toEqual([]);
+    expect(process.getMaxListeners()).toBe(listeners);
+
+    graph.removeNode(invalidId);
+    const result = await streamAllCSVsToDisk(graph, repoDir, target);
+    const functions = result.nodeFiles.get('Function')!;
+    expect(functions.rows).toBe(1);
+    expect(dataRowsOf(await fs.readFile(functions.csvPath, 'utf8'))).toHaveLength(1);
+  });
+
   it('generates CSV files for all node types in the graph', async () => {
     const graph = buildTestGraph(
       [

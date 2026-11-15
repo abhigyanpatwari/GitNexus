@@ -4,7 +4,7 @@
  * at compile time — catching typos when used with concrete module imports.
  */
 
-import { checkLbugNative } from '../core/lbug/native-check.js';
+import { checkLbugNative, prepareLbugNativeBinary } from '../core/lbug/native-check.js';
 
 function isCallable(value: unknown): value is (...args: unknown[]) => unknown {
   return typeof value === 'function';
@@ -46,8 +46,9 @@ export function createLbugLazyAction<
 
 /**
  * Analyze-specific lazy action. Unlike the generic LadybugDB wrapper, this
- * captures the complete analyzer receipt before probing/loading native code or
- * evaluating the analyzer module graph. The target export receives that start
+ * prepares any skipped native install copy, then captures the complete analyzer
+ * receipt before probing/loading native code or evaluating the analyzer module
+ * graph. The target export receives that start
  * receipt as its first argument and threads it to runFullAnalysis.
  */
 export function createAnalyzerLbugLazyAction<
@@ -62,6 +63,7 @@ export function createAnalyzerLbugLazyAction<
   analyzerModuleUrl: string,
 ): (...args: unknown[]) => Promise<void> {
   return async (...args: unknown[]): Promise<void> => {
+    prepareLbugNativeBinary();
     const identityModule = await identityLoader();
     const prepared = await identityModule.captureAnalyzerIdentityBeforeLoad(
       analyzerModuleUrl,

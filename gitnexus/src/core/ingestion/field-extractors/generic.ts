@@ -59,6 +59,13 @@ export interface FieldExtractionConfig {
    */
   extractRawType?: (node: SyntaxNode) => string | undefined;
   /**
+   * Extract the type a field's initializer constructs (`= new Config()` ->
+   * `Config`). Consulted only when `extractType` found no declared type, so it
+   * can never stand in for one. Optional — only languages whose fields can be
+   * typed by their initializer alone implement it.
+   */
+  extractInitializerType?: (node: SyntaxNode) => string | undefined;
+  /**
    * Extract `'@Name'`-prefixed annotation names from a field declaration
    * node (e.g. `['@Autowired']`). Optional — only languages with
    * field-level annotations implement it.
@@ -232,16 +239,27 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
         annotations = undefined;
       }
 
+      let initializerType: string | undefined;
+      try {
+        initializerType = type === null ? config.extractInitializerType?.(node) : undefined;
+      } catch {
+        // Same group-drop rationale as the extractRawType guard above —
+        // degrade to a field without an initializer type.
+        initializerType = undefined;
+      }
+
       return {
         name,
         type,
         ...(rawDeclaredType !== undefined ? { rawDeclaredType } : {}),
+        ...(initializerType !== undefined ? { initializerType } : {}),
         ...(annotations !== undefined && annotations.length > 0 ? { annotations } : {}),
         visibility: config.extractVisibilityForName?.(node, name) ?? config.extractVisibility(node),
         isStatic: config.isStatic(node),
         isReadonly: config.isReadonly(node),
         sourceFile: context.filePath,
         line: node.startPosition.row + 1,
+        column: node.startPosition.column,
       };
     }
   }

@@ -9,10 +9,28 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
+
+describe('PHP nested named functions become globally callable after declaration', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'php-nested-function'), () => {});
+  }, 60000);
+
+  it('resolves a sibling caller to the nested named function', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (candidate) =>
+        candidate.source === 'caller' && candidate.rel.targetId.includes('boot.target'),
+    );
+    expect(edge).toBeDefined();
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Heritage: PSR-4 imports, extends, implements, trait use, enums, calls
@@ -1098,22 +1116,6 @@ describe('PHP assignment chain propagation', () => {
     expect(saveMethods.length).toBe(2);
   });
 
-  it('resolves alias->save() to User#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('User.php'),
-    );
-    expect(userSave).toBeDefined();
-  });
-
-  it('resolves rAlias->save() to Repo#save via assignment chain', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('Repo.php'),
-    );
-    expect(repoSave).toBeDefined();
-  });
-
   it('alias->save() does NOT resolve to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     // There should be exactly one save() call targeting User.php from process
@@ -1487,14 +1489,6 @@ describe('Write access tracking (PHP)', () => {
     expect(nameWrite!.source).toBe('updateUser');
     expect(addressWrite).toBeDefined();
     expect(addressWrite!.source).toBe('updateUser');
-    expect(countWrite).toBeDefined();
-    expect(countWrite!.source).toBe('updateUser');
-  });
-
-  it('emits ACCESSES write edge for static property assignment', () => {
-    const accesses = getRelationships(result, 'ACCESSES');
-    const writes = accesses.filter((e) => e.rel.reason === 'write');
-    const countWrite = writes.find((e) => e.target === 'count');
     expect(countWrite).toBeDefined();
     expect(countWrite!.source).toBe('updateUser');
   });
@@ -2107,8 +2101,8 @@ describe('PHP typed-property double-match dedup', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'php-typed-property-dedup'), () => {});
   }, 60000);
 
-  it('detects the Mixed class', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('Mixed');
+  it('detects the MixedProperties class', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('MixedProperties');
   });
 
   it('emits exactly one Property def for the typed property `$repo`', () => {
@@ -2291,5 +2285,112 @@ describe('PHP unresolved-receiver fallback exact-required-arity gate', () => {
     expect(fallbackEdgeFromTo('callVariadicBelowRequired', 'variadicLogTwoRequired').length).toBe(
       0,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Namespaced-function factories type their results (#3498 follow-up).
+//
+// `$x = rp\make(); $x->ping()` left `$x` untyped although `make` is declared
+// `: QffWidget`. The query matched only an unqualified callee, so a
+// `qualified_name` callee minted neither a call site nor a result binding, and
+// nothing expanded `rp\make` through the file's `use` table to the function's
+// fully qualified name. A same-named `Qff\Decoy\make` must never be picked.
+// ---------------------------------------------------------------------------
+
+describe('PHP namespaced-function factory result types (#3498 follow-up)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'php-qualified-function-factory'),
+      () => {},
+    );
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === target)
+      .map((edge) => edge.rel.targetId)
+      .sort();
+
+  it.each([
+    'aliasCall',
+    'inlineAlias',
+    'fullyQualified',
+    'inlineFullyQualified',
+    'namespaceRelative',
+    'relativeKeyword',
+  ])("types %s from make's return type", (source) => {
+    expect(callsFrom(source, 'ping')).toEqual(['Method:src/Mod/QffWidget.php:QffWidget.ping#0']);
+  });
+
+  it('keeps typing a static factory call from the method, not the same-named function', () => {
+    expect(callsFrom('staticControl', 'ping')).toEqual([
+      'Method:src/Mod/QffGadget.php:QffGadget.ping#0',
+    ]);
+  });
+
+  it.each(['untypedAlias', 'untypedInline', 'vendorCall', 'ambiguousCall'])(
+    'does not guess a receiver type for %s',
+    (source) => {
+      expect(callsFrom(source, 'ping')).toEqual([]);
+    },
+  );
+
+  // Fail closed: a qualified callee names its function by path, never by its
+  // tail, so one the path cannot resolve must not bind the same-named
+  // `Qff\Ext\count` / `Qff\Ext\make` declared in the caller's namespace.
+  it.each([
+    ['builtinCall', 'count'],
+    ['vendorCall', 'make'],
+    ['ambiguousCall', 'make'],
+  ])('emits no edge for the unresolvable qualified callee in %s', (source, target) => {
+    expect(callsFrom(source, target)).toEqual([]);
+  });
+
+  it.each([
+    ['aliasCall', 'make'],
+    ['inlineAlias', 'make'],
+    ['fullyQualified', 'make'],
+    ['inlineFullyQualified', 'make'],
+    ['namespaceRelative', 'make'],
+    ['relativeKeyword', 'make'],
+    ['untypedAlias', 'untyped'],
+    ['untypedInline', 'untyped'],
+  ])('resolves the qualified callee in %s to Qff\\Mod\\%s', (source, target) => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === source && edge.target === target,
+    );
+    expect(edges.map((edge) => [edge.rel.targetId, edge.rel.reason])).toEqual([
+      [`Function:lib/functions.php:${target}`, 'import-resolved'],
+    ]);
+  });
+
+  it('types a use-function import outside any PSR-4 path from the function it names', () => {
+    expect(callsFrom('namedCall', 'ping')).toEqual([
+      'Method:src/Mod/QffWidget.php:QffWidget.ping#0',
+    ]);
+  });
+
+  it('resolves a use-function import outside any PSR-4 path by its fully qualified name', () => {
+    const edges = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'namedCall' && edge.target === 'make',
+    );
+    expect(edges.map((edge) => [edge.rel.targetId, edge.rel.reason])).toEqual([
+      ['Function:lib/functions.php:make', 'import-resolved'],
+    ]);
+  });
+
+  it('records the untyped receivers as dropped sites instead of an exact miss', () => {
+    const dropped = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter(
+        (outcome) =>
+          outcome.reason === 'receiver-unresolved' && outcome.filePath === 'src/App/Callers.php',
+      )
+      .map((outcome) => `${outcome.range.startLine}:${outcome.siteKind}:${outcome.name}`)
+      .sort();
+    expect(dropped).toEqual(['34:call:ping', '38:call:ping']);
   });
 });

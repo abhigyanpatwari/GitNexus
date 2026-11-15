@@ -1,3 +1,4 @@
+import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 /**
  * Java import resolution against DECLARED packages (#2953).
  *
@@ -33,8 +34,16 @@ import type { ParsedFile } from 'gitnexus-shared';
 import type { JvmPackageFact } from '../jvm/package-facts.js';
 
 export interface JavaPackageIndex {
-  /** Declared package -> importable type name -> the file declaring it. */
+  /** Declared package -> importable type name -> the first file declaring it. */
   readonly typesByPackage: ReadonlyMap<string, ReadonlyMap<string, string>>;
+  /**
+   * Declared package -> type name -> EVERY file declaring it, only for the
+   * package+type pairs more than one file claims. Not legal within one
+   * compilation, but one repository can hold several build modules or sample
+   * projects that each declare `models.User`. Sparse, so a workspace without
+   * such a collision pays nothing for it.
+   */
+  readonly duplicateTypes: ReadonlyMap<string, ReadonlyMap<string, readonly string[]>>;
   /** Declared package -> every file declaring it, for wildcard imports. */
   readonly filesByPackage: ReadonlyMap<string, readonly string[]>;
   /**
@@ -47,6 +56,7 @@ export interface JavaPackageIndex {
 
 const EMPTY_INDEX: JavaPackageIndex = {
   typesByPackage: new Map(),
+  duplicateTypes: new Map(),
   filesByPackage: new Map(),
   unreadablePackageFiles: 0,
 };
@@ -68,6 +78,7 @@ export function buildJavaPackageIndex(
   if (parsedFiles.length === 0) return EMPTY_INDEX;
 
   const typesByPackage = new Map<string, Map<string, string>>();
+  const duplicateTypes = new Map<string, Map<string, string[]>>();
   const filesByPackage = new Map<string, string[]>();
   let unreadablePackageFiles = 0;
 
@@ -92,9 +103,21 @@ export function buildJavaPackageIndex(
         types = new Map();
         typesByPackage.set(packageName, types);
       }
-      // First declaration wins. Two files claiming the same package+type is not
-      // legal Java; picking either is as correct as the input allows.
-      if (!types.has(typeName)) types.set(typeName, filePath);
+      const first = types.get(typeName);
+      if (first === undefined) {
+        types.set(typeName, filePath);
+      } else {
+        // A second claim: keep every declaring file so the importer's own
+        // location can choose (see `nearestDeclaringFile`).
+        let duplicates = duplicateTypes.get(packageName);
+        if (duplicates === undefined) {
+          duplicates = new Map();
+          duplicateTypes.set(packageName, duplicates);
+        }
+        const files = duplicates.get(typeName);
+        if (files === undefined) duplicates.set(typeName, [first, filePath]);
+        else files.push(filePath);
+      }
     }
 
     const files = filesByPackage.get(packageName);
@@ -102,18 +125,21 @@ export function buildJavaPackageIndex(
     else files.push(filePath);
   }
 
-  return { typesByPackage, filesByPackage, unreadablePackageFiles };
+  return { typesByPackage, duplicateTypes, filesByPackage, unreadablePackageFiles };
 }
 
 /**
  * Resolve one import specifier to the file(s) it names, or `null`.
  *
  * A wildcard answers with every file in the package; a type import answers with
- * one file. Anything the workspace does not declare answers `null`.
+ * one file. Anything the workspace does not declare answers `null`. `fromFile`
+ * is the importing file, which decides between several files declaring the
+ * same package+type.
  */
 export function resolveJavaModule(
   targetRaw: string,
   index: JavaPackageIndex,
+  fromFile?: string,
 ): string | readonly string[] | null {
   if (targetRaw === '') return null;
 
@@ -125,7 +151,7 @@ export function resolveJavaModule(
     return inPackage !== undefined && stem !== '' ? inPackage : null;
   }
 
-  return resolveTypeName(targetRaw, index);
+  return resolveTypeName(targetRaw, index, fromFile);
 }
 
 /**
@@ -141,7 +167,11 @@ export function resolveJavaModule(
  * The second is a static member import; its trailing segments name members
  * inside the type, and the file the import binds to is the type's.
  */
-function resolveTypeName(qualified: string, index: JavaPackageIndex): string | null {
+function resolveTypeName(
+  qualified: string,
+  index: JavaPackageIndex,
+  fromFile: string | undefined,
+): string | null {
   const parts = qualified.split('.').filter((part) => part !== '');
   // A single bare segment names a type in the default package, which Java
   // forbids importing. Nothing to resolve, and nothing to guess at.
@@ -151,10 +181,51 @@ function resolveTypeName(qualified: string, index: JavaPackageIndex): string | n
     const packageName = parts.slice(0, split).join('.');
     const types = index.typesByPackage.get(packageName);
     if (types === undefined) continue;
-    const file = types.get(parts[split]);
-    if (file !== undefined) return file;
+    const typeName = parts[split];
+    const file = types.get(typeName);
+    if (file === undefined) continue;
+    const duplicates = index.duplicateTypes.get(packageName)?.get(typeName);
+    return duplicates === undefined ? file : nearestDeclaringFile(duplicates, fromFile);
   }
   return null;
+}
+
+/**
+ * The one file a type import names when several declare its package+type. The
+ * import cannot say which, so the importer's location does: the file sharing
+ * the longest leading path with it (its own module or source root) wins, and a
+ * tie refuses — a fabricated IMPORTS edge at full confidence is worse than
+ * none, which is also the answer when the importer is unknown.
+ */
+function nearestDeclaringFile(
+  files: readonly string[],
+  fromFile: string | undefined,
+): string | null {
+  if (fromFile === undefined) return null;
+  const ownSegments = fromFile.replace(/\\/g, '/').split('/');
+  let nearest: string | null = null;
+  let nearestShared = -1;
+  let tied = false;
+  for (const file of files) {
+    if (!isJvmSourceVisible(fromFile, file)) continue;
+    const segments = file.replace(/\\/g, '/').split('/');
+    let shared = 0;
+    while (
+      shared < segments.length &&
+      shared < ownSegments.length &&
+      segments[shared] === ownSegments[shared]
+    ) {
+      shared++;
+    }
+    if (shared > nearestShared) {
+      nearest = file;
+      nearestShared = shared;
+      tied = false;
+    } else if (shared === nearestShared) {
+      tied = true;
+    }
+  }
+  return tied ? null : nearest;
 }
 
 /** `src/main/java/com/example/User.java` -> `User`. */

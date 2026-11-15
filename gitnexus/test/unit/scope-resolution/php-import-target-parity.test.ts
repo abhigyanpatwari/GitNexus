@@ -54,8 +54,8 @@ import {
   resolvePhpImportTargetInternal,
   type PhpResolveContext,
 } from '../../../src/core/ingestion/languages/php/import-target.js';
-import { resolvePhpImportInternal } from '../../../src/core/ingestion/import-resolvers/php.js';
-import { buildSuffixIndex } from '../../../src/core/ingestion/import-resolvers/utils.js';
+import { resolvePhpImportInternal } from '../../../src/core/ingestion/languages/php/import-helpers.js';
+import { buildSuffixIndex } from '../../../src/core/ingestion/utils/suffix-index.js';
 import type { ComposerConfig } from '../../../src/core/ingestion/language-config.js';
 import type { ImportResolutionContext } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
 import { CountingSet } from '../../helpers/counting-file-set.js';
@@ -434,7 +434,7 @@ const GENERATED_CASES: readonly Case[] = generatedTargets().flatMap((target) =>
  *  - the PSR-4 namespace-directory fallback is NOT gated on the imported symbol
  *    kind. It fires for a class import too, whenever the class-style path
  *    misses, and returns the FIRST `.php` file directly in the namespace
- *    directory — see the "known limitation" note atop `import-resolvers/php.ts`.
+ *    directory — see the "known limitation" note atop `languages/php/import-helpers.ts`.
  *    Cases that lean on it are marked; their answers are order-dependent in
  *    general and deterministic here only because the fixture pins the order.
  */

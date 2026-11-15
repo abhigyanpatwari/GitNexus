@@ -1,9 +1,8 @@
 /**
  * U5 — TypeScript emits `@reference.receiver-chain` for a receiver that is
- * itself an expression.
+ * itself an expression, for calls and field reads/writes.
  *
- * Capture-level, not resolution-level: nothing consumes the field yet, so these
- * assert what is written, and that nothing extra is.
+ * Pins the chain data consumed by compound receiver resolution.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -77,11 +76,24 @@ describe('TypeScript receiver-chain capture', () => {
     expect(chainsFor(`${MODELS}\nconst u = new User();\nu.save();\n`)).toEqual({});
   });
 
-  it('emits no chain for a property read or write receiver (CALL_TAGS gate)', () => {
-    // Without the gate these pay the walk and the bytes for a field no
-    // call-site resolver reads.
-    const chains = chainsFor(
+  it('emits a chain for property reads and writes', () => {
+    const matches = emitTsScopeCaptures(
       `${MODELS}\nsvc.getUser().name = 'x';\nconst n = svc.getUser().name;\n`,
+      'main.ts',
+    );
+    for (const kind of ['@reference.read.member', '@reference.write.member']) {
+      const members = matches.filter(
+        (match) => match[kind] !== undefined && match['@reference.name']?.text === 'name',
+      );
+      expect(members).not.toHaveLength(0);
+      for (const member of members)
+        expect(member['@reference.receiver-chain']?.text).toBe('2|svc|cgetUser');
+    }
+  });
+
+  it('does not encode field receivers without a named base or beyond the depth limit', () => {
+    const chains = chainsFor(
+      `${MODELS}\nnew User().address.name = 'x';\nconst n = svc.getUser().address.address.address.name;\n`,
     );
     expect(chains).not.toHaveProperty('name');
   });

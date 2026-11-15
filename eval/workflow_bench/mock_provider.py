@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -185,8 +186,11 @@ def _openai_response(reply: Reply) -> dict[str, Any]:
     cache_read = reply.cache_read_input_tokens or 0
     cache_write = reply.cache_creation_input_tokens or 0
     total_input = reply.input_tokens + cache_read + cache_write
+    # Reusing call IDs across turns makes the CLI discard later tool results.
+    # Discovery followed by an MCP call must be two distinct calls.
+    response_id = uuid.uuid4().hex
     return {
-        "id": "resp_mock",
+        "id": f"resp_{response_id}",
         "object": "response",
         "created_at": int(time.time()),
         "status": "completed",
@@ -194,7 +198,7 @@ def _openai_response(reply: Reply) -> dict[str, Any]:
         "error": None,
         "output": [
             {
-                "id": "msg_mock",
+                "id": f"msg_{response_id}",
                 "type": "message",
                 "role": "assistant",
                 "status": "completed",
@@ -207,10 +211,10 @@ def _openai_response(reply: Reply) -> dict[str, Any]:
             # been wrong about the wire on the one path that matters most.
             *(
                 {
-                    "id": f"fc_mock_{index}",
+                    "id": f"fc_{response_id}_{index}",
                     "type": "function_call",
                     "status": "completed",
-                    "call_id": f"call_mock_{index}",
+                    "call_id": f"call_{response_id}_{index}",
                     "name": tool["name"],
                     "arguments": json.dumps(tool.get("input", {})),
                 }

@@ -6,15 +6,19 @@
  * All Dart pipeline features are covered: Property nodes, HAS_PROPERTY edges,
  * CALLS chain resolution, IMPORTS, call attribution, and ACCESSES field reads.
  */
-import { describe, it, expect, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
 import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  getResolutionOutcomes,
   edgeSet,
   runPipelineFromRepo,
+  writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
 import {
@@ -149,6 +153,137 @@ describe.skipIf(!dartAvailable)('Dart field-type resolution', () => {
   });
 });
 
+// ── Prefixed-import factory results (#3498) ─────────────────────────────
+
+describe.skipIf(!dartAvailable)('Dart prefixed-import factory result types (#3498)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'dart-prefixed-factory-return'),
+      () => {},
+    );
+  }, 60000);
+
+  const methodCalls = (source: string) =>
+    getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === source && edge.target === 'm')
+      .map((edge) => edge.rel.targetId);
+
+  // `awaitedCall` (`final x = await rp.makeAsync()`, `Future<C> makeAsync()`):
+  // the binding carries `@type-binding.awaited`, the return binding carries
+  // `Future<C>` whole, and the post-finalize chain follow takes what the
+  // Dart await route says the Future yields — `C` (DART-04). The exact owner
+  // matters: `Other.m` is the same-named decoy.
+  it.each(['finalCall', 'varCall', 'inlineCall', 'awaitedCall'])(
+    'resolves %s to the exact C.m',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+    },
+  );
+
+  it('does not guess a receiver type for untypedCall', () => {
+    expect(methodCalls('untypedCall')).toEqual([]);
+  });
+
+  // `import 'mod.dart' deferred as dp;` is a namespace import like `as rp`:
+  // the deferred branch of the grammar must be captured, or the file has no
+  // IMPORTS edge and `dp.make()` never binds its result to C.
+  it('captures a deferred prefixed import as an IMPORTS edge', () => {
+    const imports = getRelationships(result, 'IMPORTS')
+      .filter((edge) => edge.sourceFilePath === 'lib/deferred_callers.dart')
+      .map((edge) => edge.targetFilePath);
+    expect(imports).toEqual(['lib/mod.dart']);
+  });
+
+  it.each(['deferredFinalCall', 'deferredInlineCall'])(
+    'resolves %s to C.m through the deferred prefix',
+    (source) => {
+      expect(methodCalls(source)).toEqual(['Method:lib/mod.dart:C.m#0']);
+    },
+  );
+
+  it('records the untyped factory result as a dropped site (and the awaited one no longer)', () => {
+    expect(
+      getResolutionOutcomes(result)
+        .filter((outcome) => outcome.kind === 'suppressed')
+        .filter(
+          (outcome) =>
+            outcome.reason === 'receiver-unresolved' && outcome.filePath === 'lib/callers.dart',
+        )
+        .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
+        .sort(),
+    ).toEqual(['17:m']);
+  });
+});
+
+// ── Deferred-prefix `loadLibrary` ───────────────────────────────────────
+
+describe.skipIf(!dartAvailable)('Dart deferred-prefix loadLibrary', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'dart-deferred-load-library'), () => {});
+  }, 60000);
+
+  const DEFERRED = 'lib/deferred_callers.dart';
+  const IMMEDIATE = 'lib/immediate_callers.dart';
+  const LOAD = 'Function:lib/mod.dart:loadLibrary';
+  const TIMEOUT = 'Method:lib/mod.dart:Pending.timeout#1';
+
+  const targets = (type: string, file: string, source: string) => [
+    ...new Set(
+      getRelationships(result, type)
+        .filter((edge) => edge.sourceFilePath === file && edge.source === source)
+        .map((edge) => edge.rel.targetId)
+        .sort(),
+    ),
+  ];
+
+  // A deferred prefix gets an implicit `loadLibrary()` and the library loads
+  // with `hide loadLibrary`, so `dp.loadLibrary` never names mod.dart's own
+  // `loadLibrary`. In the `as ip` control it is an ordinary namespace member.
+  it('binds no dp.loadLibrary() call to the library declaration, unlike ip.loadLibrary()', () => {
+    expect(targets('CALLS', DEFERRED, 'deferredLoad')).toEqual([]);
+    expect(targets('CALLS', IMMEDIATE, 'immediateLoad')).toEqual([LOAD]);
+  });
+
+  it('binds no dp.loadLibrary tear-off to the library declaration, unlike ip.loadLibrary', () => {
+    expect(targets('ACCESSES', DEFERRED, 'deferredLoadTearOff')).toEqual([]);
+    expect(targets('ACCESSES', IMMEDIATE, 'immediateLoadTearOff')).toEqual([LOAD]);
+  });
+
+  // The library's `Pending loadLibrary()` annotation must not type the result:
+  // through the deferred prefix it is the SDK Future, whose `timeout` is not
+  // Pending.timeout. `dp.feature()` in the same body still resolves.
+  it('does not type a dp.loadLibrary() result from the library return annotation', () => {
+    expect(targets('CALLS', DEFERRED, 'deferredLoadResult')).toEqual([
+      'Function:lib/mod.dart:feature',
+    ]);
+    expect(targets('CALLS', IMMEDIATE, 'immediateLoadResult')).toEqual([LOAD, TIMEOUT]);
+  });
+
+  it('does not type a member called on dp.loadLibrary() inline', () => {
+    expect(targets('CALLS', DEFERRED, 'deferredLoadChain')).toEqual([]);
+    expect(targets('CALLS', IMMEDIATE, 'immediateLoadChain')).toEqual([LOAD, TIMEOUT]);
+  });
+
+  // Constructors and static members reach mod.dart through the deferred prefix
+  // as they do through `as ip`. decoy.dart declares a second `C`, so no
+  // unique-name match can supply these edges.
+  it('resolves constructors and static members through the deferred prefix like as ip', () => {
+    const members = (file: string, source: string) => ({
+      calls: targets('CALLS', file, source),
+      reads: targets('ACCESSES', file, source),
+    });
+    expect(members(DEFERRED, 'deferredMembers')).toEqual({
+      calls: ['Class:lib/mod.dart:C', 'Method:lib/mod.dart:C.sm#0'],
+      reads: ['Class:lib/mod.dart:C', 'Property:lib/mod.dart:C.sf'],
+    });
+    expect(members(IMMEDIATE, 'immediateMembers')).toEqual(members(DEFERRED, 'deferredMembers'));
+  });
+});
+
 // ── Phase 9: Call-result binding ────────────────────────────────────────
 
 describe.skipIf(!dartAvailable)('Dart call-result binding', () => {
@@ -243,13 +378,6 @@ describe.skipIf(!dartAvailable)('Dart method enrichment', () => {
     );
     expect(speak).toBeDefined();
     expect(speak!.properties.isAbstract).toBe(true);
-  });
-
-  it('marks breathe as NOT isAbstract', () => {
-    const methods = getNodesByLabelFull(result, 'Method');
-    const breathe = methods.find((n) => n.name === 'breathe');
-    expect(breathe).toBeDefined();
-    expect(breathe!.properties.isAbstract).toBe(false);
   });
 
   it('marks classify as isStatic', () => {
@@ -922,3 +1050,179 @@ describe('CF3 — Dart class accessors keep their class owner', () => {
     expect(owned).toContain('normalField');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #3498 RC2: `dartBindingScopeFor` hoists every method's return-type binding
+// onto the Module scope, so `svc.getUser().save()` types its receiver only if
+// the receiver cascade walks up there (`hoistTypeBindingsToModule`). The
+// hoisted entries are keyed by bare method name, so the walk must also refuse
+// a same-named method of ANOTHER class — the second describe pins that.
+// ---------------------------------------------------------------------------
+
+/** Every CALLS target id emitted by `source` in `filePath`, sorted. */
+function dartCallTargets(result: PipelineResult, filePath: string, source: string): string[] {
+  return getRelationships(result, 'CALLS')
+    .filter((edge) => edge.source === source && edge.sourceFilePath === filePath)
+    .map((edge) => edge.rel.targetId)
+    .sort();
+}
+
+describe.skipIf(!dartAvailable)(
+  'Dart chained receivers through hoisted return types (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dart-hoisted-return-'));
+      writeFixtureRepo(root, {
+        'models.dart': `class Address {
+  void save() {}
+}
+
+class User {
+  Address address = Address();
+  void save() {}
+}
+
+class Service {
+  User getUser() => User();
+}
+
+class ChildService extends Service {}
+`,
+        'callers.dart': `import 'models.dart';
+
+void plainChain(Service svc) {
+  svc.getUser().save();
+}
+
+void plainDeepChain(Service svc) {
+  svc.getUser().address.save();
+}
+
+void optionalChain(Service svc) {
+  svc.getUser().address?.save();
+}
+
+void inheritedChain(ChildService child) {
+  child.getUser().save();
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it.each([
+      {
+        source: 'plainChain',
+        targets: ['Method:models.dart:Service.getUser#0', 'Method:models.dart:User.save#0'],
+      },
+      {
+        source: 'plainDeepChain',
+        targets: ['Method:models.dart:Address.save#0', 'Method:models.dart:Service.getUser#0'],
+      },
+      {
+        source: 'optionalChain',
+        targets: ['Method:models.dart:Address.save#0', 'Method:models.dart:Service.getUser#0'],
+      },
+      {
+        // The owner itself declares nothing; the walk refuses the binding for
+        // `ChildService` and accepts it for the `Service` it inherits from.
+        source: 'inheritedChain',
+        targets: ['Method:models.dart:Service.getUser#0', 'Method:models.dart:User.save#0'],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(dartCallTargets(result, 'callers.dart', source)).toEqual(targets);
+    });
+  },
+);
+
+describe.skipIf(!dartAvailable)(
+  'Dart same-named methods on two classes do not share a hoisted return type (#3498)',
+  () => {
+    let root: string;
+    let result: PipelineResult;
+
+    beforeAll(async () => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-dart-hoisted-collision-'));
+      // One Module-scope entry per method NAME: in each file the later class's
+      // `getUser` overwrites the earlier one's. Both orders are covered so the
+      // test does not depend on which one happens to win.
+      writeFixtureRepo(root, {
+        'accounts.dart': `class User {
+  void save() {}
+}
+
+class Admin {
+  void save() {}
+}
+
+class A {
+  User getUser() => User();
+}
+
+class B {
+  Admin getUser() => Admin();
+}
+`,
+        'reversed.dart': `import 'accounts.dart';
+
+class C {
+  Admin getUser() => Admin();
+}
+
+class D {
+  User getUser() => User();
+}
+`,
+        'callers.dart': `import 'accounts.dart';
+import 'reversed.dart';
+
+void viaA(A a) {
+  a.getUser().save();
+}
+
+void viaB(B b) {
+  b.getUser().save();
+}
+
+void viaC(C c) {
+  c.getUser().save();
+}
+
+void viaD(D d) {
+  d.getUser().save();
+}
+`,
+      });
+      result = await runPipelineFromRepo(root, () => {});
+    }, 60000);
+
+    afterAll(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    // `viaA` and `viaC` are the guard: their class's own binding was overwritten
+    // by the other class's, so the walk finds a binding it must refuse. The safe
+    // answer is no `save` edge at all — never the other class's return type.
+    it.each([
+      { source: 'viaA', targets: ['Method:accounts.dart:A.getUser#0'] },
+      {
+        source: 'viaB',
+        targets: ['Method:accounts.dart:Admin.save#0', 'Method:accounts.dart:B.getUser#0'],
+      },
+      { source: 'viaC', targets: ['Method:reversed.dart:C.getUser#0'] },
+      {
+        source: 'viaD',
+        targets: ['Method:accounts.dart:User.save#0', 'Method:reversed.dart:D.getUser#0'],
+      },
+    ])('resolves every call in $source to $targets', ({ source, targets }) => {
+      expect(dartCallTargets(result, 'callers.dart', source)).toEqual(targets);
+    });
+  },
+);

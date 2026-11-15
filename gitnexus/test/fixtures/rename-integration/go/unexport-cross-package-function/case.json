@@ -1,0 +1,16 @@
+{
+  "language": "go",
+  "description": "Refuse to unexport a function that another package calls through its import; the caller could no longer compile.",
+  "categories": ["cross-file", "visibility", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "Target",
+    "kind": "Function",
+    "file": "api/api.go"
+  },
+  "newName": "target",
+  "expect": {
+    "status": "error",
+    "code": "invalid_name",
+    "planningStatus": "blocked"
+  }
+}

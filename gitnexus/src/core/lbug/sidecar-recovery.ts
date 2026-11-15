@@ -241,11 +241,13 @@ export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
 // SIGKILLing a writer mid-CHECKPOINT (homelab 2026-09-19, GitNexus image
 // 1.6.10-20260917, built on 0.19.x). The 0.18.3 binary does NOT contain it
 // (checked via `strings`), and 0.18.3 tolerates the same on-disk state, so on
-// 0.18.x this classifier simply never fires. If the engine pin ever moves
-// back to ^0.19, the read-path self-heal is already in place.
+// 0.18.x this classifier simply never fires. In 0.22.0 the same refusal is
+// reported as "checkpoint recovery is pending".
 export const isReadOnlyCheckpointInProgressError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
-  return /cannot open database in read-only mode while checkpoint is in progress/i.test(msg);
+  return /cannot open database in read-only mode while checkpoint (?:is in progress|recovery is pending)/i.test(
+    msg,
+  );
 };
 
 /** Prefix of the interrupted-checkpoint wrap — must not rematch the native classifier. */
@@ -392,6 +394,105 @@ export async function inspectLbugSidecars(dbPath: string): Promise<LbugSidecarSt
   }
   return { kind: 'clean', dbPath };
 }
+
+export interface FileEvidenceInput {
+  /** Apparent size, `stat().size`. */
+  size: number;
+  /** 512-byte blocks actually allocated; `undefined` where the platform omits it. */
+  blocks?: number;
+  /** The numeric `f_type` magic from `statfs`; `undefined` when it could not be read. */
+  fsType?: number;
+}
+
+/**
+ * Deadline for each filesystem call behind {@link describeFileEvidence}. The
+ * evidence runs inside the analyze failure handler, before the checkpoint driver
+ * stops, the DB closes and the staging file is wiped; a stat that stalls on a
+ * hung network or virtualised mount (9p/NFS/virtiofs) must cost a bounded delay,
+ * not hang the handler and swallow the real error behind it.
+ */
+export const FILE_EVIDENCE_TIMEOUT_MS = 2000;
+
+/**
+ * One log line of size evidence for an lbug file (#3530): apparent size versus
+ * allocated bytes distinguishes a sparse or reflink-backed file from a plainly
+ * short one, and the filesystem type tells a maintainer what kind of mount the
+ * file sat on. The type is printed as the raw hex `f_type` magic rather than a
+ * name — a lookup table here would be a guess presented as a fact. Pure, so the
+ * sparse/regular cases are testable without a real sparse file (which not every
+ * CI filesystem produces).
+ *
+ * Three non-size outcomes stay distinct: `'absent'` (ENOENT — the file is not
+ * there, which is itself evidence), `'timeout'` (the stat never answered), and
+ * `undefined` (any other failure to inspect).
+ */
+export const formatFileEvidence = (
+  label: string,
+  input: FileEvidenceInput | 'absent' | 'timeout' | undefined,
+): string => {
+  if (input === 'absent') return `${label}: absent`;
+  if (input === 'timeout') {
+    return `${label}: unavailable (timed out after ${FILE_EVIDENCE_TIMEOUT_MS} ms)`;
+  }
+  if (!input) return `${label}: unavailable`;
+  const allocated = input.blocks === undefined ? 'unknown' : `${input.blocks * 512} B`;
+  const fsType = input.fsType === undefined ? 'unknown' : `0x${input.fsType.toString(16)}`;
+  return `${label}: apparent ${input.size} B, allocated ${allocated}, filesystem type ${fsType}`;
+};
+
+const FILE_EVIDENCE_TIMED_OUT = Symbol('file-evidence-timed-out');
+
+/**
+ * Race `op` against {@link FILE_EVIDENCE_TIMEOUT_MS}. `op` is invoked
+ * synchronously (so callers can dispatch several before awaiting any), and the
+ * timer is always cleared. A call that outlives the deadline is abandoned, not
+ * cancelled — `Promise.race` keeps its eventual rejection handled.
+ */
+const withDeadline = async <T>(
+  op: () => Promise<T>,
+): Promise<T | typeof FILE_EVIDENCE_TIMED_OUT> => {
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<typeof FILE_EVIDENCE_TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(FILE_EVIDENCE_TIMED_OUT), FILE_EVIDENCE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([op(), deadline]);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+/**
+ * Stat `filePath` and format it with {@link formatFileEvidence}. Never throws
+ * and never waits longer than {@link FILE_EVIDENCE_TIMEOUT_MS}: this runs inside
+ * a failure handler, where a diagnostic must neither mask the real error nor
+ * stall behind a hung mount. A missing file reads "absent"; any other failure
+ * "unavailable". `stat` and `statfs` are dispatched together, synchronously, so
+ * a caller fanning out over several files has every call in flight at once.
+ */
+export const describeFileEvidence = async (label: string, filePath: string): Promise<string> => {
+  const [stat, statfs] = await Promise.allSettled([
+    withDeadline(() => fs.stat(filePath)),
+    withDeadline(() => fs.statfs(filePath)),
+  ]);
+  if (stat.status === 'rejected') {
+    const reason: unknown = stat.reason;
+    const absent = (reason as NodeJS.ErrnoException | null)?.code === 'ENOENT';
+    return formatFileEvidence(label, absent ? 'absent' : undefined);
+  }
+  if (stat.value === FILE_EVIDENCE_TIMED_OUT) return formatFileEvidence(label, 'timeout');
+  // The filesystem type is optional evidence: a failed or stalled statfs only
+  // blanks that field.
+  const fsType =
+    statfs.status === 'fulfilled' && statfs.value !== FILE_EVIDENCE_TIMED_OUT
+      ? statfs.value.type
+      : undefined;
+  return formatFileEvidence(label, {
+    size: stat.value.size,
+    blocks: typeof stat.value.blocks === 'number' ? stat.value.blocks : undefined,
+    fsType,
+  });
+};
 
 /**
  * Reject the WAL-quarantine path when discarding the WAL would be unsafe or

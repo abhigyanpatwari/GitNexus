@@ -28,6 +28,7 @@ export { getDartCaptureCacheStats, resetDartCaptureCacheStats } from './cache-st
 export {
   interpretDartImport,
   interpretDartTypeBinding,
+  dartElementTypeOf,
   normalizeDartType,
   DART_HERITAGE_PREFIX,
 } from './interpret.js';

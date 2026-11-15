@@ -1,0 +1,20 @@
+{
+  "language": "python",
+  "description": "Rename an inherited member despite literal attribute access on a proven unrelated owner.",
+  "categories": [
+    "dynamic-attribute",
+    "polymorphism",
+    "unrelated-owner"
+  ],
+  "target": {
+    "name": "target",
+    "kind": "Method",
+    "file": "model.py",
+    "startLine": 1
+  },
+  "newName": "renamed",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

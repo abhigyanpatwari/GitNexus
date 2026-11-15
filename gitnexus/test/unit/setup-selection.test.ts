@@ -19,6 +19,7 @@ describe('setupCommand coding-agent selection', () => {
   let tempHome: string;
   let originalHome: string | undefined;
   let originalUserProfile: string | undefined;
+  let originalCodexHome: string | undefined;
   let originalExitCode: number | string | null | undefined;
 
   beforeEach(async () => {
@@ -26,6 +27,8 @@ describe('setupCommand coding-agent selection', () => {
     vi.clearAllMocks();
     originalHome = process.env.HOME;
     originalUserProfile = process.env.USERPROFILE;
+    originalCodexHome = process.env.CODEX_HOME;
+    delete process.env.CODEX_HOME;
     originalExitCode = process.exitCode;
     tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-setup-selection-'));
     process.env.HOME = tempHome;
@@ -45,6 +48,8 @@ describe('setupCommand coding-agent selection', () => {
     vi.restoreAllMocks();
     process.env.HOME = originalHome;
     process.env.USERPROFILE = originalUserProfile;
+    if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = originalCodexHome;
     process.exitCode = originalExitCode;
     await fs.rm(tempHome, { recursive: true, force: true });
   });

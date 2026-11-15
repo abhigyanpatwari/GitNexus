@@ -17,7 +17,7 @@ import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
-import CSharp from 'tree-sitter-c-sharp';
+import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Ruby from 'tree-sitter-ruby';
 import CPP from 'tree-sitter-cpp';
 import PHP from 'tree-sitter-php';
@@ -30,7 +30,7 @@ import type { NodeLabel } from 'gitnexus-shared';
 
 function describeFromProvider(
   language: SupportedLanguages,
-  grammar: unknown,
+  grammar: Parser.Language,
   src: string,
   nodeType: string,
   captureKey: string,

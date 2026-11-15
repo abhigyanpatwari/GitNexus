@@ -1,0 +1,7 @@
+{
+  "name": "wrapper-targets",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ]
+}

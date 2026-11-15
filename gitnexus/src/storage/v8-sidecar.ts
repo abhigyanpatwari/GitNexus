@@ -18,8 +18,53 @@ import v8 from 'node:v8';
 import { logger } from '../core/logger.js';
 import { linkOrCopyFile, writeFileAtomicBytes, writeFileAtomicBytesSync } from './fs-atomic.js';
 
+/** The same envelope as disk shards, for independently compressed pack sections. */
+export const encodeV8CacheBuffer = (graph: unknown, paths: readonly string[]): Buffer | undefined =>
+  encodeEnvelope(graph, paths);
+
+/** Authenticate metadata and payload before trusting a packed section's identity. */
+export const inspectV8CacheBuffer = (data: Buffer): V8CacheInspection | undefined => {
+  const meta = decodePrefix(data);
+  if (
+    !meta ||
+    !runtimeCompatible(meta) ||
+    meta.payloadOff + meta.payloadLen + PAYLOAD_HASH_LEN !== data.length
+  )
+    return undefined;
+  const rawPaths = data.subarray(meta.pathsOff, meta.payloadOff);
+  const payload = data.subarray(meta.payloadOff, meta.payloadOff + meta.payloadLen);
+  const digest = createHash('sha256').update(rawPaths).update(payload).digest();
+  if (!digest.equals(data.subarray(meta.payloadOff + meta.payloadLen))) return undefined;
+  const paths = parseCachePathListing(rawPaths);
+  return paths && paths.length === meta.pathCount ? { paths } : undefined;
+};
+
+export const decodeV8CacheBuffer = (
+  data: Buffer,
+  pool?: Map<string, string>,
+  expectedPaths?: readonly string[],
+): V8CacheHit | undefined => {
+  try {
+    const inspected = inspectV8CacheBuffer(data);
+    if (!inspected) return undefined;
+    if (
+      expectedPaths &&
+      (inspected.paths.length !== expectedPaths.length ||
+        expectedPaths.some((path, index) => inspected.paths[index] !== path))
+    )
+      return undefined;
+    const meta = decodePrefix(data)!;
+    const value: unknown = v8.deserialize(
+      data.subarray(meta.payloadOff, meta.payloadOff + meta.payloadLen),
+    );
+    if (pool) internGraphStrings(value, pool);
+    return { kind: 'hit', value, bytes: data.length, paths: inspected.paths };
+  } catch {
+    return undefined;
+  }
+};
 const MAGIC = Buffer.from('GNXV8CF1', 'ascii');
-/** Envelope version — independent of PARSE_CACHE_VERSION / SCHEMA_BUMP. */
+/** Envelope version — independent of artifact-derived parser compatibility. */
 export const V8_CACHE_FORMAT = 5;
 const U32 = 4;
 const U16 = 2;
@@ -42,7 +87,7 @@ const internString = (value: string, pool: Map<string, string>): string => {
  * retained heap (~+59% measured vs interned JSON).
  */
 export const internGraphStrings = (root: unknown, pool: Map<string, string>): unknown => {
-  const seen = new WeakSet<object>();
+  const seen = new Set<object>();
   const walk = (value: unknown): unknown => {
     if (typeof value === 'string') return internString(value, pool);
     if (value === null || typeof value !== 'object') return value;
@@ -66,8 +111,14 @@ export const internGraphStrings = (root: unknown, pool: Map<string, string>): un
       return value;
     }
     const rec = value as Record<string, unknown>;
-    for (const key of Object.keys(rec)) {
-      rec[key] = walk(rec[key]);
+    const keys = Object.keys(rec);
+    for (let i = 0; i < keys.length; i++) {
+      const key = keys[i];
+      const child = rec[key];
+      if (typeof child === 'string') rec[key] = internString(child, pool);
+      else if (child !== null && typeof child === 'object') {
+        walk(child);
+      }
     }
     return value;
   };

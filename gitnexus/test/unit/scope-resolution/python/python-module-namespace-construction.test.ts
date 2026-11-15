@@ -34,6 +34,12 @@ def locally_shadowed():
 def dotted():
     return pkg.models.User()
 
+def reexported():
+    return pkg.User()
+
+def missing_package_member():
+    return pkg.Hidden()
+
 def dotted_root_shadowed():
     pkg = object()
     return pkg.models.User()
@@ -41,14 +47,32 @@ def dotted_root_shadowed():
   ],
   [
     'pkg/models.py',
-    `class User:
+    `from decoy import Hidden
+
+class User:
     pass
 `,
   ],
-  ['pkg/__init__.py', '# package marker\n'],
+  ['pkg/__init__.py', 'from .models import User\n'],
+  [
+    'pkg/package_leaf.py',
+    `import pkg.subpkg
+
+def from_root():
+    return pkg.User()
+
+def from_leaf():
+    return pkg.subpkg.User()
+`,
+  ],
+  ['pkg/subpkg/__init__.py', 'from .models import User\n'],
+  ['pkg/subpkg/models.py', 'class User:\n    pass\n'],
   [
     'decoy.py',
     `class Missing:
+    pass
+
+class Hidden:
     pass
 `,
   ],
@@ -99,14 +123,18 @@ function build() {
     return resolveCompoundReceiverClass(expression, functionScope.id, scopes, index, {
       constructionSyntax: { bare: true },
       namespaceTargets,
+      namespaceExportsIncludeImportedNames:
+        pythonScopeResolver.namespaceExportsIncludeImportedNames,
     });
   };
 
-  const dotted = parsedFiles.find((file) => file.filePath === 'pkg/dotted.py');
-  if (dotted === undefined) throw new Error('missing dotted fixture');
-  const dottedNamespaceTargets = namespaceTargetsFor(dotted);
-
-  const resolveDottedIn = (functionName: string, expression: string) => {
+  const resolveDottedIn = (
+    functionName: string,
+    expression: string,
+    filePath = 'pkg/dotted.py',
+  ) => {
+    const dotted = parsedFiles.find((file) => file.filePath === filePath);
+    if (dotted === undefined) throw new Error(`missing fixture ${filePath}`);
     const functionScope = dotted.scopes.find(
       (scope) =>
         scope.kind === 'Function' &&
@@ -115,7 +143,9 @@ function build() {
     if (functionScope === undefined) throw new Error(`missing scope for ${functionName}`);
     return resolveCompoundReceiverClass(expression, functionScope.id, scopes, index, {
       constructionSyntax: { bare: true },
-      namespaceTargets: dottedNamespaceTargets,
+      namespaceTargets: namespaceTargetsFor(dotted),
+      namespaceExportsIncludeImportedNames:
+        pythonScopeResolver.namespaceExportsIncludeImportedNames,
     });
   };
 
@@ -149,6 +179,28 @@ describe('Python module namespace construction', () => {
   it('resolves construction through a dotted import-path namespace', () => {
     expect(resolveDottedIn('dotted', 'pkg.models.User()')).toMatchObject({
       filePath: 'pkg/models.py',
+      qualifiedName: 'User',
+    });
+  });
+
+  it('does not treat a class re-exported from the imported leaf as ambiguous', () => {
+    expect(resolveDottedIn('reexported', 'pkg.User()')).toMatchObject({
+      filePath: 'pkg/models.py',
+      qualifiedName: 'User',
+    });
+  });
+
+  it('does not expose an imported leaf member on the package', () => {
+    expect(resolveDottedIn('missing_package_member', 'pkg.Hidden()')).toBeUndefined();
+  });
+
+  it('resolves root and leaf re-exports from their own package namespaces', () => {
+    expect(resolveDottedIn('from_root', 'pkg.User()', 'pkg/package_leaf.py')).toMatchObject({
+      filePath: 'pkg/models.py',
+      qualifiedName: 'User',
+    });
+    expect(resolveDottedIn('from_leaf', 'pkg.subpkg.User()', 'pkg/package_leaf.py')).toMatchObject({
+      filePath: 'pkg/subpkg/models.py',
       qualifiedName: 'User',
     });
   });

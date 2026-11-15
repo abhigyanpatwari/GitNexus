@@ -1,0 +1,19 @@
+{
+  "language": "cpp",
+  "description": "A Go source that mentions the selected C++ name only in comments and strings does not block a proven C++ rename.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "comments-and-strings"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.cpp"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

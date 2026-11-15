@@ -1,0 +1,21 @@
+{
+  "language": "c",
+  "description": "Refuse a C function that an indexed Rust extern block declares and calls, until the Rust binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "api.c"
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

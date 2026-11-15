@@ -52,6 +52,8 @@ export default [
       '**/dist/**',
       '**/node_modules/**',
       '**/coverage/**',
+      '**/.stryker-tmp/**',
+      'gitnexus/reports/mutation/**',
       'gitnexus/vendor/**',
       'gitnexus-web/src/vendor/**',
       'gitnexus/test/fixtures/**',

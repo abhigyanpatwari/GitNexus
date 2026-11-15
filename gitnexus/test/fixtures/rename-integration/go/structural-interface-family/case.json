@@ -1,0 +1,47 @@
+{
+  "language": "go",
+  "description": "Rename a structural interface method and concrete implementation with interface and concrete dispatch; retain an incompatible same-name method.",
+  "categories": ["polymorphism", "method-family", "interface", "homonyms"],
+  "target": {
+    "name": "Compute",
+    "kind": "Method",
+    "file": "model.go",
+    "startLine": 2
+  },
+  "newName": "Calculate",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": {
+        "name": "Compute",
+        "kind": "Method",
+        "file": "model.go",
+        "startLine": 4
+      },
+      "to": {
+        "name": "Compute",
+        "kind": "Method",
+        "file": "model.go",
+        "startLine": 2
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "dispatch",
+        "kind": "Function",
+        "file": "model.go"
+      },
+      "to": {
+        "name": "Compute",
+        "kind": "Method",
+        "file": "model.go",
+        "startLine": 2
+      }
+    }
+  ]
+}

@@ -1,0 +1,5255 @@
+{
+  "source": {
+    "revision": "c263c4f72089cb07ce1de9033f7aa6b564c914ce",
+    "dirty": false,
+    "measuredSourceHashes": {
+      "../gitnexus-shared/src/scope-resolution/position-index.ts": "298bebc52fec08469db72952fb299cd46445cba5556ac5001bf81f6020169f21",
+      "../gitnexus-shared/src/scope-resolution/name-claims.ts": "01a5e40b6d507e75117db5566292135f3e36ebae55f2a46732137b3354f0d741",
+      "src/core/ingestion/route-extractors/fetch-wrapper.ts": "dfc0bf92e7bac5b708c6c42b5b07853fb823f4a833cb80fdde88008d8f7a7d78",
+      "src/core/ingestion/route-extractors/fetch-wrapper-index.ts": "191c965da129859f41d072b856152de7aefbf498e68a912f0c2443fcf72e08ff",
+      "src/core/ingestion/route-extractors/framework-route-facts.ts": "6f1a1704898d2a8bc0814b11e57bebefd7e1898c73d405c2138ebe8d7becdba2",
+      "src/core/ingestion/route-extractors/lexical-bindings.ts": "1b77babb6e42678a8d2d2e802c69fe1cf339b7454a6be10813b09c4d8c56fa81",
+      "src/core/ingestion/pipeline-phases/routes.ts": "7c6c5969ee99a6179b3d1bbb5f7c96be554aa10bbfd8ecb90e1a812097a05cd3"
+    }
+  },
+  "harnessFingerprint": "ddc7dbef8488e03682e3817b73cf1daf81767aa093f0fbc232d192047b486487",
+  "environment": {
+    "node": "v22.23.3",
+    "platform": "linux",
+    "arch": "x64",
+    "cpu": "12th Gen Intel(R) Core(TM) i9-12900K",
+    "cpuCount": 24,
+    "allowedCpus": "23",
+    "note": "Benchmark pinned to CPU 23 with taskset; baseline and candidate ran back to back; this session ran no other work during the runs; other host processes on the remaining CPUs were not controlled and share caches and memory bandwidth; their 1-minute load average was sampled every 30 s in a separate log"
+  },
+  "settings": {
+    "protocol": "duration-calibrated-v2",
+    "targetIterationMs": 500,
+    "pilotConfirmationBatches": 3,
+    "maxPilotIterations": 64,
+    "maxInvocationsPerIteration": 1048576,
+    "warmup": 5,
+    "repetitions": 15,
+    "sizes": [128, 256, 512],
+    "lookupSizes": [2000, 4000, 8000],
+    "closureSizes": [1000, 2000, 4000],
+    "deepHelperSizes": [32, 64, 128],
+    "linearScalingBudget": 1.8
+  },
+  "adapters": {
+    "extraction": "fresh-provider-context",
+    "classification": "production-index"
+  },
+  "arms": {
+    "position-index": [
+      {
+        "units": 2000,
+        "scopes": 2001,
+        "outerReads": 2000,
+        "fingerprint": "6195deb354fd6403aecdf25af6aecc46d29abc004995e91d8878d37487722184",
+        "timing": {
+          "invocationsPerIteration": 512,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 12.626556999999593,
+              "wallMs": 12.66348300000027,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 18.65317800000048,
+              "wallMs": 18.678917000000183,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 23.8472840000004,
+              "wallMs": 23.871744000000035,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 9.85884200000146,
+              "wallMs": 9.907979000000523,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 17.57928600000014,
+              "wallMs": 17.611093999999866,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 40.43485200000305,
+              "wallMs": 40.48278500000015,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 72.82538699999805,
+              "wallMs": 72.91730300000017,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 146.54807699999492,
+              "wallMs": 146.72398500000054,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 303.33865499999683,
+              "wallMs": 303.7280780000001,
+              "qualified": false
+            },
+            {
+              "invocations": 512,
+              "workMs": 591.6101659999922,
+              "wallMs": 592.3937919999998,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 583.8514519999899,
+              "wallMs": 584.3956399999997,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 564.1125040000006,
+              "wallMs": 564.8359279999995,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 512,
+              "workMs": 587.2631099999899,
+              "wallMs": 588.0220140000001
+            },
+            {
+              "invocations": 512,
+              "workMs": 652.8376290000006,
+              "wallMs": 653.8830090000001
+            },
+            {
+              "invocations": 512,
+              "workMs": 532.0905600000251,
+              "wallMs": 532.3941369999993
+            },
+            {
+              "invocations": 512,
+              "workMs": 584.8601919999801,
+              "wallMs": 585.2977140000003
+            },
+            {
+              "invocations": 512,
+              "workMs": 570.0900710000024,
+              "wallMs": 570.4429240000009
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 512,
+              "workMs": 628.6450860000041,
+              "wallMs": 628.9908260000011
+            },
+            {
+              "invocations": 512,
+              "workMs": 543.4122109999862,
+              "wallMs": 543.7633289999994
+            },
+            {
+              "invocations": 512,
+              "workMs": 614.1829429999907,
+              "wallMs": 614.3105240000004
+            },
+            {
+              "invocations": 512,
+              "workMs": 565.5316799999928,
+              "wallMs": 565.6249699999989
+            },
+            {
+              "invocations": 512,
+              "workMs": 620.9735169999713,
+              "wallMs": 621.066123999999
+            },
+            {
+              "invocations": 512,
+              "workMs": 630.4568230000059,
+              "wallMs": 630.5765140000003
+            },
+            {
+              "invocations": 512,
+              "workMs": 622.6672270000436,
+              "wallMs": 622.8030490000001
+            },
+            {
+              "invocations": 512,
+              "workMs": 644.57376999999,
+              "wallMs": 644.7236699999994
+            },
+            {
+              "invocations": 512,
+              "workMs": 594.4030929999917,
+              "wallMs": 594.514287
+            },
+            {
+              "invocations": 512,
+              "workMs": 559.106993000014,
+              "wallMs": 559.1969179999996
+            },
+            {
+              "invocations": 512,
+              "workMs": 597.2819079999754,
+              "wallMs": 597.3728669999982
+            },
+            {
+              "invocations": 512,
+              "workMs": 549.0162139999811,
+              "wallMs": 549.1052139999993
+            },
+            {
+              "invocations": 512,
+              "workMs": 590.1081369999811,
+              "wallMs": 590.2124069999991
+            },
+            {
+              "invocations": 512,
+              "workMs": 594.6577109999926,
+              "wallMs": 594.7800190000016
+            },
+            {
+              "invocations": 512,
+              "workMs": 579.1996210000361,
+              "wallMs": 579.281200999998
+            }
+          ],
+          "minMs": 1.061351974609348,
+          "meanMs": 1.1633094966145776,
+          "medianMs": 1.1614408417968605,
+          "standardDeviationMs": 0.06145568058058314,
+          "samplesMs": [
+            1.227822433593758, 1.061351974609348, 1.1995760605468568, 1.104554062499986,
+            1.2128389003905689, 1.2313609824218865, 1.21614692773446, 1.2589331445312304,
+            1.1609435410156088, 1.0920058457031523, 1.166566226562452, 1.0722972929687131,
+            1.152554955078088, 1.1614408417968605, 1.1312492597656956
+          ]
+        }
+      },
+      {
+        "units": 4000,
+        "scopes": 4001,
+        "outerReads": 4000,
+        "fingerprint": "82b545d8dbe7e30c66114c8b14e9a2927c2f068f7d264c509c45a4bead396b2c",
+        "timing": {
+          "invocationsPerIteration": 256,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 1.9139600000016799,
+              "wallMs": 1.9169910000018717,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 4.634015999999974,
+              "wallMs": 4.638232999997854,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 8.38826600000175,
+              "wallMs": 8.394732000000658,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 15.842104000003019,
+              "wallMs": 15.84947999999713,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 35.69895899999756,
+              "wallMs": 35.72848100000192,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 79.86787300000651,
+              "wallMs": 79.98223400000279,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 153.43703300000197,
+              "wallMs": 153.59754299999986,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 304.8902499999713,
+              "wallMs": 305.1243539999996,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 572.3948140000102,
+              "wallMs": 572.750049000002,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 624.4978230000233,
+              "wallMs": 624.8944990000018,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 563.1496430000079,
+              "wallMs": 563.7628509999995,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 256,
+              "workMs": 615.5014189999965,
+              "wallMs": 615.8860280000008
+            },
+            {
+              "invocations": 256,
+              "workMs": 551.5689879999845,
+              "wallMs": 551.6440550000007
+            },
+            {
+              "invocations": 256,
+              "workMs": 618.231807000011,
+              "wallMs": 618.320037999998
+            },
+            {
+              "invocations": 256,
+              "workMs": 574.9659399999873,
+              "wallMs": 575.0541799999992
+            },
+            {
+              "invocations": 256,
+              "workMs": 551.3244379999815,
+              "wallMs": 551.414205000001
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 256,
+              "workMs": 558.6018820000136,
+              "wallMs": 558.6952310000015
+            },
+            {
+              "invocations": 256,
+              "workMs": 640.7377229999875,
+              "wallMs": 640.8523090000017
+            },
+            {
+              "invocations": 256,
+              "workMs": 605.2505209999981,
+              "wallMs": 605.3725029999987
+            },
+            {
+              "invocations": 256,
+              "workMs": 573.3174699999436,
+              "wallMs": 573.4155709999977
+            },
+            {
+              "invocations": 256,
+              "workMs": 579.5779429999493,
+              "wallMs": 579.6739190000008
+            },
+            {
+              "invocations": 256,
+              "workMs": 557.6800370000128,
+              "wallMs": 557.7566379999989
+            },
+            {
+              "invocations": 256,
+              "workMs": 562.03016999998,
+              "wallMs": 562.1155409999992
+            },
+            {
+              "invocations": 256,
+              "workMs": 557.3610389999922,
+              "wallMs": 557.4419820000003
+            },
+            {
+              "invocations": 256,
+              "workMs": 589.2303969999812,
+              "wallMs": 589.3196429999989
+            },
+            {
+              "invocations": 256,
+              "workMs": 530.1880379999893,
+              "wallMs": 530.287389000001
+            },
+            {
+              "invocations": 256,
+              "workMs": 588.3099250000305,
+              "wallMs": 588.4211529999993
+            },
+            {
+              "invocations": 256,
+              "workMs": 637.5624830000197,
+              "wallMs": 637.7002790000006
+            },
+            {
+              "invocations": 256,
+              "workMs": 620.2483409999477,
+              "wallMs": 620.3919249999999
+            },
+            {
+              "invocations": 256,
+              "workMs": 576.5898449999695,
+              "wallMs": 576.6975910000001
+            },
+            {
+              "invocations": 256,
+              "workMs": 574.5132110000013,
+              "wallMs": 574.6084610000034
+            }
+          ],
+          "minMs": 2.0710470234374583,
+          "meanMs": 2.2789580794270354,
+          "medianMs": 2.252304082031131,
+          "standardDeviationMs": 0.12174375846189864,
+          "samplesMs": [
+            2.182038601562553, 2.502881730468701, 2.3642598476562426, 2.2395213671872796,
+            2.263976339843552, 2.1784376445313, 2.195430351562422, 2.1771915585937194,
+            2.3016812382811764, 2.0710470234374583, 2.298085644531369, 2.490478449218827,
+            2.4228450820310456, 2.252304082031131, 2.244192230468755
+          ]
+        }
+      },
+      {
+        "units": 8000,
+        "scopes": 8001,
+        "outerReads": 8000,
+        "fingerprint": "4212ff5d2a5a3171ea98f716b5f65579f93cb28203ef1bcc568c0bcbab9e0416",
+        "timing": {
+          "invocationsPerIteration": 128,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 6.69692500000383,
+              "wallMs": 6.697722000004433,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 10.265726999990875,
+              "wallMs": 10.266949000004388,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 17.922767999989446,
+              "wallMs": 17.924890999995114,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 39.19572599999083,
+              "wallMs": 39.19982000000164,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 78.41477600000508,
+              "wallMs": 78.42425700000604,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 158.65257500000007,
+              "wallMs": 158.67244299999584,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 344.30936199999996,
+              "wallMs": 344.3507580000005,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 673.9749520000114,
+              "wallMs": 674.0609629999963,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 659.0700170000346,
+              "wallMs": 659.1427820000026,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 676.1204290000242,
+              "wallMs": 676.2136140000002,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 128,
+              "workMs": 681.8027889999794,
+              "wallMs": 681.8844460000037
+            },
+            {
+              "invocations": 128,
+              "workMs": 680.2066149999955,
+              "wallMs": 680.2916710000063
+            },
+            {
+              "invocations": 128,
+              "workMs": 652.6430730000211,
+              "wallMs": 652.7204219999985
+            },
+            {
+              "invocations": 128,
+              "workMs": 660.7879550000071,
+              "wallMs": 660.8624199999977
+            },
+            {
+              "invocations": 128,
+              "workMs": 664.6767750000436,
+              "wallMs": 664.7541469999996
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 128,
+              "workMs": 693.0977530000018,
+              "wallMs": 693.1900339999993
+            },
+            {
+              "invocations": 128,
+              "workMs": 678.7087829999364,
+              "wallMs": 678.7903210000004
+            },
+            {
+              "invocations": 128,
+              "workMs": 669.0863880000106,
+              "wallMs": 669.1619530000025
+            },
+            {
+              "invocations": 128,
+              "workMs": 683.3629560000263,
+              "wallMs": 683.4489509999985
+            },
+            {
+              "invocations": 128,
+              "workMs": 693.8482669999721,
+              "wallMs": 693.9321889999992
+            },
+            {
+              "invocations": 128,
+              "workMs": 682.9398250000231,
+              "wallMs": 683.0245389999982
+            },
+            {
+              "invocations": 128,
+              "workMs": 712.5940650000412,
+              "wallMs": 712.7017059999998
+            },
+            {
+              "invocations": 128,
+              "workMs": 722.3301180000053,
+              "wallMs": 722.4499769999966
+            },
+            {
+              "invocations": 128,
+              "workMs": 751.759284999971,
+              "wallMs": 751.8831839999984
+            },
+            {
+              "invocations": 128,
+              "workMs": 698.8621800000547,
+              "wallMs": 698.9657120000047
+            },
+            {
+              "invocations": 128,
+              "workMs": 689.4985759999981,
+              "wallMs": 689.587940999998
+            },
+            {
+              "invocations": 128,
+              "workMs": 712.3291569999928,
+              "wallMs": 712.4299429999955
+            },
+            {
+              "invocations": 128,
+              "workMs": 693.8228739999904,
+              "wallMs": 693.9304979999943
+            },
+            {
+              "invocations": 128,
+              "workMs": 651.5781789999819,
+              "wallMs": 651.6509720000031
+            },
+            {
+              "invocations": 128,
+              "workMs": 685.6900509999905,
+              "wallMs": 685.7818189999962
+            }
+          ],
+          "minMs": 5.090454523437359,
+          "meanMs": 5.426827321354165,
+          "medianMs": 5.414826195312514,
+          "standardDeviationMs": 0.1846158174457247,
+          "samplesMs": [
+            5.414826195312514, 5.302412367187003, 5.227237406250083, 5.338773093750206,
+            5.420689585937282, 5.335467382812681, 5.5671411328128215, 5.6432040468750415,
+            5.873119414062273, 5.459860781250427, 5.3867076249999855, 5.565071539062444,
+            5.420491203124925, 5.090454523437359, 5.356953523437426
+          ]
+        }
+      }
+    ],
+    "position-deep-completed": [
+      {
+        "units": 2000,
+        "scopes": 2001,
+        "outerReads": 2000,
+        "fingerprint": "6195deb354fd6403aecdf25af6aecc46d29abc004995e91d8878d37487722184",
+        "timing": {
+          "invocationsPerIteration": 512,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 1.0078639999992447,
+              "wallMs": 1.0085070000059204,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 2.915005000002566,
+              "wallMs": 2.915688000000955,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 4.564389999992272,
+              "wallMs": 4.5654429999995045,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 7.937920000003942,
+              "wallMs": 7.93907400000171,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 16.44921500000055,
+              "wallMs": 16.45159099999728,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 31.721575999989,
+              "wallMs": 31.72657700000127,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 66.27573600001051,
+              "wallMs": 66.28698399999848,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 148.23818699997355,
+              "wallMs": 148.25924700000178,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 269.7587049999638,
+              "wallMs": 269.8020039999974,
+              "qualified": false
+            },
+            {
+              "invocations": 512,
+              "workMs": 550.2677169999952,
+              "wallMs": 550.3574200000003,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 530.4763769999481,
+              "wallMs": 530.5606679999983,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 571.3218549998492,
+              "wallMs": 571.4268130000055,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 512,
+              "workMs": 522.3011049999914,
+              "wallMs": 522.3872419999971
+            },
+            {
+              "invocations": 512,
+              "workMs": 576.6464530000085,
+              "wallMs": 576.7760920000001
+            },
+            {
+              "invocations": 512,
+              "workMs": 532.0459209999608,
+              "wallMs": 532.1265670000066
+            },
+            {
+              "invocations": 512,
+              "workMs": 534.8494710001323,
+              "wallMs": 534.9355180000057
+            },
+            {
+              "invocations": 512,
+              "workMs": 540.4627829999445,
+              "wallMs": 540.5641610000021
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 512,
+              "workMs": 533.9737339998828,
+              "wallMs": 534.056918000002
+            },
+            {
+              "invocations": 512,
+              "workMs": 557.7537660001035,
+              "wallMs": 557.8562719999973
+            },
+            {
+              "invocations": 512,
+              "workMs": 546.7705150000038,
+              "wallMs": 546.8547340000005
+            },
+            {
+              "invocations": 512,
+              "workMs": 555.0039140000517,
+              "wallMs": 555.1050969999997
+            },
+            {
+              "invocations": 512,
+              "workMs": 514.5325219999286,
+              "wallMs": 514.6110850000041
+            },
+            {
+              "invocations": 512,
+              "workMs": 552.2298029999365,
+              "wallMs": 552.3569879999995
+            },
+            {
+              "invocations": 512,
+              "workMs": 540.356541000001,
+              "wallMs": 540.4438459999947
+            },
+            {
+              "invocations": 512,
+              "workMs": 529.6723040000215,
+              "wallMs": 529.7515459999995
+            },
+            {
+              "invocations": 512,
+              "workMs": 570.3631399998776,
+              "wallMs": 570.4675370000041
+            },
+            {
+              "invocations": 512,
+              "workMs": 531.8352849999574,
+              "wallMs": 531.9129469999971
+            },
+            {
+              "invocations": 512,
+              "workMs": 527.6406429999697,
+              "wallMs": 527.7314970000007
+            },
+            {
+              "invocations": 512,
+              "workMs": 546.7120660000219,
+              "wallMs": 546.7957460000034
+            },
+            {
+              "invocations": 512,
+              "workMs": 546.6058509999784,
+              "wallMs": 546.6991720000005
+            },
+            {
+              "invocations": 512,
+              "workMs": 531.3791890001157,
+              "wallMs": 531.4600510000018
+            },
+            {
+              "invocations": 512,
+              "workMs": 530.9507709999234,
+              "wallMs": 531.0296300000045
+            }
+          ],
+          "minMs": 1.0049463320311105,
+          "meanMs": 1.0567421932291372,
+          "medianMs": 1.055383869140627,
+          "standardDeviationMs": 0.028095970362162218,
+          "samplesMs": [
+            1.0429174492185211, 1.0893628242189521, 1.0679111621093824, 1.083992019531351,
+            1.0049463320311105, 1.078573833984251, 1.055383869140627, 1.034516218750042,
+            1.113990507812261, 1.0387407910155417, 1.0305481308593158, 1.0677970039062927,
+            1.0675895527343329, 1.037849978515851, 1.0370132246092254
+          ]
+        }
+      },
+      {
+        "units": 4000,
+        "scopes": 4001,
+        "outerReads": 4000,
+        "fingerprint": "82b545d8dbe7e30c66114c8b14e9a2927c2f068f7d264c509c45a4bead396b2c",
+        "timing": {
+          "invocationsPerIteration": 256,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 3.5089849999931175,
+              "wallMs": 3.5097139999998035,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 5.682500000002619,
+              "wallMs": 5.683599000003596,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 9.826291000004858,
+              "wallMs": 9.82888699999603,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 19.410338999994565,
+              "wallMs": 19.414810000002035,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 41.05086400001164,
+              "wallMs": 41.06217899999319,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 79.29504499999166,
+              "wallMs": 79.31463700000313,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 167.2500010000149,
+              "wallMs": 167.2944639999987,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 317.47838199999387,
+              "wallMs": 317.5297589999973,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 628.8825470000011,
+              "wallMs": 629.0032260000007,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 602.6360109999878,
+              "wallMs": 602.7315720000042,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 570.0232730000425,
+              "wallMs": 570.1031660000008,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 256,
+              "workMs": 603.0221789999996,
+              "wallMs": 603.1211220000041
+            },
+            {
+              "invocations": 256,
+              "workMs": 579.6478010002538,
+              "wallMs": 579.7300319999995
+            },
+            {
+              "invocations": 256,
+              "workMs": 607.8693279999716,
+              "wallMs": 607.9711439999955
+            },
+            {
+              "invocations": 256,
+              "workMs": 587.2102320001286,
+              "wallMs": 587.3003750000062
+            },
+            {
+              "invocations": 256,
+              "workMs": 597.2238329998945,
+              "wallMs": 597.324363000007
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 256,
+              "workMs": 574.7641510001267,
+              "wallMs": 574.839227000004
+            },
+            {
+              "invocations": 256,
+              "workMs": 599.6470249998238,
+              "wallMs": 599.7491169999994
+            },
+            {
+              "invocations": 256,
+              "workMs": 588.7329209999734,
+              "wallMs": 588.8157890000002
+            },
+            {
+              "invocations": 256,
+              "workMs": 595.5918470000761,
+              "wallMs": 595.7010750000045
+            },
+            {
+              "invocations": 256,
+              "workMs": 605.4942920000904,
+              "wallMs": 605.5821369999903
+            },
+            {
+              "invocations": 256,
+              "workMs": 620.0842510000657,
+              "wallMs": 620.1967869999935
+            },
+            {
+              "invocations": 256,
+              "workMs": 560.6583219999011,
+              "wallMs": 560.7365740000096
+            },
+            {
+              "invocations": 256,
+              "workMs": 596.7447189999075,
+              "wallMs": 596.8428500000009
+            },
+            {
+              "invocations": 256,
+              "workMs": 606.2654779999139,
+              "wallMs": 606.372073999999
+            },
+            {
+              "invocations": 256,
+              "workMs": 635.6514960000059,
+              "wallMs": 635.7699149999971
+            },
+            {
+              "invocations": 256,
+              "workMs": 589.0751869998348,
+              "wallMs": 590.3094039999996
+            },
+            {
+              "invocations": 256,
+              "workMs": 631.9865800000698,
+              "wallMs": 632.1075699999928
+            },
+            {
+              "invocations": 256,
+              "workMs": 652.7801200000395,
+              "wallMs": 652.9087609999988
+            },
+            {
+              "invocations": 256,
+              "workMs": 604.9594799999031,
+              "wallMs": 605.0520820000092
+            },
+            {
+              "invocations": 256,
+              "workMs": 581.6568789997982,
+              "wallMs": 581.7402799999982
+            }
+          ],
+          "minMs": 2.1900715703121136,
+          "meanMs": 2.355232486458211,
+          "medianMs": 2.3423711914055616,
+          "standardDeviationMs": 0.09479775646028882,
+          "samplesMs": [
+            2.245172464844245, 2.3423711914055616, 2.299737972656146, 2.326530652344047,
+            2.365212078125353, 2.4222041054690067, 2.1900715703121136, 2.3310340585933886,
+            2.3682245234371635, 2.483013656250023, 2.301074949218105, 2.4686975781252727,
+            2.549922343750154, 2.3631229687496216, 2.2720971835929618
+          ]
+        }
+      },
+      {
+        "units": 8000,
+        "scopes": 8001,
+        "outerReads": 8000,
+        "fingerprint": "4212ff5d2a5a3171ea98f716b5f65579f93cb28203ef1bcc568c0bcbab9e0416",
+        "timing": {
+          "invocationsPerIteration": 128,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 4.624125999995158,
+              "wallMs": 4.624624000003678,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 8.836418000006233,
+              "wallMs": 8.837280000007013,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 18.300719000020763,
+              "wallMs": 18.302574000001187,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 37.90902500000084,
+              "wallMs": 37.91239300000598,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 74.04595499996503,
+              "wallMs": 74.05205500000739,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 148.12821599998279,
+              "wallMs": 148.14152099999774,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 351.31104800004687,
+              "wallMs": 351.3526899999997,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 641.3959389999509,
+              "wallMs": 641.4526680000126,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 657.876469999901,
+              "wallMs": 657.9429119999986,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 667.772187999959,
+              "wallMs": 667.8452680000046,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 128,
+              "workMs": 657.5359039999894,
+              "wallMs": 657.6091199999937
+            },
+            {
+              "invocations": 128,
+              "workMs": 640.2083209999691,
+              "wallMs": 640.2642500000075
+            },
+            {
+              "invocations": 128,
+              "workMs": 656.8431459999993,
+              "wallMs": 656.9089740000054
+            },
+            {
+              "invocations": 128,
+              "workMs": 641.9175579999865,
+              "wallMs": 641.974338999993
+            },
+            {
+              "invocations": 128,
+              "workMs": 664.6708660001314,
+              "wallMs": 664.7384449999954
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 128,
+              "workMs": 678.594025999977,
+              "wallMs": 678.6655989999999
+            },
+            {
+              "invocations": 128,
+              "workMs": 683.7435879999393,
+              "wallMs": 683.81674200001
+            },
+            {
+              "invocations": 128,
+              "workMs": 642.1152639999491,
+              "wallMs": 642.174874999997
+            },
+            {
+              "invocations": 128,
+              "workMs": 652.4070440000214,
+              "wallMs": 652.4719269999914
+            },
+            {
+              "invocations": 128,
+              "workMs": 677.0933560001286,
+              "wallMs": 677.1653300000035
+            },
+            {
+              "invocations": 128,
+              "workMs": 682.3828170000052,
+              "wallMs": 682.453376999998
+            },
+            {
+              "invocations": 128,
+              "workMs": 682.1874020000105,
+              "wallMs": 682.2617170000012
+            },
+            {
+              "invocations": 128,
+              "workMs": 672.4904679999745,
+              "wallMs": 672.5604250000033
+            },
+            {
+              "invocations": 128,
+              "workMs": 676.9571310000028,
+              "wallMs": 677.0393120000081
+            },
+            {
+              "invocations": 128,
+              "workMs": 645.9195960001525,
+              "wallMs": 645.977246999988
+            },
+            {
+              "invocations": 128,
+              "workMs": 659.9937640001008,
+              "wallMs": 660.0571909999999
+            },
+            {
+              "invocations": 128,
+              "workMs": 631.6551410000684,
+              "wallMs": 631.7077180000051
+            },
+            {
+              "invocations": 128,
+              "workMs": 681.7189090000029,
+              "wallMs": 681.7941089999949
+            },
+            {
+              "invocations": 128,
+              "workMs": 659.0009909999208,
+              "wallMs": 659.0629009999975
+            },
+            {
+              "invocations": 128,
+              "workMs": 654.9027940000815,
+              "wallMs": 654.9656550000072
+            }
+          ],
+          "minMs": 4.934805789063034,
+          "meanMs": 5.198522026562674,
+          "medianMs": 5.253831781249801,
+          "standardDeviationMs": 0.13332437512427114,
+          "samplesMs": [
+            5.3015158281248205, 5.341746781249526, 5.016525499999602, 5.096930031250167,
+            5.289791843751004, 5.33111575781254, 5.329589078125082, 5.253831781249801,
+            5.288727585937522, 5.046246843751192, 5.156201281250787, 4.934805789063034,
+            5.325928976562523, 5.148445242186881, 5.116428078125637
+          ]
+        }
+      }
+    ],
+    "spread-aliases": [
+      {
+        "units": 128,
+        "bytes": 12632,
+        "routes": 128,
+        "calls": 128,
+        "fingerprint": "4d3af8c532ed0ae30072bb2b0dc846211850c47b114778e8cc2211f5082a414a",
+        "timing": {
+          "invocationsPerIteration": 64,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 21.030698999995366,
+              "wallMs": 21.036109000007855,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 100.71027199998207,
+              "wallMs": 100.71526599999925,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 137.7952959999966,
+              "wallMs": 137.80721299999277,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 110.5399180000095,
+              "wallMs": 110.5639269999956,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 206.2348159999965,
+              "wallMs": 206.28424399999494,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 367.80052200001955,
+              "wallMs": 367.8782599999977,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 703.7715479999897,
+              "wallMs": 703.9385609999881,
+              "qualified": true
+            },
+            {
+              "invocations": 64,
+              "workMs": 723.3264699999418,
+              "wallMs": 723.503721999994,
+              "qualified": true
+            },
+            {
+              "invocations": 64,
+              "workMs": 702.9425829999818,
+              "wallMs": 703.1043409999984,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 64,
+              "workMs": 673.7589049999951,
+              "wallMs": 673.9063009999954
+            },
+            {
+              "invocations": 64,
+              "workMs": 690.8684769999381,
+              "wallMs": 691.040593999991
+            },
+            {
+              "invocations": 64,
+              "workMs": 710.7137209999928,
+              "wallMs": 710.8633350000018
+            },
+            {
+              "invocations": 64,
+              "workMs": 692.6429960000241,
+              "wallMs": 692.798471999995
+            },
+            {
+              "invocations": 64,
+              "workMs": 728.5035979999811,
+              "wallMs": 728.6591190000036
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 64,
+              "workMs": 698.0610549999401,
+              "wallMs": 698.211884999997
+            },
+            {
+              "invocations": 64,
+              "workMs": 694.9394820000307,
+              "wallMs": 695.0910030000086
+            },
+            {
+              "invocations": 64,
+              "workMs": 728.562877000033,
+              "wallMs": 728.730018000002
+            },
+            {
+              "invocations": 64,
+              "workMs": 722.6610599999985,
+              "wallMs": 722.8394640000042
+            },
+            {
+              "invocations": 64,
+              "workMs": 716.8145049999584,
+              "wallMs": 716.9651900000026
+            },
+            {
+              "invocations": 64,
+              "workMs": 755.0382269999827,
+              "wallMs": 755.1865140000009
+            },
+            {
+              "invocations": 64,
+              "workMs": 690.7704640000593,
+              "wallMs": 690.9132339999924
+            },
+            {
+              "invocations": 64,
+              "workMs": 693.7699989999965,
+              "wallMs": 693.9123620000028
+            },
+            {
+              "invocations": 64,
+              "workMs": 701.2786910000141,
+              "wallMs": 701.416246000008
+            },
+            {
+              "invocations": 64,
+              "workMs": 699.3520140000328,
+              "wallMs": 699.4776319999946
+            },
+            {
+              "invocations": 64,
+              "workMs": 774.6201839999703,
+              "wallMs": 774.7745399999985
+            },
+            {
+              "invocations": 64,
+              "workMs": 689.1770950000646,
+              "wallMs": 689.3114389999973
+            },
+            {
+              "invocations": 64,
+              "workMs": 698.710009000104,
+              "wallMs": 698.8480019999988
+            },
+            {
+              "invocations": 64,
+              "workMs": 692.9296800000157,
+              "wallMs": 693.0617280000006
+            },
+            {
+              "invocations": 64,
+              "workMs": 713.1656789999251,
+              "wallMs": 713.3002729999862
+            }
+          ],
+          "minMs": 10.768392109376009,
+          "meanMs": 11.114428146875131,
+          "medianMs": 10.927375218750512,
+          "standardDeviationMs": 0.39137696763449475,
+          "samplesMs": [
+            10.907203984374064, 10.85842940625048, 11.383794953125516, 11.291579062499977,
+            11.20022664062435, 11.79747229687473, 10.793288500000926, 10.840156234374945,
+            10.95747954687522, 10.927375218750512, 12.103440374999536, 10.768392109376009,
+            10.917343890626626, 10.827026250000245, 11.14321373437383
+          ]
+        }
+      },
+      {
+        "units": 256,
+        "bytes": 25432,
+        "routes": 256,
+        "calls": 256,
+        "fingerprint": "ade99b29037a7ae11377f27ce0749dae4772327a0b81a9f95d655c9783252506",
+        "timing": {
+          "invocationsPerIteration": 32,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 45.06135200000426,
+              "wallMs": 45.065228000006755,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 40.79901200000313,
+              "wallMs": 40.80568600000697,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 85.70221999999194,
+              "wallMs": 85.71353100000124,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 161.9237540000031,
+              "wallMs": 161.94671799999196,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 350.2341410000081,
+              "wallMs": 350.2780700000003,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 742.0512059999892,
+              "wallMs": 742.1294559999951,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 696.4231370000052,
+              "wallMs": 696.5052880000003,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 689.5103300000046,
+              "wallMs": 689.5848510000069,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 32,
+              "workMs": 709.3357309999556,
+              "wallMs": 709.4149729999917
+            },
+            {
+              "invocations": 32,
+              "workMs": 689.1611609999673,
+              "wallMs": 689.2341929999966
+            },
+            {
+              "invocations": 32,
+              "workMs": 684.5760360000277,
+              "wallMs": 684.6483099999896
+            },
+            {
+              "invocations": 32,
+              "workMs": 691.5302380000212,
+              "wallMs": 691.6052130000025
+            },
+            {
+              "invocations": 32,
+              "workMs": 699.9251350000559,
+              "wallMs": 699.9955410000111
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 32,
+              "workMs": 688.6317639999907,
+              "wallMs": 688.7026869999972
+            },
+            {
+              "invocations": 32,
+              "workMs": 692.2219660000264,
+              "wallMs": 692.2982520000078
+            },
+            {
+              "invocations": 32,
+              "workMs": 687.8645319999632,
+              "wallMs": 687.9380689999962
+            },
+            {
+              "invocations": 32,
+              "workMs": 696.6193769999663,
+              "wallMs": 696.6969439999957
+            },
+            {
+              "invocations": 32,
+              "workMs": 693.153724000018,
+              "wallMs": 693.2218959999882
+            },
+            {
+              "invocations": 32,
+              "workMs": 705.806882000019,
+              "wallMs": 705.8787000000011
+            },
+            {
+              "invocations": 32,
+              "workMs": 689.3207000000548,
+              "wallMs": 689.3867929999979
+            },
+            {
+              "invocations": 32,
+              "workMs": 700.7139049999678,
+              "wallMs": 700.7901730000012
+            },
+            {
+              "invocations": 32,
+              "workMs": 687.090751999931,
+              "wallMs": 687.1608879999985
+            },
+            {
+              "invocations": 32,
+              "workMs": 715.3197460000229,
+              "wallMs": 715.396504999997
+            },
+            {
+              "invocations": 32,
+              "workMs": 712.5100300000049,
+              "wallMs": 712.5897490000061
+            },
+            {
+              "invocations": 32,
+              "workMs": 712.1680980000529,
+              "wallMs": 712.237255
+            },
+            {
+              "invocations": 32,
+              "workMs": 695.4689099999814,
+              "wallMs": 695.5440390000003
+            },
+            {
+              "invocations": 32,
+              "workMs": 687.4857629999897,
+              "wallMs": 687.553866000002
+            },
+            {
+              "invocations": 32,
+              "workMs": 713.8166719999717,
+              "wallMs": 713.8928920000035
+            }
+          ],
+          "minMs": 21.471585999997842,
+          "meanMs": 21.829568377083252,
+          "medianMs": 21.73340343749942,
+          "standardDeviationMs": 0.33259307340584265,
+          "samplesMs": [
+            21.519742624999708, 21.631936437500826, 21.49576662499885, 21.769355531248948,
+            21.66105387500056, 22.056465062500592, 21.541271875001712, 21.897309531248993,
+            21.471585999997842, 22.353742062500714, 22.265938437500154, 22.25525306250165,
+            21.73340343749942, 21.483930093749677, 22.306770999999117
+          ]
+        }
+      },
+      {
+        "units": 512,
+        "bytes": 51032,
+        "routes": 512,
+        "calls": 512,
+        "fingerprint": "09eaf101a26caac103ec60f39d542f8b542a5dfa19ec8d755ddd99496885e215",
+        "timing": {
+          "invocationsPerIteration": 16,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 38.34743300000264,
+              "wallMs": 38.35150900000008,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 80.79520799999591,
+              "wallMs": 80.80145999998786,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 171.2597880000103,
+              "wallMs": 171.26836200000253,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 378.76657400002296,
+              "wallMs": 378.78989900001034,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 719.417066999973,
+              "wallMs": 719.4569330000086,
+              "qualified": true
+            },
+            {
+              "invocations": 16,
+              "workMs": 760.2437950000021,
+              "wallMs": 760.2831989999977,
+              "qualified": true
+            },
+            {
+              "invocations": 16,
+              "workMs": 778.3985170000087,
+              "wallMs": 778.436646999995,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 16,
+              "workMs": 748.2167799999879,
+              "wallMs": 748.259865
+            },
+            {
+              "invocations": 16,
+              "workMs": 772.9367539999075,
+              "wallMs": 772.9750869999989
+            },
+            {
+              "invocations": 16,
+              "workMs": 763.4209449999616,
+              "wallMs": 763.4585049999878
+            },
+            {
+              "invocations": 16,
+              "workMs": 763.6989810000232,
+              "wallMs": 763.7409990000015
+            },
+            {
+              "invocations": 16,
+              "workMs": 780.5314909999724,
+              "wallMs": 780.5736270000052
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 16,
+              "workMs": 747.8349469999084,
+              "wallMs": 747.8818209999881
+            },
+            {
+              "invocations": 16,
+              "workMs": 785.5079459999979,
+              "wallMs": 785.5477410000167
+            },
+            {
+              "invocations": 16,
+              "workMs": 760.2844889999833,
+              "wallMs": 760.325045000005
+            },
+            {
+              "invocations": 16,
+              "workMs": 751.4598139999725,
+              "wallMs": 751.4993519999844
+            },
+            {
+              "invocations": 16,
+              "workMs": 774.632626000006,
+              "wallMs": 774.6732680000132
+            },
+            {
+              "invocations": 16,
+              "workMs": 758.3435829999798,
+              "wallMs": 758.3813489999739
+            },
+            {
+              "invocations": 16,
+              "workMs": 763.7957450000395,
+              "wallMs": 763.8383239999821
+            },
+            {
+              "invocations": 16,
+              "workMs": 767.7899610000313,
+              "wallMs": 767.8295630000066
+            },
+            {
+              "invocations": 16,
+              "workMs": 768.1872270000458,
+              "wallMs": 768.2343229999824
+            },
+            {
+              "invocations": 16,
+              "workMs": 752.2002860000066,
+              "wallMs": 752.238932999986
+            },
+            {
+              "invocations": 16,
+              "workMs": 769.624487999914,
+              "wallMs": 769.6632089999912
+            },
+            {
+              "invocations": 16,
+              "workMs": 783.2637270000123,
+              "wallMs": 783.3050140000123
+            },
+            {
+              "invocations": 16,
+              "workMs": 756.9731820000452,
+              "wallMs": 757.012573999993
+            },
+            {
+              "invocations": 16,
+              "workMs": 784.9756809999817,
+              "wallMs": 785.0155380000069
+            },
+            {
+              "invocations": 16,
+              "workMs": 749.5808550000656,
+              "wallMs": 749.6207319999812
+            }
+          ],
+          "minMs": 46.73968418749428,
+          "meanMs": 47.81022732083329,
+          "medianMs": 47.737234062502466,
+          "standardDeviationMs": 0.8006076101569418,
+          "samplesMs": [
+            46.73968418749428, 49.09424662499987, 47.517780562498956, 46.966238374998284,
+            48.414539125000374, 47.39647393749874, 47.737234062502466, 47.98687256250196,
+            48.011701687502864, 47.01251787500041, 48.101530499994624, 48.95398293750077,
+            47.310823875002825, 49.06098006249886, 46.8488034375041
+          ]
+        }
+      }
+    ],
+    "completed-scopes": [
+      {
+        "units": 128,
+        "bytes": 9602,
+        "routes": 128,
+        "calls": 128,
+        "fingerprint": "4d3af8c532ed0ae30072bb2b0dc846211850c47b114778e8cc2211f5082a414a",
+        "timing": {
+          "invocationsPerIteration": 128,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 8.8682029999909,
+              "wallMs": 8.87063799999305,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 13.950055000022985,
+              "wallMs": 13.953602000023238,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 38.80586300001596,
+              "wallMs": 38.81176899999264,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 57.41008299996611,
+              "wallMs": 57.421950999996625,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 114.44709500001045,
+              "wallMs": 114.47155799999018,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 191.22164300005534,
+              "wallMs": 191.2670860000071,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 402.9574989999528,
+              "wallMs": 403.082224999991,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 758.8634840000886,
+              "wallMs": 759.056248000008,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 749.1885090000287,
+              "wallMs": 749.3766450000112,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 742.4023440001183,
+              "wallMs": 742.5824929999944,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 128,
+              "workMs": 777.5828570002632,
+              "wallMs": 777.7785750000039
+            },
+            {
+              "invocations": 128,
+              "workMs": 799.8429640000977,
+              "wallMs": 800.0455739999888
+            },
+            {
+              "invocations": 128,
+              "workMs": 799.9108959999576,
+              "wallMs": 800.1122139999934
+            },
+            {
+              "invocations": 128,
+              "workMs": 811.3979040000995,
+              "wallMs": 811.6211590000021
+            },
+            {
+              "invocations": 128,
+              "workMs": 802.1518209999776,
+              "wallMs": 802.3564199999964
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 128,
+              "workMs": 825.8658599996706,
+              "wallMs": 826.0567340000125
+            },
+            {
+              "invocations": 128,
+              "workMs": 822.3094749999,
+              "wallMs": 822.5222910000011
+            },
+            {
+              "invocations": 128,
+              "workMs": 850.3261700000148,
+              "wallMs": 850.5807809999969
+            },
+            {
+              "invocations": 128,
+              "workMs": 824.4398650000512,
+              "wallMs": 824.6221519999963
+            },
+            {
+              "invocations": 128,
+              "workMs": 822.0424939999357,
+              "wallMs": 822.2607990000106
+            },
+            {
+              "invocations": 128,
+              "workMs": 820.6484220002021,
+              "wallMs": 820.8970540000009
+            },
+            {
+              "invocations": 128,
+              "workMs": 822.5324280002678,
+              "wallMs": 822.7158970000164
+            },
+            {
+              "invocations": 128,
+              "workMs": 855.770470999938,
+              "wallMs": 856.0050000000047
+            },
+            {
+              "invocations": 128,
+              "workMs": 847.4165120000544,
+              "wallMs": 847.6319669999939
+            },
+            {
+              "invocations": 128,
+              "workMs": 849.0927430002193,
+              "wallMs": 849.2895240000216
+            },
+            {
+              "invocations": 128,
+              "workMs": 853.3275400000566,
+              "wallMs": 853.3810200000007
+            },
+            {
+              "invocations": 128,
+              "workMs": 854.2071589998086,
+              "wallMs": 854.2653879999998
+            },
+            {
+              "invocations": 128,
+              "workMs": 914.0386170000129,
+              "wallMs": 914.1045179999783
+            },
+            {
+              "invocations": 128,
+              "workMs": 841.2203330000048,
+              "wallMs": 841.273114999989
+            },
+            {
+              "invocations": 128,
+              "workMs": 889.1246950000932,
+              "wallMs": 889.1941680000164
+            }
+          ],
+          "minMs": 6.411315796876579,
+          "meanMs": 6.610605616666787,
+          "medianMs": 6.620441500000425,
+          "standardDeviationMs": 0.20834971218686407,
+          "samplesMs": [
+            6.452077031247427, 6.424292773436719, 6.643173203125116, 6.4409364453129,
+            6.4222069843744976, 6.411315796876579, 6.426034593752092, 6.685706804687015,
+            6.620441500000425, 6.633537054689214, 6.666621406250442, 6.673493429686005,
+            7.140926695312601, 6.572033851562537, 6.946286679688228
+          ]
+        }
+      },
+      {
+        "units": 256,
+        "bytes": 19330,
+        "routes": 256,
+        "calls": 256,
+        "fingerprint": "ade99b29037a7ae11377f27ce0749dae4772327a0b81a9f95d655c9783252506",
+        "timing": {
+          "invocationsPerIteration": 64,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 12.507157000014558,
+              "wallMs": 12.508093000011286,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 23.503198999998858,
+              "wallMs": 23.50419599999441,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 45.2525349999778,
+              "wallMs": 45.25417900001048,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 93.64303300002939,
+              "wallMs": 93.64650600001914,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 184.94439400004921,
+              "wallMs": 184.95160000000033,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 387.78931700007524,
+              "wallMs": 387.80507699999725,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 795.4012289999228,
+              "wallMs": 795.4302460000035,
+              "qualified": true
+            },
+            {
+              "invocations": 64,
+              "workMs": 837.2229760000191,
+              "wallMs": 837.249840000004,
+              "qualified": true
+            },
+            {
+              "invocations": 64,
+              "workMs": 837.8160849999404,
+              "wallMs": 837.8429079999914,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 64,
+              "workMs": 838.0980489999347,
+              "wallMs": 838.1243160000013
+            },
+            {
+              "invocations": 64,
+              "workMs": 847.1001010001637,
+              "wallMs": 847.1294990000024
+            },
+            {
+              "invocations": 64,
+              "workMs": 890.5273500000476,
+              "wallMs": 890.5588399999833
+            },
+            {
+              "invocations": 64,
+              "workMs": 868.6538809998601,
+              "wallMs": 868.6791800000065
+            },
+            {
+              "invocations": 64,
+              "workMs": 881.1424800000677,
+              "wallMs": 881.1706370000029
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 64,
+              "workMs": 895.8684329999378,
+              "wallMs": 895.898715999996
+            },
+            {
+              "invocations": 64,
+              "workMs": 891.2781510000932,
+              "wallMs": 891.3079049999942
+            },
+            {
+              "invocations": 64,
+              "workMs": 911.4288689999667,
+              "wallMs": 911.4559339999978
+            },
+            {
+              "invocations": 64,
+              "workMs": 880.8748309999937,
+              "wallMs": 880.9047200000205
+            },
+            {
+              "invocations": 64,
+              "workMs": 872.8919289999176,
+              "wallMs": 872.9204879999743
+            },
+            {
+              "invocations": 64,
+              "workMs": 867.209302000032,
+              "wallMs": 867.2347639999934
+            },
+            {
+              "invocations": 64,
+              "workMs": 915.3802370000049,
+              "wallMs": 915.4100389999803
+            },
+            {
+              "invocations": 64,
+              "workMs": 902.5777789998683,
+              "wallMs": 902.6063690000155
+            },
+            {
+              "invocations": 64,
+              "workMs": 908.1833269999188,
+              "wallMs": 908.209977999999
+            },
+            {
+              "invocations": 64,
+              "workMs": 875.2341290000186,
+              "wallMs": 875.2595789999759
+            },
+            {
+              "invocations": 64,
+              "workMs": 907.7919519998832,
+              "wallMs": 907.8307239999995
+            },
+            {
+              "invocations": 64,
+              "workMs": 913.8475629999593,
+              "wallMs": 913.8755900000106
+            },
+            {
+              "invocations": 64,
+              "workMs": 881.0979890000017,
+              "wallMs": 881.124840000004
+            },
+            {
+              "invocations": 64,
+              "workMs": 906.4508209999767,
+              "wallMs": 906.4801199999929
+            },
+            {
+              "invocations": 64,
+              "workMs": 911.3265109999629,
+              "wallMs": 911.3540570000187
+            }
+          ],
+          "minMs": 13.5501453437505,
+          "meanMs": 14.00150189895785,
+          "medianMs": 14.102777796872942,
+          "standardDeviationMs": 0.25992355852674165,
+          "samplesMs": [
+            13.997944265624028, 13.926221109376456, 14.241076078124479, 13.763669234374902,
+            13.638936390623712, 13.5501453437505, 14.302816203125076, 14.102777796872942,
+            14.190364484373731, 13.67553326562529, 14.184249249998174, 14.278868171874365,
+            13.767156078125026, 14.163294078124636, 14.23947673437442
+          ]
+        }
+      },
+      {
+        "units": 512,
+        "bytes": 38786,
+        "routes": 512,
+        "calls": 512,
+        "fingerprint": "09eaf101a26caac103ec60f39d542f8b542a5dfa19ec8d755ddd99496885e215",
+        "timing": {
+          "invocationsPerIteration": 32,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 33.74304199998733,
+              "wallMs": 33.74437699999544,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 57.84168599997065,
+              "wallMs": 57.84418200000073,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 100.36893099997542,
+              "wallMs": 100.37191000001621,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 209.24750600004336,
+              "wallMs": 209.25422100001015,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 403.34894100003294,
+              "wallMs": 403.3591900000174,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 928.4762939999928,
+              "wallMs": 928.4962300000188,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 907.536180999974,
+              "wallMs": 907.5541800000065,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 953.6800770000555,
+              "wallMs": 953.6987450000015,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 32,
+              "workMs": 932.5224280001421,
+              "wallMs": 932.5441529999953
+            },
+            {
+              "invocations": 32,
+              "workMs": 937.8014319999784,
+              "wallMs": 937.8248029999959
+            },
+            {
+              "invocations": 32,
+              "workMs": 998.2288629999384,
+              "wallMs": 998.2543600000208
+            },
+            {
+              "invocations": 32,
+              "workMs": 924.4696389999881,
+              "wallMs": 924.4889799999946
+            },
+            {
+              "invocations": 32,
+              "workMs": 970.2560790000716,
+              "wallMs": 970.2760719999787
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 32,
+              "workMs": 946.2879200000607,
+              "wallMs": 946.3112329999858
+            },
+            {
+              "invocations": 32,
+              "workMs": 929.6476260000782,
+              "wallMs": 929.6673829999927
+            },
+            {
+              "invocations": 32,
+              "workMs": 947.0189790000732,
+              "wallMs": 947.0371100000048
+            },
+            {
+              "invocations": 32,
+              "workMs": 939.297411000065,
+              "wallMs": 939.3182309999829
+            },
+            {
+              "invocations": 32,
+              "workMs": 964.106759999966,
+              "wallMs": 964.1273229999933
+            },
+            {
+              "invocations": 32,
+              "workMs": 925.3088520001329,
+              "wallMs": 925.3290090000082
+            },
+            {
+              "invocations": 32,
+              "workMs": 925.9489139999496,
+              "wallMs": 925.9680220000155
+            },
+            {
+              "invocations": 32,
+              "workMs": 959.040905999922,
+              "wallMs": 959.0615370000014
+            },
+            {
+              "invocations": 32,
+              "workMs": 941.4521500000847,
+              "wallMs": 941.4728679999826
+            },
+            {
+              "invocations": 32,
+              "workMs": 963.5955830000457,
+              "wallMs": 963.6180940000049
+            },
+            {
+              "invocations": 32,
+              "workMs": 942.7360099999642,
+              "wallMs": 942.7557049999887
+            },
+            {
+              "invocations": 32,
+              "workMs": 946.5551519998407,
+              "wallMs": 946.5776800000167
+            },
+            {
+              "invocations": 32,
+              "workMs": 991.9758900000015,
+              "wallMs": 991.9970979999925
+            },
+            {
+              "invocations": 32,
+              "workMs": 932.4729020000377,
+              "wallMs": 932.4927850000095
+            },
+            {
+              "invocations": 32,
+              "workMs": 949.8495840001269,
+              "wallMs": 949.8660609999788
+            }
+          ],
+          "minMs": 28.915901625004153,
+          "meanMs": 29.59436383125073,
+          "medianMs": 29.571497500001897,
+          "standardDeviationMs": 0.5463182160203812,
+          "samplesMs": [
+            29.571497500001897, 29.051488312502443, 29.594343093752286, 29.353044093752032,
+            30.128336249998938, 28.915901625004153, 28.935903562498424, 29.97002831249756,
+            29.420379687502646, 30.11236196875143, 29.46050031249888, 29.579848499995023,
+            30.999246562500048, 29.13977818750118, 29.682799500003966
+          ]
+        }
+      }
+    ],
+    "wrapper-aliases": [
+      {
+        "units": 128,
+        "bytes": 12981,
+        "definitions": 128,
+        "seeds": 128,
+        "carriers": 128,
+        "calls": 128,
+        "fingerprint": "cae7521012cc3ef817b65fa771740cdbb8b5a0bfe3280cf4cae9ec8c6f2774df",
+        "timing": {
+          "invocationsPerIteration": 64,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 20.493722000013804,
+              "wallMs": 90.15245399999549,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 77.9174800000037,
+              "wallMs": 183.59511999998358,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 81.99568500000169,
+              "wallMs": 323.1019619999861,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 126.89539399999194,
+              "wallMs": 485.74875800000154,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 302.2541570000758,
+              "wallMs": 1000.2290700000012,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 416.86906700005056,
+              "wallMs": 1740.288161000004,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 859.9155130002182,
+              "wallMs": 3441.364429999987,
+              "qualified": true
+            },
+            {
+              "invocations": 64,
+              "workMs": 833.9720339999476,
+              "wallMs": 3405.1295470000186,
+              "qualified": true
+            },
+            {
+              "invocations": 64,
+              "workMs": 821.8438639998785,
+              "wallMs": 3406.353926999989,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 64,
+              "workMs": 902.5879150000401,
+              "wallMs": 3519.551394000009
+            },
+            {
+              "invocations": 64,
+              "workMs": 833.6798690001306,
+              "wallMs": 3347.1172859999933
+            },
+            {
+              "invocations": 64,
+              "workMs": 954.1346760001034,
+              "wallMs": 3565.7283149999857
+            },
+            {
+              "invocations": 64,
+              "workMs": 874.5615150000085,
+              "wallMs": 3476.4414819999947
+            },
+            {
+              "invocations": 64,
+              "workMs": 910.6704350000655,
+              "wallMs": 3534.0457590000005
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 64,
+              "workMs": 871.5245259998483,
+              "wallMs": 3449.271184000012
+            },
+            {
+              "invocations": 64,
+              "workMs": 876.877807999932,
+              "wallMs": 3434.3389730000054
+            },
+            {
+              "invocations": 64,
+              "workMs": 888.6432949999289,
+              "wallMs": 3473.0069709999952
+            },
+            {
+              "invocations": 64,
+              "workMs": 879.7272640000447,
+              "wallMs": 3414.970835999993
+            },
+            {
+              "invocations": 64,
+              "workMs": 906.6937820000458,
+              "wallMs": 3628.0404419999977
+            },
+            {
+              "invocations": 64,
+              "workMs": 902.7922629999521,
+              "wallMs": 3537.0206110000145
+            },
+            {
+              "invocations": 64,
+              "workMs": 876.8653360000462,
+              "wallMs": 3464.163231000013
+            },
+            {
+              "invocations": 64,
+              "workMs": 893.7948120002984,
+              "wallMs": 3492.8874080000096
+            },
+            {
+              "invocations": 64,
+              "workMs": 909.9497989999945,
+              "wallMs": 3529.0434840000235
+            },
+            {
+              "invocations": 64,
+              "workMs": 859.1178960002144,
+              "wallMs": 3408.316783999966
+            },
+            {
+              "invocations": 64,
+              "workMs": 908.2386469999328,
+              "wallMs": 3503.643430999946
+            },
+            {
+              "invocations": 64,
+              "workMs": 877.7846059998847,
+              "wallMs": 3474.2472970000235
+            },
+            {
+              "invocations": 64,
+              "workMs": 886.2113859999808,
+              "wallMs": 3447.4520599999814
+            },
+            {
+              "invocations": 64,
+              "workMs": 921.7746359999292,
+              "wallMs": 3538.725888999994
+            },
+            {
+              "invocations": 64,
+              "workMs": 873.6751490001916,
+              "wallMs": 3485.298570999992
+            }
+          ],
+          "minMs": 13.42371712500335,
+          "meanMs": 13.8892408385419,
+          "medianMs": 13.8470529062497,
+          "standardDeviationMs": 0.27562639923152027,
+          "samplesMs": [
+            13.61757071874763, 13.701215749998937, 13.88505148437389, 13.745738500000698,
+            14.167090343750715, 14.106129109374251, 13.701020875000722, 13.965543937504663,
+            14.217965609374914, 13.42371712500335, 14.19122885937395, 13.715384468748198,
+            13.8470529062497, 14.402728687498893, 13.651174203127994
+          ]
+        }
+      },
+      {
+        "units": 256,
+        "bytes": 26293,
+        "definitions": 256,
+        "seeds": 256,
+        "carriers": 256,
+        "calls": 256,
+        "fingerprint": "9d42a80fd08bb7d8dac3134a9ca5c41e8fb8684104c62ed69d45e5cf87611cd4",
+        "timing": {
+          "invocationsPerIteration": 32,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 23.652650000003632,
+              "wallMs": 110.49002000002656,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 130.7236559999874,
+              "wallMs": 320.24860400002217,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 117.69261900003767,
+              "wallMs": 467.1440990000265,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 190.4710699999123,
+              "wallMs": 861.7899200000102,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 467.1913160000695,
+              "wallMs": 1838.9662020000396,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 924.7597050001496,
+              "wallMs": 3647.846637999988,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 954.9837050000206,
+              "wallMs": 3691.813667999988,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 941.655141000112,
+              "wallMs": 3688.382585000014,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 32,
+              "workMs": 942.9338509999216,
+              "wallMs": 4057.554865000013
+            },
+            {
+              "invocations": 32,
+              "workMs": 939.2427010000101,
+              "wallMs": 3723.978623999981
+            },
+            {
+              "invocations": 32,
+              "workMs": 975.0094250002294,
+              "wallMs": 3834.804408999975
+            },
+            {
+              "invocations": 32,
+              "workMs": 943.712849999778,
+              "wallMs": 3721.6251300000004
+            },
+            {
+              "invocations": 32,
+              "workMs": 1023.5729440000723,
+              "wallMs": 3770.736167999974
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 32,
+              "workMs": 930.4192129996954,
+              "wallMs": 3698.8885009999503
+            },
+            {
+              "invocations": 32,
+              "workMs": 936.2001849998487,
+              "wallMs": 3716.9603720000014
+            },
+            {
+              "invocations": 32,
+              "workMs": 896.8981449999264,
+              "wallMs": 3627.1855869999854
+            },
+            {
+              "invocations": 32,
+              "workMs": 880.641427999828,
+              "wallMs": 3575.368642000016
+            },
+            {
+              "invocations": 32,
+              "workMs": 961.3419660001528,
+              "wallMs": 3772.3591529999976
+            },
+            {
+              "invocations": 32,
+              "workMs": 953.6332299999776,
+              "wallMs": 3769.4660569999833
+            },
+            {
+              "invocations": 32,
+              "workMs": 945.5029879998765,
+              "wallMs": 3734.0273620000225
+            },
+            {
+              "invocations": 32,
+              "workMs": 929.6979550001561,
+              "wallMs": 3678.1832050000085
+            },
+            {
+              "invocations": 32,
+              "workMs": 925.6953549999744,
+              "wallMs": 3710.5723829999915
+            },
+            {
+              "invocations": 32,
+              "workMs": 916.2361210001982,
+              "wallMs": 3682.940201999969
+            },
+            {
+              "invocations": 32,
+              "workMs": 977.9071269999258,
+              "wallMs": 3751.3012400000007
+            },
+            {
+              "invocations": 32,
+              "workMs": 908.7152870000573,
+              "wallMs": 3686.2280080000055
+            },
+            {
+              "invocations": 32,
+              "workMs": 968.2686180002056,
+              "wallMs": 3862.8969389999984
+            },
+            {
+              "invocations": 32,
+              "workMs": 960.6065099999541,
+              "wallMs": 3783.1977169999736
+            },
+            {
+              "invocations": 32,
+              "workMs": 930.6637379998574,
+              "wallMs": 3744.7790579999564
+            }
+          ],
+          "minMs": 27.520044624994625,
+          "meanMs": 29.21339138749924,
+          "medianMs": 29.083241812495544,
+          "standardDeviationMs": 0.8500908522020922,
+          "samplesMs": [
+            29.075600406240483, 29.256255781245272, 28.0280670312477, 27.520044624994625,
+            30.041936437504773, 29.8010384374993, 29.54696837499614, 29.053061093754877,
+            28.9279798437492, 28.632378781256193, 30.559597718747682, 28.39735271875179,
+            30.258394312506425, 30.018953437498567, 29.083241812495544
+          ]
+        }
+      },
+      {
+        "units": 512,
+        "bytes": 52917,
+        "definitions": 512,
+        "seeds": 512,
+        "carriers": 512,
+        "calls": 512,
+        "fingerprint": "0b0e9cc792162060c8aaf2f92a11adbff83488e46a438091b7b1b1c37eef6c1c",
+        "timing": {
+          "invocationsPerIteration": 16,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 49.474916999985,
+              "wallMs": 222.10357700003078,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 99.89588999998523,
+              "wallMs": 460.66230299999006,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 295.58794299996225,
+              "wallMs": 1045.315248000028,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 501.24491100013256,
+              "wallMs": 1953.921778000018,
+              "qualified": true
+            },
+            {
+              "invocations": 8,
+              "workMs": 506.65012599981856,
+              "wallMs": 1974.9488560000318,
+              "qualified": true
+            },
+            {
+              "invocations": 8,
+              "workMs": 485.5478149999981,
+              "wallMs": 1890.5690010000253,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 997.0247470001923,
+              "wallMs": 3900.393803999992,
+              "qualified": true
+            },
+            {
+              "invocations": 16,
+              "workMs": 959.7652470001485,
+              "wallMs": 3791.47070299997,
+              "qualified": true
+            },
+            {
+              "invocations": 16,
+              "workMs": 991.8424949999899,
+              "wallMs": 3932.002983000013,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 16,
+              "workMs": 1022.8633520000731,
+              "wallMs": 3953.597317000036
+            },
+            {
+              "invocations": 16,
+              "workMs": 1007.2973699998693,
+              "wallMs": 3900.7332949999836
+            },
+            {
+              "invocations": 16,
+              "workMs": 987.423014,
+              "wallMs": 3865.63594800001
+            },
+            {
+              "invocations": 16,
+              "workMs": 994.4033499999205,
+              "wallMs": 4598.706911000016
+            },
+            {
+              "invocations": 16,
+              "workMs": 1029.6026279997895,
+              "wallMs": 3918.3661100000027
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 16,
+              "workMs": 1004.6297789998935,
+              "wallMs": 3886.8274580000434
+            },
+            {
+              "invocations": 16,
+              "workMs": 980.2515710000298,
+              "wallMs": 3871.911036000005
+            },
+            {
+              "invocations": 16,
+              "workMs": 957.6085019998718,
+              "wallMs": 3826.2849249999854
+            },
+            {
+              "invocations": 16,
+              "workMs": 1057.0743060000823,
+              "wallMs": 3962.6970679999795
+            },
+            {
+              "invocations": 16,
+              "workMs": 1011.5341900002095,
+              "wallMs": 3942.563380000007
+            },
+            {
+              "invocations": 16,
+              "workMs": 998.3454419998452,
+              "wallMs": 3894.273944000015
+            },
+            {
+              "invocations": 16,
+              "workMs": 1003.0555659999955,
+              "wallMs": 3855.3160170000046
+            },
+            {
+              "invocations": 16,
+              "workMs": 1004.3810089999461,
+              "wallMs": 3906.63274500001
+            },
+            {
+              "invocations": 16,
+              "workMs": 1024.4493169998168,
+              "wallMs": 3808.7129689999856
+            },
+            {
+              "invocations": 16,
+              "workMs": 990.6702050000895,
+              "wallMs": 3874.890505999967
+            },
+            {
+              "invocations": 16,
+              "workMs": 1017.9605079999892,
+              "wallMs": 3901.644949999987
+            },
+            {
+              "invocations": 16,
+              "workMs": 1015.4223259999999,
+              "wallMs": 3888.3517819999834
+            },
+            {
+              "invocations": 16,
+              "workMs": 990.6686560000526,
+              "wallMs": 3886.4007679999922
+            },
+            {
+              "invocations": 16,
+              "workMs": 1002.794741000107,
+              "wallMs": 3900.3608210000093
+            },
+            {
+              "invocations": 16,
+              "workMs": 995.9675609999103,
+              "wallMs": 3885.3908560000127
+            }
+          ],
+          "minMs": 59.85053137499199,
+          "meanMs": 62.728390329166,
+          "medianMs": 62.690972874999716,
+          "standardDeviationMs": 1.3760487369197696,
+          "samplesMs": [
+            62.78936118749334, 61.26572318750186, 59.85053137499199, 66.06714412500514,
+            63.22088687501309, 62.396590124990325, 62.690972874999716, 62.77381306249663,
+            64.02808231248855, 61.91688781250559, 63.622531749999325, 63.46389537499999,
+            61.916791000003286, 62.67467131250669, 62.2479725624944
+          ]
+        }
+      }
+    ],
+    "nested-helpers": [
+      {
+        "units": 128,
+        "bytes": 7117,
+        "definitions": 129,
+        "seeds": 129,
+        "carriers": 1,
+        "calls": 1,
+        "fingerprint": "8c8f4514b99b7f021a2d99006348d166ecfde726a52f084a83f4c584b97bd09e",
+        "timing": {
+          "invocationsPerIteration": 128,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 15.760024999966845,
+              "wallMs": 41.183218999998644,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 17.051834999991115,
+              "wallMs": 60.040823000017554,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 47.02106600004481,
+              "wallMs": 184.72514799999772,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 79.66162099997746,
+              "wallMs": 257.0163729999913,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 124.45918999996502,
+              "wallMs": 465.89815100003034,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 252.875771999883,
+              "wallMs": 926.2181369999889,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 504.43679099984,
+              "wallMs": 1860.5105739999563,
+              "qualified": true
+            },
+            {
+              "invocations": 64,
+              "workMs": 497.32511299982434,
+              "wallMs": 1874.114941000007,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 976.6559079997824,
+              "wallMs": 3651.827958000009,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 967.7449229997001,
+              "wallMs": 3644.7068940000026,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 984.6887759998208,
+              "wallMs": 3638.388175000029,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 128,
+              "workMs": 993.8302229999681,
+              "wallMs": 3691.983899999992
+            },
+            {
+              "invocations": 128,
+              "workMs": 955.7749739996507,
+              "wallMs": 3671.1941780000343
+            },
+            {
+              "invocations": 128,
+              "workMs": 958.9459729999653,
+              "wallMs": 3626.4748919999693
+            },
+            {
+              "invocations": 128,
+              "workMs": 914.5501629997161,
+              "wallMs": 3569.098300999962
+            },
+            {
+              "invocations": 128,
+              "workMs": 975.2587919998914,
+              "wallMs": 3697.9842769999523
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 128,
+              "workMs": 976.5345989994239,
+              "wallMs": 3636.007485000009
+            },
+            {
+              "invocations": 128,
+              "workMs": 985.0798639998538,
+              "wallMs": 3697.0945240000146
+            },
+            {
+              "invocations": 128,
+              "workMs": 966.2760429998161,
+              "wallMs": 3682.0121320000035
+            },
+            {
+              "invocations": 128,
+              "workMs": 1032.1306909996783,
+              "wallMs": 3652.17975999997
+            },
+            {
+              "invocations": 128,
+              "workMs": 973.398676999961,
+              "wallMs": 3698.906915999949
+            },
+            {
+              "invocations": 128,
+              "workMs": 966.4360949996626,
+              "wallMs": 3656.3341909999726
+            },
+            {
+              "invocations": 128,
+              "workMs": 882.5110919999424,
+              "wallMs": 3494.071401000023
+            },
+            {
+              "invocations": 128,
+              "workMs": 952.5651539998362,
+              "wallMs": 3614.5428450000472
+            },
+            {
+              "invocations": 128,
+              "workMs": 988.6152540005278,
+              "wallMs": 3657.2881220000563
+            },
+            {
+              "invocations": 128,
+              "workMs": 1004.2173530003056,
+              "wallMs": 3608.861372000072
+            },
+            {
+              "invocations": 128,
+              "workMs": 935.1751860005315,
+              "wallMs": 3603.605848999927
+            },
+            {
+              "invocations": 128,
+              "workMs": 924.2484350011218,
+              "wallMs": 3541.17105600005
+            },
+            {
+              "invocations": 128,
+              "workMs": 970.8393230002839,
+              "wallMs": 3637.0419899999397
+            },
+            {
+              "invocations": 128,
+              "workMs": 994.2445699999807,
+              "wallMs": 3726.1344380000373
+            },
+            {
+              "invocations": 128,
+              "workMs": 973.4513899991289,
+              "wallMs": 3733.402725000051
+            }
+          ],
+          "minMs": 6.89461790624955,
+          "meanMs": 7.565481107291695,
+          "medianMs": 7.6046771640621955,
+          "standardDeviationMs": 0.27630183491472426,
+          "samplesMs": [
+            7.629176554682999, 7.695936437498858, 7.5490315859360635, 8.063521023434987,
+            7.6046771640621955, 7.550281992184864, 6.89461790624955, 7.44191526562372,
+            7.723556671879123, 7.8454480703148874, 7.306056140629153, 7.220690898446264,
+            7.584682210939718, 7.7675357031248495, 7.605088984368194
+          ]
+        }
+      },
+      {
+        "units": 256,
+        "bytes": 14413,
+        "definitions": 257,
+        "seeds": 257,
+        "carriers": 1,
+        "calls": 1,
+        "fingerprint": "e8e616ca58be58cc8aa2af74d2372a658c799f872ed145c4fe2f2eef08ec7e43",
+        "timing": {
+          "invocationsPerIteration": 32,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 15.943476999993436,
+              "wallMs": 56.266441000043415,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 27.31795100006275,
+              "wallMs": 105.82436999992933,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 52.25279700011015,
+              "wallMs": 212.17527200002223,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 160.29009599983692,
+              "wallMs": 530.5785909999395,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 252.76568700000644,
+              "wallMs": 928.2037599999458,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 552.2395859997487,
+              "wallMs": 1941.648515000008,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 509.8304199995473,
+              "wallMs": 1823.266384000075,
+              "qualified": true
+            },
+            {
+              "invocations": 32,
+              "workMs": 523.1737920002779,
+              "wallMs": 1856.3413320000982,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 32,
+              "workMs": 549.5705020003952,
+              "wallMs": 1875.830725000007
+            },
+            {
+              "invocations": 32,
+              "workMs": 560.6587379998527,
+              "wallMs": 1906.0297029999783
+            },
+            {
+              "invocations": 32,
+              "workMs": 552.6293379999697,
+              "wallMs": 1915.4561049999902
+            },
+            {
+              "invocations": 32,
+              "workMs": 537.3510199999437,
+              "wallMs": 1866.8393449999858
+            },
+            {
+              "invocations": 32,
+              "workMs": 504.7124270000495,
+              "wallMs": 1844.0134480000706
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 32,
+              "workMs": 523.6768200001679,
+              "wallMs": 1840.4840429999167
+            },
+            {
+              "invocations": 32,
+              "workMs": 498.8249619996641,
+              "wallMs": 1804.6973260000814
+            },
+            {
+              "invocations": 32,
+              "workMs": 535.6808580001816,
+              "wallMs": 1892.8061390001094
+            },
+            {
+              "invocations": 32,
+              "workMs": 569.6052730000811,
+              "wallMs": 2014.484162000008
+            },
+            {
+              "invocations": 32,
+              "workMs": 527.5281630001264,
+              "wallMs": 1865.1197249999968
+            },
+            {
+              "invocations": 32,
+              "workMs": 519.7460550002288,
+              "wallMs": 1835.6451880000532
+            },
+            {
+              "invocations": 32,
+              "workMs": 518.1524880002253,
+              "wallMs": 1844.7536929999478
+            },
+            {
+              "invocations": 32,
+              "workMs": 519.7036640000297,
+              "wallMs": 1824.774139999994
+            },
+            {
+              "invocations": 32,
+              "workMs": 507.95430000009947,
+              "wallMs": 1829.0567969999975
+            },
+            {
+              "invocations": 32,
+              "workMs": 548.6611640002811,
+              "wallMs": 1959.499873999972
+            },
+            {
+              "invocations": 32,
+              "workMs": 570.1989640003303,
+              "wallMs": 1962.533049999969
+            },
+            {
+              "invocations": 32,
+              "workMs": 523.8670589999529,
+              "wallMs": 1885.047205000068
+            },
+            {
+              "invocations": 32,
+              "workMs": 502.13379699981306,
+              "wallMs": 1812.599491000059
+            },
+            {
+              "invocations": 32,
+              "workMs": 527.9703210003208,
+              "wallMs": 1882.740736000007
+            },
+            {
+              "invocations": 32,
+              "workMs": 540.0850259999279,
+              "wallMs": 1897.3147539999336
+            }
+          ],
+          "minMs": 15.588280062489503,
+          "meanMs": 16.52872690416965,
+          "medianMs": 16.370845593748527,
+          "standardDeviationMs": 0.6641216414201353,
+          "samplesMs": [
+            16.364900625005248, 15.588280062489503, 16.740026812505675, 17.800164781252533,
+            16.48525509375395, 16.24206421875715, 16.19226525000704, 16.240739500000927,
+            15.873571875003108, 17.145661375008785, 17.818717625010322, 16.370845593748527,
+            15.691681156244158, 16.499072531260026, 16.877657062497747
+          ]
+        }
+      },
+      {
+        "units": 512,
+        "bytes": 29005,
+        "definitions": 513,
+        "seeds": 513,
+        "carriers": 1,
+        "calls": 1,
+        "fingerprint": "523c3d13e27760ab02a826ed6870ebfbffdbb009273f73bbfd353e0b07f1a787",
+        "timing": {
+          "invocationsPerIteration": 16,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 27.22055799991358,
+              "wallMs": 111.23357599996962,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 58.13679600006435,
+              "wallMs": 227.15781799994875,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 200.63254300015979,
+              "wallMs": 595.4995820000768,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 232.1641509999754,
+              "wallMs": 917.321571999928,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 548.1520960000344,
+              "wallMs": 1963.5083159999922,
+              "qualified": true
+            },
+            {
+              "invocations": 16,
+              "workMs": 569.3168289996684,
+              "wallMs": 1974.0865910000866,
+              "qualified": true
+            },
+            {
+              "invocations": 16,
+              "workMs": 521.4377059998224,
+              "wallMs": 1936.5092390000354,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 16,
+              "workMs": 553.9470360002015,
+              "wallMs": 1974.9968400000362
+            },
+            {
+              "invocations": 16,
+              "workMs": 540.8044309996767,
+              "wallMs": 1957.5560169999953
+            },
+            {
+              "invocations": 16,
+              "workMs": 533.3306700000539,
+              "wallMs": 1948.5164670000086
+            },
+            {
+              "invocations": 16,
+              "workMs": 582.058008999913,
+              "wallMs": 2060.9915969999274
+            },
+            {
+              "invocations": 16,
+              "workMs": 564.7598460001172,
+              "wallMs": 1985.8183730000164
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 16,
+              "workMs": 565.5414259996032,
+              "wallMs": 1951.9826319999993
+            },
+            {
+              "invocations": 16,
+              "workMs": 560.2073439999949,
+              "wallMs": 1977.3609050000086
+            },
+            {
+              "invocations": 16,
+              "workMs": 528.8194890001323,
+              "wallMs": 3542.9472449999303
+            },
+            {
+              "invocations": 16,
+              "workMs": 566.464254999999,
+              "wallMs": 1935.9914310000604
+            },
+            {
+              "invocations": 16,
+              "workMs": 554.6463860003278,
+              "wallMs": 1937.1203139999416
+            },
+            {
+              "invocations": 16,
+              "workMs": 556.89966500015,
+              "wallMs": 1948.3486590000102
+            },
+            {
+              "invocations": 16,
+              "workMs": 562.7676559999818,
+              "wallMs": 1959.085216000094
+            },
+            {
+              "invocations": 16,
+              "workMs": 554.688215999864,
+              "wallMs": 1943.134485000046
+            },
+            {
+              "invocations": 16,
+              "workMs": 567.1898780004121,
+              "wallMs": 1952.293209000025
+            },
+            {
+              "invocations": 16,
+              "workMs": 577.274344000034,
+              "wallMs": 2028.460145000019
+            },
+            {
+              "invocations": 16,
+              "workMs": 552.0974890000653,
+              "wallMs": 1997.337463999982
+            },
+            {
+              "invocations": 16,
+              "workMs": 603.964879999985,
+              "wallMs": 2071.3570410000393
+            },
+            {
+              "invocations": 16,
+              "workMs": 565.4175719999475,
+              "wallMs": 2003.8350039999932
+            },
+            {
+              "invocations": 16,
+              "workMs": 578.3950319997966,
+              "wallMs": 1959.081358000054
+            },
+            {
+              "invocations": 16,
+              "workMs": 556.9225219996879,
+              "wallMs": 1984.228204999934
+            }
+          ],
+          "minMs": 33.05121806250827,
+          "meanMs": 35.213733974999926,
+          "medianMs": 35.17297849999886,
+          "standardDeviationMs": 1.0113951211541619,
+          "samplesMs": [
+            35.3463391249752, 35.01295899999968, 33.05121806250827, 35.404015937499935,
+            34.665399125020485, 34.806229062509374, 35.17297849999886, 34.6680134999915,
+            35.44936737502576, 36.07964650000213, 34.50609306250408, 37.74780499999906,
+            35.33859824999672, 36.14968949998729, 34.80765762498049
+          ]
+        }
+      }
+    ],
+    "nested-helper-chain": [
+      {
+        "units": 32,
+        "bytes": 1192,
+        "definitions": 33,
+        "seeds": 33,
+        "carriers": 1,
+        "calls": 1,
+        "fingerprint": "68381006f2dcc1fa1819b133aeff003d19943e3c27ec6d00fd96ca162060c398",
+        "timing": {
+          "invocationsPerIteration": 512,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 3.3727319999597967,
+              "wallMs": 7.509887999971397,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 2.136487999930978,
+              "wallMs": 10.493153999908827,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 4.494442999945022,
+              "wallMs": 20.9864280000329,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 8.950827999971807,
+              "wallMs": 45.03965099994093,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 24.468734999885783,
+              "wallMs": 92.69626999995671,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 47.871092999819666,
+              "wallMs": 199.23551000002772,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 78.9004449993372,
+              "wallMs": 377.03751799999736,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 207.60442200035322,
+              "wallMs": 785.1098410000559,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 340.88058999949135,
+              "wallMs": 1532.7480819999473,
+              "qualified": false
+            },
+            {
+              "invocations": 512,
+              "workMs": 697.1397260002559,
+              "wallMs": 3125.3323689999525,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 689.6356900007231,
+              "wallMs": 3110.2281850000145,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 680.2845079986146,
+              "wallMs": 3054.0308400000213,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 512,
+              "workMs": 683.0632570019225,
+              "wallMs": 3085.578153999988
+            },
+            {
+              "invocations": 512,
+              "workMs": 692.7619119998999,
+              "wallMs": 3083.415842999937
+            },
+            {
+              "invocations": 512,
+              "workMs": 732.0696720005944,
+              "wallMs": 3128.9267130000517
+            },
+            {
+              "invocations": 512,
+              "workMs": 812.6902690003626,
+              "wallMs": 3291.9037140000146
+            },
+            {
+              "invocations": 512,
+              "workMs": 806.4232920004288,
+              "wallMs": 3235.961588999955
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 512,
+              "workMs": 735.6686729994835,
+              "wallMs": 3108.005298999953
+            },
+            {
+              "invocations": 512,
+              "workMs": 798.8069489990594,
+              "wallMs": 3230.2157219999935
+            },
+            {
+              "invocations": 512,
+              "workMs": 696.911073999363,
+              "wallMs": 3097.0874629999744
+            },
+            {
+              "invocations": 512,
+              "workMs": 658.3925509994151,
+              "wallMs": 3057.446962999995
+            },
+            {
+              "invocations": 512,
+              "workMs": 699.9873150009662,
+              "wallMs": 3088.0082460000413
+            },
+            {
+              "invocations": 512,
+              "workMs": 688.6771169987042,
+              "wallMs": 3081.85888100008
+            },
+            {
+              "invocations": 512,
+              "workMs": 721.866013999097,
+              "wallMs": 3085.031434000004
+            },
+            {
+              "invocations": 512,
+              "workMs": 699.4474279993447,
+              "wallMs": 3132.797522000037
+            },
+            {
+              "invocations": 512,
+              "workMs": 714.5149339992786,
+              "wallMs": 3147.648157999967
+            },
+            {
+              "invocations": 512,
+              "workMs": 745.3606290003518,
+              "wallMs": 3163.140134999994
+            },
+            {
+              "invocations": 512,
+              "workMs": 682.5733600005042,
+              "wallMs": 3056.1597100000363
+            },
+            {
+              "invocations": 512,
+              "workMs": 688.6133700001519,
+              "wallMs": 3098.8819920000387
+            },
+            {
+              "invocations": 512,
+              "workMs": 756.1748660005396,
+              "wallMs": 3091.1890739999944
+            },
+            {
+              "invocations": 512,
+              "workMs": 690.7917250000173,
+              "wallMs": 3102.241183999926
+            },
+            {
+              "invocations": 512,
+              "workMs": 687.0609989988152,
+              "wallMs": 3075.4075190000003
+            }
+          ],
+          "minMs": 1.2859229511707326,
+          "meanMs": 1.3886519536451942,
+          "medianMs": 1.36610825781122,
+          "standardDeviationMs": 0.06940806641597644,
+          "samplesMs": [
+            1.4368528769521163, 1.5601698222637879, 1.3611544414050059, 1.2859229511707326,
+            1.367162724611262, 1.345072494138094, 1.4098945585919864, 1.36610825781122,
+            1.395536980467341, 1.455782478516312, 1.3331510937509847, 1.3449479882815467,
+            1.476904035157304, 1.3492025878906588, 1.341916013669561
+          ]
+        }
+      },
+      {
+        "units": 64,
+        "bytes": 2344,
+        "definitions": 65,
+        "seeds": 65,
+        "carriers": 1,
+        "calls": 1,
+        "fingerprint": "50db1ae7d947c8f0a95bcf38cac793f1ee0577de314ad7292962ab095b76128c",
+        "timing": {
+          "invocationsPerIteration": 256,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 2.2584290000377223,
+              "wallMs": 12.834496000083163,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 4.7184630000265315,
+              "wallMs": 28.81730100000277,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 9.164876000024378,
+              "wallMs": 54.254206000012346,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 18.677994000026956,
+              "wallMs": 106.12963199999649,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 45.043728999909945,
+              "wallMs": 226.84279000002425,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 86.2320020000916,
+              "wallMs": 438.7740680000279,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 161.9638969997177,
+              "wallMs": 867.8223749999888,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 331.0742020010948,
+              "wallMs": 1775.508014000021,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 815.2463270007866,
+              "wallMs": 3695.321415000013,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 722.9382249998162,
+              "wallMs": 3633.036942000035,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 676.8780379991513,
+              "wallMs": 3562.782935999916,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 256,
+              "workMs": 776.6340940024238,
+              "wallMs": 3674.7125340000493
+            },
+            {
+              "invocations": 256,
+              "workMs": 740.0234100002563,
+              "wallMs": 3599.7528490000404
+            },
+            {
+              "invocations": 256,
+              "workMs": 736.0805520007852,
+              "wallMs": 3620.1284999999916
+            },
+            {
+              "invocations": 256,
+              "workMs": 756.79228100006,
+              "wallMs": 3600.6493790000677
+            },
+            {
+              "invocations": 256,
+              "workMs": 729.0198880019598,
+              "wallMs": 3595.0167460000375
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 256,
+              "workMs": 796.2711780001409,
+              "wallMs": 3664.2635320000118
+            },
+            {
+              "invocations": 256,
+              "workMs": 694.6826559997862,
+              "wallMs": 3553.961299000075
+            },
+            {
+              "invocations": 256,
+              "workMs": 694.7606889988529,
+              "wallMs": 3549.364143999992
+            },
+            {
+              "invocations": 256,
+              "workMs": 662.2495580000104,
+              "wallMs": 3562.5634490000084
+            },
+            {
+              "invocations": 256,
+              "workMs": 666.7036379986675,
+              "wallMs": 3517.5630679999013
+            },
+            {
+              "invocations": 256,
+              "workMs": 677.0613400002476,
+              "wallMs": 3559.3008210000116
+            },
+            {
+              "invocations": 256,
+              "workMs": 659.3221500007203,
+              "wallMs": 3525.950800999999
+            },
+            {
+              "invocations": 256,
+              "workMs": 652.9526669996558,
+              "wallMs": 3560.6104979999363
+            },
+            {
+              "invocations": 256,
+              "workMs": 771.3068189992337,
+              "wallMs": 3665.5127109999303
+            },
+            {
+              "invocations": 256,
+              "workMs": 719.6733939992264,
+              "wallMs": 3589.2293990000617
+            },
+            {
+              "invocations": 256,
+              "workMs": 806.4285279992037,
+              "wallMs": 3678.082366999937
+            },
+            {
+              "invocations": 256,
+              "workMs": 738.8148100002436,
+              "wallMs": 3633.824091000017
+            },
+            {
+              "invocations": 256,
+              "workMs": 736.3126069988357,
+              "wallMs": 3671.9343289999524
+            },
+            {
+              "invocations": 256,
+              "workMs": 677.8882590004941,
+              "wallMs": 3678.894874999998
+            },
+            {
+              "invocations": 256,
+              "workMs": 704.1164259992074,
+              "wallMs": 3636.8670900000725
+            }
+          ],
+          "minMs": 2.5505963554674054,
+          "meanMs": 2.775662687238158,
+          "medianMs": 2.713908941401769,
+          "standardDeviationMs": 0.19449038055309228,
+          "samplesMs": [
+            3.1104342890630505, 2.713604124999165, 2.713908941401769, 2.5869123359375408,
+            2.604311085932295, 2.644770859375967, 2.5754771484403136, 2.5505963554674054,
+            3.0129172617157565, 2.811224195309478, 3.1501114374968893, 2.8859953515634515,
+            2.876221121089202, 2.6480010117206803, 2.750454789059404
+          ]
+        }
+      },
+      {
+        "units": 128,
+        "bytes": 4704,
+        "definitions": 129,
+        "seeds": 129,
+        "carriers": 1,
+        "calls": 1,
+        "fingerprint": "8c8f4514b99b7f021a2d99006348d166ecfde726a52f084a83f4c584b97bd09e",
+        "timing": {
+          "invocationsPerIteration": 128,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 4.81481300003361,
+              "wallMs": 34.888575999997556,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 9.334399999934249,
+              "wallMs": 71.3000840001041,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 19.936148999957368,
+              "wallMs": 146.00893300003372,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 72.29617699980736,
+              "wallMs": 327.90442199993413,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 117.88494499993976,
+              "wallMs": 612.3134279999649,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 164.967755000107,
+              "wallMs": 1178.6460280000465,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 389.26729699992575,
+              "wallMs": 2493.4221739999484,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 823.5659719991963,
+              "wallMs": 4965.371278999955,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 806.99516699987,
+              "wallMs": 4937.393956000102,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 845.651095999754,
+              "wallMs": 4937.890644000028,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 128,
+              "workMs": 805.8386180003872,
+              "wallMs": 4904.194454000099
+            },
+            {
+              "invocations": 128,
+              "workMs": 816.1242940004449,
+              "wallMs": 5028.080576999928
+            },
+            {
+              "invocations": 128,
+              "workMs": 858.1551180010429,
+              "wallMs": 5010.235794999986
+            },
+            {
+              "invocations": 128,
+              "workMs": 837.9911819988629,
+              "wallMs": 4939.798665000009
+            },
+            {
+              "invocations": 128,
+              "workMs": 841.6026830001501,
+              "wallMs": 4985.664153999998
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 128,
+              "workMs": 796.7799019992817,
+              "wallMs": 4907.273411000031
+            },
+            {
+              "invocations": 128,
+              "workMs": 836.2358200005256,
+              "wallMs": 4983.870298999944
+            },
+            {
+              "invocations": 128,
+              "workMs": 835.1338559995638,
+              "wallMs": 4874.227029999951
+            },
+            {
+              "invocations": 128,
+              "workMs": 846.589590999647,
+              "wallMs": 4942.419358999934
+            },
+            {
+              "invocations": 128,
+              "workMs": 800.1206229990348,
+              "wallMs": 4901.491327999975
+            },
+            {
+              "invocations": 128,
+              "workMs": 805.9773409999907,
+              "wallMs": 4951.960195999942
+            },
+            {
+              "invocations": 128,
+              "workMs": 789.7658339996124,
+              "wallMs": 4922.394281000015
+            },
+            {
+              "invocations": 128,
+              "workMs": 828.3700460008113,
+              "wallMs": 4915.688409000053
+            },
+            {
+              "invocations": 128,
+              "workMs": 795.1854279995896,
+              "wallMs": 4914.743661999935
+            },
+            {
+              "invocations": 128,
+              "workMs": 853.182940999628,
+              "wallMs": 4974.466907999944
+            },
+            {
+              "invocations": 128,
+              "workMs": 835.9547110010171,
+              "wallMs": 4935.168561000028
+            },
+            {
+              "invocations": 128,
+              "workMs": 794.1650539991679,
+              "wallMs": 4868.441338000004
+            },
+            {
+              "invocations": 128,
+              "workMs": 839.6444539993536,
+              "wallMs": 4954.136506000068
+            },
+            {
+              "invocations": 128,
+              "workMs": 756.0255199999083,
+              "wallMs": 4842.069438999984
+            },
+            {
+              "invocations": 128,
+              "workMs": 816.8688830005703,
+              "wallMs": 4878.451257999986
+            }
+          ],
+          "minMs": 5.9064493749992835,
+          "meanMs": 6.369791668748803,
+          "medianMs": 6.381788148441956,
+          "standardDeviationMs": 0.20999962560745017,
+          "samplesMs": [
+            6.224842984369388, 6.533092343754106, 6.524483249996592, 6.6139811796847425,
+            6.2509423671799595, 6.296697976562427, 6.170045578121972, 6.471640984381338,
+            6.212386156246794, 6.665491726559594, 6.530896179695446, 6.204414484368499,
+            6.55972229686995, 5.9064493749992835, 6.381788148441956
+          ]
+        }
+      }
+    ],
+    "reverse-chain": [
+      {
+        "units": 1000,
+        "definitions": 1000,
+        "calls": 1000,
+        "matched": 1000,
+        "rejected": 0,
+        "fingerprint": "bcd728b416971f003385ab322f8afd8bc5f00ab0a0153867868dbff1861d9ed3",
+        "semanticStatus": "correct",
+        "divergences": [],
+        "timing": {
+          "invocationsPerIteration": 1024,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 1.5078879999928176,
+              "wallMs": 1.5090719999279827,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 9.552575999987312,
+              "wallMs": 9.554482999956235,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 26.046966999885626,
+              "wallMs": 26.050844000070356,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 47.68082899984438,
+              "wallMs": 47.68865999998525,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 15.082235000096262,
+              "wallMs": 15.089383999933489,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 28.83318299963139,
+              "wallMs": 28.851743999985047,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 58.370232999906875,
+              "wallMs": 58.407273999997415,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 114.14912800013553,
+              "wallMs": 114.20046199997887,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 233.2517809991259,
+              "wallMs": 233.3671280000126,
+              "qualified": false
+            },
+            {
+              "invocations": 512,
+              "workMs": 459.8030450006481,
+              "wallMs": 460.30543199996464,
+              "qualified": false
+            },
+            {
+              "invocations": 1024,
+              "workMs": 917.9441190001089,
+              "wallMs": 918.2908039999893,
+              "qualified": true
+            },
+            {
+              "invocations": 1024,
+              "workMs": 917.2603950005723,
+              "wallMs": 917.5734790000133,
+              "qualified": true
+            },
+            {
+              "invocations": 1024,
+              "workMs": 911.7264020008733,
+              "wallMs": 912.0598140000366,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 1024,
+              "workMs": 923.3158000000985,
+              "wallMs": 923.669980000006
+            },
+            {
+              "invocations": 1024,
+              "workMs": 915.4728740007849,
+              "wallMs": 915.799331999966
+            },
+            {
+              "invocations": 1024,
+              "workMs": 916.0968199992785,
+              "wallMs": 916.4121589999413
+            },
+            {
+              "invocations": 1024,
+              "workMs": 930.8414419986075,
+              "wallMs": 931.2678420000011
+            },
+            {
+              "invocations": 1024,
+              "workMs": 923.4602219966473,
+              "wallMs": 923.851222999976
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 1024,
+              "workMs": 926.7608340003062,
+              "wallMs": 927.1333289999748
+            },
+            {
+              "invocations": 1024,
+              "workMs": 911.2736830028007,
+              "wallMs": 911.6146670000162
+            },
+            {
+              "invocations": 1024,
+              "workMs": 907.7270049977815,
+              "wallMs": 908.0417059999891
+            },
+            {
+              "invocations": 1024,
+              "workMs": 1007.0489609997021,
+              "wallMs": 1007.55713500001
+            },
+            {
+              "invocations": 1024,
+              "workMs": 914.0537030017003,
+              "wallMs": 914.3842559999321
+            },
+            {
+              "invocations": 1024,
+              "workMs": 916.0374509985559,
+              "wallMs": 916.3569240000797
+            },
+            {
+              "invocations": 1024,
+              "workMs": 921.6552379993955,
+              "wallMs": 921.9968279999448
+            },
+            {
+              "invocations": 1024,
+              "workMs": 919.3689199987566,
+              "wallMs": 919.7117619999917
+            },
+            {
+              "invocations": 1024,
+              "workMs": 917.2459540001582,
+              "wallMs": 917.6106480000308
+            },
+            {
+              "invocations": 1024,
+              "workMs": 920.0417949999683,
+              "wallMs": 920.3903080000309
+            },
+            {
+              "invocations": 1024,
+              "workMs": 914.660691998899,
+              "wallMs": 915.0206789999502
+            },
+            {
+              "invocations": 1024,
+              "workMs": 936.4454599986784,
+              "wallMs": 936.857022000011
+            },
+            {
+              "invocations": 1024,
+              "workMs": 915.1781350013334,
+              "wallMs": 915.5318149999948
+            },
+            {
+              "invocations": 1024,
+              "workMs": 916.9278599999379,
+              "wallMs": 917.2767449999228
+            },
+            {
+              "invocations": 1024,
+              "workMs": 917.5932400011225,
+              "wallMs": 917.9414729999844
+            }
+          ],
+          "minMs": 0.886452153318146,
+          "meanMs": 0.9024751908202536,
+          "medianMs": 0.8957480019532795,
+          "standardDeviationMs": 0.023333815242086223,
+          "samplesMs": [
+            0.905039876953424, 0.8899157060574225, 0.886452153318146, 0.9834462509762716,
+            0.892630569337598, 0.8945678232407772, 0.9000539433587846, 0.8978212109362858,
+            0.8957480019532795, 0.8984783154296565, 0.8932233320301748, 0.9144975195299594,
+            0.8937286474622397, 0.8954373632811894, 0.8960871484385962
+          ]
+        }
+      },
+      {
+        "units": 2000,
+        "definitions": 2000,
+        "calls": 2000,
+        "matched": 2000,
+        "rejected": 0,
+        "fingerprint": "acae44d8830ca003826f9b5e6c6fae63cdfff1171a7590d6268a5954f325eb74",
+        "semanticStatus": "correct",
+        "divergences": [],
+        "timing": {
+          "invocationsPerIteration": 256,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 1.758581000030972,
+              "wallMs": 1.7635240000672638,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 3.4623279999941587,
+              "wallMs": 3.4646450000582263,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 10.566575999953784,
+              "wallMs": 10.573074000072666,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 21.293531000148505,
+              "wallMs": 21.308304999955,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 34.22267200006172,
+              "wallMs": 34.23823299992364,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 65.19546899967827,
+              "wallMs": 65.21760199998971,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 141.81667800049763,
+              "wallMs": 141.87845299998298,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 275.2029650004115,
+              "wallMs": 275.33060499990825,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 536.0627950020134,
+              "wallMs": 536.2552650000434,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 548.8483200005721,
+              "wallMs": 549.107963000075,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 540.4856940002646,
+              "wallMs": 540.6890980000608,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 256,
+              "workMs": 525.9737260007532,
+              "wallMs": 526.1530019999482
+            },
+            {
+              "invocations": 256,
+              "workMs": 536.4587810006924,
+              "wallMs": 536.6741310000652
+            },
+            {
+              "invocations": 256,
+              "workMs": 527.011458999943,
+              "wallMs": 527.1883209999651
+            },
+            {
+              "invocations": 256,
+              "workMs": 536.698722999543,
+              "wallMs": 536.9169629999669
+            },
+            {
+              "invocations": 256,
+              "workMs": 524.7486579997931,
+              "wallMs": 524.926543999929
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 256,
+              "workMs": 543.055700999801,
+              "wallMs": 543.2840260000667
+            },
+            {
+              "invocations": 256,
+              "workMs": 532.7720279992791,
+              "wallMs": 532.977927000029
+            },
+            {
+              "invocations": 256,
+              "workMs": 551.8375029999297,
+              "wallMs": 552.0550799999619
+            },
+            {
+              "invocations": 256,
+              "workMs": 572.8823099986184,
+              "wallMs": 573.1966370000737
+            },
+            {
+              "invocations": 256,
+              "workMs": 521.3268450001488,
+              "wallMs": 521.4926919999998
+            },
+            {
+              "invocations": 256,
+              "workMs": 539.8313510000007,
+              "wallMs": 540.0538320000051
+            },
+            {
+              "invocations": 256,
+              "workMs": 530.3495009987382,
+              "wallMs": 530.5376079999842
+            },
+            {
+              "invocations": 256,
+              "workMs": 539.313193998998,
+              "wallMs": 539.5285389999626
+            },
+            {
+              "invocations": 256,
+              "workMs": 543.8041690001264,
+              "wallMs": 544.0200709999772
+            },
+            {
+              "invocations": 256,
+              "workMs": 534.606754999375,
+              "wallMs": 534.8193290000781
+            },
+            {
+              "invocations": 256,
+              "workMs": 533.2546930009266,
+              "wallMs": 533.4416180000408
+            },
+            {
+              "invocations": 256,
+              "workMs": 524.8139019998489,
+              "wallMs": 524.9868179999758
+            },
+            {
+              "invocations": 256,
+              "workMs": 534.1672359999502,
+              "wallMs": 534.3668890000554
+            },
+            {
+              "invocations": 256,
+              "workMs": 539.2165369995637,
+              "wallMs": 539.4268759998959
+            },
+            {
+              "invocations": 256,
+              "workMs": 548.7147790010786,
+              "wallMs": 548.9566389999818
+            }
+          ],
+          "minMs": 2.036432988281831,
+          "meanMs": 2.1067569020823913,
+          "medianMs": 2.1063145976545457,
+          "standardDeviationMs": 0.04839419168981468,
+          "samplesMs": [
+            2.121311332030473, 2.081140734372184, 2.1556152460934754, 2.2378215234321033,
+            2.036432988281831, 2.108716214843753, 2.071677738276321, 2.106692164058586,
+            2.124235035156744, 2.0883076367163085, 2.0830261445348697, 2.0500543046869097,
+            2.0865907656248055, 2.1063145976545457, 2.143417105472963
+          ]
+        }
+      },
+      {
+        "units": 4000,
+        "definitions": 4000,
+        "calls": 4000,
+        "matched": 4000,
+        "rejected": 0,
+        "fingerprint": "0eb89d335ae6498930dc4266c3527ecec8b855463ca8be57a54e7b7dc7cd7a0a",
+        "semanticStatus": "correct",
+        "divergences": [],
+        "timing": {
+          "invocationsPerIteration": 128,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 4.327943000011146,
+              "wallMs": 4.329120000009425,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 9.388735999935307,
+              "wallMs": 9.396613999968395,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 18.469286000006832,
+              "wallMs": 18.47706299996935,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 35.016504999948665,
+              "wallMs": 35.031627000076696,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 69.98336900013965,
+              "wallMs": 70.00510199996643,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 133.3728889997583,
+              "wallMs": 133.41198400000576,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 284.68628000013996,
+              "wallMs": 284.7816519999178,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 558.4618689997587,
+              "wallMs": 558.6452829999616,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 558.0336079995614,
+              "wallMs": 558.191519999993,
+              "qualified": true
+            },
+            {
+              "invocations": 128,
+              "workMs": 553.8837760000024,
+              "wallMs": 554.043891999987,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 128,
+              "workMs": 549.1643980001099,
+              "wallMs": 549.3148469999433
+            },
+            {
+              "invocations": 128,
+              "workMs": 548.081385000376,
+              "wallMs": 548.2307060000021
+            },
+            {
+              "invocations": 128,
+              "workMs": 567.915961000137,
+              "wallMs": 568.1253779999679
+            },
+            {
+              "invocations": 128,
+              "workMs": 574.0272179992171,
+              "wallMs": 574.2177969999611
+            },
+            {
+              "invocations": 128,
+              "workMs": 580.1029530008091,
+              "wallMs": 580.2928029999603
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 128,
+              "workMs": 550.9876589996275,
+              "wallMs": 551.137287999969
+            },
+            {
+              "invocations": 128,
+              "workMs": 570.5238529999042,
+              "wallMs": 570.6980120000662
+            },
+            {
+              "invocations": 128,
+              "workMs": 548.5765279988991,
+              "wallMs": 548.7271480000345
+            },
+            {
+              "invocations": 128,
+              "workMs": 562.2461029993137,
+              "wallMs": 562.4119659999851
+            },
+            {
+              "invocations": 128,
+              "workMs": 555.3710589996772,
+              "wallMs": 555.5329700000584
+            },
+            {
+              "invocations": 128,
+              "workMs": 551.6883759989869,
+              "wallMs": 551.8441530000418
+            },
+            {
+              "invocations": 128,
+              "workMs": 566.1382309999317,
+              "wallMs": 566.3184990000445
+            },
+            {
+              "invocations": 128,
+              "workMs": 552.448073999607,
+              "wallMs": 552.5949180000462
+            },
+            {
+              "invocations": 128,
+              "workMs": 570.8643519999459,
+              "wallMs": 571.0402640000684
+            },
+            {
+              "invocations": 128,
+              "workMs": 552.5597590006655,
+              "wallMs": 552.7113410000456
+            },
+            {
+              "invocations": 128,
+              "workMs": 558.3146779997041,
+              "wallMs": 558.5020660000155
+            },
+            {
+              "invocations": 128,
+              "workMs": 565.930609999923,
+              "wallMs": 566.090991999954
+            },
+            {
+              "invocations": 128,
+              "workMs": 557.9389079991961,
+              "wallMs": 558.1092899999348
+            },
+            {
+              "invocations": 128,
+              "workMs": 558.3151230001822,
+              "wallMs": 558.494675999973
+            },
+            {
+              "invocations": 128,
+              "workMs": 560.7990890004439,
+              "wallMs": 560.9654830000363
+            }
+          ],
+          "minMs": 4.285754124991399,
+          "meanMs": 4.365990834372921,
+          "medianMs": 4.361833421872689,
+          "standardDeviationMs": 0.0557109362167444,
+          "samplesMs": [
+            4.3045910859345895, 4.4572176015617515, 4.285754124991399, 4.3925476796821386,
+            4.338836398434978, 4.310065437492085, 4.422954929686966, 4.31600057812193,
+            4.459877749999578, 4.316873117192699, 4.361833421872689, 4.421332890624399,
+            4.3588977187437195, 4.3618368984389235, 4.381242882815968
+          ]
+        }
+      }
+    ],
+    "name-collisions": [
+      {
+        "units": 1000,
+        "definitions": 1001,
+        "calls": 1002,
+        "matched": 501,
+        "rejected": 501,
+        "fingerprint": "8247f61401d8417f204480a88b2bc2d897845323097cf0ccdc8925f150362e38",
+        "semanticStatus": "correct",
+        "divergences": [],
+        "timing": {
+          "invocationsPerIteration": 1024,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 0.9744149999460205,
+              "wallMs": 0.9753229999914765,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 1.9574159999610856,
+              "wallMs": 1.9582239999435842,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 13.050560999894515,
+              "wallMs": 13.054471999988891,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 8.544873000355437,
+              "wallMs": 8.565444000065327,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 16.025574999977835,
+              "wallMs": 16.031501000048593,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 23.128120999899693,
+              "wallMs": 23.141383999958634,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 46.57066600001417,
+              "wallMs": 46.58944500004873,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 96.4687120000599,
+              "wallMs": 96.50252600002568,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 196.8750409996137,
+              "wallMs": 196.97719800006598,
+              "qualified": false
+            },
+            {
+              "invocations": 512,
+              "workMs": 379.50678600009996,
+              "wallMs": 379.6570370000554,
+              "qualified": false
+            },
+            {
+              "invocations": 1024,
+              "workMs": 768.1361939983908,
+              "wallMs": 768.4380870000459,
+              "qualified": true
+            },
+            {
+              "invocations": 1024,
+              "workMs": 776.1489329977194,
+              "wallMs": 776.4400090000127,
+              "qualified": true
+            },
+            {
+              "invocations": 1024,
+              "workMs": 768.3843769996893,
+              "wallMs": 768.6875559999608,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 1024,
+              "workMs": 753.5888549975352,
+              "wallMs": 753.8840919999639
+            },
+            {
+              "invocations": 1024,
+              "workMs": 759.665307003539,
+              "wallMs": 759.9469679999165
+            },
+            {
+              "invocations": 1024,
+              "workMs": 756.8298900004011,
+              "wallMs": 757.1043069999432
+            },
+            {
+              "invocations": 1024,
+              "workMs": 759.6538529985119,
+              "wallMs": 759.9702539999271
+            },
+            {
+              "invocations": 1024,
+              "workMs": 753.4423470005859,
+              "wallMs": 753.707856999943
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 1024,
+              "workMs": 756.8490530013805,
+              "wallMs": 757.1473840000108
+            },
+            {
+              "invocations": 1024,
+              "workMs": 761.5362149992725,
+              "wallMs": 761.8336030000355
+            },
+            {
+              "invocations": 1024,
+              "workMs": 755.7071479995502,
+              "wallMs": 755.9949150000466
+            },
+            {
+              "invocations": 1024,
+              "workMs": 759.1959310005186,
+              "wallMs": 759.4756710000802
+            },
+            {
+              "invocations": 1024,
+              "workMs": 762.089669998386,
+              "wallMs": 762.3748860000633
+            },
+            {
+              "invocations": 1024,
+              "workMs": 758.7652060008841,
+              "wallMs": 759.067674000049
+            },
+            {
+              "invocations": 1024,
+              "workMs": 752.015999999363,
+              "wallMs": 752.2978340000845
+            },
+            {
+              "invocations": 1024,
+              "workMs": 759.066518000327,
+              "wallMs": 759.3398689999012
+            },
+            {
+              "invocations": 1024,
+              "workMs": 766.138891002629,
+              "wallMs": 766.4372189999558
+            },
+            {
+              "invocations": 1024,
+              "workMs": 755.0261210009921,
+              "wallMs": 755.2795359999873
+            },
+            {
+              "invocations": 1024,
+              "workMs": 758.2753080012044,
+              "wallMs": 758.5751269999892
+            },
+            {
+              "invocations": 1024,
+              "workMs": 760.1117900001118,
+              "wallMs": 760.3947940000799
+            },
+            {
+              "invocations": 1024,
+              "workMs": 754.2229199984577,
+              "wallMs": 754.4847089999821
+            },
+            {
+              "invocations": 1024,
+              "workMs": 760.9580460008001,
+              "wallMs": 761.2703769999789
+            },
+            {
+              "invocations": 1024,
+              "workMs": 757.4853700011736,
+              "wallMs": 757.7541869999841
+            }
+          ],
+          "minMs": 0.7343906249993779,
+          "meanMs": 0.7407190225914746,
+          "medianMs": 0.7409816464852383,
+          "standardDeviationMs": 0.0034426063928664845,
+          "samplesMs": [
+            0.7391104033216607, 0.743687709960227, 0.7379952617183108, 0.741402276367694,
+            0.7442281933577988, 0.7409816464852383, 0.7343906249993779, 0.7412758964846944,
+            0.7481825107447548, 0.7373301962900314, 0.7405032304699262, 0.7422966699219842,
+            0.7365458203109938, 0.7431230917976563, 0.7397318066417711
+          ]
+        }
+      },
+      {
+        "units": 2000,
+        "definitions": 2001,
+        "calls": 2002,
+        "matched": 1001,
+        "rejected": 1001,
+        "fingerprint": "7242ac2f7cfd3fbefc253004f705f716e26ec215c90778246b248e51b0442ce3",
+        "semanticStatus": "correct",
+        "divergences": [],
+        "timing": {
+          "invocationsPerIteration": 512,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 1.5725049999309704,
+              "wallMs": 1.5735019999556243,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 3.125143999932334,
+              "wallMs": 3.1266149999573827,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 7.367307999986224,
+              "wallMs": 7.37277300003916,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 11.894846000126563,
+              "wallMs": 11.901325000100769,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 25.775864999974146,
+              "wallMs": 25.793595999944955,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 49.706351000466384,
+              "wallMs": 49.73490999999922,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 99.29595600022003,
+              "wallMs": 99.33135899994522,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 193.99857299914584,
+              "wallMs": 194.0507009999128,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 394.0236969994148,
+              "wallMs": 394.1343160000397,
+              "qualified": false
+            },
+            {
+              "invocations": 512,
+              "workMs": 781.3500689987559,
+              "wallMs": 781.5798080000095,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 805.7317790017696,
+              "wallMs": 805.9966789999744,
+              "qualified": true
+            },
+            {
+              "invocations": 512,
+              "workMs": 790.3769450011896,
+              "wallMs": 790.6552920000395,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 512,
+              "workMs": 779.5876029990613,
+              "wallMs": 779.8373799999245
+            },
+            {
+              "invocations": 512,
+              "workMs": 782.333667001687,
+              "wallMs": 782.539911000058
+            },
+            {
+              "invocations": 512,
+              "workMs": 785.8533080002526,
+              "wallMs": 786.1084409999894
+            },
+            {
+              "invocations": 512,
+              "workMs": 776.8944289996289,
+              "wallMs": 777.1338739999337
+            },
+            {
+              "invocations": 512,
+              "workMs": 781.5589320012368,
+              "wallMs": 781.7621199999703
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 512,
+              "workMs": 798.5466669999296,
+              "wallMs": 798.7909010000294
+            },
+            {
+              "invocations": 512,
+              "workMs": 787.3482450011652,
+              "wallMs": 787.56193299999
+            },
+            {
+              "invocations": 512,
+              "workMs": 785.9782469990896,
+              "wallMs": 786.2245420000982
+            },
+            {
+              "invocations": 512,
+              "workMs": 784.007038999116,
+              "wallMs": 784.2505189999938
+            },
+            {
+              "invocations": 512,
+              "workMs": 789.7507309985813,
+              "wallMs": 789.9663090000395
+            },
+            {
+              "invocations": 512,
+              "workMs": 788.519300998887,
+              "wallMs": 788.7543340000557
+            },
+            {
+              "invocations": 512,
+              "workMs": 779.9658240024,
+              "wallMs": 780.2007049999665
+            },
+            {
+              "invocations": 512,
+              "workMs": 795.0023929973831,
+              "wallMs": 795.2807150000008
+            },
+            {
+              "invocations": 512,
+              "workMs": 783.0205469998764,
+              "wallMs": 783.3336649999255
+            },
+            {
+              "invocations": 512,
+              "workMs": 793.7193749998696,
+              "wallMs": 793.972219999996
+            },
+            {
+              "invocations": 512,
+              "workMs": 783.2722529995954,
+              "wallMs": 783.5111399999587
+            },
+            {
+              "invocations": 512,
+              "workMs": 778.653546000598,
+              "wallMs": 778.864310999983
+            },
+            {
+              "invocations": 512,
+              "workMs": 782.4080910005141,
+              "wallMs": 782.6338629999664
+            },
+            {
+              "invocations": 512,
+              "workMs": 783.5257889990462,
+              "wallMs": 783.7708880000282
+            },
+            {
+              "invocations": 512,
+              "workMs": 793.9202699981397,
+              "wallMs": 794.1676539999899
+            }
+          ],
+          "minMs": 1.520807707032418,
+          "meanMs": 1.537452905988827,
+          "medianMs": 1.5351137636700969,
+          "standardDeviationMs": 0.011578031240969958,
+          "samplesMs": [
+            1.5596614589842375, 1.5377895410179008, 1.5351137636700969, 1.5312637480451485,
+            1.542481896481604, 1.5400767597634513, 1.5233707500046876, 1.552739048823014,
+            1.5293370058591336, 1.5502331542966203, 1.5298286191398347, 1.520807707032418,
+            1.5281408027353791, 1.530323806638762, 1.5506255273401166
+          ]
+        }
+      },
+      {
+        "units": 4000,
+        "definitions": 4001,
+        "calls": 4002,
+        "matched": 2001,
+        "rejected": 2001,
+        "fingerprint": "68403a5bb4c76512c4d965d7c9ef8e7f9664ae4280b151e7d3a00af1d60d4c95",
+        "semanticStatus": "correct",
+        "divergences": [],
+        "timing": {
+          "invocationsPerIteration": 256,
+          "pilotIterations": [
+            {
+              "invocations": 1,
+              "workMs": 3.1034209999488667,
+              "wallMs": 3.1051880000159144,
+              "qualified": false
+            },
+            {
+              "invocations": 2,
+              "workMs": 8.023821000009775,
+              "wallMs": 8.029556999914348,
+              "qualified": false
+            },
+            {
+              "invocations": 4,
+              "workMs": 13.695448000100441,
+              "wallMs": 13.701414000010118,
+              "qualified": false
+            },
+            {
+              "invocations": 8,
+              "workMs": 24.103962000110187,
+              "wallMs": 24.112751999986358,
+              "qualified": false
+            },
+            {
+              "invocations": 16,
+              "workMs": 52.14532799972221,
+              "wallMs": 52.16676299995743,
+              "qualified": false
+            },
+            {
+              "invocations": 32,
+              "workMs": 100.75367299979553,
+              "wallMs": 100.77609099994879,
+              "qualified": false
+            },
+            {
+              "invocations": 64,
+              "workMs": 205.4871200004127,
+              "wallMs": 205.54027200001292,
+              "qualified": false
+            },
+            {
+              "invocations": 128,
+              "workMs": 398.7198070001323,
+              "wallMs": 398.79415700002573,
+              "qualified": false
+            },
+            {
+              "invocations": 256,
+              "workMs": 812.5156120011816,
+              "wallMs": 812.7085460000671,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 814.2778989995131,
+              "wallMs": 814.5084130000323,
+              "qualified": true
+            },
+            {
+              "invocations": 256,
+              "workMs": 818.4985889992677,
+              "wallMs": 818.6866719999816,
+              "qualified": true
+            }
+          ],
+          "warmupIterations": [
+            {
+              "invocations": 256,
+              "workMs": 813.0759209989337,
+              "wallMs": 813.2647019999567
+            },
+            {
+              "invocations": 256,
+              "workMs": 817.3191759986803,
+              "wallMs": 817.5398670000723
+            },
+            {
+              "invocations": 256,
+              "workMs": 814.108378999168,
+              "wallMs": 814.2878269999055
+            },
+            {
+              "invocations": 256,
+              "workMs": 817.0531779997982,
+              "wallMs": 817.2654200000688
+            },
+            {
+              "invocations": 256,
+              "workMs": 809.3804949998157,
+              "wallMs": 809.5696179999504
+            }
+          ],
+          "measuredIterations": [
+            {
+              "invocations": 256,
+              "workMs": 815.3887000009418,
+              "wallMs": 815.5486479999963
+            },
+            {
+              "invocations": 256,
+              "workMs": 821.8119559992338,
+              "wallMs": 822.0268710000673
+            },
+            {
+              "invocations": 256,
+              "workMs": 816.7381599996006,
+              "wallMs": 816.9293750000652
+            },
+            {
+              "invocations": 256,
+              "workMs": 831.4530509997858,
+              "wallMs": 831.6898130000336
+            },
+            {
+              "invocations": 256,
+              "workMs": 819.1296980006155,
+              "wallMs": 819.3559149999637
+            },
+            {
+              "invocations": 256,
+              "workMs": 813.1925589999883,
+              "wallMs": 813.3905909999739
+            },
+            {
+              "invocations": 256,
+              "workMs": 812.8765880007995,
+              "wallMs": 813.0388409999432
+            },
+            {
+              "invocations": 256,
+              "workMs": 820.9062760008965,
+              "wallMs": 821.1127219999908
+            },
+            {
+              "invocations": 256,
+              "workMs": 818.284344998654,
+              "wallMs": 818.525350999902
+            },
+            {
+              "invocations": 256,
+              "workMs": 820.184401002014,
+              "wallMs": 820.3991359999636
+            },
+            {
+              "invocations": 256,
+              "workMs": 830.3912170005497,
+              "wallMs": 830.5923710000934
+            },
+            {
+              "invocations": 256,
+              "workMs": 818.2787420001114,
+              "wallMs": 818.4932740000077
+            },
+            {
+              "invocations": 256,
+              "workMs": 810.7277459995821,
+              "wallMs": 810.8930769999279
+            },
+            {
+              "invocations": 256,
+              "workMs": 820.8949780013645,
+              "wallMs": 821.1253169999691
+            },
+            {
+              "invocations": 256,
+              "workMs": 820.4501550013665,
+              "wallMs": 820.6611250001006
+            }
+          ],
+          "minMs": 3.1669052578108676,
+          "meanMs": 3.2007053572931,
+          "medianMs": 3.199725382814904,
+          "standardDeviationMs": 0.022395036335925832,
+          "samplesMs": [
+            3.1851121093786787, 3.210202953122007, 3.19038343749844, 3.247863480467913,
+            3.199725382814904, 3.176533433593704, 3.175299171878123, 3.206665140628502,
+            3.196423222650992, 3.2038453164141174, 3.243715691408397, 3.196401335937935,
+            3.1669052578108676, 3.20662100781783, 3.204883417974088
+          ]
+        }
+      }
+    ]
+  },
+  "scaling": {
+    "position-index": [
+      {
+        "fromUnits": 2000,
+        "toUnits": 4000,
+        "minLinearFactor": 0.9756645641516561,
+        "medianLinearFactor": 0.969616359687593
+      },
+      {
+        "fromUnits": 2000,
+        "toUnits": 8000,
+        "minLinearFactor": 1.1990495719648053,
+        "medianLinearFactor": 1.1655406802586816
+      }
+    ],
+    "position-deep-completed": [
+      {
+        "fromUnits": 2000,
+        "toUnits": 4000,
+        "minLinearFactor": 1.0896460340751384,
+        "medianLinearFactor": 1.1097247456098114
+      },
+      {
+        "fromUnits": 2000,
+        "toUnits": 8000,
+        "minLinearFactor": 1.2276291857021937,
+        "medianLinearFactor": 1.2445310030955528
+      }
+    ],
+    "spread-aliases": [
+      {
+        "fromUnits": 128,
+        "toUnits": 256,
+        "minLinearFactor": 0.9969727040911982,
+        "medianLinearFactor": 0.9944475687174453
+      },
+      {
+        "fromUnits": 128,
+        "toUnits": 512,
+        "minLinearFactor": 1.0851128866954558,
+        "medianLinearFactor": 1.092147773524541
+      }
+    ],
+    "completed-scopes": [
+      {
+        "fromUnits": 128,
+        "toUnits": 256,
+        "minLinearFactor": 1.0567366959487292,
+        "medianLinearFactor": 1.0650934531233331
+      },
+      {
+        "fromUnits": 128,
+        "toUnits": 512,
+        "minLinearFactor": 1.1275338222729259,
+        "medianLinearFactor": 1.1166739219733306
+      }
+    ],
+    "wrapper-aliases": [
+      {
+        "fromUnits": 128,
+        "toUnits": 256,
+        "minLinearFactor": 1.0250530597719132,
+        "medianLinearFactor": 1.0501599874500795
+      },
+      {
+        "fromUnits": 128,
+        "toUnits": 512,
+        "minLinearFactor": 1.1146415485676635,
+        "medianLinearFactor": 1.1318468503630996
+      }
+    ],
+    "nested-helpers": [
+      {
+        "fromUnits": 128,
+        "toUnits": 256,
+        "minLinearFactor": 1.1304672916217502,
+        "medianLinearFactor": 1.0763669016163535
+      },
+      {
+        "fromUnits": 128,
+        "toUnits": 512,
+        "minLinearFactor": 1.1984427024066613,
+        "medianLinearFactor": 1.1562942693418194
+      }
+    ],
+    "nested-helper-chain": [
+      {
+        "fromUnits": 32,
+        "toUnits": 64,
+        "minLinearFactor": 0.9917376282713074,
+        "medianLinearFactor": 0.9932993691693206
+      },
+      {
+        "fromUnits": 32,
+        "toUnits": 128,
+        "minLinearFactor": 1.148289905243141,
+        "medianLinearFactor": 1.1678774562615672
+      }
+    ],
+    "reverse-chain": [
+      {
+        "fromUnits": 1000,
+        "toUnits": 2000,
+        "minLinearFactor": 1.1486423608195349,
+        "medianLinearFactor": 1.175729442355154
+      },
+      {
+        "fromUnits": 1000,
+        "toUnits": 4000,
+        "minLinearFactor": 1.2086817401675516,
+        "medianLinearFactor": 1.2173717977492606
+      }
+    ],
+    "name-collisions": [
+      {
+        "fromUnits": 1000,
+        "toUnits": 2000,
+        "minLinearFactor": 1.035421514969439,
+        "medianLinearFactor": 1.0358649036394716
+      },
+      {
+        "fromUnits": 1000,
+        "toUnits": 4000,
+        "minLinearFactor": 1.0780724692031405,
+        "medianLinearFactor": 1.07955622045176
+      }
+    ]
+  }
+}

@@ -13,6 +13,9 @@ mermaid.initialize({
   startOnLoad: false,
   maxTextSize: 900000,
   theme: 'base',
+  // Preserve the diagram appearance across Mermaid 12's new defaults.
+  layout: 'dagre',
+  look: 'classic',
   themeVariables: {
     primaryColor: '#1e293b', // node bg - slate
     primaryTextColor: '#f1f5f9',

@@ -1,7 +1,7 @@
 import type { ParsedFile, ReferenceSite } from 'gitnexus-shared';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { zigPackageFor, type ZigWorkspaceIndex } from '../../language-config.js';
-import { resolveZigImportInternal } from '../../import-resolvers/zig.js';
+import { resolveZigImportInternal } from './import-helpers.js';
 import {
   buildZigBoolConstMap,
   collectZigStaticGatedRanges,

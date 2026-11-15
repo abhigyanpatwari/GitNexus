@@ -25,6 +25,7 @@ import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { getGlobalDir } from './global-dir.js';
 import { GITNEXUS_DIR, INDEX_METADATA_FILE, LBUG_DIRECTORY } from './storage-constants.js';
 import { slotNameForCanonicalPath, STORAGE_PATH_ENV, STORAGE_ROOT_ENV } from './storage-slot.js';
+import type { RepoMeta } from './repo-meta.js';
 
 export const SHARED_STORE_ENV = 'GITNEXUS_SHARED_STORE';
 export const STORES_DIR = 'stores';
@@ -224,10 +225,10 @@ export const storeRootOfCheckoutSlot = (storagePath: string): string | null => {
 };
 
 /**
- * The graph a flat storage slot reads.
+ * The graph a storage slot reads.
  *
- * Non-shared storage is always `<storagePath>/lbug`, with no I/O. A shared
- * checkout slot may record `graphPath` in its metadata, naming a commit graph
+ * A private generation is an owned basename in the slot. A shared checkout
+ * slot may record `graphPath` in its metadata, naming a commit graph
  * in the same store; any other recorded value (outside the store, a sibling's
  * private slot, unreadable metadata) falls back to the slot's own graph so a
  * hand-edited file cannot redirect reads.
@@ -244,13 +245,31 @@ const readRecordedGraphPath = (slot: string): unknown => {
   const metaPath = path.resolve(root, INDEX_METADATA_FILE);
   const rel = path.relative(root, metaPath);
   if (rel.startsWith('..') || path.isAbsolute(rel)) return undefined;
+  const cached = recordedGraphCache.get(metaPath);
+  if (cached) {
+    const current = fs.lstatSync(metaPath);
+    if (!current.isFile()) throw new Error('Index metadata must be a regular file');
+    if (
+      cached.key ===
+      `${current.dev}:${current.ino}:${current.size}:${current.mtimeMs}:${current.ctimeMs}`
+    )
+      return cached.recorded;
+  }
   // One open, then stat and read through the same descriptor, so the cache
   // key always describes the bytes that were parsed.
-  const fd = fs.openSync(metaPath, 'r');
+  const fd = fs.openSync(
+    metaPath,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0),
+  );
   try {
     const stat = fs.fstatSync(fd);
-    const key = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-    const cached = recordedGraphCache.get(metaPath);
+    if (!stat.isFile()) throw new Error('Index metadata must be a regular file');
+    if (!fs.constants.O_NOFOLLOW) {
+      const entry = fs.lstatSync(metaPath);
+      if (!entry.isFile() || entry.ino !== stat.ino || entry.dev !== stat.dev)
+        throw new Error('Index metadata changed during open');
+    }
+    const key = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
     if (cached?.key === key) return cached.recorded;
     const recorded = (JSON.parse(fs.readFileSync(fd, 'utf-8')) as { graphPath?: unknown })
       .graphPath;
@@ -261,17 +280,37 @@ const readRecordedGraphPath = (slot: string): unknown => {
   }
 };
 
-export const resolveGraphPath = (storagePath: string): string => {
+export const resolveGraphPath = (
+  storagePath: string,
+  metadata?: Pick<RepoMeta, 'graphPath'>,
+): string => {
   const own = path.join(storagePath, LBUG_DIRECTORY);
-  const root = storeRootOfCheckoutSlot(storagePath);
-  if (!root) return own;
   let recorded: unknown;
   try {
-    recorded = readRecordedGraphPath(storagePath);
+    // Capability readers already loaded this receipt; validate that same
+    // snapshot without another stat, read, or parse on the status hot path.
+    recorded = metadata === undefined ? readRecordedGraphPath(storagePath) : metadata.graphPath;
   } catch {
     return own;
   }
-  if (typeof recorded !== 'string' || !path.isAbsolute(recorded)) return own;
+  if (typeof recorded !== 'string') return own;
+  if (/^lbug\.generation\.[a-f0-9]{32}$/.test(recorded)) {
+    const graph = path.join(storagePath, recorded);
+    const relative = path.relative(storagePath, graph);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) return own;
+    // Never follow an edited pointer to a symlink or another slot. A missing
+    // committed generation must fail at open, rather than serve an older lbug.
+    try {
+      const stat = fs.lstatSync(graph);
+      if (!stat.isFile() || stat.isSymbolicLink())
+        throw new Error('Published graph generation must be an owned regular file');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+    return graph;
+  }
+  const root = storeRootOfCheckoutSlot(storagePath);
+  if (!root || !path.isAbsolute(recorded)) return own;
   const graph = path.resolve(recorded);
   const commitDir = path.dirname(graph);
   // Only a published `<commit>-<featureKey>` dir, never `.publish-*` staging.
@@ -280,6 +319,15 @@ export const resolveGraphPath = (storagePath: string): string => {
     isDirectChild(path.join(root, 'commits'), commitDir) &&
     COMMIT_GRAPH_DIR_RE.test(path.basename(commitDir));
   return valid ? graph : own;
+};
+
+/** A private generation remains its own write target. Only an immutable
+ * shared commit graph needs a new slot-local file before mutation. */
+export const resolveGraphWritePath = (storagePath: string): string => {
+  const graph = resolveGraphPath(storagePath);
+  return path.dirname(path.resolve(graph)) === path.resolve(storagePath)
+    ? graph
+    : path.join(storagePath, LBUG_DIRECTORY);
 };
 
 /**

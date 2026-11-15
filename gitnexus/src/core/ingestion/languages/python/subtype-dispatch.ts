@@ -26,7 +26,9 @@ export interface PythonSubtypeDispatchSideChannel {
 const simplePositionalCallsByFile = new Map<string, Map<string, number>>();
 const positionalCapacitiesByFile = new Map<string, Map<string, number>>();
 
-const positionKey = (line: number, column: number): string => `${line}:${column}`;
+/** Shared by every Python capture side channel so capture and replay key
+ * positions identically. */
+export const positionKey = (line: number, column: number): string => `${line}:${column}`;
 
 const nodePosition = (node: SyntaxNode, mapLine?: LineMapper): PositionTuple => {
   const line = node.startPosition.row + 1;

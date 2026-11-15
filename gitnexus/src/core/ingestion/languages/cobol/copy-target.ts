@@ -24,7 +24,7 @@
  * per-name arrays, so a pass still scans the set once.
  */
 import path from 'node:path';
-import { perFileSet } from '../../import-resolvers/per-file-set.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 
 const COPYBOOK_EXTENSIONS = new Set(['.cpy', '.copybook']);
 const COBOL_SOURCE_EXTENSIONS = new Set(['.cbl', '.cob', '.cobol']);

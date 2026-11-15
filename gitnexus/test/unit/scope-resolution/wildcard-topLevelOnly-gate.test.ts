@@ -89,7 +89,7 @@ function buildFixture(topLevelOnly: boolean) {
     },
   });
 
-  const cImports = out.imports.get(fileC.moduleScope) ?? [];
+  const cImports = out.imports.edgesAt(fileC.moduleScope) ?? [];
   return { out, fileC, fooBetaMethod, betaImport: cImports[0] };
 }
 
@@ -138,7 +138,7 @@ describe('M17 — export * wildcard fan-out gated by namedImportsBindTopLevelOnl
           namedImportsBindTopLevelOnly: topLevelOnly,
         },
       });
-      const edge = out.imports.get(fileC.moduleScope)?.[0];
+      const edge = out.imports.edgesAt(fileC.moduleScope)?.[0];
       expect(edge?.linkStatus, `topLevelOnly=${topLevelOnly}`).toBeUndefined();
       expect(edge?.targetDefId, `topLevelOnly=${topLevelOnly}`).toBe('def:alpha');
     }

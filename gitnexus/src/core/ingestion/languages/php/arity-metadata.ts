@@ -21,6 +21,7 @@
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { phpMethodConfig } from '../../method-extractors/configs/php.js';
+import { declarationParameterTypes } from '../../method-extractors/declaration-facts.js';
 
 interface PhpArityMetadata {
   readonly parameterCount: number | undefined;
@@ -33,7 +34,7 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
 
   let hasVariadic = false;
   let optionalCount = 0;
-  const types: string[] = [];
+  let types = declarationParameterTypes(params);
 
   for (const p of params) {
     if (p.isVariadic) {
@@ -41,7 +42,6 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
     } else if (p.isOptional) {
       optionalCount++;
     }
-    if (p.type !== null) types.push(p.type);
   }
   // PHP variadic marker convention: append the literal '...' string to
   // `parameterTypes`. This is intentionally DIFFERENT from C#, which uses
@@ -54,7 +54,7 @@ export function computePhpArityMetadata(fnNode: SyntaxNode): PhpArityMetadata {
   // arity logic lives in `phpArityCompatibility` (arity.ts) and now
   // also in `phpEmitUnresolvedReceiverEdges` (scope-resolver.ts), both
   // of which check `'...'`. Finding 9 of PR #1497 adversarial review.
-  if (hasVariadic) types.push('...');
+  if (hasVariadic) types = [...types, '...'];
 
   const total = params.length;
   // Variadic methods accept any arg count ≥ required — leave `parameterCount`

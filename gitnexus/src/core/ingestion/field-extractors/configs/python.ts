@@ -3,6 +3,8 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { FieldExtractionConfig } from '../generic.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
+import { extractPythonInstanceFields } from '../../languages/python/instance-fields.js';
+import { pythonFieldVisibility } from '../../languages/python/field-helpers.js';
 
 /**
  * Python field extraction config.
@@ -20,6 +22,7 @@ export const pythonConfig: FieldExtractionConfig = {
   fieldNodeTypes: ['expression_statement'],
   bodyNodeTypes: ['block'],
   defaultVisibility: 'public',
+  extractPrimaryFields: extractPythonInstanceFields,
 
   extractName(node) {
     // expression_statement wrapping an assignment or type
@@ -78,15 +81,12 @@ export const pythonConfig: FieldExtractionConfig = {
       const left = inner.childForFieldName('left');
       name = left?.text;
     }
-    if (!name) return 'public';
-    if (name.startsWith('__') && !name.endsWith('__')) return 'private';
-    if (name.startsWith('_')) return 'protected';
-    return 'public';
+    return pythonFieldVisibility(name);
   },
 
   isStatic(_node) {
     // Reports syntactic static keyword — Python class variables don't use explicit static keyword.
-    // Instance variables (self.x) live in __init__ and are not extracted here.
+    // Constructor-assigned instance fields are extracted by extractPrimaryFields.
     return false;
   },
 

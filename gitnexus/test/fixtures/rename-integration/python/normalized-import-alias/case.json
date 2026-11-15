@@ -1,0 +1,36 @@
+{
+  "language": "python",
+  "description": "Rename a Unicode-normalized callable through import aliases and a call chain while preserving shadowing and strings.",
+  "categories": [
+    "cross-file",
+    "alias",
+    "call-graph",
+    "unicode-normalization",
+    "shadowing"
+  ],
+  "target": {
+    "name": "\u212aelvin",
+    "kind": "Function",
+    "file": "source.py"
+  },
+  "newName": "measure",
+  "expect": {
+    "status": "success",
+    "edits": 4
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "entry",
+        "kind": "Function",
+        "file": "entry.py"
+      },
+      "to": {
+        "name": "middle",
+        "kind": "Function",
+        "file": "middle.py"
+      }
+    }
+  ]
+}

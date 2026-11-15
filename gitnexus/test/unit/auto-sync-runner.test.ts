@@ -1454,6 +1454,67 @@ describe('auto-sync runner', () => {
     );
   });
 
+  it.each([
+    ['short', 'Cannot read from file: position: 4096, numBytesRead: 0'],
+    ['oversized', `native-start ${'n'.repeat(3000)}`],
+  ])(
+    'logs the whole analyze failure diagnosis but persists only a short summary for a %s native error (#3530)',
+    async (_label, nativeFailure) => {
+      const errorLogger = vi.fn();
+      // Realistic size: a remedy line plus seven evidence lines, about 1.3 KB — more
+      // than half the log cap, so an even head/tail split would cut the remedy.
+      const diagnosis = [
+        `start-of-remedy ${'A read reached end-of-file in the staged copy of the index. '.repeat(5)}`,
+        ...Array.from(
+          { length: 7 },
+          (_, i) => `Failure evidence — line ${i}: ${'staging copy apparent 4096 B, '.repeat(4)}`,
+        ),
+      ].join('\n');
+      const message = `${nativeFailure}\n${diagnosis}`;
+      const deps: Partial<AutoSyncRunDeps> = withCloneRoot({
+        cloneOrPull: vi.fn(async () => '/tmp/repos/gitee.com/qts_server/qts_account'),
+        getCurrentBranch: vi.fn(async () => 'master'),
+        getCurrentCommit: vi.fn(async () => 'commit-1'),
+        runAnalysis: vi.fn(async () => {
+          throw new Error(message);
+        }),
+        registerRepo: vi.fn(),
+        loadState: vi.fn<AutoSyncRunDeps['loadState']>(async () => ({})),
+        saveState: vi.fn(async () => {}),
+        writeCommitInfo: vi.fn(async () => {}),
+        addRepoToGroup: vi.fn(async () => false),
+        syncGroupByName: vi.fn(async () => {}),
+        getAvailableMemoryGB: vi.fn(() => 8),
+      });
+
+      await runAutoSyncOnce(config, {
+        deps,
+        logger: { info: vi.fn(), warn: vi.fn(), error: errorLogger },
+        now: () => new Date('2026-06-30T00:00:00.000Z'),
+      });
+
+      expect(diagnosis.length).toBeGreaterThan(1000);
+      expect(errorLogger).toHaveBeenCalledWith(
+        expect.stringContaining(diagnosis.replace(/\s+/g, ' ')),
+      );
+      // The error payload (the part after the log prefix) stays within the 2000-character cap,
+      // separator included.
+      const logged: string = errorLogger.mock.calls[0][0];
+      const prefix =
+        '[auto-sync] Analysis failed for /tmp/repos/gitee.com/qts_server/qts_account; consecutive failures 1/3: ';
+      expect(logged.startsWith(prefix)).toBe(true);
+      expect(logged.length - prefix.length).toBeLessThanOrEqual(2000);
+      expect(errorLogger).toHaveBeenCalledWith(expect.stringContaining(nativeFailure.slice(0, 40)));
+      expect(deps.saveState).toHaveBeenCalledWith(
+        expect.objectContaining({
+          '/tmp/repos/gitee.com/qts_server/qts_account|master': expect.objectContaining({
+            lastAnalyzeError: message.replace(/\s+/g, ' ').slice(0, 240),
+          }),
+        }),
+      );
+    },
+  );
+
   it('does not count leftover-worker timeout toward the analyze failure threshold', async () => {
     const errorLogger = vi.fn();
     const leftover = new AutoSyncAnalysisError(

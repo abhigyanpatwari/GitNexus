@@ -202,7 +202,7 @@ describe('interrupted-checkpoint recovery (pooled read path self-heal)', () => {
           await probe.close().catch(() => {});
         }
       })(),
-    ).rejects.toThrow(/checkpoint is in progress/i);
+    ).rejects.toThrow(/checkpoint (?:is in progress|recovery is pending)/i);
 
     // The wiki path: pooled READ-ONLY open. Before the fix this refused with
     // "Cannot open database in read-only mode while checkpoint is in

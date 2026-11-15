@@ -1,0 +1,21 @@
+{
+  "language": "objective-c",
+  "description": "Refuse a multipart Objective-C selector that an indexed Swift caller names by its base name, until the Swift binding is proven.",
+  "categories": [
+    "cross-language",
+    "interop",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "fetch:with:",
+    "kind": "Method",
+    "file": "Foo.h"
+  },
+  "newName": "load:using:",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_boundary",
+    "planningStatus": "unsupported"
+  }
+}

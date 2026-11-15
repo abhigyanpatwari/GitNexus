@@ -1,0 +1,19 @@
+{
+  "language": "swift",
+  "description": "Rename a property of a struct with an explicit initializer beside labels of another memberwise type and another function.",
+  "categories": [
+    "argument-label",
+    "unrelated-name"
+  ],
+  "target": {
+    "name": "x",
+    "kind": "Property",
+    "file": "Shapes.swift",
+    "startLine": 1
+  },
+  "newName": "px",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  }
+}

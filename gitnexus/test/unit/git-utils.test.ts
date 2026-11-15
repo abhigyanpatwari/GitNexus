@@ -416,6 +416,45 @@ describe('getCanonicalRepoRoot', () => {
   });
 });
 
+describe('resolveRepoIdentityRoot', () => {
+  it.each(['ordinary', 'GIT_DIR', 'GIT_COMMON_DIR', 'commondir', 'symlink'] as const)(
+    'preserves Git identity for %s checkouts',
+    async (layout) => {
+      const { getCanonicalRepoRoot, resolveRepoIdentityRoot } =
+        await import('../../src/storage/git.js');
+      const root = fs.realpathSync.native(makeIsolatedTempDir('gitnexus-identity-'));
+      let repo = path.join(root, 'repo');
+      const other = path.join(root, 'other');
+      vi.stubEnv('GIT_DIR', undefined);
+      vi.stubEnv('GIT_COMMON_DIR', undefined);
+      try {
+        for (const directory of [repo, other]) {
+          fs.mkdirSync(directory);
+          execFileSync(gitExecutable, ['init', '-q'], { cwd: directory, stdio: 'pipe' });
+        }
+        if (layout === 'GIT_DIR' || layout === 'GIT_COMMON_DIR')
+          vi.stubEnv(layout, path.join(other, '.git'));
+        else if (layout === 'commondir')
+          fs.writeFileSync(path.join(repo, '.git', 'commondir'), path.join(other, '.git') + '\n');
+        else if (layout === 'symlink') {
+          const link = path.join(root, 'linked-name');
+          fs.symlinkSync(repo, link, 'junction');
+          repo = link;
+        }
+        const canonical = getCanonicalRepoRoot(repo);
+        expect(canonical).not.toBeNull();
+        expect(resolveRepoIdentityRoot(repo)).toBe(canonical);
+        const subdir = path.join(repo, 'subdir');
+        fs.mkdirSync(subdir);
+        expect(resolveRepoIdentityRoot(subdir)).toBe(path.resolve(subdir));
+      } finally {
+        vi.unstubAllEnvs();
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+});
+
 // ─── selfCommitContextFiles (#2639) ────────────────────────────────────────
 
 describe('selfCommitContextFiles', () => {

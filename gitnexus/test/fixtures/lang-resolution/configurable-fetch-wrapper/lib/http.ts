@@ -6,6 +6,6 @@ const API_BASE = process.env.API_BASE || '';
 // `fetch()`, so the parse-phase auto-detector cannot flag it. Listing
 // "doRequest" in `.gitnexusrc` `fetchWrappers` is what lets the routes phase
 // trace its consumers (#1589/#1852 residual).
-export async function doRequest(path: string, opts?: Record<string, unknown>) {
-  return axios.get(`${API_BASE}${path}`, opts);
+export async function doRequest<T = unknown>(path: string, opts?: Record<string, unknown>) {
+  return axios.get<T>(`${API_BASE}${path}`, opts);
 }

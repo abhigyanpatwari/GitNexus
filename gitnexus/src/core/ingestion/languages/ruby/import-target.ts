@@ -8,8 +8,8 @@
  *   - Known external gems → null, even if an unrelated repo file suffix matches
  */
 
-import { resolveRubyImportInternal } from '../../import-resolvers/ruby.js';
-import { getWorkspaceFileIndex } from '../../import-resolvers/workspace-file-index.js';
+import { resolveRubyImportInternal } from './import-helpers.js';
+import { getWorkspaceFileIndex } from '../../utils/workspace-file-index.js';
 import { isHeritageMarker } from '../../utils/heritage-marker.js';
 import {
   findRubyResolutionScope,

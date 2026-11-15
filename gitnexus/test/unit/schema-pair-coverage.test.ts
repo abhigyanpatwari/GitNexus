@@ -13,7 +13,7 @@ import { CALL_TARGET_TYPES } from '../../src/core/ingestion/model/symbol-table.j
 /**
  * `RELATION_SCHEMA` is generated from two cross products plus one hand-written
  * block. This file guards the generated half; a pair drawn from either rule and
- * absent from the DDL does not degrade — `assertDeclaredPair` throws and
+ * absent from the DDL does not degrade — `checkDeclaredPair` fails the run and
  * `analyze` dies mid-phase on whichever codebase first produces it. Failing
  * here means fixing the rule, not the assertion.
  *

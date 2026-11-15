@@ -1,0 +1,32 @@
+--- a/gitnexus/src/mcp/local/local-backend.ts
++++ b/gitnexus/src/mcp/local/local-backend.ts
+@@ -2567,7 +2567,7 @@
+    * Codepoint comparison (not `localeCompare`) keeps page boundaries stable
+    * across machines/locales, matching the existing `refreshRepos` ordering.
+    */
+-  async listReposPage(params?: { limit?: unknown; offset?: unknown } | null): Promise<{
++  async listReposPage(params?: { limit?: unknown; offset?: unknown; name_contains?: unknown } | null): Promise<{
+     repositories: RepoListing[];
+     pagination: ListReposPagination;
+   }> {
+@@ -2578,7 +2578,9 @@
+ 
+     // One consistent snapshot per call (listRepos refreshes the registry once),
+     // sorted into a stable total order before slicing.
+-    const all = await this.listRepos();
++    const all = (await this.listRepos()).filter((repo) =>
++      typeof params?.name_contains !== 'string' || repo.name.toLowerCase().includes(params.name_contains.toLowerCase()),
++    );
+     all.sort(
+       (a, b) =>
+         compareCodeUnits(a.name.toLowerCase(), b.name.toLowerCase()) ||
+--- a/gitnexus/src/mcp/tools.ts
++++ b/gitnexus/src/mcp/tools.ts
+@@ -108,6 +108,7 @@
+     inputSchema: {
+       type: 'object',
+       properties: {
++        name_contains: { type: 'string', description: 'Case-insensitive repository name substring' },
+         limit: {
+           type: 'integer',
+           description: `Max repositories to return in this page (default: ${LIST_REPOS_DEFAULT_LIMIT}, min: 1, max: ${LIST_REPOS_MAX_LIMIT}). Values outside [1, ${LIST_REPOS_MAX_LIMIT}] are rejected.`,

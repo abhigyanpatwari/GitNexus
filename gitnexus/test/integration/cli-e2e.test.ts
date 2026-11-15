@@ -16,7 +16,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 
 import { cleanupTempDirSync } from '../helpers/test-db.js';
-import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
@@ -91,15 +91,10 @@ afterAll(() => {
 });
 
 function cliEnv(extraEnv: Record<string, string> = {}) {
-  return {
-    ...process.env,
+  return cliAnalysisEnv({
     GITNEXUS_HOME: suiteGitnexusHome,
-    // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
-    // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
-    // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
     ...extraEnv,
-  };
+  });
 }
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {

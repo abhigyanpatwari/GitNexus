@@ -1,0 +1,35 @@
+{
+  "language": "vue",
+  "description": "Resolve an escaped source export through a differently escaped Vue import while preserving the local script alias and template.",
+  "categories": [
+    "cross-file",
+    "escaped-identifier",
+    "alias",
+    "call-graph"
+  ],
+  "target": {
+    "name": "calc\\u0075late",
+    "kind": "Function",
+    "file": "source.ts"
+  },
+  "newName": "compute",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "run",
+        "kind": "Function",
+        "file": "App.vue"
+      },
+      "to": {
+        "name": "calc\\u0075late",
+        "kind": "Function",
+        "file": "source.ts"
+      }
+    }
+  ]
+}

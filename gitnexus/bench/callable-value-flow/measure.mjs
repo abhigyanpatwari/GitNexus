@@ -15,7 +15,7 @@
  * same-named callable in the file.
  *
  * For a synthetic corpus at two scales it reports:
- *   - elapsed_ms_small / elapsed_ms_large (fastest of REPS, see `fastest`) + a scaling ratio
+ *   - elapsed_ms_small / elapsed_ms_large (median of window minima) + a scaling ratio
  *     `(t_large/t_small)/(LARGE/SMALL)`: ~1.0 linear, ~3.x quadratic;
  *   - `callable_only_ms_large`, the same corpus with the PRE-#2693 def
  *     population, so the cost the widening actually added stays visible as
@@ -48,8 +48,9 @@ const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
 
 const SMALL = 250;
 const LARGE = 800;
-const REPS = 15;
-const WARMUP = 5;
+const REPS = 7;
+const WARMUP = 2;
+const WINDOW_MS = 1000;
 
 /**
  * Deterministic synthetic corpus — no randomness, so the fingerprint is stable.
@@ -144,34 +145,23 @@ function callableOnlyScopes(scopes) {
   return { defs: { byId } };
 }
 
-/**
- * MIN, not median. Both scales are timed in one process, and every source of
- * error here is additive — scheduler preemption, GC, a noisy neighbour on a
- * shared CI runner. The fastest observed run is the closest estimate of the
- * uncontended cost, so the derived ratios stay comparable across machines
- * instead of tracking whatever else the box was doing. (Measured directly: the
- * same build reported an overhead of 1.65 idle and 2.03 while a test shard was
- * running — a median-based gate would have to be loosened until it could no
- * longer detect the regression it exists to catch.)
- */
-function fastest(values) {
-  return Math.min(...values);
+function median(values) {
+  return [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 }
 
 function timeIndex(scopes, nodeLookup, graph) {
-  // Warm up before timing: the first calls carry JIT compilation of the whole
-  // resolve chain, and the widened and callable-only runs would otherwise be
-  // measured at different optimisation tiers — which alone moved the reported
-  // overhead by ~30%.
-  for (let w = 0; w < WARMUP; w++) buildGraphTargetIndex(scopes, nodeLookup, undefined, graph);
-  const samples = [];
+  // A short handful of calls can all overlap JIT, GC or scheduler pauses.
+  // Keep the uncontended-cost estimator, but give each variant a full window
+  // to reach it. Retaining only the minimum also bounds sampling memory.
+  const start = performance.now();
+  let best = Infinity;
   let last;
-  for (let r = 0; r < REPS; r++) {
+  do {
     const t0 = performance.now();
     last = buildGraphTargetIndex(scopes, nodeLookup, undefined, graph);
-    samples.push(performance.now() - t0);
-  }
-  return { ms: fastest(samples), result: last };
+    best = Math.min(best, performance.now() - t0);
+  } while (performance.now() - start < WINDOW_MS);
+  return { ms: best, result: last };
 }
 
 function fingerprint(targets) {
@@ -179,29 +169,46 @@ function fingerprint(targets) {
   return crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 }
 
-const scales = {};
-for (const [name, fileCount] of [
+const cases = [
   ['small', SMALL],
   ['large', LARGE],
-]) {
-  const { graph, scopes, nodeLookup } = buildCorpus(fileCount);
-  const widened = timeIndex(scopes, nodeLookup, graph);
-  const callableOnly = timeIndex(callableOnlyScopes(scopes), nodeLookup, graph);
-  scales[name] = {
-    files: fileCount,
-    defs: scopes.defs.byId.size,
-    ms: widened.ms,
-    callable_only_ms: callableOnly.ms,
-    targets: widened.result.size,
-    callable_only_targets: callableOnly.result.size,
-    fingerprint: fingerprint(widened.result),
+].map(([name, files]) => ({ name, files, ...buildCorpus(files) }));
+const variants = cases.flatMap((corpus) => [
+  corpus,
+  { ...corpus, scopes: callableOnlyScopes(corpus.scopes) },
+]);
+const samples = variants.map(() => []);
+const results = [];
+// Measure all four variants in each round, reversing their order to avoid
+// consistently favouring one tier or scale. Discard complete warmup rounds.
+// Pair ratios within rounds so a change in runner load does not compare a
+// quiet control period with a busy widened period (or small with large).
+for (let round = 0; round < WARMUP + REPS; round++) {
+  for (const i of round % 2 === 0 ? [0, 1, 2, 3] : [3, 2, 1, 0]) {
+    const { scopes, nodeLookup, graph } = variants[i];
+    const timed = timeIndex(scopes, nodeLookup, graph);
+    results[i] = timed.result;
+    if (round >= WARMUP) samples[i].push(timed.ms);
+  }
+}
+
+const scales = {};
+for (const [i, corpus] of cases.entries()) {
+  scales[corpus.name] = {
+    files: corpus.files,
+    defs: corpus.scopes.defs.byId.size,
+    ms: median(samples[i * 2]),
+    callable_only_ms: median(samples[i * 2 + 1]),
+    targets: results[i * 2].size,
+    callable_only_targets: results[i * 2 + 1].size,
+    fingerprint: fingerprint(results[i * 2]),
   };
 }
 
-const scalingRatio = scales.large.ms / scales.small.ms / (LARGE / SMALL);
+const scalingRatio = median(samples[2].map((ms, i) => ms / samples[0][i] / (LARGE / SMALL)));
 // How much slower the widened gate is than the pre-#2693 one on the same
 // corpus. 1.0 = free; 2.0 = the widening doubled the index build.
-const wideningOverhead = scales.large.ms / scales.large.callable_only_ms;
+const wideningOverhead = median(samples[2].map((ms, i) => ms / samples[3][i]));
 
 const report = {
   small: scales.small,

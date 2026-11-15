@@ -29,7 +29,7 @@ const FRESH: StalenessInfo = { isStale: false, commitsBehind: 0 };
 const BEHIND: StalenessInfo = {
   isStale: true,
   commitsBehind: 3,
-  hint: '⚠️ Index is 3 commits behind HEAD. Run analyze tool to update.',
+  hint: '⚠️ Index is 3 commits behind HEAD. Run the CLI command `npx gitnexus analyze` from the repository directory to update.',
 };
 
 const meta = (over: Partial<RepoMeta> = {}): RepoMeta =>
@@ -119,7 +119,12 @@ describe('projectRepoListEntry — GET /api/repos', () => {
     const b = projectRepoListEntry(entry({ name: 'api', path: '/ws/b/api' }), FRESH, FULL_SOURCE);
     expect(a.id).not.toBe(b.id);
     expect(a.id).toBe(publicRepoId('/ws/a/api'));
-    expect(a.id).not.toContain('ws');
+    // The id is an HMAC under a per-process random key, so a short substring
+    // such as 'ws' appears in it by chance (~0.5% of runs). Assert the opaque
+    // base64url shape instead; '/' is outside that alphabet, so the path can
+    // never appear in the id by chance.
+    expect(a.id).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(a.id).not.toContain('/ws/a/api');
   });
 
   it('keeps every field the route returned before, unchanged', () => {
@@ -166,6 +171,23 @@ describe('projectRepoListEntry — GET /api/repos', () => {
 });
 
 describe('projectRepoDetail — GET /api/repo', () => {
+  it('reports graph completeness separately from pending vector work', () => {
+    const metadata = meta({
+      scopeExtractionReceipt: 1,
+      embeddingJob: { version: 1, identity: 'a'.repeat(64), graphGeneration: 'b'.repeat(32) },
+    });
+    const out = projectRepoDetail(entry(), metadata, FRESH, FULL_SOURCE, {
+      phase: 'embedding',
+      totalUnits: 3,
+      completedUnits: 1,
+      reusedUnits: 0,
+      pendingUnits: 1,
+      failedUnits: 1,
+    });
+    expect(out.graphIncompleteReasons).toEqual([]);
+    expect(out.incompleteReasons).toEqual(['embedding-job-pending']);
+    expect(out.embeddingProgress).toMatchObject({ failedUnits: 1, pendingUnits: 1 });
+  });
   it('returns lastCommit and branch, which the route used to drop', () => {
     const out = projectRepoDetail(entry({ branch: 'master' }), null, FRESH, FULL_SOURCE);
     expect(out.lastCommit).toBe(entry().lastCommit);

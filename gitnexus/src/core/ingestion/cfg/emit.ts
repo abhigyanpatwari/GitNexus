@@ -179,6 +179,7 @@ export const isEmitSafeCfg = (cfg: FunctionCfg | undefined | null): cfg is Funct
     typeof cfg?.filePath !== 'string' ||
     !Number.isInteger(cfg.functionStartLine) ||
     !Number.isInteger(cfg.functionStartColumn) ||
+    (cfg.ownerId !== undefined && (typeof cfg.ownerId !== 'string' || !cfg.ownerId.trim())) ||
     !Array.isArray(cfg.blocks) ||
     !Array.isArray(cfg.edges)
   ) {
@@ -385,6 +386,7 @@ export function emitFileCfgs(
           // position (#2227 follow-up U3). Absent map (pdg off / no captures)
           // ⇒ `''`, and the bridge falls back to the leaf-name match (R3).
           calleeIds: calleeIdsOfBlock(b, calleeIdMap),
+          ...(cfg.ownerId === undefined ? {} : { ownerId: cfg.ownerId }),
         },
       });
       result.blocks++;

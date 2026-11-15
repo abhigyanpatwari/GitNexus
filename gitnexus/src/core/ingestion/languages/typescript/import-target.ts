@@ -18,7 +18,7 @@
  */
 
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
-import type { NodeWorkspacePackages } from '../../import-resolvers/node-workspace-packages.js';
+import type { NodeWorkspacePackages } from './workspace-packages.js';
 import { resolveTsModule } from './module-resolution.js';
 import type { TsconfigIndex } from './tsconfig.js';
 

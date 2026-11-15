@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  buildCollisionGroups,
   typeTagForId,
   arityForIdFromInfo,
   constTagForId,
@@ -119,7 +120,7 @@ describe('typeTagForId', () => {
 
   it('returns empty string for variadic method (arity undefined)', () => {
     const m = makeMethodInfo('log', [{ name: 'args', type: 'String' }]);
-    m.parameters[0].isVariadic = true;
+    m.parameters = m.parameters.map((parameter) => ({ ...parameter, isVariadic: true }));
     const map = buildMethodMap([m]);
 
     expect(typeTagForId(map, 'log', undefined, m)).toBe('');
@@ -182,14 +183,30 @@ describe('typeTagForId', () => {
     expect(typeTagForId(map, 'process', 1, vecStr)).toBe('~vector<string>');
   });
 
-  it('falls back to type when rawType is not set', () => {
-    // Backward compat: old ParameterInfo without rawType still works
-    const findInt = makeMethodInfo('find', [{ name: 'id', type: 'int' }], { line: 10 });
-    const findStr = makeMethodInfo('find', [{ name: 'name', type: 'String' }], { line: 15 });
-    const map = buildMethodMap([findInt, findStr]);
+  it('preserves raw types and falls back per parameter in a cached collision group', () => {
+    const vectorInt = makeMethodInfo(
+      'process',
+      [
+        { name: 'items', type: 'vector', rawType: 'vector<int>' },
+        { name: 'enabled', type: 'bool', rawType: null },
+      ],
+      { line: 10 },
+    );
+    const vectorString = makeMethodInfo(
+      'process',
+      [
+        { name: 'items', type: 'vector', rawType: 'vector<string>' },
+        { name: 'enabled', type: 'bool' },
+      ],
+      { line: 15 },
+    );
+    const map = buildMethodMap([vectorInt, vectorString]);
+    const groups = buildCollisionGroups(map);
 
-    expect(typeTagForId(map, 'find', 1, findInt)).toBe('~int');
-    expect(typeTagForId(map, 'find', 1, findStr)).toBe('~String');
+    expect(typeTagForId(map, 'process', 2, vectorInt, undefined, groups)).toBe('~vector<int>,bool');
+    expect(typeTagForId(map, 'process', 2, vectorString, undefined, groups)).toBe(
+      '~vector<string>,bool',
+    );
   });
 });
 
@@ -204,7 +221,7 @@ describe('arityForIdFromInfo', () => {
 
   it('returns undefined for variadic methods', () => {
     const m = makeMethodInfo('log', [{ name: 'args', type: 'String' }]);
-    m.parameters[0].isVariadic = true;
+    m.parameters = m.parameters.map((parameter) => ({ ...parameter, isVariadic: true }));
     expect(arityForIdFromInfo(m)).toBeUndefined();
   });
 
