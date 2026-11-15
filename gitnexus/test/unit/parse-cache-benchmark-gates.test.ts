@@ -64,7 +64,7 @@ function report(pairs = 7, maxPairs = 7, candidateMs = [100]) {
 
 // Paired ratios averaging 1.00: moderate spread settles within 14 pairs,
 // wide spread stays inconclusive through all 21.
-const moderateNoise = [94, 106, 97, 103, 95, 105, 100];
+const moderateNoise = [96, 104, 98, 102, 97, 103, 100];
 const wideNoise = [80, 90, 95, 100, 105, 110, 120];
 
 describe('parse-cache performance acceptance', () => {
@@ -168,12 +168,13 @@ describe('parse-cache sequential looks', () => {
     expect([result.verdict, result.look, result.passed]).toEqual(['pass', 2, true]);
   });
 
-  it('splits the five-percent error across looks, so each look is stricter', () => {
-    // The same seven pairs pass a single 95% look but not the first of three.
+  it('splits the five-percent family error across metrics and looks', () => {
+    // The same seven pairs pass one look but not the first of three.
     const single = assessComparison(report(7, 7, moderateNoise));
     const first = assessComparison(report(7, 21, moderateNoise));
-    expect([single.verdict, single.confidence]).toEqual(['pass', 0.95]);
-    expect([first.verdict, first.confidence]).toEqual(['continue', 1 - 0.05 / 3]);
+    expect([single.verdict, single.confidence]).toEqual(['pass', 1 - 0.05 / 8]);
+    expect([first.verdict, first.confidence]).toEqual(['continue', 1 - 0.05 / 24]);
+    expect((1 - first.confidence) * first.metrics.length * first.looks).toBeCloseTo(0.05);
   });
 
   it('fails evidence that is still inconclusive at the pair cap', () => {

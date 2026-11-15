@@ -115,6 +115,13 @@ export type ParsedImport = ParsedImportSyntax & {
   readonly atRange?: Range;
   /** Per-import lexical binding override; useful when a provider also has file-wide dependencies. */
   readonly bindsAtLexicalScope?: boolean;
+  /** An export dependency publishes names without importing them locally. */
+  readonly exportsOnly?: boolean;
+  /** Ordered namespace filters retained from the source declaration. */
+  readonly nameFilters?: readonly {
+    readonly kind: 'show' | 'hide';
+    readonly names: readonly string[];
+  }[];
 };
 
 type ParsedImportSyntax =
@@ -377,6 +384,9 @@ type ParsedImportSyntax =
   | {
       readonly kind: 'wildcard';
       readonly targetRaw: string;
+      /** False when this statement imports names without publishing them from
+       * its file. Absent preserves the historical re-exporting wildcard. */
+      readonly reexportsName?: boolean;
       /** See the same field on the `named` variant. Present here although
        *  `typeOnly` is not: erasure is a syntactic fact this spelling cannot
        *  express, but POSITION is not — Ruby's `def f; require './m'; end` is
@@ -529,6 +539,7 @@ export interface Callsite {
  * bounded-fixpoint linking (RFC §3.2).
  */
 export interface ImportEdge {
+  readonly nameFilters?: ParsedImport['nameFilters'];
   readonly atRange?: Range;
   /** How this scope sees the imported name (after alias). */
   readonly localName: string;

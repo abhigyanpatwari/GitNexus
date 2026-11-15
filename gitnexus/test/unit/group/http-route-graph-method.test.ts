@@ -76,6 +76,37 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
     FILE_DETECTIONS.clear();
   });
 
+  it('keeps contract order and duplicate winners independent of graph row order', async () => {
+    const providers = [
+      { filePath: 'routes.fake', routePath: '/same', routeMethod: 'GET', handlerSymbolId: 'b' },
+      { filePath: 'routes.fake', routePath: '/same', routeMethod: 'GET', handlerSymbolId: 'a' },
+      { filePath: 'routes.fake', routePath: '/other', routeMethod: 'POST', handlerSymbolId: 'c' },
+    ];
+    const consumers = [
+      { filePath: 'client.fake', routePath: '/z', fetchReason: 'second' },
+      { filePath: 'client.fake', routePath: '/a', fetchReason: 'first' },
+      { filePath: 'client.fake', routePath: '/a', fetchReason: 'duplicate' },
+    ];
+    const extract = async (reversed: boolean) =>
+      new HttpRouteExtractor().extract(
+        async (query) => {
+          const rows = query.includes('HANDLES_ROUTE')
+            ? providers
+            : query.includes('FETCHES')
+              ? consumers
+              : [];
+          return reversed ? [...rows].reverse() : [...rows];
+        },
+        '/repo',
+        { name: 'r', url: 'r' } as never,
+      );
+    const forward = await extract(false);
+    expect(await extract(true)).toEqual(forward);
+    expect(
+      forward.find((c) => c.role === 'provider' && c.contractId === 'http::GET::/same')?.symbolUid,
+    ).toBe('a');
+  });
+
   it('framework-route: uses Route.method when the edge reason cannot decode the verb', async () => {
     // Spring controller: reason is the generic 'framework-route', so
     // methodFromRouteReason() returns null. The verb must come from the

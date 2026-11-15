@@ -141,6 +141,35 @@ function extractPattern(toolName, toolInput) {
       '--type',
       '--include',
       '--exclude',
+      '--sort',
+      '--sortr',
+    ]);
+    const flagsWithoutValues = new Set([
+      '--line-number',
+      '--no-line-number',
+      '--ignore-case',
+      '--smart-case',
+      '--case-sensitive',
+      '--fixed-strings',
+      '--word-regexp',
+      '--line-regexp',
+      '--recursive',
+      '--hidden',
+      '--no-ignore',
+      '--follow',
+      '--count',
+      '--files-with-matches',
+      '--files-without-match',
+      '--only-matching',
+      '--invert-match',
+      '--quiet',
+      '--with-filename',
+      '--no-filename',
+      '--multiline',
+      '--multiline-dotall',
+      '--pcre2',
+      '--text',
+      '--null',
     ]);
 
     for (const token of tokens.slice(1)) {
@@ -163,6 +192,19 @@ function extractPattern(toolName, toolInput) {
           explicitPattern ??= token.slice(token.indexOf('=') + 1);
         else if (token.startsWith('-e')) explicitPattern ??= token.slice(2);
         else if (flagsWithValues.has(token)) pending = 'skip';
+        else if (token.startsWith('--') && token.includes('=')) {
+          const separator = token.indexOf('=');
+          if (!flagsWithValues.has(token.slice(0, separator)) || separator === token.length - 1)
+            return null;
+        } else if (/^-[mABCgt].+/.test(token)) {
+          // A known short option with its value attached (e.g. -m100).
+        } else if (
+          !flagsWithoutValues.has(token) &&
+          !/^-[inrRlLwxoEHhsvqFIPcSUaNzZ0u]+$/.test(token)
+        ) {
+          // Unknown options may consume the next token. Do not guess a pattern.
+          return null;
+        }
         continue;
       }
       pattern ??= token;

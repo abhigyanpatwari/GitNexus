@@ -45,6 +45,7 @@ import {
   resolveQualifiedClassSpelling,
   findEnclosingClassDef,
   findExportedDef,
+  namespaceImportAllowsMember,
   findExportedDefByName,
   findExportedDefIncludingImportedNames,
   findReceiverTypeBinding,
@@ -331,6 +332,16 @@ function resolveConstructionExpressionClass(
       )
         return undefined;
       const namespaceMatches = namespaceFiles
+        .filter((targetFile) =>
+          namespaceImportAllowsMember(
+            inScope,
+            namespaceName,
+            exportedName,
+            scopes,
+            options.lookupPosition,
+            targetFile,
+          ),
+        )
         .map((targetFile) =>
           options.namespaceExportsIncludeImportedNames === true
             ? findExportedDefIncludingImportedNames(
@@ -756,11 +767,13 @@ function boundCalleeReturnType(
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   position: TypeRef['lookupPosition'],
+  index: WorkspaceResolutionIndex,
 ): TypeRef | undefined {
   const claim = lookupNameClaim(inScope, name, scopes, { position, purpose: 'value' });
   const identities = new Set(claim.bindings.map((binding) => binding.def.nodeId));
   return identities.size === 1 && identities.has(fnDef.nodeId)
-    ? producerTypeRef(fnDef.nodeId, scopes)
+    ? (producerTypeRef(fnDef.nodeId, scopes) ??
+        index.declaredReturnTypeByCallableId.get(fnDef.nodeId))
     : undefined;
 }
 
@@ -1381,7 +1394,8 @@ export function resolveCompoundReceiverClass(
         const retType =
           findReceiverTypeBinding(inScope, fnExpr, scopes, {
             position: options.lookupPosition,
-          }) ?? boundCalleeReturnType(fnDef, fnExpr, inScope, scopes, options.lookupPosition);
+          }) ??
+          boundCalleeReturnType(fnDef, fnExpr, inScope, scopes, options.lookupPosition, index);
         const viaReturn =
           retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
         if (viaReturn !== undefined) return viaReturn;

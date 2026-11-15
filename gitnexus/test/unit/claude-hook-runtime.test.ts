@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
-import { runHook } from '../utils/hook-test-helpers.js';
+import { envWithPath, runHook } from '../utils/hook-test-helpers.js';
 
 const HOOK_DIR = path.resolve(__dirname, '../../hooks/claude');
 const PLUGIN_DIR = path.resolve(__dirname, '../../../gitnexus-claude-plugin/hooks');
@@ -135,6 +135,9 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: `rg pre" middle "'suffix' src`, pattern: 'pre middle suffix' },
     { command: "rg -g '*.ts' -n 'quoted phrase' src", pattern: 'quoted phrase' },
     { command: 'rg --max-count 100 UserService src/', pattern: 'UserService' },
+    { command: 'rg --sort path UserService src/', pattern: 'UserService' },
+    { command: 'rg --sortr=modified UserService src/', pattern: 'UserService' },
+    { command: 'rg -nri -m100 UserService src/', pattern: 'UserService' },
     { command: 'grep --max-count 100 UserService src/', pattern: 'UserService' },
     { command: 'rg --after-context 100 UserService src/', pattern: 'UserService' },
     { command: 'grep --after-context 100 UserService src/', pattern: 'UserService' },
@@ -174,6 +177,11 @@ describe('Claude hook literal Bash search patterns', () => {
     'rg --max-count 100',
     'rg UserService --max-count',
     'grep UserService --max-count',
+    'rg --sort',
+    'rg --sort path',
+    'rg --unknown-option value UserService src',
+    'rg --unknown-option=value UserService src',
+    'rg -Q value UserService src',
   ])('declines an empty, malformed, or expanded argument in %s', (command) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
   });
@@ -225,8 +233,9 @@ describe('Claude hook package ownership', () => {
         for (const debug of ['', '1']) {
           const result = runHook(path.join(packageHooks, 'gitnexus-hook.cjs'), input, repo, {
             env: {
-              ...process.env,
-              PATH: `${bin}${path.delimiter}${process.env.PATH || ''}`,
+              ...envWithPath(
+                `${bin}${path.delimiter}${process.env.PATH || process.env.Path || ''}`,
+              ),
               NODE_PATH: otherPackageAvailable ? modules : '',
               GITNEXUS_HOME: home,
               GITNEXUS_HOOK_CLI_PATH: '',

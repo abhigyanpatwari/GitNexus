@@ -79,6 +79,25 @@ describe('finalizeScopeModel: empty input', () => {
 // ─── Single file ───────────────────────────────────────────────────────────
 
 describe('finalizeScopeModel: single file', () => {
+  it('forwards the associative merge opt-in to crowded module binding materialization', () => {
+    const defs = Array.from({ length: 64 }, (_, i) => ({
+      ...mkDef(`def:C${i}.run`, 'app.dart', `C${i}.run`),
+      ownerId: `class:${i}`,
+    }));
+    const file = mkFile('app.dart', { localDefs: defs });
+    const sizes: number[] = [];
+    const out = finalizeScopeModel([file], {
+      hooks: {
+        mergeBindingsAreAssociative: true,
+        mergeBindings: (existing, incoming) => {
+          sizes.push(existing.length + incoming.length);
+          return [...existing, ...incoming];
+        },
+      },
+    });
+    expect(out.bindings.get(file.moduleScope)?.get('run')).toHaveLength(64);
+    expect(sizes).toEqual([64]);
+  });
   it('builds all per-file indexes from a single ParsedFile', () => {
     const userClass = mkDef('def:User', 'models.ts', 'models.User');
     const file = mkFile('models.ts', {

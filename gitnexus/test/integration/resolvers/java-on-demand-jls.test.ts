@@ -267,6 +267,28 @@ afterEach(() => vi.unstubAllEnvs());
 describe.each(STORAGE_FORMS)(
   'Java on-demand imports: JLS scenarios pinned to current behaviour (#3695), $form',
   ({ form, disableGroups }) => {
+    it('does not expose imported members as members of the importing class', async () => {
+      vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', disableGroups);
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-private-wildcard-'));
+      try {
+        writeFixtureRepo(root, {
+          'src/b/Tools.java': 'package b; public class Tools { public static void helper() {} }',
+          'src/a/Util.java': 'package a; import b.*; public class Util {}',
+          'src/app/U.java':
+            'package app; import static a.Util.helper; public class U { void wrong() { helper(); } }',
+          'src/app/Direct.java':
+            'package app; import static b.Tools.helper; public class Direct { void correct() { helper(); } }',
+        });
+        const result = await runPipelineFromRepo(root, () => {});
+        const callers = [...result.graph.iterRelationshipsByType('CALLS')]
+          .filter((rel) => result.graph.getNode(rel.targetId)?.properties.name === 'helper')
+          .map((rel) => result.graph.getNode(rel.sourceId)?.properties.name)
+          .sort();
+        expect(callers).toEqual(['correct']);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
     it.each(scenarios)(`$name [${form}]`, async ({ files, edges }) => {
       vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', disableGroups);
       const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-on-demand-jls-'));

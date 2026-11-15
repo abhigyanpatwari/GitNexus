@@ -81,6 +81,7 @@ import {
   findEnclosingClassDef,
   isReceiverOwnedButUnbound,
   findExportedDef,
+  namespaceImportAllowsMember,
   findExportedDefIncludingImportedNames,
   findOwnedMember,
   findReceiverTypeBinding,
@@ -204,6 +205,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'collapseMemberCallsByCallerTarget'
   | 'elementTypeOf'
   | 'hoistTypeBindingsToModule'
+  | 'reportedUnboundReceiverNames'
   | 'hoistedTypeBindingsRequireOwner'
   | 'stripReceiverCastExpressions'
   | 'constructionSyntax'
@@ -920,7 +922,14 @@ function emitReceiverBoundCallsInPass(
         )
       )
         return undefined;
-      cursor = { files };
+      cursor = {
+        files:
+          segments[k] === undefined
+            ? files
+            : files.filter((file) =>
+                namespaceImportAllowsMember(inScope, key, segments[k]!, scopes, position, file),
+              ),
+      };
       rest = segments.slice(k);
       break;
     }
@@ -987,7 +996,12 @@ function emitReceiverBoundCallsInPass(
       )
     )
       return undefined;
-    return uniqueClassAcross(files, tail);
+    return uniqueClassAcross(
+      files.filter((file) =>
+        namespaceImportAllowsMember(inScope, head, tail, scopes, position, file),
+      ),
+      tail,
+    );
   };
   // A qualified callee as the free-call head of a compound receiver
   // (`rp::make().m()`, or `x` bound to `rp::make`): the definition the
@@ -2410,6 +2424,16 @@ function emitReceiverBoundCallsInPass(
         if (cursor !== undefined && 'files' in cursor) targetFiles = cursor.files;
       }
       if (targetFiles !== undefined && provider.resolveQualifiedReceiverMember === undefined) {
+        targetFiles = targetFiles.filter((file) =>
+          namespaceImportAllowsMember(
+            site.inScope,
+            receiverName,
+            memberName,
+            scopes,
+            site.atRange,
+            file,
+          ),
+        );
         sourceBindingGrounded = true;
         // Graph emission historically picks the first package-file hit. An
         // edit needs the complete candidate set at this same namespace tier.
@@ -2745,6 +2769,18 @@ function emitReceiverBoundCallsInPass(
         if (targetFiles3 !== undefined && className.length > 0) {
           let found3 = false;
           for (const targetFile3 of targetFiles3) {
+            if (
+              !walkChains &&
+              !namespaceImportAllowsMember(
+                typeRef.declaredAtScope,
+                nsName,
+                className,
+                scopes,
+                typeRef.lookupPosition,
+                targetFile3,
+              )
+            )
+              continue;
             const classDef3 = walkChains
               ? chainDef3
               : lookupNamespaceMember(targetFile3, className);
@@ -3915,6 +3951,17 @@ function emitReceiverBoundCallsInPass(
             reason: 'receiver-type-unresolved',
             declineDetail: 'untyped-binder',
             binderScopeId: binder.id,
+            candidateIds: [],
+            phase: 'receiver-bound-calls',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: site.kind,
+          });
+        } else if (provider.reportedUnboundReceiverNames?.has(receiverName)) {
+          options.recordResolutionOutcome({
+            kind: 'suppressed',
+            reason: 'receiver-unresolved',
             candidateIds: [],
             phase: 'receiver-bound-calls',
             filePath: parsed.filePath,

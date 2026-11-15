@@ -16,6 +16,8 @@
 import type { Scope, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 
 export interface WorkspaceResolutionIndex {
+  /** Authoritative provider exports, including transitive exports where supported. */
+  readonly namespaceExportsByFile?: ReadonlyMap<string, ReadonlyMap<string, SymbolDefinition>>;
   /** Class def `nodeId` → that class's `Scope`. */
   readonly classScopeByDefId: ReadonlyMap<string, Scope>;
 

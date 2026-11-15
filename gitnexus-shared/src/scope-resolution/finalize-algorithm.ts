@@ -195,7 +195,7 @@ export interface FinalizeHooks {
 
   /**
    * Merge `incoming` bindings into `existing` for a given name. Called
-   * once per name at each scope. Typical rules:
+   * incrementally for each incoming group unless batching is enabled. Typical rules:
    *   - Python: local > imported > wildcard (last-write-wins within tier).
    *   - Rust: explicit `use` > glob; `pub use` overrides.
    * Return value replaces the bucket entirely — no implicit append.
@@ -205,6 +205,9 @@ export interface FinalizeHooks {
     incoming: readonly BindingRef[],
     scope: ScopeId,
   ): readonly BindingRef[];
+  /** Opt in only when merging all ordered inputs once is equivalent to
+   * folding over incoming groups. Avoids quadratic repeated-prefix merges. */
+  readonly mergeBindingsAreAssociative?: boolean;
 }
 
 /** One SCC in the file-level import graph. */
@@ -367,6 +370,8 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       (groupIndex.get(file.filePath) ?? []).some(
         (group) =>
           group.fromScope === file.moduleScope &&
+          group.source.kind === 'wildcard' &&
+          group.source.reexportsName !== false &&
           group.targetFiles.some((targetFile) => byFilePath.has(targetFile)),
       )
     ) {
@@ -732,7 +737,11 @@ function withGroupDrafts(
       for (let placed = 0; placed <= drafts.length; placed++) {
         while (groups[nextGroup]?.position === placed) {
           const group = groups[nextGroup++]!;
-          if (group.fromScope !== moduleScope) continue;
+          if (
+            group.fromScope !== moduleScope ||
+            (group.source.kind === 'wildcard' && group.source.reexportsName === false)
+          )
+            continue;
           for (const targetFile of group.targetFiles) {
             merged.push({
               source: group.source,
@@ -803,6 +812,7 @@ function makeEdgeDrafts(
       ...(parsed.kind === 'namespace' && parsed.explicitAlias === true
         ? { explicitAlias: true }
         : {}),
+      ...(parsed.nameFilters === undefined ? {} : { nameFilters: parsed.nameFilters }),
       ...typeOnlyFor(parsed),
       ...runsOnlyWhenCalledFor(parsed),
       linkStatus: 'unresolved',
@@ -858,6 +868,7 @@ function makeEdgeDrafts(
       localName: extractLocalName(parsed),
       ...(parsed.atRange !== undefined ? { atRange: parsed.atRange } : {}),
       targetFile: tf,
+      ...(parsed.nameFilters === undefined ? {} : { nameFilters: parsed.nameFilters }),
       targetExportedName: extractExportedName(parsed),
       kind:
         hooks.isNamespaceImport?.(parsed, tf, file.filePath) === true
@@ -1254,7 +1265,7 @@ function buildReexportClosures(
  */
 function contributesReexportEdge(draft: ImportEdgeDraft): boolean {
   if (draft.base.kind === 'namespace') return false;
-  if (draft.source.kind === 'wildcard') return true;
+  if (draft.source.kind === 'wildcard') return draft.source.reexportsName !== false;
   return isNamedReexport(draft);
 }
 
@@ -1492,7 +1503,7 @@ function collectAmbiguousWildcards(
   // name → (target file → declaring def ids), in declaration order.
   const providers = new Map<string, Map<string, string[]>>();
   for (const draft of drafts) {
-    if (draft.source.kind !== 'wildcard') continue;
+    if (draft.source.kind !== 'wildcard' || draft.source.reexportsName === false) continue;
     const targetFile = draft.targetFile;
     if (targetFile === null) continue;
     const target = byFilePath.get(targetFile);
@@ -1608,7 +1619,7 @@ function populateFileClosure(
   // + transitive closure). `myClosure.has(name)` checks below preserve
   // the named-precedence and first-wins semantics from above.
   for (const draft of drafts) {
-    if (draft.source.kind !== 'wildcard') continue;
+    if (draft.source.kind !== 'wildcard' || draft.source.reexportsName === false) continue;
     const targetFile = draft.targetFile;
     if (targetFile === null) continue;
     const targetModule = byFilePath.get(targetFile);
@@ -1987,6 +1998,21 @@ function materializeBindings(
   hooks: FinalizeHooks,
 ): ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>> {
   const buckets = new Map<ScopeId, Map<string, readonly BindingRef[]>>();
+  const append = (
+    bucket: Map<string, readonly BindingRef[]>,
+    name: string,
+    incoming: readonly BindingRef[],
+    scopeId: ScopeId,
+  ) => {
+    if (!hooks.mergeBindingsAreAssociative) {
+      bucket.set(name, hooks.mergeBindings(bucket.get(name) ?? [], incoming, scopeId));
+      return;
+    }
+    // In batch mode every array is created here and remains private until frozen.
+    let refs = bucket.get(name) as BindingRef[] | undefined;
+    if (refs === undefined) bucket.set(name, (refs = []));
+    for (const ref of incoming) refs.push(ref);
+  };
 
   // Build a `nodeId → SymbolDefinition` index once across all files
   // (O(N_files × D_defs)) so the per-edge lookup below is O(1) instead
@@ -2007,8 +2033,7 @@ function materializeBindings(
     // from lexical visibility for top-level functions/classes.
     if (file.moduleBindings !== undefined) {
       for (const [name, incoming] of file.moduleBindings) {
-        const existing = scopeBindings.get(name) ?? [];
-        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+        append(scopeBindings, name, incoming, file.moduleScope);
       }
       // Some language enrichers synthesize members after scope extraction
       // (for example Lombok accessors). They have no lexical scope binding to
@@ -2025,8 +2050,7 @@ function materializeBindings(
         const name = deriveSimpleName(def);
         if (name === null) continue;
         const incoming: BindingRef[] = [{ def, origin: 'local' }];
-        const existing = scopeBindings.get(name) ?? [];
-        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+        append(scopeBindings, name, incoming, file.moduleScope);
       }
     } else {
       // Compatibility for direct/legacy callers that predate scope bindings.
@@ -2034,8 +2058,7 @@ function materializeBindings(
         const name = deriveSimpleName(def);
         if (name === null) continue;
         const incoming: BindingRef[] = [{ def, origin: 'local' }];
-        const existing = scopeBindings.get(name) ?? [];
-        scopeBindings.set(name, hooks.mergeBindings(existing, incoming, file.moduleScope));
+        append(scopeBindings, name, incoming, file.moduleScope);
       }
     }
 
@@ -2067,8 +2090,7 @@ function materializeBindings(
       const name = edge.localName.length > 0 ? edge.localName : fallback;
       if (name === null) continue;
       const incoming: BindingRef[] = [{ def, origin, via: edge }];
-      const existing = scopeBindings.get(name) ?? [];
-      scopeBindings.set(name, hooks.mergeBindings(existing, incoming, scopeId));
+      append(scopeBindings, name, incoming, scopeId);
     }
   }
 
@@ -2077,7 +2099,10 @@ function materializeBindings(
     // Freeze nested buckets for immutability.
     const frozen = new Map<string, readonly BindingRef[]>();
     for (const [name, refs] of scopeBindings) {
-      frozen.set(name, Object.freeze(refs.slice()));
+      const merged = hooks.mergeBindingsAreAssociative
+        ? hooks.mergeBindings([], refs, scopeId)
+        : refs;
+      frozen.set(name, Object.freeze(merged.slice()));
     }
     out.set(scopeId, frozen);
   }

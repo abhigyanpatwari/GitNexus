@@ -1089,6 +1089,7 @@ export function runScopeResolution(
               filterWildcardNames(targetModuleScope, names, parsedFiles),
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
+      mergeBindingsAreAssociative: provider.mergeBindingsAreAssociative,
       wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
       namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
     },
@@ -1214,8 +1215,13 @@ export function runScopeResolution(
   // the resident tree holds (or a value-identical revived one in disk mode).
   const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, indexes.scopeTree, {
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
+    namespaceExports: provider.namespaceExportsFromModuleExports
+      ? provider.moduleExports
+      : undefined,
   });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
+  if (workspaceIndex.namespaceExportsByFile !== undefined)
+    indexes.namespaceExportsByFile = workspaceIndex.namespaceExportsByFile;
 
   // Complete implicit namespace visibility and refine provider-owned type facts
   // before return propagation. New bindings use bindingAugmentations; existing
@@ -1250,6 +1256,9 @@ export function runScopeResolution(
       provider.resolveQualifiedCallee,
       allFilePaths,
       provider.elementTypeOf,
+      provider.followsInstanceCallResultTypes === true
+        ? (owner, name) => input.model.methods.lookupAllByOwner(owner, name)
+        : undefined,
     );
   }
 

@@ -155,6 +155,30 @@ const bindingsFor = (
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('finalize', () => {
+  it('does not re-export a private wildcard import, including grouped targets', () => {
+    for (const grouped of [false, true]) {
+      const tools = file('tools', [def('helper', 'Function', 'helper')]);
+      const facade = file(
+        'facade',
+        [],
+        [{ kind: 'wildcard', targetRaw: 'tools', reexportsName: false }],
+      );
+      const caller = file('caller', [], [named('helper', 'helper', 'facade')]);
+      const files = [caller, facade, tools];
+      const phases: string[] = [];
+      const out = finalize(
+        { files, workspaceIndex: undefined, onProgress: (phase) => phases.push(phase) },
+        {
+          ...defaultHooks(files),
+          groupsWildcardTargets: grouped,
+          resolveImportTarget: (target) => (target === 'tools' ? ['tools'] : target),
+          expandsWildcardTo: () => [],
+        },
+      );
+      expect(out.imports.get(caller.moduleScope)?.[0]?.targetDefId).toBeUndefined();
+      expect(phases).not.toContain('reexports-start');
+    }
+  });
   describe('trivial / acyclic', () => {
     it('handles an empty workspace', () => {
       const out = finalize({ files: [], workspaceIndex: undefined }, defaultHooks([]));

@@ -506,6 +506,10 @@ export interface ScopeResolver {
 
   /** Exact local module bindings, excluding definitions owned by nested scopes. */
   readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
+  /** Use moduleExports as the authoritative namespace surface as well. */
+  readonly namespaceExportsFromModuleExports?: boolean;
+  /** Names whose failed bare-receiver lookup must produce an explicit outcome. */
+  readonly reportedUnboundReceiverNames?: ReadonlySet<string>;
 
   /** Filter local and transitive export names for wildcard imports. Opting in
    * applies the filter both to re-export closures and imported bindings. */
@@ -570,6 +574,9 @@ export interface ScopeResolver {
     incoming: readonly BindingRef[],
     scopeId: ScopeId,
   ): BindingRef[];
+  /** `mergeBindings` can merge one complete ordered bucket instead of every
+   * growing prefix, with identical precedence, deduplication and ordering. */
+  readonly mergeBindingsAreAssociative?: boolean;
 
   /**
    * Per-language arity compatibility between a callsite and a
@@ -875,12 +882,20 @@ export interface ScopeResolver {
    */
   readonly postExtractSourceTextPolicy?: 'all-files' | 'uncached-files';
 
+  /** Additional cached files whose captures depend on workspace metadata.
+   * Runs before source loading; keep this predicate free of file I/O. */
+  readonly requiresPostExtractSourceText?: (filePath: string, resolutionConfig: unknown) => boolean;
+
   /**
    * Whether the orchestrator should run `propagateImportedReturnTypes`
    * after finalize. Default `true`. TypeScript with explicit type
    * exports may want a different propagation strategy and opt out.
    */
   readonly propagatesReturnTypesAcrossImports?: boolean;
+
+  /** Follow a simple `receiver.method()` initializer through the receiver's
+   * declared class and unique method, preserving the producer's return scope. */
+  readonly followsInstanceCallResultTypes?: boolean;
 
   /**
    * Whether the compound-receiver resolver should fall back to

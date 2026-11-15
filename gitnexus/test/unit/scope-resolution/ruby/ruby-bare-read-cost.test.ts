@@ -168,6 +168,19 @@ function capturePass(source: string): { steps: number; groups: number } {
 }
 
 describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-04)', () => {
+  it('keeps surviving distinct free calls linear through nested blocks', () => {
+    const counts = [12, 24, 48, 96].map((depth) => {
+      const source = `class Host\n${nest(depth, (j) => `helper${j}()`)}end\n`;
+      const matches = emitRubyScopeCaptures(source, 'calls.rb');
+      expect(
+        matches.filter((match) => /^helper\d+$/.test(match['@reference.name']?.text ?? '')),
+      ).toHaveLength(depth);
+      return capturePass(source).steps;
+    });
+    const firstIncrement = counts[1] - counts[0];
+    expect(counts[2] - counts[1]).toBeLessThanOrEqual(firstIncrement * 2 * 1.1);
+    expect(counts[3] - counts[2]).toBeLessThanOrEqual(firstIncrement * 4 * 1.1);
+  });
   it.each([
     ['namedDescendantForIndex', (root, read) => root.namedDescendantForIndex(read.startIndex)],
     ['descendantForIndex', (root, read) => root.descendantForIndex(read.startIndex)],
@@ -201,8 +214,8 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
     // The verdicts are the work being counted: every read must be classified.
     expect(isDeepStrictEqual(shallow.verdicts, Array(16).fill(bound))).toBe(true);
     expect(isDeepStrictEqual(deep.verdicts, Array(64).fill(bound))).toBe(true);
-    expect(shallow.steps).toBe(29 * 16 + 20);
-    expect(deep.steps).toBe(29 * 64 + 20);
+    expect(shallow.steps).toBe(32 * 16 + 23);
+    expect(deep.steps).toBe(32 * 64 + 23);
   });
 
   // One line opening H heredocs, each body holding two interpolated blocks
@@ -220,18 +233,18 @@ describe('Ruby bare read: classification cost is linear in nesting depth (RUBY-0
     const deep = capturePass(line(128));
     expect(shallow.groups).toBe(4 * 32 + 5);
     expect(deep.groups).toBe(4 * 128 + 5);
-    expect(shallow.steps).toBe(316 * 32 + 136);
-    expect(deep.steps).toBe(316 * 128 + 136);
+    expect(shallow.steps).toBe(316 * 32 + 132);
+    expect(deep.steps).toBe(316 * 128 + 132);
   });
 
   // The whole pass for bound parameter reads. This guards the old argument-list
-  // subtree search; free-call receiver climbs are a separate #3915 follow-up.
+  // subtree search; the distinct surviving-call case above guards receiver classification too.
   it('the whole capture pass over a nest that reads at every level', () => {
     const shallow = capturePass(nest(16, () => 'target'));
     const deep = capturePass(nest(64, () => 'target'));
     expect(shallow.groups).toBe(2 * 16 + 4);
     expect(deep.groups).toBe(2 * 64 + 4);
-    expect(shallow.steps).toBe(117 * 16 + 65);
-    expect(deep.steps).toBe(117 * 64 + 65);
+    expect(shallow.steps).toBe(120 * 16 + 68);
+    expect(deep.steps).toBe(120 * 64 + 68);
   });
 });

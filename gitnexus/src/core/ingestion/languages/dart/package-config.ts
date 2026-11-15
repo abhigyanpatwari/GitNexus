@@ -10,6 +10,7 @@ import { getMaxFileSizeBytes } from '../../utils/max-file-size.js';
 export interface DartPackageConfig {
   readonly packages: ReadonlyMap<string, string>;
   readonly manifestsByName: ReadonlyMap<string, readonly string[]>;
+  readonly languageVersionsByDirectory?: ReadonlyMap<string, string | null>;
 }
 
 const DART_PUBSPEC_MANIFEST_LIMIT = 20_000;
@@ -100,6 +101,21 @@ function packageName(content: string, manifestPath: string): string | null {
   }
 }
 
+/** Dart selects a package's language version from its SDK lower bound. */
+function packageLanguageVersion(content: string): string | null {
+  try {
+    const manifest = load(content, { schema: JSON_SCHEMA }) as {
+      environment?: { sdk?: unknown };
+    } | null;
+    const sdk = manifest?.environment?.sdk;
+    if (typeof sdk !== 'string') return null;
+    const lower = /^\s*(?:\^|>=\s*)?(\d+)\.(\d+)(?:\.\d+)?(?:\s|$)/.exec(sdk);
+    return lower === null ? null : `${lower[1]}.${lower[2]}`;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Capture declarations from the shared scan, before source stat/size filtering.
  * No directory enumeration occurs here. Every enumerated regular manifest must
@@ -136,6 +152,7 @@ export async function captureDartPackageConfig(
   }
   const packages = new Map<string, string>();
   const manifestsByName = new Map<string, string[]>();
+  const languageVersionsByDirectory = new Map<string, string | null>();
   if (manifests.size === 0) return { packages, manifestsByName };
 
   // Cache static parent checks once per directory, not once per import/file.
@@ -173,6 +190,7 @@ export async function captureDartPackageConfig(
     if (read.ok === false) return incomplete(read.reason, manifestPath);
     const name = packageName(read.content, manifestPath);
     if (name === null) continue;
+    languageVersionsByDirectory.set(parent, packageLanguageVersion(read.content));
 
     const witnesses = manifestsByName.get(name) ?? [];
     witnesses.push(manifestPath);
@@ -183,7 +201,7 @@ export async function captureDartPackageConfig(
     if (witnesses.length > 1) packages.delete(name);
     else packages.set(name, parent ? `${parent}/lib` : 'lib');
   }
-  return { packages, manifestsByName };
+  return { packages, manifestsByName, languageVersionsByDirectory };
 }
 
 /** Standalone callers use the same scanner/capture boundary as the pipeline. */

@@ -1412,8 +1412,10 @@ end
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('first_statement_reader_inside: a `@return` on an attr_reader that opens the class body is not attached, so the in-class `user.save` is a missing edge (pre-existing; flips to User#save if `findFollowingAttrCall` gains the `body_statement` descent — update docs/languages/ruby-ingestion-gaps.md with it)', () => {
-    expect(saveCallsFrom('first_statement_reader_inside')).toEqual([]);
+  it('attaches @return to an attr_reader that opens the class body', () => {
+    expect(saveCallsFrom('first_statement_reader_inside').map((e) => e.rel.targetId)).toEqual([
+      userSaveId,
+    ]);
   });
 
   it('later_statement_reader_inside (control): the same tag after another statement types the in-class read to the exact User#save', () => {

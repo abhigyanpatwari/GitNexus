@@ -33,6 +33,7 @@
  */
 
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import { dartCandidateIsExportOnly } from './library-exports.js';
 import {
   modulePathReaches,
   stripExtension,
@@ -65,6 +66,7 @@ export function dartIsGlobalNameFallbackPlausible(ctx: {
   readonly callerParsed: ParsedFile;
   readonly candidate: SymbolDefinition;
 }): boolean {
+  if (dartCandidateIsExportOnly(ctx.callerParsed, ctx.candidate)) return false;
   if (ctx.candidate.filePath === ctx.callerParsed.filePath) return true;
   if (!isPrivateDartName(ctx.candidate)) return true;
   // A directive naming the candidate's file is positive evidence of one library.

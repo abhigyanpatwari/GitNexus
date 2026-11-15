@@ -142,6 +142,7 @@ export function selectScopeSourcePathsToRead(
   provider: ScopeResolver,
   primaryFilePaths: readonly string[],
   preExtractedByPath: { readonly has: (filePath: string) => boolean },
+  resolutionConfig?: unknown,
 ): string[] {
   const hasPostExtractHooks =
     provider.populateWorkspaceOwners !== undefined ||
@@ -154,7 +155,11 @@ export function selectScopeSourcePathsToRead(
 
   return needsAllSourceText
     ? [...primaryFilePaths]
-    : primaryFilePaths.filter((filePath) => !preExtractedByPath.has(filePath));
+    : primaryFilePaths.filter(
+        (filePath) =>
+          !preExtractedByPath.has(filePath) ||
+          provider.requiresPostExtractSourceText?.(filePath, resolutionConfig) === true,
+      );
 }
 
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
@@ -440,6 +445,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             provider,
             primaryFilePaths,
             preExtractedByPath,
+            resolutionConfig,
           );
           contents = await readFileContents(ctx.repoPath, pathsToRead);
         }

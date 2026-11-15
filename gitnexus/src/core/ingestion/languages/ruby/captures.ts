@@ -1,4 +1,5 @@
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import type { Capture, CaptureMatch, NameClaim } from 'gitnexus-shared';
+import { makeScopeId } from 'gitnexus-shared';
 import { recordRubyMemberDispatch } from './member-dispatch.js';
 import {
   findChild,
@@ -645,9 +646,11 @@ function rubyScopeBindings(
   const cached = cache.get(scope.id);
   if (cached !== undefined) return cached;
   const earliest = new Map<string, number>();
+  const declarations: Array<{ name: string; start: number }> = [];
   forEachRubyScopeBinding(
     scope,
     (name, start) => {
+      declarations.push({ name, start });
       const position = heredocs === null ? start : heredocs.order.get(start);
       if (position === undefined) return;
       const prev = earliest.get(name);
@@ -656,6 +659,9 @@ function rubyScopeBindings(
     heredocs,
   );
   cache.set(scope.id, earliest);
+  let byScope = rubyDeclarationPositions.get(cache);
+  if (byScope === undefined) rubyDeclarationPositions.set(cache, (byScope = new Map()));
+  byScope.set(scope.id, declarations);
   return earliest;
 }
 
@@ -776,6 +782,13 @@ interface RubyVisibleBinding {
   readonly chain: number;
   /** Earliest position the chain, from its closed scope down to here, binds the name at. */
   readonly earliest: number;
+  readonly owner: SyntaxNode;
+}
+
+interface RubySelfContext {
+  readonly inClass: boolean;
+  methods: number;
+  readonly parameters: Map<string, number>;
 }
 
 /** A scope frame of the bare-read walk: opened after its headers, closed after its body. */
@@ -785,6 +798,9 @@ interface RubyBareReadFrame {
   /** Set when the frame opens: the names it pushed and the chain it replaced. */
   names: RubyScopeBindings;
   outerChain: number;
+  parameters: string[];
+  outerSelf: RubySelfContext;
+  outerCaller: SyntaxNode | null;
 }
 
 const NO_RUBY_BINDINGS: RubyScopeBindings = new Map();
@@ -792,10 +808,25 @@ const NO_RUBY_BINDINGS: RubyScopeBindings = new Map();
 type RubyBareReadStep =
   | { readonly kind: 'visit'; readonly node: SyntaxNode }
   | { readonly kind: 'open'; readonly frame: RubyBareReadFrame }
-  | { readonly kind: 'close'; readonly frame: RubyBareReadFrame };
+  | { readonly kind: 'close'; readonly frame: RubyBareReadFrame }
+  | { readonly kind: 'self-open'; readonly frame: RubyBareReadFrame }
+  | { readonly kind: 'self-close'; readonly frame: RubyBareReadFrame };
 
 // Keyed by the capture pass's cache, so no tree survives that pass's lifetime.
 const rubyBoundReads = new WeakMap<Map<number, RubyScopeBindings>, ReadonlySet<number>>();
+const rubySelfReceivers = new WeakMap<Map<number, RubyScopeBindings>, ReadonlySet<number>>();
+const rubyHeredocCallers = new WeakMap<
+  Map<number, RubyScopeBindings>,
+  ReadonlyMap<number, SyntaxNode>
+>();
+const rubyDeclarationPositions = new WeakMap<
+  Map<number, RubyScopeBindings>,
+  Map<number, Array<{ name: string; start: number }>>
+>();
+const rubyLocalDeclarations = new WeakMap<
+  Map<number, RubyScopeBindings>,
+  Map<SyntaxNode, Array<{ name: string; start: number }>>
+>();
 
 /**
  * The ids of every identifier in the file that names a parameter or local
@@ -827,27 +858,98 @@ function rubyBoundReadIds(
   if (cached !== undefined) return cached;
   const heredocs = rubyHeredocLayout(root, cache);
   const bound = new Set<number>();
+  const selfReceivers = new Set<number>();
+  const heredocCallers = new Map<number, SyntaxNode>();
+  const localDeclarations = new Map<SyntaxNode, Array<{ name: string; start: number }>>();
+  let caller: SyntaxNode | null = null;
+  let self: RubySelfContext = { inClass: false, methods: 0, parameters: new Map() };
   const visible = new Map<string, RubyVisibleBinding[]>();
   // No chain is open above the root; `program` opens the first.
   let chain = -1;
   const steps: RubyBareReadStep[] = [{ kind: 'visit', node: root }];
   for (let step = steps.pop(); step !== undefined; step = steps.pop()) {
+    if (step.kind === 'self-open') {
+      const frame = step.frame;
+      frame.outerSelf = self;
+      const type = frame.scope.type;
+      if (type === 'class' || type === 'module' || type === 'program') {
+        self = { inClass: type !== 'program', methods: 0, parameters: new Map() };
+      }
+      const method = type === 'method' || type === 'singleton_method';
+      if (method) self.methods++;
+      frame.parameters =
+        self.inClass && (method || RUBY_OPEN_LOCAL_SCOPES.has(type))
+          ? rubyScopeLexicalNames(frame.scope)
+          : [];
+      for (const name of frame.parameters)
+        self.parameters.set(name, (self.parameters.get(name) ?? 0) + 1);
+      continue;
+    }
+    if (step.kind === 'self-close') {
+      for (const name of step.frame.parameters) {
+        const count = self.parameters.get(name)! - 1;
+        if (count === 0) self.parameters.delete(name);
+        else self.parameters.set(name, count);
+      }
+      if (step.frame.scope.type === 'method' || step.frame.scope.type === 'singleton_method')
+        self.methods--;
+      self = step.frame.outerSelf;
+      continue;
+    }
     if (step.kind === 'open') {
       const frame = step.frame;
+      frame.outerCaller = caller;
+      if (frame.scope.type === 'method' || frame.scope.type === 'singleton_method')
+        caller = frame.scope;
+      else if (frame.closed) caller = null;
       frame.outerChain = chain;
       if (frame.closed) chain = frame.scope.id;
       frame.names = rubyScopeBindings(frame.scope, cache, heredocs);
+      const declarations = rubyDeclarationPositions.get(cache)?.get(frame.scope.id) ?? [];
+      const parameters = new Set(
+        declarations.length === 0 ? [] : rubyScopeLexicalNames(frame.scope),
+      );
+      const locals = declarations.filter(({ name, start }) => {
+        if (parameters.has(name)) return false;
+        const entries = visible.get(name);
+        const outer = entries?.[entries.length - 1];
+        const position = heredocs === null ? start : heredocs.order.get(start);
+        // Assignment to an already visible outer local is a capture, not a
+        // new block-local declaration. Method bodies start a fresh chain.
+        const local =
+          frame.closed ||
+          outer === undefined ||
+          outer.chain !== chain ||
+          position === undefined ||
+          outer.earliest >= position;
+        if (!local) {
+          // A write through a captured cell invalidates its enclosing type fact
+          // too. The new claim activates at the write, preserving earlier reads.
+          const writes = localDeclarations.get(outer.owner) ?? [];
+          writes.push({ name, start });
+          localDeclarations.set(outer.owner, writes);
+        }
+        return local;
+      });
+      if (locals.length > 0) localDeclarations.set(frame.scope, locals);
       for (const [name, position] of frame.names) {
         let entries = visible.get(name);
         if (entries === undefined) visible.set(name, (entries = []));
         const top = entries[entries.length - 1];
         const earliest =
           top !== undefined && top.chain === chain ? Math.min(top.earliest, position) : position;
-        entries.push({ chain, earliest });
+        const capturesOuter =
+          !frame.closed &&
+          !parameters.has(name) &&
+          top !== undefined &&
+          top.chain === chain &&
+          top.earliest < position;
+        entries.push({ chain, earliest, owner: capturesOuter ? top.owner : frame.scope });
       }
       continue;
     }
     if (step.kind === 'close') {
+      caller = step.frame.outerCaller;
       for (const name of step.frame.names.keys()) visible.get(name)?.pop();
       chain = step.frame.outerChain;
       continue;
@@ -855,7 +957,22 @@ function rubyBoundReadIds(
     const node = step.node;
     // Visited through its opener, never where it physically sits.
     if (node.type === 'heredoc_body') continue;
+    if (
+      heredocs !== null &&
+      caller !== null &&
+      (node.startIndex < caller.startIndex || node.endIndex > caller.endIndex)
+    ) {
+      heredocCallers.set(node.id, caller);
+    }
     if (node.type === 'identifier') {
+      const localEntries = visible.get(node.text);
+      const local = localEntries?.[localEntries.length - 1];
+      if (
+        self.inClass &&
+        self.methods > 0 &&
+        (self.parameters.has(node.text) || local?.chain === chain)
+      )
+        selfReceivers.add(node.id);
       const readStart = heredocs === null ? node.startIndex : heredocs.order.get(node.startIndex);
       if (readStart !== undefined) {
         const entries = visible.get(node.text);
@@ -880,15 +997,25 @@ function rubyBoundReadIds(
       closed,
       names: NO_RUBY_BINDINGS,
       outerChain: chain,
+      parameters: [],
+      outerSelf: self,
+      outerCaller: caller,
     };
+    // Receiver ownership follows the syntax scope through its headers too;
+    // local-read activation still opens only after those headers are visited.
+    steps.push({ kind: 'self-close', frame });
     steps.push({ kind: 'close', frame });
     for (const child of children.reverse()) {
       if (!headerIds.has(child.id)) steps.push({ kind: 'visit', node: child });
     }
     steps.push({ kind: 'open', frame });
     for (const header of headers.reverse()) steps.push({ kind: 'visit', node: header });
+    steps.push({ kind: 'self-open', frame });
   }
   rubyBoundReads.set(cache, bound);
+  rubySelfReceivers.set(cache, selfReceivers);
+  rubyHeredocCallers.set(cache, heredocCallers);
+  rubyLocalDeclarations.set(cache, localDeclarations);
   return bound;
 }
 
@@ -939,7 +1066,6 @@ export function emitRubyScopeCaptures(
   // Per-scope binding index for the bare-identifier read check (RUBY-04),
   // built lazily and shared across every match of this file.
   const bareReadBindings = new Map<number, RubyScopeBindings>();
-  const lexicalNamesByScope = new Map<number, ReadonlySet<string>>();
   const receiverlessCallSites = new Set<string>();
 
   for (const m of rawMatches) {
@@ -1213,10 +1339,25 @@ export function emitRubyScopeCaptures(
     // check above. Give both an explicit receiver when a lexical claim would
     // otherwise stop free-call lookup; retain the arity from the call node.
     const nameNode = nodeMap['@reference.name'];
+    if (nameNode !== undefined && callTag !== undefined) {
+      rubyBoundReadIds(tree.rootNode, bareReadBindings);
+      const caller = rubyHeredocCallers.get(bareReadBindings)?.get(nameNode.id);
+      if (caller !== undefined) {
+        grouped['@reference.caller-scope'] = syntheticCapture(
+          '@reference.caller-scope',
+          nameNode,
+          makeScopeId({
+            filePath: _filePath,
+            kind: 'Function',
+            range: nodeToCapture('', caller).range,
+          }),
+        );
+      }
+    }
     if (
       grouped['@reference.call.free'] !== undefined &&
       nameNode !== undefined &&
-      rubyBareCallNeedsSelfReceiver(nameNode, lexicalNamesByScope)
+      rubyBareCallNeedsSelfReceiver(nameNode, bareReadBindings)
     ) {
       grouped['@reference.call.member'] = grouped['@reference.call.free']!;
       delete grouped['@reference.call.free'];
@@ -1452,7 +1593,75 @@ export function emitRubyScopeCaptures(
     out.push(match);
   }
 
+  attachRubyLocalClaims(out, tree.rootNode, bareReadBindings, sourceText);
   return out;
+}
+
+/** Ordered local declarations stop the type walk without hiding earlier accessor reads. */
+function attachRubyLocalClaims(
+  matches: CaptureMatch[],
+  root: SyntaxNode,
+  bindings: Map<number, RubyScopeBindings>,
+  sourceText: string,
+): void {
+  rubyBoundReadIds(root, bindings);
+  const declarations = rubyLocalDeclarations.get(bindings)!;
+  if (declarations.size === 0) return;
+  const lineStarts = [0];
+  for (let i = 0; i < sourceText.length; i++) if (sourceText[i] === '\n') lineStarts.push(i + 1);
+  // A closure binding has a declaration spanning its initializer, rather
+  // than only the identifier. The claim must contain that declaration so
+  // the shared name-claim filter can retain the callable binding.
+  const callableRanges = new Map<string, Capture['range']>();
+  for (const match of matches) {
+    const name = match['@declaration.name'];
+    const declaration = match['@declaration.function'];
+    if (name !== undefined && declaration !== undefined) {
+      callableRanges.set(
+        `${name.text}:${name.range.startLine}:${name.range.startCol}`,
+        declaration.range,
+      );
+    }
+  }
+  const claimsByStart = new Map<string, NameClaim[]>();
+  for (const [scope, locals] of declarations) {
+    const claims: NameClaim[] = locals.map(({ name, start }) => {
+      let lo = 0,
+        hi = lineStarts.length;
+      while (lo + 1 < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (lineStarts[mid]! <= start) lo = mid;
+        else hi = mid;
+      }
+      const position = { startLine: lo + 1, startCol: start - lineStarts[lo]! };
+      const callableRange = callableRanges.get(
+        `${name}:${position.startLine}:${position.startCol}`,
+      );
+      return {
+        name,
+        kind: 'binding',
+        inactive: 'outer',
+        availableFrom: position,
+        range: callableRange ?? {
+          ...position,
+          endLine: position.startLine,
+          endCol: position.startCol + name.length,
+        },
+      };
+    });
+    claimsByStart.set(`${scope.startPosition.row + 1}:${scope.startPosition.column}`, claims);
+  }
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i]!;
+    const anchor = match['@scope.function'] ?? match['@scope.block'] ?? match['@scope.module'];
+    if (anchor === undefined) continue;
+    const claims = claimsByStart.get(`${anchor.range.startLine}:${anchor.range.startCol}`);
+    if (claims === undefined) continue;
+    matches[i] = {
+      ...match,
+      '@scope.name-claims': { ...anchor, name: '@scope.name-claims', text: JSON.stringify(claims) },
+    };
+  }
 }
 
 /**
@@ -1762,25 +1971,10 @@ function rubyScopeLexicalNames(scopeNode: SyntaxNode): string[] {
 /** Does a method call cross a parameter claim with an available self binding? */
 function rubyBareCallNeedsSelfReceiver(
   identifier: SyntaxNode,
-  namesByScope: Map<number, ReadonlySet<string>>,
+  bindings: Map<number, RubyScopeBindings>,
 ): boolean {
-  let hasMethod = false;
-  let hasClaim = false;
-  for (let scope = identifier.parent; scope !== null; scope = scope.parent) {
-    if (scope.type === 'program') return false;
-    if (scope.type === 'class' || scope.type === 'module') return hasMethod && hasClaim;
-    const method = scope.type === 'method' || scope.type === 'singleton_method';
-    if (!method && scope.type !== 'block' && scope.type !== 'do_block' && scope.type !== 'lambda')
-      continue;
-    hasMethod ||= method;
-    let names = namesByScope.get(scope.id);
-    if (names === undefined) {
-      names = new Set(rubyScopeLexicalNames(scope));
-      namesByScope.set(scope.id, names);
-    }
-    hasClaim ||= names.has(identifier.text);
-  }
-  return false;
+  rubyBoundReadIds(identifier.tree.rootNode, bindings);
+  return rubySelfReceivers.get(bindings)!.has(identifier.id);
 }
 
 /** Publish the parameters `scopeNode` declares on its scope match, when it declares any. */
@@ -1975,6 +2169,8 @@ function findFollowingAttrCall(commentNode: SyntaxNode): SyntaxNode | null {
   while (sibling !== null && sibling.type === 'comment') {
     sibling = sibling.nextNamedSibling;
   }
+  if (sibling === null) return null;
+  if (sibling.type === 'body_statement') sibling = sibling.firstNamedChild;
   if (sibling === null) return null;
   if (sibling.type === 'call') {
     const methodNode = sibling.childForFieldName('method');
