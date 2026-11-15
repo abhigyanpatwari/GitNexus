@@ -7,8 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildScopeTree, createEagerImportVisibility, finalize } from 'gitnexus-shared';
 import { createNamespaceTargetCache } from '../../src/core/ingestion/scope-resolution/scope/namespace-target-cache.ts';
-import { dartMergeBindings } from '../../src/core/ingestion/languages/dart/merge-bindings.ts';
-import { rubyMergeBindings } from '../../src/core/ingestion/languages/ruby/merge-bindings.ts';
+import { dartScopeResolver } from '../../src/core/ingestion/languages/dart/scope-resolver.ts';
+import { rubyScopeResolver } from '../../src/core/ingestion/languages/ruby/scope-resolver.ts';
 import { emitDartScopeCaptures } from '../../src/core/ingestion/languages/dart/captures.ts';
 import { emitRubyScopeCaptures } from '../../src/core/ingestion/languages/ruby/captures.ts';
 import { captureWork } from '../dart-closure-binders/capture-work.mjs';
@@ -94,6 +94,9 @@ function prepare(form, n) {
       localDefs: refs.map((ref) => ref.def),
       parsedImports: [],
     };
+    // The merge hook and its associativity opt-in are the provider's own, as
+    // the pipeline forwards them: a provider that stops opting in fails here.
+    const resolver = form === 'dart-bindings' ? dartScopeResolver : rubyScopeResolver;
     return () => {
       let visits = 0;
       const result = finalize(
@@ -101,12 +104,10 @@ function prepare(form, n) {
         {
           resolveImportTarget: () => null,
           expandsWildcardTo: () => [],
-          mergeBindingsAreAssociative: true,
-          mergeBindings: (existing, incoming) => {
+          mergeBindingsAreAssociative: resolver.mergeBindingsAreAssociative,
+          mergeBindings: (existing, incoming, scopeId) => {
             visits += existing.length + incoming.length;
-            return form === 'dart-bindings'
-              ? dartMergeBindings([...existing, ...incoming])
-              : rubyMergeBindings(existing, incoming, 'module');
+            return resolver.mergeBindings(existing, incoming, scopeId);
           },
         },
       );

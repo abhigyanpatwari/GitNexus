@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { finalize, type BindingRef, type FinalizeFile } from 'gitnexus-shared';
-import { dartMergeBindings } from '../../../src/core/ingestion/languages/dart/merge-bindings.js';
-import { rubyMergeBindings } from '../../../src/core/ingestion/languages/ruby/merge-bindings.js';
+import { finalize, type BindingRef, type FinalizeFile, type ScopeId } from 'gitnexus-shared';
+import { dartScopeResolver } from '../../../src/core/ingestion/languages/dart/scope-resolver.js';
+import { rubyScopeResolver } from '../../../src/core/ingestion/languages/ruby/scope-resolver.js';
 
 describe('crowded-class binding materialization', () => {
-  it.each(['dart', 'ruby'] as const)('merges each %s name once per scope', (language) => {
+  // The merge hook and its associativity opt-in are read from the provider the
+  // pipeline runs, so a provider that stops opting in fails the count below.
+  it.each([
+    { language: 'dart', resolver: dartScopeResolver },
+    { language: 'ruby', resolver: rubyScopeResolver },
+  ])('merges each $language name once per scope', ({ resolver }) => {
     for (const count of [16, 64, 256, 1024]) {
       const refs: BindingRef[] = Array.from({ length: count }, (_, i) => ({
         def: {
@@ -25,11 +30,13 @@ describe('crowded-class binding materialization', () => {
         parsedImports: [],
       };
       let visited = 0;
-      const merge = (existing: readonly BindingRef[], incoming: readonly BindingRef[]) => {
+      const merge = (
+        existing: readonly BindingRef[],
+        incoming: readonly BindingRef[],
+        scopeId: ScopeId,
+      ) => {
         visited += existing.length + incoming.length;
-        return language === 'dart'
-          ? dartMergeBindings([...existing, ...incoming])
-          : rubyMergeBindings(existing, incoming, 'module');
+        return resolver.mergeBindings(existing, incoming, scopeId);
       };
       const result = finalize(
         { files: [file], workspaceIndex: undefined as never },
@@ -37,7 +44,7 @@ describe('crowded-class binding materialization', () => {
           resolveImportTarget: () => null,
           expandsWildcardTo: () => [],
           mergeBindings: merge,
-          mergeBindingsAreAssociative: true,
+          mergeBindingsAreAssociative: resolver.mergeBindingsAreAssociative,
         },
       );
       expect(
