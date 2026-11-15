@@ -106,15 +106,17 @@ function buildDartLocalCallables(parsed: ParsedFile): DartLocalCallables {
  * Index each file's local callables while its scopes are still resident, and
  * carry the index on the file. Runs in the workspace-reference hook, before
  * scope sealing can strip `scopes` from the files the fallback later sees.
+ *
+ * A file that declares no local callable is left as it is: the lazy index of
+ * such a file answers the same (no owner) with or without its scopes.
  */
 export function recordDartLocalCallables(files: ParsedFile[]): void {
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (file === undefined) continue;
-    const withFacts: WithLocalCallables = {
-      ...file,
-      [LOCAL_CALLABLES]: buildDartLocalCallables(file),
-    };
+    const index = buildDartLocalCallables(file);
+    if (index.owners.size === 0) continue;
+    const withFacts: WithLocalCallables = { ...file, [LOCAL_CALLABLES]: index };
     files[i] = withFacts;
   }
 }

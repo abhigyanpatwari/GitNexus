@@ -110,7 +110,7 @@ function tokenizeShellCommand(command) {
 // value is attached; `boolean` never does; `pattern` carries the query;
 // `file` reads queries from a file; `exit` prints information and searches
 // nothing. The tools disagree on single letters (-E, -r, -T, -d, -h, -I, -L).
-const words = (text) => text.trim().split(/\s+/);
+const optionNames = (text) => text.trim().split(/\s+/);
 
 function searchOptionTable(kinds) {
   const table = new Map();
@@ -137,13 +137,13 @@ const SEARCH_TOOL_OPTIONS = {
       pattern: ['regexp'],
       file: ['file'],
       exit: ['files', 'generate', 'help', 'pcre2-version', 'type-list', 'version'],
-      value: words(`
+      value: optionNames(`
         after-context before-context color colors context context-separator dfa-size-limit encoding
         engine field-context-separator field-match-separator glob hostname-bin hyperlink-format
         iglob ignore-file max-columns max-count max-depth max-filesize path-separator pre pre-glob
         regex-size-limit replace sort sortr threads type type-add type-clear type-not
       `),
-      boolean: words(`
+      boolean: optionNames(`
         auto-hybrid-regex binary block-buffered byte-offset case-sensitive column count
         count-matches crlf debug files-with-matches files-without-match fixed-strings follow
         glob-case-insensitive heading hidden ignore ignore-case ignore-dot ignore-exclude
@@ -180,11 +180,11 @@ const SEARCH_TOOL_OPTIONS = {
       pattern: ['regexp'],
       file: ['file'],
       exit: ['help', 'version'],
-      value: words(`
+      value: optionNames(`
         after-context before-context binary-files context devices directories exclude exclude-dir
         exclude-from group-separator include label max-count
       `),
-      boolean: words(`
+      boolean: optionNames(`
         basic-regexp binary byte-offset color colour count dereference-recursive extended-regexp
         files-with-matches files-without-match fixed-strings ignore-case initial-tab invert-match
         line-buffered line-number line-regexp no-filename no-group-separator no-ignore-case

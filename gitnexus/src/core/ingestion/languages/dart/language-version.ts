@@ -31,14 +31,19 @@ export function dartLanguageVersionHasWildcardVariables(major: number, minor: nu
   return major > 3 || (major === 3 && minor >= 7);
 }
 
+/** The same question for a `major.minor` string; a missing part reads as 3.7. */
+export function dartVersionHasWildcardVariables(version: string): boolean {
+  const [major = 3, minor = 7] = version.split('.').map(Number);
+  return dartLanguageVersionHasWildcardVariables(major, minor);
+}
+
 export function setDartDefaultLanguageVersion(
   node: SyntaxNode,
   version: string,
   filePath?: string,
 ): void {
-  const [major = 3, minor = 7] = version.split('.').map(Number);
   const state: DartLanguageVersionState = {
-    defaultWildcards: dartLanguageVersionHasWildcardVariables(major, minor),
+    defaultWildcards: dartVersionHasWildcardVariables(version),
     packageSensitive: false,
   };
   stateByTree.set(node.tree, state);

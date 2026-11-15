@@ -1111,8 +1111,7 @@ export function emitRubyScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
-    const localScope =
-      nodeMap['@scope.function'] ?? nodeMap['@scope.block'] ?? nodeMap['@scope.module'];
+    const localScope = rubyLocalScopeOf(nodeMap);
     if (localScope !== undefined) localScopeNodes.set(grouped, localScope);
     const freeCall = nodeIfType(nodeMap['@reference.call.free'], 'call');
     if (freeCall !== null && freeCall.childForFieldName('receiver') === null) {
@@ -1791,6 +1790,12 @@ function rubyDeclarationSpans(
   return spans.length === 1 ? null : spans;
 }
 
+/** The scope a capture match opens, under whichever scope tag captured it.
+ *  One reader for the node map and for the match, so the two cannot drift. */
+function rubyLocalScopeOf<T>(byTag: Readonly<Record<string, T | undefined>>): T | undefined {
+  return byTag['@scope.function'] ?? byTag['@scope.block'] ?? byTag['@scope.module'];
+}
+
 /**
  * Ordered local declarations stop the type walk without hiding earlier
  * accessor reads. A claim belongs to the scope NODE that declares the local:
@@ -1836,7 +1841,7 @@ function attachRubyLocalClaims(
   }
   for (const [i, match] of matches.entries()) {
     const scope = scopeNodes.get(match);
-    const anchor = match['@scope.function'] ?? match['@scope.block'] ?? match['@scope.module'];
+    const anchor = rubyLocalScopeOf(match);
     if (scope === undefined || anchor === undefined) continue;
     const locals = declarations.get(scope.id);
     if (locals === undefined) continue;

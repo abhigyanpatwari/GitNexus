@@ -340,8 +340,7 @@ export function emitDartScopeCaptures(
       // `operator *` — what the signature reader calls it — which no receiver
       // or callee can spell, so no lookup reads it; hoisted to the Module scope
       // it would only be one file-wide entry per operator symbol, the last
-      // class declaring that operator winning. Neither had a declaration
-      // capture before this tag, so no binding is lost
+      // class declaring that operator winning
       // (`dart-capture-feedback.test.ts`, "an operator and a factory …").
       const withholdsReturnBinding =
         declTag === '@dart.accessor' || declTag === '@dart.callable-body';
@@ -892,10 +891,9 @@ function dartCatchBody(catchClause: SyntaxNode): SyntaxNode | null {
  * makes the owner of a binder a field read, not a climb.
  *
  * Pre-order over an explicit stack, not recursion: a syntax tree is as deep as
- * the source nests (one argument closure is about eight levels), and a frame
- * per level put a ceiling on that depth which moved with every local this walk
- * gained. The pending nodes now live on the heap, so the walk has no depth
- * limit of its own (`callable-flow-stack-depth.test.ts`).
+ * the source nests (one argument closure is about eight levels). The pending
+ * nodes live on the heap, so the walk has no depth limit of its own
+ * (`callable-flow-stack-depth.test.ts`).
  */
 function walkDartTree(
   root: SyntaxNode,

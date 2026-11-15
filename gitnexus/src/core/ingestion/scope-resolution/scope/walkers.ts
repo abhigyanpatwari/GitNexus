@@ -20,7 +20,12 @@
  * as-is for TypeScript, Java, Kotlin, Ruby, etc.
  */
 
-import { importTargetDirectory, lookupLexicalName, nameClaimsFor } from 'gitnexus-shared';
+import {
+  importNameFiltersAllow,
+  importTargetDirectory,
+  lookupLexicalName,
+  nameClaimsFor,
+} from 'gitnexus-shared';
 import type {
   NameLookupOptions,
   NameClaimResult,
@@ -2536,13 +2541,7 @@ export function namespaceImportAllowsMember(
       edge.kind === 'namespace' && (targetFile === undefined || edge.targetFile === targetFile),
   );
   return (
-    imports.length === 0 ||
-    imports.some(
-      (edge) =>
-        edge.nameFilters?.every((filter) =>
-          filter.kind === 'show' ? filter.names.includes(member) : !filter.names.includes(member),
-        ) ?? true,
-    )
+    imports.length === 0 || imports.some((edge) => importNameFiltersAllow(edge.nameFilters, member))
   );
 }
 

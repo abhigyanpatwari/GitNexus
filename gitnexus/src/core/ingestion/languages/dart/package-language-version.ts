@@ -4,7 +4,7 @@ import { dartProvider } from '../dart.js';
 import { emitDartScopeCaptures } from './captures.js';
 import {
   dartCaptureDependsOnPackageLanguageVersion,
-  dartLanguageVersionHasWildcardVariables,
+  dartVersionHasWildcardVariables,
 } from './language-version.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
@@ -49,8 +49,7 @@ function packageVersion(filePath: string, config: DartPackageConfig | undefined)
 function legacyPackageVersion(filePath: string, config: unknown): string | null {
   const version = packageVersion(filePath, config as DartPackageConfig | undefined);
   if (version === null) return null;
-  const [major = 3, minor = 7] = version.split('.').map(Number);
-  return dartLanguageVersionHasWildcardVariables(major, minor) ? null : version;
+  return dartVersionHasWildcardVariables(version) ? null : version;
 }
 
 /** Source is needed only for a file that both sits in a pre-3.7 package and
