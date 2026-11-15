@@ -369,7 +369,13 @@ export function rCallsBeforeLocalDefinition(root: Parser.SyntaxNode, name: strin
       for (const child of node.namedChildren) stack.push(child);
     }
     if (definitions.length === 0) continue;
-    const calls = callsOf(body, name);
+    // A default (`function(a, b = helper(a))`) is evaluated lazily in the function's own
+    // environment, where the local definition may already exist, so a call in one is as
+    // undecidable as a call before the definition. The parameters precede the body, so the
+    // ordering test below refuses it whichever statement defines the local.
+    const parameters =
+      fn.type === 'function_definition' ? fn.childForFieldName('parameters') : null;
+    const calls = [...(parameters ? callsOf(parameters, name) : []), ...callsOf(body, name)];
     if (calls.length === 0) continue;
     const first = definitions
       .filter((d) => body.type === 'braced_expression' && d.parent?.id === body.id)

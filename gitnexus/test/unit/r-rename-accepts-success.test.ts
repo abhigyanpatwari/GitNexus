@@ -93,3 +93,39 @@ describe('T9: several directories declare the same Package: name', () => {
     expect(verdict?.message ?? '').not.toMatch(/Package: name/);
   });
 });
+
+describe('T10: a call in a parameter default beside a local definition of the name', () => {
+  const file = 'a.R';
+  const withDefault = (body: string): string =>
+    `helper <- function(x) x\nf <- function(a, b = helper(a)) {\n${body}}\n`;
+
+  it('refuses when the function body defines a local function of the name', () => {
+    expect(
+      check({ [file]: withDefault('  helper <- function(y) y\n  b\n') }, file, 'helper', 'assist'),
+    ).toMatchObject({
+      code: 'ambiguous_reference',
+      message: expect.stringContaining('before the local definition'),
+    });
+  });
+
+  it('refuses a default that calls the name when the local definition follows a body call', () => {
+    expect(
+      check(
+        { [file]: withDefault('  helper(a)\n  helper <- function(y) y\n  b\n') },
+        file,
+        'helper',
+        'assist',
+      ),
+    ).toMatchObject({ code: 'ambiguous_reference' });
+  });
+
+  it('accepts a default call when the function has no local definition of the name', () => {
+    expect(check({ [file]: withDefault('  b\n') }, file, 'helper', 'assist')).toBeUndefined();
+  });
+
+  it('accepts a local definition when no default calls the name', () => {
+    const source =
+      'helper <- function(x) x\nf <- function(a, b = 1) {\n  helper <- function(y) y\n  helper(a)\n}\n';
+    expect(check({ [file]: source }, file, 'helper', 'assist')).toBeUndefined();
+  });
+});
