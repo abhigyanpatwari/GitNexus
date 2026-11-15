@@ -1497,16 +1497,15 @@ export interface ScopeResolver {
    * risk LOW with 0 affected processes).
    *
    * `emitFreeCallFallback` invokes this BEFORE the implicit-`this` and
-   * scope-chain lookups, so an explicit path outranks a lexical shadow. That
-   * includes a lexical NAME CLAIM (`lexicalNames`, a parameter or a local of the
-   * same name): the contract left open whether such a claim blocks the call
-   * before the hook runs, and it does not — a defined result for a site with
-   * `rawQualifiedName` bypasses the block, because the written path names the
-   * module and a local binding of the bare tail cannot be what it means.
+   * scope-chain lookups, so an explicit path outranks a lexical shadow.
    * Returning `undefined` (unqualified call, unknown module, or no such
-   * member in the named module) falls through to the unchanged chain, name-claim
-   * block included — the hook never removes an edge the prior tiers would have
-   * produced.
+   * member in the named module) falls through to the unchanged chain — the
+   * hook is strictly additive and never removes an edge the prior tiers
+   * would have produced.
+   *
+   * By default a lexical NAME CLAIM (`lexicalNames`: a parameter or a local of
+   * the same name) still blocks the call before this hook runs. A provider
+   * opts into the stronger ordering with `qualifiedFreeCallOutranksNameClaim`.
    *
    * Languages whose qualified calls carry a value/type receiver (`x.foo()`,
    * `Type::foo()`) are served by the receiver-bound-calls pass and leave
@@ -1526,6 +1525,18 @@ export interface ScopeResolver {
     workspaceIndex: WorkspaceResolutionIndex,
     allFilePaths: ReadonlySet<string>,
   ) => SymbolDefinition | undefined;
+
+  /**
+   * Opt-in for providers whose `resolveQualifiedFreeCall` reads a path that
+   * cannot be a local binding (an R `pkg::fn`, `pkg:::fn`). When `true`,
+   * `emitFreeCallFallback` runs the hook BEFORE the lexical name-claim block,
+   * and a defined result for a site with `rawQualifiedName` bypasses that
+   * block: the written path names the module, so a local binding of the bare
+   * tail (a parameter, a `let`, a loop variable) cannot be what it means.
+   * Absent or `false`, the hook runs after the block exactly as before, so a
+   * provider that does not set this sees no change in its graph.
+   */
+  readonly qualifiedFreeCallOutranksNameClaim?: boolean;
 
   /**
    * Optional resolver for a qualified CALLEE TEXT whose path syntax only the

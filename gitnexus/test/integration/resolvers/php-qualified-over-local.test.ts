@@ -2,11 +2,11 @@
  * PHP: a namespaced function call (`\Lib\make()`) beside an unresolved `use function Ext\make` and
  * a same-named function of the caller's own namespace.
  *
- * The shared free-call pass now resolves a qualified site's hook before it applies a lexical name
- * claim (unit-tested with a fake hook in `free-call-qualified-over-name-claim.test.ts`). PHP
- * publishes no such claim for these declarations, so this fixture pins that its edges did not move
- * with the reorder: the qualified call binds `Lib\make`, the unqualified control binds the
- * namespace's own `make`.
+ * The shared free-call pass resolves a qualified site's hook before it applies a lexical name
+ * claim only for a provider that sets `qualifiedFreeCallOutranksNameClaim` (unit-tested with a
+ * fake hook in `free-call-qualified-over-name-claim.test.ts`). PHP does not, so this fixture pins
+ * that its edges did not move: the qualified call binds `Lib\make`, the unqualified control binds
+ * the namespace's own `make`.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import path from 'path';

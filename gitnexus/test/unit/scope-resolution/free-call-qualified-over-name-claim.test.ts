@@ -1,9 +1,11 @@
 /**
  * A module-qualified free call (`mod::fn()`) names its module, so a lexical name claim for the
- * bare tail (a local binding or parameter called `fn`) cannot be what the call means. The
- * `resolveQualifiedFreeCall` hook therefore runs BEFORE the name-claim block, and a defined hit
- * bypasses it. An undefined hit, a site without a written path and a language without the hook
- * keep the block, so the reorder only ever adds an edge for a site the hook resolved.
+ * bare tail (a local binding or parameter called `fn`) cannot be what the call means. A provider
+ * that sets `qualifiedFreeCallOutranksNameClaim` therefore has its `resolveQualifiedFreeCall`
+ * hook run BEFORE the name-claim block, and a defined hit bypasses it. An undefined hit, a site
+ * without a written path and a language without the hook keep the block, so the reorder only
+ * ever adds an edge for a site the hook resolved. A provider that does not opt in keeps the
+ * original order: the block first, the hook after it (pinned below).
  *
  * The hook is a fake: this pins the ordering in the shared pass, not any language.
  */
@@ -86,7 +88,7 @@ function mkScope(
 
 type Hook = NonNullable<ScopeResolver['resolveQualifiedFreeCall']>;
 
-function run(reference: ReferenceSite, hook: Hook | undefined, claimed = true) {
+function run(reference: ReferenceSite, hook: Hook | undefined, claimed = true, optIn = true) {
   const callerScope = mkScope(
     'scope:caller-mod',
     CALLER_FILE,
@@ -168,6 +170,7 @@ function run(reference: ReferenceSite, hook: Hook | undefined, claimed = true) {
     {
       recordSourceBinding: (_site, binding) => bindings.push(binding),
       ...(hook === undefined ? {} : { resolveQualifiedFreeCall: hook }),
+      ...(optIn ? { qualifiedFreeCallOutranksNameClaim: true } : {}),
     },
   );
   return {
@@ -233,5 +236,29 @@ describe('the qualified hook outranks a lexical name claim', () => {
     const { calls } = run(site(true), probe.hook, false);
     expect(calls).toHaveLength(1);
     expect(probe.calls).toBe(1);
+  });
+
+  it('without the opt-in a name claim still blocks a qualified site, and the hook never runs', () => {
+    const probe = hitHook();
+    const { calls, bindings } = run(site(true), probe.hook, true, false);
+    expect(calls).toHaveLength(0);
+    expect(bindings.map((b) => b.basis)).toContain('lexical-name-claim');
+    expect(probe.calls).toBe(0);
+  });
+
+  it('without the opt-in and without a name claim the hook runs once, in its original place', () => {
+    const probe = hitHook();
+    const { calls } = run(site(true), probe.hook, false, false);
+    expect(calls).toHaveLength(1);
+    expect(probe.calls).toBe(1);
+  });
+
+  it('an opted-in hit is written as the call target even when the hook result is not callable-typed', () => {
+    // L12: the hook result is assigned unconditionally; the pass does not re-check its type,
+    // so a hook that returns a non-callable definition still yields an edge to it. Pinned so
+    // a later guard flips this test deliberately.
+    const classDef: SymbolDefinition = { ...targetDef, type: 'Class' };
+    const { calls } = run(site(true), () => classDef);
+    expect(calls).toHaveLength(1);
   });
 });

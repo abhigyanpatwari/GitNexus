@@ -1,3 +1,4 @@
+mod shadowed;
 mod tools;
 
 use tools::ToolCtx;

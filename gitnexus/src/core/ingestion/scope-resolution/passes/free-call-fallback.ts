@@ -118,6 +118,8 @@ export function emitFreeCallFallback(
     /** Module-qualified free-call resolver (#2730) — see
      *  `ScopeResolver.resolveQualifiedFreeCall`. */
     readonly resolveQualifiedFreeCall?: ScopeResolver['resolveQualifiedFreeCall'];
+    /** Mirrors `ScopeResolver.qualifiedFreeCallOutranksNameClaim`. */
+    readonly qualifiedFreeCallOutranksNameClaim?: boolean;
     readonly resolveUnqualifiedCall?: ScopeResolver['resolveUnqualifiedCall'];
     readonly selectedCalls?: Map<string, SymbolDefinition | null>;
     readonly onSelectedCall?: (key: string, definition: SymbolDefinition | null) => void;
@@ -285,11 +287,14 @@ export function emitFreeCallFallback(
                 b.def.type === 'Struct' ||
                 b.def.type === 'Record',
             )));
-      // A module-qualified free call (`mod::fn()`) names its module explicitly, so the path is
-      // evidence the lexical name claim is not: a local `fn` binds the bare tail, never `mod::fn`.
-      // The hook therefore runs before the block, and a defined hit bypasses it.
+      // Opt-in (`qualifiedFreeCallOutranksNameClaim`): a module-qualified free call
+      // (`mod::fn()`) names its module explicitly, so the path is evidence the lexical name
+      // claim is not. The hook then runs before the block, and a defined hit bypasses it.
+      // Without the opt-in the hook runs later, exactly where it always has.
       const qualifiedFnDef =
-        options.resolveQualifiedFreeCall !== undefined && site.rawQualifiedName !== undefined
+        options.qualifiedFreeCallOutranksNameClaim === true &&
+        options.resolveQualifiedFreeCall !== undefined &&
+        site.rawQualifiedName !== undefined
           ? options.resolveQualifiedFreeCall(site, parsed, scopes, workspaceIndex, allFilePaths())
           : undefined;
       if (blocksCall && qualifiedFnDef === undefined) {
@@ -428,9 +433,25 @@ export function emitFreeCallFallback(
       // the caller's own file and emits a self-loop instead of the real
       // cross-module edge (#2730). Only fires when the language populated
       // `rawQualifiedName` AND provides the hook; `undefined` falls through to
-      // the unchanged chain, so this tier is strictly additive. Resolved above, before the
+      // the unchanged chain, so this tier is strictly additive. With the
+      // `qualifiedFreeCallOutranksNameClaim` opt-in the hook was resolved above, before the
       // name-claim block, so that a hit also outranks a lexical name claim.
-      if (fnDef === undefined) fnDef = qualifiedFnDef;
+      if (fnDef === undefined) {
+        if (options.qualifiedFreeCallOutranksNameClaim === true) {
+          fnDef = qualifiedFnDef;
+        } else if (
+          options.resolveQualifiedFreeCall !== undefined &&
+          site.rawQualifiedName !== undefined
+        ) {
+          fnDef = options.resolveQualifiedFreeCall(
+            site,
+            parsed,
+            scopes,
+            workspaceIndex,
+            allFilePaths(),
+          );
+        }
+      }
       // Implicit-this overload narrowing: an unqualified call inside
       // a method body might be calling a sibling overload on the
       // enclosing class. When the workspace has multiple methods of

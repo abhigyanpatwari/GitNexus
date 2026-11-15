@@ -332,6 +332,8 @@ export const rScopeResolver: ScopeResolver = {
     recordRPackageConfig(parsedFiles, ctx.resolutionConfig);
   },
   resolveQualifiedFreeCall: resolveRQualifiedFreeCall,
+  // `pkg::fn` names its package, so a local `fn` (parameter, assignment) cannot be the callee.
+  qualifiedFreeCallOutranksNameClaim: true,
 
   // `populateRNamespaceImports` and `populateRQualifiedCalls` read only ParsedFile scopes, never source
   // text: without this, merely declaring the hook makes the pipeline read the
