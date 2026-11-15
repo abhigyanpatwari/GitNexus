@@ -143,7 +143,7 @@ describe('populateRNamespaceImports with backtick-quoted definitions', () => {
     expect(importsOf(files[0])).toEqual(['`%||%`<-prov::`%||%`']);
   });
 
-  it('adds one import per spelling when the provider writes the name two ways', () => {
+  it('adds no import when two files of the provider write the name two ways', () => {
     const files = [
       caller(),
       parse('f <- function() 1', 'prov/R/a.R'),
@@ -152,7 +152,8 @@ describe('populateRNamespaceImports with backtick-quoted definitions', () => {
     populateRNamespaceImports(files, {
       resolutionConfig: config({ consumer: { importFrom: [{ pkg: 'prov', name: 'f' }] } }),
     });
-    expect(importsOf(files[0]).sort()).toEqual(['`f`<-prov::`f`', 'f<-prov::f']);
+    // Two files of the package define the function: the name is ambiguous and binds nowhere.
+    expect(importsOf(files[0]).sort()).toEqual([]);
   });
 
   it('lets a backtick-defined top-level function of the caller package mask its import', () => {

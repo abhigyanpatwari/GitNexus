@@ -5,13 +5,11 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
   "imports": {
     "analytics/R/own.R": [
       "["helper","helper","decoy"]",
-      "["shared","shared","corelib"]",
       "["only_b","only_b","corelib"]",
       "["Stack","Stack","corelib"]",
     ],
     "analytics/R/use.R": [
       "["helper","helper","decoy"]",
-      "["shared","shared","corelib"]",
       "["only_b","only_b","corelib"]",
       "["Stack","Stack","corelib"]",
     ],
@@ -34,10 +32,7 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
       "corelib/R/b.R",
     ],
     ""corelib"::print.tidy": null,
-    ""corelib"::shared": [
-      "corelib/R/a.R",
-      "corelib/R/b.R",
-    ],
+    ""corelib"::shared": null,
     ""corelib"::tidy": null,
     "corelib::Stack": [
       "corelib/R/a.R",
@@ -53,10 +48,7 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
       "corelib/R/b.R",
     ],
     "corelib::print.tidy": null,
-    "corelib::shared": [
-      "corelib/R/a.R",
-      "corelib/R/b.R",
-    ],
+    "corelib::shared": null,
     "corelib::tidy": null,
     "decoy::Stack": null,
     "decoy::dup": null,

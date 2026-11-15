@@ -532,6 +532,14 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
 
   it('returns only the files that define the name at top level', () => {
     const s = setup(
+      { [F]: 'f <- function(d) d', 'scorelib/R/t.R': 'g <- function(d) d' },
+      { exports: ['f', 'g'] },
+    );
+    expect(resolve(s, 'scorelib', 'f')).toEqual([F]);
+  });
+
+  it('returns nothing when two files of the package define the name as a function', () => {
+    const s = setup(
       {
         [F]: 'f <- function(d) d',
         'scorelib/R/t.R': 'g <- function(d) d',
@@ -539,7 +547,7 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
       },
       { exports: ['f', 'g'] },
     );
-    expect(resolve(s, 'scorelib', 'f')).toEqual([F, 'scorelib/R/u.R']);
+    expect(resolve(s, 'scorelib', 'f')).toBeNull();
   });
 
   it('ignores same-named definitions outside the package R/ directory and in other packages', () => {
