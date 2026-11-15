@@ -6,6 +6,7 @@
  * the indexed file list is passed in directly.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -116,6 +117,30 @@ describe('collectRUnindexedSources', () => {
     expect(await collectRUnindexedSources(root, [])).toEqual([
       { path: 'big.R', words: [], unreadable: true },
     ]);
+  });
+
+  it('ignores a .gitnexusignore that is a symbolic link, a directory or a FIFO', async () => {
+    await write({ 'rules.txt': 'scratch/\n', 'scratch/try.R': 'helper(1)\n' });
+    await fs.symlink(path.join(root, 'rules.txt'), path.join(root, '.gitnexusignore'));
+    expect(paths(await collectRUnindexedSources(root, []))).toEqual(['scratch/try.R']);
+    await fs.rm(path.join(root, '.gitnexusignore'));
+    await fs.mkdir(path.join(root, '.gitnexusignore'));
+    expect(paths(await collectRUnindexedSources(root, []))).toEqual(['scratch/try.R']);
+    if (process.platform !== 'win32') {
+      await fs.rmdir(path.join(root, '.gitnexusignore'));
+      execFileSync('mkfifo', [path.join(root, '.gitnexusignore')]);
+      expect(paths(await collectRUnindexedSources(root, []))).toEqual(['scratch/try.R']);
+    }
+  });
+
+  it('reads a file at exactly the size cap, and a multi-byte file, through its handle', async () => {
+    await write({
+      'cap.R': 'x'.repeat(MAX_UNINDEXED_R_SOURCE_BYTES),
+      'uni.R': '# é\nhelper(1)\n',
+    });
+    const sources = await collectRUnindexedSources(root, []);
+    expect(sources.find((source) => source.path === 'cap.R')?.unreadable).toBeUndefined();
+    expect(sources.find((source) => source.path === 'uni.R')?.words).toContain('helper');
   });
 
   it('does not follow a symbolic link', async () => {

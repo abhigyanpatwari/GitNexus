@@ -10,7 +10,7 @@
  * refuses a rename whose old name one of them uses, and the plan's resolution snapshot makes an
  * edit of such a file between preview and apply a `resolution_changed`.
  */
-import type { Dirent } from 'fs';
+import { constants as fsConstants, type Dirent } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import ignore, { type Ignore } from 'ignore';
@@ -73,11 +73,39 @@ function tokens(text: string): string[] {
 /** The repository's `.gitnexusignore` rules (the user's explicit "not mine"), if any. */
 async function gitnexusIgnore(repoRoot: string): Promise<Ignore | undefined> {
   try {
-    const file = path.join(repoRoot, '.gitnexusignore');
-    if (!(await fs.lstat(file)).isFile()) return undefined;
-    return ignore().add(await fs.readFile(file, 'utf8'));
+    const text = await readRegularFile(path.join(repoRoot, '.gitnexusignore'), Infinity);
+    return text === undefined ? undefined : ignore().add(text);
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Reads `file` through one handle, so the checks and the read cannot see the file change type.
+ * Returns `undefined` when it is not a regular file (a symbolic link, a directory, a FIFO) or is
+ * larger than `maxBytes`; rejects when it cannot be opened or read.
+ *
+ * POSIX: the kernel refuses a final symbolic link (`O_NOFOLLOW`) and the open does not block on a
+ * FIFO (`O_NONBLOCK`); the type and size come from the handle's own `stat`, so they are exact.
+ * Windows has neither flag: the handle's `stat` still rejects directories and oversize files, and
+ * an `lstat` after the open rejects a symbolic link, but a link swapped in between the open and
+ * the `lstat` is a narrow window this does not close (same as `readNestedGitignore`). No device
+ * or inode comparison is made, because Windows reports different `dev` values for `stat(path)`
+ * and `fstat(fd)`.
+ */
+async function readRegularFile(file: string, maxBytes: number): Promise<string | undefined> {
+  const { O_RDONLY, O_NOFOLLOW, O_NONBLOCK = 0 } = fsConstants;
+  const handle = await fs.open(file, O_RDONLY | (O_NOFOLLOW ?? 0) | O_NONBLOCK);
+  try {
+    const opened = await handle.stat();
+    if (!opened.isFile() || opened.size > maxBytes) return undefined;
+    if (O_NOFOLLOW === undefined) {
+      const link = await fs.lstat(file);
+      if (!link.isFile()) return undefined;
+    }
+    return await handle.readFile('utf8');
+  } finally {
+    await handle.close();
   }
 }
 
@@ -115,11 +143,12 @@ export async function collectRUnindexedSources(
       if (ignored?.ignores(relative)) continue;
       const absolute = path.join(repoRoot, relative);
       try {
-        if ((await fs.stat(absolute)).size > MAX_UNINDEXED_R_SOURCE_BYTES) {
-          result.push({ path: relative, words: [], unreadable: true });
-          continue;
-        }
-        result.push({ path: relative, words: tokens(await fs.readFile(absolute, 'utf8')) });
+        const text = await readRegularFile(absolute, MAX_UNINDEXED_R_SOURCE_BYTES);
+        result.push(
+          text === undefined
+            ? { path: relative, words: [], unreadable: true }
+            : { path: relative, words: tokens(text) },
+        );
       } catch {
         result.push({ path: relative, words: [], unreadable: true });
       }
