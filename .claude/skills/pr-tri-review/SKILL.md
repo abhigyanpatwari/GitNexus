@@ -1,11 +1,11 @@
 ---
 name: pr-tri-review
-description: "Review a GitHub PR with three review methods (GitNexus PR swarm + ce-code-review personas + Codex on gpt-5.5/xhigh), then a dedicated synthesis agent merges everything with honest cross-engine confidence weighting, a synthesis critic gates the result, and it posts as one inline-comment review. Use for a thorough, high-signal PR review that ends with inline comments on the PR."
+description: "Review a GitHub PR with three review methods (GitNexus PR swarm + ce-code-review personas + Codex on gpt-6-astra/xhigh by default), then a dedicated synthesis agent merges everything with honest cross-engine confidence weighting, a synthesis critic gates the result, and it posts as one inline-comment review. Use for a thorough, high-signal PR review that ends with inline comments on the PR."
 ---
 
 # PR Tri-Review (two engines × {swarm, ce} + Codex adversarial → Claude synthesis → critic gate → inline comments)
 
-Runs the **same two review methodologies on both engines** — Claude *and* Codex (GPT-5.5) each run the GitNexus PR swarm and ce-code-review — plus a Codex-only adversarial pass. A **claude-mem recall** seeds every lane with cross-session prior context first. Every lane's full output is persisted to disk, then a **dedicated Claude synthesis agent** merges them weighting by **cross-engine** corroboration, an independent critic vets that digest, and it posts a single `COMMENT` review with inline comments.
+Runs the **same two review methodologies on both engines** — Claude *and* Codex (`gpt-6-astra` by default) each run the GitNexus PR swarm and ce-code-review — plus a Codex-only adversarial pass. A **claude-mem recall** seeds every lane with cross-session prior context first. Every lane's full output is persisted to disk, then a **dedicated Claude synthesis agent** merges them weighting by **cross-engine** corroboration, an independent critic vets that digest, and it posts a single `COMMENT` review with inline comments.
 
 ```
 /pr-tri-review <PR number or URL>
@@ -23,15 +23,17 @@ Both engines run the **identical** two review methodologies, so cross-engine agr
 |---|---|---|
 | A1 | **Claude** (Swarm mode) | GitNexus PR swarm — the `gitnexus-*` lanes per `pr-swarm-review/orchestration.md` |
 | A2 | **Claude** | ce-code-review — the `compound-engineering:ce-*` persona pipeline |
-| B1 | **Codex** `gpt-5.5`/`xhigh` (Solo mode) | `$gitnexus-pr-review` — same swarm, all 7 personas run by one agent (orchestration.md Solo mode) |
-| B2 | **Codex** `gpt-5.5`/`xhigh` | `ce-code-review` — Codex's own copy, `mode:report-only` |
-| B3 | **Codex** `gpt-5.5` (no effort flag) | native `codex-companion adversarial-review` — Codex's red-team reviewer |
+| B1 | **Codex** `$CODEX_MODEL`/`xhigh` (Solo mode) | `$gitnexus-pr-review` — same swarm, all 7 personas run by one agent (orchestration.md Solo mode) |
+| B2 | **Codex** `$CODEX_MODEL`/`xhigh` | `ce-code-review` — Codex's own copy, `mode:report-only` |
+| B3 | **Codex** `$CODEX_MODEL` (no effort flag) | native `codex-companion adversarial-review` — Codex's red-team reviewer |
 
 Then a **Claude** synthesis agent merges all five from disk; `gitnexus-synthesis-critic` gates the digest before posting.
 
 > **Independence is the point of B.** A1/A2 are both Claude — agreement between them is *correlated* (shared priors, shared blind spots), so it's "consistent across personas," not independent confirmation. The strong signal is **a Codex lane (B) agreeing with a Claude lane (A) on the same finding** — same review scaffolding, genuinely different engine. Because B1/B2 run the *same* swarm/ce contracts as A1/A2, a finding both engines surface is the highest-confidence class. Never market the output as five independent confirmations — it's two engines.
 
-> **Effort caveat.** The Codex `task` legs (B1, B2) honor `--model gpt-5.5 --effort xhigh`. The adversarial-review leg (B3) accepts `--model gpt-5.5` but **not** `--effort` — the companion exposes reasoning effort only on `task`.
+> **Codex model.** Every Codex leg runs on `$CODEX_MODEL`: **`gpt-6-astra`** unless you set it, with **`gpt-6.1-sol`** as the cheaper tier (`CODEX_MODEL=gpt-6.1-sol`). Both take `--effort xhigh`. Use one model for all three legs of a run, and name the model actually used in the digest body.
+
+> **Effort caveat.** The Codex `task` legs (B1, B2) honor `--model "$CODEX_MODEL" --effort xhigh`. The adversarial-review leg (B3) accepts `--model "$CODEX_MODEL"` but **not** `--effort` — the companion exposes reasoning effort only on `task`.
 
 ---
 
@@ -218,7 +220,7 @@ Keep it evidence-tagged (cite the observation/memory id or PR#) and **skeptical*
 | Routes, serializers, exported type signatures, versioning | `compound-engineering:ce-api-contract-reviewer` |
 | Error handling, retries, timeouts, background jobs | `compound-engineering:ce-reliability-reviewer` |
 
-### Engine B — Codex on `--model gpt-5.5 --effort xhigh` (Solo mode, read-only)
+### Engine B — Codex on `--model "$CODEX_MODEL" --effort xhigh` (Solo mode, read-only)
 
 Codex has both review skills installed (`$gitnexus-pr-review`, `ce-code-review`) and runs them **itself**, single-agent — the independent engine running the same scaffolding as A. Always include all three legs regardless of diff size:
 
@@ -245,6 +247,8 @@ Right-size: a focused 2-file PR can drop the swarm's facts/docs/hygiene lanes an
 CC=$(ls /home/node/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs \
         /home/node/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | head -1)
 
+CODEX_MODEL="${CODEX_MODEL:-gpt-6-astra}"   # or gpt-6.1-sol; both take --effort xhigh
+
 # Prompts go in files — `task` reads them via --prompt-file (the prompt is otherwise positional;
 # --prompt is NOT a flag). Long multi-line prompts are far safer as files than as shell args.
 # Inline the claude-mem briefing so Codex gets prior context too (its sandbox may not read /tmp).
@@ -258,16 +262,16 @@ PRIOR=$(cat "$ART/prior-context.md" 2>/dev/null || echo "no relevant prior conte
   echo "Run the ce-code-review skill with arguments: mode:report-only base:$BASE";
   echo "Strictly read-only. Return its structured findings verbatim."; } > "$ART/p-ce.txt"
 
-# B1 — GitNexus swarm, Solo mode (gpt-5.5 / xhigh). `task` blocks in foreground (no --wait flag); no --write = read-only.
-node "$CC" task --cwd "$W" --model gpt-5.5 --effort xhigh --prompt-file "$ART/p-swarm.txt" \
+# B1 — GitNexus swarm, Solo mode ($CODEX_MODEL / xhigh). `task` blocks in foreground (no --wait flag); no --write = read-only.
+node "$CC" task --cwd "$W" --model "$CODEX_MODEL" --effort xhigh --prompt-file "$ART/p-swarm.txt" \
   > "$ART/codex-swarm.md" 2>&1; echo $? > "$ART/codex-swarm.exit"
 
-# B2 — ce-code-review, report-only (gpt-5.5 / xhigh, read-only).
-node "$CC" task --cwd "$W" --model gpt-5.5 --effort xhigh --prompt-file "$ART/p-ce.txt" \
+# B2 — ce-code-review, report-only ($CODEX_MODEL / xhigh, read-only).
+node "$CC" task --cwd "$W" --model "$CODEX_MODEL" --effort xhigh --prompt-file "$ART/p-ce.txt" \
   > "$ART/codex-ce.md" 2>&1; echo $? > "$ART/codex-ce.exit"
 
-# B3 — native Codex adversarial-review (gpt-5.5; --effort unsupported here, read-only by design). --wait IS valid here. Focus text is positional.
-node "$CC" adversarial-review --wait --cwd "$W" --base "$BASE" --scope branch --model gpt-5.5 \
+# B3 — native Codex adversarial-review ($CODEX_MODEL; --effort unsupported here, read-only by design). --wait IS valid here. Focus text is positional.
+node "$CC" adversarial-review --wait --cwd "$W" --base "$BASE" --scope branch --model "$CODEX_MODEL" \
   "Red-team the PR's changed surface. Default to refuted unless you can construct a concrete trigger. Prior gotchas in this area to probe (verify, may be stale): $PRIOR" \
   > "$ART/codex-adversarial.md" 2>&1; echo $? > "$ART/codex-adversarial.exit"
 ```
@@ -291,7 +295,7 @@ Give every agent: the literal first line **`[independent-lane]`** (see *Side pan
 
 Once all five lanes have written their files, **a dedicated Claude synthesis agent — not you — merges everything.** It reads the lane artifacts straight from `$ART`, so the merge runs in one fresh context rebuilt from disk; nothing depends on raw lane output still living in this conversation (which is exactly why each lane persisted its file).
 
-**4.1 — Dispatch the synthesis agent.** Spawn one agent (`general-purpose`, session model; it needs Read/Grep/Bash to read `$ART` and check findings against the worktree). Hand it: the PR id, the worktree path, the `BASE` sha, and **the artifact dir `$ART`**. Tell it to read every `*.md` there — `claude-*` and `codex-*` are lane findings (labeled by engine via filename: `claude-*` = Claude, `codex-*` = GPT-5.5); **`prior-context.md` is context, not a finding** (the claude-mem recall) — use it only to flag when a finding is a *known recurring* regression (cite the memory/PR#) and to sanity-check, never as a finding on its own. Produce a **draft digest written to `$ART/digest-draft.md`** by applying these rules, staying read-only:
+**4.1 — Dispatch the synthesis agent.** Spawn one agent (`general-purpose`, session model; it needs Read/Grep/Bash to read `$ART` and check findings against the worktree). Hand it: the PR id, the worktree path, the `BASE` sha, and **the artifact dir `$ART`**. Tell it to read every `*.md` there — `claude-*` and `codex-*` are lane findings (labeled by engine via filename: `claude-*` = Claude, `codex-*` = Codex); **`prior-context.md` is context, not a finding** (the claude-mem recall) — use it only to flag when a finding is a *known recurring* regression (cite the memory/PR#) and to sanity-check, never as a finding on its own. Produce a **draft digest written to `$ART/digest-draft.md`** by applying these rules, staying read-only:
 
 1. **Weight by cross-engine corroboration, not raw count.** Both engines ran the same swarm + ce scaffolding, so engine agreement is a clean same-prompt A/B:
    - **Strong:** a **Codex lane (B) and a Claude lane (A) independently reached it** (the genuine cross-engine signal — different engine, same review contract), **or** it was reproduced end-to-end. (Reproduction is often unavailable — worktrees can't `npm run build`; see Pitfalls — so don't rely on it.)
@@ -337,7 +341,7 @@ Inline-comment rules:
 - **Anchor only to lines present in the PR diff** (added/context lines, `side:"RIGHT"`). A finding in an **unchanged file** (e.g. an untouched caller that defeats new code) can't be inlined there — anchor on the nearest *in-diff* line and **reference** the real location in the body.
 - Each comment: severity tag, one-line problem, evidence, fix, and the `[reproduced]`/`[code-read]` tag.
 
-The digest **body** should: (1) state the **engine breakdown** — Claude ran swarm + ce; Codex (GPT-5.5/xhigh) ran swarm + ce + adversarial — and which Codex legs were actually live (per the 4.1 rule-6 liveness check); (2) **credit what's solid** (esp. correctness the reviews validated); (3) lead with the headline finding(s); (4) list inline findings briefly; (5) note lower-priority items, refuted suspicions, and test gaps; (6) include CI status; (7) note coverage limits if the PR was large; (8) close with a line that it's an automated multi-tool digest to verify before acting.
+The digest **body** should: (1) state the **engine breakdown** — Claude ran swarm + ce; Codex (name the model, `xhigh`) ran swarm + ce + adversarial — and which Codex legs were actually live (per the 4.1 rule-6 liveness check); (2) **credit what's solid** (esp. correctness the reviews validated); (3) lead with the headline finding(s); (4) list inline findings briefly; (5) note lower-priority items, refuted suspicions, and test gaps; (6) include CI status; (7) note coverage limits if the PR was large; (8) close with a line that it's an automated multi-tool digest to verify before acting.
 
 After posting, confirm the inline comments attached (using the captured `$RID`):
 ```bash
@@ -378,7 +382,7 @@ rm -rf "$ART"   # only after the review posted; on failure leave it for debuggin
 - **Fetch the PR's actual base ref first** (`git fetch origin "$BASEREF"`, not a hardcoded `main` — release/stacked PRs differ), and sanity-check `BASE` by file count — a stale/wrong base turns a 5-file PR into a phantom diff and poisons every agent.
 - **Both engines run the SAME swarm+ce scaffolding** — so the strong signal is a **Codex lane agreeing with a Claude lane** (different engine, same contract). Agreement *within* one engine (A1+A2, or B-legs together) is "consistent," not independent — it can be a shared false positive. State the engine breakdown in the body.
 - **Don't demote a verified single-lane P0/P1** just because one lane found it — that's exactly where the other engine's blind spot was.
-- **Codex (B1/B2) runs on gpt-5.5 / xhigh; B3 adversarial has no effort flag.** Drive all three Codex legs through `codex-companion.mjs` directly — `codex:codex-rescue` is a `task`-only forwarder and is **barred from `adversarial-review`**. `task` accepts `--model gpt-5.5 --effort xhigh`; `adversarial-review` accepts `--model` but **not** `--effort`. Run every leg `--cwd "$W"` (PR-head code) and read-only (no `--write`; `adversarial-review` is read-only by design).
+- **Codex (B1/B2) runs on `$CODEX_MODEL` / xhigh (`gpt-6-astra` by default, `gpt-6.1-sol` as the cheaper tier); B3 adversarial has no effort flag.** Drive all three Codex legs through `codex-companion.mjs` directly — `codex:codex-rescue` is a `task`-only forwarder and is **barred from `adversarial-review`**. `task` accepts `--model "$CODEX_MODEL" --effort xhigh`; `adversarial-review` accepts `--model` but **not** `--effort`. Run every leg `--cwd "$W"` (PR-head code) and read-only (no `--write`; `adversarial-review` is read-only by design).
 - **Don't use `ce-code-review mode:headless` for the Codex ce leg** — headless silently applies `safe_auto` fixes (a write). Use `mode:report-only`, which is strictly read-only.
 - **Codex can silently evaporate or fail to resolve a skill in `codex exec`** — check each `codex-*.md` artifact for real findings vs an empty/"skill not found" marker; if all of Engine B is empty, the body must say "Codex unavailable — degraded to Claude-only," and drop all cross-engine corroboration claims.
 - **Persist every lane to `$ART` before synthesis** — CE personas self-write (they have `Write`); `gitnexus-*` swarm lanes have no `Write`, so the coordinator writes their returns. The synthesis agent reads `$ART` from disk, so a context compaction mid-run doesn't lose findings.
