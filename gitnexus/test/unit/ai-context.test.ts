@@ -2230,6 +2230,21 @@ describe('block heading levels follow the file (#2774)', () => {
     });
   });
 
+  it('nests a block when the only title sits below it', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'AGENTS.md');
+      await fs.appendFile(file, '\n# Appendix\n', 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('AGENTS.md (updated)');
+      expect(await fs.readFile(file, 'utf-8')).toContain(
+        '<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n',
+      );
+    });
+  });
+
   it('leaves a block-only file at level 1 without rewriting it', async () => {
     await withRepo(async (dir, storage) => {
       await generateAIContextFiles(dir, storage, 'P', stats);
@@ -2276,6 +2291,15 @@ describe('block heading levels follow the file (#2774)', () => {
     ['a longer backtick fence', '````md\n```\n# Example\n````\n'],
     ['a fence with a false closing line', '```md\n``` text\n# Example\n```\n'],
     ['an ATX subheading followed by equals signs', '## Details\n===\n'],
+    ['a four-space-indented # line', 'Notes.\n\n    # Example\n'],
+    ['equals signs after a blank line', 'Notes.\n\n===\n'],
+    ['an indented fence', 'Notes.\n\n  ```sh\n# Example\n  ```\n'],
+    ['a fence closed by the other fence character', 'Notes.\n\n```\n~~~\n# Example\n```\n'],
+    ['an indented HTML comment', 'Notes.\n\n  <!--\n# Example\n-->\n'],
+    ['equals signs under a thematic break', '---\n===\n'],
+    ['equals signs under a list item', '- item\n===\n'],
+    ['equals signs under a block quote', '> quote\n===\n'],
+    ['a fence opened on a list item line', '- ```sh\n  # Example\n  ```\n- Next.\n'],
   ])('does not nest under %s', async (_name, original) => {
     await withRepo(async (dir, storage) => {
       for (const name of ['CLAUDE.md', 'AGENTS.md']) {
@@ -2300,6 +2324,9 @@ describe('block heading levels follow the file (#2774)', () => {
     ['YAML front matter containing fence delimiters', '---\nexample: |\n  ```md\n---\n\n# Guide\n'],
     ['a UTF-8 byte-order mark', '\uFEFF# Guide\n'],
     ['a setext title starting with a literal hash', '#Guide\n======\n'],
+    ['a lone hash', '#\n'],
+    ['a tab after the hash', '#\tGuide\n'],
+    ['a fence left open inside a list item', '- ```sh\n  npm ci\n\n# Guide\n'],
   ])('recognizes a title after %s', async (_name, original) => {
     await withRepo(async (dir, storage) => {
       const file = path.join(dir, 'CLAUDE.md');
@@ -2364,5 +2391,77 @@ indexed by GitNexus as **P** (10 symbols, 20 relationships, 3 execution flows).
 
       expect(await fs.readFile(file, 'utf-8')).toBe(original);
     });
+  });
+
+  it('nests under a front-matter title, which MD025 counts as the file title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '---\ntitle: Guide\n---\n\n## Overview\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n');
+      expect(levelOne(content)).toEqual([]);
+      const repeated = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(repeated.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(content);
+    });
+  });
+
+  // The writer trims the file, which can change what its first lines are. The
+  // level is chosen for the text as written, so the next run agrees with it.
+  it.each([
+    ['a blank line before front matter', '\n---\nname: x\n# yaml comment\n---\n\nNotes.\n', '#'],
+    ['an indented first line', '    # install deps\n    npm ci\n\nNotes.\n', '##'],
+  ])('settles the heading level in one write for %s', async (_name, original, level) => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, original, 'utf-8');
+
+      const first = await generateAIContextFiles(dir, storage, 'P', stats);
+      const written = await fs.readFile(file, 'utf-8');
+      const second = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(first.files).toContain('CLAUDE.md (appended)');
+      expect(written).toContain(`<!-- gitnexus:start -->\n${level} GitNexus — Code Intelligence\n`);
+      expect(second.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(written);
+    });
+  });
+
+  it('keeps an existing block when blank lines precede front matter', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '---\nname: x\n# yaml comment\n---\n\nNotes.\n', 'utf-8');
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const padded = '\n' + (await fs.readFile(file, 'utf-8'));
+      await fs.writeFile(file, padded, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(padded);
+    });
+  });
+
+  // Nesting shifts every block line that starts with `#`, so the template must
+  // not gain one that is not a heading (a `# comment` in a fenced example).
+  it('starts no block line with # other than its headings', () => {
+    const block = generateGitNexusContent('P', stats, {
+      generatedSkills: [{ name: 'auth', label: 'Auth', symbolCount: 5, fileCount: 2 }],
+      groupNames: ['platform'],
+      hasPdg: true,
+      hasSpringActuator: true,
+    });
+
+    expect(block.split('\n').filter((line) => line.startsWith('#'))).toEqual([
+      '# GitNexus — Code Intelligence',
+      '## Always Do',
+      '## Never Do',
+      '## Resources',
+      '## Cross-Repo Groups',
+      '## CLI',
+    ]);
   });
 });

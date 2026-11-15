@@ -303,30 +303,54 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
- * Whether `markdown` has a level-1 heading of its own: an ATX `# Title` or a
- * setext title underlined with `=`. Fenced code, HTML comments and YAML front
- * matter can contain heading examples without giving the file a title.
+ * A fence opener, optionally behind the list-item or block-quote markers that
+ * open on the same line (`- ```sh`): group 1 is that marker prefix, group 2
+ * the fence, group 3 the info string.
+ */
+const FENCE_OPENER = /^((?: {0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])[ \t]))*) {0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * A line that cannot be the text of a setext heading: an ATX heading, a block
+ * quote, a list item, or a thematic break (also the shape of a setext `---`
+ * underline). A row of `=` under one of these is paragraph text, not a title.
+ */
+const NOT_SETEXT_TEXT =
+  /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)|([-*_])[ \t]*(?:\1[ \t]*){2,}$)/;
+
+/**
+ * Whether `markdown` has a title of its own: an ATX `# Title`, a setext title
+ * underlined with `=`, or a `title` key in closed YAML front matter (which
+ * markdownlint's MD025 counts as the document title). Fenced code, HTML
+ * comments and the rest of the front matter can contain heading examples
+ * without giving the file a title.
  */
 function hasTopLevelHeading(markdown: string): boolean {
   const lines = markdown.replace(/^\uFEFF/, '').split('\n');
   let start = 0;
   if (/^---[ \t]*$/.test(lines[0])) {
     const end = lines.findIndex((line, i) => i > 0 && /^---[ \t]*$/.test(line));
-    if (end !== -1) start = end + 1;
+    if (end !== -1) {
+      // markdownlint's default `front_matter_title` pattern.
+      if (lines.slice(1, end).some((line) => /^\s*"?title"?\s*[:=]/i.test(line))) return true;
+      start = end + 1;
+    }
   }
-  let fence: { char: string; length: number } | undefined;
+  // `inside` is set for a fence opened in a list item or block quote: the
+  // shape a later line must have to still belong to that container.
+  let fence: { char: string; length: number; inside?: RegExp } | undefined;
   let inComment = false;
   let previous = '';
   for (let i = start; i < lines.length; i++) {
     const line = lines[i];
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence?.inside && line.trim() !== '' && !fence.inside.test(line)) {
+      // The list item or block quote ended, and with it any fence still open
+      // inside (one closed deeper than three spaces is not seen as closed
+      // below); this line is ordinary content again.
+      fence = undefined;
+    }
     if (fence) {
-      if (
-        fenceMatch &&
-        fenceMatch[1][0] === fence.char &&
-        fenceMatch[1].length >= fence.length &&
-        /^[ \t]*$/.test(fenceMatch[2])
-      ) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) {
         fence = undefined;
       }
       previous = '';
@@ -337,9 +361,16 @@ function hasTopLevelHeading(markdown: string): boolean {
       previous = '';
       continue;
     }
+    const opener = FENCE_OPENER.exec(line);
     // Backtick fence info strings cannot contain backticks (CommonMark §4.5).
-    if (fenceMatch && (fenceMatch[1][0] !== '`' || !fenceMatch[2].includes('`'))) {
-      fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
+    if (opener && (opener[2][0] !== '`' || !opener[3].includes('`'))) {
+      const inside =
+        opener[1] === ''
+          ? undefined
+          : opener[1].includes('>')
+            ? /^ {0,3}>/
+            : new RegExp(`^ {${line.indexOf(opener[2])}}`);
+      fence = { char: opener[2][0], length: opener[2].length, inside };
       previous = '';
       continue;
     }
@@ -347,7 +378,7 @@ function hasTopLevelHeading(markdown: string): boolean {
     if (
       /^ {0,3}=+[ \t]*$/.test(line) &&
       previous.trim() !== '' &&
-      !/^ {0,3}#{1,6}(?:[ \t]|$)/.test(previous)
+      !NOT_SETEXT_TEXT.test(previous)
     ) {
       return true;
     }
@@ -508,7 +539,10 @@ async function upsertGitNexusSection(
     // unless the counts are the only thing that moved (#2907).
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-    const placed = nestUnderExistingTitle(content, before + after);
+    // The write below trims the file, which can change what its first lines
+    // are (a blank line before front matter, an indented first line), so the
+    // title is looked for in the text as it will be written.
+    const placed = nestUnderExistingTitle(content, before.trimStart() + after);
     if (stripVolatileCounts(existingSection) === stripVolatileCounts(placed)) {
       return repairLineEndings();
     }
@@ -517,9 +551,10 @@ async function upsertGitNexusSection(
     return 'updated';
   }
 
-  // Append new section
-  const newContent =
-    existingContent.trim() + '\n\n' + nestUnderExistingTitle(content, existingContent) + '\n';
+  // Append new section, deciding its heading level from the trimmed text that
+  // is written rather than the text that was read.
+  const kept = existingContent.trim();
+  const newContent = kept + '\n\n' + nestUnderExistingTitle(content, kept) + '\n';
   await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
 }
