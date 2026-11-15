@@ -1,6 +1,10 @@
 import type { ParsedFile } from 'gitnexus-shared';
 import { dartProvider } from '../dart.js';
 import { emitDartScopeCaptures } from './captures.js';
+import {
+  dartCaptureDependsOnPackageLanguageVersion,
+  dartLanguageVersionHasWildcardVariables,
+} from './language-version.js';
 import { extractParsedFile } from '../../scope-extractor-bridge.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -8,6 +12,8 @@ import type { DartPackageConfig } from './package-config.js';
 
 const versionsByConfig = new WeakMap<DartPackageConfig, Map<string, string | null>>();
 
+/** Language version of the nearest enclosing package, or null when that
+ * package declares none (or no manifest encloses the file). */
 function packageVersion(filePath: string, config: DartPackageConfig | undefined): string | null {
   const versions = config?.languageVersionsByDirectory;
   if (versions === undefined || config === undefined) return null;
@@ -18,47 +24,61 @@ function packageVersion(filePath: string, config: DartPackageConfig | undefined)
   }
   let directory = filePath.slice(0, Math.max(0, filePath.lastIndexOf('/')));
   const visited: string[] = [];
-  let version: string | null;
+  let version: string | null = null;
   while (true) {
-    if (cached.has(directory)) {
-      version = cached.get(directory)!;
-      break;
-    }
-    if (versions.has(directory)) {
-      version = versions.get(directory)!;
+    // A stored null is a package boundary without a version: it ends the walk.
+    const known = cached.has(directory) ? cached.get(directory) : versions.get(directory);
+    if (known !== undefined) {
+      version = known;
       break;
     }
     visited.push(directory);
-    if (directory === '') {
-      version = null;
-      break;
-    }
+    if (directory === '') break;
     directory = directory.slice(0, Math.max(0, directory.lastIndexOf('/')));
   }
   for (const dir of visited) cached.set(dir, version);
   return version;
 }
 
-export function requiresDartPackageSource(filePath: string, config: unknown): boolean {
+/** The package version under which a `_` parameter/local still binds, or null
+ * when the worker's default capture already matches the package. */
+function legacyPackageVersion(filePath: string, config: unknown): string | null {
   const version = packageVersion(filePath, config as DartPackageConfig | undefined);
-  if (version === null) return false;
-  const [major, minor] = version.split('.').map(Number);
-  return major! < 3 || (major === 3 && minor! < 7);
+  if (version === null) return null;
+  const [major = 3, minor = 7] = version.split('.').map(Number);
+  return dartLanguageVersionHasWildcardVariables(major, minor) ? null : version;
+}
+
+/** Source is needed only for a file that both sits in a pre-3.7 package and
+ * recorded a version-sensitive `_` binder at capture time. Both inputs are
+ * already in memory: the captured manifest map and the reused `ParsedFile`. */
+export function requiresDartPackageSource(
+  filePath: string,
+  config: unknown,
+  preExtracted?: ParsedFile,
+): boolean {
+  return (
+    legacyPackageVersion(filePath, config) !== null &&
+    dartCaptureDependsOnPackageLanguageVersion(preExtracted)
+  );
 }
 
 /** Package metadata is acquired after worker capture and can change without a
- * source edit. Re-extract legacy files here, on both cold and warm runs, so a
- * cached 3.7 capture cannot erase an older package's `_` bindings. Modern
- * packages keep the worker snapshots; explicit file overrides win in capture.
+ * source edit, so the worker always captures with the default (3.7+) rules and
+ * records whether a `_` parameter/local makes that capture version-dependent.
+ * Only those files of a pre-3.7 package are extracted again here, on both cold
+ * and warm runs; every other file keeps its worker snapshot, and an explicit
+ * file override already won in capture.
  */
 export function applyDartPackageLanguageVersions(
   files: ParsedFile[],
   ctx: Parameters<NonNullable<ScopeResolver['populateWorkspaceReferences']>>[1],
 ): void {
   for (let i = 0; i < files.length; i++) {
-    const file = files[i]!;
-    if (!requiresDartPackageSource(file.filePath, ctx.resolutionConfig)) continue;
-    const version = packageVersion(file.filePath, ctx.resolutionConfig as DartPackageConfig)!;
+    const file = files[i];
+    if (file === undefined || !dartCaptureDependsOnPackageLanguageVersion(file)) continue;
+    const version = legacyPackageVersion(file.filePath, ctx.resolutionConfig);
+    if (version === null) continue;
     const source = ctx.fileContents.get(file.filePath);
     if (source === undefined)
       throw new Error(`Dart language version requires source: ${file.filePath}`);

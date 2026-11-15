@@ -231,7 +231,7 @@ function dartLexicalFunctionOwner(input: SyntaxNode, links: DartTreeLinks): Synt
 
 export function emitDartScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
   _sourceMeta?: Parameters<NonNullable<LanguageProvider['emitScopeCaptures']>>[3],
   languageVersion?: string,
@@ -248,7 +248,7 @@ export function emitDartScopeCaptures(
   }
 
   const root = tree.rootNode;
-  setDartDefaultLanguageVersion(root, languageVersion ?? '3.7');
+  setDartDefaultLanguageVersion(root, languageVersion ?? '3.7', filePath);
   const staticBefore = new Map<number, boolean>();
   const treeLinks = indexDartTreeLinks(root, staticBefore);
   const out: CaptureMatch[] = [];

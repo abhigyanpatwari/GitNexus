@@ -883,8 +883,18 @@ export interface ScopeResolver {
   readonly postExtractSourceTextPolicy?: 'all-files' | 'uncached-files';
 
   /** Additional cached files whose captures depend on workspace metadata.
-   * Runs before source loading; keep this predicate free of file I/O. */
-  readonly requiresPostExtractSourceText?: (filePath: string, resolutionConfig: unknown) => boolean;
+   * Runs before source loading; keep this predicate free of file I/O.
+   *
+   * `preExtracted` is the reused `ParsedFile` the pass already holds for
+   * `filePath`, so a resolver can decide from a capture-time fact it recorded
+   * there (for example on `captureSideChannel`) instead of from the path
+   * alone. It is undefined when the caller cannot supply the record; answer
+   * that case conservatively. */
+  readonly requiresPostExtractSourceText?: (
+    filePath: string,
+    resolutionConfig: unknown,
+    preExtracted: ParsedFile | undefined,
+  ) => boolean;
 
   /**
    * Whether the orchestrator should run `propagateImportedReturnTypes`

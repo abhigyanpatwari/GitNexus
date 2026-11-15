@@ -1,13 +1,58 @@
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ParsedFile } from 'gitnexus-shared';
+import { SupportedLanguages } from 'gitnexus-shared';
+
+/** Counts captures made in this process. */
+const captureProbe = vi.hoisted(() => ({
+  calls: [] as { filePath: string; languageVersion: string | undefined }[],
+}));
+vi.mock('../../../src/core/ingestion/languages/dart/captures.js', async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import('../../../src/core/ingestion/languages/dart/captures.js')>();
+  return {
+    ...real,
+    emitDartScopeCaptures: (...args: Parameters<typeof real.emitDartScopeCaptures>) => {
+      captureProbe.calls.push({ filePath: args[1], languageVersion: args[4] });
+      return real.emitDartScopeCaptures(...args);
+    },
+  };
+});
+
+import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
+import { dartProvider } from '../../../src/core/ingestion/languages/dart.js';
+import { dartScopeResolver } from '../../../src/core/ingestion/languages/dart/scope-resolver.js';
 import {
   captureDartPackageConfig,
   dartSdkLowerBoundLanguageVersion,
   type DartPackageConfig,
 } from '../../../src/core/ingestion/languages/dart/package-config.js';
-import { requiresDartPackageSource } from '../../../src/core/ingestion/languages/dart/package-language-version.js';
+import {
+  applyDartPackageLanguageVersions,
+  requiresDartPackageSource,
+} from '../../../src/core/ingestion/languages/dart/package-language-version.js';
+import { selectScopeSourcePathsToRead } from '../../../src/core/ingestion/scope-resolution/pipeline/phase.js';
+
+const MODELS = 'class Other { void save() {} }\nclass User { void save() {} }\n';
+
+/** The capture the parse worker produces: default rules plus the side channel. */
+function workerParsedFile(filePath: string, source: string): ParsedFile {
+  const parsed = extractParsedFile(dartProvider, source, filePath);
+  if (parsed === undefined) throw new Error(`fixture did not extract: ${filePath}`);
+  // Same order as the parse worker: capture, then collect for that file.
+  return { ...parsed, captureSideChannel: dartProvider.collectCaptureSideChannel?.(filePath) };
+}
+
+function packageConfig(versions: readonly (readonly [string, string | null])[]): DartPackageConfig {
+  return {
+    packages: new Map(),
+    manifestsByName: new Map(),
+    languageVersionsByDirectory: new Map(versions),
+  };
+}
 
 describe('Dart SDK constraint lower bound', () => {
   it.each([
@@ -98,3 +143,160 @@ describe('Dart package language-version boundaries', () => {
     expect(requiresDartPackageSource('lib/a.dart', legacyRoot)).toBe(true);
   });
 });
+
+describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))(
+  'Dart capture-time language-version sensitivity',
+  () => {
+    beforeEach(() => {
+      captureProbe.calls.length = 0;
+    });
+
+    const SENSITIVE = { kind: 'dart', packageLanguageVersionSensitive: true } as const;
+    it.each([
+      ['a parameter named _', 'void f(Other _) { _.save(); }\n', SENSITIVE, true],
+      ['a local named _', 'void f() { final _ = Other(); _.save(); }\n', SENSITIVE, true],
+      [
+        'a closure parameter named _',
+        'void f(List<Other> xs) { xs.forEach((_) {}); }\n',
+        SENSITIVE,
+        true,
+      ],
+      [
+        'a binder named _ after a declaration-level @dart comment, which Dart ignores',
+        "import 'models.dart';\n// @dart=3.5\nvoid f(Other _) { _.save(); }\n",
+        SENSITIVE,
+        true,
+      ],
+      ['no _ binder', 'void f(Other o) { o.save(); }\n', undefined, false],
+      ['a _ read without a binder', 'class A { void f() { _.save(); } }\n', undefined, false],
+      [
+        'only pattern wildcards',
+        'int f(Object o) { final (_, b) = (1, 2); return switch (o) { _ => b }; }\n',
+        undefined,
+        false,
+      ],
+      [
+        'a _ binder under a legacy file override',
+        '// @dart=3.5\nvoid f(Other _) { _.save(); }\n',
+        undefined,
+        false,
+      ],
+      [
+        'a _ binder under a modern file override',
+        '// @dart = 3.8\nvoid f(Other _) { _.save(); }\n',
+        undefined,
+        false,
+      ],
+      [
+        'a _ binder under an override that follows a licence comment',
+        '// Copyright\n// @dart=3.5\nvoid f(Other _) { _.save(); }\n',
+        undefined,
+        false,
+      ],
+    ] as const)(
+      'records whether the capture depends on the package version: %s',
+      (_title, source, sideChannel, sensitive) => {
+        const parsed = workerParsedFile('lib/a.dart', source);
+        expect(parsed.captureSideChannel).toEqual(sideChannel);
+        expect(requiresDartPackageSource('lib/a.dart', packageConfig([['', '3.0']]), parsed)).toBe(
+          sensitive,
+        );
+        expect(requiresDartPackageSource('lib/a.dart', packageConfig([['', '3.7']]), parsed)).toBe(
+          false,
+        );
+      },
+    );
+
+    it('does not let one capture answer for another file', () => {
+      workerParsedFile('lib/sensitive.dart', 'void f(Other _) {}\n');
+      expect(dartProvider.collectCaptureSideChannel?.('lib/other.dart')).toBeUndefined();
+      workerParsedFile('lib/plain.dart', 'void f(Other o) {}\n');
+      expect(dartProvider.collectCaptureSideChannel?.('lib/sensitive.dart')).toBeUndefined();
+    });
+
+    describe('with N reused files of which K have a _ parameter or local', () => {
+      const sources: Record<string, string> = {
+        'lib/models.dart': MODELS,
+        'lib/param.dart':
+          "import 'models.dart';\nclass Holder {\n  final _ = User();\n  void f(Other _) { _.save(); }\n}\n",
+        'lib/local.dart': "import 'models.dart';\nvoid g() { final _ = Other(); _.save(); }\n",
+        'lib/plain.dart': "import 'models.dart';\nvoid h(User u) { u.save(); }\n",
+        'lib/pattern.dart': 'int p(Object o) => switch (o) { _ => 0 };\n',
+        'lib/override.dart': "// @dart=3.5\nimport 'models.dart';\nvoid o(Other _) { _.save(); }\n",
+        'modern/lib/param.dart': 'class M {}\nvoid m(M _) {}\n',
+      };
+      const paths = Object.keys(sources);
+      const legacy = packageConfig([
+        ['', '3.0'],
+        ['modern', '3.7'],
+      ]);
+      const reused = (): Map<string, ParsedFile> =>
+        new Map(paths.map((filePath) => [filePath, workerParsedFile(filePath, sources[filePath])]));
+
+      it('reads source for exactly the K sensitive files of the legacy package', () => {
+        const preExtracted = reused();
+        expect(
+          selectScopeSourcePathsToRead(dartScopeResolver, paths, preExtracted, legacy),
+        ).toEqual(['lib/param.dart', 'lib/local.dart']);
+        expect(
+          selectScopeSourcePathsToRead(
+            dartScopeResolver,
+            paths,
+            preExtracted,
+            packageConfig([['', '3.7']]),
+          ),
+        ).toEqual([]);
+        expect(selectScopeSourcePathsToRead(dartScopeResolver, paths, preExtracted)).toEqual([]);
+      });
+
+      it('still reads a file that has no reused record', () => {
+        const preExtracted = reused();
+        preExtracted.delete('lib/plain.dart');
+        expect(
+          selectScopeSourcePathsToRead(dartScopeResolver, paths, preExtracted, legacy),
+        ).toEqual(['lib/param.dart', 'lib/local.dart', 'lib/plain.dart']);
+      });
+
+      it('captures again exactly the K sensitive files and keeps every other record', () => {
+        const preExtracted = reused();
+        const files = paths.map((filePath) => preExtracted.get(filePath) as ParsedFile);
+        const before = [...files];
+        captureProbe.calls.length = 0;
+        applyDartPackageLanguageVersions(files, {
+          fileContents: new Map(Object.entries(sources)),
+          resolutionConfig: legacy,
+        });
+        expect(captureProbe.calls).toEqual([
+          { filePath: 'lib/param.dart', languageVersion: '3.0' },
+          { filePath: 'lib/local.dart', languageVersion: '3.0' },
+        ]);
+        expect(files.map((file, index) => file === before[index])).toEqual([
+          true,
+          false,
+          false,
+          true,
+          true,
+          true,
+          true,
+        ]);
+        expect(files.map((file) => file.filePath)).toEqual(paths);
+        // The replacement keeps the record that selects it on the next run.
+        expect(files[1].captureSideChannel).toEqual(before[1].captureSideChannel);
+      });
+
+      it('captures nothing again when the package is modern or has no manifest', () => {
+        const preExtracted = reused();
+        const files = paths.map((filePath) => preExtracted.get(filePath) as ParsedFile);
+        const before = [...files];
+        captureProbe.calls.length = 0;
+        applyDartPackageLanguageVersions(files, {
+          fileContents: new Map(Object.entries(sources)),
+          resolutionConfig: packageConfig([['', '3.7']]),
+        });
+        applyDartPackageLanguageVersions(files, { fileContents: new Map(Object.entries(sources)) });
+        expect(captureProbe.calls).toEqual([]);
+        expect(files).toEqual(before);
+      });
+    });
+  },
+);
