@@ -464,7 +464,7 @@ export function emitDartScopeCaptures(
   const cascadeReceivers = new Map<number, DartCascadeReceiver>();
   const initializers: Array<{ node: SyntaxNode; owner: SyntaxNode | null }> = [];
   const writes: Array<{ name: string; owner: SyntaxNode }> = [];
-  walkDartTree(root, null, null, (node, type, owner, opensBlock) => {
+  walkDartTree(root, (node, type, owner, opensBlock) => {
     if (type === 'function_expression' && owner !== null) {
       const body = findFunctionBody(node);
       const key = body === null ? undefined : nodeSpanKey(body);
@@ -878,51 +878,68 @@ function dartCatchBody(catchClause: SyntaxNode): SyntaxNode | null {
  * is skipped). `null` outside every function and every scope-opening
  * expression (a field, a top-level variable). Tracking it on the way down
  * makes the owner of a binder a field read, not a climb.
+ *
+ * Pre-order over an explicit stack, not recursion: a syntax tree is as deep as
+ * the source nests (one argument closure is about eight levels), and a frame
+ * per level put a ceiling on that depth which moved with every local this walk
+ * gained. The pending nodes now live on the heap, so the walk has no depth
+ * limit of its own (`callable-flow-stack-depth.test.ts`).
  */
 function walkDartTree(
-  node: SyntaxNode,
-  owner: SyntaxNode | null,
-  parentType: string | null,
+  root: SyntaxNode,
   visit: (node: SyntaxNode, type: string, owner: SyntaxNode | null, opensBlock: boolean) => void,
-  outerOwner: SyntaxNode | null = owner,
 ): void {
-  // Read once: `type` is a native call on every access.
-  const type = node.type;
-  const opensBlock = opensDartBlockScope(type, parentType);
-  visit(node, type, owner, opensBlock);
-  let childOwner = owner;
-  if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
-  else if (type === 'function_expression') childOwner = findFunctionBody(node);
-  else if (type === 'class_body' || type === 'program') childOwner = null;
-  else if (opensBlock) childOwner = node;
-  else if (type === 'catch_clause') childOwner = dartCatchBody(node);
-  else if (DART_SIGNATURE_TYPES.has(type)) {
-    // A signature's parameters belong to its SIBLING body; an inner signature
-    // (`method_signature > function_signature`) reads its wrapper's sibling.
-    const host = parentType === 'method_signature' ? (node.parent ?? node) : node;
-    const body = nextDartNonCommentSibling(host);
-    childOwner = body !== null && body.type === 'function_body' ? body : null;
-  }
-  const branch = type === 'if_statement' || type === 'if_element';
-  const tokens = branch || type === 'for_loop_parts' ? node.children : [];
-  const elseToken = branch ? tokens.find((child) => child.type === 'else') : undefined;
-  const caseToken = branch ? tokens.find((child) => child.type === 'case') : undefined;
-  const inToken =
-    type === 'for_loop_parts' ? tokens.find((child) => child.type === 'in') : undefined;
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child === null) continue;
-    const outsideBranch =
-      (elseToken !== undefined && child.startIndex >= elseToken.endIndex) ||
-      (caseToken !== undefined && child.endIndex <= caseToken.startIndex);
-    const outsideLoop = inToken !== undefined && child.startIndex >= inToken.endIndex;
-    walkDartTree(
-      child,
-      outsideBranch ? owner : outsideLoop ? outerOwner : childOwner,
-      type,
-      visit,
-      opensBlock ? owner : outerOwner,
-    );
+  // One pending node per index across the four arrays: the node, the owner of
+  // the scope it sits in, its parent's type, and the owner outside the nearest
+  // scope-opening statement (what a for-in iterable is read in).
+  const nodes: SyntaxNode[] = [root];
+  const owners: Array<SyntaxNode | null> = [null];
+  const parentTypes: Array<string | null> = [null];
+  const outerOwners: Array<SyntaxNode | null> = [null];
+  for (;;) {
+    const node = nodes.pop();
+    if (node === undefined) return;
+    const owner = owners.pop() ?? null;
+    const parentType = parentTypes.pop() ?? null;
+    const outerOwner = outerOwners.pop() ?? null;
+    // Read once: `type` is a native call on every access.
+    const type = node.type;
+    const opensBlock = opensDartBlockScope(type, parentType);
+    visit(node, type, owner, opensBlock);
+    let childOwner = owner;
+    if (type === 'function_body' || type === 'function_expression_body') childOwner = node;
+    else if (type === 'function_expression') childOwner = findFunctionBody(node);
+    else if (type === 'class_body' || type === 'program') childOwner = null;
+    else if (opensBlock) childOwner = node;
+    else if (type === 'catch_clause') childOwner = dartCatchBody(node);
+    else if (DART_SIGNATURE_TYPES.has(type)) {
+      // A signature's parameters belong to its SIBLING body; an inner signature
+      // (`method_signature > function_signature`) reads its wrapper's sibling.
+      const host = parentType === 'method_signature' ? (node.parent ?? node) : node;
+      const body = nextDartNonCommentSibling(host);
+      childOwner = body !== null && body.type === 'function_body' ? body : null;
+    }
+    const branch = type === 'if_statement' || type === 'if_element';
+    const tokens = branch || type === 'for_loop_parts' ? node.children : [];
+    const elseToken = branch ? tokens.find((child) => child.type === 'else') : undefined;
+    const caseToken = branch ? tokens.find((child) => child.type === 'case') : undefined;
+    const inToken =
+      type === 'for_loop_parts' ? tokens.find((child) => child.type === 'in') : undefined;
+    const childOuterOwner = opensBlock ? owner : outerOwner;
+    // Pushed last child first, so the first child is the next node popped and
+    // the visit order is the recursive pre-order.
+    for (let i = node.namedChildCount - 1; i >= 0; i--) {
+      const child = node.namedChild(i);
+      if (child === null) continue;
+      const outsideBranch =
+        (elseToken !== undefined && child.startIndex >= elseToken.endIndex) ||
+        (caseToken !== undefined && child.endIndex <= caseToken.startIndex);
+      const outsideLoop = inToken !== undefined && child.startIndex >= inToken.endIndex;
+      nodes.push(child);
+      owners.push(outsideBranch ? owner : outsideLoop ? outerOwner : childOwner);
+      parentTypes.push(type);
+      outerOwners.push(childOuterOwner);
+    }
   }
 }
 
