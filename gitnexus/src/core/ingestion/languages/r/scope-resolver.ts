@@ -42,7 +42,7 @@ import {
 import { rBareName } from './bare-name.js';
 import { applyRCaptureSideChannel, rResolveSelfMember } from './r6-self.js';
 import { perFileSet } from '../../utils/per-file-set.js';
-import { resolveRImportTarget } from './import-target.js';
+import { resolveRImportTarget, rNameDefinedInSeveralFiles } from './import-target.js';
 import { collectRUnindexedSources } from './unindexed-sources.js';
 import {
   isRGlobalNameFallbackPlausible,
@@ -184,7 +184,8 @@ const parsedFileByModuleScope = perFileSet(
  * A name is dropped when another undotted definition of the file carries it (a closure-local
  * function of that name, a second assignment): finalize indexes the defs by simple name and would
  * bind the name to the first one it meets, possibly the nested one.
- * The dropped name resolves through the lower tiers.
+ * The dropped name resolves through the lower tiers. So is a name that another file of the same
+ * package defines at top level too (`docs/languages/r-provider.md`: such a name stays ambiguous).
  *
  * A bare name is dropped when the same file also defines a dotted top-level
  * name with that tail (`foo` next to `print.foo`). The shared finalize indexes
@@ -215,6 +216,13 @@ export function expandRWildcardNames(
     // Another definition of the file (a closure-local function, a second assignment) carries the
     // same name, and finalize binds the name to whichever it meets first.
     if (repeated.has(rBareName(qn))) continue;
+    // Another file of the same package defines the name too: neither file can be chosen.
+    if (
+      cfg !== undefined &&
+      rNameDefinedInSeveralFiles(parsedFiles, cfg, target.filePath, rBareName(qn))
+    ) {
+      continue;
+    }
     if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above (as written, as finalize keys it)
     if (cfg !== undefined && rSymbolVisibility(cfg, target.filePath, rBareName(qn)) !== 'public') {
       continue; // not an export of the package (or not provably one)

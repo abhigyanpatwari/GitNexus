@@ -129,6 +129,45 @@ function packageDefIndex(
 }
 
 /**
+ * True when more than one `R/` file of the package that owns `filePath` defines `symbol` as a
+ * function at top level. Such a name is ambiguous for `library()` and `importFrom()`: neither can tell the files
+ * apart. False when `filePath` belongs to no package of `rConfig`.
+ */
+export function rNameDefinedInSeveralFiles(
+  parsedFiles: readonly ParsedFile[],
+  rConfig: RPackageConfig,
+  filePath: string,
+  symbol: string,
+): boolean {
+  const location = rPackageDirForFile(filePath, rConfig);
+  if (location === undefined) return false;
+  const index = packageDefIndex(parsedFiles, rConfig, location.name);
+  const defining = index?.definingFiles.get(symbol);
+  return (
+    index !== undefined &&
+    defining !== undefined &&
+    definedAsFunctionInSeveralFiles(index, defining, symbol)
+  );
+}
+
+/**
+ * True when more than one of `files` binds `symbol` to a function. A class of that name next to a
+ * function (a Bioconductor `setClass("Circle")` beside `Circle <- function(r)`) is not a second
+ * callee: the call reaches the function.
+ */
+function definedAsFunctionInSeveralFiles(
+  index: RPackageDefIndex,
+  files: readonly string[],
+  symbol: string,
+): boolean {
+  let functions = 0;
+  for (const file of files) {
+    if (index.files.get(file)?.functions.has(symbol) === true && ++functions > 1) return true;
+  }
+  return false;
+}
+
+/**
  * `s` without its leading and trailing backticks. Two scans, not `/^`+|`+$/g`: the pattern is
  * quadratic on `x` + n backticks + `y`, and a NAMESPACE entry is repository-controlled text.
  */
@@ -172,7 +211,8 @@ function backtickedExports(exports: ReadonlySet<string>): ReadonlySet<string> {
  * are found by the symbol, while the dotted-tail guard below compares the spelling, because
  * finalize indexes a definition by the text of its name as written.
  *
- * `null` (no binding, no IMPORTS edge) when: `pkg` is not a local package
+ * `null` (no binding, no IMPORTS edge) when: more than one file of `pkg` defines the name;
+ * `pkg` is not a local package
  * (external packages never suffix-match anything); `importedName` is dotted
  * (finalize keys defs by the text after the last `.`, so it can never bind);
  * the provider has a NAMESPACE that does not export the name; no file defines
@@ -209,6 +249,9 @@ export function resolveRNamedImport(
   const index = packageDefIndex(parsedFiles, rConfig, pkg);
   const defining = index?.definingFiles.get(symbol);
   if (index === undefined || defining === undefined || defining.length === 0) return null;
+  // Two files of the package define the name: which one R uses depends on load order, so the
+  // name binds to neither.
+  if (definedAsFunctionInSeveralFiles(index, defining, symbol)) return null;
   if (defining.some((file) => index.files.get(file)?.dottedTails.has(importedName) === true)) {
     return null;
   }

@@ -1,0 +1,1 @@
+twice <- function() "b"

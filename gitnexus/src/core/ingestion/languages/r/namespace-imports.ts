@@ -744,6 +744,8 @@ export interface RFileTopLevel {
    * kept): the key the shared finalize pass indexes the definition under.
    */
   readonly dottedTails: ReadonlySet<string>;
+  /** The symbols of {@link names} bound to a plain function (not only a class) in this file. */
+  readonly functions: ReadonlySet<string>;
   /**
    * For each symbol in {@link names} written with backticks somewhere, every spelling bound in
    * this file (the plain one too, when it is also bound). Empty for a file with no such name.
@@ -762,6 +764,7 @@ export interface RFileTopLevel {
 const EMPTY_TOP_LEVEL: RFileTopLevel = {
   names: new Set(),
   dottedTails: new Set(),
+  functions: new Set(),
   writtenAs: new Map(),
   repeated: new Set(),
 };
@@ -807,6 +810,7 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
   if (moduleScope !== undefined) {
     const names = new Set<string>();
     const dottedTails = new Set<string>();
+    const functions = new Set<string>();
     const writtenAs = new Map<string, string[]>();
     const bindsTopLevel = (refs: readonly { origin: string; def: { type: string } }[]): boolean =>
       refs.some((r) => r.origin === 'local' && TOP_LEVEL_BINDABLE_TYPES.has(r.def.type));
@@ -814,6 +818,9 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
       if (!bindsTopLevel(refs)) continue;
       const symbol = rBareName(name);
       names.add(symbol);
+      if (refs.some((r) => r.origin === 'local' && r.def.type === 'Function')) {
+        functions.add(symbol);
+      }
       if (symbol !== name) {
         const spellings = writtenAs.get(symbol);
         if (spellings === undefined) writtenAs.set(symbol, [name]);
@@ -826,7 +833,7 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
       const plain = moduleScope.bindings.get(symbol);
       if (plain !== undefined && bindsTopLevel(plain)) spellings.unshift(symbol);
     }
-    result = { names, dottedTails, writtenAs, repeated: result.repeated };
+    result = { names, dottedTails, functions, writtenAs, repeated: result.repeated };
   }
   topLevelCache.set(parsed, result);
   return result;
