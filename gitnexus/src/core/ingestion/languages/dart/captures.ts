@@ -1294,10 +1294,16 @@ function countArgs(argPart: SyntaxNode): number {
 }
 
 /** Receiver text preceding a member-call/read selector (the postfix chain
- *  head plus any intermediate selectors): `user.address.save()` → `user.address`. */
-function computeReceiverText(nameSelector: SyntaxNode, links: DartTreeLinks): string | null {
+ *  head plus any intermediate selectors): `user.address.save()` → `user.address`.
+ *  `last` is the receiver's final node, by default the selector's previous
+ *  sibling; a cascade passes the sibling before its comments. */
+function computeReceiverText(
+  nameSelector: SyntaxNode,
+  links: DartTreeLinks,
+  last: SyntaxNode | null = links.get(nameSelector.id)!.previous,
+): string | null {
   const selectors: SyntaxNode[] = [];
-  let cur = links.get(nameSelector.id)!.previous;
+  let cur = last;
   let head: SyntaxNode | null = null;
   while (cur !== null) {
     if (cur.type === 'selector' || ASSIGNABLE_SELECTORS.has(cur.type)) {
@@ -1433,9 +1439,10 @@ function parenthesizedRun(paren: SyntaxNode): PostfixRun | null {
 function parenthesizedReceiver(
   nameSelector: SyntaxNode,
   links: DartTreeLinks,
+  last: SyntaxNode | null = links.get(nameSelector.id)!.previous,
 ): { readonly text: string; readonly chain: string | undefined } | null {
   const outer: SyntaxNode[] = [];
-  let cur = links.get(nameSelector.id)!.previous;
+  let cur = last;
   while (cur !== null && (cur.type === 'selector' || ASSIGNABLE_SELECTORS.has(cur.type))) {
     outer.push(cur);
     cur = links.get(cur.id)!.previous;
@@ -1568,18 +1575,28 @@ interface DartCascadeReceiver {
 
 /** Each cascade section starts again at the original receiver. Its direct
  * selector/argument children then form an ordinary member chain. Keeping the
- * receiver even when its type is unknown prevents a free-call name guess. */
+ * receiver even when its type is unknown prevents a free-call name guess.
+ *
+ * tree-sitter keeps a comment as a NAMED sibling, so in a commented builder
+ * chain (`o`, then `// first` and `..apply(1)`, then `// second` and
+ * `..apply(2)`) the node before a section is the comment. Read as the
+ * receiver, its text typed nothing and every later section inherited it: the
+ * calls vanished with no outcome row. Comments of either kind are stepped
+ * over, before a section and inside one. */
 function emitCascadeReference(
   cascade: SyntaxNode,
   out: CaptureMatch[],
   links: DartTreeLinks,
   receivers: Map<number, DartCascadeReceiver>,
 ): void {
-  const previous = links.get(cascade.id)!.previous;
-  const paren = parenthesizedReceiver(cascade, links);
+  let previous = links.get(cascade.id)!.previous;
+  while (previous !== null && DART_COMMENT_TYPES.has(previous.type)) {
+    previous = links.get(previous.id)?.previous ?? null;
+  }
+  const paren = parenthesizedReceiver(cascade, links, previous);
   const base = (previous?.type === 'cascade_section' ? receivers.get(previous.id) : undefined) ?? {
     text:
-      computeReceiverText(cascade, links) ??
+      computeReceiverText(cascade, links, previous) ??
       paren?.text ??
       previous?.text ??
       '<unknown cascade receiver>',
@@ -1590,7 +1607,7 @@ function emitCascadeReference(
   const decoded = decodeReceiverChain(base.chain);
   const steps: MixedChainStep[] = [...(decoded?.steps ?? [])];
   let structural = decoded !== undefined && !decoded.truncated;
-  const children = cascade.namedChildren;
+  const children = cascade.namedChildren.filter((child) => !DART_COMMENT_TYPES.has(child.type));
   for (let i = 0; i < children.length; i++) {
     const selector = children[i]!;
     if (selector.type !== 'cascade_selector' && !ASSIGNABLE_SELECTORS.has(selector.type)) break;

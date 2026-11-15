@@ -8,8 +8,11 @@
  *     retyped the result of every other callable of that name: the top-level or
  *     imported function called from another function, a method of the same
  *     name, and (through the exporting file) call sites in importing files.
+ *   - A comment before a cascade section, or inside one, is not the receiver.
  */
 import { describe, expect, it } from 'vitest';
+import type { CaptureMatch } from 'gitnexus-shared';
+import { emitDartScopeCaptures } from '../../../src/core/ingestion/languages/dart/captures.js';
 import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import { getRelationships, useFixture, type PipelineResult } from './helpers.js';
@@ -25,6 +28,17 @@ function memberCallsBySite(result: PipelineResult, member: string): string[] {
       const line = /^:(\d+):\d+/.exec(site)?.[1] ?? '-';
       return `${edge.sourceFilePath}:${line} -> ${edge.rel.targetId}`;
     })
+    .sort();
+}
+
+/** `line receiver.name` of every member call the emitter captures. */
+function memberCallReceivers(source: string): string[] {
+  return (emitDartScopeCaptures(source, 'cascade.dart') as CaptureMatch[])
+    .filter((match) => match['@reference.call.member'] !== undefined)
+    .map(
+      (match) =>
+        `${match['@reference.call.member']?.range.startLine} ${match['@reference.receiver']?.text}.${match['@reference.name']?.text}`,
+    )
     .sort();
 }
 
@@ -167,6 +181,51 @@ void outside(Box b) {
           'members.dart:31 -> Method:members.dart:Widget.save#0',
           // Page.render: the method `Widget build()`
           'members.dart:7 -> Method:members.dart:Widget.save#0',
+        ]);
+      });
+    });
+
+    describe('a comment in a cascade is not the receiver', () => {
+      const SOURCE = `class User { Profile profile = Profile(); void apply(dynamic x) {} }
+class Other { void apply(dynamic x) {} }
+class Profile { void apply(dynamic x) {} }
+int helper() => 1;
+void commented(User u, Other o) {
+  o
+    // leading comment
+    ..apply(helper()) // trailing comment
+    /// documentation comment
+    ..apply(2)
+    /* block comment */
+    ..apply(3);
+  u
+    ..apply(4) /* after a section */
+    ..profile /* inside a section */ .apply(5)
+    ..apply /* before the arguments */ (6);
+}
+`;
+
+      it('reads the receiver past line, block and documentation comments', () => {
+        expect(memberCallReceivers(SOURCE)).toEqual([
+          '10 o.apply',
+          '12 o.apply',
+          '14 u.apply',
+          '15 u.profile.apply',
+          '16 u.apply',
+          '8 o.apply',
+        ]);
+      });
+
+      const run = useFixture('dart-commented-cascade', { 'cascade.dart': SOURCE });
+
+      it('resolves every section of a commented cascade to its receiver owner', () => {
+        expect(memberCallsBySite(run(), 'apply')).toEqual([
+          'cascade.dart:10 -> Method:cascade.dart:Other.apply#1',
+          'cascade.dart:12 -> Method:cascade.dart:Other.apply#1',
+          'cascade.dart:14 -> Method:cascade.dart:User.apply#1',
+          'cascade.dart:15 -> Method:cascade.dart:Profile.apply#1',
+          'cascade.dart:16 -> Method:cascade.dart:User.apply#1',
+          'cascade.dart:8 -> Method:cascade.dart:Other.apply#1',
         ]);
       });
     });
