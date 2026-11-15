@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   processProcesses,
+  stableProcessId,
   traceFromEntryPoint,
   buildSinkFunctionSet,
   deduplicateTraces,
@@ -9,6 +10,95 @@ import {
 import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { CommunityMembership } from '../../src/core/ingestion/community-processor.js';
+
+describe('stable process identity', () => {
+  it('frames endpoint pairs unambiguously and preserves the sanitized entry suffix', () => {
+    const id = stableProcessId('fn:ab', 'c', 'Handle request!', new Set());
+    expect(id).toMatch(/^proc_[0-9a-f]{12}_handle_request_$/);
+    expect(stableProcessId('fn:ab', 'c', 'Handle request!', new Set())).toBe(id);
+    expect(stableProcessId('fn:a', 'bc', 'Handle request!', new Set())).not.toBe(id);
+  });
+
+  it('resolves occupied IDs with unique deterministic suffixes', () => {
+    const used = new Set<string>();
+    const first = stableProcessId('fn:a', 'fn:b', 'entry', used);
+    expect(stableProcessId('fn:a', 'fn:b', 'entry', used)).toBe(`${first}_2`);
+    expect(stableProcessId('fn:a', 'fn:b', 'entry', used)).toBe(`${first}_3`);
+    expect(used.size).toBe(3);
+  });
+
+  const flowGraph = (chains: string[][], names: Record<string, string> = {}) => {
+    const graph = createKnowledgeGraph();
+    for (const chain of chains) {
+      for (const id of chain) {
+        graph.addNode({
+          id,
+          label: 'Function',
+          properties: {
+            name: names[id] ?? id.slice(3),
+            filePath: `src/${id.slice(3)}.ts`,
+            startLine: 1,
+            endLine: 10,
+            isExported: true,
+          },
+        });
+      }
+      for (let i = 0; i < chain.length - 1; i++) {
+        graph.addRelationship({
+          id: `${chain[i]}-${chain[i + 1]}`,
+          sourceId: chain[i],
+          targetId: chain[i + 1],
+          type: 'CALLS',
+          confidence: 1,
+          reason: 'import-resolved',
+        });
+      }
+    }
+    return graph;
+  };
+
+  it('preserves existing processes and steps when an unrelated flow is added or removed', async () => {
+    const chains = [
+      ['fn:b0', 'fn:b1', 'fn:b2'],
+      ['fn:c0', 'fn:c1', 'fn:c2'],
+    ];
+    const before = await processProcesses(flowGraph(chains), []);
+    const after = await processProcesses(flowGraph([['fn:a0', 'fn:a1', 'fn:a2'], ...chains]), []);
+    expect(before.processes).toHaveLength(2);
+    expect(after.processes).toHaveLength(3);
+    expect(after.processes.filter(({ entryPointId }) => entryPointId !== 'fn:a0')).toEqual(
+      before.processes,
+    );
+    expect(after.steps.filter(({ nodeId }) => !nodeId.startsWith('fn:a'))).toEqual(before.steps);
+  });
+
+  it('keeps identity across intermediate steps but changes it for either endpoint', async () => {
+    const detect = async (chain: string[]) =>
+      (await processProcesses(flowGraph([chain]), [])).processes[0];
+    const before = await detect(['fn:start', 'fn:middle', 'fn:end']);
+    const changedMiddle = await detect(['fn:start', 'fn:other', 'fn:end']);
+    expect(changedMiddle.id).toBe(before.id);
+    expect(changedMiddle.trace).not.toEqual(before.trace);
+    expect((await detect(['fn:start', 'fn:middle', 'fn:elsewhere'])).id).not.toBe(before.id);
+    expect((await detect(['fn:another', 'fn:middle', 'fn:end'])).id).not.toBe(before.id);
+  });
+
+  it('distinguishes identical entry names from different symbols', async () => {
+    const result = await processProcesses(
+      flowGraph(
+        [
+          ['fn:a', 'fn:am', 'fn:ae'],
+          ['fn:b', 'fn:bm', 'fn:be'],
+        ],
+        { 'fn:a': 'handle', 'fn:b': 'handle' },
+      ),
+      [],
+    );
+    expect(result.processes).toHaveLength(2);
+    expect(new Set(result.processes.map(({ id }) => id)).size).toBe(2);
+    expect(result.processes.every(({ id }) => id.endsWith('_handle'))).toBe(true);
+  });
+});
 
 describe('processProcesses', () => {
   it('detects no processes in empty graph', async () => {

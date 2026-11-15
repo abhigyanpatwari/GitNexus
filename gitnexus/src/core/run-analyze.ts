@@ -258,6 +258,7 @@ import {
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
+import { computeFileRowDigests, nextFileRowDigests } from './incremental/file-row-digests.js';
 import {
   graphCompactionReason,
   incrementalMutationLimit,
@@ -3915,6 +3916,9 @@ async function runFullAnalysisInner(
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
+    // Release the phase context captured by this completed callback before the
+    // native database write allocates its own buffers.
+    pipelineResult.runDeferredDerivedPhases = undefined;
   }
 
   // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
@@ -4204,6 +4208,18 @@ async function runFullAnalysisInner(
       });
     };
     let incrementalFtsRebuildTables: Set<string> | undefined;
+    // Resolution groups (see LanguageProvider.incrementalResolutionGroup) make
+    // every group member a rewrite candidate when one member changes. The row
+    // digests are what let an unchanged member whose rows are identical in the
+    // new graph stay out of the write set. Repositories with no group skip this.
+    const { collectResolutionGroupFiles, hasResolutionGroups } =
+      await import('./incremental/resolution-groups.js');
+    const currentRowDigests = hasResolutionGroups(allFilePaths)
+      ? computeFileRowDigests(pipelineResult.graph)
+      : undefined;
+    // The files whose rows a surgical write replaces; undefined on any run that
+    // writes the whole graph.
+    let surgicalWriteSet: ReadonlySet<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -4238,20 +4254,16 @@ async function runFullAnalysisInner(
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
       // Resolution groups can change edges between unchanged files without an
-      // import or a new-graph edge touching the changed/deleted member. Expand
-      // before the importer walk so dependents of these siblings refresh too.
-      const { collectResolutionGroupFiles } = await import('./incremental/resolution-groups.js');
+      // import or a new-graph edge touching the changed/deleted member. Group
+      // members, and the files that import them, are therefore CANDIDATES for
+      // a rewrite: the second walk below adds a candidate only when its rows
+      // in the new graph differ from the rows recorded for it.
+      const rewriteCandidates = new Set<string>();
       for (const filePath of collectResolutionGroupFiles(
         [...hashDiff.toWrite, ...hashDiff.deleted],
         allFilePaths,
       )) {
-        writableFiles.add(filePath);
-      }
-      const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
-      if (resolutionGroupExpansion > 0) {
-        log(
-          `Incremental: +${resolutionGroupExpansion} resolution sibling(s) added to writable set`,
-        );
+        if (!writableFiles.has(filePath)) rewriteCandidates.add(filePath);
       }
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
       // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
@@ -4335,8 +4347,42 @@ async function runFullAnalysisInner(
           frontier = nextFrontier;
         }
       }
-      const importerExpansion =
-        writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
+      const importerExpansion = writableFiles.size - directlyChangedCount;
+      // Candidate walk: same importer BFS, seeded with the resolution-group
+      // members. Discovery ignores digests, so every file the unconditional
+      // expansion would have reached is still examined; only the rewrite is
+      // conditional. A file with no recorded digest counts as changed.
+      let resolutionGroupExpansion = 0;
+      if (rewriteCandidates.size > 0) {
+        let frontier: string[] = [...rewriteCandidates];
+        for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+          const importers = await queryImportersBatch(frontier, {
+            onChunkFailure: () => {
+              droppedImporterChunks += 1;
+            },
+          });
+          const nextFrontier: string[] = [];
+          for (const i of importers) {
+            if (!writableFiles.has(i) && !rewriteCandidates.has(i)) {
+              rewriteCandidates.add(i);
+              nextFrontier.push(i);
+            }
+          }
+          frontier = nextFrontier;
+        }
+        const recordedRowDigests = existingMeta!.fileRowDigests;
+        for (const filePath of rewriteCandidates) {
+          if (writableFiles.has(filePath)) continue;
+          const recorded = recordedRowDigests?.[filePath];
+          if (recorded !== undefined && recorded === currentRowDigests?.get(filePath)) continue;
+          writableFiles.add(filePath);
+          resolutionGroupExpansion += 1;
+        }
+        log(
+          `Incremental: ${resolutionGroupExpansion} of ${rewriteCandidates.size} ` +
+            `resolution-group candidate(s) have changed rows and were added to writable set`,
+        );
+      }
       incrementalStats = {
         changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
         reparsedFiles: pipelineResult.reparsedFileCount,
@@ -4359,9 +4405,10 @@ async function runFullAnalysisInner(
 
       // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
       //    composed:
-      //      (a) `writableFiles` — toWrite ∪ resolution siblings ∪ transitive
-      //          importers of changed/deleted files and their siblings (the
-      //          bounded BFS above, reading IMPORTS from the pre-pipeline DB).
+      //      (a) `writableFiles` — toWrite ∪ transitive importers of
+      //          changed/deleted files (the bounded BFS above, reading IMPORTS
+      //          from the pre-pipeline DB) ∪ the resolution-group candidates
+      //          whose rows changed.
       //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
       //          edges and pulls in any unchanged-side file that sits
       //          on a writable-boundary-crossing edge (catches refined
@@ -4456,6 +4503,7 @@ async function runFullAnalysisInner(
       // would otherwise hand deleteNodesForFiles the same path twice in one
       // batch (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
+      surgicalWriteSet = effectiveWriteSet;
       await saveIncrementalDirtyState('effective-write-set', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
@@ -4581,6 +4629,7 @@ async function runFullAnalysisInner(
         if (preserveDerivedLayer) {
           progress('communities', 63, 'Detecting code communities and flows...');
           await pipelineResult.runDeferredDerivedPhases?.();
+          pipelineResult.runDeferredDerivedPhases = undefined;
         }
         // Every live cause is named, not just the first: a DB can carry BOTH a
         // vector index and FTS indexes, and reporting one cause while the other
@@ -6145,6 +6194,16 @@ async function runFullAnalysisInner(
       // Embedding sync also needs snapshot identity for non-git checkouts.
       // Incremental DB eligibility still independently requires repoHasGit.
       fileHashes: newFileHashesRecord,
+      // Recorded only where a resolution group exists. A file's entry moves
+      // to its new digest only when this run wrote that file's rows.
+      fileRowDigests:
+        currentRowDigests === undefined
+          ? undefined
+          : nextFileRowDigests(
+              existingMeta?.fileRowDigests,
+              currentRowDigests,
+              surgicalWriteSet !== undefined && !escalatedFullWrite ? surgicalWriteSet : 'all',
+            ),
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),

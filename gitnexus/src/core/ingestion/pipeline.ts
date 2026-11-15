@@ -388,18 +388,25 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
 
 // ── Pipeline orchestrator ─────────────────────────────────────────────────
 
+// The graph keeps this lookup callback alive. Give it its own closure scope so
+// retaining a graph cannot also retain the pipeline's phase results and context.
+const createPipelineGraph = (repoPath: string) => {
+  const integrity = createRelationshipIntegrityCollector(
+    repoPath,
+    (id) => graph.getNode(id),
+    (filePath, text) => getProviderForFile(filePath)?.referenceSourceText?.(text, filePath),
+  );
+  const graph: ReturnType<typeof createKnowledgeGraph> = createKnowledgeGraph(integrity.inspect);
+  return { graph, integrity };
+};
+
 export const runPipelineFromRepo = async (
   repoPath: string,
   onProgress: (progress: PipelineProgress) => void,
   options?: PipelineOptions,
 ): Promise<PipelineResult> => {
   options?.signal?.throwIfAborted();
-  const integrity = createRelationshipIntegrityCollector(
-    repoPath,
-    (id) => graph.getNode(id),
-    (filePath, text) => getProviderForFile(filePath)?.referenceSourceText?.(text, filePath),
-  );
-  const graph = createKnowledgeGraph(integrity.inspect);
+  const { graph, integrity } = createPipelineGraph(repoPath);
   const pipelineStart = Date.now();
 
   // Streamed structural emit (#2680). The sink is a write-routing façade over

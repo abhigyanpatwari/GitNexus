@@ -50,7 +50,7 @@ export function createNamespaceTargetCache(
     collectBindings(scope.bindings);
     collectBindings(scopes.bindings?.get(id));
     collectBindings(scopes.bindingAugmentations?.get(id));
-    for (const edge of scopes.imports?.get(id) ?? scope.imports) {
+    for (const edge of scopes.imports?.edgesAt(id) ?? scope.imports) {
       importNames.add(edge.localName);
       if (edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved')
         hasNamespaceImports = true;

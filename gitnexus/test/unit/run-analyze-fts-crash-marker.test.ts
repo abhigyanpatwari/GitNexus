@@ -30,6 +30,7 @@ import {
 } from '../../src/core/ingestion/process-detection-budget.js';
 import { getSearchFTSCjkSegmentation } from '../../src/core/search/cjk-segmentation.js';
 import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
+import { MAX_INCREMENTAL_WRITES } from '../../src/core/incremental/compaction-policy.js';
 import {
   FTS_DIRTY_PHASE,
   allowsFtsCrashWalPark,
@@ -1208,8 +1209,79 @@ describe('runFullAnalysis FTS crash marker', () => {
       expect(result.alreadyUpToDate).not.toBe(true);
       expect(runPipelineFromRepo).toHaveBeenCalled();
       expect(runDeferredDerivedPhases).toHaveBeenCalled();
+      expect(await runPipelineFromRepo.mock.results[0].value).toHaveProperty(
+        'runDeferredDerivedPhases',
+        undefined,
+      );
       const finalMeta = await loadMeta(storagePath);
       expect(finalMeta?.processDetection?.uncertified).toBeUndefined();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('releases deferred phases before compacting an unchanged snapshot', async () => {
+    const runDeferredDerivedPhases = vi.fn(async () => undefined);
+    const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
+      repoPath,
+      graph: fileGraph(),
+      runDeferredDerivedPhases,
+    }));
+    const wipeLbugDbFiles = vi.fn(async () => {
+      expect(runDeferredDerivedPhases).toHaveBeenCalledTimes(1);
+      expect(await runPipelineFromRepo.mock.results[0].value).toHaveProperty(
+        'runDeferredDerivedPhases',
+        undefined,
+      );
+    });
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async () => ({
+      ...(await mockLbugAdapter()),
+      wipeLbugDbFiles,
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/search/fts-indexes.js')>()),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      missingSearchFTSIndexTables: vi.fn(async () => []),
+      dropSearchFTSIndexes: vi.fn(async () => undefined),
+      buildSearchIndexesOrDegrade: vi.fn(async () => ({ ok: true })),
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({ runPipelineFromRepo }));
+
+    const tmpRepo = await createTempDir('gitnexus-deferred-compaction-');
+    try {
+      await seedGitFile(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      const fileHash = await computeFileHash(path.join(tmpRepo.dbPath, REL_FILE));
+      await saveMeta(storagePath, {
+        ...incrementalMeta(tmpRepo.dbPath),
+        lastCommit: headCommit(tmpRepo.dbPath),
+        fileHashes: { [REL_FILE]: fileHash! },
+        graphCompaction: { version: 1, compactBytes: 7, incrementalWrites: MAX_INCREMENTAL_WRITES },
+        processDetection: {
+          maxProcesses: null,
+          maxProcessBranching: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessBranching,
+          maxProcessTraceDepth: PROCESS_DETECTION_BUDGET_DEFAULTS.maxProcessTraceDepth,
+          maxEntryPointCandidates: PROCESS_DETECTION_BUDGET_DEFAULTS.maxEntryPointCandidates,
+        },
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {}, onLog: () => {} },
+      );
+
+      expect(result.alreadyUpToDate).not.toBe(true);
+      expect(runPipelineFromRepo).toHaveBeenCalledWith(
+        tmpRepo.dbPath,
+        expect.any(Function),
+        expect.objectContaining({ skipDerivedGraphPhases: true }),
+      );
+      expect(wipeLbugDbFiles).toHaveBeenCalledTimes(1);
+      expect(runDeferredDerivedPhases).toHaveBeenCalledTimes(1);
     } finally {
       await tmpRepo.cleanup();
     }

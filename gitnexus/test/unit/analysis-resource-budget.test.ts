@@ -221,6 +221,12 @@ describe('analysis resource admission', () => {
     );
   });
 
+  it('lets vector index construction use the CPU allowance beyond the model thread cap', () => {
+    const budget = resolveAnalysisResourceBudget({ ...request, embeddingThreads: 2 });
+    expect(budget.embedding.nativeThreads).toBe(2);
+    expect(budget.embedding.indexThreads).toBe(request.availableCpus);
+  });
+
   it('admits explicit embedding concurrency and includes sidecar heap within the model reservation', () => {
     const budget = resolveAnalysisResourceBudget({ ...request, embeddingThreads: 8 });
     expect(budget.embedding.nativeThreads).toBe(8);
@@ -267,6 +273,23 @@ describe('analysis resource admission', () => {
     expect(() => resolveAnalysisResourceBudget({ ...request, modelMemoryMb: 128 })).toThrow(
       'model reservation',
     );
+  });
+
+  it.each([
+    // The limit does not fit beside one worker: admit the largest heap that does.
+    [15_700, 4121],
+    // The limit fits: reserve what the process can actually use.
+    [32_768, 4144],
+  ])('treats an unpinned heap limit on a %i MiB host as a ceiling', (ramMb, mainHeapMb) => {
+    const budget = resolveAnalysisResourceBudget({
+      effectiveMemoryBytes: ramMb * MIB,
+      availableCpus: 4,
+      modelMemoryMb: 0,
+      supervisorBytes: 225 * MIB,
+      mainHeapLimitMb: 4144,
+    });
+    expect(budget.mainHeapMb).toBe(mainHeapMb);
+    expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
   });
 
   it('reports the inherited heap requirement when explicit worker caps cannot constrain it', () => {

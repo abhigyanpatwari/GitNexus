@@ -70,6 +70,7 @@ const result = await runPublishedEmbeddingJob(
       modelHeapMb: 0,
       queueBytes: 16 * 1024 ** 2,
       nativeThreads: 1,
+      indexThreads: 1,
       reservedBytes: 96 * 1024 ** 2,
     },
     config: { threads: 1, subBatchSize: 8, maxInputChars: 256 },

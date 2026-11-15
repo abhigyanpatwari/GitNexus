@@ -546,16 +546,50 @@ describe('uninstallCommand', () => {
     const raw = ['[mcp_servers.gitnexus]', 'command = "gitnexus"', 'args = ["mcp"]', ''].join('\n');
     await fs.writeFile(configPath, raw, 'utf-8');
 
-    const uninstallCommand = await importUninstall();
-    await uninstallCommand({ force: true });
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      const uninstallCommand = await importUninstall();
+      await uninstallCommand({ force: true });
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
 
     expect(execFileMock).toHaveBeenCalledWith(
       'codex',
       ['mcp', 'remove', 'gitnexus'],
-      expect.any(Object),
+      expect.objectContaining({ shell: false }),
       expect.any(Function),
     );
     // CLI path handles removal; we must not also rewrite the file.
+    expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
+  });
+
+  it('runs `codex mcp remove` as one shell command line on Windows', async () => {
+    execFileMock.mockImplementationOnce((...args: any[]) => {
+      const callback = args.at(-1);
+      if (typeof callback === 'function') callback(null, '', '');
+    });
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    const raw = ['[mcp_servers.gitnexus]', 'command = "gitnexus"', 'args = ["mcp"]', ''].join('\n');
+    await fs.writeFile(configPath, raw, 'utf-8');
+
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const uninstallCommand = await importUninstall();
+      await uninstallCommand({ force: true });
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'codex mcp remove gitnexus',
+      [],
+      expect.objectContaining({ shell: true }),
+      expect.any(Function),
+    );
     expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
   });
 

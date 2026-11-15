@@ -26,7 +26,7 @@ export interface SigmaNodeAttributes {
   circlesAnchorY?: number;
   circlesRing?: number;
   circlesAnchorAngle?: number;
-  community?: number; // Community index from Leiden algorithm
+  community?: string | number; // Stable community ID or legacy numeric index
   communityColor?: string; // Color assigned by community
 }
 
@@ -89,11 +89,11 @@ const getNodeMass = (nodeType: NodeLabel, nodeCount: number): number => {
  * Folders are positioned in a wide spread, children positioned NEAR their parents
  *
  * @param knowledgeGraph - The knowledge graph to convert
- * @param communityMemberships - Optional map of nodeId -> communityIndex for community coloring
+ * @param communityMemberships - Optional node-to-community map; defaults to MEMBER_OF relationships
  */
 export const knowledgeGraphToGraphology = (
   knowledgeGraph: KnowledgeGraph,
-  communityMemberships?: Map<string, number>,
+  communityMemberships?: Map<string, string | number>,
 ): Graph<SigmaNodeAttributes, SigmaEdgeAttributes> => {
   const graph = new Graph<SigmaNodeAttributes, SigmaEdgeAttributes>();
   const nodeCount = knowledgeGraph.nodes.length;
@@ -125,7 +125,17 @@ export const knowledgeGraphToGraphology = (
   });
 
   // Create node lookup
-  const nodeMap = new Map(knowledgeGraph.nodes.map((n) => [n.id, n]));
+  const nodeMap = new Map<string, (typeof knowledgeGraph.nodes)[number]>();
+  for (const node of knowledgeGraph.nodes) nodeMap.set(node.id, node);
+
+  if (!communityMemberships) {
+    communityMemberships = new Map();
+    for (const rel of knowledgeGraph.relationships) {
+      if (rel.type === 'MEMBER_OF' && nodeMap.get(rel.targetId)?.label === 'Community') {
+        communityMemberships.set(rel.sourceId, rel.targetId);
+      }
+    }
+  }
 
   // Separate structural nodes (folders, packages) from content nodes
   const structuralTypes = new Set(['Project', 'Package', 'Module', 'Folder']);
@@ -138,7 +148,7 @@ export const knowledgeGraphToGraphology = (
 
   // === CLUSTER-BASED POSITIONING ===
   // Calculate cluster centers - each cluster gets a region of the graph
-  const clusterCenters = new Map<number, { x: number; y: number }>();
+  const clusterCenters = new Map<string | number, { x: number; y: number; color: string }>();
   if (communityMemberships && communityMemberships.size > 0) {
     // Find unique community IDs
     const communities = new Set(communityMemberships.values());
@@ -154,6 +164,7 @@ export const knowledgeGraphToGraphology = (
       clusterCenters.set(communityId, {
         x: radius * Math.cos(angle),
         y: radius * Math.sin(angle),
+        color: getCommunityColor(communityId),
       });
       idx++;
     });
@@ -199,6 +210,7 @@ export const knowledgeGraphToGraphology = (
 
   // Process remaining nodes in HIERARCHY ORDER (parents before children)
   // Use BFS starting from structural nodes to ensure parents are positioned first
+  const symbolTypes = new Set(['Function', 'Class', 'Method', 'Interface']);
   const addNodeWithPosition = (nodeId: string) => {
     if (graph.hasNode(nodeId)) return;
 
@@ -209,7 +221,6 @@ export const knowledgeGraphToGraphology = (
 
     // Check if this is a symbol node with a community assignment
     const communityIndex = communityMemberships?.get(nodeId);
-    const symbolTypes = new Set(['Function', 'Class', 'Method', 'Interface']);
     const clusterCenter = communityIndex !== undefined ? clusterCenters.get(communityIndex) : null;
 
     if (clusterCenter && symbolTypes.has(node.label)) {
@@ -242,7 +253,7 @@ export const knowledgeGraphToGraphology = (
     // Symbol nodes get colored by community if available
     const usesCommunityColor = hasCommunity && symbolTypes.has(node.label);
     const nodeColor = usesCommunityColor
-      ? getCommunityColor(communityIndex!)
+      ? clusterCenter!.color
       : NODE_COLORS[node.label] || '#9ca3af';
 
     graph.addNode(nodeId, {
@@ -258,24 +269,22 @@ export const knowledgeGraphToGraphology = (
       hidden: false,
       mass: getNodeMass(node.label, nodeCount),
       community: communityIndex,
-      communityColor: hasCommunity ? getCommunityColor(communityIndex!) : undefined,
+      communityColor: clusterCenter?.color,
     });
   };
 
   // BFS from structural nodes - this ensures parent is ALWAYS positioned before child
-  const queue: string[] = [...structuralNodes.map((n) => n.id)];
-  const visited = new Set<string>(queue);
+  const visited = new Set(structuralNodes.map((n) => n.id));
 
-  while (queue.length > 0) {
-    const currentId = queue.shift()!;
-
+  // Set iteration visits appended children in insertion order, serving as the
+  // BFS queue without shifting an array or retaining a second list of node IDs.
+  for (const currentId of visited) {
     // Get children of current node and add them
     const children = parentToChildren.get(currentId) || [];
     for (const childId of children) {
       if (!visited.has(childId)) {
         visited.add(childId);
         addNodeWithPosition(childId);
-        queue.push(childId); // Add to queue so its children are processed too
       }
     }
   }

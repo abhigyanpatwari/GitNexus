@@ -304,33 +304,51 @@ async function fileExists(filePath: string): Promise<boolean> {
 
 /**
  * Whether `markdown` has a level-1 heading of its own: an ATX `# Title` or a
- * setext title underlined with `=`. Lines inside fenced code blocks are not
- * headings.
+ * setext title underlined with `=`. Fenced code, HTML comments and YAML front
+ * matter can contain heading examples without giving the file a title.
  */
 function hasTopLevelHeading(markdown: string): boolean {
+  const lines = markdown.replace(/^\uFEFF/, '').split('\n');
+  let start = 0;
+  if (/^---[ \t]*$/.test(lines[0])) {
+    const end = lines.findIndex((line, i) => i > 0 && /^---[ \t]*$/.test(line));
+    if (end !== -1) start = end + 1;
+  }
   let fence: { char: string; length: number } | undefined;
+  let inComment = false;
   let previous = '';
-  for (const line of markdown.split('\n')) {
-    const fenceMatch = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    const fenceMatch = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (fence) {
       if (
         fenceMatch &&
         fenceMatch[1][0] === fence.char &&
         fenceMatch[1].length >= fence.length &&
-        line.trim() === fenceMatch[1]
+        /^[ \t]*$/.test(fenceMatch[2])
       ) {
         fence = undefined;
       }
       previous = '';
       continue;
     }
-    if (fenceMatch) {
+    if (inComment || /^ {0,3}<!--/.test(line)) {
+      inComment = !line.includes('-->');
+      previous = '';
+      continue;
+    }
+    // Backtick fence info strings cannot contain backticks (CommonMark §4.5).
+    if (fenceMatch && (fenceMatch[1][0] !== '`' || !fenceMatch[2].includes('`'))) {
       fence = { char: fenceMatch[1][0], length: fenceMatch[1].length };
       previous = '';
       continue;
     }
     if (/^ {0,3}#(?:[ \t]|$)/.test(line)) return true;
-    if (/^ {0,3}=+[ \t]*$/.test(line) && previous.trim() !== '' && !/^ {0,3}#/.test(previous)) {
+    if (
+      /^ {0,3}=+[ \t]*$/.test(line) &&
+      previous.trim() !== '' &&
+      !/^ {0,3}#{1,6}(?:[ \t]|$)/.test(previous)
+    ) {
       return true;
     }
     previous = line;

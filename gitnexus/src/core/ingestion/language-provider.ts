@@ -54,6 +54,7 @@ import type {
   FetchWrapperReexport,
 } from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
+import type { ElementAccessRoute } from './scope-resolution/contract/scope-resolver.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
 /**
@@ -267,9 +268,12 @@ interface LanguageProviderConfig {
   readonly extensions: readonly string[];
 
   /**
-   * Files with the same provider-local key must be rewritten together when
-   * any member changes, is added, or is deleted. Resolution can change edges
+   * Files with the same provider-local key are re-examined together when any
+   * member changes, is added, or is deleted. Resolution can change edges
    * between untouched members even without an import or current graph edge.
+   * A member (or a file importing one) is rewritten when its graph rows differ
+   * from the rows recorded at its last write, so a key may be as wide as the
+   * whole language without turning every edit into a full database write.
    * Derive the key from the path alone: deleted files have no current source.
    * This only widens incremental invalidation, not semantic resolution scope.
    */
@@ -1288,6 +1292,17 @@ interface LanguageProviderConfig {
     targetFile: string,
     workspaceIndex: WorkspaceIndex,
   ) => readonly string[];
+
+  /**
+   * Element or yield type of a container spelling, by access route — the same
+   * contract as `ScopeResolver.elementTypeOf`, and a provider that answers
+   * both should hand the SAME function to both. Read on the parse side by the
+   * scope extractor's chain follow for the `await` route only: a binding
+   * marked `@type-binding.awaited` takes what the followed return type yields
+   * under `await` (`Future<C>` → `C`). A provider without it, or one that
+   * answers `undefined`, leaves the follow exactly as it was.
+   */
+  readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
 
   /**
    * Decide the scope to which a `ParsedImport` attaches. Most languages

@@ -2268,6 +2268,72 @@ describe('block heading levels follow the file (#2774)', () => {
     });
   });
 
+  it.each([
+    ['an HTML comment with an ATX heading', '<!--\n# Example\n-->\n'],
+    ['an HTML comment with a setext heading', '<!--\nExample\n=======\n-->\n'],
+    ['YAML front matter', '---\nexample: |\n  # Example\n---\n'],
+    ['a tilde fence', '~~~md\n# Example\n~~~\n'],
+    ['a longer backtick fence', '````md\n```\n# Example\n````\n'],
+    ['a fence with a false closing line', '```md\n``` text\n# Example\n```\n'],
+    ['an ATX subheading followed by equals signs', '## Details\n===\n'],
+  ])('does not nest under %s', async (_name, original) => {
+    await withRepo(async (dir, storage) => {
+      for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+        await fs.writeFile(path.join(dir, name), original, 'utf-8');
+      }
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(dir, name), 'utf-8');
+        expect(content.startsWith(original)).toBe(true);
+        expect(content).toContain('<!-- gitnexus:start -->\n# GitNexus — Code Intelligence\n');
+      }
+    });
+  });
+
+  it.each([
+    ['an invalid backtick fence opener', '```example`\n\n# Guide\n'],
+    ['an unclosed front matter delimiter', '---\n# Guide\n...\n'],
+    ['a comment containing fence delimiters', '<!--\n```md\n-->\n\n# Guide\n'],
+    ['a code sample containing a comment opener', '```html\n<!--\n```\n\n# Guide\n'],
+    ['YAML front matter containing fence delimiters', '---\nexample: |\n  ```md\n---\n\n# Guide\n'],
+    ['a UTF-8 byte-order mark', '\uFEFF# Guide\n'],
+    ['a setext title starting with a literal hash', '#Guide\n======\n'],
+  ])('recognizes a title after %s', async (_name, original) => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, original, 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n');
+      const repeated = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(repeated.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(content);
+    });
+  });
+
+  it('preserves a nested block when only the counts change', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'AGENTS.md');
+      await fs.writeFile(file, '# Guide\n', 'utf-8');
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const original = await fs.readFile(file, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', {
+        nodes: 100,
+        edges: 200,
+        processes: 30,
+      });
+
+      expect(original).toContain('\n## GitNexus — Code Intelligence\n');
+      expect(result.files).toContain('AGENTS.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(original);
+    });
+  });
+
   it('nests the block in a CRLF file with a title and keeps CRLF', async () => {
     await withRepo(async (dir, storage) => {
       const file = path.join(dir, 'CLAUDE.md');

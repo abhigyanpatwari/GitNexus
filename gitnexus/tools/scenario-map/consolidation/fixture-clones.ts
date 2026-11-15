@@ -58,7 +58,7 @@ export async function runFixtureClones(
   if (Object.keys(sources).length === 0)
     return {
       tool: 'jscpd',
-      version: '5.4.2 (not run: no captured sources)',
+      version: '5.4.3 (not run: no captured sources)',
       sourceCount: 0,
       clones: [],
     };
