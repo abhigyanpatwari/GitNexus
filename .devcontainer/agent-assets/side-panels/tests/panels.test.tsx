@@ -136,6 +136,7 @@ test('the agents pane logs a message, opens an agent on a click and sends what i
     return { value: {} };
   });
   on('session.send', (_, e) => {
+    // The event names the recipient as a string, whichever form the caller passed to `$.session.send`.
     sent.push({ to: e.to, text: e.text });
 
     return { isDelivered: true };

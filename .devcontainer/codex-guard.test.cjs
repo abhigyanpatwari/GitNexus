@@ -39,6 +39,20 @@ const DENIED = [
   '> /tmp/log rm -rf /workspace',
   '</dev/null git push --force origin feature',
   'rm 2>/dev/null -rf /',
+  // What precedes a command is open-ended, so it is judged wherever it stands.
+  '2>& 1 rm -rf /',
+  'timeout 10 rm -rf /',
+  'stdbuf -o0 rm -rf /workspace',
+  '! rm -rf /',
+  '(rm -rf /)',
+  '{ rm -rf ~; }',
+  'if true; then rm -rf /; fi',
+  'echo "$(rm -rf /)"',
+  'echo `git clean -fdx`',
+  'eval "rm -rf /"',
+  'busybox rm -rf /',
+  // An unquoted mention is refused too: the guard fails closed.
+  'echo rm -rf / > notes.txt',
 ];
 
 const ALLOWED = [
@@ -59,8 +73,11 @@ const ALLOWED = [
   'echo "rm -rf /" > notes.txt',
   'git log --grep "push origin main"',
   'bash -lc "ls && git status"',
-  'echo rm -rf / > notes.txt',
   'ls /nope 2>/dev/null',
+  'git rm -r --cached .',
+  'docker rm -f web',
+  'npm run reboot',
+  "echo 'rm -rf /' > notes.txt",
   'rm -rf build 2>&1',
 ];
 

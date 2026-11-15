@@ -27,18 +27,29 @@ const PROTECTED = [
   /(^|\/)\.(claude|codex|claude-mem)(\/\*?)?$/,
 ];
 
-// Words a command may stand behind: `sudo rm`, `env A=b rm`, `xargs rm`.
-const PREFIXES = new Set(['sudo', 'env', 'time', 'nohup', 'command', 'exec', 'xargs', 'nice']);
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash']);
 // git options that take a value, so the word after them is not the subcommand.
 const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+// Tools whose own `rm` subcommand is not the shell's rm (`git rm -r --cached .`).
+const HAVE_RM_SUBCOMMAND = new Set([
+  'git',
+  'docker',
+  'podman',
+  'npm',
+  'pnpm',
+  'yarn',
+  'gh',
+  'kubectl',
+  'helm',
+]);
 
 /**
  * Splits a command line into simple commands, each a list of words, honouring
  * quotes: `git commit -m "rm -rf /"` is one command whose last word is text.
- * ponytail: no $(...) or backtick parsing, and no variable expansion. A command
- * hidden in a substitution or built from variables is not seen; a real shell
- * parser (or denying substitutions outright) is the upgrade if that matters.
+ * Grouping and substitution marks end a command too, so what stands inside
+ * `( ... )`, `{ ...; }`, `$( ... )` and backticks is read as commands of its own.
+ * ponytail: no variable expansion. A command built from variables (`$X -rf /`)
+ * is not seen; a real shell parser is the upgrade if that matters.
  */
 function simpleCommands(line) {
   const commands = [];
@@ -58,9 +69,18 @@ function simpleCommands(line) {
   };
   for (let at = 0; at < line.length; at += 1) {
     const char = line[at];
-    if (quote !== '') {
+    if (quote === "'") {
       if (char === quote) quote = '';
       else word += char;
+    } else if (quote === '"') {
+      // A substitution inside double quotes still runs. Its text is read as
+      // commands from there on; losing track of the closing quote only splits
+      // the rest into more words, which fails closed.
+      if (char === quote) quote = '';
+      else if (char === '`' || (char === '$' && line[at + 1] === '(')) {
+        endCommand();
+        quote = '';
+      } else word += char;
     } else if (char === "'" || char === '"') {
       quote = char;
       hasWord = true;
@@ -69,7 +89,7 @@ function simpleCommands(line) {
       hasWord = true;
     } else if (/\s/.test(char) && char !== '\n') {
       endWord();
-    } else if (char === ';' || char === '|' || char === '&' || char === '\n') {
+    } else if (';|&\n(){}`'.includes(char)) {
       endCommand();
     } else {
       word += char;
@@ -96,69 +116,78 @@ function withoutRedirections(words) {
   return kept;
 }
 
-/** @returns {string | undefined} why the command is refused */
+/** Why `name args...` is refused, when `name` is a command this guard watches. */
+function judge(name, args, before, depth) {
+  if ((SHELLS.has(name) || name === 'eval') && depth < 3) {
+    // `sh -c '<script>'` and `eval <words>` run their argument as a command line.
+    const flag = args.findIndex((arg) => /^-[a-z]*c$/.test(arg));
+    const script = name === 'eval' ? args.join(' ') : flag === -1 ? '' : (args[flag + 1] ?? '');
+    return refusal(script, depth + 1);
+  }
+
+  if (name === 'rm' && !HAVE_RM_SUBCOMMAND.has(before)) {
+    const flags = args.filter((arg) => arg.startsWith('-')).join(' ');
+    const targets = args.filter((arg) => !arg.startsWith('-'));
+    const isRecursive = /(^|\s)-[a-zA-Z]*[rR]|--recursive/.test(flags);
+    const hit = targets.find((target) => PROTECTED.some((path) => path.test(target)));
+    if (isRecursive && hit !== undefined) return `rm -r on ${hit}`;
+    const memory = targets.find((target) => /\.claude-mem(\/|$)|claude-mem\.db/.test(target));
+    if (memory !== undefined) return `rm on the claude-mem store (${memory})`;
+  }
+
+  if (name === 'git') {
+    let at = 0;
+    while (at < args.length && args[at].startsWith('-')) {
+      at += GIT_VALUE_OPTIONS.has(args[at]) ? 2 : 1;
+    }
+    const verb = args[at];
+    const rest = args.slice(at + 1);
+    if (verb === 'push') {
+      if (rest.some((arg) => arg === '-f' || arg === '--force' || /^\+/.test(arg))) {
+        return 'git push --force (use --force-with-lease on your own branch)';
+      }
+      const refs = rest.filter((arg) => !arg.startsWith('-')).slice(1);
+      if (refs.some((ref) => /(^|:)(refs\/heads\/)?(main|master)$/.test(ref))) {
+        return 'git push to main (work goes through a pull request)';
+      }
+    }
+    if (verb === 'clean' && rest.some((arg) => /^-[a-zA-Z]*[xX]/.test(arg))) {
+      return 'git clean -x (it deletes ignored files: local skills, indexes, node_modules)';
+    }
+  }
+
+  if (name === 'dd' && args.some((arg) => /^of=\/dev\//.test(arg))) return 'dd onto a device';
+  if (/^mkfs(\.\w+)?$/.test(name)) return 'a disk format command';
+  if (name === 'chmod' || name === 'chown') {
+    const isRecursive = args.some((arg) => /^-[a-zA-Z]*R|--recursive/.test(arg));
+    const hit = args.find((arg) => /^(\/|~\/?|\$\{?HOME\}?\/?|\/home\/?)$/.test(arg));
+    if (isRecursive && hit !== undefined) return `${name} -R on ${hit}`;
+  }
+  if (name === 'npm' && args[0] === 'publish') return 'npm publish';
+  if (name === 'gh' && /^(repo|release)$/.test(args[0] ?? '') && args[1] === 'delete') {
+    return `gh ${args[0]} delete`;
+  }
+
+  return undefined;
+}
+
+/**
+ * Why the command line is refused, or undefined when it may run.
+ *
+ * A watched command is judged wherever it stands in a simple command, not only
+ * as its first word. What may precede a command is open-ended (`timeout 10`,
+ * `stdbuf -o0`, `!`, `then`, a redirection in any spelling), so a list of
+ * allowed prefixes is a list of bypasses. The price is that an unquoted
+ * mention is refused too (`echo rm -rf /`): the guard fails closed.
+ */
 function refusal(line, depth = 0) {
   if (/:\(\)\s*\{[^}]*\|\s*:\s*&/.test(line)) return 'a fork bomb';
   for (const all of simpleCommands(line)) {
-    let words = withoutRedirections(all);
-    while (
-      words.length > 1 &&
-      (PREFIXES.has(words[0].split('/').pop()) ||
-        /^[A-Za-z_]\w*=/.test(words[0]) ||
-        words[0].startsWith('-'))
-    ) {
-      words = words.slice(1);
-    }
-    const name = (words[0] ?? '').split('/').pop();
-    const args = words.slice(1);
-
-    if (SHELLS.has(name) && depth < 3) {
-      const flag = args.findIndex((arg) => /^-[a-z]*c$/.test(arg));
-      const why = flag === -1 ? undefined : refusal(args[flag + 1] ?? '', depth + 1);
+    const words = withoutRedirections(all);
+    for (let at = 0; at < words.length; at += 1) {
+      const nameOf = (word) => (word ?? '').split('/').pop();
+      const why = judge(nameOf(words[at]), words.slice(at + 1), nameOf(words[at - 1]), depth);
       if (why !== undefined) return why;
-    }
-
-    if (name === 'rm') {
-      const flags = args.filter((arg) => arg.startsWith('-')).join(' ');
-      const targets = args.filter((arg) => !arg.startsWith('-'));
-      const isRecursive = /(^|\s)-[a-zA-Z]*[rR]|--recursive/.test(flags);
-      const hit = targets.find((target) => PROTECTED.some((path) => path.test(target)));
-      if (isRecursive && hit !== undefined) return `rm -r on ${hit}`;
-      const memory = targets.find((target) => /\.claude-mem(\/|$)|claude-mem\.db/.test(target));
-      if (memory !== undefined) return `rm on the claude-mem store (${memory})`;
-    }
-
-    if (name === 'git') {
-      let at = 0;
-      while (at < args.length && args[at].startsWith('-'))
-        at += GIT_VALUE_OPTIONS.has(args[at]) ? 2 : 1;
-      const verb = args[at];
-      const rest = args.slice(at + 1);
-      if (verb === 'push') {
-        if (rest.some((arg) => arg === '-f' || arg === '--force' || /^\+/.test(arg))) {
-          return 'git push --force (use --force-with-lease on your own branch)';
-        }
-        const refs = rest.filter((arg) => !arg.startsWith('-')).slice(1);
-        if (refs.some((ref) => /(^|:)(refs\/heads\/)?(main|master)$/.test(ref))) {
-          return 'git push to main (work goes through a pull request)';
-        }
-      }
-      if (verb === 'clean' && rest.some((arg) => /^-[a-zA-Z]*[xX]/.test(arg))) {
-        return 'git clean -x (it deletes ignored files: local skills, indexes, node_modules)';
-      }
-    }
-
-    if (name === 'dd' && args.some((arg) => /^of=\/dev\//.test(arg))) return 'dd onto a device';
-    if (/^(mkfs(\.\w+)?|shutdown|reboot|halt|poweroff)$/.test(name))
-      return 'a disk or power command';
-    if (name === 'chmod' || name === 'chown') {
-      const isRecursive = args.some((arg) => /^-[a-zA-Z]*R|--recursive/.test(arg));
-      const hit = args.find((arg) => /^(\/|~\/?|\$\{?HOME\}?\/?|\/home\/?)$/.test(arg));
-      if (isRecursive && hit !== undefined) return `${name} -R on ${hit}`;
-    }
-    if (name === 'npm' && args[0] === 'publish') return 'npm publish';
-    if (name === 'gh' && /^(repo|release)$/.test(args[0] ?? '') && args[1] === 'delete') {
-      return `gh ${args[0]} delete`;
     }
   }
 
