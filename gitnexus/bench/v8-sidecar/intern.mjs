@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import v8 from 'node:v8';
+import { loadCachePayloads } from './cache-payloads.mjs';
 
 const [baselineRoot, candidateRoot, indexingResults, output] = process.argv.slice(2);
 assert(
@@ -28,24 +30,19 @@ for (const [variant, root] of Object.entries({
     moduleHash: createHash('sha256').update(fs.readFileSync(filename)).digest('hex'),
   };
 }
-const files = ['parse-cache', 'parsedfile-cache']
-  .flatMap((dir) =>
-    fs
-      .readdirSync(path.join(storage, dir), { recursive: true })
-      .filter((name) => name.endsWith('.v8'))
-      .map((name) => path.join(storage, dir, name)),
-  )
-  .sort();
-assert(files.length > 0, 'No real V8 shards were measured');
-const payloads = [];
+const { format: cacheFormat, payloads } = await loadCachePayloads(storage, {
+  tryLoadV8Cache: modules.baseline.tryLoadV8Cache,
+  // Older baseline runtimes need only their loose-shard reader.
+  async loadPackedModules() {
+    const load = (name) =>
+      import(pathToFileURL(path.resolve(baselineRoot, `gitnexus/dist/storage/${name}.js`)).href);
+    return { ...(await load('file-result-store')), ...(await load('file-result-codec')) };
+  },
+});
 const pools = { baseline: new Map(), candidate: new Map() };
 const fingerprint = createHash('sha256');
-for (const filename of files) {
-  const hit = await modules.baseline.tryLoadV8Cache(filename);
-  assert.equal(hit?.kind, 'hit', 'Unreadable baseline shard');
-  const payload = v8.serialize(hit.value);
+for (const payload of payloads) {
   fingerprint.update(payload);
-  payloads.push(payload);
   const before = v8.deserialize(payload);
   const after = v8.deserialize(payload);
   modules.baseline.internGraphStrings(before, pools.baseline);
@@ -59,41 +56,38 @@ assert(strings > 0, 'No strings were interned');
 pools.baseline.clear();
 pools.candidate.clear();
 const samples = [];
-for (let round = 0; round < 10; round++) {
-  for (const variant of round % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
-    global.gc();
-    const pool = new Map();
-    let ms = 0;
-    let cpuMs = 0;
-    const totalCpu = process.cpuUsage();
-    const graphs = [];
-    for (const payload of payloads) {
-      const graph = v8.deserialize(payload);
-      const cpu = process.cpuUsage();
-      const started = performance.now();
-      modules[variant].internGraphStrings(graph, pool);
-      ms += performance.now() - started;
-      const used = process.cpuUsage(cpu);
-      cpuMs += (used.user + used.system) / 1000;
-      graphs.push(graph);
+// Correctness checks above retain a large graph and two module instances. Run
+// each timed sample outside that heap, with identical startup/GC conditions.
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-intern-'));
+try {
+  const corpusPath = path.join(scratch, 'payloads.v8');
+  fs.writeFileSync(corpusPath, v8.serialize(payloads));
+  for (let round = 0; round < 10; round++) {
+    for (const variant of round % 2 ? ['candidate', 'baseline'] : ['baseline', 'candidate']) {
+      const runtimeRoot = variant === 'baseline' ? baselineRoot : candidateRoot;
+      const measured = JSON.parse(
+        execFileSync(
+          process.execPath,
+          [
+            '--expose-gc',
+            '--predictable',
+            '--predictable-gc-schedule',
+            '--max-old-space-size=4096',
+            fileURLToPath(new URL('./intern-sample.mjs', import.meta.url)),
+            path.resolve(runtimeRoot, 'gitnexus/dist/storage/v8-sidecar.js'),
+            corpusPath,
+            String(strings),
+          ],
+          { encoding: 'utf8', timeout: 120_000 },
+        ),
+      );
+      const row = { round, variant, ...measured };
+      samples.push(row);
+      console.log(JSON.stringify(row));
     }
-    const used = process.cpuUsage(totalCpu);
-    assert.equal(pool.size, strings);
-    global.gc();
-    const row = {
-      round,
-      variant,
-      ms,
-      cpuMs,
-      // Deserialization + interning CPU, excluding the forced heap-measurement GC.
-      hydrateCpuMs: (used.user + used.system) / 1000,
-      heapUsed: process.memoryUsage().heapUsed,
-      peakRssKiB: process.resourceUsage().maxRSS,
-    };
-    assert.equal(graphs.length, files.length);
-    samples.push(row);
-    console.log(JSON.stringify(row));
   }
+} finally {
+  fs.rmSync(scratch, { recursive: true, force: true });
 }
 fs.writeFileSync(
   output,
@@ -102,7 +96,9 @@ fs.writeFileSync(
       node: process.version,
       runtimes,
       corpusHead: indexing.head,
-      shards: files.length,
+      cacheFormat,
+      // One payload per legacy shard or packed facts/scope section.
+      shards: payloads.length,
       bytes: payloads.reduce((sum, p) => sum + p.length, 0),
       fingerprint: fingerprint.digest('hex'),
       strings,

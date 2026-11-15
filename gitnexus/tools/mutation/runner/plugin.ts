@@ -1,5 +1,5 @@
 /**
- * Stryker test-runner plugin `vitest5`: runs a mutation scope under the repo's own Vitest 5.0.x
+ * Stryker test-runner plugin `vitest5`: runs a mutation scope under the repo's supported Vitest 5
  * (KTD1), with per-test coverage keyed by KTD3 ids, task-id test selection (KTD4), the configured
  * forks pool with fresh workers and no shared caches (KTD5), KTD17 outcome classes in sidecar
  * files (KTD6) and a run manifest shared by every runner process (KTD16).

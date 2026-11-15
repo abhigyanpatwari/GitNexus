@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';

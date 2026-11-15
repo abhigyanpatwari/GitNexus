@@ -84,7 +84,7 @@ annotation so their intentional overlap remains available for acceptance checks.
 The fingerprint report likewise retains existing table pairs in its `kept` list.
 The CI plan artifact includes `consolidation.html`, `consolidation.json`, and `fixtures.json`.
 
-Fixture text is compared locally with the pinned **jscpd 5.4.2** development
+Fixture text is compared locally with the pinned **jscpd 5.4.3** development
 dependency. Exact, consistently renamed, and near-miss fragments contribute to
 byte overlap; comments and whitespace are ignored by the clone engine. The
 coverage denominator conservatively includes all non-whitespace captured bytes.

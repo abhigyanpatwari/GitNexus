@@ -14,6 +14,7 @@ import {
   type SymbolDefinition,
   type TypeRef,
 } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import { resolveReferenceSites } from '../../../src/core/ingestion/resolve-references.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
@@ -85,7 +86,7 @@ function makeIndexes(
       computeMro: (owner) => mro[owner] ?? [],
       implementsOf: () => [],
     }),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     bindings: new Map(),
     workspaceFqnBindings: new Map(),
     workspaceTypeBindings: new Map(),
@@ -174,7 +175,7 @@ describe('resolveReferenceSites', () => {
     const imports = new Map<ScopeId, readonly ImportEdge[]>();
     const indexes = {
       ...makeIndexes([module, inner], [decoy, actual], [imported, shadowed]),
-      imports,
+      imports: createEagerImportVisibility(imports),
     };
     imports.set(module.id, [
       {
@@ -233,7 +234,7 @@ describe('resolveReferenceSites', () => {
       resolveReferenceSites({
         scopes: {
           ...makeIndexes([module], [hidden, shown], [hiddenSite, shownSite]),
-          imports,
+          imports: createEagerImportVisibility(imports),
         },
         ownedMembersByOwner: () => [],
         isNamespaceMemberVisible,
@@ -470,6 +471,38 @@ describe('resolveReferenceSites', () => {
       ),
     ).toBe(owner);
     expect(guesses).toBe(1);
+  });
+
+  it('sees a nearer binding written by the recorder between two sites', () => {
+    const outer = mkDef({ nodeId: 'Outer.Target', qualifiedName: 'Outer.Target' });
+    const nearer = mkDef({ nodeId: 'Nearer.Target', qualifiedName: 'Nearer.Target' });
+    const module = mkScope({
+      id: 'module',
+      parent: null,
+      bindings: { Target: [{ def: outer, origin: 'local' }] },
+    });
+    const innerBindings = new Map<string, readonly BindingRef[]>();
+    const inner: Scope = {
+      ...mkScope({ id: 'inner', parent: module.id, kind: 'Function' }),
+      bindings: innerBindings,
+    };
+    const sites: ReferenceSite[] = [3, 4].map((line) => ({
+      name: 'Target',
+      kind: 'type-reference',
+      inScope: inner.id,
+      atRange: range(line, 0, line, 6),
+    }));
+    const targets = new Map<ReferenceSite, string>();
+    resolveReferenceSites({
+      scopes: makeIndexes([module, inner], [outer, nearer], sites),
+      ownedMembersByOwner: () => [],
+      // A cached start for `inner` would keep the second site on the outer binding.
+      recordSourceBinding: (site, binding) => {
+        targets.set(site, binding.targetDefIds.join());
+        innerBindings.set('Target', [{ def: nearer, origin: 'local' }]);
+      },
+    });
+    expect(sites.map((site) => targets.get(site)).join(' ')).toBe('Outer.Target Nearer.Target');
   });
 
   it('observes blocked lexical names and explicit same-spelling import aliases', () => {

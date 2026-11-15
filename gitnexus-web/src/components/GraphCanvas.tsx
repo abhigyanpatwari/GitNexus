@@ -210,19 +210,7 @@ export const GraphCanvas = forwardRef<GraphCanvasHandle>((_, ref) => {
     } else if (graphViewMode === 'circles') {
       sigmaGraph = knowledgeGraphToCirclesGraphology(graph);
     } else {
-      // Build community memberships map from MEMBER_OF relationships
-      const communityMemberships = new Map<string, number>();
-      graph.relationships.forEach((rel) => {
-        if (rel.type === 'MEMBER_OF') {
-          const communityNode = nodeById.get(rel.targetId);
-          if (communityNode && communityNode.label === 'Community') {
-            const numericPart = rel.targetId.replace('comm_', '');
-            const communityIdx = /^\d+$/.test(numericPart) ? parseInt(numericPart, 10) : 0;
-            communityMemberships.set(rel.sourceId, communityIdx);
-          }
-        }
-      });
-      sigmaGraph = knowledgeGraphToGraphology(graph, communityMemberships);
+      sigmaGraph = knowledgeGraphToGraphology(graph);
     }
 
     setSigmaGraph(sigmaGraph);

@@ -80,6 +80,9 @@ describe('CLI analyzer identity receipt', () => {
     ).version;
     const env = {
       ...process.env,
+      // This tiny repository needs a bounded child heap. Node's default heap
+      // plus its parser worker can exceed admission on a 16 GiB CI runner.
+      NODE_OPTIONS: '--max-old-space-size=1024',
       GITNEXUS_HOME: isolatedHome.dbPath,
       GITNEXUS_LANG: 'en',
       GITNEXUS_LBUG_EXTENSION_INSTALL: 'never',

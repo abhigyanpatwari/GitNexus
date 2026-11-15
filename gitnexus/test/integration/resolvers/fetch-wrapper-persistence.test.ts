@@ -7,21 +7,18 @@ import { createWorkerPool } from '../../../src/core/ingestion/workers/worker-poo
 import type { ParseWorkerResult } from '../../../src/core/ingestion/workers/parse-worker.js';
 import {
   loadParseCache,
-  loadParseCacheChunk,
+  loadParseCacheFiles,
   pruneCache,
   saveParseCache,
   type ParseCache,
 } from '../../../src/storage/parse-cache.js';
-import {
-  clearParsedFileStore,
-  getDurableParsedFileDir,
-  loadDurableParsedFileIndex,
-  pruneAndSaveDurableParsedFileStore,
-} from '../../../src/storage/parsedfile-store.js';
+import { clearParsedFileStore } from '../../../src/storage/parsedfile-store.js';
+import { loadFileResultStore } from '../../../src/storage/file-result-store.js';
 import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 import { runPipelineFromRepo, writeFixtureRepo, type PipelineResult } from './helpers.js';
 
 const realWorker = new URL('../../../dist/core/ingestion/workers/parse-worker.js', import.meta.url);
+const codecModule = new URL('../../../dist/storage/file-result-codec.js', import.meta.url);
 const providerModule = new URL(
   '../../../dist/core/ingestion/languages/typescript.js',
   import.meta.url,
@@ -60,12 +57,18 @@ describe('fetch-wrapper facts across workers and persistent caches', () => {
       `
 import fs from 'node:fs';
 import { parentPort } from 'node:worker_threads';
+import { decodeFileResultSection } from ${JSON.stringify(codecModule.href)};
 const send = parentPort.postMessage.bind(parentPort);
 parentPort.postMessage = (message, ...rest) => {
-  if (message.type === 'result') fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify({
-    definitions: message.data.fetchWrapperDefs,
-    calls: message.data.fetchWrapperCalls,
-  }) + '\\n');
+  if (message.type === 'result') {
+    const parts = message.data.fileResults?.map(part => part.encoded
+      ? decodeFileResultSection(part.encoded.facts, part.key, part.path, 'facts').value
+      : part.raw) ?? [message.data];
+    fs.appendFileSync(${JSON.stringify(marker)}, JSON.stringify({
+      definitions: parts.flatMap(part => part.fetchWrapperDefs ?? []),
+      calls: parts.flatMap(part => part.fetchWrapperCalls ?? []),
+    }) + '\\n');
+  }
   return send(message, ...rest);
 };
 await import(${JSON.stringify(realWorker.href)});
@@ -102,12 +105,7 @@ await import(${JSON.stringify(realWorker.href)});
       });
     const persist = async (cache: ParseCache) => {
       pruneCache(cache, cache.usedKeys);
-      const keys = await saveParseCache(storage, cache);
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storage),
-        identity.base,
-        new Set(keys),
-      );
+      await saveParseCache(storage, cache);
       await clearParsedFileStore(storage);
     };
     const coldCache = await loadParseCache(storage, identity, storage);
@@ -145,18 +143,17 @@ await import(${JSON.stringify(realWorker.href)});
       }),
     );
     await persist(coldCache);
-    const durable = await loadDurableParsedFileIndex(
-      getDurableParsedFileDir(storage),
+    const durable = await loadFileResultStore(
+      path.join(storage, 'parse-cache', 'files'),
       identity.base,
     );
-    expect([...durable.values()].flatMap((paths) => [...paths])).toHaveLength(parsedCount);
+    expect(durable.records.size).toBe(parsedCount);
 
     const warmCache = await loadParseCache(storage, identity, storage);
     expect(warmCache.entries.size).toBe(0);
-    const chunks = await Promise.all(
-      [...warmCache.onDiskKeys!].map((key) => loadParseCacheChunk(warmCache, key)),
-    );
-    const parts = chunks.flatMap((chunk) => chunk ?? []);
+    const facts = await loadParseCacheFiles(warmCache, [...durable.records.values()], storage);
+    expect(facts.size).toBe(parsedCount);
+    const parts = [...facts.values()];
     expect(parts.flatMap((part) => part.parsedFiles ?? [])).toEqual([]);
     expect(parts.flatMap((part) => part.fetchWrapperDefs ?? [])).toContainEqual(
       expect.objectContaining({

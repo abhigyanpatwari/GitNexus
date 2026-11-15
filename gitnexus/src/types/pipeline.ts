@@ -1,4 +1,5 @@
 import type { KnowledgeGraph } from '../core/graph/types.js';
+import type { RelationshipIntegrityReceipt } from '../core/graph/relationship-integrity.js';
 import { CommunityDetectionResult } from '../core/ingestion/community-processor.js';
 import { ProcessDetectionResult } from '../core/ingestion/process-processor.js';
 import type { ResolutionOutcome } from '../core/ingestion/scope-resolution/resolution-outcome.js';
@@ -8,6 +9,7 @@ import type { GraphEmitManifest } from '../core/lbug/graph-emit-sink.js';
 
 // CLI-specific: in-memory result with graph + detection results
 export interface PipelineResult {
+  relationshipIntegrity?: RelationshipIntegrityReceipt;
   graph: KnowledgeGraph;
   /** Absolute path to the repo root — used for lazy file reads during LadybugDB loading */
   repoPath: string;
@@ -54,7 +56,7 @@ export interface PipelineResult {
   /**
    * True if a worker pool was actually constructed for this run. The worker
    * pool is the sole parse path (sequential parsing was removed). False means
-   * no pool was needed: either there were no parseable files, or every chunk
+   * no pool was needed: either there were no parseable files, or every file
    * was a parse-cache hit and the cached worker output was replayed without
    * spawning workers (a warm all-cache-hit run, #2038). Primarily a test
    * affordance so regression suites can prove the pool engaged.
@@ -62,7 +64,7 @@ export interface PipelineResult {
   usedWorkerPool: boolean;
   /** Files actually dispatched to parser workers after parse-cache lookup. */
   reparsedFileCount: number;
-  /** Files restored from parse-cache chunks without parser-worker dispatch. */
+  /** Files restored from per-file parse-cache entries without parser-worker dispatch. */
   parseCacheHitFileCount?: number;
   /** Files omitted from scope-resolution while the rest of analysis continued. */
   scopeExtractionFailures: readonly string[];

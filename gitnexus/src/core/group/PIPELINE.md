@@ -137,6 +137,17 @@ names a reserved keyword (e.g. `Macro`, `Union`), which is what broke the
 - `grpc`/`thrift` method → `labels(n) IN ['Function','Method']`, service → `labels(n) IN ['Class','Interface']`
 - `lib` → `labels(n) IN ['Module']`
 
+Manifest contracts also go through the exact and wildcard passes. A
+consumer created from a link only matches providers in the repo that link
+names (#1188), so a route another repo happens to share does not pick up
+an extra cross-link. `meta.providerRepo` carries the declared repo through
+matching, and sync drops it before writing the registry.
+
+This applies to every link type, so a `topic` link matches only the
+publisher it names. Two things still match across the whole group:
+consumers the extractors find in source, and the provider contract a link
+creates, which any source consumer of the same contract can match.
+
 ## Cross-impact query (PR #606)
 
 ```mermaid

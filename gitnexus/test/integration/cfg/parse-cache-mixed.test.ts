@@ -10,6 +10,12 @@ import {
 } from '../../../src/storage/parsedfile-store.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import { encodeFileResultSection } from '../../../src/storage/file-result-codec.js';
+import {
+  appendFileResults,
+  emptyFileResultStore,
+  pinFileResults,
+} from '../../../src/storage/file-result-store.js';
 
 // #2082 M2 U5 — the warm/mixed cache seam for statement facts. On a warm (or
 // mixed) run the unchanged chunk's ParsedFiles are loaded from the
@@ -56,7 +62,7 @@ const mkParsedFile = (filePath: string): ParsedFile =>
     parsedImports: [],
     localDefs: [],
     referenceSites: [],
-    cfgSideChannel: [factCfg],
+    cfgSideChannel: [{ ...structuredClone(factCfg), filePath }],
   }) as unknown as ParsedFile;
 
 describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () => {
@@ -66,6 +72,32 @@ describe('durable ParsedFile store carries M2 statement facts (#2082 U5)', () =>
   });
   afterEach(() => {
     if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('packed per-file scopes preserve independent statement facts at the same loading seam', async () => {
+    const store = emptyFileResultStore(path.join(tempDir, 'packs'), 'test');
+    const files = ['src/a.ts', 'src/b.ts'];
+    const records = files.map((file, index) => {
+      const key = String(index).repeat(64);
+      return {
+        key,
+        path: file,
+        cacheable: true,
+        facts: encodeFileResultSection(key, file, 'facts', { nodes: [] })!,
+        scopes: encodeFileResultSection(key, file, 'scopes', [mkParsedFile(file)])!,
+      };
+    });
+    await appendFileResults(store, records);
+    await pinFileResults(
+      store,
+      records.map((record) => record.key),
+      tempDir,
+    );
+    const loaded = await loadParsedFilesForPaths(tempDir, new Set(files));
+    expect(loaded.size).toBe(2);
+    for (const file of files)
+      expect(loaded.get(file)?.cfgSideChannel).toEqual([{ ...factCfg, filePath: file }]);
+    expect(loaded.get(files[0])?.cfgSideChannel).not.toBe(loaded.get(files[1])?.cfgSideChannel);
   });
 
   it('persist → loadParsedFilesForPaths preserves bindings + statements deep-equal', async () => {

@@ -523,6 +523,44 @@ describe('syncGroup persisting a manifest link with an unreadable endpoint', () 
     expect(readPersistedRegistry(groupDir).crossLinks).toEqual([]);
   });
 
+  it('does not send the consumer to another repo exposing the same method when the declared provider is unreadable (#1188)', async () => {
+    // A third, healthy repo that happens to serve the same method. The link
+    // says the gateway calls app/backend; losing app/backend for this run must
+    // not reroute the gateway's call to whichever repo is left.
+    const legacy: RepoHandle = {
+      id: 'pool-legacy',
+      path: '/repos/legacy',
+      repoPath: '/repos/legacy',
+      storagePath: '/repos/legacy/.gitnexus',
+    };
+    grpcExtract.mockImplementation(async (_executor: unknown, repoPath: unknown) => {
+      if (repoPath === '/repos/backend') throw new Error('gRPC extraction failed');
+      if (repoPath !== legacy.repoPath) return [];
+      return [
+        {
+          ...PARTIAL_CONTRACT,
+          contractId: LINK_CONTRACT_ID,
+          type: 'grpc',
+          symbolUid: 'Method:src/orders.ts:list',
+          symbolRef: { filePath: 'src/orders.ts', name: 'list' },
+          symbolName: 'list',
+        },
+      ];
+    });
+
+    const result = await syncGroup(
+      { ...linkedConfig(), repos: { ...linkedConfig().repos, 'app/legacy': 'legacy-repo' } },
+      {
+        groupDir,
+        resolveRepoHandle: async (registryName, groupPath) =>
+          groupPath === 'app/legacy' ? legacy : resolveLinkedHandle(registryName, groupPath),
+      },
+    );
+
+    expect(result.unreadableRepos).toEqual(['app/backend']);
+    expect(readPersistedRegistry(groupDir).crossLinks).toEqual([]);
+  });
+
   it('emits both contracts and the cross-link when both endpoints are healthy', async () => {
     // The control. Without it, "drop everything the link touches" passes every
     // case above while deleting a healthy repo's contracts.

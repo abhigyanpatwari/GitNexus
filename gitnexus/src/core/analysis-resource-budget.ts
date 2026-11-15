@@ -13,6 +13,9 @@ export interface AnalysisResourceRequest {
   /** Explicit total reservation ceiling; independent of the heap-only flag. */
   totalMb?: number;
   mainHeapMb?: number;
+  /** The runtime's own heap limit when nothing pinned one: the automatic main
+   * heap never exceeds it, and may be admitted below it. */
+  mainHeapLimitMb?: number;
   workers?: number;
   workerHeapMb?: number;
   embeddingThreads?: number;
@@ -53,6 +56,9 @@ export interface AnalysisResourceBudget {
     /** Combined source, expanded text, encoded request, vectors and prefetch. */
     readonly queueBytes: number;
     readonly nativeThreads: number;
+    /** Vector index construction follows all model/provider work, so it may
+     * use the whole CPU allowance rather than the model's thread cap. */
+    readonly indexThreads: number;
     readonly reservedBytes: number;
   };
 }
@@ -145,7 +151,14 @@ export function resolveAnalysisResourceBudget(
   );
   const mainHeapMb =
     request.mainHeapMb === undefined
-      ? Math.min(16_384, maximumMainMb, Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)))
+      ? Math.min(
+          16_384,
+          maximumMainMb,
+          Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)),
+          request.mainHeapLimitMb === undefined
+            ? Infinity
+            : Math.max(MIN_MAIN_HEAP_MB, integer(request.mainHeapLimitMb, 'main heap limit')),
+        )
       : integer(request.mainHeapMb, 'main heap reservation');
   const totalBytes = bytes(totalMb, 'resource budget');
   // --memory-budget has an established 200 MiB minimum. Preserve that explicit
@@ -234,6 +247,7 @@ export function resolveAnalysisResourceBudget(
       modelHeapMb: modelMb === 0 ? 0 : Math.min(1024, Math.floor(modelMb / 4)),
       queueBytes: bytes(queueMb, 'embedding queues'),
       nativeThreads: embeddingThreads,
+      indexThreads: cpus,
       reservedBytes: bytes(embeddingReservedMb, 'embedding reservation'),
     }),
   });

@@ -29,6 +29,7 @@ import {
   resolveJavaImportTarget,
   type JavaResolveContext,
 } from './index.js';
+import { javaOnDemandImportTargets } from './on-demand-imports.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringAopMetadata } from './spring-aop.js';
@@ -53,6 +54,10 @@ const javaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Java,
   languageProvider: javaProvider,
   importEdgeReason: 'java-scope: import',
+  onDemandImportTargets: javaOnDemandImportTargets,
+  // `import pkg.*;` binds no name here and `resolveJavaModule` answers every
+  // importer of a package with the same list, so the package is stored once.
+  groupsWildcardImportTargets: true,
 
   loadResolutionConfig: () => {
     // Worker capture facts are process-local and outlive a single analysis in

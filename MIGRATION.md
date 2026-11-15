@@ -1,5 +1,39 @@
 # Migration Guide
 
+## Stable community and process IDs (#3855)
+
+The next analysis after upgrading rebuilds the derived graph with new IDs:
+
+- Communities use `comm_<hash>`, where `hash` is the first 12 hexadecimal SHA-1
+  characters of the smallest member ID.
+- Processes use `proc_<hash>_<name>`, where `hash` covers the entry ID, a NUL
+  separator, and the terminal ID; `name` is the sanitized entry name. The hash
+  is also 12 hexadecimal characters. Colliding IDs receive `_2`, `_3`, etc.
+
+Saved positional IDs (`comm_<n>` or `proc_<n>_<entry>`) no longer resolve after
+that rebuild. Re-resolve communities and processes by label and refresh stored
+IDs. If a `Cluster_<id>` fallback label also changed, locate the community from
+its member symbols. Generated skills with those fallback names also change
+directory names once; skill generation removes stale directories.
+
+IDs remain stable while the community's smallest member or the process's
+endpoints remain unchanged, except for collision suffix allocation. A community
+ID follows its anchor if clustering moves that member; it does not identify an
+unchanging member set. Adding an unrelated component can still cause Leiden to
+repartition existing communities.
+
+Listings still break equal step-count or symbol-count ties by ID. Those ties
+now follow hash order, so a limited listing can show different entries after
+the upgrade. The complete graph retains the other entries.
+
+## Per-file parser cache (#3856)
+
+Parser facts and scopes now use per-file records in compressed packs. The format
+change invalidates old chunk caches, so the first analysis after upgrading parses
+the source again. Later runs reuse compatible files independently of chunk layout.
+No manual cache deletion is needed. Files with incomplete or zero-output parser
+results still require worker dispatch on later runs.
+
 ## Resumable analysis and separate vector storage (#3598)
 
 Analysis with embeddings publishes a private `lbug.generation.<id>` graph and
@@ -226,8 +260,9 @@ with identical content. A pre-existing repo that only has `meta.json` gets
 
 ### Process ids are not stable across this release
 
-`Process` ids are positional (`proc_<idx>_<entry>`), and this release changes
-both which execution flows are detected and the order they are selected in:
+Before #3855, `Process` ids were positional (`proc_<idx>_<entry>`). The earlier
+flow-detection release described here changed both which execution flows are
+detected and the order they are selected in:
 tracing is depth-first, sibling branches follow source order, and selection
 round-robins across terminals so one flow cannot take every slot. A given
 `proc_7_handle` before the upgrade is not the same flow afterwards.

@@ -191,6 +191,11 @@ describe('analyzeCommand WAL corruption error handling', () => {
           r.msg.includes('gitnexus analyze --wal-checkpoint-threshold'),
       ),
     ).toBe(true);
+    expect(
+      records.some(
+        (r) => typeof r.msg === 'string' && r.msg.includes('/repo/.gitnexus/lbug.wal.checkpoint'),
+      ),
+    ).toBe(true);
 
     cap.restore();
   });

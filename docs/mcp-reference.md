@@ -209,6 +209,53 @@ definitions:
     filePath: src/types/auth.ts
 ```
 
+### Search several repositories
+
+Pass `query.repo` a list of 1–10 indexed repository names or paths:
+
+```js
+query({
+  search_query: 'authentication middleware',
+  repo: ['web-client', 'auth-service', '/work/shared-types'],
+  limit: 10,
+  include_content: true,
+});
+```
+
+Array mode returns `repos`, `processes`, `process_symbols`, `definitions`,
+`per_repo`, and `partial`, even for a one-element list. Each result row carries
+`_repo`, the canonical checkout path. Symbol and process IDs remain local to their
+repository: join attachments using both `_repo` and `process_id`. A process's
+`chain` belongs to that same repository. Follow up on a symbol with
+`context({uid: row.id, repo: row._repo})`.
+
+- Results merge by local rank, with deterministic ties by repository path and ID.
+  `limit` caps processes across the entire response; definitions are capped at 20.
+  `max_symbols` still applies to each process.
+- Source previews share one 16,000-character budget across the aggregate, appear
+  once per repository/symbol pair, and retain `content_truncated` when incomplete.
+  Repositories whose retention policy excludes source do not return previews.
+- `per_repo` preserves each member's warnings, errors, timing, content availability,
+  staleness, and candidate/returned counts. There is no aggregate staleness value.
+  `partial: true` means at least one member failed or returned degraded evidence.
+  Successful peers remain available; if every member fails, the response has a
+  top-level error. Corrupt symbol identity fails the entire aggregate with recovery
+  guidance.
+- `response_sections` filters the combined data sections while retaining repository
+  metadata. `maxTokens` applies once to the complete formatted response; truncation
+  can cut JSON, as with scalar queries.
+
+The full list is validated and authorized before searching. Aliases of the same
+checkout are searched once; separate checkouts remain separate even if they share
+an index. At most four member searches run concurrently. A supplied `branch` must
+resolve for every member before any search starts. Explicit lists override MCP
+defaults and work in MCP read-only mode, subject to the server's repository allowlist.
+
+Arrays cannot contain `@group` selectors and are supported only by `query` and its
+legacy `search` alias. Other tools still take one repository. Scalar and omitted
+selectors keep their existing behavior; no repository-group configuration is needed
+for an explicit list.
+
 ### Context (360-degree Symbol View)
 
 ```

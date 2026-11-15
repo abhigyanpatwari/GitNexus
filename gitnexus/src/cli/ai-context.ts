@@ -303,6 +303,102 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * A fence opener, optionally behind the list-item or block-quote markers that
+ * open on the same line (`- ```sh`): group 1 is that marker prefix, group 2
+ * the fence, group 3 the info string.
+ */
+const FENCE_OPENER = /^((?: {0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])[ \t]))*) {0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * A line that cannot be the text of a setext heading: an ATX heading, a block
+ * quote, a list item, or a thematic break (also the shape of a setext `---`
+ * underline). A row of `=` under one of these is paragraph text, not a title.
+ */
+const NOT_SETEXT_TEXT =
+  /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)|([-*_])[ \t]*(?:\1[ \t]*){2,}$)/;
+
+/**
+ * Whether `markdown` has a title of its own: an ATX `# Title`, a setext title
+ * underlined with `=`, or a `title` key in closed YAML front matter (which
+ * markdownlint's MD025 counts as the document title). Fenced code, HTML
+ * comments and the rest of the front matter can contain heading examples
+ * without giving the file a title.
+ */
+function hasTopLevelHeading(markdown: string): boolean {
+  const lines = markdown.replace(/^\uFEFF/, '').split('\n');
+  let start = 0;
+  if (/^---[ \t]*$/.test(lines[0])) {
+    const end = lines.findIndex((line, i) => i > 0 && /^---[ \t]*$/.test(line));
+    if (end !== -1) {
+      // markdownlint's default `front_matter_title` pattern.
+      if (lines.slice(1, end).some((line) => /^\s*"?title"?\s*[:=]/i.test(line))) return true;
+      start = end + 1;
+    }
+  }
+  // `inside` is set for a fence opened in a list item or block quote: the
+  // shape a later line must have to still belong to that container.
+  let fence: { char: string; length: number; inside?: RegExp } | undefined;
+  let inComment = false;
+  let previous = '';
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (fence?.inside && line.trim() !== '' && !fence.inside.test(line)) {
+      // The list item or block quote ended, and with it any fence still open
+      // inside (one closed deeper than three spaces is not seen as closed
+      // below); this line is ordinary content again.
+      fence = undefined;
+    }
+    if (fence) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) {
+        fence = undefined;
+      }
+      previous = '';
+      continue;
+    }
+    if (inComment || /^ {0,3}<!--/.test(line)) {
+      inComment = !line.includes('-->');
+      previous = '';
+      continue;
+    }
+    const opener = FENCE_OPENER.exec(line);
+    // Backtick fence info strings cannot contain backticks (CommonMark §4.5).
+    if (opener && (opener[2][0] !== '`' || !opener[3].includes('`'))) {
+      const inside =
+        opener[1] === ''
+          ? undefined
+          : opener[1].includes('>')
+            ? /^ {0,3}>/
+            : new RegExp(`^ {${line.indexOf(opener[2])}}`);
+      fence = { char: opener[2][0], length: opener[2].length, inside };
+      previous = '';
+      continue;
+    }
+    if (/^ {0,3}#(?:[ \t]|$)/.test(line)) return true;
+    if (
+      /^ {0,3}=+[ \t]*$/.test(line) &&
+      previous.trim() !== '' &&
+      !NOT_SETEXT_TEXT.test(previous)
+    ) {
+      return true;
+    }
+    previous = line;
+  }
+  return false;
+}
+
+/**
+ * The block opens with a level-1 heading, which is right for a file GitNexus
+ * creates. Inside a file that already has its own title, a second level-1
+ * heading breaks markdownlint's MD025 (single-title), so the block's headings
+ * move down one level there (#2774). Every line of the block that starts with
+ * `#` is one of its own headings.
+ */
+function nestUnderExistingTitle(block: string, surrounding: string): string {
+  return hasTopLevelHeading(surrounding) ? block.replace(/^(#{1,5}) /gm, '#$1 ') : block;
+}
+
+/**
  * Replace the block's volatile counts — the header parenthetical and the
  * per-cluster symbol counts in the skills table — with fixed placeholders, so
  * two renderings that differ only in those numbers compare equal.
@@ -441,18 +537,24 @@ async function upsertGitNexusSection(
 
     // No keep marker — replace existing section with full verbose content,
     // unless the counts are the only thing that moved (#2907).
-    if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
-      return repairLineEndings();
-    }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-    const newContent = before + content + after;
+    // The write below trims the file, which can change what its first lines
+    // are (a blank line before front matter, an indented first line), so the
+    // title is looked for in the text as it will be written.
+    const placed = nestUnderExistingTitle(content, before.trimStart() + after);
+    if (stripVolatileCounts(existingSection) === stripVolatileCounts(placed)) {
+      return repairLineEndings();
+    }
+    const newContent = before + placed + after;
     await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
     return 'updated';
   }
 
-  // Append new section
-  const newContent = existingContent.trim() + '\n\n' + content + '\n';
+  // Append new section, deciding its heading level from the trimmed text that
+  // is written rather than the text that was read.
+  const kept = existingContent.trim();
+  const newContent = kept + '\n\n' + nestUnderExistingTitle(content, kept) + '\n';
   await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
 }

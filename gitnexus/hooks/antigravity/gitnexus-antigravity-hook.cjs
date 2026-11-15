@@ -338,8 +338,8 @@ function buildAfterToolContext(input) {
  */
 function buildMcpQueryHint(pattern) {
   return (
-    `[GitNexus] Local augment is unavailable (the graph DB is held by another ` +
-    `GitNexus process). If the GitNexus MCP tools are live in this session, call ` +
+    `[GitNexus] Local augment was skipped because the graph DB may be held by ` +
+    `another GitNexus process. If the GitNexus MCP tools are live in this session, call ` +
     `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
     `search_query "${pattern}".`
   );

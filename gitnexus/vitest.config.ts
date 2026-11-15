@@ -1,6 +1,9 @@
 import { defineConfig } from 'vitest/config';
 import PerfSequencer from './test/helpers/perf-sequencer.js';
 
+// Keep the native suite's serial include and parallel exclude in sync.
+const multiRepoQueryTest = 'test/integration/mcp-multi-repo-query.test.ts';
+
 // Keep native tests in exactly one project (TESTING.md).
 const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
   'test/integration/embedding-input-isolation.test.ts',
@@ -108,11 +111,15 @@ export default defineConfig({
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
             'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/java-incremental-on-demand.test.ts',
             'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
             'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
+            'test/integration/fts-empty-tables.test.ts',
+            'test/integration/persisted-mutation-rows.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -167,6 +174,7 @@ export default defineConfig({
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
+            'test/integration/http-route-symbol-batch.test.ts',
             'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
             'test/integration/lbug-multiwriter-deadlock.test.ts',
@@ -227,11 +235,15 @@ export default defineConfig({
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
             'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/java-incremental-on-demand.test.ts',
             'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
             'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
+            'test/integration/fts-empty-tables.test.ts',
+            'test/integration/persisted-mutation-rows.test.ts',
             'test/integration/impact-epistemic-lower-bound.test.ts',
             'test/integration/impact-scope-omission-persistence.test.ts',
             'test/integration/lbug-core-adapter.test.ts',
@@ -274,6 +286,7 @@ export default defineConfig({
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
+            'test/integration/http-route-symbol-batch.test.ts',
             'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/skills-e2e.test.ts',
             'test/integration/fts-extension-e2e.test.ts',

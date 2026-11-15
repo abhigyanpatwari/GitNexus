@@ -80,7 +80,11 @@ function runHook(
 ) {
   return spawnHook(hookPath, input, cwd, {
     ...options,
-    env: { ...(options.env ?? process.env), GITNEXUS_HOME: hookHome },
+    env: {
+      ...(options.env ?? process.env),
+      GITNEXUS_HOME: hookHome,
+      NODE_PATH: path.resolve(__dirname, '..', '..', '..'),
+    },
   });
 }
 

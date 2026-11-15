@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, fix/3852-root-cause]
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
 

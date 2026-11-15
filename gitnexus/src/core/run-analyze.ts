@@ -111,6 +111,7 @@ import {
   LBUG_MAX_DB_SIZE,
   maxDbSizeReachedRemedy,
   pastEofReadRemedy,
+  isStorageVersionMismatchError,
   type StagedBuildMode,
 } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
@@ -257,6 +258,14 @@ import {
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
+import { computeFileRowDigests, nextFileRowDigests } from './incremental/file-row-digests.js';
+import {
+  graphCompactionReason,
+  incrementalMutationLimit,
+  incrementalMutationRows,
+  isGraphCompactionState,
+} from './incremental/compaction-policy.js';
+import { persistedMutationRows } from './incremental/persisted-mutation-rows.js';
 import {
   ftsTablesAmong,
   incrementalFtsTablesFromGraph,
@@ -2072,16 +2081,18 @@ async function runFullAnalysisInner(
   runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
-  const initAnalysisLbug = (dbPath: string) => {
+  const initAnalysisLbug = (dbPath: string, readOnly = false) => {
     if (options.resources) {
       const sizedPool = getEffectiveBufferPoolSize();
       const ceiling = options.resources.parse.graphPoolBytes;
       return initLbug(dbPath, {
-        skipFts: !!ftsDisabledReason,
+        skipFts: readOnly || !!ftsDisabledReason,
+        ...(readOnly ? { readOnly: true } : {}),
         bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
         threads: options.resources.parse.nativeThreads,
       });
     }
+    if (readOnly) return initLbug(dbPath, { readOnly: true, skipFts: true });
     return ftsDisabledReason ? initLbug(dbPath, { skipFts: true }) : initLbug(dbPath);
   };
   const log = (msg: string) => callbacks.onLog?.(stripControlCharacters(msg));
@@ -2244,6 +2255,19 @@ async function runFullAnalysisInner(
   // in flight. Re-enable leaves the prior stamp untouched.
   const existingMeta = loadedMeta
     ? withExplicitFtsDisablement(loadedMeta, ftsDisabledReason)
+    : undefined;
+  // Measure the published graph, including shared-store pointers, before the
+  // no-op fast path. Compaction can become due without another source edit.
+  let publishedGraphBytes: number | undefined;
+  if (existingMeta) {
+    try {
+      publishedGraphBytes = (await fs.stat(resolveGraphPath(metaDir, existingMeta))).size;
+    } catch {
+      // Missing/unreadable evidence selects a fresh build, never unbounded DML.
+    }
+  }
+  const storageCompactionReason = existingMeta
+    ? graphCompactionReason(existingMeta.graphCompaction, publishedGraphBytes)
     : undefined;
   // KTD6: the dying process writes nothing. Infer skip from the FTS-phase
   // dirty flag (or a persisted native-abort skipReason) BEFORE later
@@ -3128,6 +3152,7 @@ async function runFullAnalysisInner(
         resumeEmbeddingCheckpoint &&
         !existingMeta.embeddingCheckpoint.recovery)) &&
     !options.force &&
+    !storageCompactionReason &&
     existingMeta.lastCommit === currentCommit &&
     !ftsModeChanged &&
     !processDetectionMismatch &&
@@ -3446,60 +3471,67 @@ async function runFullAnalysisInner(
   // disagree with the prediction (e.g. when the pipeline produces zero
   // File nodes, `isIncremental` flips false and the full-rebuild path
   // wipes the DB) — loading unconditionally is insurance against
-  // silently dropping embeddings on a mispredicted run. The re-insert
-  // step gates itself on the actual `isIncremental` value to avoid
-  // PK-conflicts when the incremental writeback path keeps the rows.
+  // silently dropping embeddings on a mispredicted run. Every fresh graph
+  // restores compatible cached rows after the bulk load.
   //
   // This is the FIRST DB open of the run — the one #2409 defect 2 is about.
   // On a dirty-recovery run it happens only after the sidecar quarantine
   // moved (or removed) the crashed run's WAL/shadow; when neither was
   // possible the dirty block above already threw a LbugWipeError, so this
   // open is replay-free by construction (FIX 1 of this shipping review).
-  if (shouldLoadCache && existingMeta) {
-    if (
-      options.graphPublication &&
-      !options.dropEmbeddings &&
-      !existingMeta.graphGeneration &&
-      !existingMeta.legacyVectorSource &&
-      // A supervisor handoff may leave only placeholder metadata on a first
-      // run. Missing storage is an error only when it claims paid vectors.
-      (existingEmbeddingCount > 0 || existsSync(lbugPath))
-    ) {
-      const { exportLegacyVectorsFromFile } = await import('./lbug/legacy-vector-export.js');
-      const historical = existingMeta.embeddingCheckpoint;
-      const legacy = await exportLegacyVectorsFromFile(lbugPath, {
-        metadataDirectory: metaDir,
-        provenance: {
-          schemaFingerprint: existingMeta.schemaFingerprint ?? SCHEMA_FINGERPRINT,
-          ...(historical
-            ? {
-                recordedIdentity: {
-                  provider: historical.provider,
-                  model: historical.model,
-                  dimensions: historical.dimensions,
-                },
-              }
-            : {}),
-        },
-        excluded: inheritedUnsafeNodeIds,
-        sourcePoolBytes: options.resources!.embedding.graphPoolBytes,
-        bufferPoolBytes: options.resources!.embedding.vectorPoolBytes,
-        threads: options.resources!.embedding.nativeThreads,
-        signal: callbacks.signal,
-      });
-      if (legacy) {
-        await saveMeta(metaDir, { ...existingMeta, legacyVectorSource: legacy });
-        existingMeta.legacyVectorSource = legacy;
-      }
-    }
-    // Cache initialization is writable and may discard quarantined WALs.
-    // Preserve the live family before this first open, including runs whose
-    // incremental write later escalates to a staged full rebuild. Keep this
-    // outside the cache-load catch: a preservation failure must stop analysis.
+  // A missing graph has no legacy rows to read. Recorded counts alone must
+  // not prevent recovery; separate vector generations are handled below.
+  const rescueLegacyBeforeRebuild =
+    !options.dropEmbeddings &&
+    !existingMeta?.graphGeneration &&
+    (options.force || Boolean(storageCompactionReason));
+  if ((shouldLoadCache || rescueLegacyBeforeRebuild) && existingMeta && existsSync(lbugPath)) {
+    // Preserve/recover sidecars before reading the prior graph. The cache
+    // open itself is read-only: failure during staging must leave the
+    // published file intact. Preservation failures must stop analysis.
     if (posixSwap || windowsSwapOk) await consolidateLbugForPublication(lbugPath);
+    let cacheOpened = false;
     try {
       progress('embeddings', 0, 'Caching embeddings...');
-      await initAnalysisLbug(lbugPath);
+      await initAnalysisLbug(lbugPath, true);
+      cacheOpened = true;
+      if (
+        options.graphPublication &&
+        !options.dropEmbeddings &&
+        !existingMeta.graphGeneration &&
+        !existingMeta.legacyVectorSource
+      ) {
+        // Preserve legacy schema/width evidence before interpreting rows as
+        // the current cache format. Export owns its own bounded connection.
+        await closeLbug();
+        const { exportLegacyVectorsFromFile } = await import('./lbug/legacy-vector-export.js');
+        const historical = existingMeta.embeddingCheckpoint;
+        const legacy = await exportLegacyVectorsFromFile(lbugPath, {
+          metadataDirectory: metaDir,
+          provenance: {
+            schemaFingerprint: existingMeta.schemaFingerprint ?? SCHEMA_FINGERPRINT,
+            ...(historical
+              ? {
+                  recordedIdentity: {
+                    provider: historical.provider,
+                    model: historical.model,
+                    dimensions: historical.dimensions,
+                  },
+                }
+              : {}),
+          },
+          excluded: inheritedUnsafeNodeIds,
+          sourcePoolBytes: options.resources!.embedding.graphPoolBytes,
+          bufferPoolBytes: options.resources!.embedding.vectorPoolBytes,
+          threads: options.resources!.embedding.nativeThreads,
+          signal: callbacks.signal,
+        });
+        if (legacy) {
+          await saveMeta(metaDir, { ...existingMeta, legacyVectorSource: legacy });
+          existingMeta.legacyVectorSource = legacy;
+        }
+        await initAnalysisLbug(lbugPath, true);
+      }
       adoptCachedEmbeddings(await loadCachedEmbeddings());
       await closeLbug();
     } catch (err: any) {
@@ -3509,15 +3541,55 @@ async function runFullAnalysisInner(
       } catch {
         /* preserve the original cache failure */
       }
-      if (err instanceof EmbeddingIntegrityError) throw err;
-      // Surface cache-load failures explicitly: silently swallowing here would
-      // re-introduce the original silent-data-loss symptom (embeddings end up
-      // at 0 in meta.json with no diagnostic) through a different door.
+      const unreadableFormat =
+        isStorageVersionMismatchError(err) ||
+        /not a valid Lbug database file|Cannot create an empty database under READ ONLY mode/i.test(
+          err?.message ?? '',
+        ) ||
+        err?.code === 'ENOENT';
+      if (!cacheOpened && unreadableFormat && (options.force || existingEmbeddingCount === 0)) {
+        // An incompatible file may still contain recoverable vectors. Retain
+        // its bytes before rebuilding, including when metadata undercounts them.
+        if (existsSync(lbugPath)) {
+          const retained = `${lbugPath}.unreadable.${randomUUID()}`;
+          await fs.copyFile(lbugPath, retained, fsConstants.COPYFILE_EXCL);
+          log(`Warning: unreadable graph retained at ${retained}; rebuilding (${err.message}).`);
+        }
+        if (!options.force) {
+          collector.add({
+            key: 'private-graph-unavailable',
+            text: 'the previous graph cannot be opened; rebuilding from source.',
+          });
+          applyCollectedForce();
+        }
+      } else if (err instanceof EmbeddingIntegrityError) {
+        throw err;
+      } else if (rescueLegacyBeforeRebuild || cacheOpened) {
+        throw new Error(
+          `Cannot read existing embeddings before rebuilding (${err?.message ?? String(err)}). ` +
+            'Resolve the read failure, or re-run with --drop-embeddings to discard them.',
+          { cause: err },
+        );
+      } else {
+        // Surface cache-load failures explicitly: silently swallowing here would
+        // re-introduce the original silent-data-loss symptom (embeddings end up
+        // at 0 in meta.json with no diagnostic) through a different door.
+        log(
+          `Warning: could not load cached embeddings ` +
+            `(${err?.message ?? String(err)}). ` +
+            `Embeddings will not be preserved on this run.`,
+        );
+      }
+    }
+  } else if (existingMeta && !existsSync(lbugPath)) {
+    if (shouldLoadCache) {
       log(
-        `Warning: could not load cached embeddings ` +
-          `(${err?.message ?? String(err)}). ` +
-          `Embeddings will not be preserved on this run.`,
+        'Warning: the previous graph is missing; no legacy embeddings are available to preserve.',
       );
+    }
+    if (!options.force) {
+      addGateReason({ key: 'private-graph-unavailable', text: 'the previous graph is missing.' });
+      applyCollectedForce();
     }
   }
 
@@ -3844,6 +3916,9 @@ async function runFullAnalysisInner(
   if (skipDerivedGraphPhases && !preserveDerivedLayer) {
     progress('communities', 58, 'Detecting code communities and flows...');
     await pipelineResult.runDeferredDerivedPhases?.();
+    // Release the phase context captured by this completed callback before the
+    // native database write allocates its own buffers.
+    pipelineResult.runDeferredDerivedPhases = undefined;
   }
 
   // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
@@ -4133,6 +4208,18 @@ async function runFullAnalysisInner(
       });
     };
     let incrementalFtsRebuildTables: Set<string> | undefined;
+    // Resolution groups (see LanguageProvider.incrementalResolutionGroup) make
+    // every group member a rewrite candidate when one member changes. The row
+    // digests are what let an unchanged member whose rows are identical in the
+    // new graph stay out of the write set. Repositories with no group skip this.
+    const { collectResolutionGroupFiles, hasResolutionGroups } =
+      await import('./incremental/resolution-groups.js');
+    const currentRowDigests = hasResolutionGroups(allFilePaths)
+      ? computeFileRowDigests(pipelineResult.graph)
+      : undefined;
+    // The files whose rows a surgical write replaces; undefined on any run that
+    // writes the whole graph.
+    let surgicalWriteSet: ReadonlySet<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -4167,20 +4254,16 @@ async function runFullAnalysisInner(
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
       // Resolution groups can change edges between unchanged files without an
-      // import or a new-graph edge touching the changed/deleted member. Expand
-      // before the importer walk so dependents of these siblings refresh too.
-      const { collectResolutionGroupFiles } = await import('./incremental/resolution-groups.js');
+      // import or a new-graph edge touching the changed/deleted member. Group
+      // members, and the files that import them, are therefore CANDIDATES for
+      // a rewrite: the second walk below adds a candidate only when its rows
+      // in the new graph differ from the rows recorded for it.
+      const rewriteCandidates = new Set<string>();
       for (const filePath of collectResolutionGroupFiles(
         [...hashDiff.toWrite, ...hashDiff.deleted],
         allFilePaths,
       )) {
-        writableFiles.add(filePath);
-      }
-      const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
-      if (resolutionGroupExpansion > 0) {
-        log(
-          `Incremental: +${resolutionGroupExpansion} resolution sibling(s) added to writable set`,
-        );
+        if (!writableFiles.has(filePath)) rewriteCandidates.add(filePath);
       }
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
       // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
@@ -4264,8 +4347,42 @@ async function runFullAnalysisInner(
           frontier = nextFrontier;
         }
       }
-      const importerExpansion =
-        writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
+      const importerExpansion = writableFiles.size - directlyChangedCount;
+      // Candidate walk: same importer BFS, seeded with the resolution-group
+      // members. Discovery ignores digests, so every file the unconditional
+      // expansion would have reached is still examined; only the rewrite is
+      // conditional. A file with no recorded digest counts as changed.
+      let resolutionGroupExpansion = 0;
+      if (rewriteCandidates.size > 0) {
+        let frontier: string[] = [...rewriteCandidates];
+        for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+          const importers = await queryImportersBatch(frontier, {
+            onChunkFailure: () => {
+              droppedImporterChunks += 1;
+            },
+          });
+          const nextFrontier: string[] = [];
+          for (const i of importers) {
+            if (!writableFiles.has(i) && !rewriteCandidates.has(i)) {
+              rewriteCandidates.add(i);
+              nextFrontier.push(i);
+            }
+          }
+          frontier = nextFrontier;
+        }
+        const recordedRowDigests = existingMeta!.fileRowDigests;
+        for (const filePath of rewriteCandidates) {
+          if (writableFiles.has(filePath)) continue;
+          const recorded = recordedRowDigests?.[filePath];
+          if (recorded !== undefined && recorded === currentRowDigests?.get(filePath)) continue;
+          writableFiles.add(filePath);
+          resolutionGroupExpansion += 1;
+        }
+        log(
+          `Incremental: ${resolutionGroupExpansion} of ${rewriteCandidates.size} ` +
+            `resolution-group candidate(s) have changed rows and were added to writable set`,
+        );
+      }
       incrementalStats = {
         changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
         reparsedFiles: pipelineResult.reparsedFileCount,
@@ -4288,9 +4405,10 @@ async function runFullAnalysisInner(
 
       // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
       //    composed:
-      //      (a) `writableFiles` — toWrite ∪ resolution siblings ∪ transitive
-      //          importers of changed/deleted files and their siblings (the
-      //          bounded BFS above, reading IMPORTS from the pre-pipeline DB).
+      //      (a) `writableFiles` — toWrite ∪ transitive importers of
+      //          changed/deleted files (the bounded BFS above, reading IMPORTS
+      //          from the pre-pipeline DB) ∪ the resolution-group candidates
+      //          whose rows changed.
       //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
       //          edges and pulls in any unchanged-side file that sits
       //          on a writable-boundary-crossing edge (catches refined
@@ -4385,6 +4503,7 @@ async function runFullAnalysisInner(
       // would otherwise hand deleteNodesForFiles the same path twice in one
       // batch (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
+      surgicalWriteSet = effectiveWriteSet;
       await saveIncrementalDirtyState('effective-write-set', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
@@ -4431,6 +4550,27 @@ async function runFullAnalysisInner(
         skipFts: Boolean(ftsDisabledReason),
       });
       const extensionForcedRebuild = !embeddingRowDmlSafe || !ftsRowDmlSafe;
+      const sizeForcedRebuild = shouldEscalateIncrementalWrite(
+        filesToDelete.length,
+        effectiveWriteSet.size,
+        allFilePaths.length,
+      );
+      // Compare the old/new source-file footprints, including removed files.
+      // Count/growth receipts separately bound graph-wide derived-layer churn.
+      const mutationLimit = incrementalMutationLimit(pipelineResult.graph);
+      const preselectedFullWrite =
+        extensionForcedRebuild || sizeForcedRebuild || Boolean(storageCompactionReason);
+      let mutationRows = preselectedFullWrite
+        ? 0
+        : incrementalMutationRows(pipelineResult.graph, effectiveWriteSet, mutationLimit);
+      if (!preselectedFullWrite && mutationRows < mutationLimit) {
+        mutationRows = Math.max(
+          mutationRows,
+          await persistedMutationRows(filesToDelete, mutationLimit),
+        );
+      }
+      const mutationForcedRebuild = mutationRows >= mutationLimit;
+      const compactWrite = preselectedFullWrite || mutationForcedRebuild;
       // `!options.dropEmbeddings` (H1): this rescue reads the rows back OUT of
       // the DB, so it must never fire on the one path whose entire purpose is to
       // destroy them. `--drop-embeddings` deliberately leaves `cachedSnapshot`
@@ -4451,11 +4591,7 @@ async function runFullAnalysisInner(
       // `cachedSnapshot.embeddingNodeIds`, which Phase 4 hands `runEmbeddingPipeline` as
       // the already-embedded set, so the very nodes the user asked to REGENERATE
       // would be skipped.
-      if (
-        extensionForcedRebuild &&
-        !options.dropEmbeddings &&
-        cacheRowCount(cachedSnapshot) === 0
-      ) {
+      if (compactWrite && !options.dropEmbeddings && cacheRowCount(cachedSnapshot) === 0) {
         // The escalation below WIPES the DB files, and Phase 3.5 restores
         // embedding rows from `cachedSnapshot` — which is only populated when
         // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
@@ -4475,25 +4611,16 @@ async function runFullAnalysisInner(
           }
         } catch (err: any) {
           discardCachedEmbeddings();
-          if (err instanceof EmbeddingIntegrityError) throw err;
-          log(
-            `Warning: could not load cached embeddings ` +
-              `(${err?.message ?? String(err)}). ` +
-              `Embeddings will not be preserved on this run.`,
+          // A compact rebuild discards every old row. Unknown cache contents
+          // must stop it before mutation rather than silently losing vectors.
+          throw new Error(
+            `Cannot read existing embeddings before rebuilding (${err?.message ?? String(err)}). ` +
+              'Resolve the read failure, or re-run with --drop-embeddings to discard them.',
+            { cause: err },
           );
         }
       }
-      // Hoisted out of the `||` below (§5.D): the size verdict has to be KNOWN
-      // even when a blocked extension already forced the rebuild, or the message
-      // cannot report both. Pure predicate over three numbers
-      // (incremental/escalation-gate.ts), so evaluating it unconditionally costs
-      // nothing and has no side effects.
-      const sizeForcedRebuild = shouldEscalateIncrementalWrite(
-        filesToDelete.length,
-        effectiveWriteSet.size,
-        allFilePaths.length,
-      );
-      if (extensionForcedRebuild || sizeForcedRebuild) {
+      if (compactWrite) {
         escalatedFullWrite = true;
         // #3016: escalation converts this run into a wipe + full bulk COPY of
         // the in-memory graph, so the derived layer the skip was betting on
@@ -4502,6 +4629,7 @@ async function runFullAnalysisInner(
         if (preserveDerivedLayer) {
           progress('communities', 63, 'Detecting code communities and flows...');
           await pipelineResult.runDeferredDerivedPhases?.();
+          pipelineResult.runDeferredDerivedPhases = undefined;
         }
         // Every live cause is named, not just the first: a DB can carry BOTH a
         // vector index and FTS indexes, and reporting one cause while the other
@@ -4510,6 +4638,10 @@ async function runFullAnalysisInner(
         // cause is APPENDED here rather than selected between — the old either/or
         // ternary dropped the write-set line whenever an extension also blocked.
         const escalationCauses: string[] = [];
+        if (storageCompactionReason) escalationCauses.push(storageCompactionReason);
+        if (mutationForcedRebuild) {
+          escalationCauses.push(`the mutation covers at least ${mutationRows} graph rows`);
+        }
         const degradedEffects: string[] = [];
         // H5: `readIndexCatalogRows()` returning nothing means "could not prove
         // anything", and both gates correctly fail CLOSED on it — but a
@@ -4946,7 +5078,7 @@ async function runFullAnalysisInner(
           'Continuing; recovery will treat the graph-boundary checkpoint as unsuccessful.',
       );
     }
-    if (wroteChangedSubgraphOnly) {
+    if (isIncremental) {
       await markIncrementalGraphVerification();
       await reconcileGraphNodeIdentities(
         pipelineResult.graph,
@@ -6029,6 +6161,7 @@ async function runFullAnalysisInner(
         pipelineResult.resolutionOutcomes !== undefined,
       ),
       nameFallbackEdges: nameFallbackSummary,
+      relationshipIntegrity: pipelineResult.relationshipIntegrity,
       scopeExtractionFailures: summarizeScopeExtractionFailures(
         pipelineResult.scopeExtractionFailures,
       ),
@@ -6061,6 +6194,16 @@ async function runFullAnalysisInner(
       // Embedding sync also needs snapshot identity for non-git checkouts.
       // Incremental DB eligibility still independently requires repoHasGit.
       fileHashes: newFileHashesRecord,
+      // Recorded only where a resolution group exists. A file's entry moves
+      // to its new digest only when this run wrote that file's rows.
+      fileRowDigests:
+        currentRowDigests === undefined
+          ? undefined
+          : nextFileRowDigests(
+              existingMeta?.fileRowDigests,
+              currentRowDigests,
+              surgicalWriteSet !== undefined && !escalatedFullWrite ? surgicalWriteSet : 'all',
+            ),
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),
@@ -6115,7 +6258,7 @@ async function runFullAnalysisInner(
     // Parse-cache publish waits until after that swap + saveMeta so a failed
     // registerRepo / close / swap cannot replace live shards (#3153).
 
-    if (wroteChangedSubgraphOnly) {
+    if (isIncremental) {
       // Registry freshness must not advance either. Include FTS, embedding
       // restoration and the final WAL drain in the certified boundary.
       await markIncrementalGraphVerification();
@@ -6138,14 +6281,31 @@ async function runFullAnalysisInner(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
-    if (
-      (useAtomicSwap || options.graphPublication) &&
-      !wroteChangedSubgraphOnly &&
-      !(await runCheckpointWithRetry()).flushed
-    ) {
+    if (!wroteChangedSubgraphOnly && !(await runCheckpointWithRetry()).flushed) {
       // Publication requires durability even when periodic/manual checkpoints
-      // are disabled. A best-effort close cannot certify the staged file.
-      throw new Error('Cannot publish staged index: final checkpoint could not be verified.');
+      // are disabled. A best-effort close cannot certify the storage baseline.
+      throw new Error(
+        `Cannot ${useAtomicSwap ? 'publish staged' : 'complete in-place'} index: final checkpoint could not be verified.`,
+      );
+    }
+
+    // Record size only after the final durable checkpoint. Failed writes never
+    // advance either this counter or the compact baseline. If stat is unavailable,
+    // omit the receipt so the next analysis conservatively rebuilds it.
+    try {
+      const bytes = (await fs.stat(buildPath)).size;
+      if (Number.isSafeInteger(bytes) && bytes > 0) {
+        if (!wroteChangedSubgraphOnly) {
+          meta.graphCompaction = { version: 1, compactBytes: bytes, incrementalWrites: 0 };
+        } else if (isGraphCompactionState(existingMeta?.graphCompaction)) {
+          meta.graphCompaction = {
+            ...existingMeta.graphCompaction,
+            incrementalWrites: existingMeta.graphCompaction.incrementalWrites + 1,
+          };
+        }
+      }
+    } catch {
+      log('Could not record the graph storage baseline; the next analysis will compact it.');
     }
     let preparedGraph: PreparedAnalysisHandoff | undefined;
     if (options.graphPublication) {

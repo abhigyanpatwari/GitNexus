@@ -117,6 +117,11 @@ describe('warm MCP session observes an in-place --repair-fts rebuild (#2767)', (
       await adapter.executeQuery(
         `CREATE (n:Function {id: 'func:login', name: 'login', filePath: 'src/auth.ts', startLine: 1, endLine: 3, content: 'function login() { return true; }'})`,
       );
+      // Keep a populated, healthy index when Function is missing so this
+      // exercises partial availability. Empty tables need no index (#3852).
+      await adapter.executeQuery(
+        "CREATE (:File {id: 'File:src/auth.ts', name: 'auth.ts', filePath: 'src/auth.ts', content: 'authentication module'})",
+      );
       if (missing === 'Function') {
         await createSearchFTSIndexes();
         await adapter.dropFTSIndex('Function', 'function_fts');

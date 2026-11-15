@@ -69,7 +69,7 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 | Embeddings                                              | `src/core/embeddings/` + `src/core/run-analyze.ts`                                                     |
 | Wiki generation                                         | `src/core/wiki/`                                                                                       |
 | Language support                                        | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts`        |
-| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks |
+| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks (which files an import can reach) and optional `ScopeResolver.onDemandImportTargets` (which wildcard targets become persisted `IMPORTS` edges) |
 | Call resolution/inheritance/MRO                         | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge)                                |
 | Type extraction                                         | `src/core/ingestion/type-extractors/`                                                                  |
 | Worker pool                                             | `src/core/ingestion/workers/`                                                                          |
@@ -113,6 +113,20 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `processes`               | `processes.ts`                         | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges                                                                                                                                                       |
 
 **Non-phase files in the same directory:** `parse-impl.ts`, `cross-file-impl.ts` (implementation), `wildcard-synthesis.ts` (whole-module import expansion), `types.ts`, `runner.ts`, `index.ts`.
+
+### Incremental resolution groups
+
+`LanguageProvider.incrementalResolutionGroup(filePath)` groups files whose
+resolution can change together even without a persisted import edge. Java uses
+one workspace-wide group because a chained call can depend on an unmentioned
+type in another directory. Edits, additions and deletions make every group member
+and its importers candidates for rewriting.
+
+After resolution, `incremental/file-row-digests.ts` compares each candidate's
+graph rows with the digest recorded in index metadata at its last write. Only
+changed candidates join the write set; missing digests conservatively require a
+rewrite. This preserves incremental/full parity without making every Java body
+edit rewrite the whole language. Grouping affects invalidation, not name visibility.
 
 ### DAG runner
 
@@ -324,6 +338,14 @@ authoritative declaration registries.
    for downstream resolution passes. `finalizeScopeModel` returns the scope/index
    bundle that the orchestrator consumes directly.
 
+The bundle's `imports` field is an `ImportVisibility` (`gitnexus-shared`,
+`scope-resolution/import-visibility.ts`), the only way to ask what a scope
+imports. A reader that needs every file a scope reaches asks `reaches`,
+`membership` or `forEachTarget`; a reader that picks an import by name,
+definition or kind uses `edgesAt`. How finalize stores imports is not visible to
+either, so no reader can hold a collection that omits part of what a scope
+reaches.
+
 This read-only model handle restricts registry writes. It does not freeze every
 scope map: imported-return propagation and precise call-result binding deliberately
 refine `Scope.typeBindings` in ordered passes. Graph-query MCP and HTTP endpoints read the
@@ -530,6 +552,8 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `resolveQualifiedCallee?`                               | `(calleeText, inScope, …) → callable \| undefined` — resolve a qualified callee only the language can read (Rust `rp::make` in `x = rp::make()` / `rp::make().m()`, Kotlin package path `com.acme.mod.make`) so chain-follow types the call from its return annotation; default off |
 | `resolveQualifiedTypeSpellings?`                        | A receiver's declared or return type written QUALIFIED (`rp::C x`, `f(a::Config c)`) that binds nothing through the scope chain resolves through `resolveQualifiedInheritanceBase` — qualifier matched against the candidate's namespace, refuse on a tie — instead of by its tail, which binds the nearer same-named class. Runs after every existing lookup and after the template-argument match; default off, C++ opts in |
 | `splitQualifiedCallee?`                                 | `(callee, callerScope?, scopes?, position?) → { receiver, member } \| undefined` — map a qualified callee spelling (`rp::make`) onto a receiver/member pair that retains the full written namespace qualifier, so a factory result (`auto x = rp::make(); x.m()`, `rp::make().m()`) is typed from the definition `resolveQualifiedReceiverMember` returns and that definition's own declared return type. Caller scope, indexes and source position let a provider reject shadowed or aliased namespace qualifiers only when visible at the factory expression. Shared code never splits on a separator; default off, C++ implements it |
+| `onDemandImportTargets?(parsed, indexes)`               | Files supplying what a source file takes through on-demand (wildcard) imports; narrows persisted File→File `IMPORTS` edges only — `undefined` keeps every edge. Default: no narrowing                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `groupsWildcardImportTargets?`                          | Store a wildcard import that resolves to a list of files as one group over that list instead of one import edge per file. Applies when finalize creates no per-name wildcard bindings; later name resolution uses `ImportVisibility`. Default: one edge per file |
 
 ### Per-language registration
 
@@ -746,12 +770,29 @@ Inputs outside that boundary require an ownership decision and an update to
 `test/unit/parse-cache-input-coverage.test.ts`, which audits imports, dynamic
 loaders, runtime assets, and shared dependencies.
 
-Both the worker-result index and durable `ParsedFile` index validate the base
-identity before workers can be skipped. Physical chunk keys bind that identity
-and sorted source path/content hashes; PDG-enabled chunks additionally bind
-the PDG identity and resolved function-line cap. A CFG-only change therefore
-does not invalidate ordinary chunks. Legacy numeric, missing, malformed, or
-foreign identities miss; a concurrently pruned shard is also a miss.
+Each logical cache entry belongs to one source path and content hash, bound to
+its base parser identity. PDG entries also bind the PDG identity and resolved
+function-line cap. Chunk membership, byte budgets and worker assignment affect
+scheduling only: editing, adding or renaming one file does not invalidate its
+unchanged neighbours. Cross-file resolution still runs from all current facts.
+
+Workers encode facts and `ParsedFile` scopes separately, with runtime-checked V8
+envelopes and bounded compression. The coordinator appends these sections to
+32 MiB target packs (a larger valid file occupies a dedicated pack), with range
+references in `parse-cache/files/index.json`. It accepts a hit only after both
+sections validate and the scope bytes are pinned into the run-owned store.
+Scope resolution reads only its requested files. Empty scope sections are
+explicit; warnings, quarantine and incomplete scope extraction prevent reuse.
+
+Publication retains immutable live packs by hard link (atomic copy fallback)
+under the existing store lock, repacking when less than half a pack's bytes
+remain selected. New staged records are packed separately. It retains compatible
+sibling keys and excludes retired files or missing staged repairs. Bounds are
+checked during publication; section hashes are checked on every read before a
+cache hit is accepted. The child/supervisor receipt binds the graph generation, parser identity
+and selected file keys. The format transition changes parser identity, so old
+chunk caches miss once; legacy helpers remain for compatibility. Missing,
+malformed, incompatible or concurrently pruned records are misses.
 
 `RepoMeta.parseCacheIdentity` records the effective parser identity for
 unchanged-analysis and shared-current adoption checks. Analysis resolves it

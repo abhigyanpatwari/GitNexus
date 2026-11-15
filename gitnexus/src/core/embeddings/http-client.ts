@@ -15,6 +15,7 @@ import { chunk } from '../../lib/utils.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 import {
   CircuitOpenError,
+  getBreaker,
   ResilientFetchExhaustedError,
   isTerminalNetworkError,
   resilientFetch,
@@ -103,6 +104,11 @@ const parsePositiveIntegerEnv = (name: string, fallback: number, max: number): n
   }
   return parsed;
 };
+
+/** Embedding requests kept in flight at once. Pacing, retries and the circuit
+ * breaker still apply to each request; set 1 for a strictly serial endpoint. */
+export const httpEmbeddingConcurrency = (): number =>
+  parsePositiveIntegerEnv('GITNEXUS_EMBEDDING_CONCURRENCY', 4, 64);
 
 const parseNonNegativeIntegerEnv = (name: string, fallback: number, max: number): number => {
   const raw = process.env[name];
@@ -497,6 +503,15 @@ const httpEmbedBatch = async (
   let parsed: EmbeddingItem[] | undefined;
   try {
     throwIfAborted(requestOptions.signal);
+    const breaker = getBreaker(HTTP_BREAKER_KEY);
+    const probeDeadline = performance.now() + timeoutMs;
+    // A recovering endpoint admits one probe. Its window peers wait locally
+    // instead of turning a healthy resume into failed provider work.
+    while (breaker.getState() === 'half-open' && breaker.isProbeInFlight()) {
+      const remaining = probeDeadline - performance.now();
+      if (remaining <= 0) throw new CircuitOpenError(1_000, HTTP_BREAKER_KEY);
+      await abortableSleep(Math.min(1_000, remaining), requestOptions.signal);
+    }
     resp = await resilientFetch(
       url,
       {
