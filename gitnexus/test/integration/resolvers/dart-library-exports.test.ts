@@ -126,3 +126,30 @@ void publicPasses() { m.open().save(); }
     ]);
   });
 });
+
+describe.skipIf(!dartAvailable)('Dart ambiguous exports travel', () => {
+  // `both.dart` exports `make` as two declarations, which Dart rejects. A
+  // library that re-exports it does not get `make` back from a third export.
+  const run = useFixture('dart-export-ambiguity', {
+    'a1.dart': 'class User { void save() {} }\nUser make() => User();\n',
+    'a2.dart': 'class Admin { void save() {} }\nAdmin make() => Admin();\n',
+    'both.dart': "export 'a1.dart';\nexport 'a2.dart';\n",
+    'c.dart':
+      'class Guest { void save() {} }\nGuest make() => Guest();\nGuest only() => Guest();\n',
+    'down.dart': "export 'both.dart';\nexport 'c.dart';\n",
+    'app.dart': `import 'down.dart' as d;
+void ambiguousUpstream() { d.make().save(); }
+void unaffected() { d.only().save(); }
+`,
+  });
+  const targets = (source: string): string[] =>
+    getRelationships(run(), 'CALLS')
+      .filter((edge) => edge.source === source)
+      .map((edge) => edge.rel.targetId)
+      .sort();
+
+  it('refuses a name that is ambiguous in a re-exported library, beside one more declaration of it', () => {
+    expect(targets('ambiguousUpstream')).toEqual([]);
+    expect(targets('unaffected')).toEqual(['Function:c.dart:only', 'Method:c.dart:Guest.save#0']);
+  });
+});

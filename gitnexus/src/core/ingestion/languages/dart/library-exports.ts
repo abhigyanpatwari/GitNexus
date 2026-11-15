@@ -143,7 +143,12 @@ export interface DartExportClosureWork {
  * exporting one. A name travels along an edge only when its state in the
  * source changes, and a name has three states that only move forward: absent,
  * one declaration, ambiguous (two different declarations reached it, so the
- * library exports neither). The work is therefore bounded by twice the number
+ * library exports neither). Ambiguity travels like a declaration does: Dart
+ * rejects a library that exports one name as two declarations, so a library
+ * that re-exports it refuses the name as well, even when another of its
+ * exports carries a single declaration of that name. Picking that one would
+ * resolve calls through a namespace the compiler never builds. The work is
+ * therefore bounded by twice the number
  * of (directive, name it can carry) pairs whatever the file order, on chains
  * and on cycles alike, and the result does not depend on that order.
  *
@@ -230,7 +235,8 @@ export function populateDartLibraryExports(
         } else if (def !== null && current?.nodeId === def.nodeId) {
           continue;
         } else {
-          // Two different declarations of one name: the library exports neither.
+          // Two different declarations of one name, or one that is already
+          // ambiguous in the exported library: this library exports neither.
           closure.delete(name);
           if (refused === undefined) ambiguous.set(dependent.path, (refused = new Set()));
           refused.add(name);

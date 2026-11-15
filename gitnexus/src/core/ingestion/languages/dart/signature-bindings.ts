@@ -9,8 +9,8 @@
  *     declaration node and carries the function name → return type; the
  *     `bindingScopeFor` hook hoists it to the Module scope so callers (and
  *     `propagateImportedReturnTypes`) see `var u = getUser(); u.m()` resolve.
- *     A LOCAL function's stays in the scope that declares the function, the
- *     only place its name is visible.
+ *     A LOCAL function's return type stays in the scope that declares the
+ *     function, the only place its name is visible.
  *     An awaitable return (`Future<T>` / `FutureOr<T>`) is carried WHOLE —
  *     see `awaitableReturnSpelling`.
  *

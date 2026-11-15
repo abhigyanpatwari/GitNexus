@@ -444,9 +444,9 @@ const RESOLVING = [
 /** Members of the un-awaited Future (`nonAwait`, and `parenNonAwait` whose
  *  parenthesized head goes through the structural fold — with a workspace
  *  `class Future<T>` present, only the fold's owner guard keeps it off the
- *  stray `Future.save`), of an unknown awaited result (`unknownAwait`), and
- *  an awaited prefixed factory with a qualified yield
- *  (`prefixedQualifiedFactory`, recall boundary 5): no edge, a recorded drop. */
+ *  stray `Future.save`) and of an unknown awaited result (`unknownAwait`): no
+ *  edge, a recorded drop. An awaited prefixed factory with a qualified yield
+ *  (`prefixedQualifiedFactory`) is resolved and has its own test below. */
 const UNRESOLVED = ['nonAwait', 'parenNonAwait', 'unknownAwait'] as const;
 /** Parenthesized heads the chain refuses to type (see `dartSelectorSteps` /
  *  `parenthesizedRun`): each keeps its receiver text so the site is resolved

@@ -61,11 +61,10 @@
  * `self.user.save` through `attr_reader :user`) are pinned in the second
  * suite: main resolved them only through the leaked class-scope binding. The
  * sixth suite pins that a bare `@type [T]` synthesizes no binding (the removed
- * capture bound the empty name). The last suite pins the `@return`-above-
- * `attr_reader` boundary named in the gaps doc: as the FIRST statement of a
- * class body the tag is not attached (`findFollowingAttrCall` has no
- * `body_statement` descent), so the in-class read is a missing edge, while
- * the same tag after another statement types the read. Explicit `target()`
+ * capture bound the empty name). The last suite pins `@return` above
+ * `attr_reader`: the tag types the in-class read whether the accessor is the
+ * FIRST statement of the class body or follows another statement, and an
+ * untyped local of the same name does not borrow that type. Explicit `target()`
  * beside a same-named parameter lives in ruby-param-shadow-call.test.ts
  * (pre-existing behaviour, passes on main).
  */
@@ -1340,7 +1339,7 @@ end
   });
 });
 
-describe('Ruby YARD @return above attr_reader: first statement of the class body is not attached (documented boundary)', () => {
+describe('Ruby YARD @return above attr_reader: attached as the first statement of the class body and after another statement', () => {
   let result: PipelineResult;
   let tmpDir: string;
   let userSaveId: string;
