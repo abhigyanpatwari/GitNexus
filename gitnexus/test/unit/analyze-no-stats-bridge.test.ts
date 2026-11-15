@@ -258,11 +258,70 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     // The fast path returns before generateAIContextFiles, so the flag only
     // takes effect through the in-place stats refresh — otherwise it stays a
     // no-op on every repo that was already indexed.
+    const stats = { nodes: 10, edges: 20, processes: 3 };
+    runFullAnalysisMock.mockResolvedValueOnce({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats,
+      alreadyUpToDate: true,
+    });
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
     await analyzeCommand(undefined, { stats: false });
 
     expect(refreshStatsLineMock).toHaveBeenCalledTimes(1);
-    expect(refreshStatsLineMock.mock.calls[0]![2]).toMatchObject({ noStats: true });
+    expect(refreshStatsLineMock).toHaveBeenCalledWith('/repo', stats, {
+      noStats: true,
+      skipAgentsMd: undefined,
+    });
+  });
+
+  it('restores stats by default on an already up-to-date index', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(refreshStatsLineMock).toHaveBeenCalledWith(
+      '/repo',
+      {},
+      {
+        noStats: false,
+        skipAgentsMd: undefined,
+      },
+    );
+  });
+
+  it.each([{ skipAgentsMd: true }, { indexOnly: true }])(
+    'forwards context suppression to the fast-path refresh with %j',
+    async (options) => {
+      const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+      await analyzeCommand(undefined, { ...options, stats: false });
+
+      expect(refreshStatsLineMock).toHaveBeenCalledWith(
+        '/repo',
+        {},
+        {
+          noStats: true,
+          skipAgentsMd: true,
+        },
+      );
+    },
+  );
+
+  it('does not refresh root context files for an up-to-date pinned branch index', async () => {
+    runFullAnalysisMock.mockResolvedValueOnce({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: { nodes: 10, edges: 20, processes: 3 },
+      alreadyUpToDate: true,
+      isPrimaryBranch: false,
+    });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { stats: false });
+
+    expect(refreshStatsLineMock).not.toHaveBeenCalled();
+    expect(refreshBaseRefLineMock).not.toHaveBeenCalled();
   });
 });

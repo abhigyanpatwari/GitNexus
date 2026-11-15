@@ -992,12 +992,11 @@ export async function refreshStatsLine(
       ? `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`
       : undefined;
   if (!noStats && counts === undefined) return { files: [] };
-  // Same two canonical phrasings the keep path accepts (#3800): the verbose
-  // template's sentence and a trimmed block's `Indexed as **name**` line. No
-  // `$` anchor, so a trailing sentence or the period stays as it is.
+  // Accept the verbose template and compact `Indexed as **name**` line,
+  // including counts wrapped by Markdown formatters. Leave trailing text alone.
   const statsPattern =
-    /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)( \((\d+ symbols, \d+ relationships, \d+ execution flows)\))?/m;
-  const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?= \|)/gm;
+    /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)(\s+\(\d+\s+symbols,\s+\d+\s+relationships,\s+\d+\s+execution\s+flows\))?/m;
+  const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?=[ \t]*\|)/gm;
   const updated: string[] = [];
   for (const name of ['AGENTS.md', 'CLAUDE.md']) {
     const filePath = path.join(repoPath, name);
@@ -1016,7 +1015,18 @@ export async function refreshStatsLine(
     const block = content.substring(startIdx, blockEnd);
     let newBlock = block.replace(
       statsPattern,
-      (match, prefix: string, project: string, existingCounts?: string) => {
+      (
+        match,
+        prefix: string,
+        project: string,
+        existingCounts: string | undefined,
+        offset: number,
+      ) => {
+        // An unrecognized parenthetical may already contain counts. Do not
+        // prepend a second tuple just because the optional capture missed it.
+        if (existingCounts === undefined && /^\s*\(/.test(block.slice(offset + match.length))) {
+          return match;
+        }
         if (noStats) return `${prefix} ${project}`;
         return existingCounts === undefined ? `${prefix} ${project} (${counts})` : match;
       },

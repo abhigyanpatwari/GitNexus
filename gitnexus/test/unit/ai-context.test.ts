@@ -2149,6 +2149,94 @@ This project is indexed by GitNexus as **my-repo** (1 symbols, 2 relationships, 
     }
   });
 
+  it.each([
+    ['verbose LF', 'This project is indexed by GitNexus as', '\n', ' '],
+    ['compact CRLF', 'Indexed as', '\r\n', '\r\n'],
+  ])(
+    'handles wrapped counts in a %s block without duplicating them',
+    async (_label, prefix, eol, gap) => {
+      const counts = `${gap}(1 symbols,${eol}2 relationships, 3 execution${eol}flows)`;
+      const before = [
+        '# User instructions',
+        '<!-- gitnexus:start -->',
+        `${prefix} **my-repo**${counts}. Custom sentence.`,
+        '<!-- gitnexus:end -->',
+        '# User footer',
+        '',
+      ].join(eol);
+      const dir = await seed(['AGENTS.md', 'CLAUDE.md'], before);
+      try {
+        expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+        for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+          expect(await read(dir, name)).toBe(before);
+        }
+        expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([
+          'AGENTS.md',
+          'CLAUDE.md',
+        ]);
+        for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+          expect(await read(dir, name)).toBe(before.replace(counts, ''));
+        }
+        expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('leaves an unrecognized parenthetical alone', async () => {
+    const before = `<!-- gitnexus:start -->\nIndexed as **my-repo** (TypeScript monorepo).\n<!-- gitnexus:end -->\n`;
+    const dir = await seed(['AGENTS.md'], before);
+    try {
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+      expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+      expect(await read(dir, 'AGENTS.md')).toBe(before);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops skill counts from aligned Markdown rows while preserving padding and links', async () => {
+    const before = `<!-- gitnexus:start -->
+Indexed as **my-repo** (1 symbols, 2 relationships, 3 execution flows).
+| Task                                      | Read this skill file                       |
+| ----------------------------------------- | ------------------------------------------ |
+| Work in the Auth area (40 symbols)         | \`.claude/skills/gitnexus-area-auth/SKILL.md\` |
+| Work in the API area (20 symbols)\t\t| \`.claude/skills/gitnexus-area-api/SKILL.md\` |
+<!-- gitnexus:end -->
+`;
+    const dir = await seed(['AGENTS.md', 'CLAUDE.md'], before);
+    try {
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+      await refreshStatsLine(dir, STATS, { noStats: true });
+      const expected = before
+        .replace(' (1 symbols, 2 relationships, 3 execution flows)', '')
+        .replace(' (40 symbols)', '')
+        .replace(' (20 symbols)', '');
+      for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+        expect(await read(dir, name)).toBe(expected);
+      }
+      expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors skipAgentsMd for both AGENTS.md and CLAUDE.md', async () => {
+    const before = `<!-- gitnexus:start -->\nIndexed as **my-repo** (1 symbols, 2 relationships, 3 execution flows).\n<!-- gitnexus:end -->\n`;
+    const dir = await seed(['AGENTS.md', 'CLAUDE.md'], before);
+    try {
+      expect(
+        (await refreshStatsLine(dir, STATS, { noStats: true, skipAgentsMd: true })).files,
+      ).toEqual([]);
+      for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+        expect(await read(dir, name)).toBe(before);
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('is a no-op without files, a block, or usable stats', async () => {
     const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-statsline-none-'));
     try {
@@ -2169,9 +2257,7 @@ This project is indexed by GitNexus as **my-repo**.
     );
     try {
       expect((await refreshStatsLine(dir, {})).files).toEqual([]);
-      expect(
-        (await refreshStatsLine(dir, STATS, { skipAgentsMd: true })).files,
-      ).toEqual([]);
+      expect((await refreshStatsLine(dir, STATS, { skipAgentsMd: true })).files).toEqual([]);
       expect(await read(dir, 'AGENTS.md')).not.toContain('(0 symbols');
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
