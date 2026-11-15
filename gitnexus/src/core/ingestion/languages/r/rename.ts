@@ -756,6 +756,12 @@ export const rRenameProvider: RenameProvider = {
       return unsupported(
         'R calls this function by name (a package or session hook); a renamed one would no longer run.',
       );
+    // The reverse: a function renamed to a hook name would be called by R at load or session
+    // start, which the author of the old name never meant.
+    if (R_HOOK_FUNCTIONS.has(newName))
+      return unsupported(
+        'R calls the new name by itself (a package or session hook); the renamed function would run at load or session start.',
+      );
     // `f(x) <- v` calls the replacement function `f<-`, so a name ending in `<-` is half of a pair
     // whose other half is written differently.
     if (name.endsWith('<-') || newName.endsWith('<-'))
@@ -829,6 +835,7 @@ export const rRenameProvider: RenameProvider = {
         );
     }
     const callInString = new RegExp(`(?<![${NAME_CHAR}])${escapeRegExp(name)}\\s*\\(`);
+    const newCallInString = new RegExp(`(?<![${NAME_CHAR}])${escapeRegExp(newName)}\\s*\\(`);
     for (const source of files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {
@@ -907,6 +914,11 @@ export const rRenameProvider: RenameProvider = {
           return unsupported(
             'A string literal contains a call of this name (glue/cli interpolation, parse(text=), a formula string); it would not be renamed.',
           );
+        // A string that evaluates a call of the new name would reach the renamed function.
+        if (value !== null && newCallInString.test(value))
+          return unsupported(
+            'A string literal contains a call of the new name (glue/cli interpolation, parse(text=), a formula string); once evaluated it would reach the renamed function.',
+          );
       }
     }
     const targetSource = files.get(target.filePath);
@@ -949,6 +961,14 @@ export const rRenameProvider: RenameProvider = {
           code: 'incomplete_semantics',
           status: 'unsupported',
           message: `An R file the index does not cover (${unindexed.path}) mentions this name; it would not be updated.`,
+        };
+      // That file may define or call something of the new name, which the renamed function
+      // would then replace or capture.
+      if (unindexed.words.includes(newName))
+        return {
+          code: 'incomplete_semantics',
+          status: 'unsupported',
+          message: `An R file the index does not cover (${unindexed.path}) mentions the new name; the renamed function could replace or capture what it refers to.`,
         };
     }
     // NAMESPACE is not an indexed source, so an `export()`, `exportPattern()` or `S3method()`

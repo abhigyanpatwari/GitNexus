@@ -129,3 +129,45 @@ describe('T10: a call in a parameter default beside a local definition of the na
     expect(check({ [file]: source }, file, 'helper', 'assist')).toBeUndefined();
   });
 });
+
+describe('T11: the string-call, unindexed-file and hook-name guards also test the new name', () => {
+  const file = 'a.R';
+  const base = 'helper <- function(x) x\n';
+  const unindexed = (words: string[], extra: object = {}): RPackageConfig => ({
+    packages: new Map(),
+    namespaceInfoByPackageDir: new Map(),
+    unindexedRSources: [{ path: 'bin/run.R', words, ...extra }],
+  });
+
+  it('string call: a string evaluating a call of the new name refuses', () => {
+    const source = `${base}y <- parse(text = "abs(1)")\n`;
+    expect(check({ [file]: source }, file, 'helper', 'abs')).toMatchObject({
+      code: 'unsupported_occurrence',
+      message: expect.stringContaining('contains a call of the new name'),
+    });
+    expect(check({ [file]: source }, file, 'helper', 'assist')).toBeUndefined();
+    expect(
+      check({ [file]: `${base}y <- "abs is a word"\n` }, file, 'helper', 'abs'),
+    ).toBeUndefined();
+  });
+
+  it('unindexed file: a file the index omits that uses the new name refuses', () => {
+    expect(
+      check({ [file]: base }, file, 'helper', 'assist', unindexed(['assist', 'source'])),
+    ).toMatchObject({
+      code: 'incomplete_semantics',
+      message: expect.stringMatching(/bin\/run\.R.*mentions the new name/s),
+    });
+    expect(check({ [file]: base }, file, 'helper', 'assist', unindexed(['other']))).toBeUndefined();
+  });
+
+  it('hook name: renaming to a name R calls by itself refuses', () => {
+    for (const hook of ['.onLoad', '.onAttach', '.First']) {
+      expect(check({ [file]: base }, file, 'helper', hook)).toMatchObject({
+        code: 'unsupported_occurrence',
+        message: expect.stringContaining('R calls the new name'),
+      });
+    }
+    expect(check({ [file]: base }, file, 'helper', '.onLoadx')).toBeUndefined();
+  });
+});
