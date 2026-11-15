@@ -80,7 +80,7 @@ interface DartStaticContext {
 
 /** Cache the preceding-token check once per parent: native sibling getters
  *  re-descend from the root, so repeated reads become expensive in deep closures. */
-function isDartStaticWithin(
+export function isDartStaticWithin(
   node: SyntaxNode,
   { parent, staticBefore }: DartStaticContext,
 ): boolean {

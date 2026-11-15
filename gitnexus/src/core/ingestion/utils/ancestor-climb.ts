@@ -68,8 +68,12 @@ function parentIndex(node: SyntaxNode): Map<number, SyntaxNode | null> {
 
 /** Whether `node` has at least NATIVE_CLIMB_LIMIT ancestors: a native read there is costly. */
 function isDeep(node: SyntaxNode): boolean {
+  if (counting) nativeParentReads++;
   let ancestor = node.parent;
-  for (let i = 1; ancestor !== null && i < NATIVE_CLIMB_LIMIT; i++) ancestor = ancestor.parent;
+  for (let i = 1; ancestor !== null && i < NATIVE_CLIMB_LIMIT; i++) {
+    if (counting) nativeParentReads++;
+    ancestor = ancestor.parent;
+  }
   return ancestor !== null;
 }
 

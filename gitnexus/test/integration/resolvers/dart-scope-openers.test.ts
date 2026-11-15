@@ -210,8 +210,7 @@ void blockDoc(User v)
     ]);
     // A closure, a for-in, a catch body, an if-case, a closure bound to a
     // local and a nested block each declare in a scope of their own: the
-    // outer annotation is kept. (The block local itself is not inferred: the
-    // call-result census still counts per outermost body.)
+    // outer annotation is kept.
     const KEPT = ['param x:Address'];
     expect(
       bindingsFor('x', 'void closure(Address x) { items.forEach((x) => use(x)); x.save(); }\n'),
@@ -231,9 +230,11 @@ void blockDoc(User v)
     expect(
       bindingsFor('x', 'void bound(Address x) { final g = (x) => use(x); g(x); x.save(); }\n'),
     ).toEqual(KEPT);
+    // Two bindings, one per scope: the block's own `x` typed by `make()`'s
+    // result (on the Block scope) and the parameter `x` (on the Function scope).
     expect(
       bindingsFor('x', 'void block(Address x) { { final x = make(); use(x); } x.save(); }\n'),
-    ).toEqual(KEPT);
+    ).toEqual(['local x:make', ...KEPT]);
   });
 
   it('keeps a parameter annotation when the second spelling declares nothing', () => {

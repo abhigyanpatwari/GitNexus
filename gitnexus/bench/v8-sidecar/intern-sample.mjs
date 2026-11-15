@@ -3,25 +3,18 @@ import fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import v8 from 'node:v8';
 
-const [modulePath, corpusPath, expectedStrings] = process.argv.slice(2);
-assert.equal(typeof global.gc, 'function', 'Run with --expose-gc');
-// Heap sizing alone leaves background GC/JIT tasks and hash seeds variable.
-// Keep their work in the measured thread under the same seed in both arms.
-assert(process.execArgv.includes('--predictable'), 'Use deterministic GC/JIT scheduling');
-assert(process.execArgv.includes('--predictable-gc-schedule'), 'Use the fixed GC profile');
-const { internGraphStrings } = await import(pathToFileURL(modulePath).href);
-const payloads = v8.deserialize(fs.readFileSync(corpusPath));
-assert(Array.isArray(payloads) && payloads.length > 0, 'Empty corpus');
-
-function measure() {
+export function measure(payloads, internGraphStrings, expectedStrings) {
   global.gc();
   const pool = new Map();
   const graphs = [];
   let ms = 0;
   let cpuMs = 0;
-  const totalCpu = process.cpuUsage();
+  let hydrateCpuMs = 0;
   for (const payload of payloads) {
+    const hydrateCpu = process.cpuUsage();
     const graph = v8.deserialize(payload);
+    const hydrated = process.cpuUsage(hydrateCpu);
+    hydrateCpuMs += (hydrated.user + hydrated.system) / 1000;
     const cpu = process.cpuUsage();
     const started = performance.now();
     internGraphStrings(graph, pool);
@@ -30,13 +23,12 @@ function measure() {
     cpuMs += (used.user + used.system) / 1000;
     graphs.push(graph);
   }
-  const used = process.cpuUsage(totalCpu);
   assert.equal(pool.size, Number(expectedStrings));
   global.gc();
   const row = {
     ms,
     cpuMs,
-    hydrateCpuMs: (used.user + used.system) / 1000,
+    hydrateCpuMs,
     heapUsed: process.memoryUsage().heapUsed,
     peakRssKiB: process.resourceUsage().maxRSS,
   };
@@ -44,15 +36,24 @@ function measure() {
   return row;
 }
 
-// Warm this process's JIT before measuring. No graph, string pool, module
-// instance or GC history from the other variant can enter this process.
-measure();
-measure();
-console.log(
-  JSON.stringify({
-    ...measure(),
-    pid: process.pid,
-    warmupRounds: 2,
-    execArgv: process.execArgv,
-  }),
-);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const [modulePath, corpusPath, expectedStrings] = process.argv.slice(2);
+  assert.equal(typeof global.gc, 'function', 'Run with --expose-gc');
+  // Keep background GC/JIT work and hash seeds the same in both arms.
+  assert(process.execArgv.includes('--predictable'), 'Use deterministic GC/JIT scheduling');
+  assert(process.execArgv.includes('--predictable-gc-schedule'), 'Use the fixed GC profile');
+  const { internGraphStrings } = await import(pathToFileURL(modulePath).href);
+  const payloads = v8.deserialize(fs.readFileSync(corpusPath));
+  assert(Array.isArray(payloads) && payloads.length > 0, 'Empty corpus');
+  // Warm this process's JIT before measuring, without sharing either arm's state.
+  measure(payloads, internGraphStrings, expectedStrings);
+  measure(payloads, internGraphStrings, expectedStrings);
+  console.log(
+    JSON.stringify({
+      ...measure(payloads, internGraphStrings, expectedStrings),
+      pid: process.pid,
+      warmupRounds: 2,
+      execArgv: process.execArgv,
+    }),
+  );
+}

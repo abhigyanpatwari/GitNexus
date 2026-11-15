@@ -73,7 +73,7 @@ describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart enclosing-t
       cost(inlineNest(depth, 'class Svc { int operator +(List<int> items) {', 'return 0; } }\n'));
     const shallow = nested(8);
     const deep = nested(64);
-    expect(isDeepStrictEqual([shallow.scopes, deep.scopes], [8, 64])).toBe(true);
+    expect(isDeepStrictEqual([shallow.scopes, deep.scopes], [9, 65])).toBe(true);
     expect(isDeepStrictEqual(thisTypes(deep.matches), ['Svc'])).toBe(true);
     expect(deep.parents).toBe(shallow.parents);
     expect(deep.siblings).toBe(0);

@@ -2672,6 +2672,11 @@ export const DART_QUERIES = `
   (function_signature
     name: (identifier) @name) @definition.function)
 
+(local_function_declaration
+  (lambda_expression
+    (function_signature
+      name: (identifier) @name) @definition.function))
+
 ; ── Abstract method declarations (function_signature inside class body declaration) ──
 (declaration
   (function_signature

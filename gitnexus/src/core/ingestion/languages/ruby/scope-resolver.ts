@@ -292,6 +292,7 @@ export const rubyScopeResolver: ScopeResolver = {
     expandRubyWildcardNames(targetModuleScope, parsedFiles),
 
   mergeBindings: (existing, incoming, scopeId) => rubyMergeBindings(existing, incoming, scopeId),
+  mergeBindingsAreAssociative: true,
 
   arityCompatibility: (callsite, def) => rubyArityCompatibility(def, callsite),
 

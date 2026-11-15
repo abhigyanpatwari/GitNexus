@@ -7938,13 +7938,13 @@ export default r;
 
       const contracts = await extractor.extract(graph.db, dir, makeRepo(dir));
 
-      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS]]);
+      expect(graph.batches()).toEqual([[ITEMS, ORDERS, USERS]]);
       expect(graph.singles()).toEqual([]);
       expect(summary(contracts)).toEqual([
+        ['http::GET::/api/items', `Method:${ITEMS}:listItems`, 'listItems'],
         ['http::GET::/api/orders', `Method:${ORDERS}:listOrders`, 'listOrders'],
         ['http::POST::/api/orders', `Method:${ORDERS}:createOrder`, 'createOrder'],
         ['http::GET::/api/users', `Method:${USERS}:listUsers`, 'listUsers'],
-        ['http::GET::/api/items', `Method:${ITEMS}:listItems`, 'listItems'],
       ]);
     });
 
@@ -7979,7 +7979,7 @@ def health():
 
       const contracts = await extractor.extract(graph.db, dir, makeRepo(dir));
 
-      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS], ['main.py']]);
+      expect(graph.batches()).toEqual([[ITEMS, ORDERS, USERS], ['main.py']]);
       expect(graph.singles()).toEqual([]);
       expect(contracts.find((c) => c.contractId === 'http::GET::/api/health')).toMatchObject({
         symbolUid: 'Function:main.py:health',
@@ -7999,15 +7999,15 @@ def health():
       const expected = await extractor.extract(working.db, dir, makeRepo(dir));
       const actual = await new HttpRouteExtractor().extract(failing.db, dir, makeRepo(dir));
 
-      expect(failing.batches()).toEqual([[ORDERS, USERS, ITEMS]]);
+      expect(failing.batches()).toEqual([[ITEMS, ORDERS, USERS]]);
       // Each file once, when the loop first reaches it: no retry per route.
-      expect(failing.singles()).toEqual([ORDERS, USERS, ITEMS]);
+      expect(failing.singles()).toEqual([ITEMS, ORDERS, USERS]);
       expect(actual).toEqual(expected);
       expect(actual.map((c) => c.symbolName)).toEqual([
+        'listItems',
         'listOrders',
         'createOrder',
         'listUsers',
-        'listItems',
       ]);
     });
 
@@ -8026,12 +8026,12 @@ def health():
 
       const contracts = await extractor.extract(graph.db, dir, makeRepo(dir));
 
-      expect(graph.batches()).toEqual([[ORDERS, USERS, ITEMS, LEGACY]]);
+      expect(graph.batches()).toEqual([[ITEMS, LEGACY, ORDERS, USERS]]);
       // The empty answer is cached: neither LEGACY route queries it again.
       expect(graph.singles()).toEqual([]);
       expect(summary(contracts.filter((c) => c.contractId.endsWith('/api/legacy')))).toEqual([
-        ['http::GET::/api/legacy', `Method:${LEGACY}:getLegacy`, 'LegacyController.java'],
         ['http::DELETE::/api/legacy', `Method:${LEGACY}:dropLegacy`, 'LegacyController.java'],
+        ['http::GET::/api/legacy', `Method:${LEGACY}:getLegacy`, 'LegacyController.java'],
       ]);
     });
 
@@ -8120,7 +8120,7 @@ export default admin;
 
       // The handler files in one query, then the files with Express detections in one more.
       expect(batched.batches()).toHaveLength(2);
-      expect(batched.batches()[0]).toEqual([ORDERS, USERS, ITEMS]);
+      expect(batched.batches()[0]).toEqual([ITEMS, ORDERS, USERS]);
       expect([...batched.batches()[1]].sort()).toEqual(['src/admin.ts', 'src/routes.ts']);
       expect(batched.singles()).toEqual([]);
       expect([...perFile.singles()].sort()).toEqual(
