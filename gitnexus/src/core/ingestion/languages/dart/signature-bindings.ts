@@ -9,6 +9,8 @@
  *     declaration node and carries the function name → return type; the
  *     `bindingScopeFor` hook hoists it to the Module scope so callers (and
  *     `propagateImportedReturnTypes`) see `var u = getUser(); u.m()` resolve.
+ *     A LOCAL function's stays in the scope that declares the function, the
+ *     only place its name is visible.
  *     An awaitable return (`Future<T>` / `FutureOr<T>`) is carried WHOLE —
  *     see `awaitableReturnSpelling`.
  *
@@ -139,9 +141,10 @@ export function synthesizeDartSignatureBindings(
  *
  * `paramOwner` is the `function_expression` for a closure, whose
  * `formal_parameter_list` is a direct child, or the `function_signature` of a
- * local function. No return binding: `dartBindingScopeFor` hoists every
- * `@type-binding.return` to the Module scope, which would publish a local
- * function's return type file-wide.
+ * local function. No return binding: a closure declares no return type, and a
+ * local function's is published with its declaration
+ * (`synthesizeDartSignatureBindings`), which `dartBindingScopeFor` keeps in the
+ * declaring scope instead of hoisting it file-wide.
  */
 export function synthesizeDartParameterBindings(
   paramOwner: SyntaxNode,
