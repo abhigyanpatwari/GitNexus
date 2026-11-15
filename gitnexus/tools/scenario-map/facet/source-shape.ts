@@ -389,6 +389,19 @@ export interface FixtureDefs {
 
 const TYPE_DECL =
   /class|struct|interface|enum|record|object_declaration|trait_item|impl_item|type_spec|protocol/;
+
+/**
+ * A node type that declares a type: matches {@link TYPE_DECL}, except the body and list nodes
+ * (`class_body`, `field_declaration_list`) and the `*_specifier` nodes; the latter are re-admitted
+ * for class/struct/union/enum by the caller. `body` and `list` match anywhere in the name,
+ * `specifier` only as the suffix.
+ */
+export function isTypeDeclarationType(type: string): boolean {
+  return (
+    TYPE_DECL.test(type) &&
+    !(type.includes('body') || type.includes('list') || type.endsWith('specifier'))
+  );
+}
 const FIELD_DECL = /field_declaration|property_declaration|field_definition/;
 
 function identifiersIn(node: SyntaxNode, skipField?: string): Set<string> {
@@ -533,7 +546,7 @@ export class SourceShaper {
       defs.files.set(path.posix.relative(dir, file), profile(root));
       const visit = (node: SyntaxNode): void => {
         const isType =
-          (TYPE_DECL.test(node.type) && !/body|list|specifier$/.test(node.type)) ||
+          isTypeDeclarationType(node.type) ||
           /^(class|struct|union|enum)_specifier$/.test(node.type);
         if (isType) {
           const name =
