@@ -168,6 +168,9 @@ function judge(name, args, before, depth) {
       if (rest.some((arg) => isForce(arg) || /^\+/.test(arg))) {
         return 'git push --force (use --force-with-lease on your own branch)';
       }
+      // --mirror overwrites and deletes remote refs without any force flag.
+      if (rest.includes('--mirror'))
+        return 'git push --mirror (it overwrites and deletes remote refs)';
       const refs = rest.filter((arg) => !arg.startsWith('-')).slice(1);
       if (refs.some((ref) => /(^|:)(refs\/heads\/)?(main|master)$/.test(ref))) {
         return 'git push to main (work goes through a pull request)';

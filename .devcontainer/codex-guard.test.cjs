@@ -63,6 +63,7 @@ const DENIED = [
   'rm -rf build/.*',
   'git push -fu origin feature',
   'git push -uf origin feature',
+  'git push --mirror origin',
   // Four shells deep: refused unread.
   `sh -c "sh -c 'sh -c \\"sh -c \\\\\\"rm -rf /\\\\\\"\\"'"`,
   // An unquoted mention is refused too: the guard fails closed.

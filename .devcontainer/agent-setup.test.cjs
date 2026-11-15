@@ -90,6 +90,11 @@ test('a Linux config is returned byte for byte, and cleaning twice changes nothi
   assert.deepEqual(cleanCodexConfig(once), { text: once, removed: [] });
 });
 
+test('a bracket inside a notify string does not end a multi-line array early', () => {
+  const text = 'notify = [\n  "C:\\\\tools\\\\notify.exe",\n  "[done]",\n  "x",\n]\nmodel = "x"\n';
+  assert.deepEqual(cleanCodexConfig(text), { text: 'model = "x"\n', removed: ['notify'] });
+});
+
 test('a notify array spread over several lines is removed whole', () => {
   const text = 'notify = [\n  "C:\\\\tools\\\\notify.exe",\n  "done",\n]\nmodel = "x"\n';
   assert.deepEqual(cleanCodexConfig(text), { text: 'model = "x"\n', removed: ['notify'] });

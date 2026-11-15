@@ -384,3 +384,27 @@ test('a message that was not delivered does not reach the bus', async ($, on) =>
   expect((await ui.find({ type: 'Text', text: /^Bus \(/ }))?.text).toBe('Bus (0)');
   await ui.unmount();
 });
+
+test("/panels closes this mod's panes and leaves a pane it does not own open", async ($, on) => {
+  const closed: string[] = [];
+  on('ui.panes', () => ({
+    value: [placedOf('work', 'Work state'), placedOf('someone-elses', 'Not ours')],
+  }));
+  on('ui.close', (_, e) => {
+    closed.push(e.id);
+
+    return { value: undefined };
+  });
+
+  on('store.set', () => ({ value: undefined }));
+
+  const { text } = await $.command.run({
+    command: 'panels',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: true, columns: 160 },
+  });
+
+  expect(text).toBe('Side panels closed.');
+  expect(closed).toEqual(['work']);
+});

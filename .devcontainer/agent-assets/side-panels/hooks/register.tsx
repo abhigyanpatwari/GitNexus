@@ -133,7 +133,8 @@ export const register: Register = (on) => {
     if (args !== '' && args !== 'refresh') {
       return { text: 'Usage: /panels [refresh | board on | board off]' };
     }
-    const open = await $.ui.panes();
+    // Only this mod's panes: `/panels` must never close a pane another plugin opened.
+    const open = (await $.ui.panes()).filter((pane) => PANES.some((own) => own.id === pane.id));
     if (args === '' && open.length > 0) {
       for (const pane of open) await $.ui.close({ id: pane.id });
       await $.store.set('auto', false);

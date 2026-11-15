@@ -75,6 +75,32 @@ const valueOf = (table, key) =>
     .find((value) => value !== undefined);
 
 /**
+ * The index of the line that ends the value assigned on `lines[at]`. An array
+ * may run over several lines; a bracket inside one of its strings does not close it.
+ * ponytail: multi-line strings (three quotes) are not read; a real TOML parser is the upgrade.
+ */
+function valueEnd(lines, at) {
+  let depth = 0;
+  for (let end = at; end < lines.length; end += 1) {
+    const line = lines[end];
+    let quote = '';
+    for (let i = end === at ? line.indexOf('=') + 1 : 0; i < line.length; i += 1) {
+      const char = line[i];
+      if (quote !== '') {
+        if (char === '\\' && quote === '"') i += 1;
+        else if (char === quote) quote = '';
+      } else if (char === '"' || char === "'") quote = char;
+      else if (char === '#') break;
+      else if (char === '[') depth += 1;
+      else if (char === ']') depth -= 1;
+    }
+    if (depth <= 0) return end;
+  }
+
+  return lines.length - 1;
+}
+
+/**
  * Removes what only works on the host the config was copied from: MCP servers
  * started by a Windows executable, plugin marketplaces at a Windows path, and a
  * Windows `notify` program. Everything else is kept byte for byte.
@@ -90,9 +116,7 @@ function cleanCodexConfig(text) {
       preamble.push(line);
       continue;
     }
-    // An array value may run over several lines: take it up to its closing bracket.
-    let end = at;
-    while (!parts.preamble[end].includes(']') && end + 1 < parts.preamble.length) end += 1;
+    const end = valueEnd(parts.preamble, at);
     const value = parts.preamble.slice(at, end + 1).join('\n');
     const program = /=\s*\[\s*("(?:[^"\\]|\\.)*"|'[^']*')/.exec(value)?.[1] ?? '';
     if (isWindowsValue(program)) {
