@@ -561,6 +561,21 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
     expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
   });
 
+  it('ambiguous exact method name in controller file → fail-open, no stamp', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index#1', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index#2', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute()], []);
+
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+
   it('ambiguous controller short-name (>1) → fail-open, no stamp', () => {
     const model = createSemanticModel();
     model.symbols.add(

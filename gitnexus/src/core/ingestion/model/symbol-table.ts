@@ -175,6 +175,16 @@ export interface SymbolTableReader {
   lookupExactAll: (filePath: string, name: string) => readonly SymbolDefinition[];
 
   /**
+   * Case-insensitive symbol lookup within one file. Returns a definition only
+   * when exactly one Method (or other symbol) in the file matches — PHP method
+   * names are case-insensitive at runtime.
+   */
+  lookupExactUniqueCaseInsensitive: (
+    filePath: string,
+    name: string,
+  ) => SymbolDefinition | undefined;
+
+  /**
    * Look up callable symbols (Function, Macro, Delegate) by name.
    * O(1) via dedicated eagerly-populated index keyed by symbol name.
    * Returned array is a view into the live index — do not mutate.
@@ -342,6 +352,27 @@ export const createSymbolTable = (): InternalSymbolTable => {
     return fileIndex.get(filePath)?.get(name) ?? [];
   };
 
+  const lookupExactUniqueCaseInsensitive = (
+    filePath: string,
+    name: string,
+  ): SymbolDefinition | undefined => {
+    const fileMap = fileIndex.get(filePath);
+    if (!fileMap) return undefined;
+    const needle = name.toLowerCase();
+    let found: SymbolDefinition | undefined;
+    let count = 0;
+    for (const [symbolName, defs] of fileMap) {
+      if (symbolName.toLowerCase() !== needle) continue;
+      for (const def of defs) {
+        if (def.type !== 'Method' && def.type !== 'Function') continue;
+        count += 1;
+        found = def;
+        if (count > 1) return undefined;
+      }
+    }
+    return count === 1 ? found : undefined;
+  };
+
   const lookupCallableByName = (name: string): SymbolDefinition[] => {
     return callableByName.get(name) ?? [];
   };
@@ -366,6 +397,7 @@ export const createSymbolTable = (): InternalSymbolTable => {
     lookupExact,
     lookupExactFull,
     lookupExactAll,
+    lookupExactUniqueCaseInsensitive,
     lookupCallableByName,
     getFiles,
     getStats,

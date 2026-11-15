@@ -2,6 +2,17 @@ import type Parser from 'tree-sitter';
 import { extractStringContent, findDescendant, type SyntaxNode } from '../utils/ast-helpers.js';
 import { splitNamespaceUseDeclaration } from '../languages/php/import-decomposer.js';
 import { normalizeQualifiedName } from '../utils/qualified-name.js';
+import {
+  composeRouteGroupStack,
+  expandMiddlewareTokens,
+  mergeLaravelRouteName,
+  mergeLumenRouteName,
+  qualifyStringActionController,
+  type PhpRouteReceiverKind,
+  type RouteGroupContext,
+} from './php-route-group.js';
+
+export type { RouteGroupContext, PhpRouteReceiverKind } from './php-route-group.js';
 
 export interface ExtractedRoute {
   filePath: string;
@@ -23,14 +34,16 @@ export interface ExtractedRoute {
   middleware: string[];
   prefix: string | null;
   lineNumber: number;
+  /** True when the handler is a string/`uses` action — group namespace applies. */
+  stringAction?: boolean;
+  stringActionGroupNamespace?: string | null;
+  stringActionAbsoluteController?: boolean;
+  /** In-file group stack used a leading-`\\` namespace that resets outers. */
+  stringActionGroupNamespaceResets?: boolean;
 }
 
-interface RouteGroupContext {
-  middleware: string[];
-  prefix: string | null;
-  namePrefix: string | null;
-  controller: string | null;
-}
+/** HTTP verbs exposed on Lumen's Router (no `any` / `match` / `resource`). */
+const LUMEN_HTTP_METHODS = new Set(['get', 'post', 'put', 'patch', 'delete', 'options', 'head']);
 
 const ROUTE_HTTP_METHODS = new Set([
   'get',
@@ -47,6 +60,39 @@ const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
 const RESOURCE_ACTIONS = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
 const API_RESOURCE_ACTIONS = ['index', 'store', 'show', 'update', 'destroy'];
 
+function getMemberObject(node: SyntaxNode): SyntaxNode | null {
+  return node.childForFieldName?.('object') ?? node.children?.[0] ?? null;
+}
+
+function isRouterVariable(node: SyntaxNode): boolean {
+  if (node.type !== 'variable_name') return false;
+  const name = node.children?.find((c: SyntaxNode) => c.type === 'name')?.text;
+  return name === 'router';
+}
+
+/** `$router` or `$app->router` / `$this->router` (member access only — no call chains). */
+function isRouterReceiver(node: SyntaxNode | null | undefined): boolean {
+  if (!node) return false;
+  if (isRouterVariable(node)) return true;
+  if (node.type === 'member_access_expression') {
+    return getRouterCallMethodName(node) === 'router';
+  }
+  return false;
+}
+
+export function isPhpRouterGroupCall(node: SyntaxNode): boolean {
+  if (node.type !== 'member_call_expression') return false;
+  if (getRouterCallMethodName(node) !== 'group') return false;
+  return isRouterReceiver(getMemberObject(node));
+}
+
+function isPhpRouterHttpCall(node: SyntaxNode): boolean {
+  if (node.type !== 'member_call_expression') return false;
+  if (!isRouterReceiver(getMemberObject(node))) return false;
+  const method = getRouterCallMethodName(node);
+  return method !== null && LUMEN_HTTP_METHODS.has(method);
+}
+
 /** Check if node is a scoped_call_expression with object 'Route' */
 function isRouteStaticCall(node: SyntaxNode): boolean {
   if (node.type !== 'scoped_call_expression') return false;
@@ -55,19 +101,19 @@ function isRouteStaticCall(node: SyntaxNode): boolean {
 }
 
 /** Get the method name from a scoped_call_expression or member_call_expression */
-function getCallMethodName(node: SyntaxNode): string | null {
+export function getRouterCallMethodName(node: SyntaxNode): string | null {
   const nameNode =
     node.childForFieldName?.('name') ?? node.children?.find((c: SyntaxNode) => c.type === 'name');
   return nameNode?.text ?? null;
 }
 
 /** Get the arguments node from a call expression */
-function getArguments(node: SyntaxNode): SyntaxNode | null {
+export function getRouterCallArguments(node: SyntaxNode): SyntaxNode | null {
   return node.children?.find((c: SyntaxNode) => c.type === 'arguments') ?? null;
 }
 
 /** Find the closure body inside arguments */
-function findClosureBody(argsNode: SyntaxNode | null): SyntaxNode | null {
+export function findRouteGroupClosureBody(argsNode: SyntaxNode | null): SyntaxNode | null {
   if (!argsNode) return null;
   for (const child of argsNode.children ?? []) {
     if (child.type === 'argument') {
@@ -92,44 +138,121 @@ function findClosureBody(argsNode: SyntaxNode | null): SyntaxNode | null {
   return null;
 }
 
-/** Extract first string argument from arguments node */
-function extractFirstStringArg(argsNode: SyntaxNode | null): string | null {
-  if (!argsNode) return null;
+function callArguments(argsNode: SyntaxNode | null): SyntaxNode[] {
+  if (!argsNode) return [];
+  const out: SyntaxNode[] = [];
   for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (!target) continue;
-    if (target.type === 'string' || target.type === 'encapsed_string') {
-      return extractStringContent(target);
+    if (child.type === 'argument') {
+      const inner = child.children?.[0];
+      if (inner) out.push(inner);
+    } else if (child.type !== '(' && child.type !== ')' && child.type !== ',') {
+      out.push(child);
     }
   }
-  return null;
+  return out;
+}
+
+function firstCallArgument(argsNode: SyntaxNode | null): SyntaxNode | null {
+  return callArguments(argsNode)[0] ?? null;
+}
+
+function foldPhpStringLiteral(node: SyntaxNode | null | undefined): string | null {
+  if (!node) return null;
+  type Frame = { node: SyntaxNode; post: boolean };
+  const stack: Frame[] = [{ node, post: false }];
+  const results = new Map<SyntaxNode, string | null>();
+
+  while (stack.length > 0) {
+    const frame = stack.pop();
+    if (!frame) break;
+    const { node: current, post } = frame;
+    if (!post) {
+      stack.push({ node: current, post: true });
+      if (current.type === 'parenthesized_expression') {
+        const inner = current.children?.[0];
+        if (inner) stack.push({ node: inner, post: false });
+        continue;
+      }
+      if (current.type === 'binary_expression') {
+        const op = current.children?.find((c: SyntaxNode) => c.type === '.');
+        if (!op) continue;
+        const right = current.children[2] ?? current.children[current.children.length - 1];
+        const left = current.children[0];
+        if (right) stack.push({ node: right, post: false });
+        if (left) stack.push({ node: left, post: false });
+      }
+      continue;
+    }
+
+    if (current.type === 'string' || current.type === 'encapsed_string') {
+      results.set(current, readPhpString(current));
+    } else if (current.type === 'parenthesized_expression') {
+      const inner = current.children?.[0];
+      results.set(current, inner ? (results.get(inner) ?? null) : null);
+    } else if (current.type === 'binary_expression') {
+      const right = current.children[2] ?? current.children[current.children.length - 1];
+      const left = current.children[0];
+      const l = left ? results.get(left) : null;
+      const r = right ? results.get(right) : null;
+      results.set(current, l !== null && r !== null ? l + r : null);
+    } else {
+      results.set(current, null);
+    }
+  }
+
+  return results.get(node) ?? null;
+}
+
+/** First route URI argument: literal string or pure literal concatenation, else null. */
+export function extractRouteUriArg(
+  argsNode: SyntaxNode | null,
+  httpMethod?: string,
+): string | null {
+  const args = callArguments(argsNode);
+  const uriNode = httpMethod === 'match' ? args[1] : args[0];
+  return foldPhpStringLiteral(uriNode);
+}
+
+/** Extract first string argument from arguments node (legacy call sites). */
+function extractFirstStringArg(argsNode: SyntaxNode | null): string | null {
+  return extractRouteUriArg(argsNode);
+}
+
+function readMiddlewareTokensFromValue(
+  val: SyntaxNode | null | undefined,
+  kind: PhpRouteReceiverKind,
+): string[] {
+  if (!val) return [];
+  if (val.type === 'string' || val.type === 'encapsed_string') {
+    const raw = readPhpString(val);
+    if (raw === null) return [];
+    return kind === 'lumen' ? expandMiddlewareTokens(raw) : [raw];
+  }
+  if (val.type === 'array_creation_expression') {
+    const items: string[] = [];
+    for (const el of val.children ?? []) {
+      if (el.type !== 'array_element_initializer') continue;
+      const str = el.children?.find(
+        (c: SyntaxNode) => c.type === 'string' || c.type === 'encapsed_string',
+      );
+      const raw = str ? readPhpString(str) : null;
+      if (raw === null) continue;
+      items.push(raw);
+    }
+    return items;
+  }
+  return [];
 }
 
 /** Extract middleware from arguments — handles string or array */
-function extractMiddlewareArg(argsNode: SyntaxNode | null): string[] {
+function extractMiddlewareArg(
+  argsNode: SyntaxNode | null,
+  kind: PhpRouteReceiverKind = 'laravel',
+): string[] {
   if (!argsNode) return [];
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (!target) continue;
-    if (target.type === 'string' || target.type === 'encapsed_string') {
-      const val = extractStringContent(target);
-      return val ? [val] : [];
-    }
-    if (target.type === 'array_creation_expression') {
-      const items: string[] = [];
-      for (const el of target.children ?? []) {
-        if (el.type === 'array_element_initializer') {
-          const str = el.children?.find(
-            (c: SyntaxNode) => c.type === 'string' || c.type === 'encapsed_string',
-          );
-          const val = str ? extractStringContent(str) : null;
-          if (val) items.push(val);
-        }
-      }
-      return items;
-    }
-  }
-  return [];
+  const target = firstCallArgument(argsNode);
+  if (!target) return [];
+  return readMiddlewareTokensFromValue(target, kind);
 }
 
 /** Extract Controller::class from arguments */
@@ -145,8 +268,40 @@ function extractClassArg(argsNode: SyntaxNode | null): string | null {
 }
 
 function joinRouteName(prefix: string | null, name: string | null): string | null {
-  if (!name) return null;
-  return prefix ? `${prefix}${name}` : name;
+  return mergeLaravelRouteName(prefix, name);
+}
+
+const ENCAPSED_LITERAL_CHILD_TYPES = new Set(['string_content', 'escape_sequence']);
+
+function encapsedStringIsFullyLiteral(node: SyntaxNode): boolean {
+  for (const child of node.children ?? []) {
+    if (!child.isNamed) continue;
+    if (ENCAPSED_LITERAL_CHILD_TYPES.has(child.type)) continue;
+    return false;
+  }
+  return true;
+}
+
+/** PHP single-quoted strings split `string_content` around escape sequences. */
+export function readPhpString(node: SyntaxNode | null | undefined): string | null {
+  if (!node) return null;
+  if (node.type === 'encapsed_string' && !encapsedStringIsFullyLiteral(node)) return null;
+  if (node.type === 'string' || node.type === 'encapsed_string') {
+    let out = '';
+    for (const child of node.children ?? []) {
+      if (child.type === 'string_content') out += child.text;
+      else if (child.type === 'escape_sequence') {
+        const esc = child.text;
+        if (esc === '\\\\') out += '\\';
+        else if (esc === "\\'") out += "'";
+        else if (esc === '\\"') out += '"';
+        else if (esc.length >= 2 && esc[0] === '\\') out += esc.slice(1);
+        else out += esc;
+      }
+    }
+    return out;
+  }
+  return extractStringContent(node);
 }
 
 function routeNameBaseFromPath(routePath: string | null): string | null {
@@ -181,14 +336,107 @@ function readControllerClassRef(classAccess: SyntaxNode): {
   return { simple, qualified };
 }
 
-/** Extract controller class name from common Laravel handler argument shapes. */
-function extractControllerTarget(argsNode: SyntaxNode | null): {
+function parseAssociativeRouteAction(
+  handlerNode: SyntaxNode,
+  kind: PhpRouteReceiverKind = 'laravel',
+): {
   controller: string | null;
   controllerQualified: string | null;
   method: string | null;
   bareMethod: string | null;
+  actionRouteName: string | null;
+  actionMiddleware: string[];
+  stringAction: boolean;
+  controllerAbsolute: boolean;
+} | null {
+  let uses: string | null = null;
+  let actionRouteName: string | null = null;
+  const actionMiddleware: string[] = [];
+  let sawUses = false;
+  for (const el of handlerNode.children ?? []) {
+    if (el.type !== 'array_element_initializer') continue;
+    const children = el.children ?? [];
+    const arrowIdx = children.findIndex((c: SyntaxNode) => c.type === '=>');
+    if (arrowIdx === -1) continue;
+    const key = readPhpString(children[arrowIdx - 1]);
+    const val = children[arrowIdx + 1];
+    if (key === 'uses') {
+      sawUses = true;
+      const text =
+        val?.type === 'string' || val?.type === 'encapsed_string' ? readPhpString(val) : null;
+      uses = text;
+    } else if (key === 'as') {
+      actionRouteName =
+        val?.type === 'string' || val?.type === 'encapsed_string' ? readPhpString(val) : null;
+    } else if (key === 'middleware') {
+      actionMiddleware.push(...readMiddlewareTokensFromValue(val, kind));
+    }
+  }
+  if (!sawUses || !uses) {
+    if (actionRouteName) {
+      return {
+        controller: null,
+        controllerQualified: null,
+        method: null,
+        bareMethod: null,
+        actionRouteName,
+        actionMiddleware,
+        stringAction: false,
+        controllerAbsolute: false,
+      };
+    }
+    return null;
+  }
+  if (uses.includes('@')) {
+    const at = uses.indexOf('@');
+    const controller = uses.slice(0, at);
+    const method = uses.slice(at + 1);
+    const absolute = controller.startsWith('\\');
+    return {
+      controller: absolute ? controller.replace(/^\\+/, '') : controller,
+      controllerQualified: null,
+      method,
+      bareMethod: null,
+      actionRouteName,
+      actionMiddleware,
+      stringAction: true,
+      controllerAbsolute: absolute,
+    };
+  }
+  return {
+    controller: null,
+    controllerQualified: null,
+    method: null,
+    bareMethod: uses,
+    actionRouteName,
+    actionMiddleware,
+    stringAction: true,
+    controllerAbsolute: false,
+  };
+}
+
+/** Extract controller class name from common Laravel handler argument shapes. */
+function extractControllerTarget(
+  argsNode: SyntaxNode | null,
+  kind: PhpRouteReceiverKind = 'laravel',
+): {
+  controller: string | null;
+  controllerQualified: string | null;
+  method: string | null;
+  bareMethod: string | null;
+  actionRouteName?: string | null;
+  actionMiddleware?: string[];
+  stringAction: boolean;
+  controllerAbsolute: boolean;
 } {
-  const none = { controller: null, controllerQualified: null, method: null, bareMethod: null };
+  const none = {
+    controller: null,
+    controllerQualified: null,
+    method: null,
+    bareMethod: null,
+    stringAction: false,
+    controllerAbsolute: false,
+  };
   if (!argsNode) return none;
 
   const args: (SyntaxNode | undefined)[] = [];
@@ -201,8 +449,14 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
   const handlerNode = args[1];
   if (!handlerNode) return none;
 
-  // Array syntax: [UserController::class, 'index']
+  if (handlerNode.type === 'anonymous_function' || handlerNode.type === 'arrow_function') {
+    return none;
+  }
+
+  // Array syntax: [UserController::class, 'index'] or ['uses' => 'Ctrl@method', ...]
   if (handlerNode.type === 'array_creation_expression') {
+    const assoc = parseAssociativeRouteAction(handlerNode, kind);
+    if (assoc) return assoc;
     let controller: string | null = null;
     let controllerQualified: string | null = null;
     let method: string | null = null;
@@ -222,20 +476,45 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
       const str = findDescendant(elements[1], 'string');
       method = str ? extractStringContent(str) : null;
     }
-    return { controller, controllerQualified, method, bareMethod: null };
+    return {
+      controller,
+      controllerQualified,
+      method,
+      bareMethod: null,
+      stringAction: false,
+      controllerAbsolute: false,
+    };
   }
 
   // String syntax: 'UserController@index'. A bare string such as 'index'
   // becomes a method only when a surrounding Route::controller(...) group
   // supplies the controller class.
   if (handlerNode.type === 'string' || handlerNode.type === 'encapsed_string') {
-    const text = extractStringContent(handlerNode);
+    const text = readPhpString(handlerNode);
     if (text?.includes('@')) {
-      const [controller, method] = text.split('@');
-      return { controller, controllerQualified: null, method, bareMethod: null };
+      const at = text.indexOf('@');
+      const controller = text.slice(0, at);
+      const method = text.slice(at + 1);
+      const absolute = controller.startsWith('\\');
+      return {
+        controller: absolute ? controller.replace(/^\\+/, '') : controller,
+        controllerQualified: null,
+        method,
+        bareMethod: null,
+        stringAction: true,
+        controllerAbsolute: absolute,
+      };
     }
-    if (text)
-      return { controller: null, controllerQualified: null, method: null, bareMethod: text };
+    if (text) {
+      return {
+        controller: null,
+        controllerQualified: null,
+        method: null,
+        bareMethod: text,
+        stringAction: true,
+        controllerAbsolute: false,
+      };
+    }
   }
 
   // Class reference: UserController::class (invokable controller)
@@ -246,10 +525,12 @@ function extractControllerTarget(argsNode: SyntaxNode | null): {
       controllerQualified: ref.qualified,
       method: '__invoke',
       bareMethod: null,
+      stringAction: false,
+      controllerAbsolute: false,
     };
   }
 
-  return { controller: null, controllerQualified: null, method: null, bareMethod: null };
+  return none;
 }
 
 interface ChainedRouteCall {
@@ -266,26 +547,26 @@ interface ChainedRouteCall {
 function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
   if (node.type !== 'member_call_expression') return null;
 
-  const terminalMethod = getCallMethodName(node);
+  const terminalMethod = getRouterCallMethodName(node);
   if (!terminalMethod) return null;
 
-  const terminalArgs = getArguments(node);
+  const terminalArgs = getRouterCallArguments(node);
   const attributes: { method: string; argsNode: SyntaxNode | null }[] = [];
 
   let current = node.children?.[0];
 
   while (current) {
     if (current.type === 'member_call_expression') {
-      const method = getCallMethodName(current);
-      const args = getArguments(current);
+      const method = getRouterCallMethodName(current);
+      const args = getRouterCallArguments(current);
       if (method) attributes.unshift({ method, argsNode: args });
       current = current.children?.[0];
     } else if (current.type === 'scoped_call_expression') {
       const obj = current.childForFieldName?.('object') ?? current.children?.[0];
       if (obj?.text !== 'Route') return null;
 
-      const method = getCallMethodName(current);
-      const args = getArguments(current);
+      const method = getRouterCallMethodName(current);
+      const args = getRouterCallArguments(current);
       if (method) attributes.unshift({ method, argsNode: args });
 
       return { isRouteFacade: true, terminalMethod, attributes, terminalArgs, node };
@@ -297,13 +578,17 @@ function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
   return null;
 }
 
-/** Parse Route::group(['middleware' => ..., 'prefix' => ...], fn) array syntax */
-function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
+/** Parse Route::group / $router->group array syntax */
+export function parseRouteGroupArrayArgs(
+  argsNode: SyntaxNode | null,
+  kind: PhpRouteReceiverKind = 'laravel',
+): RouteGroupContext {
   const ctx: RouteGroupContext = {
     middleware: [],
     prefix: null,
     namePrefix: null,
     controller: null,
+    namespace: null,
   };
   if (!argsNode) return ctx;
 
@@ -315,28 +600,23 @@ function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
         const children = el.children ?? [];
         const arrowIdx = children.findIndex((c: SyntaxNode) => c.type === '=>');
         if (arrowIdx === -1) continue;
-        const key = extractStringContent(children[arrowIdx - 1]);
+        const key = readPhpString(children[arrowIdx - 1]);
         const val = children[arrowIdx + 1];
         if (key === 'middleware') {
-          if (val?.type === 'string') {
-            const s = extractStringContent(val);
-            if (s) ctx.middleware.push(s);
-          } else if (val?.type === 'array_creation_expression') {
-            for (const item of val.children ?? []) {
-              if (item.type === 'array_element_initializer') {
-                const str = item.children?.find((c: SyntaxNode) => c.type === 'string');
-                const s = str ? extractStringContent(str) : null;
-                if (s) ctx.middleware.push(s);
-              }
-            }
-          }
+          ctx.middleware.push(...readMiddlewareTokensFromValue(val, kind));
         } else if (key === 'prefix') {
-          ctx.prefix = extractStringContent(val) ?? null;
+          ctx.prefix = readPhpString(val) ?? null;
         } else if (key === 'as' || key === 'name') {
-          ctx.namePrefix = extractStringContent(val) ?? null;
+          ctx.namePrefix = readPhpString(val) ?? null;
         } else if (key === 'controller') {
           if (val?.type === 'class_constant_access_expression') {
             ctx.controller = val.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
+          }
+        } else if (key === 'namespace') {
+          const ns = readPhpString(val);
+          if (ns !== null) {
+            ctx.namespaceResets = ns.startsWith('\\');
+            ctx.namespace = kind === 'lumen' ? ns : ns.replace(/^\\+|\\+$/g, '');
           }
         }
       }
@@ -392,35 +672,26 @@ function resolveControllerQualifiedName(
   inlineQualified: string | null,
   controllerName: string | null,
   aliasMap: Map<string, string>,
+  groupNamespace: string | null,
+  stringAction: boolean,
+  controllerAbsolute: boolean,
 ): string | null {
   if (inlineQualified) return inlineQualified;
-  if (controllerName) return aliasMap.get(controllerName) ?? null;
-  return null;
+  if (!controllerName) return null;
+  if (!stringAction) {
+    return aliasMap.get(controllerName) ?? null;
+  }
+  return qualifyStringActionController(
+    controllerName,
+    groupNamespace,
+    controllerAbsolute,
+    aliasMap.get(controllerName) ?? null,
+  );
 }
 
 export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRoute[] {
   const routes: ExtractedRoute[] = [];
   const useAliasMap = buildUseAliasMap(tree.rootNode);
-
-  function resolveStack(stack: RouteGroupContext[]): {
-    middleware: string[];
-    prefix: string | null;
-    namePrefix: string | null;
-    controller: string | null;
-  } {
-    const middleware: string[] = [];
-    let prefix: string | null = null;
-    let namePrefix: string | null = null;
-    let controller: string | null = null;
-    for (const ctx of stack) {
-      middleware.push(...ctx.middleware);
-      if (ctx.prefix) prefix = prefix ? `${prefix}/${ctx.prefix}`.replace(/\/+/g, '/') : ctx.prefix;
-      if (ctx.namePrefix)
-        namePrefix = namePrefix ? `${namePrefix}${ctx.namePrefix}` : ctx.namePrefix;
-      if (ctx.controller) controller = ctx.controller;
-    }
-    return { middleware, prefix, namePrefix, controller };
-  }
 
   function emitRoute(
     httpMethod: string,
@@ -428,13 +699,14 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
     lineNumber: number,
     groupStack: RouteGroupContext[],
     chainAttrs: { method: string; argsNode: SyntaxNode | null }[],
+    receiverKind: PhpRouteReceiverKind,
   ) {
-    const effective = resolveStack(groupStack);
+    const effective = composeRouteGroupStack(groupStack, receiverKind);
     let routeName: string | null = null;
 
     for (const attr of chainAttrs) {
       if (attr.method === 'middleware')
-        effective.middleware.push(...extractMiddlewareArg(attr.argsNode));
+        effective.middleware.push(...extractMiddlewareArg(attr.argsNode, receiverKind));
       if (attr.method === 'prefix') {
         const p = extractFirstStringArg(attr.argsNode);
         if (p) effective.prefix = effective.prefix ? `${effective.prefix}/${p}` : p;
@@ -444,14 +716,21 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         if (cls) effective.controller = cls;
       }
       if (attr.method === 'name') {
-        routeName = joinRouteName(effective.namePrefix, extractFirstStringArg(attr.argsNode));
+        const seg = extractFirstStringArg(attr.argsNode);
+        routeName =
+          receiverKind === 'lumen'
+            ? mergeLumenRouteName(effective.namePrefix, seg)
+            : joinRouteName(effective.namePrefix, seg);
       }
     }
 
-    const routePath = extractFirstStringArg(argsNode);
+    let routePath = extractRouteUriArg(argsNode, httpMethod);
+    if (routePath === '' && receiverKind === 'laravel') {
+      routePath = null;
+    }
 
-    if (ROUTE_RESOURCE_METHODS.has(httpMethod)) {
-      const target = extractControllerTarget(argsNode);
+    if (ROUTE_RESOURCE_METHODS.has(httpMethod) && receiverKind === 'laravel') {
+      const target = extractControllerTarget(argsNode, receiverKind);
       const actions = httpMethod === 'apiResource' ? API_RESOURCE_ACTIONS : RESOURCE_ACTIONS;
       const routeNameBase =
         routeName ?? joinRouteName(effective.namePrefix, routeNameBaseFromPath(routePath));
@@ -466,30 +745,54 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
             target.controllerQualified,
             target.controller ?? effective.controller,
             useAliasMap,
+            effective.namespace,
+            target.stringAction,
+            target.controllerAbsolute,
           ),
           methodName: action,
           middleware: [...effective.middleware],
           prefix: effective.prefix,
           lineNumber,
+          stringAction: target.stringAction,
+          stringActionGroupNamespace: target.stringAction ? effective.namespace : null,
+          stringActionGroupNamespaceResets: target.stringAction ? effective.namespaceResets : false,
+          stringActionAbsoluteController: target.controllerAbsolute,
         });
       }
     } else {
-      const target = extractControllerTarget(argsNode);
+      const target = extractControllerTarget(argsNode, receiverKind);
+      if (target.actionRouteName) routeName = target.actionRouteName;
+      if (target.actionMiddleware?.length) {
+        effective.middleware.push(...target.actionMiddleware);
+      }
+      if (receiverKind === 'lumen') {
+        routeName = mergeLumenRouteName(effective.namePrefix, routeName);
+      } else if (target.actionRouteName) {
+        routeName = joinRouteName(effective.namePrefix, target.actionRouteName);
+      }
+      const controllerName = target.controller ?? effective.controller;
       routes.push({
         filePath,
         httpMethod,
         routePath,
         routeName,
-        controllerName: target.controller ?? effective.controller,
+        controllerName,
         controllerQualifiedName: resolveControllerQualifiedName(
           target.controllerQualified,
-          target.controller ?? effective.controller,
+          controllerName,
           useAliasMap,
+          effective.namespace,
+          target.stringAction,
+          target.controllerAbsolute,
         ),
         methodName: target.method ?? (effective.controller ? target.bareMethod : null),
         middleware: [...effective.middleware],
         prefix: effective.prefix,
         lineNumber,
+        stringAction: target.stringAction,
+        stringActionGroupNamespace: target.stringAction ? effective.namespace : null,
+        stringActionGroupNamespaceResets: target.stringAction ? effective.namespaceResets : false,
+        stringActionAbsoluteController: target.controllerAbsolute,
       });
     }
   }
@@ -509,15 +812,22 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
 
     // Case 1: Simple Route::get(...), Route::post(...), etc.
     if (isRouteStaticCall(node)) {
-      const method = getCallMethodName(node);
+      const method = getRouterCallMethodName(node);
       if (method && (ROUTE_HTTP_METHODS.has(method) || ROUTE_RESOURCE_METHODS.has(method))) {
-        emitRoute(method, getArguments(node), node.startPosition.row, groupSnapshot, []);
+        emitRoute(
+          method,
+          getRouterCallArguments(node),
+          node.startPosition.row,
+          groupSnapshot,
+          [],
+          'laravel',
+        );
         continue;
       }
       if (method === 'group') {
-        const argsNode = getArguments(node);
-        const groupCtx = parseArrayGroupArgs(argsNode);
-        const body = findClosureBody(argsNode);
+        const argsNode = getRouterCallArguments(node);
+        const groupCtx = parseRouteGroupArrayArgs(argsNode, 'laravel');
+        const body = findRouteGroupClosureBody(argsNode);
         if (body) {
           const childSnapshot = [...groupSnapshot, groupCtx];
           const children = body.children ?? [];
@@ -538,15 +848,16 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           prefix: null,
           namePrefix: null,
           controller: null,
+          namespace: null,
         };
         for (const attr of chain.attributes) {
           if (attr.method === 'middleware')
-            groupCtx.middleware.push(...extractMiddlewareArg(attr.argsNode));
+            groupCtx.middleware.push(...extractMiddlewareArg(attr.argsNode, 'laravel'));
           if (attr.method === 'prefix') groupCtx.prefix = extractFirstStringArg(attr.argsNode);
           if (attr.method === 'name') groupCtx.namePrefix = extractFirstStringArg(attr.argsNode);
           if (attr.method === 'controller') groupCtx.controller = extractClassArg(attr.argsNode);
         }
-        const body = findClosureBody(chain.terminalArgs);
+        const body = findRouteGroupClosureBody(chain.terminalArgs);
         if (body) {
           const childSnapshot = [...groupSnapshot, groupCtx];
           const children = body.children ?? [];
@@ -566,6 +877,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           node.startPosition.row,
           groupSnapshot,
           chain.attributes,
+          'laravel',
         );
         continue;
       }
@@ -585,9 +897,38 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           node.startPosition.row,
           groupSnapshot,
           routeAttrs,
+          'laravel',
         );
         continue;
       }
+    }
+
+    if (isPhpRouterHttpCall(node)) {
+      const method = getRouterCallMethodName(node);
+      if (method) {
+        emitRoute(
+          method,
+          getRouterCallArguments(node),
+          node.startPosition.row,
+          groupSnapshot,
+          [],
+          'lumen',
+        );
+      }
+      continue;
+    }
+    if (isPhpRouterGroupCall(node)) {
+      const argsNode = getRouterCallArguments(node);
+      const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
+      const body = findRouteGroupClosureBody(argsNode);
+      if (body) {
+        const childSnapshot = [...groupSnapshot, groupCtx];
+        const children = body.children ?? [];
+        for (let i = children.length - 1; i >= 0; i--) {
+          walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
+        }
+      }
+      continue;
     }
 
     // Default: push children in reverse so leftmost is processed first

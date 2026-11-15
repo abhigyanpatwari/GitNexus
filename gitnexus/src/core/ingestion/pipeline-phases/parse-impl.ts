@@ -106,6 +106,8 @@ import {
   mergeMountPrefixes,
   resolveFastAPIRouterPrefixes,
 } from '../route-extractors/fastapi-router-prefixes.js';
+import type { ExtractedPhpRouteRequireBinding } from '../route-extractors/php-router-require-bindings.js';
+import { applyPhpRouterRequireContexts } from '../route-extractors/php-router-require-context.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
 import { resolveOperands } from '../route-extractors/python-const-resolver.js';
 import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
@@ -791,6 +793,7 @@ export async function runChunkedParseAndResolve(
   // below, after cross-file aggregation, alongside the include_router prefix pass.
   const allModuleConstants: ExtractedModuleConstants[] = [];
   const allSpringTypes: SharedSpringType[] = [];
+  const allPhpRouterRequireBindings: ExtractedPhpRouteRequireBinding[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   // Aggregated per-file ParsedFile artifacts produced by workers' calls
@@ -1014,6 +1017,11 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.springTypes?.length) {
           for (const item of chunkWorkerData.springTypes) allSpringTypes.push(item);
+        }
+        if (chunkWorkerData.phpRouterRequireBindings?.length) {
+          for (const item of chunkWorkerData.phpRouterRequireBindings) {
+            allPhpRouterRequireBindings.push(item);
+          }
         }
         if (chunkWorkerData.toolDefs?.length) {
           for (const item of chunkWorkerData.toolDefs) allToolDefs.push(item);
@@ -1410,6 +1418,15 @@ export async function runChunkedParseAndResolve(
       if (deferredProfile) {
         logDeferredProfile(`cross-file routes: +${crossFileRoutes.length}`);
       }
+    }
+    if (allPhpRouterRequireBindings.length > 0 && allExtractedRoutes.length > 0) {
+      const expanded = applyPhpRouterRequireContexts(
+        allExtractedRoutes,
+        allPaths,
+        allPhpRouterRequireBindings,
+      );
+      allExtractedRoutes.length = 0;
+      for (const route of expanded) allExtractedRoutes.push(route);
     }
     if (allExtractedRoutes.length > 0) {
       const tRoutes = startTimer(deferredProfile);

@@ -149,6 +149,20 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     expect(routeCallsEdges(graph)).toHaveLength(0);
   });
 
+  it('route with null routePath but resolvable handler → CALLS edge still emitted', async () => {
+    const graph = createKnowledgeGraph();
+    const model = modelWithController(['index']);
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ routePath: null, methodName: 'index' })],
+      model,
+    );
+
+    expect(routeCallsEdges(graph)).toHaveLength(1);
+    expect(routeCallsEdges(graph)[0].targetId).toBe('method:OrderController.index');
+  });
+
   it('route missing methodName → skipped', async () => {
     const graph = createKnowledgeGraph();
     const model = modelWithController(['index']);
@@ -178,6 +192,41 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
       'method:OrderController.index',
       'method:OrderController.store',
     ]);
+  });
+
+  it('route method name with mismatched casing → unique case-insensitive match to the method node', async () => {
+    const graph = createKnowledgeGraph();
+    const model = modelWithController(['getExistAddressTypes']);
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ methodName: 'getexistaddresstypes' })],
+      model,
+    );
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:OrderController.getExistAddressTypes');
+    expect(edges[0].confidence).toBeCloseTo(0.5, 5);
+  });
+
+  it('ambiguous case-insensitive method match → guessed Method id at reduced confidence', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+    model.symbols.add(CONTROLLER_FILE, 'INDEX', 'method:OrderController.INDEX', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'Index' })], model);
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:Index`));
+    expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
   });
 
   it('overloaded controller method → edge targets the first-registered definition', async () => {

@@ -11,6 +11,7 @@ const extract = (source: string) =>
     httpMethod: route.httpMethod,
     routePath: route.routePath,
     controllerName: route.controllerName,
+    controllerQualifiedName: route.controllerQualifiedName ?? null,
     methodName: route.methodName,
     routeName: route.routeName,
     middleware: route.middleware,
@@ -18,6 +19,21 @@ const extract = (source: string) =>
   }));
 
 describe('Laravel route extraction', () => {
+  it('Laravel group namespace leading backslash resets outer namespace', () => {
+    const routes = extract(`<?php
+Route::group(['namespace' => 'App\\\\Http\\\\Controllers'], function () {
+    Route::group(['namespace' => '\\\\Other\\\\Ns'], function () {
+        Route::get('/x', 'UserController@index');
+    });
+});
+`);
+    expect(routes).toContainEqual(
+      expect.objectContaining({
+        controllerQualifiedName: 'Other.Ns.UserController',
+      }),
+    );
+  });
+
   it('extracts representative HTTP verb route declarations', () => {
     const routes = extract(`<?php
 Route::get('/orders', [OrderController::class, 'index']);

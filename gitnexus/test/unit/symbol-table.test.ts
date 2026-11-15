@@ -49,6 +49,20 @@ describe('SymbolTable', () => {
     });
   });
 
+  describe('lookupExactUniqueCaseInsensitive', () => {
+    it('returns the sole case-insensitive match in a file', () => {
+      table.add('app/Ctrl.php', 'getExistAddressTypes', 'method:ctrl.getExist', 'Method');
+      const hit = table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'getexistaddresstypes');
+      expect(hit?.nodeId).toBe('method:ctrl.getExist');
+    });
+
+    it('returns undefined when multiple symbols differ only by case', () => {
+      table.add('app/Ctrl.php', 'index', 'method:ctrl.index', 'Method');
+      table.add('app/Ctrl.php', 'INDEX', 'method:ctrl.INDEX', 'Method');
+      expect(table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'index')).toBeUndefined();
+    });
+  });
+
   describe('lookupExact', () => {
     it('finds a symbol by file path and name', () => {
       table.add('src/index.ts', 'main', 'func:main', 'Function');
