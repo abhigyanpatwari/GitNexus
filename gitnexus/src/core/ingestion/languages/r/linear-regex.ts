@@ -272,7 +272,8 @@ type Node =
  * The code units of `node` when it matches exactly one fixed string (a literal, or a
  * sequence of literals), else null.
  */
-function literalWord(node: Node): number[] | null {
+function literalWord(node: Node, scanned?: { n: number }): number[] | null {
+  if (scanned !== undefined) scanned.n++;
   switch (node.kind) {
     case 'empty':
       return [];
@@ -285,7 +286,7 @@ function literalWord(node: Node): number[] | null {
     case 'seq': {
       const word: number[] = [];
       for (const item of node.items) {
-        const part = literalWord(item);
+        const part = literalWord(item, scanned);
         if (part === null) return null;
         for (const code of part) word.push(code);
       }
@@ -297,10 +298,10 @@ function literalWord(node: Node): number[] | null {
 }
 
 /** The strings of an alternation whose every alternative is a fixed string, else null. */
-function literalWords(items: readonly Node[]): number[][] | null {
+function literalWords(items: readonly Node[], scanned?: { n: number }): number[][] | null {
   const words: number[][] = [];
   for (const item of items) {
-    const word = literalWord(item);
+    const word = literalWord(item, scanned);
     if (word === null) return null;
     words.push(word);
   }
@@ -744,7 +745,13 @@ class Nfa {
         return cont;
       }
       case 'alt': {
-        const words = literalWords(node.items);
+        // The literal scan runs again for every copy of a repeated group, so what it visits
+        // counts as build steps (the trie walk of buildWords is no longer than that scan);
+        // otherwise `(|||...){16384}` compiles outside every budget.
+        const scanned = { n: 0 };
+        const words = literalWords(node.items, scanned);
+        this.steps += scanned.n;
+        if (this.steps > MAX_BUILD_STEPS) reject('pattern expands beyond the work cap');
         if (words !== null) return this.buildWords(words, next);
         let entry = this.build(node.items[node.items.length - 1], next);
         for (let i = node.items.length - 2; i >= 0; i--) {
