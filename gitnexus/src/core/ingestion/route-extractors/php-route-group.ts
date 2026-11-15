@@ -94,9 +94,11 @@ export function composeRouteGroupStack(
           : mergeLaravelGroupNamePrefix(namePrefix, ctx.namePrefix);
     }
     if (ctx.controller) controller = ctx.controller;
-    if (ctx.namespace) {
-      if (ctx.namespaceResets) namespaceResets = true;
-      namespace = joinPhpRouteGroupNamespaces(namespace, ctx.namespace, kind, ctx.namespaceResets);
+    if (ctx.namespaceResets) {
+      namespaceResets = true;
+      namespace = ctx.namespace?.replace(/^\\+|\\+$/g, '') || null;
+    } else if (ctx.namespace) {
+      namespace = joinPhpRouteGroupNamespaces(namespace, ctx.namespace, kind, false);
     }
   }
   return { middleware, prefix, namePrefix, controller, namespace, namespaceResets };

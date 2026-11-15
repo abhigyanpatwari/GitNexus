@@ -282,21 +282,50 @@ function encapsedStringIsFullyLiteral(node: SyntaxNode): boolean {
   return true;
 }
 
-/** PHP single-quoted strings split `string_content` around escape sequences. */
+const PHP_DOUBLE_QUOTED_SIMPLE_ESCAPES: Readonly<Record<string, string>> = {
+  n: '\n',
+  t: '\t',
+  r: '\r',
+  v: '\v',
+  e: '\x1b',
+  f: '\f',
+  '\\': '\\',
+  $: '$',
+  '"': '"',
+};
+
+/**
+ * Decode one `escape_sequence` node. The grammar only emits escape nodes for
+ * sequences the quote style recognizes (single-quoted: `\\` and `\'`); any
+ * other backslash stays in `string_content`, matching PHP.
+ */
+function decodePhpEscapeSequence(esc: string, doubleQuoted: boolean): string {
+  const body = esc.slice(1);
+  if (!doubleQuoted) return body === '\\' || body === "'" ? body : esc;
+  const simple = PHP_DOUBLE_QUOTED_SIMPLE_ESCAPES[body];
+  if (simple !== undefined) return simple;
+  if (/^[0-7]{1,3}$/.test(body)) return String.fromCharCode(parseInt(body, 8) & 0xff);
+  const hex = /^x([0-9A-Fa-f]{1,2})$/.exec(body);
+  if (hex) return String.fromCharCode(parseInt(hex[1], 16));
+  const unicode = /^u\{([0-9A-Fa-f]+)\}$/.exec(body);
+  if (unicode) {
+    const codePoint = parseInt(unicode[1], 16);
+    if (codePoint <= 0x10ffff) return String.fromCodePoint(codePoint);
+  }
+  return esc;
+}
+
+/** Literal value of a PHP string node; `null` when it interpolates. */
 export function readPhpString(node: SyntaxNode | null | undefined): string | null {
   if (!node) return null;
   if (node.type === 'encapsed_string' && !encapsedStringIsFullyLiteral(node)) return null;
   if (node.type === 'string' || node.type === 'encapsed_string') {
+    const doubleQuoted = node.type === 'encapsed_string';
     let out = '';
     for (const child of node.children ?? []) {
       if (child.type === 'string_content') out += child.text;
       else if (child.type === 'escape_sequence') {
-        const esc = child.text;
-        if (esc === '\\\\') out += '\\';
-        else if (esc === "\\'") out += "'";
-        else if (esc === '\\"') out += '"';
-        else if (esc.length >= 2 && esc[0] === '\\') out += esc.slice(1);
-        else out += esc;
+        out += decodePhpEscapeSequence(child.text, doubleQuoted);
       }
     }
     return out;

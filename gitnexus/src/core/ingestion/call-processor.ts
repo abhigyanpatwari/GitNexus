@@ -156,7 +156,7 @@ export function buildExportedTypeMapFromGraph(
  */
 const ROUTE_EDGE_CONFIDENCE = 0.5;
 
-/** Zero exact match: unique case-insensitive Method/Function in the controller file (PHP route branches only). */
+/** Zero exact match: unique case-insensitive Method in the controller file (PHP route branches only). */
 function routeHandlerMethodCaseInsensitiveFallback(
   symbols: SymbolTableReader,
   controllerFilePath: string,

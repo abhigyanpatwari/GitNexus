@@ -20,6 +20,8 @@ export interface ExtractedPhpRouteRequireBinding {
   middleware: string[];
   namePrefix: string | null;
   lineNumber: number;
+  /** `require_once` / `include_once`: PHP skips the file if it already ran. */
+  once: boolean;
 }
 
 export function shouldExtractPhpRouterRequireBindings(content: string): boolean {
@@ -51,14 +53,14 @@ function resolveRequirePath(bootstrapRelPath: string, expr: SyntaxNode | null): 
             : null;
       const rightLit = right ? literalFromNode(right) : null;
       if (leftLit === null || rightLit === null) return null;
-      return path.posix.normalize(path.posix.join(leftLit, rightLit));
+      return leftLit + rightLit;
     }
     return null;
   };
 
   const resolved = literalFromNode(expr);
   if (!resolved) return null;
-  return resolved.replace(/\\/g, '/').replace(/^\.\//, '');
+  return path.posix.normalize(resolved.replace(/\\/g, '/')).replace(/^\.\//, '');
 }
 
 function isRequireCall(node: SyntaxNode): boolean {
@@ -114,24 +116,60 @@ function requireArgument(node: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
-function groupCallFromNode(node: SyntaxNode): SyntaxNode | null {
-  const expr = node.type === 'expression_statement' ? node.children?.[0] : node;
-  if (expr && isPhpRouterGroupCall(expr)) return expr;
-  return null;
+function isOnceRequire(node: SyntaxNode): boolean {
+  if (node.type === 'expression_statement') {
+    const inner = node.children?.[0];
+    return inner !== undefined && isOnceRequire(inner);
+  }
+  if (node.type === 'include_once_expression' || node.type === 'require_once_expression') {
+    return true;
+  }
+  if (node.type === 'function_call_expression') {
+    const name =
+      getRouterCallMethodName(node) ?? node.children?.find((c) => c.type === 'name')?.text;
+    return name === 'require_once' || name === 'include_once';
+  }
+  return false;
 }
 
+/** Bodies that do not run when the enclosing group closure runs. */
+const DEFERRED_SCOPE_TYPES = new Set([
+  'anonymous_function',
+  'arrow_function',
+  'function_definition',
+  'class_declaration',
+  'interface_declaration',
+  'trait_declaration',
+  'enum_declaration',
+]);
+
+/**
+ * Visit a group closure body in source order, including requires nested under
+ * `if`/loop/block statements. Nested group calls push their own context.
+ */
 function visitGroupBody(
   body: SyntaxNode,
   hostFilePath: string,
   stack: RouteGroupContext[],
   bindings: ExtractedPhpRouteRequireBinding[],
 ): void {
-  for (const child of body.children ?? []) {
-    if (isRequireCall(child)) {
-      const arg = requireArgument(child);
-      const requiredPath = resolveRequirePath(hostFilePath, arg);
+  const pending: { node: SyntaxNode; stack: RouteGroupContext[] }[] = [];
+  const pushChildren = (node: SyntaxNode, frameStack: RouteGroupContext[]) => {
+    const children = node.children ?? [];
+    for (let i = children.length - 1; i >= 0; i--) {
+      pending.push({ node: children[i], stack: frameStack });
+    }
+  };
+  pushChildren(body, stack);
+
+  while (pending.length > 0) {
+    const frame = pending.pop();
+    if (!frame) continue;
+    const { node, stack: frameStack } = frame;
+    if (isRequireCall(node)) {
+      const requiredPath = resolveRequirePath(hostFilePath, requireArgument(node));
       if (!requiredPath?.endsWith('.php')) continue;
-      const merged = composeRouteGroupStack(stack, 'lumen');
+      const merged = composeRouteGroupStack(frameStack, 'lumen');
       bindings.push({
         filePath: hostFilePath,
         requiredPath,
@@ -139,17 +177,20 @@ function visitGroupBody(
         namespace: merged.namespace,
         middleware: [...merged.middleware],
         namePrefix: merged.namePrefix,
-        lineNumber: child.startPosition.row,
+        lineNumber: node.startPosition.row,
+        once: isOnceRequire(node),
       });
       continue;
     }
-    const nestedGroup = groupCallFromNode(child);
-    if (nestedGroup) {
-      const argsNode = getRouterCallArguments(nestedGroup);
+    if (isPhpRouterGroupCall(node)) {
+      const argsNode = getRouterCallArguments(node);
       const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
       const innerBody = findRouteGroupClosureBody(argsNode);
-      if (innerBody) visitGroupBody(innerBody, hostFilePath, [...stack, groupCtx], bindings);
+      if (innerBody) pushChildren(innerBody, [...frameStack, groupCtx]);
+      continue;
     }
+    if (DEFERRED_SCOPE_TYPES.has(node.type)) continue;
+    pushChildren(node, frameStack);
   }
 }
 

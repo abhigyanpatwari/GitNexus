@@ -180,6 +180,7 @@ describe('mergeResult', () => {
       middleware: [],
       namePrefix: 'api',
       lineNumber: 1,
+      once: false,
     };
     const second = {
       filePath: 'bootstrap/app.php',
@@ -189,6 +190,7 @@ describe('mergeResult', () => {
       middleware: ['auth'],
       namePrefix: 'orders',
       lineNumber: 2,
+      once: false,
     };
     mergeResult(target, { ...emptyResult(), phpRouterRequireBindings: [first] });
     mergeResult(target, emptyResult());

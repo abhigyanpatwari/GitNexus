@@ -114,6 +114,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         middleware: ['auth'],
         namePrefix: 'orders',
         lineNumber: 1,
+        once: false,
       },
       {
         filePath: 'bootstrap/app.php',
@@ -123,6 +124,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         middleware: [],
         namePrefix: null,
         lineNumber: 2,
+        once: false,
       },
     ];
     const map = resolvePhpRouterRequireBindings(files, bindings);
@@ -156,6 +158,7 @@ describe('applyPhpRouterRequireContexts', () => {
         middleware: ['auth'],
         namePrefix: 'order',
         lineNumber: 1,
+        once: false,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -210,6 +213,7 @@ describe('applyPhpRouterRequireContexts', () => {
         middleware: [],
         namePrefix: null,
         lineNumber: 1,
+        once: false,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -247,6 +251,7 @@ describe('applyPhpRouterRequireContexts', () => {
         middleware: [],
         namePrefix: null,
         lineNumber: 1,
+        once: false,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -255,6 +260,96 @@ describe('applyPhpRouterRequireContexts', () => {
       bindings,
     );
     expect(merged[0]?.controllerQualifiedName).toBe('Other.Ns.UserController');
+  });
+});
+
+describe('extractPhpRouterRequireBindings — PHP include semantics', () => {
+  it('concatenates require path operands verbatim, as PHP `.` does', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/../routes/web' . '.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings.map((b) => b.requiredPath)).toEqual(['routes/web.php']);
+  });
+
+  it('visits requires nested under if, loop, and block statements', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  if (env('A')) {
+    require __DIR__ . '/../routes/a.php';
+  } else {
+    foreach ([1] as $x) {
+      $router->group(['prefix' => 'v1'], function ($router) {
+        require __DIR__ . '/../routes/b.php';
+      });
+    }
+  }
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings.map((b) => [b.requiredPath, b.prefix])).toEqual([
+      ['routes/a.php', 'api'],
+      ['routes/b.php', 'api/v1'],
+    ]);
+  });
+
+  it('does not bind requires inside functions or closures that the group does not run', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  function later() { require __DIR__ . '/../routes/a.php'; }
+  $cb = function () { require __DIR__ . '/../routes/b.php'; };
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings).toEqual([]);
+  });
+
+  it('marks require_once and include_once bindings', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/../routes/a.php';
+  require_once __DIR__ . '/../routes/b.php';
+  include_once __DIR__ . '/../routes/c.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings.map((b) => [b.requiredPath, b.once])).toEqual([
+      ['routes/a.php', false],
+      ['routes/b.php', true],
+      ['routes/c.php', true],
+    ]);
+  });
+
+  it('a require_once of an already-included routes file adds no context', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'first'], function ($router) {
+  require_once __DIR__ . '/../routes/order.php';
+});
+$app->router->group(['prefix' => 'second'], function ($router) {
+  require_once __DIR__ . '/../routes/order.php';
+});
+$app->router->group(['prefix' => 'third'], function ($router) {
+  require __DIR__ . '/../routes/order.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/order.php']),
+      bindings,
+    );
+    expect(map.get('routes/order.php')?.map((ctx) => ctx.prefix)).toEqual(['first', 'third']);
   });
 });
 

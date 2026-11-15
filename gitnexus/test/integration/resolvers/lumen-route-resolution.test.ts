@@ -39,8 +39,15 @@ describe('Lumen route pipeline', () => {
   const handlesRoute = () => getRelationships(result, 'HANDLES_ROUTE');
 
   it('emits exact Route URLs for bound and unbound route files', () => {
-    expect(routeUrls()).toEqual(['/home', '/orders/v1/list', '/solo', '/users']);
-    expect(routeUrls()).not.toContain('/prefixed-by-non-route-require');
+    expect(routeUrls()).toEqual(['/admin/dash', '/home', '/orders/v1/list', '/solo', '/users']);
+  });
+
+  it('binds a conditional require whose path is built by string concatenation', () => {
+    expect(routeByUrl('/admin/dash')).toBeDefined();
+  });
+
+  it('a repeated require_once of the same routes file adds no second group', () => {
+    expect(routeByUrl('/legacy/v1/list')).toBeUndefined();
   });
 
   it('CALLS and HANDLES_ROUTE reach the correct controller methods', () => {
@@ -62,12 +69,12 @@ describe('Lumen route pipeline', () => {
     );
     expect(orderCall).toBeDefined();
 
-    expect(
-      handlesRoute().some((e) => e.rel.targetId === homeRoute?.id && e.sourceLabel === 'Method'),
-    ).toBe(true);
-    expect(
-      handlesRoute().some((e) => e.rel.targetId === orderRoute?.id && e.sourceLabel === 'Method'),
-    ).toBe(true);
+    const handlerIdsFor = (routeId: string | undefined) =>
+      handlesRoute()
+        .filter((e) => e.rel.targetId === routeId && e.sourceLabel === 'Method')
+        .map((e) => e.rel.sourceId);
+    expect(handlerIdsFor(homeRoute?.id)).toEqual([homeCall?.rel.targetId]);
+    expect(handlerIdsFor(orderRoute?.id)).toEqual([orderCall?.rel.targetId]);
   });
 
   it('unbound standalone route keeps in-file path without bootstrap prefix', () => {

@@ -175,9 +175,9 @@ export interface SymbolTableReader {
   lookupExactAll: (filePath: string, name: string) => readonly SymbolDefinition[];
 
   /**
-   * Case-insensitive symbol lookup within one file. Returns a definition only
-   * when exactly one Method (or other symbol) in the file matches — PHP method
-   * names are case-insensitive at runtime.
+   * Case-insensitive Method lookup within one file. Returns a definition only
+   * when exactly one Method in the file matches — PHP method names are
+   * case-insensitive at runtime. Free functions never match.
    */
   lookupExactUniqueCaseInsensitive: (
     filePath: string,
@@ -364,7 +364,7 @@ export const createSymbolTable = (): InternalSymbolTable => {
     for (const [symbolName, defs] of fileMap) {
       if (symbolName.toLowerCase() !== needle) continue;
       for (const def of defs) {
-        if (def.type !== 'Method' && def.type !== 'Function') continue;
+        if (def.type !== 'Method') continue;
         count += 1;
         found = def;
         if (count > 1) return undefined;

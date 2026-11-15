@@ -201,6 +201,47 @@ $router->get("/plain", 'UserController@plain');
     );
   });
 
+  it('decodes double-quoted escapes and keeps single-quoted backslashes', () => {
+    const routes = extract(`<?php
+$router->get("/a\\x2Fb\\101", 'UserController@hex');
+$router->get('/a\\nb', 'UserController@single');
+$router->get("/x", "Admin\\Ns\\UserController@dq");
+`);
+    expect(routes).toContainEqual(
+      expect.objectContaining({ routePath: '/a/bA', methodName: 'hex' }),
+    );
+    expect(routes).toContainEqual(
+      expect.objectContaining({ routePath: '/a\\nb', methodName: 'single' }),
+    );
+    expect(routes).toContainEqual(
+      expect.objectContaining({ controllerName: 'Admin\\Ns\\UserController', methodName: 'dq' }),
+    );
+  });
+
+  it('a bare backslash namespace resets to the root namespace', () => {
+    const lumen = extract(`<?php
+$router->group(['namespace' => 'App\\\\Http\\\\Controllers'], function () use ($router) {
+  $router->group(['namespace' => '\\\\'], function () use ($router) {
+    $router->get('/x', 'Vendor\\\\UserController@index');
+  });
+});
+`);
+    expect(lumen).toContainEqual(
+      expect.objectContaining({ controllerQualifiedName: 'Vendor.UserController' }),
+    );
+
+    const laravel = extract(`<?php
+Route::group(['namespace' => 'App\\\\Http\\\\Controllers'], function () {
+  Route::group(['namespace' => '\\\\'], function () {
+    Route::get('/x', 'Vendor\\\\UserController@index');
+  });
+});
+`);
+    expect(laravel).toContainEqual(
+      expect.objectContaining({ controllerQualifiedName: 'Vendor.UserController' }),
+    );
+  });
+
   it('Lumen middleware array keeps pipe inside elements', () => {
     const routes = extract(`<?php
 $router->group(['middleware' => ['a|b']], function () use ($router) {

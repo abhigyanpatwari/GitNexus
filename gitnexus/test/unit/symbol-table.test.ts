@@ -61,6 +61,11 @@ describe('SymbolTable', () => {
       table.add('app/Ctrl.php', 'INDEX', 'method:ctrl.INDEX', 'Method');
       expect(table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'index')).toBeUndefined();
     });
+
+    it('never matches a free function, so it cannot stand in for a controller action', () => {
+      table.add('app/Ctrl.php', 'Helper', 'func:helper', 'Function');
+      expect(table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'helper')).toBeUndefined();
+    });
   });
 
   describe('lookupExact', () => {
