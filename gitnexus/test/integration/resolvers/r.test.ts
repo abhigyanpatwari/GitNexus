@@ -309,14 +309,14 @@ describe('R function definitions and calls', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const edge = extends_.find((e) => e.source === 'DataModel' && e.target === 'VIRTUAL');
     expect(edge).toBeDefined();
-    // The target is the single placeholder minted for the `"VIRTUAL"` sentinel, not
+    // The target is the placeholder minted for the `"VIRTUAL"` sentinel in that file, not
     // a file-scoped Class from the `contains = "VIRTUAL"` string.
-    expect(edge?.rel.targetId).toBe('Class:VIRTUAL');
+    expect(edge?.rel.targetId).toBe('Class:pkgA/R/models.R:<virtual>');
     const virtualIds: string[] = [];
     result.graph.forEachNode((n) => {
       if (n.label === 'Class' && n.properties.name === 'VIRTUAL') virtualIds.push(n.id);
     });
-    expect(virtualIds).toEqual(['Class:VIRTUAL']);
+    expect(virtualIds).toEqual(['Class:pkgA/R/models.R:<virtual>']);
   });
 
   it('emits EXTENDS edge from R6 class defined with bare R6Class() via inherit=', () => {

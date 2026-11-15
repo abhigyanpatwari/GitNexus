@@ -47,7 +47,7 @@ Calls:
 
 Heritage:
 
-- R6 `inherit=` and S4 `contains=` (a single class or `c(...)`). `contains = "VIRTUAL"` links to one placeholder class named `VIRTUAL`.
+- R6 `inherit=` and S4 `contains=` (a single class or `c(...)`). `contains = "VIRTUAL"` links to a placeholder class named `VIRTUAL`, one per declaring file (a placeholder shared across files would break incremental analysis when its owner file changes).
 
 Exports:
 

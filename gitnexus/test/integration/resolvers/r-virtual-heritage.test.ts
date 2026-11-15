@@ -14,7 +14,9 @@ import type { PipelineResult } from './helpers.js';
 beforeAll(() => vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000'));
 afterAll(() => vi.unstubAllEnvs());
 
-const PLACEHOLDER = 'Class:VIRTUAL';
+// One placeholder per declaring file; the `<virtual>` segment keeps it apart from a real class
+// named VIRTUAL in the same file (`Class:R/classes.R:VIRTUAL`).
+const PLACEHOLDER = 'Class:R/classes.R:<virtual>';
 const extendsEdges = (result: PipelineResult, source: string) =>
   getRelationships(result, 'EXTENDS').filter((e) => e.source === source);
 
@@ -32,8 +34,8 @@ describe('R: an R6 class deriving from a class named VIRTUAL', () => {
 
   it('mints no placeholder node and no edge to it', () => {
     expect(result.graph.getNode(PLACEHOLDER)).toBeUndefined();
-    const toPlaceholder = getRelationships(result, 'EXTENDS').filter(
-      (e) => e.rel.targetId === PLACEHOLDER,
+    const toPlaceholder = getRelationships(result, 'EXTENDS').filter((e) =>
+      e.rel.targetId.endsWith(':<virtual>'),
     );
     expect(toPlaceholder).toEqual([]);
   });

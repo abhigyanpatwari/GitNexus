@@ -15,7 +15,7 @@
  * (`resolveInheritanceBaseInScope` / `findClassBindingInScope`) can never
  * find a binding for it — that lookup is scope-model-only and never
  * consults graph nodes directly. `emitRVirtualHeritageEdges` below mints
- * the placeholder `VIRTUAL` graph node and its EXTENDS edge directly,
+ * each file's placeholder `VIRTUAL` graph node and its EXTENDS edge directly,
  * mirroring Ruby's `emitRubyMixinEdges` shape for the same reason: a
  * heritage target that R code names but never declares.
  */
@@ -53,8 +53,8 @@ import { rProvider } from '../r.js';
 import { populateRQualifiedCalls, resolveRQualifiedFreeCall } from './qualified-call.js';
 import { rArityCompatibility, rMergeBindings } from './simple-hooks.js';
 
-/** Literal string `"VIRTUAL"` graph id — one node shared by every S4 class
- *  that names it as a base, minted lazily on first use. */
+/** Literal string `"VIRTUAL"`: the name of the placeholder class minted for it, one per
+ *  declaring file (see {@link virtualPlaceholderId}). */
 const VIRTUAL_CLASS_NAME = 'VIRTUAL';
 
 /**
@@ -75,17 +75,30 @@ function isDeclaredByNamingCall(def: SymbolDefinition): boolean {
 }
 
 /**
- * Mint the `VIRTUAL` placeholder Class node (once) and an EXTENDS edge from
+ * Graph id of the placeholder owned by `filePath`. The segment `<virtual>` cannot be an R
+ * identifier, so it never meets the id of a real class named `VIRTUAL` in the same file
+ * (`Class:<file>:VIRTUAL`).
+ */
+function virtualPlaceholderId(filePath: string): string {
+  return generateId('Class', `${filePath}:<${VIRTUAL_CLASS_NAME.toLowerCase()}>`);
+}
+
+/**
+ * Mint one `VIRTUAL` placeholder Class node per declaring file and an EXTENDS edge from
  * every S4 class whose `contains=` names it (not an R6 class whose `inherit=` names a
  * class called `VIRTUAL`). Scope is deliberately limited to
  * the literal string `"VIRTUAL"`: other S4 base-type sentinels (`"numeric"`,
  * `"list"`, …) are not treated as placeholder classes, which would be a
  * separate design decision.
  *
+ * Each placeholder lives in the file of the classes that name it, so every EXTENDS edge stays
+ * within one file: the incremental writer follows only file-owned edges, and one placeholder
+ * shared across files, owned by an arbitrary one, broke the next incremental analyse once that
+ * file was edited or deleted.
+ *
  * Idempotent: re-seeds its dedup set from any `EXTENDS` edge already
- * targeting a node named `VIRTUAL` before emitting, and re-uses the graph's
- * existing `VIRTUAL` node instead of minting a second one when the
- * orchestrator re-runs resolution.
+ * targeting a placeholder, and re-uses the graph's existing placeholder
+ * instead of minting a second one when the orchestrator re-runs resolution.
  */
 function emitRVirtualHeritageEdges(
   graph: KnowledgeGraph,
@@ -95,13 +108,17 @@ function emitRVirtualHeritageEdges(
 ): void {
   if (scopes === undefined) return;
 
-  const virtualGraphId = generateId('Class', VIRTUAL_CLASS_NAME);
   const emitted = new Set<string>();
   for (const rel of graph.iterRelationshipsByType('EXTENDS')) {
-    if (rel.targetId === virtualGraphId) emitted.add(rel.sourceId);
+    const target = graph.getNode(rel.targetId);
+    if (
+      target !== undefined &&
+      target.properties.name === VIRTUAL_CLASS_NAME &&
+      rel.targetId === virtualPlaceholderId(target.properties.filePath)
+    ) {
+      emitted.add(rel.sourceId);
+    }
   }
-
-  let virtualNodeMinted = graph.getNode(virtualGraphId) !== undefined;
 
   for (const site of scopes.referenceSites) {
     if (site.kind !== 'inherits' || site.name !== VIRTUAL_CLASS_NAME) continue;
@@ -110,13 +127,13 @@ function emitRVirtualHeritageEdges(
     const callerGraphId = resolveDefGraphId(callerClass.filePath, callerClass, nodeLookup);
     if (callerGraphId === undefined || emitted.has(callerGraphId)) continue;
 
-    if (!virtualNodeMinted) {
+    const virtualGraphId = virtualPlaceholderId(callerClass.filePath);
+    if (graph.getNode(virtualGraphId) === undefined) {
       graph.addNode({
         id: virtualGraphId,
         label: 'Class',
         properties: { name: VIRTUAL_CLASS_NAME, filePath: callerClass.filePath },
       });
-      virtualNodeMinted = true;
     }
     emitted.add(callerGraphId);
     graph.addRelationship({

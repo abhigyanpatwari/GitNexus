@@ -42,14 +42,14 @@ describe('R S4/RefClass definitions are named by their first argument only', () 
 
   it('mints no file-scoped Class from contains = "VIRTUAL"', () => {
     const virtual = nodesByLabel(result, 'Class').filter((n) => n.name === 'VIRTUAL');
-    expect(virtual.map((n) => n.id)).toEqual(['Class:VIRTUAL']);
+    expect(virtual.map((n) => n.id)).toEqual(['Class:R/defs.R:<virtual>']);
   });
 
-  it('still emits EXTENDS Abstract -> VIRTUAL to the single placeholder node', () => {
+  it('still emits EXTENDS Abstract -> VIRTUAL to the placeholder node of its file', () => {
     const edge = getRelationships(result, 'EXTENDS').find(
       (e) => e.source === 'Abstract' && e.target === 'VIRTUAL',
     );
-    expect(edge?.rel.targetId).toBe('Class:VIRTUAL');
+    expect(edge?.rel.targetId).toBe('Class:R/defs.R:<virtual>');
   });
 
   it('does not duplicate a base class named only by contains = "Base"', () => {
