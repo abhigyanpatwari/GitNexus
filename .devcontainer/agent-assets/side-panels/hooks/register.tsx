@@ -26,6 +26,9 @@ const changed = atom({ plugin: 'side-panels', key: 'changed' } as const, [], {
 });
 const bus = atom({ plugin: 'side-panels', key: 'bus' } as const, [], { shape: 'bus-1' });
 const run = atom({ plugin: 'side-panels', key: 'run' } as const, null, { shape: 'run-1' });
+const relayed = atom({ plugin: 'side-panels', key: 'relayed' } as const, false, {
+  shape: 'relayed-1',
+});
 const target = atom({ plugin: 'side-panels', key: 'target' } as const, '', { shape: 'target-1' });
 const notes = atom({ plugin: 'side-panels', key: 'notes' } as const, {}, { shape: 'notes-1' });
 
@@ -47,7 +50,7 @@ function hostOf($: EngineInterface): Host {
         .run(['git', ...args], { ...(cwd === undefined ? {} : { cwd }), timeoutMs: 20_000 })
         .catch(() => undefined);
 
-      return ran?.exitCode === 0 ? ran.stdout : '';
+      return ran?.exitCode === 0 ? ran.stdout : undefined;
     },
     mem: async (tool, args) => textOf(await $.mcp.call(MEM, tool, args)),
     agents: async () =>
@@ -65,6 +68,7 @@ function hostOf($: EngineInterface): Host {
       (await $.env.get('SIDE_PANELS_BOARD')) !== 'off' && (await $.store.get('board')) === true,
     boardList: async () => `board-${(await $.session.id()).slice(0, 8)}`,
     bus: () => read($, bus),
+    relayed: () => read($, relayed),
     run: () => read($, run),
     ls: (path) => $.fs.list(path).catch(() => []),
     cat: (path) => $.fs.read(path).catch(() => ''),
@@ -73,7 +77,18 @@ function hostOf($: EngineInterface): Host {
       work: (lists) => update($, work, () => lists),
       agents: (list) => update($, agents, () => list),
       changed: (lines) => update($, changed, () => lines),
-      bus: (entry) => update($, bus, (list) => [...list, entry].slice(-100)),
+      bus: async (entry) => {
+        // Decided inside the write, so two reports of one event racing each other add one entry.
+        let isNew = false;
+        await update($, bus, (list) => {
+          isNew = entry.key === undefined || !list.some((one) => one.key === entry.key);
+
+          return isNew ? [...list, entry].slice(-100) : list;
+        });
+
+        return isNew;
+      },
+      relayed: () => update($, relayed, () => true),
       run: (next) => update($, run, () => next),
       note: (pane, text) => update($, notes, (all) => ({ ...all, [pane]: text })),
     },
@@ -172,6 +187,7 @@ export const register: Register = (on) => {
         from: nameOf(await host.agents(), e.agentId),
         to: 'main',
         text: clip(e.answer, 600),
+        key: `result:${e.agentId}:${e.turnId}`,
       });
     }
     void refresh(host, e.agentId === undefined ? [] : ['agents', 'activity']);
@@ -198,9 +214,10 @@ export const register: Register = (on) => {
   });
 
   on('session.end', async ($, e, next) => {
-    // An open list is shown at every later session's start: close a used board.
+    // An open list is shown at every later session's start: close the board this
+    // session relayed to, also when the board was switched off afterwards.
     const host = hostOf($);
-    if ((await host.isBoardOn()) && (await host.bus()).length > 0) {
+    if (await host.relayed()) {
       await host
         .mem('work_state_write', { list: await host.boardList(), fields: { status: 'done' } })
         .catch(() => undefined);

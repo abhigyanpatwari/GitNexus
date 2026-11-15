@@ -34,6 +34,11 @@ const DENIED = [
   'find . -name x | xargs rm -rf /',
   'FOO=1 sudo -n rm -rf ~/',
   'git -c user.name=x push --force',
+  '2>/dev/null rm -rf /',
+  '>/tmp/log rm -rf ~',
+  '> /tmp/log rm -rf /workspace',
+  '</dev/null git push --force origin feature',
+  'rm 2>/dev/null -rf /',
 ];
 
 const ALLOWED = [
@@ -54,6 +59,9 @@ const ALLOWED = [
   'echo "rm -rf /" > notes.txt',
   'git log --grep "push origin main"',
   'bash -lc "ls && git status"',
+  'echo rm -rf / > notes.txt',
+  'ls /nope 2>/dev/null',
+  'rm -rf build 2>&1',
 ];
 
 for (const command of DENIED) {

@@ -30,7 +30,10 @@ export function worktreesView(
 ) {
   const { Box, Text } = kit;
   const busy = data.list.filter((one) => rank(one) > 0);
-  const clean = data.list.filter((one) => rank(one) === 0);
+  const quiet = data.list.filter((one) => rank(one) === 0);
+  const clean = quiet.filter((one) => one.ahead !== null);
+  // No upstream to compare with: nothing dirty, but whether it is pushed is not known.
+  const untracked = quiet.filter((one) => one.ahead === null);
 
   return (
     <Box flexDirection="column">
@@ -49,7 +52,8 @@ export function worktreesView(
               ? 'prunable: its folder is gone'
               : [
                   one.branch,
-                  one.dirty > 0 ? `${one.dirty} dirty` : '',
+                  one.dirty === null ? 'status unreadable' : '',
+                  (one.dirty ?? 0) > 0 ? `${one.dirty} dirty` : '',
                   (one.ahead ?? 0) > 0 ? `${one.ahead} unpushed` : '',
                 ]
                   .filter(Boolean)
@@ -65,6 +69,16 @@ export function worktreesView(
             .map((one) => short(one.path))
             .join(', ')}
           {clean.length > 30 ? `, and ${clean.length - 30} more` : ''}
+        </Text>
+      )}
+      {untracked.length > 0 && (
+        <Text dimColor wrap="wrap">
+          no upstream, push state unknown:{' '}
+          {untracked
+            .slice(0, 30)
+            .map((one) => short(one.path))
+            .join(', ')}
+          {untracked.length > 30 ? `, and ${untracked.length - 30} more` : ''}
         </Text>
       )}
     </Box>

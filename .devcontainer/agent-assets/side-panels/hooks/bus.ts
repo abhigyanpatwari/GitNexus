@@ -28,17 +28,6 @@ export const nameOf = (agents: readonly AgentRow[], id: string | undefined) => {
   return one ? `${one.type} (${clip(one.description, 40)})` : `agent ${id.slice(0, 8)}`;
 };
 
-const isRepeat = (list: readonly BusEntry[], entry: BusEntry) =>
-  list
-    .slice(-3)
-    .some(
-      (one) =>
-        one.kind === entry.kind &&
-        one.from === entry.from &&
-        one.to === entry.to &&
-        one.text === entry.text,
-    );
-
 const lineOf = (entry: BusEntry) =>
   entry.kind === 'message'
     ? `${entry.from} to ${entry.to}: ${clip(entry.text, 300)}`
@@ -49,15 +38,14 @@ const lineOf = (entry: BusEntry) =>
  * to claude-mem, so no agent needs a tool of its own to be heard.
  */
 export const post = async (host: Host, entry: BusEntry) => {
-  if (isRepeat(await host.bus(), entry)) return;
-  await host.put.bus(entry);
+  if (!(await host.put.bus(entry))) return;
   if (!(await host.isBoardOn())) return;
   await host
     .mem('work_state_write', {
       list: await host.boardList(),
       fields: { task: lineOf(entry), status: 'doing' },
     })
-    .catch(() => undefined);
+    .then(host.put.relayed, () => undefined);
 };
 
 /** What a new worker is told of the board; nothing while the board is empty. */

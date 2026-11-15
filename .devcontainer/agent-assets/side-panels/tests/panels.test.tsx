@@ -162,8 +162,8 @@ test('the agents pane shows a review run: a running Codex leg, an empty one, and
   const RUN = '/tmp/pr-tri-review/3945/20261115-100425-e08a9358';
   const file = (name: string, size: number) =>
     ({ name, kind: 'file', size, mtimeMs: now, isLink: false }) as const;
-  const dir = (name: string) =>
-    ({ name, kind: 'dir', size: 0, mtimeMs: now, isLink: false }) as const;
+  const dir = (name: string, mtimeMs = now) =>
+    ({ name, kind: 'dir', size: 0, mtimeMs, isLink: false }) as const;
   const files = [
     file('codex-swarm.md', 20_252),
     file('codex-ce.md', 120),
@@ -180,7 +180,12 @@ test('the agents pane shows a review run: a running Codex leg, an empty one, and
       e.path === '/tmp/pr-tri-review'
         ? [dir('3945')]
         : e.path === '/tmp/pr-tri-review/3945'
-          ? [dir('20261115-100425-e08a9358'), dir('harness')]
+          ? // Started in the same second: the suffix is random, so the folder written last is the newer run.
+            [
+              dir('20261115-100425-e08a9358'),
+              dir('20261115-100425-ffffffff', now - 60_000),
+              dir('harness'),
+            ]
           : e.path === RUN
             ? files
             : [],
@@ -245,4 +250,116 @@ test('SIDE_PANELS_BOARD=off keeps the board from every agent of that process', a
   });
 
   expect(prompts[0]).toBe('Fix it.');
+});
+
+test('the same words sent twice are two entries; one event reported twice is one', async ($, on) => {
+  on('store.get', () => ({ value: undefined }));
+  on('env.get', () => ({ value: undefined }));
+  on('ui.panes', () => ({ value: [] }));
+  on('agent.list', () => ({ value: [WORKER] }));
+  on('session.send', () => ({ isDelivered: true }));
+  on('turn.complete', () => ({ text: '' }));
+
+  const message = { to: 'a1', text: 'run the tests', origin: { kind: 'model' } } as const;
+  await $.session.send(message);
+  await $.session.send(message);
+  const finished = {
+    reason: 'answer',
+    answer: 'Done.',
+    durationMs: 1,
+    isAborted: false,
+    turnId: 't9',
+    agentId: 'a1',
+  } as const;
+  await $.turn.complete(finished);
+  await $.turn.complete(finished);
+
+  const ui = await $.ui.mount({ ...paneOf('agents', 'Agents'), surface: 'terminal' });
+  expect((await ui.find({ type: 'Text', text: /^Bus \(/ }))?.text).toBe('Bus (3)');
+  await ui.unmount();
+});
+
+test('a board switched off after relaying is still closed when the session ends', async ($, on) => {
+  let isBoardOn = true;
+  const written: string[] = [];
+  on('store.get', (_, e) => ({ value: e.key === 'board' ? isBoardOn : undefined }));
+  on('env.get', () => ({ value: undefined }));
+  on('session.id', () => ({ value: 'abcdef1234' }));
+  on('ui.panes', () => ({ value: [] }));
+  on('agent.list', () => ({ value: [WORKER] }));
+  on('mcp.call', (_, e) => {
+    written.push(JSON.stringify(e));
+
+    return { value: { content: [{ type: 'text', text: 'ok' }], isError: false } };
+  });
+  on('turn.complete', () => ({ text: '' }));
+  on('session.end', () => ({ sessionId: 's1' }));
+
+  await $.turn.complete({
+    reason: 'answer',
+    answer: 'A finding.',
+    durationMs: 1,
+    isAborted: false,
+    turnId: 't1',
+    agentId: 'a1',
+  });
+  isBoardOn = false;
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: { id: 's1' } });
+
+  expect(written.length).toBe(2);
+  expect(written[1]).toContain('"status":"done"');
+  expect(written[1]).toContain('board-abcdef12');
+});
+
+test('a session that relayed nothing closes no board', async ($, on) => {
+  const written: string[] = [];
+  on('store.get', (_, e) => ({ value: e.key === 'board' ? true : undefined }));
+  on('env.get', () => ({ value: undefined }));
+  on('mcp.call', (_, e) => {
+    written.push(JSON.stringify(e));
+
+    return { value: { content: [{ type: 'text', text: 'ok' }], isError: false } };
+  });
+  on('session.end', () => ({ sessionId: 's1' }));
+
+  await $.session.end({ reason: 'prompt_input_exit', sessionId: 's1', resume: { id: 's1' } });
+
+  expect(written).toEqual([]);
+});
+
+test('a worktree that cannot be read, or has no upstream, is not called clean', async ($, on) => {
+  const ran = (exitCode: number, stdout = '') => ({
+    value: { exitCode, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  });
+  on('store.get', () => ({ value: undefined }));
+  on('env.get', () => ({ value: undefined }));
+  on('ui.panes', () => ({ value: [placedOf('worktrees', 'Worktrees')] }));
+  on('process.run', (_, e) => {
+    const args = e.argv.slice(1).join(' ');
+    if (args === 'worktree list --porcelain') {
+      return ran(
+        0,
+        [
+          'worktree /w/main\nHEAD a\nbranch refs/heads/main',
+          'worktree /w/broken\nHEAD b\nbranch refs/heads/fix',
+          'worktree /w/local\nHEAD c\nbranch refs/heads/spike',
+        ].join('\n\n'),
+      );
+    }
+    if (args === 'status --porcelain') return e.init?.cwd === '/w/broken' ? ran(128) : ran(0);
+    // Only main has an upstream to count against.
+    return e.init?.cwd === '/w/main' ? ran(0, '0\n') : ran(128);
+  });
+
+  const ui = await $.ui.mount({ ...paneOf('worktrees', 'Worktrees'), surface: 'terminal' });
+  await ui.press({ key: 'refresh' });
+
+  expect((await ui.find({ type: 'Text', text: /unreadable/ }))?.text).toBe(
+    'fix · status unreadable',
+  );
+  expect((await ui.find({ type: 'Text', text: /^clean:/ }))?.text).toBe('clean: main');
+  expect((await ui.find({ type: 'Text', text: /^no upstream/ }))?.text).toBe(
+    'no upstream, push state unknown: local',
+  );
+  await ui.unmount();
 });

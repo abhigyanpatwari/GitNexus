@@ -31,12 +31,20 @@ export const readRun = async (host: Host, now: number): Promise<ReviewRun | null
       prs.map(async (pr) =>
         (await host.ls(`${ROOT}/${pr.name}`))
           .filter((one) => one.kind === 'dir' && RUN.test(one.name))
-          .map((one) => ({ id: one.name, dir: `${ROOT}/${pr.name}/${one.name}` })),
+          .map((one) => ({
+            id: one.name,
+            dir: `${ROOT}/${pr.name}/${one.name}`,
+            mtimeMs: one.mtimeMs,
+          })),
       ),
     )
   ).flat();
-  // A run id starts with its start time, so the greatest id is the newest run.
-  const newest = runs.sort((a, b) => b.id.localeCompare(a.id))[0];
+  // A run id is its start time to the second and then a random suffix: the
+  // latest start is the newest run, and runs of one second go by folder time.
+  const startOf = (id: string) => id.slice(0, 15);
+  const newest = runs.sort(
+    (a, b) => startOf(b.id).localeCompare(startOf(a.id)) || b.mtimeMs - a.mtimeMs,
+  )[0];
   if (newest === undefined) return null;
   const files = await host.ls(newest.dir);
   const lanes = await Promise.all(

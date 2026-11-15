@@ -30,28 +30,32 @@ const path = require('node:path');
 
 const WINDOWS_PATH = /^(?:\\\\\?\\)?[A-Za-z]:[\\/]|^\\\\/;
 
-/** The text of a TOML basic or literal string value, or undefined for anything else. */
+/**
+ * The text of the TOML basic or literal string a value starts with, or
+ * undefined for anything else. What follows the string (a comment) is ignored.
+ */
 function tomlString(raw) {
   const value = raw.trim();
-  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
-  if (value.startsWith('"') && value.endsWith('"')) {
-    return value.slice(1, -1).replace(/\\\\/g, '\\').replace(/\\"/g, '"');
-  }
+  const literal = /^'([^']*)'/.exec(value);
+  if (literal) return literal[1];
+  const basic = /^"((?:[^"\\]|\\.)*)"/.exec(value);
+  if (basic) return basic[1].replace(/\\\\/g, '\\').replace(/\\"/g, '"');
   return undefined;
 }
+
+// A table header, alone on its line or followed by a comment.
+const TABLE_HEADER = /^\[+([^\]]+)\]+\s*(?:#.*)?$/;
 
 const isWindowsValue = (raw) => WINDOWS_PATH.test(tomlString(raw) ?? '');
 
 /** Splits TOML into the lines before the first table and the tables after it. */
 function tomlParts(text) {
-  const lines = text.split('\n');
-  const first = lines.findIndex((line) => /^\[/.test(line));
-  const preamble = first === -1 ? lines : lines.slice(0, first);
+  const preamble = [];
   const tables = [];
-  for (const line of first === -1 ? [] : lines.slice(first)) {
-    const header = /^\[+([^\]]+)\]+\s*$/.exec(line);
+  for (const line of text.split('\n')) {
+    const header = TABLE_HEADER.exec(line);
     if (header) tables.push({ name: header[1].trim(), lines: [line] });
-    else tables.at(-1).lines.push(line);
+    else (tables.at(-1)?.lines ?? preamble).push(line);
   }
   return { preamble, tables };
 }

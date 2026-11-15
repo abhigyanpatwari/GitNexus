@@ -1,7 +1,8 @@
 export type Worktree = {
   path: string
   branch: string
-  dirty: number
+  /** Changed files; null when `git status` could not be read there. */
+  dirty: number | null
   ahead: number | null
   isPrunable: boolean
 }
@@ -16,6 +17,12 @@ export type BusEntry = {
   from: string
   to: string
   text: string
+  /**
+   * Names the one event an entry records, where it has one, so a second report
+   * of it is not a second entry. A message has none: the same words sent twice
+   * are two messages.
+   */
+  key?: string
 }
 
 /** One lane artifact of a review run: a Claude lane's file, or a Codex leg's growing log. */
@@ -40,6 +47,7 @@ declare module 'claude-code' {
       changed: Shaped<string[]>
       bus: Shaped<BusEntry[]>
       target: Shaped<string>
+      relayed: Shaped<boolean>
       run: Shaped<ReviewRun | null>
       notes: Shaped<Record<string, string>>
     }

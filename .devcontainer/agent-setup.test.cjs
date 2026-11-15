@@ -95,6 +95,31 @@ test('a notify array spread over several lines is removed whole', () => {
   assert.deepEqual(cleanCodexConfig(text), { text: 'model = "x"\n', removed: ['notify'] });
 });
 
+test('a comment after a table header or a value does not hide a host-only entry', () => {
+  const text = [
+    'model = "x"',
+    '',
+    '[mcp_servers.memory] # local tool',
+    `command = 'C:\\tools\\memory.exe' # the host build`,
+    '',
+    '[mcp_servers.gitnexus] # note',
+    'command = "npx" # stays',
+    '',
+  ].join('\n');
+
+  assert.deepEqual(cleanCodexConfig(text), {
+    text: ['model = "x"', '', '[mcp_servers.gitnexus] # note', 'command = "npx" # stays', ''].join(
+      '\n',
+    ),
+    removed: ['mcp_servers.memory'],
+  });
+});
+
+test('a line that opens with a bracket but is no table header stays where it is', () => {
+  const text = 'args = [\n  ["a", "b"],\n]\n\n[tui]\nx = 1\n';
+  assert.deepEqual(cleanCodexConfig(text), { text, removed: [] });
+});
+
 test('sandbox defaults are added only where the sandbox cannot start and none is chosen', () => {
   const config = 'model = "x"\n\n[projects."/workspace"]\ntrust_level = "trusted"\n';
 

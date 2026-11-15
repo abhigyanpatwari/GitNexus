@@ -14,8 +14,8 @@ export type PaneId = 'worktrees' | 'work' | 'agents' | 'activity';
  * register.tsx. The other modules take a Host and never see `$`.
  */
 export type Host = {
-  /** Runs git; resolves its stdout, or '' when it fails. */
-  git: (args: string[], cwd?: string) => Promise<string>;
+  /** Runs git; resolves its stdout, or undefined when it fails. */
+  git: (args: string[], cwd?: string) => Promise<string | undefined>;
   /** Calls a claude-mem MCP tool; resolves its text, rejects on an error result. */
   mem: (tool: string, args: Record<string, unknown>) => Promise<string>;
   agents: () => Promise<AgentRow[]>;
@@ -25,6 +25,8 @@ export type Host = {
   /** The claude-mem work-state list this session's board is relayed to. */
   boardList: () => Promise<string>;
   bus: () => Promise<readonly BusEntry[]>;
+  /** Whether this session has relayed anything to the claude-mem board list. */
+  relayed: () => Promise<boolean>;
   /** The review run as last read, for telling which legs finished since. */
   run: () => Promise<ReviewRun | null>;
   /** A folder's entries; none when it is missing. */
@@ -36,7 +38,9 @@ export type Host = {
     work: (lists: WorkList[]) => Promise<unknown>;
     agents: (list: AgentRow[]) => Promise<unknown>;
     changed: (lines: string[]) => Promise<unknown>;
-    bus: (entry: BusEntry) => Promise<unknown>;
+    /** Adds the entry unless one with its key is already there; resolves whether it was added. */
+    bus: (entry: BusEntry) => Promise<boolean>;
+    relayed: () => Promise<unknown>;
     run: (run: ReviewRun | null) => Promise<unknown>;
     note: (pane: PaneId, text: string) => Promise<unknown>;
   };

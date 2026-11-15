@@ -81,11 +81,26 @@ function simpleCommands(line) {
   return commands;
 }
 
+/**
+ * Drops redirections, which may stand anywhere in a command, before its name
+ * included: `2>/dev/null rm -rf /` runs rm. An operator written apart from its
+ * target (`> out.txt`) takes the next word with it.
+ */
+function withoutRedirections(words) {
+  const kept = [];
+  for (let at = 0; at < words.length; at += 1) {
+    const redirection = /^\d*(?:>>?|<<?<?)(.*)$/.exec(words[at]);
+    if (redirection === null) kept.push(words[at]);
+    else if (redirection[1] === '') at += 1;
+  }
+  return kept;
+}
+
 /** @returns {string | undefined} why the command is refused */
 function refusal(line, depth = 0) {
   if (/:\(\)\s*\{[^}]*\|\s*:\s*&/.test(line)) return 'a fork bomb';
   for (const all of simpleCommands(line)) {
-    let words = all;
+    let words = withoutRedirections(all);
     while (
       words.length > 1 &&
       (PREFIXES.has(words[0].split('/').pop()) ||

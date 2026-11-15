@@ -44,26 +44,31 @@ export const parseWork = (text: string): WorkList[] => {
   return lists;
 };
 
-/** How much a worktree wants a look: gone folder, then dirty, then unpushed. */
+/** How much a worktree wants a look: gone folder, then dirty or unreadable, then unpushed. */
 export const rank = (one: Worktree) =>
-  (one.isPrunable ? 4 : 0) + (one.dirty > 0 ? 2 : 0) + ((one.ahead ?? 0) > 0 ? 1 : 0);
+  (one.isPrunable ? 4 : 0) + (one.dirty !== 0 ? 2 : 0) + ((one.ahead ?? 0) > 0 ? 1 : 0);
 
 const inspect = async (host: Host, block: string): Promise<Worktree> => {
   const path = /^worktree (.*)$/m.exec(block)?.[1] ?? '';
   const branch = /^branch refs\/heads\/(.*)$/m.exec(block)?.[1] ?? 'detached';
   if (/^prunable/m.test(block)) return { path, branch, dirty: 0, ahead: null, isPrunable: true };
-  const dirty = (await host.git(['status', '--porcelain'], path))
-    .split('\n')
-    .filter(Boolean).length;
-  const ahead = (await host.git(['rev-list', '--count', '@{upstream}..HEAD'], path)).trim();
+  const status = await host.git(['status', '--porcelain'], path);
+  // No count comes back for a branch with no upstream: its push state is unknown, not clean.
+  const ahead = (await host.git(['rev-list', '--count', '@{upstream}..HEAD'], path))?.trim();
 
-  return { path, branch, dirty, ahead: ahead === '' ? null : Number(ahead), isPrunable: false };
+  return {
+    path,
+    branch,
+    dirty: status === undefined ? null : status.split('\n').filter(Boolean).length,
+    ahead: ahead === undefined || ahead === '' ? null : Number(ahead),
+    isPrunable: false,
+  };
 };
 
 const readWorktrees = async (host: Host) => {
-  const blocks = (await host.git(['worktree', 'list', '--porcelain']))
-    .split('\n\n')
-    .filter(Boolean);
+  const listed = await host.git(['worktree', 'list', '--porcelain']);
+  if (listed === undefined) throw new Error('git worktree list failed');
+  const blocks = listed.split('\n\n').filter(Boolean);
   const list: Worktree[] = [];
   // ponytail: two git calls a worktree, 8 worktrees at a time, every refresh.
   // Cache by HEAD and index mtime if a hundred worktrees start to feel slow.
@@ -92,11 +97,15 @@ const READ: Record<PaneId, (host: Host) => Promise<unknown>> = {
         from: `${lane.name} (review run)`,
         to: 'main',
         text: `${statusOf(lane)}, ${sizeOf(lane.bytes)}, in ${after?.dir ?? ''}`,
+        key: `lane:${after?.dir ?? ''}/${lane.name}`,
       });
     }
   },
-  activity: async (host) =>
-    host.put.changed((await host.git(['status', '--short'])).split('\n').filter(Boolean)),
+  activity: async (host) => {
+    const status = await host.git(['status', '--short']);
+    if (status === undefined) throw new Error('git status failed');
+    await host.put.changed(status.split('\n').filter(Boolean));
+  },
 };
 
 /**
