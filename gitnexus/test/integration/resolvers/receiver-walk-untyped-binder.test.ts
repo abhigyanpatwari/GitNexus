@@ -21,11 +21,7 @@
  * parameter stops the walk too. PHP emits no lexical binder names: its pins
  * characterize today's edges, including known wrong ones, until it opts in.
  */
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
+import { describe, expect, it } from 'vitest';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import {
   isLanguageAvailable,
@@ -33,7 +29,7 @@ import {
   loadParser,
 } from '../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-import { getRelationships, getResolutionOutcomes, writeFixtureRepo } from './helpers.js';
+import { getRelationships, getResolutionOutcomes, useFixture } from './helpers.js';
 
 // The Dart grammar is optional; its suites skip where it cannot load.
 let dartAvailable = isLanguageAvailable(SupportedLanguages.Dart);
@@ -44,24 +40,6 @@ if (dartAvailable) {
   } catch {
     dartAvailable = false;
   }
-}
-
-/** Materialize `files`, run the pipeline once, and clean up after the block. */
-function useFixture(prefix: string, files: Record<string, string>): () => PipelineResult {
-  let root = '';
-  let result: PipelineResult | undefined;
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-${prefix}-`));
-    writeFixtureRepo(root, files);
-    result = await runPipelineFromRepo(root, () => {});
-  }, 60000);
-  afterAll(() => {
-    if (root !== '') fs.rmSync(root, { recursive: true, force: true });
-  });
-  return () => {
-    if (result === undefined) throw new Error('pipeline did not run');
-    return result;
-  };
 }
 
 /**

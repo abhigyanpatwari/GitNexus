@@ -31,35 +31,13 @@
  * Explicit calls (`target()`, `target(1)`, `target 1`) keep their method
  * targets beside parameters. A bare `target` still reads the parameter.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import path from 'path';
-import fs from 'node:fs';
-import os from 'node:os';
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
   getRelationships,
   getResolutionOutcomes,
-  runPipelineFromRepo,
-  writeFixtureRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
-
-/** Materialize `files`, run the pipeline once, and clean up after the block. */
-function useFixture(prefix: string, files: Record<string, string>): () => PipelineResult {
-  let root = '';
-  let result: PipelineResult | undefined;
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-${prefix}-`));
-    writeFixtureRepo(root, files);
-    result = await runPipelineFromRepo(root, () => {});
-  }, 60000);
-  afterAll(() => {
-    if (root !== '') fs.rmSync(root, { recursive: true, force: true });
-  });
-  return () => {
-    if (result === undefined) throw new Error('pipeline did not run');
-    return result;
-  };
-}
 
 /**
  * Every CALLS edge to a method named `member` from the source named `source`,

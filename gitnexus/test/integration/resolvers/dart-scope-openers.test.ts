@@ -194,13 +194,13 @@ void blockDoc(User v)
       bindingsFor('cs', 'void f(Address cs) /* c */ { final cs = make(); cs.save(); }\n'),
     ).toEqual([]);
     expect(bindingsFor('cs', 'set s(Address cs) { final cs = make(); cs.save(); }\n')).toEqual([]);
-    // A collection `for` element shares the function's scope: withheld.
+    // A collection `for` element scopes its own variable (DART-12): kept.
     expect(
       bindingsFor(
         'cs',
         'void c(Address cs, List<User> us) { final t = [for (final cs in us) cs]; }\n',
       ),
-    ).toEqual([]);
+    ).toEqual(['param cs:Address']);
     // A different local name, or a plain assignment, keeps the annotation.
     expect(
       bindingsFor('cs', 'void g(Address cs) /* c */ { final w = make(); cs.save(); }\n'),
@@ -318,20 +318,20 @@ void blockDoc(User v)
       // A for-in, a catch body and an enum method's for-in each rebind the
       // name in a scope of their own, so the outer typed parameter answers —
       // never the same-named hoisted return of `Other ds()` / `Depot.es()` or
-      // the enum field `Kind.depot`. In `collect` the collection `for` shares
-      // the function's scope: `fs` is withheld, and both `fs.save()` sites —
-      // the `Other` element inside the closure and the `Address` parameter
-      // after it — stop at the untyped binder rather than reach `Depot.fs()`.
+      // the enum field `Kind.depot`. In `collect` the collection `for` element
+      // scopes its own `fs` (DART-12): the `Other` element inside the closure
+      // stops at the element's untyped binder, and the `Address` parameter
+      // after it keeps its annotation; neither reaches `Depot.fs()`.
       // `docUntyped`'s parameter, behind a `///` comment, is still its
       // function's binder, so `Depot.gs()` never answers it either.
       expect(callEdges('save', 'nested_rebinding.dart')).toEqual([
         'Function:nested_rebinding.dart:caught -> Method:models.dart:Address.save#0',
+        'Function:nested_rebinding.dart:collect -> Method:models.dart:Address.save#0',
         'Function:nested_rebinding.dart:forIn -> Method:models.dart:Address.save#0',
         'Method:nested_rebinding.dart:Kind.moved#1 -> Method:models.dart:Address.save#0',
       ]);
       expect(outcomesIn('nested_rebinding.dart')).toEqual([
         '49:52 save receiver-type-unresolved',
-        '51:5 save receiver-type-unresolved',
         '57:5 save receiver-type-unresolved',
       ]);
     });
