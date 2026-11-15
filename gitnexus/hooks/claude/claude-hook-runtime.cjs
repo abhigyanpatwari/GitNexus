@@ -165,9 +165,12 @@ const SEARCH_TOOL_OPTIONS = {
     }),
   },
   grep: {
-    // GNU grep accepts any unambiguous prefix of a long name, and reads the
-    // value of --color only when it is attached with `=`.
+    // GNU grep accepts a prefix of a long name only when it names ONE option
+    // (`--no` is rejected as ambiguous), where two spellings of one option
+    // count as one (`--col` is --color). It reads the value of --color only
+    // when it is attached with `=`.
     abbreviations: true,
+    aliases: { colour: 'color' },
     shortEquals: false,
     short: searchOptionTable({
       pattern: 'e',
@@ -199,11 +202,14 @@ const SEARCH_TOOL_OPTIONS = {
 function longSearchOptionKind(options, name) {
   const exact = options.long.get(name);
   if (exact || !options.abbreviations || name === '') return exact;
-  const kinds = new Set();
-  for (const [candidate, kind] of options.long) {
-    if (candidate.startsWith(name)) kinds.add(kind);
+  const matched = new Set();
+  let kind;
+  for (const [candidate, candidateKind] of options.long) {
+    if (!candidate.startsWith(name)) continue;
+    matched.add((options.aliases && options.aliases[candidate]) || candidate);
+    kind = candidateKind;
   }
-  return kinds.size === 1 ? [...kinds][0] : undefined;
+  return matched.size === 1 ? kind : undefined;
 }
 
 /**

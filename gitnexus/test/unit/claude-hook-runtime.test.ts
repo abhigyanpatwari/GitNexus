@@ -222,6 +222,10 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: 'grep -e=UserService src/', pattern: '=UserService' },
     { command: 'grep -r --max 100 UserService src/', pattern: 'UserService' },
     { command: 'grep -r --reg=UserService src/', pattern: 'UserService' },
+    // A prefix that names one option, or two spellings of one option.
+    { command: 'grep -r --no-m UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --line-n UserService src/', pattern: 'UserService' },
+    { command: 'grep -r --col UserService src/', pattern: 'UserService' },
     // `--name=value` carries its own value, so it cannot hide the query.
     { command: 'rg --unknown-option=value UserService src', pattern: 'UserService' },
     { command: 'grep --unknown-option=value -r UserService src', pattern: 'UserService' },
@@ -253,6 +257,11 @@ describe('Claude hook literal Bash search patterns', () => {
     'rg --sort path',
     'rg --unknown-option value UserService src',
     'grep --unknown-option value UserService src',
+    // GNU grep rejects a prefix shared by several options, whatever their kind.
+    'grep -r --no UserService src/',
+    'grep -r --line UserService src/',
+    'grep -r --co UserService src/',
+    'grep -r --nu UserService src/',
     'rg -Q value UserService src',
     'rg -nQ value UserService src',
     'grep -rQ value UserService src',
