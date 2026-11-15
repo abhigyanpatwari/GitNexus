@@ -51,6 +51,12 @@ const DENIED = [
   'echo `git clean -fdx`',
   'eval "rm -rf /"',
   'busybox rm -rf /',
+  // A leading ./ names the same thing.
+  'cd /workspace && rm -rf ./*',
+  'rm -rf ../*',
+  'rm -rf .*',
+  'rm -rf ././',
+  'rm -rf ./.git',
   // An unquoted mention is refused too: the guard fails closed.
   'echo rm -rf / > notes.txt',
 ];
@@ -75,6 +81,11 @@ const ALLOWED = [
   'bash -lc "ls && git status"',
   'ls /nope 2>/dev/null',
   'git rm -r --cached .',
+  'rm -rf ./build',
+  'rm -rf ./node_modules/.cache',
+  // The stated limit: a computed target is not seen.
+  'rm -rf "$TMP"',
+  'rm -rf "$(mktemp -d)"',
   'docker rm -f web',
   'npm run reboot',
   "echo 'rm -rf /' > notes.txt",

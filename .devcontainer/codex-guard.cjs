@@ -1,8 +1,14 @@
 #!/usr/bin/env node
-// Codex PreToolUse hook: refuses shell commands that destroy work or publish
-// irreversibly. In this dev container Codex runs without its sandbox (the
-// container cannot create user namespaces) and `codex exec` never asks, so this
-// is the one check between a bad command and the disk.
+// Codex PreToolUse hook: refuses the common shell commands that destroy work or
+// publish irreversibly. In this dev container Codex runs without its sandbox
+// (the container cannot create user namespaces) and `codex exec` never asks.
+//
+// It is a best-effort check on the command text, not a boundary. It reads
+// literal commands and literal targets. It cannot see a target or a command
+// built from a variable or a substitution (`rm -rf "$DIR"`,
+// `rm -rf "$(printf /workspace)"`), and a tool that deletes by other means
+// (`find -delete`, a script) passes. Refusing every such form would refuse
+// routine cleanup, so the limit is stated here instead.
 //
 // agent-setup.cjs copies this file to ~/.codex/hooks/guard/deny-destructive.cjs
 // and registers it in ~/.codex/hooks.json. It must stay self-contained: no
@@ -21,8 +27,8 @@ const PROTECTED = [
   /^\/home(\/\*|\/node\/?\*?)?\/?$/,
   /^\/workspace\/?\*?$/,
   /^\/(etc|usr|var|bin|lib|opt|root)(\/.*)?$/,
-  /^\.{1,2}\/?$/, // . and ..
-  /^\*$/, // a bare * deletes whatever the current folder happens to be
+  /^\.\.?(\/\*?)?$/, // . .. ./ ../ ../*
+  /^\.?\*$/, // a bare * deletes whatever the current folder happens to be; .* also matches ..
   /(^|\/)\.git\/?$/,
   /(^|\/)\.(claude|codex|claude-mem)(\/\*?)?$/,
 ];
@@ -129,7 +135,9 @@ function judge(name, args, before, depth) {
     const flags = args.filter((arg) => arg.startsWith('-')).join(' ');
     const targets = args.filter((arg) => !arg.startsWith('-'));
     const isRecursive = /(^|\s)-[a-zA-Z]*[rR]|--recursive/.test(flags);
-    const hit = targets.find((target) => PROTECTED.some((path) => path.test(target)));
+    // `./*` is `*`, and `././.git` is `.git`: a leading `./` names the same thing.
+    const plain = (target) => target.replace(/^(?:\.\/+)+(?=.)/, '');
+    const hit = targets.find((target) => PROTECTED.some((path) => path.test(plain(target))));
     if (isRecursive && hit !== undefined) return `rm -r on ${hit}`;
     const memory = targets.find((target) => /\.claude-mem(\/|$)|claude-mem\.db/.test(target));
     if (memory !== undefined) return `rm on the claude-mem store (${memory})`;

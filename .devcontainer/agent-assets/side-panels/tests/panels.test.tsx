@@ -163,6 +163,7 @@ test('the agents pane shows a review run: a running Codex leg, an empty one, and
   const RUN = '/tmp/pr-tri-review/3945/20261115-100425-e08a9358';
   const file = (name: string, size: number) =>
     ({ name, kind: 'file', size, mtimeMs: now, isLink: false }) as const;
+  const STALE = '/tmp/pr-tri-review/3945/20261115-120000-aaaaaaaa';
   const dir = (name: string, mtimeMs = now) =>
     ({ name, kind: 'dir', size: 0, mtimeMs, isLink: false }) as const;
   const files = [
@@ -185,11 +186,15 @@ test('the agents pane shows a review run: a running Codex leg, an empty one, and
             [
               dir('20261115-100425-e08a9358'),
               dir('20261115-100425-ffffffff', now - 60_000),
+              // Started later, but nothing written for seven hours: the active run is shown, not this one.
+              dir('20261115-120000-aaaaaaaa'),
               dir('harness'),
             ]
           : e.path === RUN
             ? files
-            : [],
+            : e.path === STALE
+              ? [{ ...file('codex-swarm.md', 900), mtimeMs: now - 7 * 60 * 60_000 }]
+              : [],
   }));
   on('fs.read', (_, e) => ({
     value: e.path.endsWith('.exit')

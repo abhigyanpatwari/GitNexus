@@ -171,7 +171,7 @@ export function agentsView(
         <Button
           key={`view-${one.id}`}
           plain
-          dimColor={one.status !== 'running'}
+          dimColor={one.status !== 'running' && one.status !== 'idle'}
           onPress={() => void actions.view(one.id)}
         >
           {clip(`${one.status} ${one.type}: ${one.description}`, 90)}
