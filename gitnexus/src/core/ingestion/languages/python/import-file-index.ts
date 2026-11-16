@@ -131,6 +131,9 @@ function buildImporterAncestors(importerDir: string): readonly string[] {
  *    parent (`a/b/c.py` -> `b`, not `a`), which is exactly the set of segments
  *    `hasRepoCandidate`'s ancestor walk can ever match — so a segment absent
  *    from it settles the walk in one lookup (#2913).
+ *  - `srcChildDirNames`: the NAME of every directory whose parent directory is
+ *    named `src` (`a/src/mypkg/x.py` and `src/mypkg/x.py` -> `mypkg`), so the
+ *    src-layout tier (#3949) proves absence in one lookup.
  *  - `ancestorsByDir`: the per-importer-directory ancestor-chain memo behind
  *    `importerAncestors`. The one structure here that is NOT derived from the
  *    file set: it is filled lazily, from the importer paths the pass actually
@@ -154,6 +157,7 @@ export interface PythonFileIndex {
   readonly byInitParent: Map<string, { raw: string; norm: string }[]>;
   readonly dirPrefixes: Set<string>;
   readonly nestedDirNames: Set<string>;
+  readonly srcChildDirNames: Set<string>;
   readonly ancestorsByDir: Map<string, readonly string[]>;
   readonly bareImportPrefixesByDir: Map<string, readonly string[]>;
 }
@@ -170,6 +174,7 @@ export const getPythonFileIndex = perFileSet(
     const byInitParent = new Map<string, { raw: string; norm: string }[]>();
     const dirPrefixes = new Set<string>();
     const nestedDirNames = new Set<string>();
+    const srcChildDirNames = new Set<string>();
 
     for (const raw of allFilePaths) {
       const norm = raw.replace(/\\/g, '/');
@@ -239,14 +244,21 @@ export const getPythonFileIndex = perFileSet(
       // probes — exactly when another slash precedes it at index > 0. Index 0
       // is excluded on purpose: `a/` and `/` name a directory whose parent is
       // empty, which check (2) already answers and which the ancestor walk
-      // (non-empty ancestors only) never probes.
+      // (non-empty ancestors only) never probes. `srcChildDirNames` keeps the
+      // subset whose parent is named `src`; each prefix is visited once, so
+      // the early break leaves it complete.
       for (let i = lastSlash; i >= 0; i--) {
         if (norm[i] !== '/') continue;
         const dirPrefix = norm.slice(0, i + 1);
         if (dirPrefixes.has(dirPrefix)) break;
         dirPrefixes.add(dirPrefix);
         const parentSlash = i > 0 ? norm.lastIndexOf('/', i - 1) : -1;
-        if (parentSlash > 0) nestedDirNames.add(norm.slice(parentSlash + 1, i));
+        if (parentSlash > 0) {
+          const name = norm.slice(parentSlash + 1, i);
+          nestedDirNames.add(name);
+          const parentStart = norm.lastIndexOf('/', parentSlash - 1) + 1;
+          if (norm.slice(parentStart, parentSlash) === 'src') srcChildDirNames.add(name);
+        }
       }
     }
 
@@ -256,6 +268,7 @@ export const getPythonFileIndex = perFileSet(
       byInitParent,
       dirPrefixes,
       nestedDirNames,
+      srcChildDirNames,
       ancestorsByDir: new Map<string, readonly string[]>(),
       bareImportPrefixesByDir: new Map<string, readonly string[]>(),
     };

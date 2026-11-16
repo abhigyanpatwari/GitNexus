@@ -123,25 +123,27 @@ export function resolvePythonImportTarget(
   if (internal !== null) return internal;
 
   // PEP-328: unresolved relative imports must NOT fall through to suffix
-  // matching. Mirrors `pythonImportStrategy` in `configs/python.ts`.
+  // matching.
   if (parsedImport.targetRaw.startsWith('.')) return null;
 
   // External dotted imports like `django.apps` must not fall through to
   // generic suffix matching when the repo has unrelated local files such
-  // as `accounts/apps.py`. Mirrors `pythonImportStrategy`'s
-  // `hasRepoCandidate` check: only suffix-match if the leading segment
-  // looks like a local package/module somewhere in-repo.
+  // as `accounts/apps.py` (#898). `hasRepoCandidate` only lets the suffix
+  // tier run if the leading segment looks like a local package/module the
+  // importer can reach. A rejected target can still be an exact file under a
+  // src-layout root (#3949), which is never a suffix guess.
   const pathLike = parsedImport.targetRaw.replace(/\./g, '/');
   if (pathLike.includes('/')) {
     const [leadingSegment] = pathLike.split('/').filter(Boolean);
     if (!leadingSegment || !hasRepoCandidate(leadingSegment, ctx.allFilePaths, ctx.fromFile)) {
-      return null;
+      return resolveFromSrcRoots(pathLike, ctx.allFilePaths, ctx.fromFile);
     }
   }
 
   // Multi-segment absolute resolve: try exact paths first, then ancestor
   // walk (mirrors the single-segment ancestor walk in
-  // `resolvePythonImportInternal`), then a suffix match in nested repos.
+  // `resolvePythonImportInternal`), then src-layout roots, then a suffix
+  // match in nested repos.
   // Using direct `Set.has` + `endsWith` instead of `suffixResolve`'s shared
   // helper because that helper requires a pre-built `SuffixIndex` to
   // disambiguate ties — without one it falls back to an O(files) scan that
@@ -228,7 +230,8 @@ const parsedFileByPath = perFileSet(
  * Precedence order:
  *  1. Workspace-root direct hit (`<pathLike>.py`, `<pathLike>/__init__.py`).
  *  2. Closest-ancestor match walking up from the importer's directory.
- *  3. Suffix fallback (deterministic: fewest path segments, then
+ *  3. Closest src-layout root (`resolveFromSrcRoots`, dotted targets only).
+ *  4. Suffix fallback (deterministic: fewest path segments, then
  *     lexicographic on the normalized path).
  *
  * Root wins over ancestor by construction — if both `services/sync.py` and
@@ -295,6 +298,10 @@ function resolveAbsoluteFromFiles(
     }
   }
 
+  // Before the suffix fallback, so the closest src root beats its tie-break.
+  const viaSrc = resolveFromSrcRoots(pathLike, allFilePaths, fromFile);
+  if (viaSrc !== null) return viaSrc;
+
   // Suffix-match fallback (preserved for monorepo/nested-repo layouts
   // that don't share a directory ancestor with the importer).
   //
@@ -341,6 +348,48 @@ function resolveAbsoluteFromFiles(
     return 0;
   });
   return matches[0].raw;
+}
+
+/**
+ * src layout (#3949): resolve a DOTTED `pathLike` to `<root>src/<pathLike>.py`
+ * or `<root>src/<pathLike>/__init__.py`, where `<root>` is each importer
+ * ancestor, closest first, then the workspace root. PyPA's src layout and
+ * setuptools' automatic discovery put `src/` on the import path, so `tests/`
+ * and `scripts/` import `src/mypkg` as `mypkg`. No `src/<seg>/__init__.py` is
+ * required, as discovery is namespace-aware. Exact matches only: a miss here
+ * never widens into a suffix guess, so external imports stay unresolved.
+ *
+ * Cost is O(depth) Set lookups with no file scan: `srcChildDirNames` retires
+ * every target whose leading segment names no directory under any `src/`, and
+ * a root without `<root>src/<leading>/` is skipped without probing.
+ */
+function resolveFromSrcRoots(
+  pathLike: string,
+  allFilePaths: ReadonlySet<string>,
+  fromFile: string,
+): string | null {
+  const slash = pathLike.indexOf('/');
+  if (slash <= 0) return null;
+  const index = getPythonFileIndex(allFilePaths);
+  const leading = pathLike.slice(0, slash);
+  if (!index.srcChildDirNames.has(leading)) return null;
+
+  // Same bucket guards as `resolveAbsoluteFromFiles`.
+  const lastSeg = pathLike.slice(pathLike.lastIndexOf('/') + 1);
+  const mayBeModule = index.byBasename.has(`${lastSeg}.py`);
+  const mayBePackage = index.byInitParent.has(`${lastSeg}/__init__.py`) || lastSeg === '';
+  if (!mayBeModule && !mayBePackage) return null;
+
+  const ancestors = importerAncestors(index, importerDirOf(fromFile));
+  for (let i = 0; i <= ancestors.length; i++) {
+    const root = i < ancestors.length ? `${ancestors[i]}/src/` : 'src/';
+    if (!index.dirPrefixes.has(`${root}${leading}/`)) continue;
+    const candidateFile = `${root}${pathLike}.py`;
+    if (mayBeModule && allFilePaths.has(candidateFile)) return candidateFile;
+    const candidatePkg = `${root}${pathLike}/__init__.py`;
+    if (mayBePackage && allFilePaths.has(candidatePkg)) return candidatePkg;
+  }
+  return null;
 }
 
 /**

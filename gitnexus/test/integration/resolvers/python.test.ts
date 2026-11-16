@@ -709,6 +709,70 @@ def boot():
 });
 
 // ---------------------------------------------------------------------------
+// src layout (#3949): `tests/` and `scripts/` import the package that lives
+// under `src/`, as pytest and setuptools put `src/` on the import path.
+// ---------------------------------------------------------------------------
+
+describe('Python src layout: dotted imports from tests/ and scripts/ resolve into src/', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-python-src-layout-'));
+    writeFixtureRepo(repoDir, {
+      'src/mypkg/__init__.py': '',
+      'src/mypkg/core.py': `def compute(x):
+    return x * 2
+`,
+      'src/mypkg/inside.py': `from mypkg.core import compute
+
+def use_inside():
+    return compute(1)
+`,
+      'tests/test_core.py': `from mypkg.core import compute
+
+def test_compute():
+    assert compute(2) == 4
+`,
+      'scripts/run.py': `import sys
+sys.path.insert(0, "src")
+from mypkg.core import compute
+
+def main():
+    print(compute(3))
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it.each([
+    { importer: 'src/mypkg/inside.py' },
+    { importer: 'tests/test_core.py' },
+    { importer: 'scripts/run.py' },
+  ])('emits IMPORTS $importer → src/mypkg/core.py', ({ importer }) => {
+    const edge = getRelationships(result, 'IMPORTS').find(
+      (i) => i.sourceFilePath === importer && i.targetFilePath === 'src/mypkg/core.py',
+    );
+    expect(edge).toBeDefined();
+  });
+
+  it.each([
+    { caller: 'use_inside', file: 'src/mypkg/inside.py' },
+    { caller: 'test_compute', file: 'tests/test_core.py' },
+    { caller: 'main', file: 'scripts/run.py' },
+  ])('emits CALLS $caller → compute in src/mypkg/core.py', ({ caller, file }) => {
+    const targets = getRelationships(result, 'CALLS')
+      .filter((c) => c.source === caller && c.sourceFilePath === file && c.target === 'compute')
+      .map((c) => c.targetFilePath);
+    expect(targets).toEqual(['src/mypkg/core.py']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Workspace-root precedence: when both `services/sync.py` (root) and
 // `backend/services/sync.py` (ancestor) exist, an importer at
 // `backend/routers/cron.py` doing `from services.sync import X` resolves to
