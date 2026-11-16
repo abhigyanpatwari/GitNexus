@@ -17,7 +17,7 @@
  * Since the hooks are CJS scripts that call main() on load, we test them
  * by spawning them as child processes with controlled stdin JSON.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -4817,6 +4817,154 @@ describe('Linked git worktree resolution', () => {
     });
   }
 });
+
+describe.each([false, true])(
+  'Registered linked-worktree precedence (#3895), reverse registry: %s',
+  (reverse) => {
+    let root: string;
+    let mainRepo: string;
+    let worktreePath: string;
+    let registryHome: string;
+    let mainStorage: string;
+    let worktreeStorage: string;
+    let mainHead: string;
+    let worktreeHead: string;
+
+    beforeEach(() => {
+      root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-worktree-')));
+      mainRepo = path.join(root, 'projects', 'a-much-longer-main-checkout-path');
+      worktreePath = path.join(root, 'wt');
+      registryHome = path.join(root, 'home');
+      mainStorage = path.join(root, 'main-index');
+      worktreeStorage = path.join(root, 'worktree-index');
+      fs.mkdirSync(mainRepo, { recursive: true });
+      initRepoWithCommit(mainRepo);
+      mainHead = runGit(mainRepo, ['rev-parse', 'HEAD']).stdout.trim();
+      runGit(mainRepo, ['worktree', 'add', '-b', 'feature', worktreePath]);
+      fs.writeFileSync(path.join(worktreePath, 'file.txt'), 'worktree commit');
+      commitAll(worktreePath, 'worktree');
+      worktreeHead = runGit(worktreePath, ['rev-parse', 'HEAD']).stdout.trim();
+      expect(worktreeHead).not.toBe(mainHead);
+
+      for (const [repoPath, storagePath, lastCommit] of [
+        [mainRepo, mainStorage, mainHead],
+        [worktreePath, worktreeStorage, worktreeHead],
+      ]) {
+        fs.mkdirSync(storagePath);
+        fs.writeFileSync(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({ repoPath, storagePath, lastCommit }),
+        );
+      }
+      const entries = [
+        { name: 'main', path: mainRepo, storagePath: mainStorage },
+        { name: 'worktree', path: worktreePath, storagePath: worktreeStorage },
+      ];
+      writeHookRegistry(registryHome, reverse ? entries.reverse() : entries);
+      vi.stubEnv('GITNEXUS_HOME', registryHome);
+      vi.stubEnv('GITNEXUS_STORAGE_PATH', undefined);
+      vi.stubEnv('GITNEXUS_STORAGE_ROOT', undefined);
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    const helpers = [
+      CJS_REGISTRY_QUERY,
+      path.resolve(__dirname, '../../../gitnexus-cursor-integration/hooks/registry-query.cjs'),
+      path.resolve(__dirname, '../../../gitnexus-factory-plugin/hooks/registry-query.cjs'),
+    ];
+
+    it.each(helpers)(
+      'prefers active worktree indexes over the longer main checkout (%s)',
+      (file) => {
+        const resolver = createRequire(import.meta.url)(file) as ReturnType<
+          typeof loadRegistryQuery
+        >;
+        const nestedDir = path.join(worktreePath, 'pkg', 'src');
+        fs.mkdirSync(nestedDir, { recursive: true });
+        expect(mainRepo.length).toBeGreaterThan(nestedDir.length);
+        for (const cwd of [worktreePath, nestedDir]) {
+          expect(resolver.resolveHookRepo(cwd)).toMatchObject({
+            path: worktreePath,
+            storagePath: worktreeStorage,
+            metadata: { lastCommit: worktreeHead },
+          });
+        }
+
+        // A --skip-git subdirectory index is nearer still, even in a linked worktree.
+        const subdir = path.dirname(nestedDir);
+        const subdirStorage = path.join(root, 'subdir-index');
+        fs.mkdirSync(subdirStorage);
+        fs.writeFileSync(
+          path.join(subdirStorage, 'gitnexus.json'),
+          JSON.stringify({
+            repoPath: subdir,
+            storagePath: subdirStorage,
+            lastCommit: worktreeHead,
+          }),
+        );
+        const entries = [
+          { name: 'main', path: mainRepo, storagePath: mainStorage },
+          { name: 'worktree', path: worktreePath, storagePath: worktreeStorage },
+          { name: 'subdir', path: subdir, storagePath: subdirStorage },
+        ];
+        writeHookRegistry(registryHome, reverse ? entries.reverse() : entries);
+        expect(resolver.resolveHookRepo(nestedDir)).toMatchObject({
+          path: subdir,
+          storagePath: subdirStorage,
+        });
+      },
+    );
+
+    it.each(helpers)(
+      'retains the main-checkout fallback when the worktree is unregistered (%s)',
+      (file) => {
+        writeHookRegistry(registryHome, [
+          { name: 'main', path: mainRepo, storagePath: mainStorage },
+        ]);
+        const resolver = createRequire(import.meta.url)(file) as ReturnType<
+          typeof loadRegistryQuery
+        >;
+        expect(resolver.resolveHookRepo(worktreePath)).toMatchObject({
+          path: mainRepo,
+          storagePath: mainStorage,
+        });
+      },
+    );
+
+    it.each([CJS_HOOK, PLUGIN_HOOK])(
+      'checks staleness against the registered worktree commit (%s)',
+      (hookPath) => {
+        const event = {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "worktree"' },
+          tool_output: { exit_code: 0 },
+          cwd: worktreePath,
+        };
+        const fresh = runHook(hookPath, event, worktreePath, { registryHome });
+        expect(fresh.status).toBe(0);
+        expect(fresh.stdout.trim()).toBe('');
+
+        // Prove the hook still warns when the worktree's own index really is stale.
+        fs.writeFileSync(
+          path.join(worktreeStorage, 'gitnexus.json'),
+          JSON.stringify({
+            repoPath: worktreePath,
+            storagePath: worktreeStorage,
+            lastCommit: mainHead,
+          }),
+        );
+        const stale = runHook(hookPath, event, worktreePath, { registryHome });
+        expect(stale.status).toBe(0);
+        expect(parseHookOutput(stale.stdout)?.additionalContext).toContain('stale');
+      },
+    );
+  },
+);
 
 // ─── Integration: dispatch map routes correctly ─────────────────────
 
