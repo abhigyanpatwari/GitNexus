@@ -778,6 +778,7 @@ function buildDefFromDeclarationMatch(
   // emits the marker, and both `true` and `false` are verdicts (see
   // `SymbolDefinition.isExported`). Absent stays absent.
   const isExported = parseBooleanCapture(match['@declaration.is-exported']);
+  const isDefaultExport = parseBooleanCapture(match['@declaration.is-default-export']);
   const graphPosition = match['@declaration.graph-position']?.range;
 
   return {
@@ -803,6 +804,7 @@ function buildDefFromDeclarationMatch(
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
     ...(isExported !== undefined ? { isExported } : {}),
+    ...(isDefaultExport === true ? { isDefaultExport: true } : {}),
   };
 }
 
@@ -1998,6 +2000,10 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.type-parameters',
   '@declaration.is-explicit',
   '@declaration.is-deleted',
+  // Synthesized on the HOC default-export function node itself, the same span as
+  // its `@declaration.function` anchor; listing it keeps the anchor choice from
+  // depending on capture key order.
+  '@declaration.is-default-export',
 ]);
 
 /**
