@@ -32,7 +32,8 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
 // uses only writeSync from node:fs, so a full mock is safe here (matches the
 // pattern in tool-direct-cli.test.ts).
 vi.mock('node:fs', () => ({
-  writeSync: vi.fn(),
+  // Report every byte written, as the real call does; output() loops until all land.
+  writeSync: vi.fn((_fd: number, bytes: Buffer, offset = 0) => bytes.length - offset),
 }));
 
 import { impactCommand } from '../../src/cli/tool.js';
