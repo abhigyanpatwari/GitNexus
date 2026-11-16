@@ -67,6 +67,20 @@ interface PackageBucket {
   readonly moduleScopes: { filePath: string; scope: ParsedFile['scopes'][number] }[];
 }
 
+interface SiblingCandidate {
+  readonly def: BindingRef['def'];
+  readonly filePath: string;
+}
+
+interface DirectoryRanking {
+  /** Every package candidate, nearest-first for a file in this directory. Own
+   *  file entries are included; the caller skips them. */
+  readonly ordered: readonly SiblingCandidate[];
+  /** Candidates that share the whole directory and continue past it, keyed by
+   *  the segment right after the directory. */
+  readonly pathsByNextSegment: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
 export function createJvmPackageSiblingVisibility(
   options: JvmPackageSiblingOptions,
 ): JvmPackageSiblingVisibility {
@@ -152,7 +166,7 @@ export function createJvmPackageSiblingVisibility(
         continue;
       }
 
-      const classDefs: { def: BindingRef['def']; filePath: string }[] = [];
+      const classDefs: SiblingCandidate[] = [];
       for (const parsed of bucket.parsed) {
         const moduleScopeId = parsed.scopes.find((scope) => scope.kind === 'Module')?.id;
         for (const scope of parsed.scopes) {
@@ -178,6 +192,9 @@ export function createJvmPackageSiblingVisibility(
       }
       for (const sibling of bucket.moduleScopes) moduleScopeByPath.set(sibling.filePath, sibling);
       const allSiblingPaths = [...parsedByPath.keys()];
+      // Proximity depends only on the two paths, so files sharing a directory
+      // share one ranking; rank once per directory instead of once per file.
+      const rankingByDirectory = new Map<string, DirectoryRanking>();
 
       for (const { filePath, scope } of bucket.moduleScopes) {
         let scopeAug = augmentations.get(scope.id);
@@ -187,29 +204,33 @@ export function createJvmPackageSiblingVisibility(
         }
 
         const ownSegments = segmentsByPath.get(filePath) ?? pathSegments(filePath);
-        const proximityCache = new Map<string, number>();
-        const candidates = classDefs.filter((candidate) => candidate.filePath !== filePath);
-        for (const candidate of candidates) {
-          if (!proximityCache.has(candidate.filePath)) {
-            proximityCache.set(
-              candidate.filePath,
-              sharedSegmentCount(segmentsByPath.get(candidate.filePath) ?? [], ownSegments),
-            );
-          }
+        const dirSegments = ownSegments.slice(0, -1);
+        const dirKey = `${dirSegments.length}:${dirSegments.join('/')}`;
+        let ranking = rankingByDirectory.get(dirKey);
+        if (ranking === undefined) {
+          ranking = rankForDirectory(classDefs, dirSegments, segmentsByPath);
+          rankingByDirectory.set(dirKey, ranking);
         }
         // Nearest-first by shared path prefix. Ties (the common case in a flat
         // package, where every sibling shares the same directory) keep the
         // walker's traversal order, so the retained set is deterministic but
         // arbitrary among equally-near candidates — which is why truncation
         // marks the file incomplete below rather than being treated as exact.
-        candidates.sort(
-          (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
-        );
+        // The directory ranking is exact for this file unless another path
+        // continues past the directory with this file's own name (a directory
+        // named like the file, or a path spelling that normalizes to it): that
+        // candidate shares one more segment, so rank this file on its own.
+        const sameNamePaths = ranking.pathsByNextSegment.get(ownSegments[ownSegments.length - 1]);
+        const candidates =
+          sameNamePaths !== undefined && (sameNamePaths.size > 1 || !sameNamePaths.has(filePath))
+            ? rankByProximity(classDefs, filePath, ownSegments, segmentsByPath)
+            : ranking.ordered;
 
         const injectedIds = new Set<string>();
         const injectedPaths = new Set<string>();
         let truncated = false;
         for (const { def, filePath: defPath } of candidates) {
+          if (defPath === filePath) continue;
           if (injectedIds.has(def.nodeId) || def.qualifiedName === undefined) continue;
           if (maxInjectedSiblings > 0 && injectedIds.size >= maxInjectedSiblings) {
             truncated = true;
@@ -365,6 +386,68 @@ export function createJvmPackageSiblingVisibility(
 
 function pathSegments(filePath: string): string[] {
   return filePath.replace(/\\/g, '/').split('/');
+}
+
+/**
+ * Rank `candidates` for any file directly inside `dirSegments`. A candidate
+ * that shares the whole directory scores at least the directory depth against
+ * every such file; the rest score below it, and that score does not depend on
+ * the file name. So the full-directory candidates come first in walker order
+ * and the rest follow, stably sorted by shared prefix. The one exception, a
+ * candidate continuing past the directory with the file's own name, is
+ * surfaced through `pathsByNextSegment` for the caller to rank exactly.
+ */
+function rankForDirectory(
+  candidates: readonly SiblingCandidate[],
+  dirSegments: readonly string[],
+  segmentsByPath: ReadonlyMap<string, readonly string[]>,
+): DirectoryRanking {
+  const depth = dirSegments.length;
+  const ordered: SiblingCandidate[] = [];
+  const farther: { candidate: SiblingCandidate; shared: number }[] = [];
+  const pathsByNextSegment = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const segments = segmentsByPath.get(candidate.filePath) ?? [];
+    const shared = sharedSegmentCount(segments, dirSegments);
+    if (shared < depth) {
+      farther.push({ candidate, shared });
+      continue;
+    }
+    ordered.push(candidate);
+    if (segments.length > depth) {
+      const next = segments[depth];
+      let paths = pathsByNextSegment.get(next);
+      if (paths === undefined) pathsByNextSegment.set(next, (paths = new Set()));
+      paths.add(candidate.filePath);
+    }
+  }
+  farther.sort((a, b) => b.shared - a.shared);
+  for (const { candidate } of farther) ordered.push(candidate);
+  return { ordered, pathsByNextSegment };
+}
+
+/** Exact per-file nearest-first ranking, for the rare file a directory
+ *  ranking cannot serve. */
+function rankByProximity(
+  classDefs: readonly SiblingCandidate[],
+  filePath: string,
+  ownSegments: readonly string[],
+  segmentsByPath: ReadonlyMap<string, readonly string[]>,
+): SiblingCandidate[] {
+  const proximityCache = new Map<string, number>();
+  const candidates = classDefs.filter((candidate) => candidate.filePath !== filePath);
+  for (const candidate of candidates) {
+    if (!proximityCache.has(candidate.filePath)) {
+      proximityCache.set(
+        candidate.filePath,
+        sharedSegmentCount(segmentsByPath.get(candidate.filePath) ?? [], ownSegments),
+      );
+    }
+  }
+  candidates.sort(
+    (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
+  );
+  return candidates;
 }
 
 function sharedSegmentCount(aSegments: readonly string[], bSegments: readonly string[]): number {
