@@ -14,6 +14,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  useFixture,
   writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -173,7 +174,11 @@ describe('Python global nested declarations bind at module scope (#3502)', () =>
     );
     expect(
       calls.map((edge) => `${edge.targetFilePath}:${edge.targetLabel}:${edge.target}`).sort(),
-    ).toEqual(['main.py:Function:class_target', 'main.py:Method:class_ping']);
+    ).toEqual([
+      'main.py:Class:ClassTarget',
+      'main.py:Function:class_target',
+      'main.py:Method:class_ping',
+    ]);
     expect(getNodesByLabel(result, 'Method')).not.toContain('class_target');
     const definition = getNodesByLabelFull(result, 'Function').find(
       (node) => node.name === 'class_target',
@@ -1492,6 +1497,182 @@ describe('Python constructor-call resolution', () => {
     expect(saveCall).toBeDefined();
     expect(saveCall!.source).toBe('process');
     expect(saveCall!.targetFilePath).toBe('models.py');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3950: a bare call naming exactly one class (`Plain(1)`) constructs it and
+// links to the Class node. A callable of the same name still wins; a name
+// with no class binding or two class bindings emits nothing new.
+// ---------------------------------------------------------------------------
+
+describe('Python bare class call links to the Class (#3950)', () => {
+  const run = useFixture('python-bare-class-call', {
+    'models.py': `from dataclasses import dataclass
+
+
+class Plain:
+    def __init__(self, x):
+        self.x = x
+
+
+@dataclass
+class Point:
+    x: int
+
+
+class Base:
+    def __init__(self, x):
+        self.x = x
+
+
+class Child(Base):
+    pass
+
+
+def build_local():
+    return Plain(2)
+`,
+    'core.py': `from models import Plain, Point
+
+
+def helper():
+    return 1
+
+
+def use_helper():
+    return helper()
+
+
+def make_plain():
+    return Plain(1)
+
+
+def make_point():
+    return Point(1)
+`,
+    'aliased.py': `from models import Plain as P
+
+
+def make_aliased():
+    return P(1)
+`,
+    'inherit.py': `from models import Child
+
+
+def make_child():
+    return Child(1)
+`,
+    'later.py': `def make_later():
+    return Later()
+
+
+class Later:
+    pass
+
+
+def make_nested():
+    class Inner:
+        pass
+
+    return Inner()
+`,
+    'errors.py': `class MyError(Exception):
+    pass
+
+
+def fail_local():
+    raise MyError()
+
+
+def fail_builtin():
+    raise ValueError()
+
+
+class Factory:
+    @classmethod
+    def create(cls):
+        return cls()
+`,
+    'shadow.py': `from models import Plain
+
+
+def Plain(x):
+    return x
+
+
+def make_shadowed():
+    return Plain(1)
+`,
+    'fast.py': `class Codec:
+    pass
+`,
+    'slow.py': `class Codec:
+    pass
+`,
+    'conditional.py': `try:
+    from fast import Codec
+except ImportError:
+    from slow import Codec
+
+
+def make_codec():
+    return Codec()
+`,
+    'qualified.py': `import models
+
+
+def make_qualified():
+    return models.Plain(4)
+`,
+    'module_level.py': `from models import Plain
+
+INSTANCE = Plain(5)
+`,
+  });
+
+  it.each([
+    { caller: 'build_local', file: 'models.py', targets: ['Class:models.py:Plain:local-call'] },
+    { caller: 'make_plain', file: 'core.py', targets: ['Class:models.py:Plain:import-resolved'] },
+    { caller: 'make_point', file: 'core.py', targets: ['Class:models.py:Point:import-resolved'] },
+    { caller: 'use_helper', file: 'core.py', targets: ['Function:core.py:helper:local-call'] },
+    {
+      caller: 'make_aliased',
+      file: 'aliased.py',
+      targets: ['Class:models.py:Plain:import-resolved'],
+    },
+    {
+      caller: 'make_child',
+      file: 'inherit.py',
+      targets: ['Class:models.py:Child:import-resolved'],
+    },
+    { caller: 'make_later', file: 'later.py', targets: ['Class:later.py:Later:local-call'] },
+    { caller: 'make_nested', file: 'later.py', targets: ['Class:later.py:Inner:local-call'] },
+    { caller: 'fail_local', file: 'errors.py', targets: ['Class:errors.py:MyError:local-call'] },
+    { caller: 'fail_builtin', file: 'errors.py', targets: [] },
+    { caller: 'create', file: 'errors.py', targets: [] },
+    {
+      caller: 'make_shadowed',
+      file: 'shadow.py',
+      targets: ['Function:shadow.py:Plain:local-call'],
+    },
+    { caller: 'make_codec', file: 'conditional.py', targets: [] },
+    {
+      caller: 'make_qualified',
+      file: 'qualified.py',
+      targets: ['Class:models.py:Plain:import-resolved'],
+    },
+    {
+      caller: 'module_level.py',
+      file: 'module_level.py',
+      targets: ['Class:models.py:Plain:import-resolved'],
+    },
+  ])('links $caller only to its expected call targets', ({ caller, file, targets }) => {
+    const actual = getRelationships(run(), 'CALLS')
+      .filter((c) => c.source === caller && c.sourceFilePath === file)
+      .map((c) => `${c.targetLabel}:${c.targetFilePath}:${c.target}:${c.rel.reason}`)
+      .sort();
+    expect(actual).toEqual(targets);
   });
 });
 
@@ -3862,7 +4043,7 @@ describe('Python from-import module alias resolution', () => {
       (edge) => edge.sourceFilePath === 'pkg/app.py',
     );
 
-    expect(calls.filter((edge) => edge.target === 'User')).toHaveLength(2);
+    expect(calls.filter((edge) => edge.target === 'User')).toHaveLength(3);
     expect(calls.filter((edge) => edge.target === 'save')).toHaveLength(3);
     expect(calls.every((edge) => edge.targetFilePath === 'pkg/models.py')).toBe(true);
   });

@@ -218,12 +218,12 @@ const ROWS: readonly Row[] = [
   {
     name: 's4-param-rooted-dotted-callee-does-not-type-the-field',
     callerId: `Method:${PY_FILE}:ParamRootCollision.run#0`,
-    targets: [`Method:${PY_FILE}:Alien.ping#0`],
+    targets: [`Class:${PY_FILE}:Alien`, `Method:${PY_FILE}:Alien.ping#0`],
   },
   {
     name: 's4-module-rooted-dotted-callee-does-not-type-the-field',
     callerId: `Method:${PY_FILE}:ModuleRootCollision.run#0`,
-    targets: [`Method:${PY_FILE}:Alien.ping#0`],
+    targets: [`Class:${PY_FILE}:Alien`, `Method:${PY_FILE}:Alien.ping#0`],
   },
   // The control the fix must not disturb: an ordinary `factory.build()` has a
   // trailing segment that names no class, so it never fabricated and must still
@@ -231,7 +231,7 @@ const ROWS: readonly Row[] = [
   {
     name: 's4-control-ordinary-method-call-still-emits-no-field-edge',
     callerId: `Method:${PY_FILE}:PlainMethodCallControl.run#0`,
-    targets: [`Method:${PY_FILE}:Alien.ping#0`],
+    targets: [`Class:${PY_FILE}:Alien`, `Method:${PY_FILE}:Alien.ping#0`],
   },
 
   // ── S5: the displacement, closed by the same change ────────────────────────

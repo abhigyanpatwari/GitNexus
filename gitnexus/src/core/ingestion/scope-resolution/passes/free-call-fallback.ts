@@ -19,6 +19,7 @@
 
 import type {
   DefId,
+  NameClaimResult,
   ParameterTypeClass,
   ParsedFile,
   Reference,
@@ -95,6 +96,10 @@ export function emitFreeCallFallback(
     /** When true, a constructor-form site's edge gets ` (constructor)`
      *  appended to its reason. See `ScopeResolver.markConstructionSites`. */
     readonly markConstructionSites?: boolean;
+    /** When true, a free call whose name binds exactly one class constructs
+     *  it (`Plain(1)`) and links like a constructor-form site. From
+     *  `ScopeResolver.constructionSyntax.bare`. */
+    readonly bareCallConstructs?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
     readonly isCallableVisibleFromCaller?: ScopeResolver['isCallableVisibleFromCaller'];
     /** Whether a type named through a written qualifier (`ns.Type{}`) is
@@ -752,6 +757,21 @@ export function emitFreeCallFallback(
           }
         }
       }
+      // Bare-call construction (`Plain(1)`): no callable answers the name, but
+      // exactly one class does, so the call constructs it.
+      if (fnDef === undefined && options.bareCallConstructs === true) {
+        const [cls, ...others] = classBindingsOf(nameClaim.bindings);
+        if (cls !== undefined && others.length === 0) {
+          writtenDefinition = cls;
+          // Drop the callable lookup's empty list, which would otherwise record
+          // the site as an incompatible free call.
+          sourceCandidates = undefined;
+          fnDef =
+            options.constructorCallTargetsClass === true
+              ? writtenDefinition
+              : pickConstructorOrClass(writtenDefinition, workspaceIndex, scopes, site.arity);
+        }
+      }
       // Name-guess tier: pickUniqueGlobalCallable consults no import context —
       // it resolves to any globally-unique callable. Same-package calls are
       // usually caught by nearest-scope lookup before reaching here, so what
@@ -840,18 +860,7 @@ export function emitFreeCallFallback(
         // A class called with ordinary call syntax still names its type, even
         // when no constructor method exists for a runtime CALLS edge.
         if (options.recordSourceBinding !== undefined) {
-          const classes = [
-            ...new Map(
-              nameClaim.bindings
-                .filter(
-                  (binding) =>
-                    binding.def.type === 'Class' ||
-                    binding.def.type === 'Struct' ||
-                    binding.def.type === 'Record',
-                )
-                .map((binding) => [binding.def.nodeId, binding.def]),
-            ).values(),
-          ];
+          const classes = classBindingsOf(nameClaim.bindings);
           if (classes.length === 1)
             options.recordSourceBinding(
               site,
@@ -1077,6 +1086,22 @@ export function constructionSiteReason(
   return markConstructionSites === true && site.callForm === 'constructor'
     ? `${base} (constructor)`
     : base;
+}
+
+/** The distinct class-like definitions among a name claim's bindings. */
+function classBindingsOf(bindings: NameClaimResult['bindings']): SymbolDefinition[] {
+  return [
+    ...new Map(
+      bindings
+        .filter(
+          (binding) =>
+            binding.def.type === 'Class' ||
+            binding.def.type === 'Struct' ||
+            binding.def.type === 'Record',
+        )
+        .map((binding) => [binding.def.nodeId, binding.def]),
+    ).values(),
+  ];
 }
 
 function siteKey(
