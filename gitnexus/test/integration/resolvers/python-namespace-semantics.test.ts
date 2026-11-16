@@ -40,6 +40,63 @@ describe('Python wildcard definitions and lexical namespace visibility', () => {
       'imported_star.py': 'from imported_all import *\n',
       'blocked_multi.py': 'from assigned_star import *\n',
       'local_star.py': 'from local_all import *\n',
+      'bare_star.py': 'from origin import *\ndef via_star():\n    return helper()\n',
+      'all_helpers.py': 'def listed_import():\n    return 12\n',
+      'all_literal.py': `from all_helpers import listed_import
+__all__ = ["listed_public", "_listed_private", "listed_import"]
+def listed_public():
+    return 13
+def _listed_private():
+    return 14
+def unlisted_public():
+    return 15
+`,
+      'all_extended.py': `__all__ = ["first_listed"]
+__all__ += ["second_listed"]
+def first_listed():
+    return 16
+def second_listed():
+    return 17
+`,
+      'all_computed.py': `base = []
+__all__ = base + ["computed_listed"]
+def computed_listed():
+    return 18
+`,
+      'all_extend_call.py': `__all__ = []
+__all__.extend(["extend_listed"])
+def extend_listed():
+    return 19
+`,
+      'all_conditional.py': `if True:
+    __all__ = ["conditional_listed"]
+def conditional_listed():
+    return 20
+`,
+      'all_star.py': `from all_literal import *
+from all_extended import *
+from all_computed import *
+from all_extend_call import *
+from all_conditional import *
+def star_public():
+    return listed_public()
+def star_private():
+    return _listed_private()
+def star_imported():
+    return listed_import()
+def star_unlisted():
+    return unlisted_public()
+def star_first():
+    return first_listed()
+def star_second():
+    return second_listed()
+def star_computed():
+    return computed_listed()
+def star_extend_call():
+    return extend_listed()
+def star_conditional():
+    return conditional_listed()
+`,
       'cycle_a.py': 'from cycle_b import *\ndef cyclic():\n    return 7\n',
       'cycle_b.py': 'from cycle_a import *\n',
       'module_target.py': 'def helper():\n    return 8\n',
@@ -216,15 +273,39 @@ def enclosing():
     ).toEqual(['Class:origin.py:Maker', 'Method:origin.py:work']);
   });
 
-  it('filters private names and declines explicit module-level __all__ through every hop', () => {
-    for (const name of [
-      'private_export',
-      'assigned_exports',
-      'imported_exports',
-      'transitive_blocked_exports',
-    ]) {
+  it('filters private names and declines an imported module-level __all__ through every hop', () => {
+    for (const name of ['private_export', 'imported_exports']) {
       expect(callsFrom(name), name).toEqual([]);
     }
+  });
+
+  it('publishes the names of a literal module-level __all__ through every hop', () => {
+    for (const name of ['assigned_exports', 'transitive_blocked_exports']) {
+      expect(
+        callsFrom(name).map((edge) => edge.rel.targetId),
+        name,
+      ).toEqual(['Function:origin.py:helper']);
+    }
+  });
+
+  it('links a bare call to a public name bound by a star import (#3951)', () => {
+    expect(callsFrom('via_star').map((edge) => edge.rel.targetId)).toEqual([
+      'Function:origin.py:helper',
+    ]);
+  });
+
+  it.each([
+    ['star_public', ['Function:all_literal.py:listed_public']],
+    ['star_private', ['Function:all_literal.py:_listed_private']],
+    ['star_imported', ['Function:all_helpers.py:listed_import']],
+    ['star_unlisted', []],
+    ['star_first', ['Function:all_extended.py:first_listed']],
+    ['star_second', ['Function:all_extended.py:second_listed']],
+    ['star_computed', []],
+    ['star_extend_call', []],
+    ['star_conditional', []],
+  ])('binds exactly the names of a literal __all__ through a star import: %s', (name, targets) => {
+    expect(callsFrom(name).map((edge) => edge.rel.targetId)).toEqual(targets);
   });
 
   it('propagates wildcard exports through a bounded cycle', () => {
