@@ -12,14 +12,19 @@ const TARGET_WRAPPERS = new Set([
   'list',
 ]);
 
+export function isPythonTypeAnnotation(node: SyntaxNode): boolean {
+  for (let ancestor = node.parent; ancestor !== null; ancestor = ancestor.parent) {
+    if (ancestor.type === 'type') return true;
+    if (ancestor.type === 'block' || ancestor.type === 'module') break;
+  }
+  return false;
+}
+
 /** Python Language Reference §§6.3.1, 7.2 and 7.5: a target is not a read,
  * except for augmented assignment. Reading the receiver of a target still is. */
 export function pythonAttributeAccessKinds(node: SyntaxNode): readonly ('read' | 'write')[] {
   // An annotation names a type; it does not read that instance's field.
-  for (let ancestor = node.parent; ancestor !== null; ancestor = ancestor.parent) {
-    if (ancestor.type === 'type') return [];
-    if (ancestor.type === 'block' || ancestor.type === 'module') break;
-  }
+  if (isPythonTypeAnnotation(node)) return [];
 
   let target = node;
   while (target.parent !== null && TARGET_WRAPPERS.has(target.parent.type)) {
