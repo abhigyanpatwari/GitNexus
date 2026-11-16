@@ -419,13 +419,68 @@ import custom.Value;
     expect(sites[0].dependencies).toEqual([{ name: 'first', rawType: 'First', annotations: [] }]);
   });
 
-  it('refuses a generated constructor with the same signature as an explicit injected constructor', () => {
-    expect(
-      constructorSites(`import org.springframework.stereotype.Service;
+  it.each([
+    ['Autowired', 'org.springframework.beans.factory.annotation.Autowired'],
+    ['Inject', 'jakarta.inject.Inject'],
+  ])(
+    'keeps the written @%s constructor when a generated constructor has the same signature, and refuses the generated one',
+    (annotation, annotationImport) => {
+      const sites = constructorSites(`import org.springframework.stereotype.Service;
+import ${annotationImport};
+@Service @lombok.AllArgsConstructor class Consumer {
+  First first;
+  @${annotation} Consumer(First chosen) {}
+}`);
+      expect(
+        sites.map((site) => ({
+          memberName: site.memberName,
+          implicitConstructor: site.implicitConstructor,
+          annotations: site.annotations.map((fact) => fact.name),
+          dependencies: site.dependencies.map((dependency) => dependency.name),
+        })),
+      ).toEqual([
+        {
+          memberName: 'Consumer',
+          implicitConstructor: false,
+          annotations: [annotation],
+          dependencies: ['chosen'],
+        },
+      ]);
+    },
+  );
+
+  it('keeps only the written injected constructor when one of two generated constructors clashes with it', () => {
+    const sites = constructorSites(`import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+@Service @lombok.RequiredArgsConstructor @lombok.AllArgsConstructor class Consumer {
+  final First first;
+  Second second;
+  @Autowired Consumer(First chosen) { this.first = chosen; }
+}`);
+    expect(sites.map((site) => site.dependencies.map((dependency) => dependency.name))).toEqual([
+      ['chosen'],
+    ]);
+  });
+
+  it('does not make an unannotated written constructor an implicit injection site under a signature clash', () => {
+    const sites = constructorSites(`import org.springframework.stereotype.Service;
 import org.springframework.beans.factory.annotation.Autowired;
 @Service @lombok.AllArgsConstructor class Consumer {
   First first;
-  @Autowired Consumer(First first) {}
+  @Autowired Consumer(First chosen) {}
+  Consumer(Second other) {}
+}`);
+    expect(sites.map((site) => site.dependencies.map((dependency) => dependency.name))).toEqual([
+      ['chosen'],
+    ]);
+  });
+
+  it('refuses both the generated and the implicit constructor when the clashing written constructor is not annotated', () => {
+    expect(
+      constructorSites(`import org.springframework.stereotype.Service;
+@Service @lombok.AllArgsConstructor class Consumer {
+  First first;
+  Consumer(First chosen) {}
 }`),
     ).toEqual([]);
   });

@@ -160,12 +160,16 @@ export function captureJavaSpringDiClassFact(
     (child) => child.type === 'constructor_declaration',
   );
   const lombok = collectJavaLombokConstructors(classNode, compilationUnitImports);
+  // A Lombok constructor whose signature matches a written one is a compile
+  // error: Lombok still generates it and never removes the written one. So
+  // which constructors exist is unknown, and the sole-constructor deduction
+  // and the generated facts are refused below. A written constructor that is
+  // explicitly marked for injection is still in the source; keep it.
   const soleConstructor =
     lombok.complete &&
     !lombok.hasSignatureConflict &&
     constructors.length + lombok.generated.length === 1;
   for (const constructor of constructors) {
-    if (lombok.hasSignatureConflict) continue;
     const annotations = javaSpringAnnotationFacts(constructor);
     const implicitConstructor =
       soleConstructor &&
