@@ -214,3 +214,73 @@ describe('Java Lombok workspace proof annotation spelling', () => {
     expect(getters(result.after.get('Model.java'))).toEqual([]);
   });
 });
+
+describe('Java Lombok workspace proof single-static-import of an annotation name', () => {
+  const model = (owner: string) =>
+    `package p; import lombok.*; import static ${owner}.Value; @Value class Model { Repo repo; } class Repo {}`;
+
+  it.each([
+    ['a static field', 'public final class Constants { public static final String Value = "v"; }'],
+    ['an interface constant', 'public interface Constants { String Value = "v"; }'],
+    ['a static method', 'public class Constants { public static String Value() { return ""; } }'],
+    [
+      'a static field beside a private member type',
+      'public class Constants { private @interface Value {} public static final String Value = ""; }',
+    ],
+    [
+      'a static field with a workspace base',
+      'public class Constants extends Base { public static final String Value = ""; }',
+    ],
+  ])('proves lombok.* when the workspace owner imports %s', (_label, constants) => {
+    const result = reconcile({
+      'p/Model.java': model('custom.Constants'),
+      'custom/Constants.java': `package custom; ${constants}`,
+      'custom/Base.java': 'package custom; public class Base { public static int size; }',
+    });
+    expect(getters(result.before.get('p/Model.java'))).toEqual([]);
+    expect(getters(result.after.get('p/Model.java'))).toEqual(['Model.getRepo']);
+  });
+
+  it.each([
+    ['a member annotation type', 'public class Constants { public @interface Value {} }'],
+    [
+      'an interface member type',
+      'public interface Constants { @interface Value {} String OTHER = ""; }',
+    ],
+    [
+      'a member type inherited from a workspace base',
+      'public class Constants extends Base { public static final String OTHER = ""; }',
+    ],
+    [
+      'a static field and an inner class it may also name',
+      'public class Constants { public class Value {} public static final String Value = ""; }',
+    ],
+    [
+      'a static field with a base outside the workspace',
+      'public class Constants extends com.acme.Base { public static final String Value = ""; }',
+    ],
+  ])('keeps refusing lombok.* when the workspace owner imports %s', (_label, constants) => {
+    const result = reconcile({
+      'p/Model.java': model('custom.Constants'),
+      'custom/Constants.java': `package custom; ${constants}`,
+      'custom/Base.java': 'package custom; public class Base { public @interface Value {} }',
+    });
+    expect(getters(result.after.get('p/Model.java'))).toEqual([]);
+  });
+
+  it('keeps refusing, without recapture, a static import whose owner is outside the workspace', () => {
+    const result = reconcile({ 'p/Model.java': model('com.acme.Constants') });
+    expect(getters(result.before.get('p/Model.java'))).toEqual([]);
+    expect(result.after.get('p/Model.java')).toBe(result.before.get('p/Model.java'));
+  });
+
+  it('lets a same-package sibling, not lombok.*, own a name a static import only names as a field', () => {
+    const result = reconcile({
+      'p/Model.java': model('custom.Constants'),
+      'p/Value.java': 'package p; public @interface Value {}',
+      'custom/Constants.java':
+        'package custom; public class Constants { public static final String Value = ""; }',
+    });
+    expect(getters(result.after.get('p/Model.java'))).toEqual([]);
+  });
+});

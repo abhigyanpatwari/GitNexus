@@ -179,11 +179,14 @@ export interface LombokImportIndex {
   bySimple: Map<string, string>;
   starPackages: Set<string>;
   shadowedSimpleNames: Set<string>;
-  /** Simple names of single-static-imports; a static member type hides wildcards. */
+  /**
+   * Simple names of single-static-imports. One that imports a static member
+   * type hides wildcards; one that imports only fields or methods does not.
+   */
   staticImportedSimpleNames: Set<string>;
   /** Compilation-unit lifetime only; never retained across AST edits. */
   memberTypeNamesByOwner: ReadonlyMap<number, ReadonlySet<string>>;
-  workspaceProof?: JavaLombokAnnotationWorkspaceProof;
+  workspaceProof?: JavaLombokWorkspaceProof;
 }
 
 /**
@@ -200,17 +203,28 @@ export type JavaLombokAnnotationWorkspaceProof = (
   context: Parser.SyntaxNode | undefined,
 ) => JavaAnnotationProof;
 
+/** Workspace facts, used only while one compilation unit is being re-extracted. */
+export interface JavaLombokWorkspaceProof {
+  readonly annotation: JavaLombokAnnotationWorkspaceProof;
+  /**
+   * Whether this file's single-static-import of a simple name imports a
+   * member type (`true`), only fields or methods (`false`), or cannot be
+   * decided (`uncertain`).
+   */
+  readonly staticImportsType: (simpleName: string) => JavaAnnotationProof;
+}
+
 let activeWorkspaceProof:
   | {
       tree: Parser.Tree;
-      proof: JavaLombokAnnotationWorkspaceProof;
+      proof: JavaLombokWorkspaceProof;
     }
   | undefined;
 
 /** Synchronous, exception-safe context; no tree or proof survives this call. */
 export function withJavaLombokWorkspaceProof<T>(
   tree: Parser.Tree,
-  proof: JavaLombokAnnotationWorkspaceProof,
+  proof: JavaLombokWorkspaceProof,
   run: () => T,
 ): T {
   const previous = activeWorkspaceProof;
@@ -270,8 +284,9 @@ export function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex
     const wildcard = child.namedChildren.some((part) => part.type === 'asterisk');
     if (child.children.some((part) => part.type === 'static')) {
       // `import static a.Tags.Value;` may import a member type named Value,
-      // which shadows every type-import-on-demand (JLS 6.4.1). A static
-      // wildcard is itself on-demand and cannot shadow `lombok.*`.
+      // which shadows every type-import-on-demand (JLS 6.4.1), or only a
+      // field or method, which does not. A static wildcard is itself
+      // on-demand and cannot shadow `lombok.*`.
       if (!wildcard) staticImportedSimpleNames.add(annotationSimpleName(text));
       continue;
     }
@@ -322,10 +337,11 @@ function javaAnnotationProof(
   imports: LombokImportIndex,
   context?: Parser.SyntaxNode,
 ): JavaAnnotationProof {
-  const workspace = imports.workspaceProof?.(nameText, qualifiedName, context) ?? true;
+  const workspace = imports.workspaceProof?.annotation(nameText, qualifiedName, context) ?? true;
   if (workspace === false) return false;
-  if (!isLocallyProvenJavaAnnotation(nameText, qualifiedName, imports, context)) return false;
-  return workspace;
+  const local = isLocallyProvenJavaAnnotation(nameText, qualifiedName, imports, context);
+  if (local === false) return false;
+  return local === 'uncertain' ? 'uncertain' : workspace;
 }
 
 function isLocallyProvenJavaAnnotation(
@@ -333,7 +349,7 @@ function isLocallyProvenJavaAnnotation(
   qualifiedName: string,
   imports: LombokImportIndex,
   context?: Parser.SyntaxNode,
-): boolean {
+): JavaAnnotationProof {
   if (nameText.includes('.')) {
     const root = nameText.split('.')[0]!;
     if (
@@ -369,16 +385,19 @@ function isLocallyProvenJavaAnnotation(
   }
   const imported = imports.bySimple.get(simple);
   if (imported !== undefined) return imported === qualifiedName;
-  if (imports.staticImportedSimpleNames.has(simple)) return false;
   const packageName = qualifiedName.slice(0, qualifiedName.lastIndexOf('.'));
   if (!imports.starPackages.has(packageName)) return false;
   // Refuse only a second wildcard package known to declare the same name.
   const declarers = KNOWN_ON_DEMAND_DECLARERS.get(simple);
-  if (declarers === undefined) return true;
   for (const other of imports.starPackages) {
-    if (other !== packageName && declarers.has(other)) return false;
+    if (other !== packageName && declarers?.has(other) === true) return false;
   }
-  return true;
+  if (!imports.staticImportedSimpleNames.has(simple)) return true;
+  // Only an imported member type shadows the wildcard; a static field or
+  // method is an expression name (JLS 6.4.1, 7.5.3). The file alone cannot
+  // tell them apart, so only the workspace owner can decide.
+  const importsType = imports.workspaceProof?.staticImportsType(simple) ?? 'uncertain';
+  return importsType === 'uncertain' ? 'uncertain' : !importsType;
 }
 
 /**

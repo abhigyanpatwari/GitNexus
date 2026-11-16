@@ -26,7 +26,9 @@ import {
   LOMBOK_ANNOTATION_NAMES,
   synthesizeLombokAccessors,
   withJavaLombokWorkspaceProof,
+  type JavaAnnotationProof,
   type JavaLombokAnnotationWorkspaceProof,
+  type JavaLombokWorkspaceProof,
 } from './lombok-synthesizer.js';
 
 const TYPE_NODES = new Set([
@@ -96,9 +98,31 @@ function inheritsMemberType(member: TypeEntry, heir: TypeEntry): boolean {
   if (modifiers.includes('public') || modifiers.includes('protected')) return true;
   return member.packageName === heir.packageName;
 }
+/** Whether a single-static-import in `from`'s package imports this member type (JLS 7.5.3). */
+function staticallyImportsMemberType(
+  from: Pick<TypeEntry, 'packageName'>,
+  member: TypeEntry,
+): JavaAnnotationProof {
+  const modifiers = member.fact.modifiers;
+  if (modifiers === undefined) return 'uncertain';
+  if (modifiers.includes('private')) return false;
+  // A protected member type of another package is not accessible from an
+  // import declaration (outside every subclass body); leave it undecided.
+  if (!modifiers.includes('public') && member.packageName !== from.packageName)
+    return modifiers.includes('protected') ? 'uncertain' : false;
+  // Only static members are imported. Member interfaces, enums, records and
+  // annotation types, and every member type of an interface, are static.
+  const ownerKind = member.parent?.fact.kind;
+  return modifiers.includes('static') ||
+    member.fact.kind !== 'class_declaration' ||
+    ownerKind === 'interface_declaration' ||
+    ownerKind === 'annotation_type_declaration'
+    ? true
+    : 'uncertain';
+}
 interface Correction {
   readonly tree: Parser.Tree;
-  readonly proof: JavaLombokAnnotationWorkspaceProof;
+  readonly proof: JavaLombokWorkspaceProof;
   readonly removed: readonly SymbolDefinition[];
 }
 const corrections = new WeakMap<ParsedFile, Correction>();
@@ -109,6 +133,8 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   /** Top-level types by package, then simple name: one index per reconcile. */
   const packageTypes = new Map<string, Map<string, TypeEntry[]>>();
   const simpleNames = new Set<string>();
+  /** Simple names of type facts without an equal-range Class scope, by file. */
+  const unmappedNames = new Map<string, Set<string>>();
   for (const parsed of parsedFiles) {
     const pkg = getJavaPackageFact(parsed.filePath);
     const facts = getJavaOverloadFacts(parsed.filePath);
@@ -118,7 +144,12 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     const entries = new Map<string, TypeEntry>();
     for (const fact of facts.types) {
       const scope = scopes.get(rangeKey(fact.range));
-      if (scope?.kind !== 'Class') continue;
+      if (scope?.kind !== 'Class') {
+        const unmapped = unmappedNames.get(parsed.filePath) ?? new Set<string>();
+        unmapped.add(fact.simpleName);
+        unmappedNames.set(parsed.filePath, unmapped);
+        continue;
+      }
       const entry: TypeEntry = {
         filePath: parsed.filePath,
         packageName: pkg.packageName,
@@ -154,7 +185,7 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     byFile.set(parsed.filePath, entries);
   }
 
-  const visible = (from: TypeEntry, target: TypeEntry) =>
+  const visible = (from: Pick<TypeEntry, 'filePath' | 'packageName'>, target: TypeEntry) =>
     isJvmSourceVisible(from.filePath, target.filePath) &&
     (from.packageName === target.packageName || target.fact.modifiers?.includes('public') === true);
   const fqnOf = (target: TypeEntry) =>
@@ -306,7 +337,60 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     inherited.set(entry, result);
     return result;
   };
-  return { byFile, packageTypes, namesOf };
+  /** Every supertype is a workspace type or Object, so all member types are known. */
+  const closed = new Map<TypeEntry, boolean>();
+  const isClosed = (entry: TypeEntry): boolean => {
+    const cached = closed.get(entry);
+    if (cached !== undefined) return cached;
+    // A cyclic hierarchy is not a known one.
+    closed.set(entry, false);
+    const result = entry.fact.bases.every((base) => {
+      const target = resolveBase(entry, base);
+      return target === 'object' || (typeof target === 'object' && isClosed(target));
+    });
+    closed.set(entry, result);
+    return result;
+  };
+  /**
+   * Whether a single-static-import of `head` in `from`'s file imports a member
+   * type (JLS 7.5.3): `true` when a workspace owner declares or inherits an
+   * accessible static member type of that name; `false` when each owner and its
+   * whole hierarchy are in the workspace without one, so the import names only
+   * fields or methods; `uncertain` for an owner outside the workspace or an
+   * ambiguous one.
+   */
+  const staticImportsType = (
+    from: Pick<TypeEntry, 'filePath' | 'packageName' | 'facts'>,
+    head: string,
+  ): JavaAnnotationProof => {
+    let result: JavaAnnotationProof = false;
+    for (const item of from.facts.imports) {
+      if (!item.static || item.wildcard) continue;
+      const name = stripGaps(item.name);
+      const dot = name.lastIndexOf('.');
+      if (dot < 0 || name.slice(dot + 1) !== head) continue;
+      const owners = (byFqn.get(name.slice(0, dot)) ?? []).filter((target) =>
+        visible(from, target),
+      );
+      // Outside the workspace, ambiguous, or named through an inherited member type.
+      if (owners.length !== 1) {
+        result = 'uncertain';
+        continue;
+      }
+      const owner = owners[0]!;
+      // A type fact without an extracted scope might be a member type missed here.
+      if (!isClosed(owner) || unmappedNames.get(owner.filePath)?.has(head) === true)
+        result = 'uncertain';
+      for (const member of [...owner.members, ...namesOf(owner).members]) {
+        if (member.fact.simpleName !== head || !TYPE_NODES.has(member.fact.kind)) continue;
+        const imported = staticallyImportsMemberType(from, member);
+        if (imported === true) return true;
+        if (imported === 'uncertain') result = 'uncertain';
+      }
+    }
+    return result;
+  };
+  return { byFile, packageTypes, namesOf, staticImportsType };
 }
 
 /** Reconcile only files whose file-local annotation proof can be shadowed by siblings. */
@@ -361,15 +445,42 @@ export function reconcileJavaLombokWorkspaceProof(
           (!foreignOnly || entry.filePath !== original.filePath) &&
           isJvmSourceVisible(original.filePath, entry.filePath),
       );
-    // A single-static-import may name a member type; it shadows package
-    // siblings, and the leaf proof refuses it against wildcard imports.
+    // A single-type import shadows package siblings. A single-static-import
+    // does so only when it imports a member type, and the leaf proof then
+    // refuses that name itself; one importing a field leaves the sibling.
     const named = new Set(
-      facts.imports.filter((item) => !item.wildcard).map((item) => item.name.split('.').pop()!),
+      facts.imports
+        .filter((item) => !item.wildcard && !item.static)
+        .map((item) => item.name.split('.').pop()!),
     );
     const packageCanShadow = annotations.some((name) =>
       name.includes('.')
         ? hasSibling(name.split('.')[0]!, true)
         : hasSibling(name, true) && !named.has(name),
+    );
+    // The leaf proof leaves a single-static-import of an annotation name
+    // uncertain; a workspace owner may decide whether it names a member type.
+    const staticNames = new Set(
+      facts.imports
+        .filter((item) => !item.wildcard && item.static)
+        .map((item) => stripGaps(item.name).split('.').pop()!),
+    );
+    const staticVerdicts = new Map<string, JavaAnnotationProof>();
+    const staticImportsType = (name: string): JavaAnnotationProof => {
+      let verdict = staticVerdicts.get(name);
+      if (verdict === undefined) {
+        verdict = staticNames.has(name)
+          ? inventory.staticImportsType(
+              { filePath: original.filePath, packageName: pkg.packageName, facts },
+              name,
+            )
+          : 'uncertain';
+        staticVerdicts.set(name, verdict);
+      }
+      return verdict;
+    };
+    const staticCanDecide = annotations.some(
+      (name) => staticNames.has(name) && staticImportsType(name) !== 'uncertain',
     );
     // Anonymous/local type facts can lack an equal-range extracted scope.
     // Keep the prior trigger in that case; narrower coverage is not proof.
@@ -385,8 +496,8 @@ export function reconcileJavaLombokWorkspaceProof(
         if (hasAnnotationInLines(linesByRoot.get(name), entry.fact.range)) return true;
       return false;
     });
-    if (!packageCanShadow && !inheritedCanShadow) continue;
-    const proof: JavaLombokAnnotationWorkspaceProof = (written, _qualified, context) => {
+    if (!packageCanShadow && !inheritedCanShadow && !staticCanDecide) continue;
+    const annotationProof: JavaLombokAnnotationWorkspaceProof = (written, _qualified, context) => {
       const root = written.split('.')[0]!;
       if (
         written.includes('.')
@@ -426,6 +537,7 @@ export function reconcileJavaLombokWorkspaceProof(
       }
       return uncertain ? 'uncertain' : true;
     };
+    const proof: JavaLombokWorkspaceProof = { annotation: annotationProof, staticImportsType };
     const tree =
       (ctx.treeCache?.get(original.filePath) as Parser.Tree | undefined) ??
       parseSourceSafe(getJavaParser(), source, undefined, {
