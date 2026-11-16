@@ -1207,7 +1207,9 @@ describe('finalize — wildcardReexportExcludedNames (#3956)', () => {
     const files = [consumer, barrel, child];
     const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files, EXCLUDE_DEFAULT));
     const imports = out.imports.get(consumer.moduleScope) ?? [];
-    expect(imports.find((edge) => edge.localName === 'X')?.targetDefId).toBeUndefined();
+    const defaultImport = imports.find((edge) => edge.localName === 'X');
+    expect(defaultImport).toBeDefined();
+    expect(defaultImport?.targetDefId).toBeUndefined();
     expect(imports.find((edge) => edge.localName === 'Child')?.targetDefId).toBe('def:Child');
   });
 

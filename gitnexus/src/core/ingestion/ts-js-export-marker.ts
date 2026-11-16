@@ -259,7 +259,8 @@ export function collectEsmExportEvidence(
 ): EsmExportEvidence | undefined {
   if (filePath.endsWith('.d.ts')) return undefined;
   const namedLocals = new Set<string>();
-  let defaultLocal: string | undefined;
+  // Every local named as the default; two different ones (invalid input) name none.
+  const defaultLocals = new Set<string>();
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
   // = …`, an alias (`const m = module.exports; m.x = …`), an `exports.x` — means
   // "not under `export`" says nothing.
@@ -279,19 +280,20 @@ export function collectEsmExportEvidence(
             namedLocals.add(name);
             // `export { f as default }`: TS parses the alias as an identifier,
             // JS as an anonymous `default` token, so compare text, not type.
-            if (spec.childForFieldName('alias')?.text === 'default') defaultLocal = name;
+            if (spec.childForFieldName('alias')?.text === 'default') defaultLocals.add(name);
           }
         } else if (child.type === 'identifier') {
           // `export default f;` and TS `export = f;`. Only the former names a
           // default: `export =` binds `import X from` only under esModuleInterop.
           namedLocals.add(child.text);
-          if (isDefaultExportStatement(stmt)) defaultLocal = child.text;
+          if (isDefaultExportStatement(stmt)) defaultLocals.add(child.text);
         }
       }
     } else if (hasTopLevelThisExportAssignment(stmt)) {
       commonJs = true;
     }
   }
+  const [defaultLocal] = defaultLocals.size === 1 ? defaultLocals : [];
   return { namedLocals, commonJs, defaultLocal };
 }
 

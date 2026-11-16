@@ -350,6 +350,18 @@ describe('@declaration.is-default-export (#3956)', () => {
     }
   });
 
+  it('marks no default when two different locals are both named as the default', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(
+        defaultExports(
+          emit,
+          'function a() {}\nfunction b() {}\nexport { a as default };\nexport { b as default };',
+          file,
+        ),
+      ).toEqual([]);
+    }
+  });
+
   it('leaves TS `export =` unmarked (interop-dependent, deferred)', () => {
     expect(defaultExports(emitTsScopeCaptures, 'function f() {}\nexport = f;', 'x.ts')).toEqual([]);
   });
