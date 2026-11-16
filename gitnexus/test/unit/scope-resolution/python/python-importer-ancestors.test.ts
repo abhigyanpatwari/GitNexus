@@ -107,20 +107,25 @@ function legacyDirPrefixes(files: readonly string[]): Set<string> {
 }
 
 /**
- * The specification of `nestedDirNames`, read off the legacy prefix set: the
- * name of every directory prefix that has a NON-EMPTY parent, which is exactly
- * the set of `${ancestor}/${segment}/` shapes the old ancestor loop could ever
- * match. A segment outside it made the old loop run to completion and answer
- * false; the new code answers false without running it.
+ * The specification of `nestedDirParents`, read off the legacy prefix set: the
+ * name of every directory prefix that has a NON-EMPTY parent, with each such
+ * parent, which is exactly the set of `${ancestor}/${segment}/` shapes the old
+ * ancestor loop could ever match. A segment outside it made the old loop run to
+ * completion and answer false; the new code answers false without running it.
+ * Rendered as sorted `segment<-parent` strings for comparison.
  */
-function specNestedDirNames(dirPrefixes: ReadonlySet<string>): Set<string> {
-  const names = new Set<string>();
+function specNestedDirParents(dirPrefixes: ReadonlySet<string>): string[] {
+  const pairs: string[] = [];
   for (const prefix of dirPrefixes) {
     const dir = prefix.slice(0, -1);
     const slash = dir.lastIndexOf('/');
-    if (slash > 0) names.add(dir.slice(slash + 1));
+    if (slash > 0) pairs.push(`${dir.slice(slash + 1)}<-${dir.slice(0, slash)}`);
   }
-  return names;
+  return pairs.sort();
+}
+
+function nestedDirParentPairs(parents: ReadonlyMap<string, ReadonlySet<string>>): string[] {
+  return [...parents].flatMap(([name, dirs]) => [...dirs].map((dir) => `${name}<-${dir}`)).sort();
 }
 
 // ─── the workspace the adapter is driven against ─────────────────────────────
@@ -227,7 +232,7 @@ describe('Python importer-ancestor memo (#2913)', () => {
     // the first prefix already present. Skipping the rest is only sound
     // because a prefix is always stored with all of its own ancestors.
     expect(sortedStrings(index.dirPrefixes)).toEqual(sortedStrings(legacy));
-    expect(sortedStrings(index.nestedDirNames)).toEqual(sortedStrings(specNestedDirNames(legacy)));
+    expect(nestedDirParentPairs(index.nestedDirParents)).toEqual(specNestedDirParents(legacy));
   });
 
   /**

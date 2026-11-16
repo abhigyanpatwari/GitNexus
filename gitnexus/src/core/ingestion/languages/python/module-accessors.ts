@@ -252,7 +252,7 @@ function literalAllAssignment(
  * `__all__` leaves the value unknown.
  */
 export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void {
-  let names: readonly string[] | undefined;
+  let names: string[] | undefined;
   let literal = true;
   walkNamedTree(root, (node) => {
     // Length first: `.text` copies the token out of the native tree.
@@ -260,7 +260,10 @@ export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void
     if (node.endIndex - node.startIndex !== 7 || node.text !== '__all__') return;
     const assignment = literalAllAssignment(node);
     if (assignment === undefined) literal = false;
-    else names = assignment.reset ? assignment.names : [...(names ?? []), ...assignment.names];
+    // Append in place: copying the list on every `+=` is quadratic in the
+    // number of statements.
+    else if (assignment.reset || names === undefined) names = [...assignment.names];
+    else names.push(...assignment.names);
   });
   if (literal && names !== undefined) literalAllByFile.set(filePath, names);
 }

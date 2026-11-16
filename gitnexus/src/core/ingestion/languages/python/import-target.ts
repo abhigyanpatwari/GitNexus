@@ -359,9 +359,9 @@ function resolveAbsoluteFromFiles(
  * required, as discovery is namespace-aware. Exact matches only: a miss here
  * never widens into a suffix guess, so external imports stay unresolved.
  *
- * Cost is O(depth) Set lookups with no file scan: `srcChildDirNames` retires
- * every target whose leading segment names no directory under any `src/`, and
- * a root without `<root>src/<leading>/` is skipped without probing.
+ * Cost is O(depth) with no file scan: `srcDirRoots` retires every target whose
+ * leading segment names no directory under any `src/`, and each step looks up
+ * a memoized ancestor string rather than hashing a fresh path key.
  */
 function resolveFromSrcRoots(
   pathLike: string,
@@ -371,8 +371,8 @@ function resolveFromSrcRoots(
   const slash = pathLike.indexOf('/');
   if (slash <= 0) return null;
   const index = getPythonFileIndex(allFilePaths);
-  const leading = pathLike.slice(0, slash);
-  if (!index.srcChildDirNames.has(leading)) return null;
+  const roots = index.srcDirRoots.get(pathLike.slice(0, slash));
+  if (roots === undefined) return null;
 
   // Same bucket guards as `resolveAbsoluteFromFiles`.
   const lastSeg = pathLike.slice(pathLike.lastIndexOf('/') + 1);
@@ -382,8 +382,9 @@ function resolveFromSrcRoots(
 
   const ancestors = importerAncestors(index, importerDirOf(fromFile));
   for (let i = 0; i <= ancestors.length; i++) {
-    const root = i < ancestors.length ? `${ancestors[i]}/src/` : 'src/';
-    if (!index.dirPrefixes.has(`${root}${leading}/`)) continue;
+    const dir = i < ancestors.length ? ancestors[i] : '';
+    if (!roots.has(dir)) continue;
+    const root = dir === '' ? 'src/' : `${dir}/src/`;
     // A src/ that is itself a package is imported as `src.x`, not a sys.path
     // root, so `email.utils` must not bind to its `src/email/utils.py`.
     if (index.normSet.has(`${root}__init__.py`)) continue;
@@ -437,17 +438,19 @@ function hasRepoCandidate(
   // (3) used to MATERIALIZE one `${ancestor}/${seg}/` string per component of
   // the importer's directory, eagerly, before checks (1) and (2) had even run —
   // O(depth^2) characters on every import, and the other half of #2913. Two
-  // things replace that: `nestedDirNames` answers "is `seg` the name of any
+  // things replace that: `nestedDirParents` answers "is `seg` the name of any
   // directory sitting under a non-empty parent?" in O(1), which is `false` for
   // every external import (`os`, `django`, an unknown distribution) and skips
   // the walk outright; and what remains walks the per-directory ancestor chain,
-  // built once per pass, closest first, so the common in-repo hit exits after a
-  // step or two. `nestedDirNames` is exact, not a filter: `${A}/${seg}/` can
-  // only be a directory prefix if `seg` names a directory under the non-empty
-  // parent `A`, so a miss here means the old loop would have missed too.
-  if (!index.nestedDirNames.has(leadingSegment)) return false;
+  // built once per pass, closest first. `${A}/${seg}/` is a directory prefix
+  // exactly when `A` is one of `seg`'s recorded parents, so each step looks up
+  // the memoized ancestor string itself: its hash is cached, where a fresh
+  // `${A}/${seg}/` key cost O(depth) to hash and made a non-matching walk
+  // O(depth^2) again.
+  const parents = index.nestedDirParents.get(leadingSegment);
+  if (parents === undefined) return false;
   for (const ancestor of importerAncestors(index, importerDirOf(fromFile))) {
-    if (index.dirPrefixes.has(`${ancestor}/${prefix}`)) return true;
+    if (parents.has(ancestor)) return true;
   }
   return false;
 }
