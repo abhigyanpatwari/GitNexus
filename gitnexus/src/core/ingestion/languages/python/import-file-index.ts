@@ -257,7 +257,8 @@ export const getPythonFileIndex = perFileSet(
           const name = norm.slice(parentSlash + 1, i);
           nestedDirNames.add(name);
           const parentStart = norm.lastIndexOf('/', parentSlash - 1) + 1;
-          if (norm.slice(parentStart, parentSlash) === 'src') srcChildDirNames.add(name);
+          // The parent is named `src` exactly when `src/` starts at its name.
+          if (norm.startsWith('src/', parentStart)) srcChildDirNames.add(name);
         }
       }
     }

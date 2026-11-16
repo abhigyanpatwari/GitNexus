@@ -255,7 +255,9 @@ export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void
   let names: readonly string[] | undefined;
   let literal = true;
   walkNamedTree(root, (node) => {
-    if (!literal || node.type !== 'identifier' || node.text !== '__all__') return;
+    // Length first: `.text` copies the token out of the native tree.
+    if (!literal || node.type !== 'identifier') return;
+    if (node.endIndex - node.startIndex !== 7 || node.text !== '__all__') return;
     const assignment = literalAllAssignment(node);
     if (assignment === undefined) literal = false;
     else names = assignment.reset ? assignment.names : [...(names ?? []), ...assignment.names];
