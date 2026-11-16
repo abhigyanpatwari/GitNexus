@@ -9,6 +9,7 @@ import {
 } from 'gitnexus-shared';
 import { nodeToCapture } from '../../utils/ast-helpers.js';
 import { eraseJavaTypeArguments, javaTrailingDimensions, javaTypeText } from './type-spelling.js';
+import { synthesizeJavaSamLambdaCaptures } from './sam-lambda-types.js';
 import {
   getJavaOverloadFacts,
   javaRangeContains,
@@ -891,6 +892,8 @@ export function synthesizeJavaDeclaredTypeCaptures(
       // can type this variable; resolution decides or removes the binding.
       if (inferred !== undefined || inherited.length > 0) emit(name, inferred, dependsOn, body);
     } else if (node.type === 'lambda_expression') {
+      // A lambda this JDK callback route does not type may still take its
+      // parameter types from the selected method's functional interface.
       const argumentsNode = node.parent;
       const call = argumentsNode?.parent;
       const receiver = call?.childForFieldName('object');
@@ -903,8 +906,10 @@ export function synthesizeJavaDeclaredTypeCaptures(
         argumentsNode.namedChildren.filter(
           (child) => child.type !== 'line_comment' && child.type !== 'block_comment',
         ).length !== 1
-      )
+      ) {
+        out.push(...synthesizeJavaSamLambdaCaptures(node));
         continue;
+      }
       const found = lookup(receiver);
       const owner = container(found.binding, node);
       const parameters = lambdaParameters(node);
@@ -930,8 +935,10 @@ export function synthesizeJavaDeclaredTypeCaptures(
             : member === 'forEach' && parameters.length === 2
               ? ['forEachKey', 'forEachValue']
               : undefined;
-      if (candidates === undefined && (routes === undefined || found.shadows.length === 0))
+      if (candidates === undefined && (routes === undefined || found.shadows.length === 0)) {
+        out.push(...synthesizeJavaSamLambdaCaptures(node));
         continue;
+      }
       for (let i = 0; i < parameters.length; i++) {
         const parameter = parameters[i]!;
         const explicit = parameter.childForFieldName('type');

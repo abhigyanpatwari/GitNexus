@@ -44,6 +44,11 @@ import {
   emitJavaLombokWorkspaceCorrections,
 } from './lombok-workspace-proof.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
+import {
+  indexJavaSamLambdaTargets,
+  javaSamLambdaParameterType,
+  selectJavaLambdaOverload,
+} from './sam-lambda-types.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringAopMetadata } from './spring-aop.js';
 import { attachJavaSpringConfigBindings } from './spring-config-bindings.js';
@@ -101,8 +106,16 @@ const javaScopeResolver: ScopeResolver = {
   populateWorkspaceReferences: reconcileJavaLombokWorkspaceProof,
   emitHeritageEdges: emitJavaLombokWorkspaceCorrections,
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
-  resolveReceiverMember: resolveJavaReceiverMember,
-  resolveUnqualifiedCall: resolveJavaUnqualifiedCall,
+  // A call whose every argument is an implicitly typed lambda is decided by
+  // potential applicability where the general selector has no evidence.
+  resolveReceiverMember: (owner, member, site, scopes, model) =>
+    selectJavaLambdaOverload(
+      resolveJavaReceiverMember(owner, member, site, scopes, model),
+      site,
+      scopes,
+    ),
+  resolveUnqualifiedCall: (site, scopes, model) =>
+    selectJavaLambdaOverload(resolveJavaUnqualifiedCall(site, scopes, model), site, scopes),
   resolveSelectedMethodImplementation: resolveJavaSelectedMethodImplementation,
   receiverMemberLookupCoversAllCalls: true,
   // A producer indexed by trailing subscripts (`make()[0].save()`) is typed
@@ -111,8 +124,13 @@ const javaScopeResolver: ScopeResolver = {
   receiverCallSite: resolveJavaReceiverCallSite,
   elementTypeOf: javaArrayElementType,
   // `for (var x : xs)` over a selected method's result: only the element of
-  // that method's own proven JDK container return type.
-  callResultElementType: javaCallResultElementType,
+  // that method's own proven JDK container return type. An implicitly typed
+  // lambda argument's parameter: the selected method's workspace functional
+  // interface parameter type (`sam-lambda-types.ts`).
+  callResultElementType: (callee, returned, route, scopes) =>
+    route.startsWith('lambda:')
+      ? javaSamLambdaParameterType(callee, returned, route, scopes)
+      : javaCallResultElementType(callee, returned, route, scopes),
   qualifiedTypeLookupSpelling: javaQualifiedTypeLookupSpelling,
   hoistedTypeBindingsRequireOwner: true,
 
@@ -134,6 +152,7 @@ const javaScopeResolver: ScopeResolver = {
     populateJavaPackageSiblings(parsedFiles, indexes, ctx);
     populateJavaQualifiedTypeBindings(parsedFiles, indexes);
     validateJavaQualifiedContextualBindings(parsedFiles, indexes);
+    indexJavaSamLambdaTargets(parsedFiles, indexes);
   },
   resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
   populateRangeBindings: populateJavaCrossFileReturnTypes,

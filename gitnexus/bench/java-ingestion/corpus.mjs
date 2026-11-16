@@ -226,6 +226,7 @@ class Harness {
   Item field; Item x; Item[] arrayField;
   void accept(ItemCallback callback) {}
   void acceptOther(OtherCallback callback) {}
+  void acceptExternal(missing.Callback callback) {}
   Item[] arrayResult() { return arrayField; }
   Item trailingResult()[] { return arrayField; }
   Item[] needsArgument(int ignored) { return arrayField; }
@@ -263,6 +264,7 @@ class Harness {
   }
   void typedLambda() { acceptOther((Other x) -> x.save()); }
   void unknownLambda() { accept(x -> x.audit()); }
+  void externalLambda() { acceptExternal(x -> x.audit()); } // absent external type negative
   void siblingLambda() { accept((Item x) -> x.audit()); acceptOther((Other x) -> x.save()); }
   void own() {}
   void lexicalThis() { accept(x -> this.own()); }
@@ -393,7 +395,11 @@ ${densityClasses}
       'P3 resource lifetime',
     );
     call('typedLambda', 0, ['save'], [m('Other')], 'P4 typed lambda owner');
-    call('unknownLambda', 0, ['audit'], [], 'P4 unknown lambda shadow barrier');
+    // JLS 15.27.3: `x` takes ItemCallback.accept's parameter type, Item.
+    call('unknownLambda', 0, ['audit'], [m('Item', 'audit')], 'P4 workspace SAM lambda');
+    expectations.at(-1).forbiddenTargetIds.push(m('Other', 'audit'));
+    call('externalLambda', 0, ['audit'], [], 'P4 unknown lambda shadow barrier', true);
+    expectations.at(-1).forbiddenTargetIds.push(m('Item', 'audit'), m('Other', 'audit'));
     call(
       'siblingLambda',
       0,
@@ -402,7 +408,14 @@ ${densityClasses}
       'P4 sibling lambda owners',
     );
     call('lexicalThis', 0, ['own'], [m('Harness', 'own')], 'P4 lexical this');
-    call('nestedLambda', 0, ['save', 'audit'], [m('Item')], 'P4 nested lambda names');
+    call(
+      'nestedLambda',
+      0,
+      ['save', 'audit'],
+      [m('Item'), m('Item', 'audit')],
+      'P4 nested lambda names',
+    );
+    expectations.at(-1).forbiddenTargetIds.push(m('Other', 'audit'));
     for (const caller of ['callback', 'streamCallback', 'iteration', 'listIteration'])
       call(caller, 1, ['save'], [m('Item')], 'P4 contextual JDK elements');
     call(
