@@ -64,14 +64,18 @@ export function resolveFrameworkRouteFacts(
     return targets.length === 1 && byFile.has(targets[0]) ? targets[0] : undefined;
   };
   // Which names a file can publish, directly or through `export *`. `opaque`: some star
-  // source is unresolved, so it may publish anything. `null`: the file reaches an
-  // `export *` cycle, so lookups there keep walking every star source.
+  // source is unresolved, or the chain is deeper than the resolver explores, so it may
+  // publish anything and lookups walk it under the usual bounds. `null`: the file
+  // reaches an `export *` cycle, so lookups there keep walking every star source.
   type Published = { readonly names: ReadonlySet<string>; readonly opaque: boolean } | null;
   const published = new Map<string, Published>();
+  const tooDeep: Published = { names: new Set(), opaque: true };
   const publishedBy = (filePath: string, active = new Set<string>()): Published => {
     if (published.has(filePath)) return published.get(filePath)!;
     const file = byFile.get(filePath);
     if (!file || active.has(filePath)) return null;
+    // Not cached: the same file reached from a shallower barrel is still indexable.
+    if (active.size >= MAX_RESOLUTION_DEPTH) return tooDeep;
     active.add(filePath);
     const names = new Set(file.exports.map((entry) => entry.name));
     let opaque = false;
@@ -91,26 +95,27 @@ export function resolveFrameworkRouteFacts(
     published.set(filePath, result);
     return result;
   };
-  // Per file: name -> the star sources that can publish it, plus the sources that may
-  // publish anything. A lookup through a wide `export *` barrel visits only those, not
-  // every star source per lookup (O(N^2) over N consumers of one barrel).
-  type StarIndex = { readonly byName: Map<string, string[]>; readonly always: string[] } | null;
+  // Per file: name -> positions of the star sources that can publish it, plus the
+  // positions of sources that may publish anything. A lookup through a wide `export *`
+  // barrel visits only those, not every star source per lookup (O(N^2) over N consumers
+  // of one barrel). Positions keep the original source order for the candidates.
+  type StarIndex = { readonly byName: Map<string, number[]>; readonly always: number[] } | null;
   const starIndexes = new Map<string, StarIndex>();
   const buildStarIndex = (filePath: string, file: FrameworkRouteFacts): StarIndex => {
-    const index = { byName: new Map<string, string[]>(), always: [] as string[] };
-    for (const source of file.starExports) {
+    const index = { byName: new Map<string, number[]>(), always: [] as number[] };
+    for (const [position, source] of file.starExports.entries()) {
       const target = targetFor(filePath, source);
       const inner = target === undefined ? undefined : publishedBy(target);
       if (inner === null) return null;
       if (inner === undefined || inner.opaque) {
-        index.always.push(source);
+        index.always.push(position);
         continue;
       }
       for (const name of inner.names) {
         if (name === 'default') continue;
-        const sources = index.byName.get(name);
-        if (sources) sources.push(source);
-        else index.byName.set(name, [source]);
+        const positions = index.byName.get(name);
+        if (positions) positions.push(position);
+        else index.byName.set(name, [position]);
       }
     }
     return index;
@@ -123,8 +128,15 @@ export function resolveFrameworkRouteFacts(
     if (!starIndexes.has(filePath)) starIndexes.set(filePath, buildStarIndex(filePath, file));
     const index = starIndexes.get(filePath)!;
     if (index === null) return file.starExports;
-    const named = index.byName.get(name);
-    return named === undefined ? index.always : [...index.always, ...named];
+    const { always } = index;
+    const named = index.byName.get(name) ?? [];
+    // Merge the two ascending position lists back into source order.
+    const sources: string[] = [];
+    for (let a = 0, n = 0; a < always.length || n < named.length; ) {
+      const next = n >= named.length || (a < always.length && always[a] < named[n]);
+      sources.push(file.starExports[next ? always[a++] : named[n++]]);
+    }
+    return sources;
   };
   const exportValue = (
     filePath: string,
