@@ -10,6 +10,7 @@ import {
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { interpretPythonImport } from './interpret.js';
+import { reconcilePythonImportClaims, type PythonImportClaim } from './import-claims.js';
 
 const COMPREHENSIONS = new Set([
   'list_comprehension',
@@ -30,7 +31,7 @@ interface Environment {
   parent?: Environment;
   claims: NameClaim[];
   directives: Map<string, 'module' | 'enclosing-function'>;
-  imports: Map<string, Array<{ identity: string; packageRoot?: string; claim: NameClaim }>>;
+  imports: Map<string, PythonImportClaim[]>;
 }
 interface Event {
   env: Environment;
@@ -334,29 +335,7 @@ export function applyPythonLexicalBindings(
     }
   }
   for (const env of environments) {
-    for (const [name, imports] of env.imports) {
-      const first = imports[0]!;
-      const compatible = imports.every(
-        (imp) =>
-          imp.identity === first.identity ||
-          (first.packageRoot !== undefined && imp.packageRoot === first.packageRoot),
-      );
-      const mixed = env.claims.some(
-        (claim) =>
-          claim.name === name &&
-          claim.redirect === undefined &&
-          !imports.some((imp) => imp.claim === claim),
-      );
-      // Conflicting imports remain uncertain, but a definite def/class store
-      // still supplies its own local target after the declaration executes.
-      env.claims = env.claims.map((claim) =>
-        claim.name !== name || claim.redirect !== undefined || definiteDeclarations.has(claim)
-          ? claim
-          : !compatible || mixed
-            ? { ...claim, kind: 'blocked' }
-            : { ...claim, merge: true },
-      );
-    }
+    env.claims = reconcilePythonImportClaims(env.claims, env.imports, definiteDeclarations);
   }
   const environmentAt = (node: SyntaxNode): Environment => {
     for (let current: SyntaxNode | null = node; current; current = current.parent) {
