@@ -256,3 +256,71 @@ class Expr { void call(cb.UserCb cb, models.User u) { cb.accept(u); } }`,
     ]);
   });
 });
+
+// A `var` element taken from a JDK container is kept only if the container's
+// name means the JDK type where it was written. That name is written in a
+// type, so a variable named `java` or `List` never gives it another meaning;
+// a type of that name (a local class, a same-package type) still does.
+describe('Java container element proofs next to a variable named like the proof root', () => {
+  const result = useFixture('java-r4-variable-named-proof-root', {
+    'models/User.java': 'package models; public class User { public void save() {} }',
+    'models/Other.java': 'package models; public class Other { public void save() {} }',
+    'app/ParamRoot.java': `package app;
+import models.User;
+class ParamRoot { void run(String java, java.util.List<User> users) { for (var u : users) u.save(); } }`,
+    'app/FieldRoot.java': `package app;
+import models.User;
+class FieldRoot {
+  String java;
+  void run(java.util.List<User> users) { for (var u : users) u.save(); }
+}`,
+    'app/LocalRoot.java': `package app;
+import models.User;
+class LocalRoot {
+  java.util.List<User> make() { return null; }
+  void run() { int java = 0; java.util.List<User> users = make(); for (var u : users) u.save(); }
+}`,
+    'app/OnDemandVar.java': `package app;
+import java.util.*;
+import models.User;
+class OnDemandVar { void run(String List, List<User> users) { for (var u : users) u.save(); } }`,
+    'app/LocalClassList.java': `package app;
+import java.util.*;
+import models.User;
+import models.Other;
+class LocalClassList {
+  void run() {
+    class List<T> implements Iterable<Other> { public Iterator<Other> iterator() { return null; } }
+    List<User> users = new List<>();
+    for (var u : users) u.save();
+  }
+}`,
+    'sib/List.java': `package sib;
+public class List<T> implements Iterable<models.Other> {
+  public java.util.Iterator<models.Other> iterator() { return null; }
+}`,
+    'sib/SiblingList.java': `package sib;
+import java.util.*;
+import models.User;
+class SiblingList { void run(String List, List<User> users) { for (var u : users) u.save(); } }`,
+  });
+
+  it.each([
+    ['Method:app/ParamRoot.java:ParamRoot.run#2'],
+    ['Method:app/FieldRoot.java:FieldRoot.run#1'],
+    ['Method:app/LocalRoot.java:LocalRoot.run#0'],
+    ['Method:app/OnDemandVar.java:OnDemandVar.run#2'],
+  ])('keeps the JDK container element in %s', (caller) => {
+    expect(callTargets(result(), caller, 'save')).toEqual(['Method:models/User.java:User.save#0']);
+  });
+
+  it.each([
+    ['Method:app/LocalClassList.java:LocalClassList.run#0'],
+    ['Method:sib/SiblingList.java:SiblingList.run#2'],
+  ])('never reads %s through the JDK container a type of that name shadows', (caller) => {
+    expect(result().graph.getNode(caller)).toBeDefined();
+    expect(callTargets(result(), caller, 'save')).not.toContain(
+      'Method:models/User.java:User.save#0',
+    );
+  });
+});

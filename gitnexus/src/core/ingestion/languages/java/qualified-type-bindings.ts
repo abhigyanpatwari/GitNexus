@@ -382,32 +382,34 @@ function importIndex(file: string): ImportIndex {
 
 const NO_CLAIM: NameClaimResult = { status: 'absent', bindings: [], imports: [], claims: [] };
 
-/** A declaration that can name a type, the only kind a qualifier root of a
- * type spelling can resolve to. */
+/** A declaration that can name a type, the only kind a name written in a
+ * type can resolve to. */
 const isJavaTypeDefinition = (definition: SymbolDefinition): boolean =>
   isClassLike(definition.type) || definition.type === 'Annotation';
 
 /**
- * Name lookup for the first identifier of a qualified type spelling. In a
- * type, the qualifier of `Q.Id` is a PackageOrTypeName (JLS 6.5.4.1, 6.5.5.2):
- * only types and packages compete for it, and a variable never obscures it
- * (JLS 6.4.2 covers ambiguous expression names only). So a scope where the
- * name is only a field, parameter, local, lambda parameter, record component or
- * method is passed over, and a scope that binds a type of that name as well
- * keeps only the type. Any scope that claims or imports the name, or binds it
- * to a type, answers as before. Each retry starts outside the scope that
- * answered, so it runs at most once per enclosing scope.
+ * Name lookup for a name written in a type: a simple type name, or the first
+ * identifier of a qualified one. There, only types (and, for a qualifier,
+ * packages) compete for the name: a simple type name is a TypeName and the
+ * qualifier of `Q.Id` is a PackageOrTypeName (JLS 6.5.4.1, 6.5.5), and a
+ * variable never obscures either (JLS 6.4.2 covers ambiguous expression names
+ * only). So a scope where the name is only a field, parameter, local, lambda
+ * parameter, record component or method is passed over, and a scope that binds
+ * a type of that name as well keeps only the type. Any scope that claims or
+ * imports the name, or binds it to a type, answers as before. Each retry
+ * starts outside the scope that answered, so it runs at most once per
+ * enclosing scope. Never use it for an expression, where variables come first.
  */
-function lookupQualifierRootClaim(
+export function lookupJavaTypeNameClaim(
   scopeId: ScopeId,
-  root: string,
+  name: string,
   indexes: ScopeResolutionIndexes,
-  position: TypeRef['lookupPosition'],
+  position?: TypeRef['lookupPosition'],
 ): NameClaimResult {
   const seen = new Set<ScopeId>();
   for (let start: ScopeId | null = scopeId; start !== null && !seen.has(start); ) {
     seen.add(start);
-    const claim = lookupNameClaim(start, root, indexes, { purpose: 'type', position });
+    const claim = lookupNameClaim(start, name, indexes, { purpose: 'type', position });
     const scope = claim.scope;
     // A scope also owns a name through a variable's own type fact or lexical
     // name with no binding (`blocked`): that is a value too.
@@ -484,7 +486,7 @@ function qualifiedTypeKey(
     (isJavaPackageSiblingVisibilityIncomplete(file) && hasJavaSamePackageType(file, root) !== false)
   )
     return null;
-  const claim = lookupQualifierRootClaim(ref.declaredAtScope, root, indexes, ref.lookupPosition);
+  const claim = lookupJavaTypeNameClaim(ref.declaredAtScope, root, indexes, ref.lookupPosition);
   const scope = ref.declaredAtScope;
   // Name lookup binds no inherited member type, yet one shadows every type
   // and package of that name from farther out (JLS 6.4.1): the spelling is a

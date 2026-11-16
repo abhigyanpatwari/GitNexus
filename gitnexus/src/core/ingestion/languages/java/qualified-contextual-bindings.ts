@@ -1,10 +1,6 @@
 import { makeScopeId, type ParsedFile, type SymbolDefinition, type TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import {
-  bindsTypeParameter,
-  isClassLike,
-  lookupNameClaim,
-} from '../../scope-resolution/scope/walkers.js';
+import { bindsTypeParameter, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import {
   javaReturnElementFacts,
   javaTypeFieldFacts,
@@ -25,7 +21,7 @@ import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
 } from './package-siblings.js';
-import { inheritsJavaMemberTypeNamed } from './qualified-type-bindings.js';
+import { inheritsJavaMemberTypeNamed, lookupJavaTypeNameClaim } from './qualified-type-bindings.js';
 import { eraseJavaTypeArguments } from './type-spelling.js';
 
 type Position = TypeRef['lookupPosition'];
@@ -212,12 +208,16 @@ export function validateJavaQualifiedContextualBindings(
     if (indexes.scopeTree.getScope(proof.scope) === undefined) return false;
     if (inheritsJavaMemberTypeNamed(proof.scope, proof.name, indexes)) return false;
     if (proof.kind === 'single') return true;
+    // A proof name is always written in a type (a JDK container's simple name
+    // or the `java` root of its qualified one), where no variable obscures it.
     if (
       bindsTypeParameter(proof.scope, proof.name, indexes) ||
-      lookupNameClaim(proof.scope, proof.name, indexes, {
-        purpose: 'type',
-        ...(proof.kind === 'root' ? { position } : {}),
-      }).status !== 'absent'
+      lookupJavaTypeNameClaim(
+        proof.scope,
+        proof.name,
+        indexes,
+        proof.kind === 'root' ? position : undefined,
+      ).status !== 'absent'
     )
       return false;
     // Sibling injection is capped for cost, so a large package may leave a
