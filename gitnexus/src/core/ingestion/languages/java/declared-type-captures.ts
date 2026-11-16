@@ -145,6 +145,22 @@ export interface JavaReturnElementFact {
   }[];
 }
 
+/**
+ * How a dotted element spelling is read at a binding's lookup anchor (1-based
+ * line). `import`: it is a single-type import's canonical name, so it names
+ * the imported type wherever it is read, never a member of a type in scope
+ * there (JLS 7.5.1; a same-package type is not in scope in an import, JLS 6.3).
+ * `ambiguous`: the anchor also carries that spelling as written source, and
+ * the two readings cannot be told apart, so resolution refuses both.
+ */
+export interface JavaImportedSpellingFact {
+  readonly line: number;
+  readonly col: number;
+  /** Erased, without array dimensions, as qualified lookup reads it. */
+  readonly spelling: string;
+  readonly status: 'import' | 'ambiguous';
+}
+
 /** Ephemeral proof tree: no AST nodes or new fields enter ParsedFile. */
 interface TypeEvidence {
   readonly spelling: string;
@@ -249,6 +265,11 @@ const JDK_CONTAINERS = new Set([...ITERABLE_TYPES, ...MAP_TYPES, STREAM_TYPE]);
 const containerProofs = new Map<string, readonly JavaContainerProofFact[]>();
 const returnElements = new Map<string, readonly JavaReturnElementFact[]>();
 const typeFields = new Map<string, readonly JavaTypeFieldsFact[]>();
+const importedSpellings = new Map<string, readonly JavaImportedSpellingFact[]>();
+
+export function getJavaImportedSpellings(filePath: string): readonly JavaImportedSpellingFact[] {
+  return importedSpellings.get(filePath) ?? [];
+}
 
 export function getJavaContainerProofs(filePath: string): readonly JavaContainerProofFact[] {
   return containerProofs.get(filePath) ?? [];
@@ -284,6 +305,7 @@ export function clearJavaContainerProofs(): void {
   containerProofs.clear();
   returnElements.clear();
   typeFields.clear();
+  importedSpellings.clear();
 }
 
 /** Keep container types on ordinary receivers. Element types are available
@@ -299,6 +321,12 @@ export function synthesizeJavaDeclaredTypeCaptures(
   const onDemandPackages = new Set<string>(['java.lang']);
   const proofs: JavaContainerProofFact[] = [];
   const returns: JavaReturnElementFact[] = [];
+  const spellingReads = new Map<
+    string,
+    Omit<JavaImportedSpellingFact, 'status'> & {
+      readonly status: JavaImportedSpellingFact['status'] | 'written';
+    }
+  >();
   const fieldDeclarations: SyntaxNode[] = [];
   const typeBodies: SyntaxNode[] = [];
   const localTypes = new Set<string>();
@@ -737,6 +765,20 @@ export function synthesizeJavaDeclaredTypeCaptures(
       proofs: withProof(binding?.proofs, evidence),
     };
   };
+  /** Record how qualified lookup must read `evidence` at a binding anchor. */
+  const readAt = (line: number, col: number, evidence: TypeEvidence) => {
+    const spelling = eraseJavaTypeArguments(evidence.spelling).replace(/(?:\[\])+$/, '');
+    if (!spelling.includes('.')) return;
+    const status = evidence.imported === 'single' ? 'import' : 'written';
+    const key = `${line}:${col}:${spelling}`;
+    const seen = spellingReads.get(key)?.status;
+    spellingReads.set(key, {
+      line,
+      col,
+      spelling,
+      status: seen === undefined || seen === status ? status : 'ambiguous',
+    });
+  };
   const emit = (
     name: SyntaxNode,
     inferred: TypeEvidence | undefined,
@@ -755,6 +797,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     const anchor = capture['@type-binding.parameter']!.range;
     for (const proof of dependsOn)
       proofs.push({ ...proof, line: anchor.startLine, col: anchor.startCol });
+    if (inferred !== undefined) readAt(anchor.startLine, anchor.startCol, inferred);
     out.push(capture);
   };
   /** Proofs that the walk to a value's declaration left no inherited field
@@ -934,25 +977,33 @@ export function synthesizeJavaDeclaredTypeCaptures(
         continue;
       const [first, second] = evidence.args;
       const elements: JavaReturnElementFact['elements'][number][] = [];
-      if (ITERABLE_TYPES.has(evidence.base) && evidence.args.length === 1 && first !== undefined)
+      const read: TypeEvidence[] = [];
+      if (ITERABLE_TYPES.has(evidence.base) && evidence.args.length === 1 && first !== undefined) {
         elements.push({ route: 'iterate', spelling: first.spelling, scope: first.lookupScope });
-      else if (
+        read.push(first);
+      } else if (
         MAP_TYPES.has(evidence.base) &&
         evidence.args.length === 2 &&
         first !== undefined &&
         second !== undefined
-      )
+      ) {
         elements.push(
           { route: 'values', spelling: second.spelling, scope: second.lookupScope },
           { route: 'keySet', spelling: first.spelling, scope: first.lookupScope },
         );
+        read.push(second, first);
+      }
       if (elements.length === 0) continue;
+      const line = type.startPosition.row + 1;
+      const col = type.startPosition.column;
+      // Every element of one return type is read at that type's start.
+      for (const element of read) readAt(line, col, element);
       returns.push({
         methodLine: node.startPosition.row + 1,
         methodCol: node.startPosition.column,
         written: type.text,
-        line: type.startPosition.row + 1,
-        col: type.startPosition.column,
+        line,
+        col,
         proofs: [own],
         elements,
       });
@@ -962,6 +1013,11 @@ export function synthesizeJavaDeclaredTypeCaptures(
   else containerProofs.set(filePath, proofs);
   if (returns.length === 0) returnElements.delete(filePath);
   else returnElements.set(filePath, returns);
+  const imported: JavaImportedSpellingFact[] = [];
+  for (const { status, ...read } of spellingReads.values())
+    if (status !== 'written') imported.push({ ...read, status });
+  if (imported.length === 0) importedSpellings.delete(filePath);
+  else importedSpellings.set(filePath, imported);
 
   // Every type's written supertypes and fields, for a subclass anywhere in
   // the workspace to check which name it inherits (see `InheritedFieldProof`).

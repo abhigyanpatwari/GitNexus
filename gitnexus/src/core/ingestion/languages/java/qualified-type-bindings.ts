@@ -20,8 +20,8 @@ import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
 } from './package-siblings.js';
-import { javaReturnElementFacts } from './capture-side-channel.js';
-import { javaReturnElementRef } from './declared-type-captures.js';
+import { javaImportedSpellingFacts, javaReturnElementFacts } from './capture-side-channel.js';
+import { javaReturnElementRef, type JavaImportedSpellingFact } from './declared-type-captures.js';
 
 /** A top-level or member type, the only kinds a type spelling can name. */
 interface NamedType {
@@ -157,6 +157,15 @@ function enclosingTypeInherits(
   return false;
 }
 
+/** Per file, how each dotted element spelling is read at its binding anchor. */
+const importedSpellingsByIndexes = new WeakMap<
+  ScopeResolutionIndexes,
+  ReadonlyMap<string, ReadonlyMap<string, JavaImportedSpellingFact['status']>>
+>();
+
+const importedSpellingKey = (line: number, col: number, spelling: string): string =>
+  `${line}:${col}:${spelling}`;
+
 const namedTypesByFqnByIndexes = new WeakMap<
   ScopeResolutionIndexes,
   ReadonlyMap<string, readonly NamedType[]>
@@ -225,6 +234,11 @@ function importIndex(file: string): ImportIndex {
  * `prefix.User` is the member type even when a package `prefix` declares a
  * `User`. Each reference answers for itself, so one shadowed spelling
  * elsewhere in the file cannot refuse another.
+ *
+ * An inferred element written as a simple name that a single-type import
+ * brings in is spelled with the import's canonical name instead. That spelling
+ * is never looked up here: it names the imported type (see
+ * `JavaImportedSpellingFact`).
  */
 function qualifiedTypeKey(
   ref: TypeRef,
@@ -233,6 +247,26 @@ function qualifiedTypeKey(
 ): string | null {
   const root = spelling.split('.')[0]!;
   const file = indexes.scopeTree.getScope(ref.declaredAtScope)?.filePath;
+  const position = ref.lookupPosition;
+  const imported =
+    file === undefined || position === undefined
+      ? undefined
+      : importedSpellingsByIndexes
+          .get(indexes)
+          ?.get(file)
+          ?.get(importedSpellingKey(position.startLine, position.startCol, spelling));
+  if (imported === 'ambiguous') return null;
+  // A single-type import's canonical name: no type in scope where the element
+  // was written renames its root. Only an inherited member type of the simple
+  // name shadows the import there (JLS 6.4.1), which refuses.
+  if (imported === 'import')
+    return inheritsJavaMemberTypeNamed(
+      ref.declaredAtScope,
+      spelling.slice(spelling.lastIndexOf('.') + 1),
+      indexes,
+    )
+      ? null
+      : spelling;
   if (
     file === undefined ||
     bindsTypeParameter(ref.declaredAtScope, root, indexes) ||
@@ -301,7 +335,19 @@ export function populateJavaQualifiedTypeBindings(
   >();
   const namedTypes = new Map<string, NamedType>();
   const namedTypesByFqn = new Map<string, NamedType[]>();
+  const importedSpellings = new Map<string, Map<string, JavaImportedSpellingFact['status']>>();
   for (const parsed of parsedFiles) {
+    const facts = javaImportedSpellingFacts(parsed);
+    if (facts.length > 0)
+      importedSpellings.set(
+        parsed.filePath,
+        new Map(
+          facts.map((fact) => [
+            importedSpellingKey(fact.line, fact.col, fact.spelling),
+            fact.status,
+          ]),
+        ),
+      );
     const pkg = getJavaPackageFact(parsed.filePath);
     if (pkg?.status !== 'known') continue;
     for (const { def, ...named } of collectNamedTypes(parsed, pkg.packageName).values()) {
@@ -321,6 +367,7 @@ export function populateJavaQualifiedTypeBindings(
   }
   namedTypesByIndexes.set(indexes, namedTypes);
   namedTypesByFqnByIndexes.set(indexes, namedTypesByFqn);
+  importedSpellingsByIndexes.set(indexes, importedSpellings);
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
   for (const parsed of parsedFiles) {
     const module = parsed.scopes.find((scope) => scope.kind === 'Module');
