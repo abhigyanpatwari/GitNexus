@@ -127,10 +127,16 @@ function buildImporterAncestors(importerDir: string): readonly string[] {
  *    (`…<lastSeg>.py`) lookup.
  *  - `dirPrefixes`: every directory prefix of a `.py` file, trailing-slashed
  *    (`a/b/c.py` -> `a/`, `a/b/`), for "is there a .py file under `<dir>/`".
- *  - `nestedDirNames`: the NAME of every such directory that has a non-empty
- *    parent (`a/b/c.py` -> `b`, not `a`), which is exactly the set of segments
- *    `hasRepoCandidate`'s ancestor walk can ever match — so a segment absent
- *    from it settles the walk in one lookup (#2913).
+ *  - `nestedDirParents`: the NAME of every such directory that has a non-empty
+ *    parent, mapped to those parents (`a/b/c.py` -> `b` -> {`a`}). A segment
+ *    absent from it settles `hasRepoCandidate`'s ancestor walk in one lookup
+ *    (#2913), and a present one is checked against the memoized ancestor
+ *    strings themselves, whose hashes V8 caches, so the walk stays O(depth)
+ *    instead of hashing a fresh `${ancestor}/${segment}/` key per step.
+ *  - `srcDirRoots`: the NAME of every directory whose parent is named `src`,
+ *    mapped to the directories holding that `src/` (`a/src/mypkg/x.py` ->
+ *    `mypkg` -> {`a`}, `src/mypkg/x.py` -> {``}), for the src-layout tier
+ *    (#3949), with the same O(1) absence proof and O(depth) walk.
  *  - `ancestorsByDir`: the per-importer-directory ancestor-chain memo behind
  *    `importerAncestors`. The one structure here that is NOT derived from the
  *    file set: it is filled lazily, from the importer paths the pass actually
@@ -153,7 +159,8 @@ export interface PythonFileIndex {
   readonly byBasename: Map<string, { raw: string; norm: string }[]>;
   readonly byInitParent: Map<string, { raw: string; norm: string }[]>;
   readonly dirPrefixes: Set<string>;
-  readonly nestedDirNames: Set<string>;
+  readonly nestedDirParents: Map<string, Set<string>>;
+  readonly srcDirRoots: Map<string, Set<string>>;
   readonly ancestorsByDir: Map<string, readonly string[]>;
   readonly bareImportPrefixesByDir: Map<string, readonly string[]>;
 }
@@ -169,7 +176,13 @@ export const getPythonFileIndex = perFileSet(
     const byBasename = new Map<string, { raw: string; norm: string }[]>();
     const byInitParent = new Map<string, { raw: string; norm: string }[]>();
     const dirPrefixes = new Set<string>();
-    const nestedDirNames = new Set<string>();
+    const nestedDirParents = new Map<string, Set<string>>();
+    const srcDirRoots = new Map<string, Set<string>>();
+    const record = (map: Map<string, Set<string>>, name: string, dir: string): void => {
+      const dirs = map.get(name);
+      if (dirs === undefined) map.set(name, new Set([dir]));
+      else dirs.add(dir);
+    };
 
     for (const raw of allFilePaths) {
       const norm = raw.replace(/\\/g, '/');
@@ -234,19 +247,29 @@ export const getPythonFileIndex = perFileSet(
       // same 400-file corpus moved sixteen directories down went from 800
       // inserts to 7200, for the same ~120 distinct prefixes.
       //
-      // `nestedDirNames` rides the same walk. A directory prefix has the shape
+      // `nestedDirParents` rides the same walk. A directory prefix has the shape
       // `<parent>/<name>/` — the only shape `hasRepoCandidate`'s check (3)
       // probes — exactly when another slash precedes it at index > 0. Index 0
       // is excluded on purpose: `a/` and `/` name a directory whose parent is
       // empty, which check (2) already answers and which the ancestor walk
-      // (non-empty ancestors only) never probes.
+      // (non-empty ancestors only) never probes. `srcDirRoots` keeps the
+      // subset whose parent is named `src`; each prefix is visited once, so
+      // the early break leaves both complete.
       for (let i = lastSlash; i >= 0; i--) {
         if (norm[i] !== '/') continue;
         const dirPrefix = norm.slice(0, i + 1);
         if (dirPrefixes.has(dirPrefix)) break;
         dirPrefixes.add(dirPrefix);
         const parentSlash = i > 0 ? norm.lastIndexOf('/', i - 1) : -1;
-        if (parentSlash > 0) nestedDirNames.add(norm.slice(parentSlash + 1, i));
+        if (parentSlash > 0) {
+          const name = norm.slice(parentSlash + 1, i);
+          record(nestedDirParents, name, norm.slice(0, parentSlash));
+          const parentStart = norm.lastIndexOf('/', parentSlash - 1) + 1;
+          // The parent is named `src` exactly when `src/` starts at its name.
+          if (norm.startsWith('src/', parentStart)) {
+            record(srcDirRoots, name, parentStart === 0 ? '' : norm.slice(0, parentStart - 1));
+          }
+        }
       }
     }
 
@@ -255,7 +278,8 @@ export const getPythonFileIndex = perFileSet(
       byBasename,
       byInitParent,
       dirPrefixes,
-      nestedDirNames,
+      nestedDirParents,
+      srcDirRoots,
       ancestorsByDir: new Map<string, readonly string[]>(),
       bareImportPrefixesByDir: new Map<string, readonly string[]>(),
     };

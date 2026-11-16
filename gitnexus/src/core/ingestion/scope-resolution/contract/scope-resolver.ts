@@ -1037,6 +1037,13 @@ export interface ScopeResolver {
   readonly namedImportsBindTopLevelOnly?: boolean;
 
   /**
+   * Export names `export * from M` never carries into the re-exporting
+   * module, although `M` publishes them through `moduleExports` — ECMAScript's
+   * `default`. Forwarded to `FinalizeHooks.wildcardReexportExcludedNames`.
+   */
+  readonly wildcardReexportExcludedNames?: ReadonlySet<string>;
+
+  /**
    * Veto for a single `allowGlobalFreeCallFallback` guess.
    *
    * The fallback picks a callable because its SIMPLE NAME is unique in the
@@ -1293,10 +1300,13 @@ export interface ScopeResolver {
    * per language — the receiver typing here changed nothing for them),
    * so they stay unwired rather than carrying a redundant declaration.
    *
-   * Only affects receiver TYPING. Which node a construction call links
-   * to is a separate question, owned by `constructorCallTargetsClass`.
-   * Path-syntax constructors (Rust `Foo::new(x)`) are not covered — they
-   * are not member calls and never reach this resolver.
+   * `keyword` and `selector` only affect receiver TYPING. `bare` also links
+   * the call itself: a free call whose name binds exactly one class, and no
+   * callable, emits a CALLS edge to that class (#3950). Which node a
+   * construction call links to is a separate question, owned by
+   * `constructorCallTargetsClass`. Path-syntax constructors (Rust
+   * `Foo::new(x)`) are not covered — they are not member calls and never
+   * reach this resolver.
    */
   readonly constructionSyntax?: {
     /** A free call naming a class constructs it: `Service(db)`. */
@@ -1333,7 +1343,7 @@ export interface ScopeResolver {
    * A predicate rather than a flag so the language decides WHICH calls are
    * type applications, for example by its naming convention for types.
    *
-   * Only affects receiver TYPING, like `constructionSyntax`.
+   * Only affects receiver TYPING.
    * Default: undefined (no call is a type application).
    */
   readonly isTypeApplicationCall?: (callee: string) => boolean;

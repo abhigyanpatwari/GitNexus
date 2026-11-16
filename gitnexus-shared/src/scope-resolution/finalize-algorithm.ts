@@ -183,6 +183,15 @@ export interface FinalizeHooks {
   readonly wildcardCollisionIsAmbiguous?: boolean;
 
   /**
+   * Export names a wildcard re-export never carries into the re-exporting
+   * module's closure, although the source module publishes them and a named
+   * re-export may still forward them. ECMAScript: `export * from M` skips
+   * `M`'s default export. Scoped to re-export closures; wildcard import
+   * bindings (phase 4) do not read it.
+   */
+  readonly wildcardReexportExcludedNames?: ReadonlySet<string>;
+
+  /**
    * A named import / named re-export binds only to MODULE-LEVEL declarations
    * of the target file. Opt-in for languages whose `import { x }` can never
    * reach a class member: without it, a class method sharing a name with a
@@ -413,6 +422,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         ambiguousByFile,
         topLevelOnly,
         hooks.filterWildcardNames,
+        hooks.wildcardReexportExcludedNames,
         input.workspaceIndex,
       );
       input.onProgress?.('reexports-end');
@@ -1169,6 +1179,7 @@ function buildReexportClosures(
   ambiguous: ReadonlyMap<string, ReadonlySet<string>>,
   topLevelOnly: boolean,
   filterWildcardNames: FinalizeHooks['filterWildcardNames'],
+  excludedNames: FinalizeHooks['wildcardReexportExcludedNames'],
   workspace: WorkspaceIndex,
 ): ReadonlyMap<string, FileReexportClosure> {
   const closures = new Map<string, Map<string, ReexportClosureEntry>>();
@@ -1213,6 +1224,7 @@ function buildReexportClosures(
           ambiguous,
           topLevelOnly,
           filterWildcardNames,
+          excludedNames,
           workspace,
         );
       }
@@ -1237,6 +1249,7 @@ function buildReexportClosures(
             ambiguous,
             topLevelOnly,
             filterWildcardNames,
+            excludedNames,
             workspace,
           )
         ) {
@@ -1574,6 +1587,7 @@ function populateFileClosure(
   ambiguousByFile: ReadonlyMap<string, ReadonlySet<string>>,
   topLevelOnly: boolean,
   filterWildcardNames: FinalizeHooks['filterWildcardNames'],
+  excludedNames: FinalizeHooks['wildcardReexportExcludedNames'],
   workspace: WorkspaceIndex,
 ): boolean {
   const myClosure = closures.get(filePath);
@@ -1656,12 +1670,14 @@ function populateFileClosure(
           );
     for (const [name, def] of localExports) {
       if (allowedNames !== undefined && !allowedNames.has(name)) continue;
+      if (excludedNames?.has(name) === true) continue;
       if (ambiguous.has(name) || myClosure.has(name)) continue;
       myClosure.set(name, { def, via: Object.freeze([targetFile]) });
     }
     if (targetClosure !== undefined) {
       for (const [name, entry] of targetClosure) {
         if (allowedNames !== undefined && !allowedNames.has(name)) continue;
+        if (excludedNames?.has(name) === true) continue;
         if (ambiguous.has(name) || myClosure.has(name)) continue;
         myClosure.set(name, {
           def: entry.def,

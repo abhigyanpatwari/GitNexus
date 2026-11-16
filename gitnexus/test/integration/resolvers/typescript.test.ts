@@ -14,6 +14,7 @@ import {
   getResolutionOutcomes,
   runPipelineFromRepo,
   suppressionReasonsAt,
+  useFixture,
   writeFixtureRepo,
   type OutcomeSite,
   type PipelineResult,
@@ -3790,5 +3791,90 @@ export function hoistedInline() {
       .map((outcome) => `${outcome.range.startLine}:${outcome.name}`)
       .sort();
     expect(dropped).toEqual(['15:m', '19:m']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #3956: a default import binds the declaration the target module publishes as
+// its default export, whatever the importer calls it locally.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript default imports (#3956)', () => {
+  const result = useFixture('ts-default-import', {
+    'src/c/Child.tsx':
+      'export default function Child({ a }: { a: number }) { return <div>{a}</div>; }\n',
+    'src/c/Named.tsx': 'export function Named() { return <span />; }\n',
+    'src/c/plain.ts': 'export default function plainFn(x: number) { return x + 1; }\n',
+    'src/c/Widget.tsx': 'export default function Panel() { return <div />; }\n',
+    'src/c/helper.ts': 'function helper() { return 1; }\nexport { helper as default };\n',
+    'src/c/arrow.ts': 'const arrowFn = () => 2;\nexport default arrowFn;\n',
+    'src/ui/index.ts': "export { default } from '../c/Child';\n",
+    'src/ui/alias.ts': "export { default as Btn } from '../c/Child';\n",
+    'src/lib/index.ts':
+      "export * from '../c/Child';\nexport default makeClient();\nfunction makeClient() { return () => 3; }\n",
+    'src/route.ts':
+      'const defineEventHandler = <T,>(fn: T) => fn;\nexport default defineEventHandler(async () => 4);\n',
+    'src/Parent.tsx': `import Child from './c/Child';
+import { Named } from './c/Named';
+import plainFn from './c/plain';
+export default function Parent() {
+  const v = plainFn(1);
+  return <div><Child a={v} /><Named /></div>;
+}
+`,
+    'src/Other.tsx': `import Kid from './c/Widget';
+import { default as P } from './c/plain';
+import h from './c/helper';
+import arrow from './c/arrow';
+export function Other() {
+  P(2);
+  h();
+  arrow();
+  return <Kid />;
+}
+`,
+    'src/ViaDefault.tsx':
+      "import C from './ui';\nexport function ViaDefault() { return <C a={1} />; }\n",
+    'src/ViaAlias.tsx':
+      "import { Btn } from './ui/alias';\nexport function ViaAlias() { return <Btn a={2} />; }\n",
+    'src/Client.ts':
+      "import client from './lib';\nexport function useClient() { return client(); }\n",
+    'src/Ghost.ts':
+      "import Ghost from './c/Named';\nexport function useGhost() { return Ghost(); }\n",
+    'src/UseRoute.ts':
+      "import handler from './route';\nexport function useRoute() { return handler(); }\n",
+  });
+  const calls = () => getRelationships(result(), 'CALLS');
+  const callsFrom = (source: string, targetFilePath: string) =>
+    calls().filter((c) => c.source === source && c.targetFilePath === targetFilePath);
+
+  it('links JSX and plain-call default imports to their declarations (issue repro)', () => {
+    expect(callsFrom('Parent', 'src/c/Child.tsx').map((c) => c.target)).toContain('Child');
+    expect(callsFrom('Parent', 'src/c/plain.ts').map((c) => c.target)).toContain('plainFn');
+    expect(callsFrom('Parent', 'src/c/Named.tsx').map((c) => c.target)).toEqual(['Named']);
+  });
+
+  it('binds a local name that differs from both the declared name and the file stem', () => {
+    expect(callsFrom('Other', 'src/c/Widget.tsx').map((c) => c.target)).toContain('Panel');
+  });
+
+  it('binds `{ default as X }`, `export { f as default }` and `export default <const arrow>`', () => {
+    expect(callsFrom('Other', 'src/c/plain.ts').map((c) => c.target)).toContain('plainFn');
+    expect(callsFrom('Other', 'src/c/helper.ts').map((c) => c.target)).toContain('helper');
+    expect(callsFrom('Other', 'src/c/arrow.ts').map((c) => c.target)).toContain('arrowFn');
+  });
+
+  it('carries the default through `export { default }` and `export { default as Btn }` barrels', () => {
+    expect(callsFrom('ViaDefault', 'src/c/Child.tsx').map((c) => c.target)).toContain('Child');
+    expect(callsFrom('ViaAlias', 'src/c/Child.tsx').map((c) => c.target)).toContain('Child');
+  });
+
+  it('does not forward a default through `export *` or invent one for a module without it', () => {
+    expect(callsFrom('useClient', 'src/c/Child.tsx')).toEqual([]);
+    expect(callsFrom('useGhost', 'src/c/Named.tsx')).toEqual([]);
+  });
+
+  it('links a default import of a synthesized HOC default export', () => {
+    expect(callsFrom('useRoute', 'src/route.ts').length).toBeGreaterThan(0);
   });
 });

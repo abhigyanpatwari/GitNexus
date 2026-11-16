@@ -245,6 +245,7 @@ function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
     isNamespaceImport: partial.isNamespaceImport,
     wildcardCollisionIsAmbiguous: partial.wildcardCollisionIsAmbiguous === true,
     namedImportsBindTopLevelOnly: partial.namedImportsBindTopLevelOnly === true,
+    wildcardReexportExcludedNames: partial.wildcardReexportExcludedNames,
     expandsWildcardTo: partial.expandsWildcardTo ?? (() => []),
     filterWildcardNames: partial.filterWildcardNames,
     mergeBindingsAreAssociative: partial.mergeBindingsAreAssociative,

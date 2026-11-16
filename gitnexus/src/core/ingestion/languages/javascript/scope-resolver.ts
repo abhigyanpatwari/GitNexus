@@ -45,7 +45,10 @@ import { jsMergeBindings } from './merge-bindings.js';
 import { jsArityCompatibility } from './arity.js';
 import { makeJsResolveImportTarget } from './import-target.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
-import { typescriptModuleExports } from '../typescript/module-exports.js';
+import {
+  ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
+  typescriptModuleExports,
+} from '../typescript/module-exports.js';
 import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
@@ -122,6 +125,7 @@ const javascriptScopeResolver: ScopeResolver = {
   exclusiveWildcardReexports: true,
   // Same ECMAScript rule as TypeScript: named imports bind module-level declarations only.
   namedImportsBindTopLevelOnly: true,
+  wildcardReexportExcludedNames: ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
 };
 
 export { javascriptScopeResolver };

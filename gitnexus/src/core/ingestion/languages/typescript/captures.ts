@@ -35,7 +35,11 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
-import { collectEsmExportEvidence, esmExportVerdict } from '../../ts-js-export-marker.js';
+import {
+  collectEsmExportEvidence,
+  esmExportVerdict,
+  isEsmDefaultExport,
+} from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
@@ -610,6 +614,11 @@ export function emitTsScopeCaptures(
           fnNode,
           'true',
         );
+        grouped['@declaration.is-default-export'] = syntheticCapture(
+          '@declaration.is-default-export',
+          fnNode,
+          'true',
+        );
       }
     }
 
@@ -720,6 +729,13 @@ export function emitTsScopeCaptures(
           '@declaration.is-exported',
           declNameNode,
           verdict ? 'true' : 'false',
+        );
+      }
+      if (verdict === true && isEsmDefaultExport(declNameNode, exportEvidence)) {
+        grouped['@declaration.is-default-export'] = syntheticCapture(
+          '@declaration.is-default-export',
+          declNameNode,
+          'true',
         );
       }
     }

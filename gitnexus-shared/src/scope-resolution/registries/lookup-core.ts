@@ -344,6 +344,9 @@ function resolveReceiverOwner(
     return lookupReceiverType(startScope, params.explicitReceiver.name, ctx, params);
   }
 
+  if (ctx.scopes.getScope(startScope)?.lookupPolicy?.allowImplicitReceiver === false)
+    return undefined;
+
   // Implicit `self` / `this` — the scope's typeBindings should carry it.
   for (const implicitName of IMPLICIT_RECEIVERS) {
     const owner = lookupReceiverType(startScope, implicitName, ctx, params);
