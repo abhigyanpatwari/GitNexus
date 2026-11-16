@@ -74,7 +74,6 @@ withTestLbugDB(
 
         expect(result).toMatchObject({ markdown: '', row_count: 0 });
         expect(result).toHaveProperty('staleness');
-        // The raw API still serves array consumers, including the HTTP query route.
         expect(await backend.executeCypher('test-repo', statement)).toEqual([]);
       });
 
