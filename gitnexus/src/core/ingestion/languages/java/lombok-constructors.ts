@@ -13,6 +13,9 @@ import {
   readLombokFieldDefaultsMakeFinal,
   type LombokImportIndex,
 } from './lombok-synthesizer.js';
+import { JAVA_IDENTIFIER_PART_CHARS } from './type-spelling.js';
+
+const LEADING_NAME = new RegExp(`^[${JAVA_IDENTIFIER_PART_CHARS}]+`, 'u');
 
 interface GeneratedDependency {
   readonly name: string;
@@ -114,7 +117,7 @@ function signatureOf(
         else if (char === '>') depth -= 1;
         else if (depth === 0 && !/\s/.test(char)) erased += char;
       }
-      const head = /^[\w$]+/.exec(erased)?.[0];
+      const head = LEADING_NAME.exec(erased)?.[0];
       const imported = head === undefined ? undefined : imports.bySimple.get(head);
       // Import identity expands only its leading type name. Never compare by
       // simple-name suffix: a.User and b.User remain different constructors.

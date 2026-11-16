@@ -1,6 +1,22 @@
 import type Parser from 'tree-sitter';
 import type { ElementAccessRoute } from '../../scope-resolution/contract/scope-resolver.js';
 
+/** JLS 3.8 Java letters (`Character.isJavaIdentifierStart`): letters, letter
+ * numbers, currency symbols and connector punctuation. A character-class body
+ * for `u`-flag patterns, so callers can add their own separators. */
+export const JAVA_IDENTIFIER_START_CHARS = String.raw`\p{L}\p{Nl}\p{Sc}\p{Pc}`;
+/** JLS 3.8 Java letters or digits (`Character.isJavaIdentifierPart`): adds
+ * digits, combining marks and format characters. */
+export const JAVA_IDENTIFIER_PART_CHARS = String.raw`${JAVA_IDENTIFIER_START_CHARS}\p{Nd}\p{Mn}\p{Mc}\p{Cf}`;
+/** One Java identifier. `.`, whitespace and brackets are outside both classes,
+ * so anchored patterns built from it match in linear time. */
+export const JAVA_IDENTIFIER = `[${JAVA_IDENTIFIER_START_CHARS}][${JAVA_IDENTIFIER_PART_CHARS}]*`;
+/** A dotted name with no whitespace or comments between its parts. */
+export const JAVA_QUALIFIED_NAME = `${JAVA_IDENTIFIER}(?:\\.${JAVA_IDENTIFIER})*`;
+/** Identifier characters and dots only: a written name without type
+ * arguments, whitespace or comments. It checks characters, not segments. */
+export const JAVA_DOTTED_SPELLING = new RegExp(`^[${JAVA_IDENTIFIER_PART_CHARS}.]+$`, 'u');
+
 /** Remove type-use annotations and comments structurally, including
  * annotation argument values and `//` comments that run to the line end. */
 export function javaTypeText(node: Parser.SyntaxNode): string {

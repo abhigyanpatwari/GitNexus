@@ -103,4 +103,25 @@ import org.springframework.beans.factory.annotation.Autowired;
       [{ name: 'user', rawType: 'User', annotations: [] }],
     ]);
   });
+
+  // The imported head is the whole leading Java identifier, never its ASCII
+  // prefix: `Straße` must not expand through an import of `q.Stra`.
+  it.each([
+    ['import q.Straße;', 'Straße', 'q.Straße', true],
+    ['import q.Street;', 'Street', 'q.Street', true],
+    ['import q.Stra;', 'Straße', 'q.Straße', false],
+    ['import q.Str;', 'Street', 'q.Street', false],
+  ])(
+    'with %s, compares a generated %s against a written %s by import identity (clash: %s)',
+    (imported, fieldType, parameterType, clash) => {
+      const source = `${imported}
+import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
+@Service @lombok.AllArgsConstructor class Consumer {
+  ${fieldType} road;
+  @Autowired Consumer(${parameterType} road) {}
+}`;
+      expect(hasSignatureConflict(source)).toBe(clash);
+    },
+  );
 });

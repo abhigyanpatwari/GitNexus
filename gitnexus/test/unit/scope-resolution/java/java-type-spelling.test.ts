@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { getJavaParser } from '../../../../src/core/ingestion/languages/java/query.js';
 import { parseSourceSafe } from '../../../../src/core/tree-sitter/safe-parse.js';
 import {
+  JAVA_DOTTED_SPELLING,
+  JAVA_IDENTIFIER,
+  JAVA_QUALIFIED_NAME,
   javaArrayElementType,
   javaTypeText,
   javaTrailingDimensions,
@@ -96,5 +99,53 @@ describe('Java written array types', () => {
     expect(javaArrayElementType('User[][]', { kind: 'index' })).toBe('User[]');
     expect(javaArrayElementType('java.util.List<User>', { kind: 'index' })).toBeUndefined();
     expect(javaArrayElementType('User[]', { kind: 'accessor', name: 'get' })).toBeUndefined();
+  });
+});
+
+// JLS 3.8 / Character.isJavaIdentifierStart and isJavaIdentifierPart.
+describe('Java identifier patterns', () => {
+  const identifier = new RegExp(`^${JAVA_IDENTIFIER}$`, 'u');
+  const qualified = new RegExp(`^${JAVA_QUALIFIED_NAME}$`, 'u');
+
+  it.each([
+    { name: 'ASCII letters, digits, underscore and dollar', text: '$_user2' },
+    { name: 'Latin letters with diacritics', text: 'Ünïcödé' },
+    { name: 'CJK and supplementary-plane letters', text: '𝒳漢字' },
+    { name: 'a combining mark', text: 'Cafe\u0301' },
+    { name: 'a letter number at the start', text: '\u216Btype' },
+    { name: 'a currency symbol at the start', text: '£price' },
+    { name: 'connector punctuation', text: 'a\u203Fb' },
+    { name: 'a non-ASCII digit', text: 'x\u0661' },
+    { name: 'a format character', text: 'a\u200Db' },
+  ])('accepts $name', ({ text }) => {
+    expect(identifier.test(text)).toBe(true);
+    expect(qualified.test(`p.${text}.Inner`)).toBe(true);
+    expect(JAVA_DOTTED_SPELLING.test(`p.${text}`)).toBe(true);
+  });
+
+  it.each([
+    { name: 'a leading digit', text: '1user' },
+    { name: 'a leading combining mark', text: '\u0301e' },
+    { name: 'a superscript digit', text: 'x²' },
+    { name: 'a space', text: 'a b' },
+    { name: 'a hyphen', text: 'a-b' },
+    { name: 'an empty name', text: '' },
+  ])('rejects $name', ({ text }) => {
+    expect(identifier.test(text)).toBe(false);
+  });
+
+  it.each([
+    { name: 'an empty segment', text: 'a..b' },
+    { name: 'a leading dot', text: '.a' },
+    { name: 'a trailing dot', text: 'a.' },
+    { name: 'type arguments', text: 'List<Ünïcödé>' },
+  ])('rejects a qualified name with $name', ({ text }) => {
+    expect(qualified.test(text)).toBe(false);
+  });
+
+  it('answers a long malformed dotted name without backtracking', () => {
+    const text = `${'Ünïcödé.'.repeat(20_000)}!`;
+    expect(qualified.test(text)).toBe(false);
+    expect(JAVA_DOTTED_SPELLING.test(text)).toBe(false);
   });
 });

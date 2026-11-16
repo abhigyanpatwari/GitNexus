@@ -21,7 +21,11 @@ import {
   type JavaOverloadFileFacts,
   type JavaOverloadTypeFact,
 } from './overload-argument-facts.js';
-import { eraseJavaTypeArguments } from './type-spelling.js';
+import {
+  eraseJavaTypeArguments,
+  JAVA_DOTTED_SPELLING,
+  JAVA_IDENTIFIER_PART_CHARS,
+} from './type-spelling.js';
 import {
   LOMBOK_ANNOTATION_NAMES,
   synthesizeLombokAccessors,
@@ -40,7 +44,11 @@ const TYPE_NODES = new Set([
 ]);
 /** Whitespace or a comment, as Java allows between `@`, name parts and dots. */
 const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*)*`;
-const ANNOTATION_NAME = new RegExp(String.raw`@${GAP}([\w$]+(?:${GAP}\.${GAP}[\w$]+)*)`, 'g');
+const NAME_PART = `[${JAVA_IDENTIFIER_PART_CHARS}]+`;
+const ANNOTATION_NAME = new RegExp(
+  String.raw`@${GAP}(${NAME_PART}(?:${GAP}\.${GAP}${NAME_PART})*)`,
+  'gu',
+);
 const stripGaps = (text: string) =>
   text
     .replace(/\/\*[\s\S]*?\*\//g, '')
@@ -229,7 +237,7 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   };
   const resolveBase = (entry: TypeEntry, written: string): ResolvedBase => {
     const raw = eraseJavaTypeArguments(written).replace(/\s+/g, '');
-    if (!/^[\w$.]+$/.test(raw)) return 'unknown';
+    if (!JAVA_DOTTED_SPELLING.test(raw)) return 'unknown';
     const imports = entry.facts.imports.filter((item) => !item.static && !item.wildcard);
     const head = raw.split('.')[0]!;
     const explicit = imports.filter((item) => item.name.split('.').pop() === head);

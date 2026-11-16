@@ -30,6 +30,7 @@ import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
 } from './package-siblings.js';
+import { JAVA_IDENTIFIER } from './type-spelling.js';
 
 /**
  * Implicitly typed lambda parameters typed by a workspace functional interface.
@@ -43,10 +44,12 @@ import {
  * it from borrowing an outer name.
  */
 
-const SIMPLE_NAME = /^[\p{L}_$][\p{L}\p{N}_$]*$/u;
-const TYPE_NAME =
-  /^([\p{L}_$][\p{L}\p{N}_$]*(?:\s*\.\s*[\p{L}_$][\p{L}\p{N}_$]*)*)\s*(?:<([\s\S]*)>)?$/u;
-const IDENTIFIERS = /[\p{L}_$][\p{L}\p{N}_$]*/gu;
+const SIMPLE_NAME = new RegExp(`^${JAVA_IDENTIFIER}$`, 'u');
+const TYPE_NAME = new RegExp(
+  String.raw`^(${JAVA_IDENTIFIER}(?:\s*\.\s*${JAVA_IDENTIFIER})*)\s*(?:<([\s\S]*)>)?$`,
+  'u',
+);
+const IDENTIFIERS = new RegExp(JAVA_IDENTIFIER, 'gu');
 const PRIMITIVES = new Set([
   'boolean',
   'byte',

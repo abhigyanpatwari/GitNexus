@@ -41,6 +41,14 @@ import {
   type JavaTypeRelations,
   type JavaVerdict,
 } from './overload-types.js';
+import { JAVA_IDENTIFIER_PART_CHARS, JAVA_QUALIFIED_NAME } from './type-spelling.js';
+
+/** A written type-use annotation, `@Name` or `@a.Name(...)`, with its trailing space. */
+const TYPE_ANNOTATION = new RegExp(
+  String.raw`@[${JAVA_IDENTIFIER_PART_CHARS}.]+(?:\([^()]*\))?\s*`,
+  'gu',
+);
+const QUALIFIED_NAME = new RegExp(`^${JAVA_QUALIFIED_NAME}$`, 'u');
 
 interface TypeContext {
   readonly filePath: string;
@@ -589,10 +597,7 @@ function parseType(spelling: string, context: TypeContext, state: State, depth =
   const key = `${context.filePath}:${context.at.startLine}:${context.at.startCol}:${depth}:${spelling}`;
   const cached = state.types.get(key);
   if (cached !== undefined) return cached;
-  let text = spelling
-    .trim()
-    .replace(/@[\w.]+(?:\([^()]*\))?\s*/g, '')
-    .replaceAll(/\s+/g, '');
+  let text = spelling.trim().replace(TYPE_ANNOTATION, '').replaceAll(/\s+/g, '');
   let dimensions = 0;
   while (text.endsWith('[]')) {
     dimensions++;
@@ -605,11 +610,7 @@ function parseType(spelling: string, context: TypeContext, state: State, depth =
   else {
     const open = text.indexOf('<');
     const name = open < 0 ? text : text.slice(0, open);
-    if (
-      !/^[\p{L}_$][\p{L}\p{N}_$]*(?:\.[\p{L}_$][\p{L}\p{N}_$]*)*$/u.test(name) ||
-      (open >= 0 && !text.endsWith('>'))
-    )
-      type = UNKNOWN_JAVA_TYPE;
+    if (!QUALIFIED_NAME.test(name) || (open >= 0 && !text.endsWith('>'))) type = UNKNOWN_JAVA_TYPE;
     else {
       type = resolveTypeName(name, context, state);
       if (open >= 0) {

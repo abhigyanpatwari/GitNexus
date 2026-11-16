@@ -8,7 +8,13 @@ import {
   type TypeRef,
 } from 'gitnexus-shared';
 import { nodeToCapture } from '../../utils/ast-helpers.js';
-import { eraseJavaTypeArguments, javaTrailingDimensions, javaTypeText } from './type-spelling.js';
+import {
+  eraseJavaTypeArguments,
+  JAVA_DOTTED_SPELLING,
+  JAVA_IDENTIFIER_PART_CHARS,
+  javaTrailingDimensions,
+  javaTypeText,
+} from './type-spelling.js';
 import { synthesizeJavaSamLambdaCaptures } from './sam-lambda-captures.js';
 import {
   getJavaOverloadFacts,
@@ -35,6 +41,17 @@ interface LookupResult {
   readonly shadows: readonly InheritedFieldProof[];
 }
 const UNRESOLVED: LookupResult = { shadows: [] };
+
+const SINGLE_IMPORT = new RegExp(
+  String.raw`^import\s+([${JAVA_IDENTIFIER_PART_CHARS}.]+)\s*;$`,
+  'u',
+);
+const ON_DEMAND_IMPORT = new RegExp(
+  String.raw`^import\s+([${JAVA_IDENTIFIER_PART_CHARS}.]+)\s*\.\s*\*\s*;$`,
+  'u',
+);
+const WRITTEN_TYPE = new RegExp(String.raw`^[${JAVA_IDENTIFIER_PART_CHARS}.<>\[\],]+$`, 'u');
+const NAME_SEPARATORS = new RegExp(`[^${JAVA_IDENTIFIER_PART_CHARS}]+`, 'u');
 
 /**
  * The type of an element binding whose value may only come from a field that a
@@ -443,14 +460,14 @@ export function synthesizeJavaDeclaredTypeCaptures(
 
   for (const node of nodes) {
     if (node.type === 'import_declaration') {
-      const imported = /^import\s+([\w.$]+)\s*;$/.exec(node.text)?.[1];
+      const imported = SINGLE_IMPORT.exec(node.text)?.[1];
       if (imported !== undefined) {
         const tail = imported.slice(imported.lastIndexOf('.') + 1);
         const targets = imports.get(tail) ?? new Set<string>();
         targets.add(imported);
         imports.set(tail, targets);
       }
-      const onDemand = /^import\s+([\w.$]+)\s*\.\s*\*\s*;$/.exec(node.text)?.[1];
+      const onDemand = ON_DEMAND_IMPORT.exec(node.text)?.[1];
       if (onDemand !== undefined) onDemandPackages.add(onDemand);
     } else if (node.type === 'type_parameter') {
       const name =
@@ -629,7 +646,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     const core = spelling.slice(0, spelling.length - array.length);
     const generic = core.indexOf('<');
     const raw = generic < 0 ? core : core.slice(0, generic);
-    if (!/^[\w.$]+$/.test(raw) || isTypeParameter(raw, source)) return undefined;
+    if (!JAVA_DOTTED_SPELLING.test(raw) || isTypeParameter(raw, source)) return undefined;
     const argumentsText =
       generic < 0 ? [] : core.endsWith('>') ? splitArguments(core.slice(generic + 1, -1)) : [];
     if (generic >= 0 && argumentsText.length === 0) return undefined;
@@ -713,8 +730,8 @@ export function synthesizeJavaDeclaredTypeCaptures(
     const written = binding?.type;
     if (written === undefined || written.length > 512) return undefined;
     if (
-      !/^[\w.$<>\[\],]+$/.test(written) ||
-      written.split(/[^\w$]+/).some((token) => isTypeParameter(token, binding.typeSource))
+      !WRITTEN_TYPE.test(written) ||
+      written.split(NAME_SEPARATORS).some((token) => isTypeParameter(token, binding.typeSource))
     )
       return undefined;
     return binding.evidence ?? identify(written, binding.typeSource, use);
