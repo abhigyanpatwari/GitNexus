@@ -121,8 +121,10 @@ export const MAX_SHARED_WORK = 100_000_000;
 /**
  * NFA states all the patterns of one load may keep together. A state costs about 700
  * bytes once compiled (parallel arrays plus a character set per character state;
- * measured: 2,000,000 states held 1.4 GB), so this bounds what a NAMESPACE can make the
- * analyzer hold at about 350 MB. A realistic pattern is tens to a few thousand states
+ * measured: 2,000,000 states held 1.4 GB), so this bounds the compiled automata of a
+ * crafted NAMESPACE at about 350 MB. That figure counts the automata only: the verdict
+ * memos are not counted, and a reviewer measured 1.2 GB of heap on 2.5 MB of crafted
+ * NAMESPACE files (an unconditioned, crafted-input bound, not a typical-use figure). A realistic pattern is tens to a few thousand states
  * (an alternation of 500 identifiers is about 7,500; `[[:alpha:]]{1,2000}` is 4,000), so
  * the 150 benign patterns of the 50-package monorepo above use under 5,000 states in
  * total, 1 % of this, and the allowance holds some 65 such alternations.
