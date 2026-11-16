@@ -432,24 +432,13 @@ export function synthesizeJavaDeclaredTypeCaptures(
       // An inherited field shadows an enclosing declaration (JLS 6.4.1).
       // Supertypes are a workspace fact, so resolution checks each body left.
       if (inheritsMembers(current)) {
-        const scope = classScopeOfBody(current);
+        const scope = javaClassScopeOfBody(current, filePath);
         if (scope === undefined) return UNRESOLVED;
         shadows.push({ kind: 'unshadowed-field', name: expression.text, scope });
       }
       current = current.parent;
     }
     return { shadows };
-  };
-  const classScopeOfBody = (body: SyntaxNode): ScopeId | undefined => {
-    const owner = body.parent;
-    if (owner === null) return undefined;
-    // Anonymous and enum-constant classes are scoped by their body.
-    const node =
-      body.type === 'class_body' &&
-      (owner.type === 'object_creation_expression' || owner.type === 'enum_constant')
-        ? body
-        : owner;
-    return makeScopeId({ filePath, range: nodeToCapture('', node).range, kind: 'Class' });
   };
 
   for (const node of nodes) {
@@ -1138,6 +1127,19 @@ export function synthesizeJavaDeclaredTypeCaptures(
   }
   typeFields.set(filePath, inventory);
   return out;
+}
+
+/** The Class scope of the type a body belongs to. */
+export function javaClassScopeOfBody(body: SyntaxNode, filePath: string): ScopeId | undefined {
+  const owner = body.parent;
+  if (owner === null) return undefined;
+  // Anonymous and enum-constant classes are scoped by their body.
+  const node =
+    body.type === 'class_body' &&
+    (owner.type === 'object_creation_expression' || owner.type === 'enum_constant')
+      ? body
+      : owner;
+  return makeScopeId({ filePath, range: nodeToCapture('', node).range, kind: 'Class' });
 }
 
 /** The same proof for a binding that reads the field only transitively. */

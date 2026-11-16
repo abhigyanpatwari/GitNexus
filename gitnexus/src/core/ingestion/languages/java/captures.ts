@@ -523,7 +523,7 @@ export function emitJavaScopeCaptures(
   return applyJavaLocalNameClaims(tree.rootNode, [
     ...out,
     ...synthesizeJavaLexicalCaptures(tree.rootNode),
-    ...synthesizeJavaFactoryAliasCaptures(tree.rootNode),
+    ...synthesizeJavaFactoryAliasCaptures(tree.rootNode, filePath),
     ...synthesizeJavaInitializerReceiverBindings(
       synthesizeImplicitArrayReceiverChain.initializerContexts(),
     ),

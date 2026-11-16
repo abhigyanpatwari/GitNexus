@@ -1,10 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { synthesizeJavaFactoryAliasCaptures } from '../../../../src/core/ingestion/languages/java/factory-alias-captures.js';
+import { makeScopeId } from 'gitnexus-shared';
+import {
+  JAVA_ENCLOSING_LOCAL_ROUTE,
+  synthesizeJavaFactoryAliasCaptures,
+} from '../../../../src/core/ingestion/languages/java/factory-alias-captures.js';
 import { getJavaParser } from '../../../../src/core/ingestion/languages/java/query.js';
 
 function producerAliases(source: string) {
   const tree = getJavaParser().parse(source);
-  return synthesizeJavaFactoryAliasCaptures(tree.rootNode).map((capture) => ({
+  return synthesizeJavaFactoryAliasCaptures(tree.rootNode, 'App.java').map((capture) => ({
     name: capture['@call-result-assignment.lhs']!.text,
     call: capture['@call-result-assignment.call']!.text,
     at: capture['@call-result-assignment.call']!.range,
@@ -57,7 +61,7 @@ describe('Java factory alias producer identity', () => {
       var value = factory.make();
       if (ready) { var copy = value; }
     } }`);
-    const [capture] = synthesizeJavaFactoryAliasCaptures(tree.rootNode);
+    const [capture] = synthesizeJavaFactoryAliasCaptures(tree.rootNode, 'App.java');
     expect(capture?.['@call-result-assignment.call']?.text).toBe('factory.make()');
     expect(capture?.['@call-result-assignment.scope']?.range).toEqual(
       capture?.['@call-result-assignment.lhs']?.range,
@@ -68,7 +72,6 @@ describe('Java factory alias producer identity', () => {
     'if (ready) { value = other.make(); var copy = value; }',
     'while (ready) { var copy = value; value = other.make(); }',
     'if (ready) { var copy = value; } value++;',
-    'new Object() { void m() { var copy = value; } };',
   ])('refuses a nested copy of a written or differently owned source: %s', (body) => {
     expect(
       producerAliases(`class App { void run() { var value = factory.make(); ${body} } }`),
@@ -101,7 +104,7 @@ describe('Java factory alias producer identity', () => {
       class Local {}
       var copy = value;
     } }`);
-    const [capture] = synthesizeJavaFactoryAliasCaptures(tree.rootNode);
+    const [capture] = synthesizeJavaFactoryAliasCaptures(tree.rootNode, 'App.java');
     expect(capture?.['@call-result-assignment.call']?.text).toBe('factory.make()');
     expect(capture?.['@call-result-assignment.scope']?.range).toEqual(
       capture?.['@call-result-assignment.lhs']?.range,
@@ -146,5 +149,83 @@ describe('Java factory alias producer identity', () => {
         ({ name, call }) => ({ name, call }),
       ),
     ).toEqual([{ name: 'copy', call: 'factory.make()' }]);
+  });
+});
+
+describe('Java factory aliases of an enclosing local in a local or anonymous class', () => {
+  const routed = (source: string) =>
+    synthesizeJavaFactoryAliasCaptures(getJavaParser().parse(source).rootNode, 'App.java').map(
+      (capture) => ({
+        name: capture['@call-result-assignment.lhs']!.text,
+        call: capture['@call-result-assignment.call']!.text,
+        route: capture['@call-result-assignment.element']?.text,
+      }),
+    );
+  /** The route naming the class whose body spans `open`..`close` on line 1. */
+  const routeThrough = (source: string, open: string, close: string, name = 'value'): string => {
+    const startCol = source.indexOf(open);
+    const endCol = source.indexOf(close, startCol) + close.length;
+    const scope = makeScopeId({
+      filePath: 'App.java',
+      range: { startLine: 1, startCol, endLine: 1, endCol },
+      kind: 'Class',
+    });
+    return JAVA_ENCLOSING_LOCAL_ROUTE + JSON.stringify([[scope, name]]);
+  };
+
+  it('copies an effectively final local into an anonymous class method, routed through that class', () => {
+    const source =
+      'class App { void run() { var value = factory.make(); new Task() { void m() { var copy = value; var second = copy; } }; } }';
+    const route = routeThrough(source, '{ void m()', '} }');
+    expect(routed(source)).toEqual([
+      { name: 'copy', call: 'factory.make()', route },
+      { name: 'second', call: 'factory.make()', route },
+    ]);
+  });
+
+  it('copies an effectively final local into a local class method, routed through that class', () => {
+    const source =
+      'class App { void run() { var value = factory.make(); class Local { void m() { var copy = value; } } } }';
+    expect(routed(source)).toEqual([
+      {
+        name: 'copy',
+        call: 'factory.make()',
+        route: routeThrough(source, 'class Local', '} }'),
+      },
+    ]);
+  });
+
+  it('names every class a copy is read through', () => {
+    const [, deeper] = routed(`class App { void run() {
+      var value = factory.make();
+      new Task() { void m() { var copy = value; new Task() { void m() { var deeper = copy; } }; } };
+    } }`);
+    const proofs: unknown = JSON.parse(deeper!.route!.slice(JAVA_ENCLOSING_LOCAL_ROUTE.length));
+    expect({ name: deeper!.name, call: deeper!.call }).toEqual({
+      name: 'deeper',
+      call: 'factory.make()',
+    });
+    expect((proofs as [string, string][]).map(([, name]) => name)).toEqual(['value', 'copy']);
+  });
+
+  it.each([
+    'new Task() { Repo value; void m() { var copy = value; } };',
+    'new Task() { void m() { var copy = value; } Repo value; };',
+    'new Task() { void m(Repo value) { var copy = value; } };',
+    'new Task() { void m(Object o) { if (o instanceof Repo value) { var copy = value; } } };',
+    'class Local { Repo value; void m() { var copy = value; } }',
+    'new Task() { void m() { var copy = value; } }; value = other.make();',
+    'new Task() { void m() { var copy = value; } }; value += 1;',
+    'class Local { void m() { var copy = value; } } if (ready) { value++; }',
+    'interface Local { default void m() { var copy = value; } }',
+    'enum Local { A; void m() { var copy = value; } }',
+    'record Local() { void m() { var copy = value; } }',
+    'class Local { static class Nested { void m() { var copy = value; } } }',
+  ])('refuses a copy whose name is a member there or whose source is written: %s', (body) => {
+    expect(
+      routed(`class App { void run() { var value = factory.make(); ${body} } }`).filter(
+        ({ name }) => name === 'copy',
+      ),
+    ).toEqual([]);
   });
 });

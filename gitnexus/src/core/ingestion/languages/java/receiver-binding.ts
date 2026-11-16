@@ -1,9 +1,9 @@
 /**
  * Synthesize `@type-binding.self` captures for Java instance contexts —
  * one for `this` (always on non-static methods, constructors and record
- * compact constructors inside a type declaration) and optionally one for
- * `super` (only on class methods when the enclosing class has a
- * `superclass`).
+ * compact constructors inside a type declaration or an anonymous class
+ * body) and optionally one for `super` (only on class methods when the
+ * enclosing named class has a `superclass`).
  *
  * Instance initializer blocks and instance field initializers have no
  * method scope. They get a `this` binding only where a synthesized
@@ -14,7 +14,12 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import {
+  nodeToCapture,
+  synthesizeJavaTypeIdentity,
+  syntheticCapture,
+  type SyntaxNode,
+} from '../../utils/ast-helpers.js';
 import type { JavaInitializerReceiverContext } from './implicit-array-receiver-captures.js';
 
 const TYPE_DECL_NODE_TYPES = new Set([
@@ -30,11 +35,17 @@ const FUNCTION_NODE_TYPES = new Set([
   'compact_constructor_declaration',
 ]);
 
-/** Walk up to the enclosing type declaration. */
+/** Walk up to the enclosing type: a named declaration, or the host of an
+ *  anonymous class body (`new T() { ... }`, a bodied enum constant). */
 function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
   let cur: SyntaxNode | null = node.parent;
   while (cur !== null) {
     if (TYPE_DECL_NODE_TYPES.has(cur.type)) return cur;
+    if (
+      cur.type === 'class_body' &&
+      (cur.parent?.type === 'object_creation_expression' || cur.parent?.type === 'enum_constant')
+    )
+      return cur.parent;
     cur = cur.parent;
   }
   return null;
@@ -82,7 +93,15 @@ export function synthesizeJavaReceiverBinding(fnNode: SyntaxNode): CaptureMatch[
   const enclosingType = findEnclosingTypeDeclaration(fnNode);
   if (enclosingType === null) return [];
 
-  const enclosingName = typeName(enclosingType);
+  // Inside an anonymous class body `this` is the anonymous instance: its
+  // synthesized class (`Outer$1`, the name its declaration is bound under),
+  // whose own and inherited members apply, never the enclosing type's.
+  // Without that name there is no `this` binding rather than a wrong one.
+  const anonymous =
+    enclosingType.type === 'object_creation_expression' || enclosingType.type === 'enum_constant';
+  const enclosingName = anonymous
+    ? (synthesizeJavaTypeIdentity(enclosingType)?.name ?? null)
+    : typeName(enclosingType);
   if (enclosingName === null) return [];
 
   // Anchor to the method body so the synthesized captures are inside
@@ -94,6 +113,8 @@ export function synthesizeJavaReceiverBinding(fnNode: SyntaxNode): CaptureMatch[
   out.push(buildReceiverMatch(anchorNode, 'this', enclosingName));
 
   // `super` applies only to class/record methods with an explicit superclass.
+  // An anonymous body's constructed type may be an interface (then `super`
+  // is `Object`), so it gets none, rather than the enclosing type's.
   if (enclosingType.type === 'class_declaration' || enclosingType.type === 'record_declaration') {
     const superText = firstSuperclassText(enclosingType);
     if (superText !== null) {

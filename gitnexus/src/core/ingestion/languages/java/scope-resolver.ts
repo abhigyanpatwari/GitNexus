@@ -30,6 +30,11 @@ import {
   type JavaResolveContext,
 } from './index.js';
 import { javaOnDemandImportTargets } from './on-demand-imports.js';
+import {
+  indexJavaEnclosingLocalAliases,
+  JAVA_ENCLOSING_LOCAL_ROUTE,
+  javaEnclosingLocalAliasType,
+} from './factory-alias-captures.js';
 import { javaArrayElementType } from './type-spelling.js';
 import {
   javaQualifiedTypeLookupSpelling,
@@ -126,11 +131,15 @@ const javaScopeResolver: ScopeResolver = {
   // `for (var x : xs)` over a selected method's result: only the element of
   // that method's own proven JDK container return type. An implicitly typed
   // lambda argument's parameter: the selected method's workspace functional
-  // interface parameter type (`sam-lambda-types.ts`).
+  // interface parameter type (`sam-lambda-types.ts`). A copy of an enclosing
+  // method's local inside a local or anonymous class: the producer's own type,
+  // once no supertype of that class can declare a field of the copied name.
   callResultElementType: (callee, returned, route, scopes) =>
     route.startsWith('lambda:')
       ? javaSamLambdaParameterType(callee, returned, route, scopes)
-      : javaCallResultElementType(callee, returned, route, scopes),
+      : route.startsWith(JAVA_ENCLOSING_LOCAL_ROUTE)
+        ? javaEnclosingLocalAliasType(returned, route, scopes)
+        : javaCallResultElementType(callee, returned, route, scopes),
   qualifiedTypeLookupSpelling: javaQualifiedTypeLookupSpelling,
   hoistedTypeBindingsRequireOwner: true,
 
@@ -153,6 +162,7 @@ const javaScopeResolver: ScopeResolver = {
     populateJavaQualifiedTypeBindings(parsedFiles, indexes);
     validateJavaQualifiedContextualBindings(parsedFiles, indexes);
     indexJavaSamLambdaTargets(parsedFiles, indexes);
+    indexJavaEnclosingLocalAliases(parsedFiles, indexes);
   },
   resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
   populateRangeBindings: populateJavaCrossFileReturnTypes,

@@ -36,13 +36,12 @@ class Lone implements Marker {
 `,
   });
 
-  const saveTargets = (caller: string): string[] =>
+  const targets = (caller: string, name: string): string[] =>
     getRelationships(result(), 'CALLS')
-      .filter(
-        (edge) => edge.rel.sourceId === `Method:Main.java:${caller}` && edge.target === 'save',
-      )
+      .filter((edge) => edge.rel.sourceId === `Method:Main.java:${caller}` && edge.target === name)
       .map((edge) => edge.rel.targetId)
       .sort();
+  const saveTargets = (caller: string): string[] => targets(caller, 'save');
 
   it.each([['Sub.viaSuper#0'], ['Sub.viaThis#0'], ['Sub.overloadedSuper#0']])(
     'binds the element of the producer selected through %s',
@@ -51,13 +50,17 @@ class Lone implements Marker {
     },
   );
 
-  it.each([
-    ['Sub.privateSuper#0'],
-    ['Sub.ambiguousSuper#0'],
-    ['Sub$1.run#0'],
-    ['Lone.viaObjectSuper#0'],
-  ])('leaves %s unresolved when the producer cannot be proven', (caller) => {
-    expect(result().graph.getNode(`Method:Main.java:${caller}`)).toBeDefined();
-    expect(saveTargets(caller)).toEqual([]);
+  it('types this inside an anonymous class as that class, not the enclosing Sub', () => {
+    // Sub.own() returns User[] and must never be the producer of this.own().
+    expect(targets('Sub$1.run#0', 'own')).toEqual(['Method:Main.java:Sub$1.own#0']);
+    expect(saveTargets('Sub$1.run#0')).toEqual(['Method:Main.java:Other.save#0']);
   });
+
+  it.each([['Sub.privateSuper#0'], ['Sub.ambiguousSuper#0'], ['Lone.viaObjectSuper#0']])(
+    'leaves %s unresolved when the producer cannot be proven',
+    (caller) => {
+      expect(result().graph.getNode(`Method:Main.java:${caller}`)).toBeDefined();
+      expect(saveTargets(caller)).toEqual([]);
+    },
+  );
 });
