@@ -286,11 +286,13 @@ export async function measurePythonValueReferences({
       [
         '../../src/core/ingestion/languages/python/captures.ts',
         '../../src/core/ingestion/languages/python/query.ts',
+        '../../src/core/ingestion/languages/python/import-target.ts',
         '../../src/core/ingestion/languages/python/lexical-bindings.ts',
         '../../../gitnexus-shared/src/scope-resolution/registries/lookup-core.ts',
         '../../dist/core/ingestion/workers/parse-worker.js',
         '../../dist/core/ingestion/languages/python/captures.js',
         '../../dist/core/ingestion/languages/python/query.js',
+        '../../dist/core/ingestion/languages/python/import-target.js',
         '../../dist/core/ingestion/languages/python/lexical-bindings.js',
         '../../../gitnexus-shared/dist/scope-resolution/registries/lookup-core.js',
       ].map((file) => [
