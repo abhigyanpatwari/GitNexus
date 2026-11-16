@@ -127,8 +127,8 @@ describe('native parser availability — unavailable language is skipped, not cr
       .filter((msg): msg is string => typeof msg === 'string' && msg.startsWith('Skipping 1 '));
     expect(skipped).toEqual(
       expect.arrayContaining([
-        'Skipping 1 r file(s) — r parser not available (native binding may not have built). Try: npm rebuild @eagleoutice/tree-sitter-r',
-        'Skipping 1 swift file(s) — swift parser not available (native binding may not have built). Try: npm rebuild tree-sitter-swift',
+        'Skipping 1 r file(s) — r parser not available (native binding may not have built). Try: npm rebuild @eagleoutice/tree-sitter-r, then analyze --force',
+        'Skipping 1 swift file(s) — swift parser not available (native binding may not have built). Try: npm rebuild tree-sitter-swift, then analyze --force',
       ]),
     );
   });

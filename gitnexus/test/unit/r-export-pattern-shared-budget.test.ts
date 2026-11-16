@@ -368,6 +368,12 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     expect(messages.some((m) => m.includes('further exportPattern() arguments exceeded'))).toBe(
       all.length > MAX_LISTED_DROPPED_PATTERNS,
     );
+    // The warnings say what the assertion above shows: the nodes stay exported.
+    expect(messages.length).toBeGreaterThan(0);
+    for (const m of messages) {
+      expect(m).toContain('stay exported');
+      expect(m).not.toContain('treated as not exported');
+    }
   }, 60_000);
 
   it('spends the same work and drops the same patterns on every load', async () => {
@@ -612,7 +618,7 @@ describe('the start-state filter is charged to the work budget', () => {
   it('charges the filter once per distinct start character, not again on a memoised hit', () => {
     const budget = new SharedWorkBudget(1_000_000_000);
     const matcher = compileLinearRegex(bigClasses(20, 200), budget) as LinearRegex;
-    matcher.test('\u2000\u2000'); // two misses: (start, U+2000) and (middle, U+2000)
+    matcher.test('\u2000\u2000'); // two misses: (start, U+2000) and (end, U+2000)
     expect(matcher.work).toBeGreaterThanOrEqual(2 * 20 * 200);
     const afterFirst = matcher.work;
     matcher.test('\u2000\u2000\u2000'); // every position's filter is answered from the memo

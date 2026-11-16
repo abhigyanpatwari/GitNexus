@@ -537,7 +537,7 @@ export async function runChunkedParseAndResolve(
       );
     } else {
       logger.warn(
-        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild ${grammarRebuildPackage(lang)}`,
+        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild ${grammarRebuildPackage(lang)}, then analyze --force`,
       );
     }
   }
