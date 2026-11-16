@@ -22,10 +22,25 @@ interface DeclaredBinding {
   readonly end: number;
   readonly type?: string;
   /** Workspace facts an inferred element type depends on. */
-  readonly proofs?: readonly ContainerProof[];
+  readonly proofs?: readonly BindingProof[];
   readonly typeSource: SyntaxNode;
   readonly evidence?: TypeEvidence;
 }
+
+/** What a name lookup found, and the class bodies it walked out of first. */
+interface LookupResult {
+  readonly binding?: DeclaredBinding;
+  /** Innermost first: each body's supertypes may declare the name instead. */
+  readonly shadows: readonly InheritedFieldProof[];
+}
+const UNRESOLVED: LookupResult = { shadows: [] };
+
+/**
+ * The type of an element binding whose value may only come from a field that a
+ * supertype declares. Resolution replaces it with that field's element type,
+ * or removes it; it is not a Java identifier, so it never names a type.
+ */
+export const JAVA_INHERITED_FIELD_ELEMENT = '#inherited-field';
 
 /**
  * A JDK container identity that only resolution can confirm: what a simple
@@ -41,10 +56,67 @@ export interface ContainerProof {
   readonly scope: ScopeId;
 }
 
-export interface JavaContainerProofFact extends ContainerProof {
+/** How a bound value is read from a field: a loop, a map view or a callback. */
+export type JavaFieldElementRoute =
+  | 'iterate'
+  | 'values'
+  | 'keySet'
+  | 'forEach'
+  | 'forEachOrdered'
+  | 'forEachKey'
+  | 'forEachValue';
+
+/**
+ * A lookup walked out of a class body that has supertypes without finding
+ * `name`. The name means what it found further out only if no supertype of
+ * that class declares an inherited field `name` (JLS 6.4.1, 8.3). When exactly
+ * one does, a binding with a `route` takes that field's element instead; a
+ * binding that depends on the field only transitively has no route.
+ */
+export interface InheritedFieldProof {
+  readonly kind: 'unshadowed-field';
+  readonly name: string;
+  /** Class scope of the type whose supertypes are checked. */
+  readonly scope: ScopeId;
+  readonly route?: JavaFieldElementRoute;
+}
+
+export type BindingProof = ContainerProof | InheritedFieldProof;
+
+export type JavaContainerProofFact = BindingProof & {
   /** `TypeRef.lookupPosition` of the dependent binding (1-based line). */
   readonly line: number;
   readonly col: number;
+};
+
+/** A field (or interface or enum constant) a type declares. */
+export interface JavaFieldFact {
+  readonly name: string;
+  /** Who inherits it (JLS 8.3): no subclass inherits a private field, and
+   * only a subclass in the same package inherits a package-access one. */
+  readonly access: 'private' | 'package' | 'inherited';
+  /** Elements of a JDK container or array field type, by route, each read
+   * where the field type was written (1-based `line`), after `proofs` hold. */
+  readonly element?: {
+    readonly line: number;
+    readonly col: number;
+    readonly proofs: readonly ContainerProof[];
+    readonly elements: readonly {
+      readonly route: JavaFieldElementRoute;
+      readonly spelling: string;
+      readonly scope: ScopeId;
+    }[];
+  };
+}
+
+/** The written supertypes and fields of one type that has either; a type
+ * missing from its file's list has neither. */
+export interface JavaTypeFieldsFact {
+  /** The type's class scope range. */
+  readonly range: Range;
+  /** Erased simple names of the written supertypes. */
+  readonly bases: readonly string[];
+  readonly fields: readonly JavaFieldFact[];
 }
 
 /** How a call-result assignment reaches an element of the returned value. */
@@ -176,6 +248,7 @@ const JDK_CONTAINERS = new Set([...ITERABLE_TYPES, ...MAP_TYPES, STREAM_TYPE]);
 // ParsedFile; resolution reads the snapshot, never this map.
 const containerProofs = new Map<string, readonly JavaContainerProofFact[]>();
 const returnElements = new Map<string, readonly JavaReturnElementFact[]>();
+const typeFields = new Map<string, readonly JavaTypeFieldsFact[]>();
 
 export function getJavaContainerProofs(filePath: string): readonly JavaContainerProofFact[] {
   return containerProofs.get(filePath) ?? [];
@@ -183,6 +256,11 @@ export function getJavaContainerProofs(filePath: string): readonly JavaContainer
 
 export function getJavaReturnElements(filePath: string): readonly JavaReturnElementFact[] {
   return returnElements.get(filePath) ?? [];
+}
+
+/** `undefined` when this file was not captured: its fields are unknown. */
+export function getJavaTypeFields(filePath: string): readonly JavaTypeFieldsFact[] | undefined {
+  return typeFields.get(filePath);
 }
 
 /** The binding an element of a method's declared return type gives a caller.
@@ -205,6 +283,7 @@ export function javaReturnElementRef(
 export function clearJavaContainerProofs(): void {
   containerProofs.clear();
   returnElements.clear();
+  typeFields.clear();
 }
 
 /** Keep container types on ordinary receivers. Element types are available
@@ -220,6 +299,8 @@ export function synthesizeJavaDeclaredTypeCaptures(
   const onDemandPackages = new Set<string>(['java.lang']);
   const proofs: JavaContainerProofFact[] = [];
   const returns: JavaReturnElementFact[] = [];
+  const fieldDeclarations: SyntaxNode[] = [];
+  const typeBodies: SyntaxNode[] = [];
   const localTypes = new Set<string>();
   // A type parameter is in scope only within its generic declaration (JLS 6.3).
   const typeParameters = new Map<string, { readonly start: number; readonly end: number }[]>();
@@ -243,6 +324,12 @@ export function synthesizeJavaDeclaredTypeCaptures(
     'annotation_type_declaration',
     'type_parameter',
     'field_declaration',
+    'constant_declaration',
+    'enum_constant',
+    'class_body',
+    'interface_body',
+    'enum_body',
+    'annotation_type_body',
     'local_variable_declaration',
     'formal_parameter',
     'spread_parameter',
@@ -273,7 +360,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     type?: string,
     start = name.startIndex,
     end = owner.endIndex,
-    dependsOn: readonly ContainerProof[] = [],
+    dependsOn: readonly BindingProof[] = [],
     typeSource = name,
     evidence?: TypeEvidence,
   ) => {
@@ -284,19 +371,23 @@ export function synthesizeJavaDeclaredTypeCaptures(
       start,
       end,
       ...(type === undefined ? {} : { type }),
-      ...(dependsOn.length === 0 ? {} : { proofs: dependsOn }),
+      // A later binding read through this one depends on the field only
+      // transitively: it cannot take the field's element by its own route.
+      ...(dependsOn.length === 0 ? {} : { proofs: dependsOn.map(withoutRoute) }),
       typeSource,
       ...(evidence === undefined ? {} : { evidence }),
     });
     names.set(name.text, values);
     bindings.set(owner.id, names);
   };
-  const lookup = (expression: SyntaxNode): DeclaredBinding | undefined => {
-    if (expression.type !== 'identifier') return undefined;
+  const lookup = (expression: SyntaxNode): LookupResult => {
+    if (expression.type !== 'identifier') return UNRESOLVED;
+    const shadows: InheritedFieldProof[] = [];
     let current: SyntaxNode | null = expression;
     // Deeply nested callbacks are an uncertainty boundary, not an unbounded
     // per-callback ancestor walk on hostile or generated source.
-    for (let depth = 0; current !== null && depth < 128; depth++) {
+    for (let depth = 0; current !== null; depth++) {
+      if (depth >= 128) return UNRESOLVED;
       const candidates = bindings.get(current.id)?.get(expression.text);
       let selected: DeclaredBinding | undefined;
       for (const binding of candidates ?? []) {
@@ -308,13 +399,28 @@ export function synthesizeJavaDeclaredTypeCaptures(
           selected = binding;
       }
       // An unknown declaration still stops the walk; do not borrow an outer type.
-      if (selected !== undefined) return selected;
-      // An inherited member shadows an enclosing declaration (JLS 6.4.1), and
-      // supertypes are not inventoried here: the name may be inherited.
-      if (inheritsMembers(current)) return undefined;
+      if (selected !== undefined) return { binding: selected, shadows };
+      // An inherited field shadows an enclosing declaration (JLS 6.4.1).
+      // Supertypes are a workspace fact, so resolution checks each body left.
+      if (inheritsMembers(current)) {
+        const scope = classScopeOfBody(current);
+        if (scope === undefined) return UNRESOLVED;
+        shadows.push({ kind: 'unshadowed-field', name: expression.text, scope });
+      }
       current = current.parent;
     }
-    return undefined;
+    return { shadows };
+  };
+  const classScopeOfBody = (body: SyntaxNode): ScopeId | undefined => {
+    const owner = body.parent;
+    if (owner === null) return undefined;
+    // Anonymous and enum-constant classes are scoped by their body.
+    const node =
+      body.type === 'class_body' &&
+      (owner.type === 'object_creation_expression' || owner.type === 'enum_constant')
+        ? body
+        : owner;
+    return makeScopeId({ filePath, range: nodeToCapture('', node).range, kind: 'Class' });
   };
 
   for (const node of nodes) {
@@ -356,9 +462,15 @@ export function synthesizeJavaDeclaredTypeCaptures(
       }
     }
 
-    if (node.type === 'field_declaration' || node.type === 'local_variable_declaration') {
+    if (
+      node.type === 'field_declaration' ||
+      node.type === 'constant_declaration' ||
+      node.type === 'local_variable_declaration'
+    ) {
       const declared = node.childForFieldName('type');
       const owner = ownerOf(node.parent ?? root);
+      const field = node.type !== 'local_variable_declaration';
+      if (field) fieldDeclarations.push(node);
       for (const declarator of node.namedChildren.filter(
         (child) => child.type === 'variable_declarator',
       )) {
@@ -375,12 +487,26 @@ export function synthesizeJavaDeclaredTypeCaptures(
           owner,
           name,
           type === null ? undefined : javaTypeText(type) + javaTrailingDimensions(declarator),
-          node.type === 'field_declaration' ? -1 : name.startIndex,
+          field ? -1 : name.startIndex,
           owner.endIndex,
           [],
           type ?? name,
         );
       }
+    } else if (node.type === 'enum_constant') {
+      // An enum constant is a field of its enum: it hides an outer name.
+      const name = node.childForFieldName('name');
+      if (name !== null) {
+        add(ownerOf(node.parent ?? root), name, undefined, -1);
+        fieldDeclarations.push(node);
+      }
+    } else if (
+      node.type === 'class_body' ||
+      node.type === 'interface_body' ||
+      node.type === 'enum_body' ||
+      node.type === 'annotation_type_body'
+    ) {
+      typeBodies.push(node);
     } else if (
       node.type === 'formal_parameter' ||
       node.type === 'spread_parameter' ||
@@ -584,9 +710,9 @@ export function synthesizeJavaDeclaredTypeCaptures(
     return { kind: evidence.imported, name, scope };
   };
   const withProof = (
-    inherited: readonly ContainerProof[] | undefined,
+    inherited: readonly BindingProof[] | undefined,
     evidence: TypeEvidence | undefined,
-  ): readonly ContainerProof[] => {
+  ): readonly BindingProof[] => {
     const own = evidence === undefined ? undefined : proofOf(evidence);
     return own === undefined ? (inherited ?? []) : [...(inherited ?? []), own];
   };
@@ -594,7 +720,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     binding: DeclaredBinding | undefined,
     use: SyntaxNode,
   ):
-    | { base: string; args: readonly TypeEvidence[]; proofs: readonly ContainerProof[] }
+    | { base: string; args: readonly TypeEvidence[]; proofs: readonly BindingProof[] }
     | undefined => {
     const evidence = evidenceFor(binding, use);
     if (
@@ -613,22 +739,31 @@ export function synthesizeJavaDeclaredTypeCaptures(
   };
   const emit = (
     name: SyntaxNode,
-    inferred: TypeEvidence,
-    dependsOn: readonly ContainerProof[],
+    inferred: TypeEvidence | undefined,
+    dependsOn: readonly BindingProof[],
     body?: SyntaxNode,
   ) => {
+    const lookupScope = inferred?.lookupScope ?? producerScope(name);
+    if (lookupScope === undefined) return;
     const capture = bindingCapture(
       name,
-      inferred.spelling,
+      inferred?.spelling ?? JAVA_INHERITED_FIELD_ELEMENT,
       body,
       dependsOn.some((proof) => proof.kind === 'root'),
-      inferred.lookupScope,
+      lookupScope,
     );
     const anchor = capture['@type-binding.parameter']!.range;
     for (const proof of dependsOn)
       proofs.push({ ...proof, line: anchor.startLine, col: anchor.startCol });
     out.push(capture);
   };
+  /** Proofs that the walk to a value's declaration left no inherited field
+   * behind, each telling resolution how the binding reads that field. */
+  const routed = (
+    found: LookupResult,
+    route: JavaFieldElementRoute | undefined,
+  ): readonly InheritedFieldProof[] =>
+    route === undefined ? found.shadows : found.shadows.map((shadow) => ({ ...shadow, route }));
 
   // Native descendants are in source order: outer operations publish their
   // element declaration before a nested operation asks for that declaration.
@@ -639,28 +774,33 @@ export function synthesizeJavaDeclaredTypeCaptures(
       const type = node.childForFieldName('type');
       const value = node.childForFieldName('value');
       if (name === null || body === null || type === null || value === null) continue;
-      const binding = lookup(value);
+      const found = lookup(value);
+      const binding = found.binding;
       const written = binding?.type;
       const writtenEvidence = evidenceFor(binding, node);
       const iterable = container(binding, node);
       let mapElement: TypeEvidence | undefined;
-      let mapProofs: readonly ContainerProof[] = [];
+      let mapProofs: readonly BindingProof[] = [];
+      // The value's field, read through `for (var v : field)` or a map view.
+      let shadows = routed(found, 'iterate');
       if (value.type === 'method_invocation') {
         const receiver = value.childForFieldName('object');
         const args = value.childForFieldName('arguments');
         const member = value.childForFieldName('name')?.text;
-        const map = receiver === null ? undefined : container(lookup(receiver), node);
-        if (
-          map !== undefined &&
-          MAP_TYPES.has(map.base) &&
-          map.args.length === 2 &&
+        const view =
+          (member === 'values' || member === 'keySet') &&
           args !== null &&
           args.namedChildren.every(
             (child) => child.type === 'line_comment' || child.type === 'block_comment',
           )
-        ) {
-          if (member === 'values') mapElement = map.args[1];
-          else if (member === 'keySet') mapElement = map.args[0];
+            ? member
+            : undefined;
+        const receiverFound = receiver === null ? UNRESOLVED : lookup(receiver);
+        shadows = view === undefined ? [] : routed(receiverFound, view);
+        const map = container(receiverFound.binding, node);
+        if (map !== undefined && MAP_TYPES.has(map.base) && map.args.length === 2) {
+          if (view === 'values') mapElement = map.args[1];
+          else if (view === 'keySet') mapElement = map.args[0];
           if (mapElement !== undefined) mapProofs = map.proofs;
         }
       }
@@ -682,14 +822,18 @@ export function synthesizeJavaDeclaredTypeCaptures(
       // A `var` element is only as certain as the container identity it
       // came through. Each proof is checked where that container was written,
       // so the element keeps its own lookup anchor (and local visibility).
-      const dependsOn =
-        type.text !== 'var'
+      // A written element type does not depend on the value at all.
+      const inherited = type.text !== 'var' ? [] : shadows;
+      const dependsOn = [
+        ...inherited,
+        ...(type.text !== 'var' || inferred === undefined
           ? []
           : written?.endsWith('[]')
             ? withProof(binding?.proofs, writtenEvidence)
             : elementOfIterable
               ? iterable.proofs
-              : mapProofs;
+              : mapProofs),
+      ];
       add(
         body,
         name,
@@ -700,7 +844,9 @@ export function synthesizeJavaDeclaredTypeCaptures(
         inferred?.source ?? type,
         inferred,
       );
-      if (inferred !== undefined) emit(name, inferred, dependsOn, body);
+      // Without an element from the outer value, only a supertype's field
+      // can type this variable; resolution decides or removes the binding.
+      if (inferred !== undefined || inherited.length > 0) emit(name, inferred, dependsOn, body);
     } else if (node.type === 'lambda_expression') {
       const argumentsNode = node.parent;
       const call = argumentsNode?.parent;
@@ -716,19 +862,33 @@ export function synthesizeJavaDeclaredTypeCaptures(
         ).length !== 1
       )
         continue;
-      const owner = container(lookup(receiver), node);
-      if (owner === undefined) continue;
+      const found = lookup(receiver);
+      const owner = container(found.binding, node);
       const parameters = lambdaParameters(node);
       const expected =
-        MAP_TYPES.has(owner.base) && member === 'forEach' && owner.args.length === 2
-          ? owner.args
-          : ((ITERABLE_TYPES.has(owner.base) && member === 'forEach') ||
-                (owner.base === STREAM_TYPE &&
-                  (member === 'forEach' || member === 'forEachOrdered'))) &&
-              owner.args.length === 1
+        owner === undefined
+          ? undefined
+          : MAP_TYPES.has(owner.base) && member === 'forEach' && owner.args.length === 2
             ? owner.args
-            : undefined;
-      if (expected === undefined || expected.length !== parameters.length) continue;
+            : ((ITERABLE_TYPES.has(owner.base) && member === 'forEach') ||
+                  (owner.base === STREAM_TYPE &&
+                    (member === 'forEach' || member === 'forEachOrdered'))) &&
+                owner.args.length === 1
+              ? owner.args
+              : undefined;
+      const candidates =
+        expected !== undefined && expected.length === parameters.length ? expected : undefined;
+      // How each parameter reads the receiver's field, whatever declares it.
+      const routes: readonly JavaFieldElementRoute[] | undefined =
+        member === 'forEach' && parameters.length === 1
+          ? ['forEach']
+          : member === 'forEachOrdered' && parameters.length === 1
+            ? ['forEachOrdered']
+            : member === 'forEach' && parameters.length === 2
+              ? ['forEachKey', 'forEachValue']
+              : undefined;
+      if (candidates === undefined && (routes === undefined || found.shadows.length === 0))
+        continue;
       for (let i = 0; i < parameters.length; i++) {
         const parameter = parameters[i]!;
         const explicit = parameter.childForFieldName('type');
@@ -736,18 +896,22 @@ export function synthesizeJavaDeclaredTypeCaptures(
         const name =
           parameter.type === 'identifier' ? parameter : parameter.childForFieldName('name');
         if (name === null) continue;
-        const inferred = expected[i]!;
+        const inferred = candidates?.[i];
+        const dependsOn = [
+          ...routed(found, routes?.[i]),
+          ...(inferred === undefined || owner === undefined ? [] : owner.proofs),
+        ];
         add(
           node,
           name,
-          inferred.spelling,
+          inferred?.spelling,
           -1,
           node.endIndex,
-          owner.proofs,
-          inferred.source,
+          dependsOn,
+          inferred?.source ?? name,
           inferred,
         );
-        emit(name, inferred, owner.proofs);
+        emit(name, inferred, dependsOn);
       }
     } else if (node.type === 'method_declaration') {
       const type = node.childForFieldName('type');
@@ -798,7 +962,132 @@ export function synthesizeJavaDeclaredTypeCaptures(
   else containerProofs.set(filePath, proofs);
   if (returns.length === 0) returnElements.delete(filePath);
   else returnElements.set(filePath, returns);
+
+  // Every type's written supertypes and fields, for a subclass anywhere in
+  // the workspace to check which name it inherits (see `InheritedFieldProof`).
+  const fieldElement = (declared: SyntaxNode, declarator: SyntaxNode): JavaFieldFact['element'] => {
+    const written = javaTypeText(declared) + javaTrailingDimensions(declarator);
+    if (!written.includes('<') && !written.endsWith(']')) return undefined;
+    const evidence = identify(written, declared, declared);
+    if (evidence === undefined) return undefined;
+    const elements: NonNullable<JavaFieldFact['element']>['elements'][number][] = [];
+    const [first, second] = evidence.args;
+    if (evidence.dimensions > 0)
+      elements.push({
+        route: 'iterate',
+        spelling: evidence.spelling.slice(0, -2),
+        scope: evidence.lookupScope,
+      });
+    else if (!JDK_CONTAINERS.has(evidence.base) || localTypes.has(evidence.base.split('.')[0]!))
+      return undefined;
+    else if (ITERABLE_TYPES.has(evidence.base) && evidence.args.length === 1 && first)
+      for (const route of ['iterate', 'forEach'] as const)
+        elements.push({ route, spelling: first.spelling, scope: first.lookupScope });
+    else if (evidence.base === STREAM_TYPE && evidence.args.length === 1 && first)
+      for (const route of ['forEach', 'forEachOrdered'] as const)
+        elements.push({ route, spelling: first.spelling, scope: first.lookupScope });
+    else if (MAP_TYPES.has(evidence.base) && evidence.args.length === 2 && first && second)
+      for (const [route, element] of [
+        ['values', second],
+        ['keySet', first],
+        ['forEachKey', first],
+        ['forEachValue', second],
+      ] as const)
+        elements.push({ route, spelling: element.spelling, scope: element.lookupScope });
+    if (elements.length === 0) return undefined;
+    const own = proofOf(evidence);
+    return {
+      line: declared.startPosition.row + 1,
+      col: declared.startPosition.column,
+      proofs: own === undefined ? [] : [own],
+      elements,
+    };
+  };
+  const fieldsByBody = new Map<number, JavaFieldFact[]>();
+  for (const declaration of fieldDeclarations) {
+    const body =
+      declaration.parent?.type === 'enum_body_declarations'
+        ? declaration.parent.parent
+        : declaration.parent;
+    if (body === null) continue;
+    const fields = fieldsByBody.get(body.id) ?? [];
+    fieldsByBody.set(body.id, fields);
+    if (declaration.type === 'enum_constant') {
+      const name = declaration.childForFieldName('name');
+      if (name !== null) fields.push({ name: name.text, access: 'inherited' });
+      continue;
+    }
+    const words = new Set(
+      declaration.namedChildren
+        .find((child) => child.type === 'modifiers')
+        ?.children.map((child) => child.type) ?? [],
+    );
+    // Interface and annotation constants are implicitly public.
+    const access: JavaFieldFact['access'] =
+      declaration.type === 'constant_declaration' || words.has('public') || words.has('protected')
+        ? 'inherited'
+        : words.has('private')
+          ? 'private'
+          : 'package';
+    const declared = declaration.childForFieldName('type');
+    for (const declarator of declaration.namedChildren) {
+      if (declarator.type !== 'variable_declarator') continue;
+      const name = declarator.childForFieldName('name');
+      if (name === null) continue;
+      const element = declared === null ? undefined : fieldElement(declared, declarator);
+      fields.push({ name: name.text, access, ...(element === undefined ? {} : { element }) });
+    }
+  }
+  const inventory: JavaTypeFieldsFact[] = [];
+  for (const body of typeBodies) {
+    const owner = body.parent;
+    if (owner === null) continue;
+    const bases: string[] = [];
+    let scopeNode = owner;
+    if (owner.type === 'object_creation_expression' || owner.type === 'enum_constant') {
+      scopeNode = body;
+      const base =
+        owner.type === 'object_creation_expression'
+          ? owner.childForFieldName('type')
+          : enclosingEnumName(owner);
+      if (base === null) continue;
+      bases.push(base.text);
+    } else {
+      for (const child of owner.namedChildren) {
+        if (child.type === 'superclass')
+          bases.push(...child.namedChildren.map((part) => part.text));
+        if (child.type === 'super_interfaces' || child.type === 'extends_interfaces') {
+          const list = child.namedChildren.find((part) => part.type === 'type_list');
+          bases.push(...(list?.namedChildren ?? child.namedChildren).map((part) => part.text));
+        }
+      }
+    }
+    const fields = fieldsByBody.get(body.id) ?? [];
+    if (bases.length === 0 && fields.length === 0) continue;
+    inventory.push({
+      range: nodeToCapture('', scopeNode).range,
+      bases: bases.map((base) => {
+        const erased = eraseJavaTypeArguments(base).replace(/\s+/g, '');
+        return erased.slice(erased.lastIndexOf('.') + 1);
+      }),
+      fields,
+    });
+  }
+  typeFields.set(filePath, inventory);
   return out;
+}
+
+/** The same proof for a binding that reads the field only transitively. */
+function withoutRoute(proof: BindingProof): BindingProof {
+  if (proof.kind !== 'unshadowed-field' || proof.route === undefined) return proof;
+  return { kind: proof.kind, name: proof.name, scope: proof.scope };
+}
+
+/** The name node of the enum declaring `constant`. */
+function enclosingEnumName(constant: SyntaxNode): SyntaxNode | null {
+  for (let node = constant.parent; node !== null; node = node.parent)
+    if (node.type === 'enum_declaration') return node.childForFieldName('name');
+  return null;
 }
 
 /** Whether a type body can inherit members from a supertype. Anonymous and

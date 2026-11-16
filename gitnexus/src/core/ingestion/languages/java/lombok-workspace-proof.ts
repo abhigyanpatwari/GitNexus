@@ -157,14 +157,79 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   const visible = (from: TypeEntry, target: TypeEntry) =>
     isJvmSourceVisible(from.filePath, target.filePath) &&
     (from.packageName === target.packageName || target.fact.modifiers?.includes('public') === true);
+  const fqnOf = (target: TypeEntry) =>
+    `${target.packageName === '' ? '' : target.packageName + '.'}${target.fact.name}`;
+  /**
+   * The member types a single-static-import of `head` brings into `entry`'s
+   * file (JLS 7.5.3): declared or inherited by a workspace owner. `external`
+   * when the owner is not in the workspace, so the import may name a type or
+   * only a field or method; `unknown` when the owner or its members cannot be
+   * decided.
+   */
+  const staticImported = (
+    entry: TypeEntry,
+    head: string,
+  ): { readonly types: readonly TypeEntry[]; readonly external: boolean } | 'unknown' => {
+    const types = new Set<TypeEntry>();
+    let external = false;
+    for (const item of entry.facts.imports) {
+      if (!item.static || item.wildcard) continue;
+      const dot = item.name.lastIndexOf('.');
+      if (dot < 0 || item.name.slice(dot + 1) !== head) continue;
+      const ownerName = item.name.slice(0, dot);
+      const owners = (byFqn.get(ownerName) ?? []).filter((target) => visible(entry, target));
+      if (owners.length === 0) {
+        // Like a qualified base, a path through an inherited member type may
+        // still name a workspace owner that this literal lookup missed.
+        if (simpleNames.has(ownerName.slice(ownerName.lastIndexOf('.') + 1))) return 'unknown';
+        external = true;
+        continue;
+      }
+      if (owners.length > 1) return 'unknown';
+      const owner = owners[0]!;
+      const inherited = namesOf(owner);
+      const members = [...owner.members, ...inherited.members].filter(
+        (member) => member.fact.simpleName === head && visible(entry, member),
+      );
+      if (members.length === 0 && inherited.unknown) return 'unknown';
+      for (const member of members) types.add(member);
+    }
+    return { types: [...types], external };
+  };
   const resolveBase = (entry: TypeEntry, written: string): ResolvedBase => {
     const raw = eraseJavaTypeArguments(written).replace(/\s+/g, '');
     if (!/^[\w$.]+$/.test(raw)) return 'unknown';
     const imports = entry.facts.imports.filter((item) => !item.static && !item.wildcard);
     const head = raw.split('.')[0]!;
     const explicit = imports.filter((item) => item.name.split('.').pop() === head);
+    // A single-static-import of a member type shadows like a single-type import.
+    const statics = staticImported(entry, head);
+    if (statics === 'unknown' || explicit.length > 1) return 'unknown';
+    if (statics.types.length > 0) {
+      // Two single imports of one simple name must agree; do not pick one.
+      if (explicit.length > 0) return 'unknown';
+      const candidates = [
+        ...new Set(
+          statics.types
+            .flatMap((type) => byFqn.get(fqnOf(type) + raw.slice(head.length)) ?? [])
+            .filter((target) => visible(entry, target)),
+        ),
+      ];
+      // A nested path through an imported member type may be inherited there.
+      return candidates.length === 1 ? candidates[0]! : 'unknown';
+    }
+    const resolved = resolveUnimported(entry, raw, head, explicit);
+    // An owner outside the workspace may import a type of this name, which
+    // would shadow a workspace candidate; it adds no workspace names itself.
+    return statics.external && resolved !== 'external' ? 'unknown' : resolved;
+  };
+  const resolveUnimported = (
+    entry: TypeEntry,
+    raw: string,
+    head: string,
+    explicit: readonly { readonly name: string }[],
+  ): ResolvedBase => {
     let spellings: string[];
-    if (explicit.length > 1) return 'unknown';
     if (explicit.length === 1) spellings = [explicit[0]!.name + raw.slice(head.length)];
     else if (raw.includes('.')) spellings = [raw];
     else {

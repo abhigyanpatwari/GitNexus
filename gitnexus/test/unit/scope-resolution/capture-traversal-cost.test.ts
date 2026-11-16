@@ -70,9 +70,10 @@ describe('capture traversal work', () => {
       // The write target `c.total` is not a read; every `Label.F<i>` is.
       expect(captures.filter((match) => match['@reference.read.member']).length).toBe(operands);
       expect(captures.filter((match) => match['@reference.write.member']).length).toBe(1);
-      // Declaration/type-identity bookkeeping adds five fixed reads. Neither
-      // operand count may introduce a native parent read per member access.
-      expect(parent.mock.calls.length).toBe(37);
+      // Declaration/type-identity and inherited-field bookkeeping add eight
+      // fixed reads. Neither operand count may introduce a native parent read
+      // per member access.
+      expect(parent.mock.calls.length).toBe(40);
     } finally {
       parent.mockRestore();
     }

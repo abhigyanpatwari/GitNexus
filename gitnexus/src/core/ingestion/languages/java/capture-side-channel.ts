@@ -21,8 +21,10 @@ import {
   clearJavaContainerProofs,
   getJavaContainerProofs,
   getJavaReturnElements,
+  getJavaTypeFields,
   type JavaContainerProofFact,
   type JavaReturnElementFact,
+  type JavaTypeFieldsFact,
 } from './declared-type-captures.js';
 import {
   clearJavaOverloadFacts,
@@ -42,6 +44,8 @@ export interface JavaCaptureSideChannel {
   readonly containerProofs?: readonly JavaContainerProofFact[];
   /** Element types of declared JDK container returns, for call-result loops. */
   readonly returnElements?: readonly JavaReturnElementFact[];
+  /** Supertypes and fields of this file's types; absent when not captured. */
+  readonly typeFields?: readonly JavaTypeFieldsFact[];
   readonly packageFact: JvmPackageFact;
   readonly classAnnotations: readonly JavaClassAnnotationFact[];
   readonly springAopFacts?: readonly JavaSpringAopFact[];
@@ -202,10 +206,12 @@ export function collectJavaCaptureSideChannel(
   const packageFact = getJavaPackageFact(filePath);
   const containerProofs = getJavaContainerProofs(filePath);
   const returnElements = getJavaReturnElements(filePath);
+  const typeFields = getJavaTypeFields(filePath);
   if (
     overloadFacts === undefined &&
     containerProofs.length === 0 &&
     returnElements.length === 0 &&
+    (typeFields === undefined || typeFields.length === 0) &&
     facts.length === 0 &&
     aopFacts.length === 0 &&
     configConsumers.length === 0 &&
@@ -224,6 +230,8 @@ export function collectJavaCaptureSideChannel(
     ...(overloadFacts === undefined ? {} : { overloadFacts }),
     ...(containerProofs.length > 0 ? { containerProofs } : {}),
     ...(returnElements.length > 0 ? { returnElements } : {}),
+    // Kept when empty: an empty list proves this file's types declare no field.
+    ...(typeFields === undefined ? {} : { typeFields }),
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: facts,
     ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
@@ -250,6 +258,24 @@ export function javaReturnElementFacts(parsed: ParsedFile): readonly JavaReturnE
           Array.isArray(fact.elements),
       )
     : [];
+}
+
+/** Type field facts carried on a ParsedFile; `undefined` when not captured. */
+export function javaTypeFieldFacts(parsed: ParsedFile): readonly JavaTypeFieldsFact[] | undefined {
+  const data = parsed.captureSideChannel as JavaCaptureSideChannel | undefined;
+  return data?.kind === 'java' &&
+    Array.isArray(data.typeFields) &&
+    data.typeFields.every(
+      (fact) =>
+        typeof fact === 'object' &&
+        fact !== null &&
+        typeof fact.range === 'object' &&
+        fact.range !== null &&
+        Array.isArray(fact.bases) &&
+        Array.isArray(fact.fields),
+    )
+    ? data.typeFields
+    : undefined;
 }
 
 export function getJavaClassAnnotationFacts(filePath: string): readonly JavaClassAnnotationFact[] {

@@ -85,17 +85,21 @@ class Outer {
 }`,
   });
 
+  // Java member lookup takes Base2.items (List<Other>) before Outer.items.
   it.each([
     ['In.run', 'Method:app/Outer.java:In.run#0'],
     ['In.loop', 'Method:app/Outer.java:In.loop#0'],
-    ['Impl.run', 'Method:app/Outer.java:Impl.run#0'],
     ['anonymous Base2.run', 'Method:app/Outer.java:Outer$1.run#0'],
-  ])('%s does not borrow the enclosing field', (_label, caller) => {
-    expect(saveTargets(result(), caller)).toEqual([]);
+  ])('%s reads the inherited field, not the enclosing one', (_label, caller) => {
+    expect(saveTargets(result(), caller)).toEqual([OTHER]);
   });
 
-  it('keeps enclosing-field inference in an inner class without supertypes', () => {
-    expect(saveTargets(result(), 'Method:app/Outer.java:Plain.run#0')).toEqual([USER]);
+  // HasItems declares nothing, so `items` is still Outer.items (List<User>).
+  it.each([
+    ['Impl.run', 'Method:app/Outer.java:Impl.run#0'],
+    ['Plain.run', 'Method:app/Outer.java:Plain.run#0'],
+  ])('%s keeps the enclosing field when no supertype declares it', (_label, caller) => {
+    expect(saveTargets(result(), caller)).toEqual([USER]);
   });
 });
 
