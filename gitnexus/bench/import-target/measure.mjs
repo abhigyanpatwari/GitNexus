@@ -133,12 +133,13 @@
  *     answered by the suffix index after an exact-join miss) and a NAMESPACE
  *     `importFrom(pkg, name)` (a named import that reads the parsed workspace,
  *     spelled `pkg::name` in the corpus). It passes the package map a
- *     `DESCRIPTION` scan yields and is a `CONTEXT_LANGS` member. Two of its
- *     legs are O(files) per import rather than keyed (a local `library()` scans
- *     the file list for the `R/` prefix; every `source()` path runs
- *     `normalizedFileList.indexOf` before the index), which is why R reads the
- *     highest scaling of the linear-budget languages; `_r_arm` in
- *     baselines.json has the per-leg numbers.
+ *     `DESCRIPTION` scan yields and is a `CONTEXT_LANGS` member. One of its
+ *     legs is O(files) per import rather than keyed: a local `library()` scans
+ *     the file list for the `R/` prefix. `source()` is keyed (the exact join
+ *     reads `normToRaw`, built once per pass, and a miss goes to the suffix
+ *     index), so it is not a scan. That one scan is why R reads the highest
+ *     scaling of the linear-budget languages; `_r_arm` in baselines.json has
+ *     the per-leg numbers.
  *
  * Two properties of the corpus are load-bearing and must not be "simplified":
  *
