@@ -18,7 +18,7 @@
         "syntheticAccessorMethods": 129,
         "provisionalSyntheticAccessorMethods": 131
       },
-      "corpusFingerprint": "21be3bafb20c56d74038e0efa71b82f171cbfc0dcee4a1db9a5571cc9ff6fb48",
+      "corpusFingerprint": "a474a4c8991e6f3061b0d0f2b7e688285c13fe579514fcafa193181dd4106be0",
       "capture": {
         "matches": 5769,
         "scopes": 1597,
@@ -26,13 +26,13 @@
         "nameClaims": 139,
         "lexicalNames": 150,
         "syntheticMethodCandidates": 131,
-        "fingerprint": "b9c93dbc1ffd59021b5cb96034bf5cef3184596d8c15b133a2d6f60b2da7cf1a"
+        "fingerprint": "7c98f3457a5c6a96f4a5249f7389cc1a514504c0f13627f02dc9f84fca8c8049"
       },
       "quality": {
         "cases": 405,
         "passedCases": 405,
         "nodes": 1283,
-        "edges": 1788,
+        "edges": 1789,
         "danglingEdges": 0,
         "syntheticAccessorMethods": 129,
         "features": {
@@ -146,7 +146,7 @@
           }
         },
         "semanticFingerprint": "0b163ef842a9a8444d1849c6ac042035bb01a655af9d6b2d780c90ee4dd43612",
-        "graphFingerprint": "1920b1e8fce6ea8b08a12bb6ea2a1535cbe568a9779bbe0d82e1b14965cbe27f",
+        "graphFingerprint": "69d605b7febd8e0fc862dd0acc357e12a2ccb215672a463f7dade64d79972afb",
         "errors": []
       }
     },
@@ -167,7 +167,7 @@
         "syntheticAccessorMethods": 513,
         "provisionalSyntheticAccessorMethods": 515
       },
-      "corpusFingerprint": "80d8e37e8634138c66352f426bb0d4de3c151afff3c455ad062e3de004654ce6",
+      "corpusFingerprint": "0d9e5b474c6f8b0287cadc7256fc070c2850935b2c181ad4a80cd233f678e1be",
       "capture": {
         "matches": 22353,
         "scopes": 6085,
@@ -175,13 +175,13 @@
         "nameClaims": 547,
         "lexicalNames": 582,
         "syntheticMethodCandidates": 515,
-        "fingerprint": "7ed0018ae3317ea4add1127b099ea9cb8dc890184e62cc6597d748b1c2f6c4a9"
+        "fingerprint": "e64934604032f6d8e88ca097411d2a726b7730016e2df0c28d8d5937657b83af"
       },
       "quality": {
         "cases": 1581,
         "passedCases": 1581,
         "nodes": 4859,
-        "edges": 6876,
+        "edges": 6877,
         "danglingEdges": 0,
         "syntheticAccessorMethods": 513,
         "features": {
@@ -295,7 +295,7 @@
           }
         },
         "semanticFingerprint": "b964f0b0304c3aa3f849f57b83d7eeb19ccf9fa2ae222974769d2e01ebdef3fb",
-        "graphFingerprint": "5b409cc4254448733c430ad5865d521c4f94d0281840964e8bc044069cabc102",
+        "graphFingerprint": "f96d789b5c85a059ce08aa8fb7c11802f277319ee2ca0a2c322d6df5f03a1516",
         "errors": []
       }
     },
@@ -316,7 +316,7 @@
         "syntheticAccessorMethods": 4097,
         "provisionalSyntheticAccessorMethods": 4099
       },
-      "corpusFingerprint": "15753e19a9799274c5f368a802be24327783c998981c299f8541688a6cc24bca",
+      "corpusFingerprint": "27a1e624cd835c6eaec8ca1f8367c0a7c4e3520652239fcfa47c972e52a6afdf",
       "capture": {
         "matches": 31537,
         "scopes": 6757,
@@ -324,13 +324,13 @@
         "nameClaims": 547,
         "lexicalNames": 582,
         "syntheticMethodCandidates": 4099,
-        "fingerprint": "5adea1b3f71785d60f3457702207d0f709d49af8fb9a7e14907f08df8327310e"
+        "fingerprint": "93aa734578be9ddd1909bfdc31b1b81d18c1016ac61e844fb7fb966a03398418"
       },
       "quality": {
         "cases": 2029,
         "passedCases": 2029,
         "nodes": 10683,
-        "edges": 13148,
+        "edges": 13149,
         "danglingEdges": 0,
         "syntheticAccessorMethods": 4097,
         "features": {
@@ -452,7 +452,7 @@
           }
         },
         "semanticFingerprint": "8f9f543b717a35bc29d8f334d948e8eb14895615190c1ec1706e766ecc7170ab",
-        "graphFingerprint": "31ac96938630154239f92eed3c2034805ccaf515e41acfbe8aa27d76ad5022d2",
+        "graphFingerprint": "429219981b411ee8ab0873a1c90765acea80700015f64f8db9e8bcd6513e0b0b",
         "errors": []
       }
     }
@@ -488,7 +488,7 @@
       "build": {
         "kind": "distribution",
         "canonicalization": "gitnexus-analyzer-build-v2",
-        "digest": "sha256:bf2960e00fa52143b529eaf6493fe4febd8fd303d38481aea956236125822c8b"
+        "digest": "sha256:0ccb847fc642f2135e8cfcad03f5af021fdfb44ab5cd8de83cb4ae55e22e604f"
       },
       "dependencyRuntime": {
         "canonicalization": "gitnexus-analyzer-dependency-runtime-v4",
@@ -498,8 +498,8 @@
       }
     },
     "git": {
-      "head": "89a35c554f78296560bee6d772c6631712b69168",
-      "statusDigest": "74976ead8258ef5c56c32040c26d11637799fb362725167d1b65d57fd9c13711"
+      "head": "7643ee2b78a3c1002bd62261bdf622ed181966b8",
+      "statusDigest": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
     }
   }
 }
