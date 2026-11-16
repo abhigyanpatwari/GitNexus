@@ -1,0 +1,147 @@
+gitnexus/bench/java-ingestion/README.md
+  s_676b35bc218cc9::t_c6a51184fc0987 1-149
+gitnexus/bench/java-ingestion/RESULTS.md
+  s_676b35bc218cc9::t_c7251d2fc2539d 1-33
+gitnexus/bench/java-ingestion/baseline.json
+  s_676b35bc218cc9::t_4f188804ccaa6c 1-511
+gitnexus/bench/java-ingestion/corpus.mjs
+  s_676b35bc218cc9::t_5eec07c87cd161 1-480
+gitnexus/bench/java-ingestion/evaluation.json
+  s_676b35bc218cc9::t_58ce0d6b526c2c 1-2548
+gitnexus/bench/java-ingestion/measure.mjs
+  s_676b35bc218cc9::t_f0201b99b14ad1 1-519
+gitnexus/bench/java-ingestion/receiver-delta.json
+  s_676b35bc218cc9::t_7d50d2930baa03 1-802
+gitnexus/bench/receiver-resolution/baseline.json
+  s_676b35bc218cc9::t_cbd7e7917148da 100,205-206,208,212,230,237
+gitnexus/package.json
+  s_676b35bc218cc9::t_bd4be24bafb619 66
+gitnexus/src/core/ingestion/languages/java/captures.ts
+  s_676b35bc218cc9::t_425828e09d613a 66,69-74,158-161,193-212,242,501,518-522,529
+gitnexus/src/core/ingestion/languages/java/declared-type-captures.ts
+  s_676b35bc218cc9::t_dee4b758656727 1-650
+gitnexus/src/core/ingestion/languages/java/factory-alias-captures.ts
+  s_0cc83813367234::t_e7a2e267638965 1-131
+gitnexus/src/core/ingestion/languages/java/implicit-array-receiver-captures.ts
+  s_0cc83813367234::t_def45abf0dbc35 1-105
+gitnexus/src/core/ingestion/languages/java/interpret.ts
+  s_676b35bc218cc9::t_1c9900ecd291a6 13,82-92,96-98,100,108-109
+gitnexus/src/core/ingestion/languages/java/lexical-captures.ts
+  s_676b35bc218cc9::t_1a8f1cb2bbea34 1-131
+gitnexus/src/core/ingestion/languages/java/local-name-claims.ts
+  s_0cc83813367234::t_bfdc1284f84dc3 1-131
+gitnexus/src/core/ingestion/languages/java/lombok-constructors.ts
+  s_a74d8a78aa3c5e::t_c8291616591cf7 1-328
+gitnexus/src/core/ingestion/languages/java/lombok-synthesizer.ts
+  s_a74d8a78aa3c5e::t_13ed8451f4c856 11,83,98,101-105,107-108,126,130-161,167,171-181,196-198,202-210,213-217,221-259,261-271,355-356,369-370,378,385-393,469,479,547-554
+gitnexus/src/core/ingestion/languages/java/lombok-workspace-proof.ts
+  s_a74d8a78aa3c5e::t_f49ff224b12efc 1-396
+gitnexus/src/core/ingestion/languages/java/overload-argument-facts.ts
+  s_676b35bc218cc9::t_bedc50e447ab17 266,272,459-474,701-708
+gitnexus/src/core/ingestion/languages/java/overload-resolution.ts
+  s_676b35bc218cc9::t_a8df7cde25586c 11,879-932,975-990
+gitnexus/src/core/ingestion/languages/java/qualified-contextual-bindings.ts
+  s_0cc83813367234::t_e65098c705178e 1-41
+gitnexus/src/core/ingestion/languages/java/qualified-type-bindings.ts
+  s_676b35bc218cc9::t_6ec4aeab2728b0 1-118
+gitnexus/src/core/ingestion/languages/java/query.ts
+  s_676b35bc218cc9::t_1cdfd106ff9a1a 130-138,155-159,183,195,208-212,222-224,228,233
+gitnexus/src/core/ingestion/languages/java/scope-resolver.ts
+  s_676b35bc218cc9::t_17348def15d82f 26,34-43,99-100,106-114,130-134
+gitnexus/src/core/ingestion/languages/java/spring-di.ts
+  s_a74d8a78aa3c5e::t_819f48bde0ef03 23-24,151,162-166,168,171,183-195
+gitnexus/src/core/ingestion/languages/java/type-spelling.ts
+  s_676b35bc218cc9::t_c8028962f48c60 1-46
+gitnexus/test/integration/java-alias-lexical-ownership.test.ts
+  s_0cc83813367234::t_a2ea4c1b6cd50e 1-123
+gitnexus/test/integration/java-annotated-lambda-array-review.test.ts
+  s_a74d8a78aa3c5e::t_7167a4f029d6d7 1-24
+gitnexus/test/integration/java-array-alias-adversarial-review.test.ts
+  s_676b35bc218cc9::t_a88fef9e8a78b9 1-91
+gitnexus/test/integration/java-array-method-return-identity.test.ts
+  s_0cc83813367234::t_a8ba844bce94b0 1-48
+gitnexus/test/integration/java-array-receivers.test.ts
+  s_676b35bc218cc9::t_565d3d702e3745 1-80
+gitnexus/test/integration/java-callback-qualified-lookalike.test.ts
+  s_0cc83813367234::t_ed4213847e02e3 1-65
+gitnexus/test/integration/java-contextual-declaration-identity-review.test.ts
+  s_676b35bc218cc9::t_b835b74c70d6ba 1-66
+gitnexus/test/integration/java-contextual-element-types.test.ts
+  s_676b35bc218cc9::t_6ef56627adb087 1-78
+gitnexus/test/integration/java-incremental-on-demand.test.ts
+  s_676b35bc218cc9::t_5c419b40447417 159-229
+gitnexus/test/integration/java-lambda-receiver-ownership.test.ts
+  s_676b35bc218cc9::t_9e6ba95f37702b 1-51
+gitnexus/test/integration/java-local-alias-scope-claims.test.ts
+  s_0cc83813367234::t_c4d695fff50ea5 1-56
+gitnexus/test/integration/java-lombok-annotation-package-shadow-review.test.ts
+  s_676b35bc218cc9::t_e5080f70a72a2d 1-34
+gitnexus/test/integration/java-lombok-value-constructor-di.test.ts
+  s_676b35bc218cc9::t_27d1e23c53be46 1-251
+gitnexus/test/integration/java-lombok-workspace-proof-lifecycle.test.ts
+  s_a74d8a78aa3c5e::t_9f4272916895d3 1-147
+gitnexus/test/integration/java-qualified-resource-bindings.test.ts
+  s_676b35bc218cc9::t_09047a15ac1ee3 1-63
+gitnexus/test/integration/java-qualified-type-bindings.test.ts
+  s_676b35bc218cc9::t_c405d858d75bf9 1-52
+gitnexus/test/integration/java-qualified-type-root-shadow.test.ts
+  s_0cc83813367234::t_ac7fd2d83d3973 1-19
+gitnexus/test/unit/java-lombok-qualified-constructor-review.test.ts
+  s_0cc83813367234::t_7eadd0ab0764fe 1-82
+gitnexus/test/unit/java-lombok-value-and-constructor-di.test.ts
+  s_a74d8a78aa3c5e::t_e4f38e8ce05cf0 1-277
+gitnexus/test/unit/java-lombok-workspace-proof-trigger.test.ts
+  s_a74d8a78aa3c5e::t_86a0de71ed9c3a 1-111
+gitnexus/test/unit/scope-resolution/capture-traversal-cost.test.ts
+  s_676b35bc218cc9::t_858c6335547f71 73-75
+gitnexus/test/unit/scope-resolution/java/java-contextual-declaration-identity.test.ts
+  s_c0ec49eef3777b::t_b0100e24bb445e 1-101
+gitnexus/test/unit/scope-resolution/java/java-factory-alias-captures.test.ts
+  s_0cc83813367234::t_6bf84e862c65a3 1-81
+gitnexus/test/unit/scope-resolution/java/java-implicit-array-receiver-captures.test.ts
+  s_0cc83813367234::t_628bdc078ea71a 1-49
+gitnexus/test/unit/scope-resolution/java/java-interpret.test.ts
+  s_676b35bc218cc9::t_fcde95440cdf65 42,44,47-48,51-52,55-57,60-70
+gitnexus/test/unit/scope-resolution/java/java-type-spelling.test.ts
+  s_676b35bc218cc9::t_08fc470ee7c273 1-28
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3226afa88d0fbbeb7a3601eb68b206ad6cb577ae",
+  "prompts": {},
+  "sessions": {
+    "s_0cc83813367234": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e119-3865-7552-9a3d-77ac6508fb1f",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_a74d8a78aa3c5e": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e119-7fe1-7731-9713-f9dcf1cbb647",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_c0ec49eef3777b": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e118-2797-7631-9eae-660e21051c34",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
