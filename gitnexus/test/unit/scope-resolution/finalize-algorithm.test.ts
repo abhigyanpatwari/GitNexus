@@ -1173,3 +1173,74 @@ describe('finalize', () => {
     });
   });
 });
+
+describe('finalize — wildcardReexportExcludedNames (#3956)', () => {
+  /** A module whose export surface publishes its default-exported declaration
+   *  under both its name and `default`, the way the ECMAScript providers do. */
+  const withDefault = (filePath: string, nodeId: string, name: string): FinalizeFile => {
+    const declaration = { ...def(nodeId, 'Function', name), filePath };
+    return {
+      ...file(filePath, [declaration]),
+      localExports: new Map([
+        [name, declaration],
+        ['default', declaration],
+      ]),
+    };
+  };
+  const esmHooks = (files: readonly FinalizeFile[], excluded?: ReadonlySet<string>) => ({
+    ...defaultHooks(files),
+    expandsWildcardTo: () => [],
+    ...(excluded !== undefined ? { wildcardReexportExcludedNames: excluded } : {}),
+  });
+  const EXCLUDE_DEFAULT: ReadonlySet<string> = new Set(['default']);
+  const importDefault = (local: string, targetRaw: string) =>
+    aliased(local, 'default', local, targetRaw);
+
+  it('does not carry an excluded name through `export *` from the source module', () => {
+    const child = withDefault('child', 'def:Child', 'Child');
+    const barrel = file('barrel', [], [wildcard('child')]);
+    const consumer = file(
+      'consumer',
+      [],
+      [importDefault('X', 'barrel'), named('Child', 'Child', 'barrel')],
+    );
+    const files = [consumer, barrel, child];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files, EXCLUDE_DEFAULT));
+    const imports = out.imports.get(consumer.moduleScope) ?? [];
+    const defaultImport = imports.find((edge) => edge.localName === 'X');
+    expect(defaultImport).toBeDefined();
+    expect(defaultImport?.targetDefId).toBeUndefined();
+    expect(imports.find((edge) => edge.localName === 'Child')?.targetDefId).toBe('def:Child');
+  });
+
+  it('does not carry an excluded name inherited from the source module closure', () => {
+    const leaf = withDefault('leaf', 'def:Leaf', 'Leaf');
+    const child = file('child', [], [reexport('default', 'default', 'leaf')]);
+    const barrel = file('barrel', [], [wildcard('child')]);
+    const viaChild = file('via-child', [], [importDefault('Y', 'child')]);
+    const viaBarrel = file('via-barrel', [], [importDefault('Z', 'barrel')]);
+    const files = [viaChild, viaBarrel, barrel, child, leaf];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files, EXCLUDE_DEFAULT));
+    expect(firstImport(out, viaChild.moduleScope)?.targetDefId).toBe('def:Leaf');
+    expect(firstImport(out, viaBarrel.moduleScope)?.targetDefId).toBeUndefined();
+  });
+
+  it('still binds a named re-export of the excluded name next to `export *`', () => {
+    const child = withDefault('child', 'def:Child', 'Child');
+    const other = withDefault('other', 'def:Other', 'Other');
+    const barrel = file('barrel', [], [reexport('default', 'default', 'child'), wildcard('other')]);
+    const consumer = file('consumer', [], [importDefault('X', 'barrel')]);
+    const files = [consumer, barrel, child, other];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files, EXCLUDE_DEFAULT));
+    expect(firstImport(out, consumer.moduleScope)?.targetDefId).toBe('def:Child');
+  });
+
+  it('carries every name through `export *` when the hook is absent', () => {
+    const child = withDefault('child', 'def:Child', 'Child');
+    const barrel = file('barrel', [], [wildcard('child')]);
+    const consumer = file('consumer', [], [importDefault('X', 'barrel')]);
+    const files = [consumer, barrel, child];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files));
+    expect(firstImport(out, consumer.moduleScope)?.targetDefId).toBe('def:Child');
+  });
+});

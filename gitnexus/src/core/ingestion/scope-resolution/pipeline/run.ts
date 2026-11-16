@@ -1092,6 +1092,7 @@ export function runScopeResolution(
       mergeBindingsAreAssociative: provider.mergeBindingsAreAssociative,
       wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
       namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
+      wildcardReexportExcludedNames: provider.wildcardReexportExcludedNames,
     },
   });
   // Import-visible namespaces are bindings: publish them before the first pass
@@ -1601,6 +1602,7 @@ export function runScopeResolution(
               : undefined,
           constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
           markConstructionSites: provider.markConstructionSites === true,
+          bareCallConstructs: provider.constructionSyntax?.bare === true,
           isFileLocalDef: provider.isFileLocalDef,
           isBuiltInName: provider.languageProvider.isBuiltInName,
           freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,

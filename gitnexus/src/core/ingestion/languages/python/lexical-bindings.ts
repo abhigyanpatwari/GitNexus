@@ -366,6 +366,7 @@ export function applyPythonLexicalBindings(
     return module;
   };
   const policyFor = (env: Environment) => ({
+    allowImplicitReceiver: false,
     callerScopeIsAuthoritative: true,
     ...(env.kind === 'Class' ? { skipFromChildren: true } : {}),
     ...(env.kind === 'Function' || env.node.type === 'generator_expression'

@@ -315,7 +315,7 @@ EXAMPLES:
 • Detect diamond inheritance:
   MATCH (d:Class)-[:CodeRelation {type: 'EXTENDS'}]->(b1), (d)-[:CodeRelation {type: 'EXTENDS'}]->(b2), (b1)-[:CodeRelation {type: 'EXTENDS'}]->(a), (b2)-[:CodeRelation {type: 'EXTENDS'}]->(a) WHERE b1 <> b2 RETURN d.name, b1.name, b2.name, a.name
 
-OUTPUT: Returns { markdown, row_count } — results formatted as a Markdown table for easy reading.
+OUTPUT: { markdown, row_count } with a Markdown table. Empty: { markdown: "", row_count: 0 }.
 
 TIPS:
 - All relationships use single CodeRelation table — filter with {type: 'CALLS'} etc.
@@ -365,7 +365,7 @@ INGESTION: graph_integrity reports repository-wide source-reference identity/spa
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
 - undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
-- callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
+- callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Zig/Python registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or exact coverage. Use impact() before edits; read gitnexus://repo/{name}/process/{processName} for a full flow.
 
@@ -573,7 +573,7 @@ INGESTION: graph_integrity is separate from completeness. "unverified" means sou
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
 - undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
-- callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
+- callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Zig/Python registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or apparently exact coverage from an older analyzer.
 
 PDG MODE: mode:"pdg" requires analyze --pdg; incompatible with crossDepth/@group. relationTypes/minConfidence filter inter-symbol reach. A statement-anchored slice uses a 1-based line inside the target; omit line for whole-symbol dependence.

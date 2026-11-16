@@ -1331,7 +1331,7 @@ const CASES: readonly LanguageCase[] = [
       {
         name: 'control-local',
         callerId: `Method:${PY_FILE}:ControlLocal.run#1`,
-        targets: [`Method:${PY_FILE}:Outer.inner#0`],
+        targets: [`Class:${PY_FILE}:Outer`, `Method:${PY_FILE}:Outer.inner#0`],
         status: 'resolves',
       },
       {

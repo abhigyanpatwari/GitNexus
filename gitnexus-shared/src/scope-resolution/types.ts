@@ -732,6 +732,8 @@ export interface NameClaim {
 }
 
 export interface ScopeLookupPolicy {
+  /** False when bare names cannot refer to members of an implicit receiver. */
+  readonly allowImplicitReceiver?: boolean;
   /** All lexical declarations have claims; inferred assignments alone do not declare names. */
   readonly nameClaimsComplete?: boolean;
   /** Reference scopes already identify the evaluating environment; do not infer

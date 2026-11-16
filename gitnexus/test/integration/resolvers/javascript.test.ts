@@ -15,6 +15,7 @@ import {
   edgeSet,
   runPipelineFromRepo,
   suppressionReasonsAt,
+  useFixture,
   writeFixtureRepo,
   type OutcomeSite,
   type PipelineResult,
@@ -972,5 +973,35 @@ tsAnnotated(TsActual);
 
   it.each(['jsShadow', 'tsShadow'])('respects the constructor value parameter in %s', (source) => {
     expect(getRelationships(result, 'CALLS').filter((e) => e.source === source)).toEqual([]);
+  });
+});
+
+describe('JavaScript default imports (#3956)', () => {
+  const result = useFixture('js-default-import', {
+    'legacy.js': 'export default function legacy() { return 1; }\n',
+    'lib.js': "export { default } from './legacy';\n",
+    'Comp.jsx': 'export default function Comp() { return <div />; }\n',
+    'main.js': "import run from './legacy';\nexport function main() { return run(); }\n",
+    'alias.js':
+      "import { default as go } from './legacy';\nexport function viaAlias() { return go(); }\n",
+    'barrel.js': "import run2 from './lib';\nexport function viaBarrel() { return run2(); }\n",
+    'App.jsx': "import Card from './Comp';\nexport function App() { return <Card />; }\n",
+  });
+  const targetsFrom = (source: string, targetFilePath: string) =>
+    getRelationships(result(), 'CALLS')
+      .filter((c) => c.source === source && c.targetFilePath === targetFilePath)
+      .map((c) => c.target);
+
+  it('links a default import and `{ default as X }` to the default-exported function', () => {
+    expect(targetsFrom('main', 'legacy.js')).toContain('legacy');
+    expect(targetsFrom('viaAlias', 'legacy.js')).toContain('legacy');
+  });
+
+  it('carries the default through an `export { default } from` barrel', () => {
+    expect(targetsFrom('viaBarrel', 'legacy.js')).toContain('legacy');
+  });
+
+  it('links a JSX render of a default-imported component', () => {
+    expect(targetsFrom('App', 'Comp.jsx')).toContain('Comp');
   });
 });

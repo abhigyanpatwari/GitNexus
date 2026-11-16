@@ -304,6 +304,99 @@ describe('@declaration.is-exported (JavaScript emitter)', () => {
   });
 });
 
+/** Names whose declaration captures carry `@declaration.is-default-export`. */
+function defaultExports(emit: Emit, src: string, filePath: string): string[] {
+  const names = emit(src, filePath).flatMap((m) =>
+    m['@declaration.is-default-export']?.text === 'true'
+      ? [m['@declaration.name']?.text ?? '']
+      : [],
+  );
+  return [...new Set(names)].sort();
+}
+
+const BOTH_EMITTERS = [
+  [emitTsScopeCaptures, 'x.ts'],
+  [emitJsScopeCaptures, 'x.js'],
+] as const;
+
+describe('@declaration.is-default-export (#3956)', () => {
+  it('marks a default-exported declaration but not its members or nested functions', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(defaultExports(emit, 'export default class Foo { bar() {} }', file)).toEqual(['Foo']);
+      expect(
+        defaultExports(emit, 'export default function Child() { function inner() {} }', file),
+      ).toEqual(['Child']);
+    }
+  });
+
+  it('marks the top-level local named by `export default X` and `export { X as default }`', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(defaultExports(emit, 'const X = () => 1;\nexport default X;', file)).toEqual(['X']);
+      expect(defaultExports(emit, 'function h() {}\nexport { h as default };', file)).toEqual([
+        'h',
+      ]);
+    }
+  });
+
+  it('marks nothing for named exports, re-exports from another module, or member defaults', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(
+        defaultExports(emit, 'export function Named() {}\nconst Y = 1;\nexport { Y };', file),
+      ).toEqual([]);
+      expect(
+        defaultExports(emit, "export { X as default } from './c';\nfunction X() {}", file),
+      ).toEqual([]);
+      expect(defaultExports(emit, 'export default { fetch() {} };', file)).toEqual([]);
+    }
+  });
+
+  it('marks no default when two different locals are both named as the default', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(
+        defaultExports(
+          emit,
+          'function a() {}\nfunction b() {}\nexport { a as default };\nexport { b as default };',
+          file,
+        ),
+      ).toEqual([]);
+    }
+  });
+
+  it('leaves TS `export =` unmarked (interop-dependent, deferred)', () => {
+    expect(defaultExports(emitTsScopeCaptures, 'function f() {}\nexport = f;', 'x.ts')).toEqual([]);
+  });
+
+  it('marks the synthesized default-export HOC declaration in both emitters', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'Widget.jsx'],
+      [emitTsScopeCaptures, 'Widget.tsx'],
+    ] as const) {
+      const captures = emit('export default memo(() => <div />);', file).filter(
+        (capture) => capture['@declaration.function'] !== undefined,
+      );
+      expect(captures.length).toBeGreaterThan(0);
+      expect(
+        captures.every((capture) => capture['@declaration.is-default-export']?.text === 'true'),
+      ).toBe(true);
+    }
+  });
+
+  it('lands on SymbolDefinition.isDefaultExport only for the top-level default', () => {
+    const parsed = extract(
+      emitTsScopeCaptures(
+        'function outer() { function X() {} }\nconst X = () => 1;\nexport default X;\nexport function other() {}\n',
+        'x.ts',
+      ),
+      'x.ts',
+      typescriptProvider,
+    );
+    const xs = parsed.localDefs.filter((d) => d.qualifiedName === 'X');
+    expect(xs.map((d) => d.isDefaultExport === true).sort()).toEqual([false, true, true]);
+    const other = parsed.localDefs.find((d) => d.qualifiedName === 'other')!;
+    expect('isDefaultExport' in other).toBe(false);
+  });
+});
+
 describe('SymbolDefinition.isExported through the extractor', () => {
   it('lands as a tri-state field: true / false / absent', () => {
     const esm = extract(

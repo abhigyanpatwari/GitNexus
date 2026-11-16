@@ -1230,13 +1230,13 @@ async function callableValueReferenceBoundaries(
   //     `propertyKey` (sweep 1 skips the index when it is undefined);
   //   - every JS/TS `@reference.value-ref` rule also captures
   //     `@reference.property-key` — both are object-literal shapes;
-  //   - no Zig `@reference.value-ref` rule captures one.
+  //   - no Zig or Python `@reference.value-ref` rule captures one.
   //
   // So a dispatchable registration is always a JS/TS one, an undispatchable
-  // registration is always a Zig one, and the two never meet on one symbol.
+  // registration is always a Zig or Python one, and the two never meet on one symbol.
   // `test/unit/scope-resolution/value-ref-dispatchability.test.ts` FAILS the day
   // that stops holding — a JS/TS rule for a bare callback argument
-  // (`register(handler)`), a Zig rule that grows a key. When it does, the
+  // (`register(handler)`), a Zig or Python rule that grows a key. When it does, the
   // choice to make here is between (a) splitting the edge `reason` into
   // dispatchable / undispatchable so this probe can count them apart, and
   // (b) hedging any symbol with an undispatchable registration regardless of
@@ -4989,7 +4989,8 @@ export class LocalBackend {
    * Falls back to raw result if rows aren't tabular objects.
    */
   private formatCypherAsMarkdown(result: any): any {
-    if (!Array.isArray(result) || result.length === 0) return result;
+    if (!Array.isArray(result)) return result;
+    if (result.length === 0) return { markdown: '', row_count: 0 };
 
     const firstRow = result[0];
     if (typeof firstRow !== 'object' || firstRow === null) return result;
