@@ -37,6 +37,23 @@ const CASES: Readonly<Record<string, Readonly<Record<string, readonly string[]>>
   'control-package': {
     'Function:scripts/use.R:k': ['Function:geo/R/b.R:Circle:import-resolved:0.85'],
   },
+  // One file holds both the class and the constructor function, the function first: only the
+  // function is a callee and finalize binds the first def it meets, so the import edge is kept (a
+  // class def sharing the qualified name must not count as a repeat).
+  'same-file-library': {
+    'Function:scripts/use.R:k': ['Function:geo/R/a.R:Circle:import-resolved:0.85'],
+  },
+  'same-file-importfrom': {
+    'Function:app/R/use.R:k': ['Function:geo/R/a.R:Circle:import-resolved:0.85'],
+  },
+  // (limit) With `setClass()` first, finalize binds the class def, so the import is refused and the
+  // call reaches the right function through the 0.5 guess.
+  'same-file-classfirst-library': {
+    'Function:scripts/use.R:k': [`Function:geo/R/a.R:Circle:${GUESS}`],
+  },
+  'same-file-classfirst-importfrom': {
+    'Function:app/R/use.R:k': [`Function:geo/R/a.R:Circle:${GUESS}`],
+  },
   'collate-order': {
     // Correct: b.R collates after a.R, so its Circle is the binding R calls.
     'Function:geo/R/c.R:k': [`Function:geo/R/b.R:Circle:${GUESS}`],

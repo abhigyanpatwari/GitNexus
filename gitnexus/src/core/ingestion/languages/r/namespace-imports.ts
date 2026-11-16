@@ -769,9 +769,15 @@ const EMPTY_TOP_LEVEL: RFileTopLevel = {
   repeated: new Set(),
 };
 
-/** The symbols carried by more than one undotted definition in `parsed.localDefs`. */
+/**
+ * The symbols carried by more than one undotted definition in `parsed.localDefs`, except a class
+ * def that follows the function of the same name: a Bioconductor `Circle <- function(r)` with
+ * `setClass("Circle")` after it shares the qualified name, but the shared finalize pass indexes
+ * defs by simple name and binds the first callable-or-type def it meets, which is the function.
+ * With the class first it would bind the class, so that order stays a repeat.
+ */
 function repeatedSimpleNames(parsed: ParsedFile): ReadonlySet<string> {
-  const seen = new Set<string>();
+  const firstType = new Map<string, string>();
   const repeated = new Set<string>();
   for (const def of parsed.localDefs) {
     const qn = def.qualifiedName;
@@ -779,8 +785,9 @@ function repeatedSimpleNames(parsed: ParsedFile): ReadonlySet<string> {
     // by `namedImportsBindTopLevelOnly`, the latter by the `dottedTails` guard.
     if (qn === undefined || qn.length === 0 || qn.includes('.')) continue;
     const symbol = rBareName(qn);
-    if (seen.has(symbol)) repeated.add(symbol);
-    else seen.add(symbol);
+    const first = firstType.get(symbol);
+    if (first === undefined) firstType.set(symbol, def.type);
+    else if (!(first === 'Function' && def.type === 'Class')) repeated.add(symbol);
   }
   return repeated;
 }
