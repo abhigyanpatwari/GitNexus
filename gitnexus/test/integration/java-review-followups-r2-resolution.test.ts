@@ -121,7 +121,8 @@ describe('Java JDK container elements in a package past the sibling injection ca
 ${imports}
 class K${index} extends Base {
   ${field} items;
-  void run() { items.forEach(u -> u.save()); for (var u : items) u.save(); }
+  void runEach() { items.forEach(u -> u.save()); }
+  void runFor() { for (var u : items) u.save(); }
 }`,
       ]),
     ),
@@ -136,21 +137,32 @@ class K${index} extends Base {
       }),
     ),
   };
-  const targets = (name: keyof typeof results): string[][] =>
+  // Java keeps one CALLS edge per caller and target, so each element route
+  // gets its own method: one method holding both calls would still show one
+  // `User.save` target when either route alone resolves.
+  const targets = (name: keyof typeof results, method: 'runEach' | 'runFor'): string[][] =>
     Array.from({ length: count }, (_, index) =>
-      saveTargets(results[name](), `Method:p/K${index}.java:K${index}.run#0`),
+      saveTargets(results[name](), `Method:p/K${index}.java:K${index}.${method}#0`),
     );
 
-  it.each(['demand', 'raw'] as const)(
-    'every %s member types its element through the JDK List identity',
-    (name) => {
-      expect(targets(name)).toEqual(
+  it.each([
+    ['demand', 'runEach'],
+    ['demand', 'runFor'],
+    ['raw', 'runEach'],
+    ['raw', 'runFor'],
+  ] as const)(
+    'every %s member types its element through the JDK List identity in %s',
+    (name, method) => {
+      expect(targets(name, method)).toEqual(
         Array.from({ length: count }, () => ['Method:p/User.java:User.save#0']),
       );
     },
   );
 
-  it('still refuses an on-demand List shadowed by a same-package class', () => {
-    expect(targets('shadow')).toEqual(Array.from({ length: count }, () => []));
-  });
+  it.each(['runEach', 'runFor'] as const)(
+    'still refuses an on-demand List shadowed by a same-package class in %s',
+    (method) => {
+      expect(targets('shadow', method)).toEqual(Array.from({ length: count }, () => []));
+    },
+  );
 });

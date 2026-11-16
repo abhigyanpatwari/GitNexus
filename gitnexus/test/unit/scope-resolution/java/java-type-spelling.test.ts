@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getJavaParser } from '../../../../src/core/ingestion/languages/java/query.js';
+import { parseSourceSafe } from '../../../../src/core/tree-sitter/safe-parse.js';
 import {
   javaArrayElementType,
   javaTypeText,
@@ -38,6 +39,50 @@ describe('Java written array types', () => {
     const tree = getJavaParser().parse(`class C { void m(${source}) {} }`);
     const parameter = tree.rootNode.descendantsOfType('formal_parameter')[0]!;
     expect(javaTypeText(parameter.childForFieldName('type')!)).toBe(expected);
+  });
+
+  // The Node binding parses JavaScript strings as UTF-16, so node indices are
+  // string offsets on both parse paths. Two- and four-byte UTF-8 characters
+  // before an omitted annotation or comment would shift a byte-based slice.
+  describe.each([
+    { path: 'a direct string parse', prefix: '// ü 𝒳 漢字\n', chunked: false },
+    {
+      path: 'a chunked callback parse',
+      prefix: `${' '.repeat(20_000)}// ü 𝒳 漢字\n`,
+      chunked: true,
+    },
+  ])('after non-ASCII source text, through $path', ({ prefix, chunked }) => {
+    it.each([
+      {
+        name: 'an annotation after a non-ASCII qualifier',
+        source: 'Äußer.@Ann("ü") Ünïcödé value',
+        expected: 'Äußer.Ünïcödé',
+      },
+      {
+        name: 'a block comment after a non-ASCII type argument',
+        source: 'java.util.List<@Ann Ü.Item /* c */ > values',
+        expected: 'java.util.List<Ü.Item>',
+      },
+      {
+        name: 'a line comment after a supplementary-plane type',
+        source: '𝒳<@A 漢字.Item // x\n> values',
+        expected: '𝒳<漢字.Item>',
+      },
+      {
+        name: 'a comment, an annotation and a comment before the dimensions',
+        source: 'Äußer./* 𝒳 */ @Ann 𝒳漢字 /* ü */ [] values',
+        expected: 'Äußer.𝒳漢字[]',
+      },
+    ])('keeps the exact spelling around $name', ({ source, expected }) => {
+      const text = `${prefix}class Ü { void m(${source}) {} }`;
+      const tree = parseSourceSafe(getJavaParser(), text);
+      const type = tree.rootNode
+        .descendantsOfType('formal_parameter')[0]!
+        .childForFieldName('type')!;
+      expect(text.length > 16 * 1024).toBe(chunked);
+      expect(text.slice(type.startIndex, type.endIndex)).toBe(type.text);
+      expect(javaTypeText(type)).toBe(expected);
+    });
   });
 
   it('counts only declarator brackets, independently of annotation argument strings', () => {
