@@ -162,6 +162,7 @@ function applySelectedCallResultBinding(
   indexes: ScopeResolutionIndexes,
   workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
   selected: SymbolDefinition | null | undefined,
+  elementType?: ScopeResolver['callResultElementType'],
 ): boolean {
   const scope = indexes.scopeTree.getScope(assignment.inScope);
   if (scope === undefined) return false;
@@ -169,7 +170,12 @@ function applySelectedCallResultBinding(
     selected == null
       ? undefined
       : workspaceIndex.declaredReturnTypeByCallableId.get(selected.nodeId);
-  return setCallResultBinding(scope, assignment.lhs, returned);
+  // An element of the result is typed only by the provider's route answer.
+  const bound =
+    selected == null || returned === undefined || assignment.element === undefined
+      ? returned
+      : elementType?.(selected, returned, assignment.element, indexes);
+  return setCallResultBinding(scope, assignment.lhs, bound);
 }
 
 /**
@@ -228,6 +234,8 @@ export function applyPreciseCallResultBindings(
       }
     }
     for (const assignment of parsed.callResultAssignmentSites ?? []) {
+      // An element route needs the exact selected callee; see above.
+      if (assignment.element !== undefined) continue;
       const scope = indexes.scopeTree.getScope(assignment.inScope);
       if (scope === undefined) continue;
       const targets = resolvedByPosition.get(
@@ -1312,7 +1320,13 @@ export function runScopeResolution(
       ? undefined
       : (key: string, definition: SymbolDefinition | null): void => {
           for (const assignment of assignmentsByProducer.get(key) ?? []) {
-            applySelectedCallResultBinding(assignment, indexes, workspaceIndex, definition);
+            applySelectedCallResultBinding(
+              assignment,
+              indexes,
+              workspaceIndex,
+              definition,
+              provider.callResultElementType,
+            );
           }
         };
   if (!callableFlowOnly && selectedCalls !== undefined) {

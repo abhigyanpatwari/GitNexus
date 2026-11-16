@@ -11,4 +11,11 @@ export interface CallResultAssignmentSite {
   readonly callSite: Range;
   readonly inScope: ScopeId;
   readonly lhs: string;
+  /**
+   * Present when `lhs` holds an element reached from the call's result (for
+   * example an iteration variable) instead of the result itself. The value is
+   * a provider-defined route that only `ScopeResolver.callResultElementType`
+   * interprets; without an answer from it the name stays unbound.
+   */
+  readonly element?: string;
 }

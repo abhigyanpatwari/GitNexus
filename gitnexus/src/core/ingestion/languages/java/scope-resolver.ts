@@ -36,7 +36,10 @@ import {
   javaQualifiedTypeLookupSpelling,
   populateJavaQualifiedTypeBindings,
 } from './qualified-type-bindings.js';
-import { validateJavaQualifiedContextualBindings } from './qualified-contextual-bindings.js';
+import {
+  javaCallResultElementType,
+  validateJavaQualifiedContextualBindings,
+} from './qualified-contextual-bindings.js';
 import {
   reconcileJavaLombokWorkspaceProof,
   emitJavaLombokWorkspaceCorrections,
@@ -110,6 +113,9 @@ const javaScopeResolver: ScopeResolver = {
       ? undefined
       : resolveJavaReceiverCallSite(site, scopes),
   elementTypeOf: javaArrayElementType,
+  // `for (var x : xs)` over a selected method's result: only the element of
+  // that method's own proven JDK container return type.
+  callResultElementType: javaCallResultElementType,
   qualifiedTypeLookupSpelling: javaQualifiedTypeLookupSpelling,
   hoistedTypeBindingsRequireOwner: true,
 

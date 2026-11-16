@@ -5,9 +5,10 @@ import {
   type CaptureMatch,
   type Range,
   type ScopeId,
+  type TypeRef,
 } from 'gitnexus-shared';
 import { nodeToCapture } from '../../utils/ast-helpers.js';
-import { javaTrailingDimensions, javaTypeText } from './type-spelling.js';
+import { eraseJavaTypeArguments, javaTrailingDimensions, javaTypeText } from './type-spelling.js';
 import {
   getJavaOverloadFacts,
   javaRangeContains,
@@ -34,7 +35,7 @@ interface DeclaredBinding {
  * same-package and other workspace types also shadow an on-demand import
  * (JLS 6.4.1, 7.5.2). Each proof is keyed by its binding's lookup anchor.
  */
-interface ContainerProof {
+export interface ContainerProof {
   readonly kind: 'root' | 'single' | 'on-demand';
   readonly name: string;
   readonly scope: ScopeId;
@@ -44,6 +45,32 @@ export interface JavaContainerProofFact extends ContainerProof {
   /** `TypeRef.lookupPosition` of the dependent binding (1-based line). */
   readonly line: number;
   readonly col: number;
+}
+
+/** How a call-result assignment reaches an element of the returned value. */
+export type JavaCallResultElementRoute = 'iterate' | 'values' | 'keySet';
+
+/**
+ * What a method's declared JDK container return type yields per element
+ * route, read where the return type was written. A caller's `var` loop over
+ * the selected method's result is typed only through these facts, and only
+ * after resolution confirms `proofs` at `line`/`col` of the return type.
+ */
+export interface JavaReturnElementFact {
+  /** The method's `declarationRange` start (1-based line). */
+  readonly methodLine: number;
+  readonly methodCol: number;
+  /** The return type as written, matched against `SymbolDefinition.returnType`. */
+  readonly written: string;
+  /** Start of the written return type (1-based line). */
+  readonly line: number;
+  readonly col: number;
+  readonly proofs: readonly ContainerProof[];
+  readonly elements: readonly {
+    readonly route: JavaCallResultElementRoute;
+    readonly spelling: string;
+    readonly scope: ScopeId;
+  }[];
 }
 
 /** Ephemeral proof tree: no AST nodes or new fields enter ParsedFile. */
@@ -148,13 +175,36 @@ const JDK_CONTAINERS = new Set([...ITERABLE_TYPES, ...MAP_TYPES, STREAM_TYPE]);
 // Worker-local until `collectJavaCaptureSideChannel` snapshots it for the
 // ParsedFile; resolution reads the snapshot, never this map.
 const containerProofs = new Map<string, readonly JavaContainerProofFact[]>();
+const returnElements = new Map<string, readonly JavaReturnElementFact[]>();
 
 export function getJavaContainerProofs(filePath: string): readonly JavaContainerProofFact[] {
   return containerProofs.get(filePath) ?? [];
 }
 
+export function getJavaReturnElements(filePath: string): readonly JavaReturnElementFact[] {
+  return returnElements.get(filePath) ?? [];
+}
+
+/** The binding an element of a method's declared return type gives a caller.
+ * The element means what it meant where the return type was written. */
+export function javaReturnElementRef(
+  fact: JavaReturnElementFact,
+  element: JavaReturnElementFact['elements'][number],
+): TypeRef {
+  const erased = eraseJavaTypeArguments(element.spelling);
+  const rawName = erased.slice(erased.lastIndexOf('.') + 1);
+  return {
+    rawName,
+    ...(rawName === element.spelling ? {} : { declaredSpelling: element.spelling }),
+    declaredAtScope: element.scope,
+    lookupPosition: { startLine: fact.line, startCol: fact.col },
+    source: 'assignment-inferred',
+  };
+}
+
 export function clearJavaContainerProofs(): void {
   containerProofs.clear();
+  returnElements.clear();
 }
 
 /** Keep container types on ordinary receivers. Element types are available
@@ -169,6 +219,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
   // `java.lang` is implicitly imported on demand (JLS 7.3).
   const onDemandPackages = new Set<string>(['java.lang']);
   const proofs: JavaContainerProofFact[] = [];
+  const returns: JavaReturnElementFact[] = [];
   const localTypes = new Set<string>();
   // A type parameter is in scope only within its generic declaration (JLS 6.3).
   const typeParameters = new Map<string, { readonly start: number; readonly end: number }[]>();
@@ -199,6 +250,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     'resource',
     'lambda_expression',
     'enhanced_for_statement',
+    'method_declaration',
   ]);
   const ownerOf = (node: SyntaxNode): SyntaxNode => {
     const seen: SyntaxNode[] = [];
@@ -697,10 +749,55 @@ export function synthesizeJavaDeclaredTypeCaptures(
         );
         emit(name, inferred, owner.proofs);
       }
+    } else if (node.type === 'method_declaration') {
+      const type = node.childForFieldName('type');
+      // Only a generic return type can name a JDK container's element.
+      if (
+        type === null ||
+        node.childForFieldName('dimensions') !== null ||
+        !type.text.includes('<')
+      )
+        continue;
+      const evidence = identify(javaTypeText(type), type, type);
+      const own = evidence === undefined ? undefined : proofOf(evidence);
+      if (
+        evidence === undefined ||
+        own === undefined ||
+        evidence.dimensions !== 0 ||
+        !JDK_CONTAINERS.has(evidence.base) ||
+        localTypes.has(evidence.base.split('.')[0]!)
+      )
+        continue;
+      const [first, second] = evidence.args;
+      const elements: JavaReturnElementFact['elements'][number][] = [];
+      if (ITERABLE_TYPES.has(evidence.base) && evidence.args.length === 1 && first !== undefined)
+        elements.push({ route: 'iterate', spelling: first.spelling, scope: first.lookupScope });
+      else if (
+        MAP_TYPES.has(evidence.base) &&
+        evidence.args.length === 2 &&
+        first !== undefined &&
+        second !== undefined
+      )
+        elements.push(
+          { route: 'values', spelling: second.spelling, scope: second.lookupScope },
+          { route: 'keySet', spelling: first.spelling, scope: first.lookupScope },
+        );
+      if (elements.length === 0) continue;
+      returns.push({
+        methodLine: node.startPosition.row + 1,
+        methodCol: node.startPosition.column,
+        written: type.text,
+        line: type.startPosition.row + 1,
+        col: type.startPosition.column,
+        proofs: [own],
+        elements,
+      });
     }
   }
   if (proofs.length === 0) containerProofs.delete(filePath);
   else containerProofs.set(filePath, proofs);
+  if (returns.length === 0) returnElements.delete(filePath);
+  else returnElements.set(filePath, returns);
   return out;
 }
 

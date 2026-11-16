@@ -1804,7 +1804,13 @@ function pass7CollectCallResultAssignments(
       anchor.range.startCol,
     );
     if (inScope === undefined) continue;
-    out.push({ callSite: call.range, inScope, lhs: lhs.text });
+    const element = match['@call-result-assignment.element']?.text;
+    out.push({
+      callSite: call.range,
+      inScope,
+      lhs: lhs.text,
+      ...(nonEmpty(element) ? { element } : {}),
+    });
   }
 }
 

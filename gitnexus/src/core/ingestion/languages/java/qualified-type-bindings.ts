@@ -17,6 +17,8 @@ import { getJavaOverloadFacts } from './overload-argument-facts.js';
 import { getJavaPackageFact } from './package-facts.js';
 import { eraseJavaTypeArguments } from './type-spelling.js';
 import { isJavaPackageSiblingVisibilityIncomplete } from './package-siblings.js';
+import { javaReturnElementFacts } from './capture-side-channel.js';
+import { javaReturnElementRef } from './declared-type-captures.js';
 
 /** A top-level or member type, the only kinds a type spelling can name. */
 interface NamedType {
@@ -174,17 +176,23 @@ export function populateJavaQualifiedTypeBindings(
     const pkg = getJavaPackageFact(parsed.filePath);
     if (module === undefined || pkg?.status !== 'known') continue;
     const needed = new Set<string>();
-    for (const scope of parsed.scopes)
-      for (const ref of scope.typeBindings.values()) {
-        if (ref.source === 'assignment-inferred' && ref.declaredSpelling === undefined) continue;
-        const spelling = eraseJavaTypeArguments(ref.declaredSpelling ?? ref.rawName).replace(
-          /(?:\[\])+$/,
-          '',
-        );
-        if (!spelling.includes('.')) continue;
-        const key = qualifiedTypeKey(ref, spelling, indexes);
-        if (key !== null) needed.add(key);
-      }
+    const need = (ref: TypeRef): void => {
+      if (ref.source === 'assignment-inferred' && ref.declaredSpelling === undefined) return;
+      const spelling = eraseJavaTypeArguments(ref.declaredSpelling ?? ref.rawName).replace(
+        /(?:\[\])+$/,
+        '',
+      );
+      if (!spelling.includes('.')) return;
+      const key = qualifiedTypeKey(ref, spelling, indexes);
+      if (key !== null) needed.add(key);
+    };
+    for (const scope of parsed.scopes) for (const ref of scope.typeBindings.values()) need(ref);
+    // A caller's loop variable may later take a declared return type's element,
+    // which is looked up here, where that return type was written.
+    for (const fact of javaReturnElementFacts(parsed))
+      for (const element of fact.elements)
+        if (indexes.scopeTree.getScope(element.scope) !== undefined)
+          need(javaReturnElementRef(fact, element));
     for (const key of needed) {
       const visible = (candidates.get(key) ?? []).filter(
         (candidate) =>

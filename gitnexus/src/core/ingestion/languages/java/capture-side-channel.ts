@@ -20,7 +20,9 @@ import type { JavaSpringNonHttpHandlerFact } from './spring-non-http-handlers.js
 import {
   clearJavaContainerProofs,
   getJavaContainerProofs,
+  getJavaReturnElements,
   type JavaContainerProofFact,
+  type JavaReturnElementFact,
 } from './declared-type-captures.js';
 import {
   clearJavaOverloadFacts,
@@ -38,6 +40,8 @@ export interface JavaCaptureSideChannel {
   readonly overloadFacts?: JavaOverloadFileFacts;
   /** JDK container identities that inferred element bindings depend on. */
   readonly containerProofs?: readonly JavaContainerProofFact[];
+  /** Element types of declared JDK container returns, for call-result loops. */
+  readonly returnElements?: readonly JavaReturnElementFact[];
   readonly packageFact: JvmPackageFact;
   readonly classAnnotations: readonly JavaClassAnnotationFact[];
   readonly springAopFacts?: readonly JavaSpringAopFact[];
@@ -197,9 +201,11 @@ export function collectJavaCaptureSideChannel(
   const messageProducerFacts = springMessageProducerFacts.get(filePath) ?? [];
   const packageFact = getJavaPackageFact(filePath);
   const containerProofs = getJavaContainerProofs(filePath);
+  const returnElements = getJavaReturnElements(filePath);
   if (
     overloadFacts === undefined &&
     containerProofs.length === 0 &&
+    returnElements.length === 0 &&
     facts.length === 0 &&
     aopFacts.length === 0 &&
     configConsumers.length === 0 &&
@@ -217,6 +223,7 @@ export function collectJavaCaptureSideChannel(
     importUses: importUses.get(filePath),
     ...(overloadFacts === undefined ? {} : { overloadFacts }),
     ...(containerProofs.length > 0 ? { containerProofs } : {}),
+    ...(returnElements.length > 0 ? { returnElements } : {}),
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: facts,
     ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
@@ -229,6 +236,20 @@ export function collectJavaCaptureSideChannel(
       ? { springMessageProducerFacts: messageProducerFacts }
       : {}),
   };
+}
+
+/** Return element facts carried on a ParsedFile, keeping only well-formed ones. */
+export function javaReturnElementFacts(parsed: ParsedFile): readonly JavaReturnElementFact[] {
+  const data = parsed.captureSideChannel as JavaCaptureSideChannel | undefined;
+  return data?.kind === 'java' && Array.isArray(data.returnElements)
+    ? data.returnElements.filter(
+        (fact) =>
+          typeof fact === 'object' &&
+          fact !== null &&
+          Array.isArray(fact.proofs) &&
+          Array.isArray(fact.elements),
+      )
+    : [];
 }
 
 export function getJavaClassAnnotationFacts(filePath: string): readonly JavaClassAnnotationFact[] {

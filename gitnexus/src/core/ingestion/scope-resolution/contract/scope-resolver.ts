@@ -972,6 +972,22 @@ export interface ScopeResolver {
   readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
 
   /**
+   * The type of an element reached from a call's result: a call-result
+   * assignment whose `element` names a route this provider emitted (an
+   * iteration variable over a returned container, say). Called only with the
+   * exactly selected callee and its declared return type, so the answer can
+   * depend on what that return type meant where it was written. `undefined`,
+   * or no hook, leaves the name unbound; such sites are skipped when no exact
+   * callee selection exists.
+   */
+  readonly callResultElementType?: (
+    callee: SymbolDefinition,
+    returned: TypeRef,
+    route: string,
+    scopes: ScopeResolutionIndexes,
+  ) => TypeRef | undefined;
+
+  /**
    * Collapse member-call CALLS edges by `(caller, target)` rather
    * than per-site. Default `false` — scope-resolution's contract
    * invariant is per-site dedup.
