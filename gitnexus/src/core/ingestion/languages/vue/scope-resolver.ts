@@ -62,7 +62,10 @@ import { canonicalTypeScriptName } from '../typescript/identifiers.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { vueProvider } from '../vue.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
-import { typescriptModuleExports } from '../typescript/module-exports.js';
+import {
+  ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
+  typescriptModuleExports,
+} from '../typescript/module-exports.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { typescriptArityCompatibility, typescriptMergeBindings } from '../typescript/index.js';
 import { makeVueResolveImportTarget } from './import-target.js';
@@ -133,6 +136,7 @@ const vueScopeResolver: ScopeResolver = {
   // Vue SFC scripts are TypeScript/JavaScript: a named import binds a module-level
   // declaration, never a class member (see the TS resolver).
   namedImportsBindTopLevelOnly: true,
+  wildcardReexportExcludedNames: ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
 
   /**
    * Expand the scope-resolution file universe for Vue by performing a

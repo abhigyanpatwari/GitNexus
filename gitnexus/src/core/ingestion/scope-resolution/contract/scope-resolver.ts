@@ -1021,6 +1021,13 @@ export interface ScopeResolver {
   readonly namedImportsBindTopLevelOnly?: boolean;
 
   /**
+   * Export names `export * from M` never carries into the re-exporting
+   * module, although `M` publishes them through `moduleExports` — ECMAScript's
+   * `default`. Forwarded to `FinalizeHooks.wildcardReexportExcludedNames`.
+   */
+  readonly wildcardReexportExcludedNames?: ReadonlySet<string>;
+
+  /**
    * Veto for a single `allowGlobalFreeCallFallback` guess.
    *
    * The fallback picks a callable because its SIMPLE NAME is unique in the

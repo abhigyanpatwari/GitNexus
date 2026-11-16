@@ -11,6 +11,7 @@ import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-brid
 import { extractFrameworkRouteFacts } from '../../src/core/ingestion/route-extractors/framework-route-facts.js';
 import { resolveFrameworkRouteFacts } from '../../src/core/ingestion/route-extractors/framework-route-resolver.js';
 import { composeFrameworkRoutePaths } from '../../src/core/ingestion/route-extractors/framework-route-paths.js';
+import type { FrameworkRouteFacts } from '../../src/core/ingestion/route-extractors/framework-route-types.js';
 
 function facts(source: string, filePath = 'server.ts') {
   const parser = new Parser();
@@ -631,7 +632,8 @@ function handler() {} function other() {}`);
 
   it('bounds repeated star-barrel exploration while preserving unrelated routes', () => {
     const sources: Record<string, string> = {
-      'base.ts': `export const other = 1;`,
+      // Every level publishes `missing`, so only the step budget stops the 2^25 walk.
+      'base.ts': `import {Router} from 'express'; export const missing = Router();`,
       'server.ts': `import {missing} from './a24'; import express from 'express'; missing.get('/unknown', h); const app = express(); app.get('/safe', h);`,
     };
     for (let level = 0; level < 25; level++) {
@@ -645,6 +647,65 @@ function handler() {} function other() {}`);
     expect(
       resolve(sources).registrations.map((registration) => registration.route.routePath),
     ).toEqual(['/safe']);
+  });
+
+  // #3956 follow-up: star-export lookups use a per-file index, so a barrel's unrelated
+  // sources no longer spend the lookup budget or recurse without bound.
+  const emptyFacts = (filePath: string, starExports: string[] = []): FrameworkRouteFacts => ({
+    filePath,
+    bindings: [],
+    exports: [],
+    starExports,
+    invalidBindings: [],
+    mutations: [],
+    calls: [],
+    invocations: [],
+  });
+  const resolveFacts = (files: FrameworkRouteFacts[]) => {
+    const known = new Set(files.map((file) => file.filePath));
+    return resolveFrameworkRouteFacts(files, (from, specifier) => {
+      const target = `${path.posix.join(path.posix.dirname(from), specifier)}.ts`;
+      return known.has(target) ? [target] : [];
+    });
+  };
+
+  it('resolves a router behind a star barrel wider than the lookup step budget', () => {
+    const leaves = Array.from({ length: 10_500 }, (_, index) => emptyFacts(`leaf${index}.ts`));
+    const result = resolveFacts([
+      facts(
+        `import {Router} from 'express'; export const api = Router(); api.get('/items', h);`,
+        'router.ts',
+      ),
+      facts(
+        [
+          ...leaves.map(({ filePath }) => `export * from './${filePath.slice(0, -3)}';`),
+          `export * from './router';`,
+        ].join('\n'),
+        'barrel.ts',
+      ),
+      facts(
+        `import express from 'express'; import {api} from './barrel'; const app = express(); app.use('/v1', api);`,
+        'server.ts',
+      ),
+      ...leaves,
+    ]);
+    expect(composeFrameworkRoutePaths(result).map((route) => route.routePath)).toEqual([
+      '/v1/items',
+    ]);
+  });
+
+  it('keeps an export-* chain deeper than the resolver explores on the bounded walk', () => {
+    const chain = Array.from({ length: 5_000 }, (_, index) =>
+      emptyFacts(`c${index}.ts`, index + 1 < 5_000 ? [`./c${index + 1}`] : []),
+    );
+    const result = resolveFacts([
+      facts(
+        `import express from 'express'; import {api} from './c0'; const app = express(); app.use('/v1', api); app.get('/safe', h);`,
+        'server.ts',
+      ),
+      ...chain,
+    ]);
+    expect(composeFrameworkRoutePaths(result).map((route) => route.routePath)).toEqual(['/safe']);
   });
 
   it('round-trips compact facts through JSON with identical resolved output', () => {

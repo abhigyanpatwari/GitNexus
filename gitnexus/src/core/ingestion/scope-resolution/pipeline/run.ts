@@ -1092,6 +1092,7 @@ export function runScopeResolution(
       mergeBindingsAreAssociative: provider.mergeBindingsAreAssociative,
       wildcardCollisionIsAmbiguous: provider.exclusiveWildcardReexports === true,
       namedImportsBindTopLevelOnly: provider.namedImportsBindTopLevelOnly === true,
+      wildcardReexportExcludedNames: provider.wildcardReexportExcludedNames,
     },
   });
   // Import-visible namespaces are bindings: publish them before the first pass

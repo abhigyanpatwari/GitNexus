@@ -23,7 +23,10 @@ import { canonicalTypeScriptName } from './identifiers.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
-import { typescriptModuleExports } from './module-exports.js';
+import {
+  ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
+  typescriptModuleExports,
+} from './module-exports.js';
 import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
 import { loadTsconfigIndex, type TsconfigIndex } from './tsconfig.js';
 import { loadNodeWorkspacePackages, type NodeWorkspacePackages } from './workspace-packages.js';
@@ -153,6 +156,8 @@ const typescriptScopeResolver: ScopeResolver = {
   // re-exports bind to module-level declarations only (a class method sharing
   // a name with a top-level value must not win the callable preference).
   namedImportsBindTopLevelOnly: true,
+  // `moduleExports` publishes the default export as `default`; `export *` must not forward it.
+  wildcardReexportExcludedNames: ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
 
   // TypeScript uses `.values()` / `.keys()` method-call syntax for collection
   // views -- no property-style accessors like C#'s `Dictionary<K,V>.Values` --
