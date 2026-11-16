@@ -589,6 +589,36 @@ describe('Step 3: owner-scoped contributor', () => {
 // ─── Step 2: type-binding / MRO walk ───────────────────────────────────────
 
 describe('Step 2: type-binding + MRO walk', () => {
+  it('can disable implicit member lookup without disabling explicit receivers', () => {
+    const owner = mkDef({ nodeId: 'def:Box', type: 'Class', qualifiedName: 'Box' });
+    const member = mkDef({
+      nodeId: 'def:Box.limit',
+      type: 'Variable',
+      qualifiedName: 'Box.limit',
+      ownerId: owner.nodeId,
+    });
+    const scope = mkScope({
+      id: 'scope:read',
+      parent: null,
+      typeBindings: { self: typeRef('Box', 'scope:read') },
+    });
+    const lookup = (start: Scope) => buildFieldRegistry(makeCtx([start], [owner, member]));
+
+    // Providers without an opt-out retain implicit member resolution.
+    expect(
+      lookup(scope)
+        .lookup('limit', scope.id)
+        .map((hit) => hit.def),
+    ).toEqual([member]);
+    const explicitOnly = lookup({ ...scope, lookupPolicy: { allowImplicitReceiver: false } });
+    expect(explicitOnly.lookup('limit', scope.id)).toEqual([]);
+    expect(
+      explicitOnly
+        .lookup('limit', scope.id, { explicitReceiver: { name: 'self' } })
+        .map((hit) => hit.def),
+    ).toEqual([member]);
+  });
+
   it('stops the receiver type walk at a nearer scope that binds the name without a type (DART-11)', () => {
     const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
     const saveMethod = mkDef({

@@ -43,7 +43,7 @@ import { isPythonGlobalDeclaration, pythonFunctionDefinitionLabel } from './simp
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import { synthesizeReceiverChainCapture } from '../../utils/receiver-chain-captures.js';
 import { applyPythonLexicalBindings } from './lexical-bindings.js';
-import { pythonAttributeAccessKinds } from './attribute-references.js';
+import { isPythonTypeAnnotation, pythonAttributeAccessKinds } from './attribute-references.js';
 import {
   beginPythonSubtypeDispatchCapture,
   recordPythonSimplePositionalCall,
@@ -51,6 +51,7 @@ import {
 } from './subtype-dispatch.js';
 import {
   beginPythonModuleAccessorCapture,
+  recordPythonLiteralAll,
   recordPythonModuleAccessor,
   synthesizePythonCallResultAssignment,
 } from './module-accessors.js';
@@ -131,6 +132,7 @@ export function emitPythonScopeCaptures(
   } else {
     recordCacheHit();
   }
+  if (parseText.includes('__all__')) recordPythonLiteralAll(filePath, tree.rootNode);
 
   let rawMatches: ReturnType<ReturnType<typeof getPythonScopeQuery>['matches']>;
   try {
@@ -140,6 +142,7 @@ export function emitPythonScopeCaptures(
   }
 
   const out: CaptureMatch[] = [];
+  const dependsCalleeSites = new Set<string>();
 
   for (const m of rawMatches) {
     // Group captures by their tag name. Tree-sitter strips the leading
@@ -159,6 +162,9 @@ export function emitPythonScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const bareRead = nodeMap['@reference.read.identifier'];
+    if (bareRead !== undefined && isPythonTypeAnnotation(bareRead)) continue;
 
     const attribute = nodeMap['@reference.read.member'];
     if (attribute !== undefined) {
@@ -258,7 +264,13 @@ export function emitPythonScopeCaptures(
         const synth = synthesizeReceiverTypeBinding(fnNode);
         if (synth !== null) out.push(synth);
         out.push(...synthesizeConstructorFieldTypeBindings(fnNode));
-        for (const depRef of synthesizeDependsReferences(fnNode)) out.push(depRef);
+        for (const depRef of synthesizeDependsReferences(fnNode)) {
+          out.push(depRef);
+          const callee = depRef['@reference.call.free'];
+          if (callee) {
+            dependsCalleeSites.add(`${callee.range.startLine}:${callee.range.startCol}`);
+          }
+        }
       }
       continue;
     }
@@ -328,8 +340,18 @@ export function emitPythonScopeCaptures(
   out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
+  const references =
+    dependsCalleeSites.size === 0
+      ? out
+      : out.filter((match) => {
+          const value = match['@reference.read.identifier'] ?? match['@reference.value-ref'];
+          return (
+            value === undefined ||
+            !dependsCalleeSites.has(`${value.range.startLine}:${value.range.startCol}`)
+          );
+        });
   const lexicalCaptures = applyPythonLexicalBindings(
-    out,
+    references,
     tree.rootNode,
     filePath,
     notebookSegments === undefined ? undefined : (range) => remapRange(range, notebookSegments),

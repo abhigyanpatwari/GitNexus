@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ParsedFile } from 'gitnexus-shared';
 import { pythonProvider } from '../../../../src/core/ingestion/languages/python.js';
 import { emitPythonScopeCaptures } from '../../../../src/core/ingestion/languages/python/captures.js';
+import { expandPythonWildcardNames } from '../../../../src/core/ingestion/languages/python/expand-wildcards.js';
 import type { PythonCaptureSideChannel } from '../../../../src/core/ingestion/languages/python/module-accessors.js';
 import { pythonScopeResolver } from '../../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { collectPythonSubtypeDispatchSideChannel } from '../../../../src/core/ingestion/languages/python/subtype-dispatch.js';
@@ -287,6 +288,79 @@ describe('Python module accessor capture facts', () => {
     emitPythonScopeCaptures('', 'first.py');
     expect(snapshot('first.py')).toBeUndefined();
     expect(snapshot('second.py')!.moduleAccessors[0]?.status).toBe('declined');
+  });
+
+  it.each([
+    ['a list', '__all__ = ["pub", "_priv"]', ['pub', '_priv']],
+    ['a tuple', "__all__ = ('pub',)", ['pub']],
+    ['an annotated list', '__all__: list[str] = ["pub"]', ['pub']],
+    ['an extension', '__all__ = ["first"]\n__all__ += ("second",)', ['first', 'second']],
+    ['a reassignment', '__all__ = ["first"]\n__all__ = ["second"]', ['second']],
+    ['an empty list', '__all__ = []', []],
+  ])('carries the literal __all__ names of %s', (_label, source, names) => {
+    emitPythonScopeCaptures(source, 'exports.py');
+    expect(snapshot('exports.py')).toEqual({
+      kind: 'python-capture',
+      moduleAccessors: [],
+      callResultAssignments: [],
+      literalAll: names,
+    });
+  });
+
+  it.each([
+    ['a computed value', 'base = []\n__all__ = base + ["x"]'],
+    ['an extension of an unseen value', 'from other import *\n__all__ += ["x"]'],
+    ['a method call', '__all__ = []\n__all__.extend(["x"])'],
+    ['a block assignment', 'if flag:\n    __all__ = ["x"]'],
+    ['a function assignment', 'def configure():\n    global __all__\n    __all__ = ["x"]'],
+    ['an import', 'from other import __all__'],
+    ['a read', '__all__ = ["x"]\nnames = __all__'],
+    ['a chained assignment', 'alias = __all__ = ["x"]'],
+    ['another operator', '__all__ = ["x"]\n__all__ |= ["y"]'],
+    ['a bare tuple', '__all__ = "x",'],
+    ['an annotation without a value', '__all__: list[str]'],
+    ['a non-string item', '__all__ = [name]'],
+    ['an interpolated item', '__all__ = [f"{name}"]'],
+  ])('omits literal __all__ names for %s', (_label, source) => {
+    emitPythonScopeCaptures(source, 'exports.py');
+    expect(snapshot('exports.py') ?? {}).not.toHaveProperty('literalAll');
+  });
+
+  it.each([
+    [
+      'a valid python-capture snapshot',
+      {
+        kind: 'python-capture',
+        moduleAccessors: [],
+        callResultAssignments: [],
+        literalAll: ['pub'],
+      },
+      ['pub'],
+    ],
+    ['a snapshot without a kind', { literalAll: ['pub'] }, []],
+    ['a snapshot of another kind', { kind: 'other', literalAll: ['pub'] }, []],
+    [
+      'a non-string name list',
+      { kind: 'python-capture', moduleAccessors: [], callResultAssignments: [], literalAll: [1] },
+      [],
+    ],
+  ])('expands a restored literal __all__ only from %s', (_label, captureSideChannel, expected) => {
+    const parsed = extractParsedFile(
+      pythonProvider,
+      ['__all__ = ["pub"]', 'def pub():', '    pass', 'def other():', '    pass'].join('\n'),
+      'restored.py',
+    )!;
+    const restored: ParsedFile = { ...parsed, captureSideChannel };
+    expect(expandPythonWildcardNames(restored.moduleScope, [restored], ['pub', 'other'])).toEqual(
+      expected,
+    );
+  });
+
+  it('omits stale literal __all__ names when a recapture rejects the same path', () => {
+    emitPythonScopeCaptures('__all__ = ["x"]', 'exports.py');
+    expect(snapshot('exports.py')).toHaveProperty('literalAll', ['x']);
+    emitPythonScopeCaptures('__all__ = ["x"]\n__all__.extend(["y"])', 'exports.py');
+    expect(snapshot('exports.py') ?? {}).not.toHaveProperty('literalAll');
   });
 
   it('remaps accessor and assignment facts to original notebook coordinates', () => {
