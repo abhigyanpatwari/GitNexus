@@ -87,6 +87,59 @@ describe('detectIndexContentDrift', () => {
     expect(drift).toEqual({ kind: 'current', coveredFileCount: Object.keys(recorded).length });
   });
 
+  it.skipIf(process.platform === 'win32')(
+    'does not report a tracked directory symlink as newly added after indexing',
+    async () => {
+      const repo = makeRepo({ 'src/entry.js': 'export const entry = 1;\n' });
+      fs.mkdirSync(path.join(repo, 'plugin', 'lib'), { recursive: true });
+      fs.symlinkSync('../../src', path.join(repo, 'plugin', 'lib', 'source'), 'dir');
+      execFileSync(gitExecutable, ['init', '-q'], { cwd: repo });
+      execFileSync(gitExecutable, ['add', '--', '.'], { cwd: repo });
+      execFileSync(
+        gitExecutable,
+        ['-c', 'user.email=t@t.test', '-c', 'user.name=t', 'commit', '-q', '-m', 'init'],
+        { cwd: repo },
+      );
+
+      const recorded = await recordCoverage(repo);
+      expect(Object.keys(recorded)).toContain('src/entry.js');
+      expect(Object.keys(recorded)).not.toContain('plugin/lib/source');
+      expect(await detectIndexContentDrift(repo, recorded)).toMatchObject({
+        kind: 'current',
+      });
+
+      // Excluding a directory alias must not hide new real source files.
+      fs.writeFileSync(path.join(repo, 'src', 'added.js'), 'export const added = 2;\n');
+      expect(await detectIndexContentDrift(repo, recorded)).toMatchObject({
+        kind: 'drifted',
+        added: ['src/added.js'],
+      });
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'retains file symlinks in indexed coverage and detects retargeting',
+    async () => {
+      const repo = makeRepo({
+        'a.js': 'export const a = 1;\n',
+        'b.js': 'export const b = 2;\n',
+      });
+      fs.symlinkSync('a.js', path.join(repo, 'alias.js'), 'file');
+      const recorded = await recordCoverage(repo);
+      expect(Object.keys(recorded)).toContain('alias.js');
+      expect(await detectIndexContentDrift(repo, recorded)).toMatchObject({
+        kind: 'current',
+      });
+
+      fs.unlinkSync(path.join(repo, 'alias.js'));
+      fs.symlinkSync('b.js', path.join(repo, 'alias.js'), 'file');
+      expect(await detectIndexContentDrift(repo, recorded)).toMatchObject({
+        kind: 'drifted',
+        changed: ['alias.js'],
+      });
+    },
+  );
+
   it('stays current when a file the index does not cover is modified (#3077)', async () => {
     // `.lock` is an ignored extension, so the indexer never reads this file.
     // Under the old repo-wide dirty check its edit forced an unclearable
