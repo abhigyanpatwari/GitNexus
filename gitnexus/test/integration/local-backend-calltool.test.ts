@@ -68,6 +68,15 @@ withTestLbugDB(
         expect(result.markdown).toContain('hash');
       });
 
+      it('cypher tool keeps the tabular result shape when no rows match (#3952)', async () => {
+        const statement = "MATCH (n:Function) WHERE n.name = '__missing__' RETURN n.name AS name";
+        const result = await backend.callTool('cypher', { statement });
+
+        expect(result).toMatchObject({ markdown: '', row_count: 0 });
+        expect(result).toHaveProperty('staleness');
+        expect(await backend.executeCypher('test-repo', statement)).toEqual([]);
+      });
+
       it('cypher no-match write probe returns read-only error or empty rows', async () => {
         const result = await backend.callTool('cypher', {
           query:
@@ -77,7 +86,7 @@ withTestLbugDB(
           expect(result.error).toMatch(/write operations|read-only/i);
           return;
         }
-        expect(result).toEqual([]);
+        expect(result).toMatchObject({ markdown: '', row_count: 0 });
       });
 
       it('context tool returns symbol info with callers and callees', async () => {

@@ -344,6 +344,20 @@ describe('CLI --limit flag E2E', () => {
   // ─── cypher ───────────────────────────────────────────────────────────────
 
   describe('cypher --limit', () => {
+    it.each([{ options: [] }, { options: ['--limit', '2'] }])(
+      'keeps the zero-row result object with options $options (#3952)',
+      ({ options }) => {
+        const result = runJson<CypherTabular>([
+          'cypher',
+          "MATCH (n:Function) WHERE n.name = '__missing__' RETURN n.name AS name",
+          ...options,
+          '--repo',
+          'mini-repo',
+        ]);
+        expect(result).toMatchObject({ markdown: '', row_count: 0 });
+      },
+    );
+
     it('truncates tabular result rows to --limit and keeps row_count honest', () => {
       const limited = runJson<CypherTabular>([
         'cypher',
