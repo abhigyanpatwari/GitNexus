@@ -16,6 +16,10 @@ The first implementation passed the growth budgets but spent 44–79% more cold-
 
 All four normalized growth metrics pass the 2.0 budgets. A separate `--full --record` and `--full --check` also pass. Absolute old/new timings are reviewed observations; the automatic performance gates constrain same-run growth, rather than an absolute latency SLA. Full samples and repeated-run observations are retained in [evaluation.json](evaluation.json).
 
+## Review follow-up
+
+The table above is the original measurement. Review follow-ups changed one case family: the two `P4 local element identity` cases (formerly "local element proof refusal") now expect the block-local `User` class (`LocalElement$1User` / `LocalElement$2User`) instead of an empty set, since a local class in scope wins over the import (JLS 6.3). Positive/negative case counts move by two per shape (small 262/143 → 264/141). The baseline was re-recorded with `--full --record` and passes `--check`; no other capture, target or graph fingerprint changed for this corpus. [evaluation.json](evaluation.json) keeps the original run unchanged.
+
 ## Existing gates
 
 - Receiver resolution: both arms pass after a measured baseline update. Java `indexElement` changes from `VISIBLE-GAP` to `RESOLVES`; non-Java shape/count entries remain unchanged.

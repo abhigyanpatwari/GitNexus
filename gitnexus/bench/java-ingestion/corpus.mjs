@@ -166,14 +166,19 @@ class LocalElement {
     targetIds: [method('annotated/p/User.java', 'User', 'save')],
     forbiddenTargetIds: [contextualUser, method('context/Outer.java', 'User', 'save')],
   });
-  for (const caller of ['callback', 'loop']) {
+  // A block-local class named in the element type wins over the import
+  // (JLS 6.3); each method declares its own local `User` (javac numbering).
+  for (const [caller, localUser] of [
+    ['callback', 'LocalElement$1User'],
+    ['loop', 'LocalElement$2User'],
+  ]) {
     expectations.push({
       id: `shared/local-element-proof/${caller}`,
-      feature: 'P4 local element proof refusal',
+      feature: 'P4 local element identity',
       sourceId: method('local-element/LocalElement.java', 'LocalElement', caller),
       relation: 'CALLS',
       members: ['save'],
-      targetIds: [],
+      targetIds: [method('local-element/LocalElement.java', localUser, 'save')],
       forbiddenTargetIds: [method('local-element/decoy/User.java', 'User', 'save')],
     });
   }

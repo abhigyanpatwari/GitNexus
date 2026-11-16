@@ -147,8 +147,9 @@ flowchart LR
 ```
 
 Conservative refusal is expected for raw or wildcard callback arguments,
-custom container lookalikes, uncertain generated constructor annotations, and
-raw JDK containers whose local element type requires a separate lexical proof.
+custom container lookalikes and uncertain generated constructor annotations.
+A raw JDK container whose element names a block-local class resolves to that
+local class; the container itself is still proven where it is written.
 Fully indexed multidimensional arrays and generic return substitution remain
 deferred. These results describe this synthetic corpus; broader classpath and
 real-repository coverage require additional evaluation.
