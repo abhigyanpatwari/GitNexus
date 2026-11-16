@@ -258,7 +258,63 @@ function sourceReference(definition: SymbolDefinition): JavaReferenceType {
   return { kind: 'reference', name: definition.nodeId, sourceId: definition.nodeId, arguments: [] };
 }
 
+interface NamedSourceDefinitions {
+  readonly all: readonly SymbolDefinition[];
+  readonly byFile: ReadonlyMap<string, readonly SymbolDefinition[]>;
+  readonly byQualifiedName: ReadonlyMap<string, readonly SymbolDefinition[]>;
+}
+
+/** Class-like definitions per simple or scope name, built once per resolution
+ * state and bucketed by file and by source-qualified name, so a lookup in one
+ * file does not rescan every same-named nested type in the workspace. */
+const namedSourceDefinitionsByState = new WeakMap<State, Map<string, NamedSourceDefinitions>>();
+function namedSourceDefinitions(name: string, state: State): NamedSourceDefinitions {
+  let cache = namedSourceDefinitionsByState.get(state);
+  if (cache === undefined) {
+    cache = new Map();
+    namedSourceDefinitionsByState.set(state, cache);
+  }
+  const cached = cache.get(name);
+  if (cached !== undefined) return cached;
+  const all = collectSourceDefinitions(name, state);
+  const byFile = new Map<string, SymbolDefinition[]>();
+  const byQualifiedName = new Map<string, SymbolDefinition[]>();
+  for (const definition of all) {
+    const inFile = byFile.get(definition.filePath) ?? [];
+    inFile.push(definition);
+    byFile.set(definition.filePath, inFile);
+    const qualified = sourceQualifiedName(definition);
+    if (qualified === undefined) continue;
+    const named = byQualifiedName.get(qualified) ?? [];
+    named.push(definition);
+    byQualifiedName.set(qualified, named);
+  }
+  const named = { all, byFile, byQualifiedName };
+  cache.set(name, named);
+  return named;
+}
+
 function sourceDefinitions(name: string, state: State): readonly SymbolDefinition[] {
+  return namedSourceDefinitions(name, state).all;
+}
+
+function sourceDefinitionsInFile(
+  name: string,
+  filePath: string,
+  state: State,
+): readonly SymbolDefinition[] {
+  return namedSourceDefinitions(name, state).byFile.get(filePath) ?? [];
+}
+
+function sourceDefinitionsQualified(
+  name: string,
+  qualified: string,
+  state: State,
+): readonly SymbolDefinition[] {
+  return namedSourceDefinitions(name, state).byQualifiedName.get(qualified) ?? [];
+}
+
+function collectSourceDefinitions(name: string, state: State): readonly SymbolDefinition[] {
   // Scope and graph identities are distinct. Use the finalized name index,
   // whose definitions share the inheritance and owner lookup key space.
   const qualifiedNames = new Set([
@@ -284,9 +340,7 @@ function sourceDefinitions(name: string, state: State): readonly SymbolDefinitio
 }
 
 function qualifiedReference(name: string, state: State): JavaType {
-  const matches = sourceDefinitions(name.split('.').at(-1)!, state).filter(
-    (definition) => sourceQualifiedName(definition) === name,
-  );
+  const matches = sourceDefinitionsQualified(name.split('.').at(-1)!, name, state);
   const unique = [
     ...new Map(matches.map((definition) => [definition.nodeId, definition])).values(),
   ];
@@ -324,9 +378,7 @@ function inheritsMemberTypeNamed(
   state: State,
 ): boolean {
   for (const enclosing of facts.types.filter((type) => javaRangeContains(type.range, context.at))) {
-    for (const owner of sourceDefinitions(enclosing.name, state).filter(
-      (definition) => definition.filePath === context.filePath,
-    )) {
+    for (const owner of sourceDefinitionsInFile(enclosing.name, context.filePath, state)) {
       for (const ancestorId of state.scopes.methodDispatch.mroFor(owner.nodeId)) {
         const ancestor = state.scopes.defs.get(ancestorId);
         const ancestorFact = ancestor === undefined ? undefined : typeFact(ancestor, state);
@@ -359,11 +411,11 @@ function enclosingClassIds(
     .sort((a, b) => b.range.startLine - a.range.startLine || b.range.startCol - a.range.startCol)
     .map((type) => {
       const ids = new Set(
-        [...sourceDefinitions(type.name, state), ...sourceDefinitions(type.simpleName, state)]
-          .filter(
-            (definition) =>
-              definition.filePath === context.filePath && typeFact(definition, state) === type,
-          )
+        [
+          ...sourceDefinitionsInFile(type.name, context.filePath, state),
+          ...sourceDefinitionsInFile(type.simpleName, context.filePath, state),
+        ]
+          .filter((definition) => typeFact(definition, state) === type)
           .map((definition) => definition.nodeId),
       );
       const [id] = ids;
@@ -415,9 +467,8 @@ function qualifierRoot(
   const unique = (definitions: readonly SymbolDefinition[]): SymbolDefinition[] => [
     ...new Map(definitions.map((definition) => [definition.nodeId, definition])).values(),
   ];
-  const named = sourceDefinitions(root, state);
   const inPackage = facts.packageName === '' ? root : `${facts.packageName}.${root}`;
-  const local = unique(named.filter((definition) => sourceQualifiedName(definition) === inPackage));
+  const local = unique(sourceDefinitionsQualified(root, inPackage, state));
   if (local.length > 0) return local.length === 1 ? sourceReference(local[0]!) : 'unknown';
   const onDemand: SymbolDefinition[] = [];
   for (const item of index.onDemandImports) {
@@ -427,9 +478,7 @@ function qualifierRoot(
       if (!javaStaticOnDemandImportBringsNoType(item.name, root, state.scopes)) return 'unknown';
       continue;
     }
-    onDemand.push(
-      ...named.filter((definition) => sourceQualifiedName(definition) === `${item.name}.${root}`),
-    );
+    onDemand.push(...sourceDefinitionsQualified(root, `${item.name}.${root}`, state));
   }
   const imported = unique(onDemand);
   if (imported.length === 0) return 'package';
@@ -454,13 +503,12 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   if (nearest !== undefined) {
     if (name.includes('.')) return UNKNOWN_JAVA_TYPE; // qualified nested lookup needs a proven identity
     const matches = [
-      ...sourceDefinitions(nearest.name, state),
-      ...sourceDefinitions(nearest.simpleName, state),
+      ...sourceDefinitionsInFile(nearest.name, context.filePath, state),
+      ...sourceDefinitionsInFile(nearest.simpleName, context.filePath, state),
     ].filter(
       (definition) =>
-        definition.filePath === context.filePath &&
-        (definition.nodeId.endsWith(`:${nearest!.name}`) ||
-          definition.qualifiedName === nearest!.name),
+        definition.nodeId.endsWith(`:${nearest!.name}`) ||
+        definition.qualifiedName === nearest!.name,
     );
     const unique = [
       ...new Map(matches.map((definition) => [definition.nodeId, definition])).values(),
@@ -507,9 +555,7 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   if (explicit.length > 0)
     return explicit.length === 1 ? qualifiedReference(explicit[0]!.name, state) : UNKNOWN_JAVA_TYPE;
   const inPackage = facts.packageName === '' ? name : `${facts.packageName}.${name}`;
-  const local = sourceDefinitions(name, state).filter(
-    (definition) => sourceQualifiedName(definition) === inPackage,
-  );
+  const local = sourceDefinitionsQualified(name, inPackage, state);
   if (local.length > 0) {
     const unique = [
       ...new Map(local.map((definition) => [definition.nodeId, definition])).values(),
@@ -524,9 +570,7 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   for (const item of facts.imports) {
     if (item.static || !item.wildcard) continue;
     const qualified = `${item.name}.${name}`;
-    const candidates = sourceDefinitions(name, state).filter(
-      (definition) => sourceQualifiedName(definition) === qualified,
-    );
+    const candidates = sourceDefinitionsQualified(name, qualified, state);
     if (candidates.length > 0) imported.push(...candidates.map(sourceReference));
     else if (KNOWN_JAVA_PLATFORM_TYPES.has(qualified))
       imported.push(qualifiedReference(qualified, state));
