@@ -18,7 +18,7 @@ describe('Dart import prefix semantic captures', () => {
         targetRaw: 'model.dart',
         explicitAlias: true,
       },
-      { kind: 'wildcard', targetRaw: 'other.dart' },
+      { kind: 'wildcard', targetRaw: 'other.dart', reexportsName: false },
     ]);
   });
 
@@ -48,6 +48,7 @@ describe('Dart import prefix semantic captures', () => {
         importedName: 'y.dart',
         targetRaw: 'y.dart',
         explicitAlias: true,
+        nameFilters: [{ kind: 'show', names: ['A'] }],
       },
     ]);
   });

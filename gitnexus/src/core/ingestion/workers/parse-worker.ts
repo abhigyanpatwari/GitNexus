@@ -273,6 +273,8 @@ interface ParsedNode {
 }
 
 interface ParsedRelationship {
+  /** File that emitted this fact; distinct files may share either endpoint id. */
+  originFilePath?: string;
   id: string;
   sourceId: string;
   targetId: string;
@@ -1933,7 +1935,11 @@ const processFileGroupFiles = (
           relationship.type === 'HAS_METHOD' ||
           relationship.type === 'HAS_PROPERTY'
         ) {
-          result.relationships.push({ ...relationship, type: relationship.type });
+          result.relationships.push({
+            ...relationship,
+            type: relationship.type,
+            originFilePath: file.path,
+          });
         }
       }
       for (const symbol of semanticGraph.symbols) {
@@ -2267,6 +2273,7 @@ const processFileGroupFiles = (
             const fileId = generateId('File', file.path);
             const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
             result.relationships.push({
+              originFilePath: file.path,
               id: relId,
               sourceId: fileId,
               targetId: nodeId,
@@ -2277,6 +2284,7 @@ const processFileGroupFiles = (
           }
           if (propEnclosingClassId) {
             result.relationships.push({
+              originFilePath: file.path,
               id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
               sourceId: propEnclosingClassId,
               targetId: nodeId,
@@ -3171,6 +3179,7 @@ const processFileGroupFiles = (
         const fileId = generateId('File', file.path);
         const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
         result.relationships.push({
+          originFilePath: file.path,
           id: relId,
           sourceId: fileId,
           targetId: nodeId,
@@ -3184,6 +3193,7 @@ const processFileGroupFiles = (
       if (ownerId !== undefined) {
         const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
         result.relationships.push({
+          originFilePath: file.path,
           id: generateId(memberEdgeType, `${ownerId}->${nodeId}`),
           sourceId: ownerId,
           targetId: nodeId,
@@ -3374,7 +3384,7 @@ const processFileGroupFiles = (
         result.symbols.push(sym as ParsedSymbol);
       }
       for (const rel of synthetic.relationships) {
-        result.relationships.push(rel as ParsedRelationship);
+        result.relationships.push({ ...rel, originFilePath: file.path } as ParsedRelationship);
       }
     }
   }

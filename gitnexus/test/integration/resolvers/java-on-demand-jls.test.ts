@@ -252,6 +252,21 @@ function importerEdges(result: PipelineResult): string[] {
     .sort();
 }
 
+/** Every CALLS edge leaving a file of package `app`: caller, target file and target name. */
+function appCalls(result: PipelineResult): string[] {
+  return [...result.graph.iterRelationshipsByType('CALLS')]
+    .map((rel) => ({
+      source: result.graph.getNode(rel.sourceId),
+      target: result.graph.getNode(rel.targetId),
+    }))
+    .filter(({ source }) => String(source?.properties.filePath).startsWith('src/app/'))
+    .map(
+      ({ source, target }) =>
+        `${source?.properties.name} -> ${target?.properties.filePath}:${target?.properties.name}`,
+    )
+    .sort();
+}
+
 /**
  * Both ways of storing an on-demand import must give these edges. This goes
  * through the whole pipeline, so reference resolution runs with its lookup
@@ -267,6 +282,68 @@ afterEach(() => vi.unstubAllEnvs());
 describe.each(STORAGE_FORMS)(
   'Java on-demand imports: JLS scenarios pinned to current behaviour (#3695), $form',
   ({ form, disableGroups }) => {
+    it('does not expose imported members as members of the importing class', async () => {
+      vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', disableGroups);
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-private-wildcard-'));
+      // `Util` imports the static members of `b.Tools` on demand. They are in
+      // scope inside Util.java but are not members of `Util` (JLS 7.5.4), so
+      // `import static a.Util.helper;` and `import static a.Util.Inner;` name
+      // nothing (JLS 7.5.3). `d.Tools` repeats every name so that none of them
+      // is unique in the workspace.
+      const tools = (pkg: string): string =>
+        `package ${pkg}; public class Tools { public static void helper() {} ` +
+        'public static class Inner { public static void in() {} } }';
+      try {
+        writeFixtureRepo(root, {
+          'src/b/Tools.java': tools('b'),
+          'src/d/Tools.java': tools('d'),
+          'src/a/Util.java': 'package a; import static b.Tools.*; public class Util {}',
+          'src/app/U.java':
+            'package app; import static a.Util.helper; import static a.Util.Inner; ' +
+            'public class U { void wrong() { helper(); Inner.in(); } }',
+          'src/app/Direct.java':
+            'package app; import static b.Tools.helper; import static b.Tools.Inner; ' +
+            'public class Direct { void correct() { helper(); Inner.in(); } }',
+        });
+        const result = await runPipelineFromRepo(root, () => {});
+        expect(appCalls(result)).toEqual([
+          'correct -> src/b/Tools.java:helper',
+          'correct -> src/b/Tools.java:in',
+        ]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+    it('does not re-export a type imported on demand to an importer of the importing file', async () => {
+      vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', disableGroups);
+      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-on-demand-reexport-'));
+      // `Util` imports package `c` on demand, which puts `Lib` in scope inside
+      // Util.java only (JLS 7.5.2). `b.Util.Lib` is not the canonical name of
+      // any type, so the single-type import in Named.java names nothing
+      // (JLS 7.5.1), and `import b.*;` in Star.java declares only `Util`.
+      // `d.Lib` keeps `Lib` from being unique in the workspace.
+      const lib = (pkg: string): string =>
+        `package ${pkg}; public class Lib { public static void make() {} public void run() {} }`;
+      const body = '{ new Lib().run(); Lib.make(); }';
+      try {
+        writeFixtureRepo(root, {
+          'src/c/Lib.java': lib('c'),
+          'src/d/Lib.java': lib('d'),
+          'src/b/Util.java': 'package b; import c.*; public class Util { Lib held; }',
+          'src/app/Named.java': `package app; import b.Util.Lib; public class Named { void named() ${body} }`,
+          'src/app/Star.java': `package app; import b.*; public class Star { void star() ${body} }`,
+          'src/app/Direct.java': `package app; import c.Lib; public class Direct { void correct() ${body} }`,
+        });
+        const result = await runPipelineFromRepo(root, () => {});
+        expect(appCalls(result)).toEqual([
+          'correct -> src/c/Lib.java:Lib',
+          'correct -> src/c/Lib.java:make',
+          'correct -> src/c/Lib.java:run',
+        ]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
     it.each(scenarios)(`$name [${form}]`, async ({ files, edges }) => {
       vi.stubEnv('GITNEXUS_DISABLE_IMPORT_GROUPS', disableGroups);
       const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-on-demand-jls-'));

@@ -47,6 +47,51 @@ const indexes = (fileScopes: Scope[]): ScopeResolutionIndexes =>
 const parsed = (fileScopes: Scope[]) => ({ moduleScope: 'module', scopes: fileScopes });
 
 describe('namespace target activation cache', () => {
+  it('does not turn a skipped parent into the lookup start', () => {
+    const module = scope('module', null, { imports: [edge('outer.ts', 1)] });
+    const parent = scope('class', module.id, {
+      kind: 'Class',
+      lookupPolicy: { skipFromChildren: true },
+      nameClaims: [{ name: 'pkg', kind: 'blocked', range: range(2) }],
+    });
+    const child = scope('method', parent.id, { range: range(3) });
+    const fileScopes = [module, parent, child];
+    const cache = createNamespaceTargetCache(parsed(fileScopes), indexes(fileScopes), {}, false);
+    expect(cache.at(parent.id).has('pkg')).toBe(false);
+    expect(cache.at(child.id).get('pkg')).toEqual(['outer.ts']);
+  });
+  it.each(['memory', 'sealed'] as const)(
+    'shares file imports across unrelated function scopes (%s)',
+    (storage) => {
+      const module = scope('module', null, {
+        imports: Array.from({ length: 32 }, (_, i) => edge(`pkg${i}.ts`, 1, `pkg${i}`)),
+      });
+      const functions = Array.from({ length: 1000 }, (_, i) =>
+        scope(`f${i}`, module.id, {
+          range: range(i + 2),
+          nameClaims: [
+            { name: `local${i}`, kind: 'blocked', range: range(i + 2), availableFrom: at(i + 2) },
+          ],
+        }),
+      );
+      const fileScopes = [module, ...functions];
+      const base = indexes(fileScopes);
+      const scopeTree =
+        storage === 'sealed'
+          ? new DiskBackedScopeTree(tmp, persistScopeShards(tmp, fileScopes))
+          : base.scopeTree;
+      const receiverPaths = vi.fn(() => undefined);
+      const cache = createNamespaceTargetCache(
+        parsed([]),
+        { ...base, scopeTree },
+        { receiverPaths },
+        false,
+      );
+      const first = cache.at(module.id, at(1));
+      for (const [i, fn] of functions.entries()) expect(cache.at(fn.id, at(i + 2))).toBe(first);
+      expect(receiverPaths).toHaveBeenCalledTimes(32);
+    },
+  );
   it('shares a proven empty namespace map without discarding lexical receiver lookup', () => {
     const module = scope('module', null, {
       imports: [{ ...edge('values.ts', 0, 'value'), kind: 'named' }],

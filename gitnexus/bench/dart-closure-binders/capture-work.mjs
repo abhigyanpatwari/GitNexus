@@ -3,7 +3,7 @@ import { emitDartScopeCaptures } from '../../src/core/ingestion/languages/dart/i
 
 /** Deterministic work guards, separate from timing. In particular, a cheap
  * per-binder scan of all scopes must fail even below the timer's noise floor. */
-export function captureWork(files) {
+export function captureWork(files, emitCaptures = emitDartScopeCaptures) {
   const work = {
     parent_reads: 0,
     sibling_reads: 0,
@@ -63,7 +63,7 @@ export function captureWork(files) {
           for (const entry of original.call(this)) {
             // tree-sitter batches freshly allocated node wrappers in a Map.
             // Its size depends on native-cache/GC state, not capture work.
-            const value = name === 'values' ? entry : entry?.[1];
+            const value = name === 'values' ? entry : name === 'keys' ? this.get(entry) : entry[1];
             if (!(value instanceof Parser.SyntaxNode)) work.map_visits++;
             yield entry;
           }
@@ -80,7 +80,7 @@ export function captureWork(files) {
       },
     });
     for (const file of files) {
-      for (const match of emitDartScopeCaptures(file.content, file.path)) {
+      for (const match of emitCaptures(file.content, file.path)) {
         if (match['@scope.function'] !== undefined) work.function_scopes++;
       }
     }

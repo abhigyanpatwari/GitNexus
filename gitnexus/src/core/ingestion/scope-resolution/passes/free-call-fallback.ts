@@ -271,6 +271,7 @@ export function emitFreeCallFallback(
       const lookupOptions = {
         position: site.atRange,
         purpose: 'value' as const,
+        callee: true,
       };
       const nameClaim = lookupNameClaim(site.inScope, site.name, scopes, lookupOptions);
       const strictClaim = hasExplicitNameClaim(nameClaim, site.name);

@@ -244,6 +244,17 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
     if (child && TYPE_NODE_TYPES.has(child.type)) {
       rawTypeName = child.text?.trim() ?? null;
       typeName = extractSimpleTypeName(child) ?? rawTypeName;
+      // The grammar represents `prefix.Type` as two type_identifier siblings.
+      // Keeping only the first would bind the parameter to the prefix itself.
+      const member = param.namedChild(i + 1);
+      if (
+        child.type === 'type_identifier' &&
+        member?.type === 'type_identifier' &&
+        child.nextSibling?.type === '.'
+      ) {
+        typeName = `${child.text}.${member.text}`;
+        rawTypeName = typeName;
+      }
       break;
     }
     // Also check type_identifier

@@ -132,7 +132,10 @@ export function createReferenceLookup(
             cachedNameLookupStart(scope, name, scopes, options?.skipEnclosingClasses),
             name,
             { scopes: scopes.scopeTree },
-            options,
+            // The site's own name, written without a receiver, is a callee.
+            currentSite.explicitReceiver === undefined && name === currentSite.name
+              ? { ...options, callee: true }
+              : options,
           )
         : lookupNameClaim(scope, name, scopes, options),
     onLexicalClaim:

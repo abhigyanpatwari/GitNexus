@@ -141,22 +141,22 @@ function filePathStart(items: readonly { readonly filePath: string }[], filePath
 
 /**
  * A result's relationships, each with the path of the file whose parse emitted
- * it. A worker relationship carries no path, but its target is a node that same
- * file emitted, so the path is read from the result's own nodes.
+ * it. Current workers carry exact origin; old caches fall back to endpoint nodes.
  */
 function relationshipsByFile(
   result: ParseWorkerResult,
 ): { relationship: ParsedGraphRelationship; filePath: string }[] {
   const fileOfNode = new Map<string, string>();
-  // ponytail: when two files of one result define the same node id, a
-  // relationship to it sorts with the first of them. Exact attribution needs
-  // the worker to stamp each relationship with its file.
   for (const node of result.nodes) {
     if (!fileOfNode.has(node.id)) fileOfNode.set(node.id, nodeFilePath(node));
   }
   return result.relationships.map((relationship) => ({
     relationship,
-    filePath: fileOfNode.get(relationship.targetId) ?? fileOfNode.get(relationship.sourceId) ?? '',
+    filePath:
+      relationship.originFilePath ??
+      fileOfNode.get(relationship.targetId) ??
+      fileOfNode.get(relationship.sourceId) ??
+      '',
   }));
 }
 
@@ -235,12 +235,14 @@ export const mergeChunkResults = (
     // Files arrived in path order, and a result emits its relationships file
     // by file in the order it emits their nodes: nothing to reorder.
     for (const result of chunkResults) {
-      for (const rel of result.relationships) graph.addRelationship(rel);
+      for (const { originFilePath: _origin, ...rel } of result.relationships)
+        graph.addRelationship(rel);
     }
   } else {
     const chunkRelationships = chunkResults.flatMap(relationshipsByFile);
     for (const { relationship } of byFilePath(chunkRelationships)) {
-      graph.addRelationship(relationship);
+      const { originFilePath: _origin, ...rel } = relationship;
+      graph.addRelationship(rel);
     }
   }
   for (const sym of byFilePath(chunkItems(chunkResults, (result) => result.symbols))) {

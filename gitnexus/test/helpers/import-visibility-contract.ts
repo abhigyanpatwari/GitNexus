@@ -408,7 +408,8 @@ export function generatedRelation(seed: number): ImportRelation {
   const loose = ['Self0.java', 'Self1.java', 'src/a/F0_0.java', 'src/z/Lone.java'];
   const scopes = Array.from({ length: 1 + pick(4) }, (_, s) => ({
     id: scopeId(`scope${s}`),
-    statements: Array.from({ length: pick(7) }, (_unused, line): ImportStatement => {
+    statements: Array.from({ length: pick(7) }, (_unused, index): ImportStatement => {
+      const line = index + 1;
       const shape = pick(5);
       return shape < 2
         ? {

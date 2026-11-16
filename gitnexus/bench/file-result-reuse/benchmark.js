@@ -417,9 +417,10 @@ export function assessComparison(report) {
   }
   const improving = report.pairs[0].baseline.measurements[0].cacheFormat === 'chunk';
   const budgets = benchmarkBaseline.budgets;
-  // Every look may accept or reject, so each gets an equal share of the 5%
-  // error: the chance of a wrong decision across all looks stays within 5%.
-  const alpha = 0.05 / looks;
+  // Any metric can reject at any look. Bonferroni covers the whole family
+  // of two-sided intervals, including correlated phases and repeated looks.
+  const metricCount = phases.length + 3;
+  const alpha = 0.05 / (looks * metricCount);
   const assessLook = (pairs) => {
     const metric = (name, unit, select, limit, strict = false) => {
       const summary = summarizePairs(

@@ -39,7 +39,12 @@ import { TopicExtractor } from './extractors/topic-extractor.js';
 import { IncludeExtractor } from './extractors/include-extractor.js';
 import { ManifestExtractor } from './extractors/manifest-extractor.js';
 import { discoverWorkspaceLinks } from './extractors/workspace-extractor.js';
-import { buildProviderIndex, runExactMatch, runWildcardMatch } from './matching.js';
+import {
+  buildProviderIndex,
+  runExactMatch,
+  runWildcardMatch,
+  withoutDeclaredProvider,
+} from './matching.js';
 import type { WildcardMatchResult } from './matching.js';
 import { detectServiceBoundaries, assignService } from './service-boundary-detector.js';
 import type { CypherExecutor } from './contract-extractor.js';
@@ -685,7 +690,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   const crossLinks = dedupeCrossLinks([...manifestCrossLinks, ...matched, ...wildcard.matched]).map(
     applyDegradedFlag,
   );
-  const allContracts: StoredContract[] = autoContracts;
+  const allContracts: StoredContract[] = autoContracts.map(withoutDeclaredProvider);
 
   const registry: ContractRegistry = {
     version: 1,
@@ -931,7 +936,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     contracts: allContracts,
     crossLinks,
     suppressedMatchStages,
-    unmatched: wildcard.remaining,
+    unmatched: wildcard.remaining.map(withoutDeclaredProvider),
     missingRepos,
     unreadableRepos,
     failedRepos,

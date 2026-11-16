@@ -351,12 +351,6 @@
       "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
     },
     {
-      "a": "test/unit/model/registration-table.test.ts#behavior group isolation > Impl hooks write to types.registerImpl, never to types.registerClass",
-      "b": "test/unit/model/registration-table.test.ts#hook behavior (real registries, no mocks) > implHook writes to types.registerImpl, NOT types.registerClass",
-      "category": "same-file",
-      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
-    },
-    {
       "a": "test/unit/scope-resolution/function-local-import-chain.test.ts#Python: a function-local import reaches the IMPORTS reason > `def f(): from m import X` is deferred",
       "b": "test/unit/scope-resolution/function-local-import-chain.test.ts#Rust: a function-local `use` is NOT deferred > Python still defers on the same run",
       "category": "native-parser",

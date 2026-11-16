@@ -363,11 +363,7 @@ describe('reconcileOwnership', () => {
   });
   const nodeIds = (defs: readonly SymbolDefinition[]): string[] => defs.map((d) => d.nodeId);
 
-  it('registers same-named ownerless values from different files, each once (parity pin)', () => {
-    // Parity pin: passes with or without the node-id sets. It pins the counts
-    // and bucket contents the sets must keep identical to a bucket scan:
-    // a def already in the registry before the pass, the same def twice in one
-    // pass, and the same defs again in a second pass.
+  it('does not add ownerless values or types, including repeated declarations and passes', () => {
     const model = createSemanticModel();
     const earlier = mkModuleValue('src/earlier.ts', 'logger');
     const loggerA = mkModuleValue('src/a.ts', 'logger');
@@ -385,16 +381,12 @@ describe('reconcileOwnership', () => {
 
     expect(first).toEqual({
       methodsRegistered: 0,
-      fieldsRegistered: 2,
-      nestedTypesRegistered: 2,
-      skippedAlreadyPresent: 3,
+      fieldsRegistered: 0,
+      nestedTypesRegistered: 0,
+      skippedAlreadyPresent: 0,
     });
-    expect(nodeIds(model.fields.lookupAllByOwner(NO_OWNER, 'logger'))).toEqual(
-      nodeIds([earlier, loggerA, loggerB]),
-    );
-    expect(nodeIds(model.types.lookupAllByOwner(NO_OWNER, 'Options'))).toEqual(
-      nodeIds([optionsA, optionsB]),
-    );
+    expect(nodeIds(model.fields.lookupAllByOwner(NO_OWNER, 'logger'))).toEqual(nodeIds([earlier]));
+    expect(nodeIds(model.types.lookupAllByOwner(NO_OWNER, 'Options'))).toEqual([]);
 
     const second = reconcileOwnership([earlierFile, a, b], model);
 
@@ -402,23 +394,19 @@ describe('reconcileOwnership', () => {
       methodsRegistered: 0,
       fieldsRegistered: 0,
       nestedTypesRegistered: 0,
-      skippedAlreadyPresent: 5,
+      skippedAlreadyPresent: 0,
     });
-    expect(nodeIds(model.fields.lookupAllByOwner(NO_OWNER, 'logger'))).toEqual(
-      nodeIds([earlier, loggerA, loggerB]),
-    );
-    expect(nodeIds(model.types.lookupAllByOwner(NO_OWNER, 'Options'))).toEqual(
-      nodeIds([optionsA, optionsB]),
-    );
+    expect(nodeIds(model.fields.lookupAllByOwner(NO_OWNER, 'logger'))).toEqual(nodeIds([earlier]));
+    expect(nodeIds(model.types.lookupAllByOwner(NO_OWNER, 'Options'))).toEqual([]);
   });
 
   it('keeps same-named fields apart by owner across passes', () => {
     // One field name under two real owners, an empty owner id, the literal
-    // owner id 'undefined', and no owner: five registry buckets. Each holds
+    // owner id 'undefined': four registry buckets. Each holds
     // more defs than the pass scans, so both passes answer from node-id sets:
     // a set shared between two of these owners, or one not kept current as the
     // pass registers, would register a def again.
-    const owners = ['def:A', 'def:B', '', 'undefined', NO_OWNER];
+    const owners = ['def:A', 'def:B', '', 'undefined'];
     const perOwner = 12;
     const defs = owners.map((ownerId, o) =>
       Array.from(
@@ -457,10 +445,7 @@ describe('reconcileOwnership', () => {
     );
   });
 
-  it('reads a shared ownerless bucket a bounded number of times, however many files declare it', () => {
-    // A per-def scan of the shared bucket reads it once per def: quadratic in
-    // the number of files that declare the name. The pass scans a bucket only
-    // while it is short, then answers from a node-id set.
+  it('does no owner-keyed registry work for ownerless definitions at any file count', () => {
     const readsFor = (fileCount: number) => {
       const model = createSemanticModel();
       const files = Array.from({ length: fileCount }, (_, i) => {
@@ -511,24 +496,23 @@ describe('reconcileOwnership', () => {
     const small = readsFor(50);
     const large = readsFor(200);
 
-    // Parity pin: the same counts a bucket scan produces.
-    expect([small.first.fieldsRegistered, small.first.nestedTypesRegistered]).toEqual([50, 50]);
-    expect([large.first.fieldsRegistered, large.first.nestedTypesRegistered]).toEqual([200, 200]);
+    expect([small.first.fieldsRegistered, small.first.nestedTypesRegistered]).toEqual([0, 0]);
+    expect([large.first.fieldsRegistered, large.first.nestedTypesRegistered]).toEqual([0, 0]);
     expect([small.second.skippedAlreadyPresent, large.second.skippedAlreadyPresent]).toEqual([
-      100, 400,
+      0, 0,
     ]);
-    // First pass: the reads stop once the bucket outgrows the scan, so four
-    // times the files cost no extra read. A per-def scan fails here: 50 calls
-    // and 1225 entries per registry against 200 calls and 19900.
     expect(large.firstPass).toEqual(small.firstPass);
-    // Second pass: one read of each full bucket, not one per def.
+    expect(small.firstPass).toEqual({
+      fields: { calls: 0, entries: 0 },
+      types: { calls: 0, entries: 0 },
+    });
     expect(small.secondPass).toEqual({
-      fields: { calls: 1, entries: 50 },
-      types: { calls: 1, entries: 50 },
+      fields: { calls: 0, entries: 0 },
+      types: { calls: 0, entries: 0 },
     });
     expect(large.secondPass).toEqual({
-      fields: { calls: 1, entries: 200 },
-      types: { calls: 1, entries: 200 },
+      fields: { calls: 0, entries: 0 },
+      types: { calls: 0, entries: 0 },
     });
   });
 });

@@ -328,4 +328,12 @@ else
     echo "[post-create]   skipping claude-mem seed (already seeded, or host has no store)"
 fi
 
+# Make the seeded Claude Code / Codex setup work in this Linux container and
+# install the repo's agent tooling (host-only config entries, Codex sandbox
+# default, destructive-command guard, side-panels mod, Codex plugins). The script
+# is idempotent and reports a failed step instead of failing: a missing network
+# or CLI must not fail container creation. See README "Agent setup".
+node "$SCRIPT_DIR/agent-setup.cjs" || \
+    echo "[post-create]   WARNING: agent setup did not finish; re-run: node .devcontainer/agent-setup.cjs"
+
 echo "[post-create] done"

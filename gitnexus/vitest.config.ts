@@ -44,11 +44,16 @@ export default defineConfig({
     // turn off every staging test. Empty is neither '0' nor '1', i.e. unset;
     // a test that needs a value stubs it.
     // Config tests supply their own files; never read a developer's GITNEXUS_RC.
+    // CLAUDE_CONFIG_DIR relocates Claude Code's config root, and setup/uninstall
+    // honour it: inheriting a developer's value would point setup tests that
+    // sandbox HOME at that developer's real config. Empty means unset; cases
+    // that exercise the relocation set it themselves.
     env: {
       GITNEXUS_MEMORY: 'off',
       GITNEXUS_LANG: 'en',
       GITNEXUS_ATOMIC_INCREMENTAL: '',
       GITNEXUS_RC: '',
+      CLAUDE_CONFIG_DIR: '',
     },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —

@@ -37,6 +37,16 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
   const sourceCap = captures['@import.source'];
   if (sourceCap === undefined) return null;
   const raw = stripQuotes(sourceCap.text);
+  const metadata = {
+    ...(captures['@import.exports-only'] === undefined ? {} : { exportsOnly: true }),
+    ...(captures['@import.name-filters'] === undefined
+      ? {}
+      : {
+          nameFilters: JSON.parse(captures['@import.name-filters'].text) as NonNullable<
+            ParsedImport['nameFilters']
+          >,
+        }),
+  };
   const alias = captures['@import.alias'];
   if (alias !== undefined) {
     return {
@@ -45,13 +55,14 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
       localName: alias.text,
       importedName: raw,
       explicitAlias: true,
+      ...metadata,
     };
   }
-  // Dart `import '...'` brings every PUBLIC top-level symbol of the target
-  // library directly into scope (no prefix) — wildcard semantics. The
-  // `expandsWildcardTo` hook enumerates those names so cross-file return
-  // types propagate (`var u = importedFn(); u.m()`).
-  return { kind: 'wildcard', targetRaw: raw };
+  // Dart `import '...'` brings every name of the target library's public
+  // export namespace directly into scope (no prefix) — wildcard semantics. The
+  // statement stays ONE import; `populateDartImportNamespaces` publishes each
+  // library's names once and applies this directive's `show` / `hide` there.
+  return { kind: 'wildcard', targetRaw: raw, reexportsName: false, ...metadata };
 }
 
 /** Container generics whose single type argument is the runtime element
@@ -133,8 +144,9 @@ export function interpretDartTypeBinding(captures: CaptureMatch): ParsedTypeBind
   // `svc.getUserAsync().save()` must not type the Future as a `User`. The
   // fold's await step unwraps it through `dartAwaitedType` (DART-04).
   const rawType =
-    captures['@type-binding.constructor'] !== undefined && typeCap.text.includes('.')
-      ? typeCap.text
+    (captures['@type-binding.constructor'] !== undefined && typeCap.text.includes('.')) ||
+    /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\??$/.test(typeCap.text)
+      ? typeCap.text.replace(/\?$/, '')
       : captures['@type-binding.return'] !== undefined &&
           dartAwaitedType(typeCap.text) !== undefined
         ? typeCap.text.trim().replace(/\?+$/, '')

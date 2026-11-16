@@ -1,27 +1,23 @@
 /**
  * Ownership-reconciliation correctness and scaling gate.
  *
- * `reconcileOwnership` mirrors every Property/Variable/Const/Static def and
- * every class-like def into the SemanticModel's owner-keyed registries, and
- * skips a def whose node id is already registered under its `(owner, name)`.
- * Module-level values and top-level types carry no owner, so every file's
- * `logger` shares ONE registry bucket per name across the whole repository.
- * Answering "already registered?" by scanning that bucket for every def is
- * quadratic in the number of files that declare the name. This gate pins what
- * the pass registers and checks that its cost grows linearly as the number of
- * files declaring the same names grows 4x.
+ * `reconcileOwnership` mirrors owned members into the SemanticModel's
+ * owner-keyed registries, skipping duplicates and ownerless values/types.
+ * File-scoped definitions remain available in the symbol/scope indexes.
+ * This gate catches reintroducing unnecessary ownerless registrations and
+ * checks that reconciliation scales with the number of definitions.
  *
  * Workload: N TypeScript files, each declaring the same three module-level
  * values (`logger`, `router`, `config`) and a top-level `interface Options`
- * with one member. Every value and every `Options` is ownerless, so the four
- * shared buckets each end up holding N defs; `Options.level` is owned, one def
- * per owner. The file index is zero-padded to a fixed width, so input bytes
+ * with one member. Every value and every `Options` is ownerless, so those
+ * four buckets stay empty; `Options.level` is owned, one def per owner.
+ * The file index is zero-padded to a fixed width, so input bytes
  * grow exactly with N. Defs come from the real TypeScript scope extractor and
  * `populateOwners`, the same two steps runScopeResolution runs before it
  * reconciles.
  *
  * Shapes: small = 250 files, large = 1000 files (files 4x). The timed
- * workload is two passes over a fresh model: the first registers every def,
+ * workload is two passes over a fresh model: the first registers owned defs,
  * the second finds every def already present (the shared model a later
  * language pass reconciles into). The scaling ratio divides the time growth
  * by the larger of the input-byte, def and registry-entry growth, so about 1
@@ -298,13 +294,15 @@ function report() {
     },
   };
   console.log(JSON.stringify(out, null, 2));
-  // Correctness holds on every run, not only under --check: every value and
-  // every `Options` lands in its shared bucket once, and the second pass
-  // registers nothing.
+  // Ownerless values/types stay in the file-scoped indexes. Only Options.level
+  // belongs in the owner-keyed registries, once per file across both passes.
   for (const [name, shape] of Object.entries(shapes)) {
     for (const bucket of [...VALUES.map((v) => `fields:${v}`), `types:${TYPE}`]) {
-      assert.equal(shape.shared_buckets[bucket], shape.files, `${name}: ${bucket} bucket size`);
+      assert.equal(shape.shared_buckets[bucket], 0, `${name}: ${bucket} must remain empty`);
     }
+    assert.equal(shape.first_pass.fieldsRegistered, shape.files, `${name}: owned fields`);
+    assert.equal(shape.first_pass.nestedTypesRegistered, 0, `${name}: ownerless types`);
+    assert.equal(shape.registry_entries, shape.files, `${name}: owner-keyed entries`);
     assert.equal(shape.second_pass.fieldsRegistered, 0, `${name}: second pass registered fields`);
     assert.equal(
       shape.second_pass.nestedTypesRegistered,

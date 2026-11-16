@@ -303,6 +303,102 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * A fence opener, optionally behind the list-item or block-quote markers that
+ * open on the same line (`- ```sh`): group 1 is that marker prefix, group 2
+ * the fence, group 3 the info string.
+ */
+const FENCE_OPENER = /^((?: {0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])[ \t]))*) {0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * A line that cannot be the text of a setext heading: an ATX heading, a block
+ * quote, a list item, or a thematic break (also the shape of a setext `---`
+ * underline). A row of `=` under one of these is paragraph text, not a title.
+ */
+const NOT_SETEXT_TEXT =
+  /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)|([-*_])[ \t]*(?:\1[ \t]*){2,}$)/;
+
+/**
+ * Whether `markdown` has a title of its own: an ATX `# Title`, a setext title
+ * underlined with `=`, or a `title` key in closed YAML front matter (which
+ * markdownlint's MD025 counts as the document title). Fenced code, HTML
+ * comments and the rest of the front matter can contain heading examples
+ * without giving the file a title.
+ */
+function hasTopLevelHeading(markdown: string): boolean {
+  const lines = markdown.replace(/^\uFEFF/, '').split('\n');
+  let start = 0;
+  if (/^---[ \t]*$/.test(lines[0])) {
+    const end = lines.findIndex((line, i) => i > 0 && /^---[ \t]*$/.test(line));
+    if (end !== -1) {
+      // markdownlint's default `front_matter_title` pattern.
+      if (lines.slice(1, end).some((line) => /^\s*"?title"?\s*[:=]/i.test(line))) return true;
+      start = end + 1;
+    }
+  }
+  // `inside` is set for a fence opened in a list item or block quote: the
+  // shape a later line must have to still belong to that container.
+  let fence: { char: string; length: number; inside?: RegExp } | undefined;
+  let inComment = false;
+  let previous = '';
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (fence?.inside && line.trim() !== '' && !fence.inside.test(line)) {
+      // The list item or block quote ended, and with it any fence still open
+      // inside (one closed deeper than three spaces is not seen as closed
+      // below); this line is ordinary content again.
+      fence = undefined;
+    }
+    if (fence) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) {
+        fence = undefined;
+      }
+      previous = '';
+      continue;
+    }
+    if (inComment || /^ {0,3}<!--/.test(line)) {
+      inComment = !line.includes('-->');
+      previous = '';
+      continue;
+    }
+    const opener = FENCE_OPENER.exec(line);
+    // Backtick fence info strings cannot contain backticks (CommonMark §4.5).
+    if (opener && (opener[2][0] !== '`' || !opener[3].includes('`'))) {
+      const inside =
+        opener[1] === ''
+          ? undefined
+          : opener[1].includes('>')
+            ? /^ {0,3}>/
+            : new RegExp(`^ {${line.indexOf(opener[2])}}`);
+      fence = { char: opener[2][0], length: opener[2].length, inside };
+      previous = '';
+      continue;
+    }
+    if (/^ {0,3}#(?:[ \t]|$)/.test(line)) return true;
+    if (
+      /^ {0,3}=+[ \t]*$/.test(line) &&
+      previous.trim() !== '' &&
+      !NOT_SETEXT_TEXT.test(previous)
+    ) {
+      return true;
+    }
+    previous = line;
+  }
+  return false;
+}
+
+/**
+ * The block opens with a level-1 heading, which is right for a file GitNexus
+ * creates. Inside a file that already has its own title, a second level-1
+ * heading breaks markdownlint's MD025 (single-title), so the block's headings
+ * move down one level there (#2774). Every line of the block that starts with
+ * `#` is one of its own headings.
+ */
+function nestUnderExistingTitle(block: string, surrounding: string): string {
+  return hasTopLevelHeading(surrounding) ? block.replace(/^(#{1,5}) /gm, '#$1 ') : block;
+}
+
+/**
  * Replace the block's volatile counts — the header parenthetical and the
  * per-cluster symbol counts in the skills table — with fixed placeholders, so
  * two renderings that differ only in those numbers compare equal.
@@ -441,18 +537,24 @@ async function upsertGitNexusSection(
 
     // No keep marker — replace existing section with full verbose content,
     // unless the counts are the only thing that moved (#2907).
-    if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
-      return repairLineEndings();
-    }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-    const newContent = before + content + after;
+    // The write below trims the file, which can change what its first lines
+    // are (a blank line before front matter, an indented first line), so the
+    // title is looked for in the text as it will be written.
+    const placed = nestUnderExistingTitle(content, before.trimStart() + after);
+    if (stripVolatileCounts(existingSection) === stripVolatileCounts(placed)) {
+      return repairLineEndings();
+    }
+    const newContent = before + placed + after;
     await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
     return 'updated';
   }
 
-  // Append new section
-  const newContent = existingContent.trim() + '\n\n' + content + '\n';
+  // Append new section, deciding its heading level from the trimmed text that
+  // is written rather than the text that was read.
+  const kept = existingContent.trim();
+  const newContent = kept + '\n\n' + nestUnderExistingTitle(content, kept) + '\n';
   await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
 }
@@ -842,6 +944,95 @@ export async function refreshBaseRefLine(
       );
     }
     if (newBlock === block) continue; // no base_ref line present, or already current
+    const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
+    try {
+      await fs.writeFile(filePath, newContent, 'utf-8');
+      updated.push(name);
+    } catch {
+      // best-effort — never fail analyze over a context refresh
+    }
+  }
+  return { files: updated };
+}
+
+/**
+ * Refresh the volatile counts inside an already-generated block, in place
+ * (#3618).
+ *
+ * The `alreadyUpToDate` analyze fast path returns before
+ * {@link generateAIContextFiles}, so `--no-stats` had no effect on any repo that
+ * was already indexed: the block kept its `(N symbols, N relationships, N
+ * execution flows)` parenthetical however often the flag was passed. Like
+ * {@link refreshBaseRefLine} this is a surgical edit, not a regeneration, so
+ * community-skill rows written by a prior `--skills` run survive.
+ *
+ * Only the PRESENCE of the parenthetical is decided here. A block that already
+ * carries counts keeps the numbers it has (even stale ones) so an up-to-date
+ * run never rewrites committed figures for no reader benefit (#2907); the
+ * missing ones are restored from `stats` when `--no-stats` is dropped (#1706).
+ * Best-effort: a missing file, missing/blank block or unmatched header line is
+ * silently skipped, and nothing is written unless the line actually changes.
+ *
+ * shortcut: per-skill counts in an existing skills table are only dropped under
+ * `--no-stats`, never restored — the fast path has no per-skill numbers, and
+ * the next re-index regenerates them.
+ */
+export async function refreshStatsLine(
+  repoPath: string,
+  stats: RepoStats,
+  options?: { noStats?: boolean; skipAgentsMd?: boolean },
+): Promise<{ files: string[] }> {
+  if (options?.skipAgentsMd) return { files: [] };
+  const noStats = options?.noStats === true;
+  // `alreadyUpToDate` hands us `meta.stats ?? {}`; restoring from that would
+  // print zeros, so a repo whose index predates `stats` keeps its count-free
+  // block until a real re-index.
+  const counts =
+    typeof stats.nodes === 'number'
+      ? `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`
+      : undefined;
+  if (!noStats && counts === undefined) return { files: [] };
+  // Accept the verbose template and compact `Indexed as **name**` line,
+  // including counts wrapped by Markdown formatters. Leave trailing text alone.
+  const statsPattern =
+    /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)(\s+\(\d+\s+symbols,\s+\d+\s+relationships,\s+\d+\s+execution\s+flows\))?/m;
+  const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?=[ \t]*\|)/gm;
+  const updated: string[] = [];
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const filePath = path.join(repoPath, name);
+    if (!(await fileExists(filePath))) continue;
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const startIdx = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+    if (startIdx === -1) continue;
+    const endIdx = findSectionMarkerIndex(content, GITNEXUS_END_MARKER, startIdx);
+    if (endIdx === -1 || endIdx <= startIdx) continue;
+    const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
+    const block = content.substring(startIdx, blockEnd);
+    let newBlock = block.replace(
+      statsPattern,
+      (
+        match,
+        prefix: string,
+        project: string,
+        existingCounts: string | undefined,
+        offset: number,
+      ) => {
+        // An unrecognized parenthetical may already contain counts. Do not
+        // prepend a second tuple just because the optional capture missed it.
+        if (existingCounts === undefined && /^\s*\(/.test(block.slice(offset + match.length))) {
+          return match;
+        }
+        if (noStats) return `${prefix} ${project}`;
+        return existingCounts === undefined ? `${prefix} ${project} (${counts})` : match;
+      },
+    );
+    if (noStats) newBlock = newBlock.replace(skillCountPattern, '$1');
+    if (newBlock === block) continue;
     const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
     try {
       await fs.writeFile(filePath, newContent, 'utf-8');
