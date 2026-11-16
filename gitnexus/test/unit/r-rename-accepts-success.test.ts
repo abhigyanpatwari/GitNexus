@@ -90,7 +90,8 @@ describe('T9: several directories declare the same Package: name', () => {
   it('does not refuse a package whose name is declared once', async () => {
     const config = await loadRPackageConfig(root);
     const verdict = check({ 'solo/R/a.R': body }, 'solo/R/a.R', 'helper', 'assist', config);
-    expect(verdict?.message ?? '').not.toMatch(/Package: name/);
+    // The rename is accepted: no verdict at all, not merely one that avoids the Package: wording.
+    expect(verdict).toBeUndefined();
   });
 });
 
@@ -108,7 +109,9 @@ describe('T10: a call in a parameter default beside a local definition of the na
     });
   });
 
-  it('refuses a default that calls the name when the local definition follows a body call', () => {
+  // Characterisation, not a regression test of the T10 fix: this refusal held before it (the
+  // earlier body call already made the name ambiguous). It pins that the fix did not loosen it.
+  it('still refuses when the local definition follows a body call', () => {
     expect(
       check(
         { [file]: withDefault('  helper(a)\n  helper <- function(y) y\n  b\n') },
