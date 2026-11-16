@@ -16,9 +16,9 @@ import java.lang.annotation.ElementType;
 @Target(ElementType.TYPE_USE) public @interface Marker {}`,
 });
 
-it('never turns an array type-use annotation into the lambda element owner', () => {
+it('resolves the lambda array element owner, never the type-use annotation', () => {
   const targets = getRelationships(result(), 'CALLS')
     .filter((edge) => edge.target === 'save')
     .map((edge) => edge.rel.targetId);
-  expect(targets).not.toContain('Method:Main.java:Marker.save#0');
+  expect(targets).toEqual(['Method:Main.java:Element.save#0']);
 });

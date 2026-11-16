@@ -43,7 +43,9 @@ export function applyJavaLocalNameClaims(
     scopes.push({ index, anchor, kind: tag });
   };
   for (let i = 0; i < out.length; i++) addScope(out[i]!, i);
-  for (const node of root.descendantsOfType(['block', 'for_statement'])) {
+  // A switch block is one lexical block for every statement group in it
+  // (JLS 6.3): a group's local ends with the switch, not the method.
+  for (const node of root.descendantsOfType(['block', 'for_statement', 'switch_block'])) {
     const anchor = nodeToCapture('@scope.block', node);
     if (seen.has(key('@scope.block', anchor.range))) continue;
     const match: CaptureMatch = { '@scope.block': anchor };
@@ -102,12 +104,16 @@ export function applyJavaLocalNameClaims(
   for (const [index, owned] of claims) {
     const match = out[index]!;
     const scope = SCOPE_TAGS.map((tag) => match[tag]).find((anchor) => anchor !== undefined)!;
-    let existing: NameClaim[] = [];
+    let existing: readonly NameClaim[] | undefined;
     try {
-      existing = JSON.parse(match['@scope.name-claims']?.text ?? '[]') as NameClaim[];
+      const parsed: unknown = JSON.parse(match['@scope.name-claims']?.text ?? '[]');
+      existing = Array.isArray(parsed) ? (parsed as NameClaim[]) : undefined;
     } catch {
-      /* retain conservative new claims */
+      existing = undefined;
     }
+    // Claims that cannot be read cannot be merged either. Keep the scope's
+    // own claims exactly as written rather than replacing them with ours.
+    if (existing === undefined) continue;
     out[index] = {
       ...match,
       '@scope.name-claims': {

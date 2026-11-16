@@ -1,22 +1,23 @@
 import type Parser from 'tree-sitter';
 import type { ElementAccessRoute } from '../../scope-resolution/contract/scope-resolver.js';
 
-/** Remove type-use annotations structurally, including their argument values. */
+/** Remove type-use annotations and comments structurally, including
+ * annotation argument values and `//` comments that run to the line end. */
 export function javaTypeText(node: Parser.SyntaxNode): string {
-  const annotations = node
-    .descendantsOfType(['annotation', 'marker_annotation'])
+  const omitted = node
+    .descendantsOfType(['annotation', 'marker_annotation', 'block_comment', 'line_comment'])
     .sort((a, b) => a.startIndex - b.startIndex || b.endIndex - a.endIndex);
   const written = node.text;
   let cursor = 0;
   let text = '';
-  for (const annotation of annotations) {
-    const start = annotation.startIndex - node.startIndex;
+  for (const part of omitted) {
+    const start = part.startIndex - node.startIndex;
     if (start < cursor) continue; // An outer annotation already consumed it.
     text += written.slice(cursor, start);
-    cursor = annotation.endIndex - node.startIndex;
+    cursor = part.endIndex - node.startIndex;
   }
   text += written.slice(cursor);
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, '');
+  return text.replace(/\s+/g, '');
 }
 
 /** Declarator dimensions belong only to that declarator (JLS 10.2). */

@@ -73,7 +73,12 @@ export function createJavaImplicitArrayReceiverChainSynthesizer(root: SyntaxNode
     ) {
       namedType = false;
       instance = false;
-    } else if (node.type === 'method_declaration' || node.type === 'constructor_declaration') {
+    } else if (
+      node.type === 'method_declaration' ||
+      node.type === 'constructor_declaration' ||
+      // A record's compact canonical constructor is an instance context.
+      node.type === 'compact_constructor_declaration'
+    ) {
       const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
       instance = namedType && !modifiers?.children.some((child) => child.type === 'static');
     }

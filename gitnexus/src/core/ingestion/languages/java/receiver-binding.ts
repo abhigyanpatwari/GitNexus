@@ -17,7 +17,12 @@ const TYPE_DECL_NODE_TYPES = new Set([
   'record_declaration',
 ]);
 
-const FUNCTION_NODE_TYPES = new Set(['method_declaration', 'constructor_declaration']);
+// A record's compact canonical constructor is an instance context too.
+const FUNCTION_NODE_TYPES = new Set([
+  'method_declaration',
+  'constructor_declaration',
+  'compact_constructor_declaration',
+]);
 
 /** Walk up to the enclosing type declaration. */
 function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {

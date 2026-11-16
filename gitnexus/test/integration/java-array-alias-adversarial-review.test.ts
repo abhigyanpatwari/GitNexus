@@ -77,13 +77,17 @@ class Qualified {
     expect(targets('Main.java:App', caller)).toEqual(['Method:Main.java:Element.save#0']);
   });
   it('never redirects a written qualified array element to an imported same-name owner', () => {
-    for (const target of targets('Qualified.java:Qualified', 'positive')) {
-      expect(target).toBe('Method:a/Element.java:Element.save#0');
-    }
+    expect(targets('Qualified.java:Qualified', 'positive')).not.toContain(
+      'Method:b/Element.java:Element.save#0',
+    );
+    expect(targets('Qualified.java:Qualified', 'positive')).toEqual([
+      'Method:a/Element.java:Element.save#0',
+    ]);
     expect(targets('Qualified.java:Qualified', 'negative')).toEqual([]);
   });
   it('does not interpret an array element type parameter as an unrelated same-named class', () => {
     expect(targets('Main.java:Generic', 'bounded')).not.toContain('Method:Main.java:T.save#0');
+    expect(targets('Main.java:Generic', 'bounded')).toEqual(['Method:Main.java:Base.save#0']);
   });
   it('does not infer an array element from an inapplicable implicit producer call', () => {
     expect(targets('Main.java:App', 'inapplicableNoArg')).toEqual([]);

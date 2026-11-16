@@ -13,6 +13,33 @@ describe('Java written array types', () => {
     expect(javaTypeText(field.childForFieldName('type')!)).toBe('p.User[]');
   });
 
+  it.each([
+    {
+      name: 'a line comment before the dimensions',
+      source: 'User // element type continues\n [] values',
+      expected: 'User[]',
+    },
+    {
+      name: 'a line comment inside type arguments',
+      source: 'java.util.List<User // element\n> values',
+      expected: 'java.util.List<User>',
+    },
+    {
+      name: 'a line comment holding a block comment opener',
+      source: 'User // see /* below\n [] /* trailing */ values',
+      expected: 'User[]',
+    },
+    {
+      name: 'a block comment holding a line comment marker',
+      source: 'User /* a // b */ [] values',
+      expected: 'User[]',
+    },
+  ])('removes $name from a written type', ({ source, expected }) => {
+    const tree = getJavaParser().parse(`class C { void m(${source}) {} }`);
+    const parameter = tree.rootNode.descendantsOfType('formal_parameter')[0]!;
+    expect(javaTypeText(parameter.childForFieldName('type')!)).toBe(expected);
+  });
+
   it('counts only declarator brackets, independently of annotation argument strings', () => {
     const tree = getJavaParser().parse('class C { User first, second @A("[]") []; }');
     const [first, second] = tree.rootNode.descendantsOfType('variable_declarator');
