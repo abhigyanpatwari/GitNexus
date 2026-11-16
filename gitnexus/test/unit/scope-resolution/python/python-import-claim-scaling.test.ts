@@ -47,16 +47,20 @@ describe('Python import-claim reconciliation', () => {
     expect(importClaimReads).toBe(count);
   });
 
-  it.each([32, 128, 512, 2048])('does linear identity work for %i repeated imports', (count) => {
+  it.each([32, 128, 512, 2048])('does linear import work for %i repeated imports', (count) => {
     let identityReads = 0;
+    let importClaimReads = 0;
     const claims = Array.from({ length: count }, () => claim('shared'));
     const imports = new Map([
       [
         'shared',
         claims.map((item) => ({
-          identity: 'pkg.shared',
-          get claim() {
+          get identity() {
             identityReads++;
+            return 'pkg.shared';
+          },
+          get claim() {
+            importClaimReads++;
             return item;
           },
         })),
@@ -65,7 +69,10 @@ describe('Python import-claim reconciliation', () => {
     const result = reconcilePythonImportClaims(claims, imports, new Set());
     expect(result).toHaveLength(count);
     expect(result.every((item) => item.kind === 'binding' && item.merge === true)).toBe(true);
-    expect(identityReads).toBe(count);
+    // The previous nested membership scan read import claims count * (count + 1) / 2 times.
+    expect(importClaimReads).toBe(count);
+    // The compatibility check compares each import's identity with the first one.
+    expect(identityReads).toBeLessThanOrEqual(2 * count);
   });
 
   it('blocks conflicting imports but keeps a definite declaration and ordering', () => {
