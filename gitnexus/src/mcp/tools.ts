@@ -315,7 +315,7 @@ EXAMPLES:
 • Detect diamond inheritance:
   MATCH (d:Class)-[:CodeRelation {type: 'EXTENDS'}]->(b1), (d)-[:CodeRelation {type: 'EXTENDS'}]->(b2), (b1)-[:CodeRelation {type: 'EXTENDS'}]->(a), (b2)-[:CodeRelation {type: 'EXTENDS'}]->(a) WHERE b1 <> b2 RETURN d.name, b1.name, b2.name, a.name
 
-OUTPUT: Returns { markdown, row_count } — results formatted as a Markdown table for easy reading.
+OUTPUT: { markdown, row_count } with a Markdown table. Empty: { markdown: "", row_count: 0 }.
 
 TIPS:
 - All relationships use single CodeRelation table — filter with {type: 'CALLS'} etc.

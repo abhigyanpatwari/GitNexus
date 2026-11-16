@@ -5366,12 +5366,12 @@ describe('cypher result formatting', () => {
     expect(result.markdown).not.toMatch(/\n[^|]/);
   });
 
-  it('returns empty array as-is', async () => {
+  it('formats empty results with the same object shape as populated results (#3952)', async () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 0',
     });
-    expect(result).toEqual([]);
+    expect(result).toMatchObject({ markdown: '', row_count: 0 });
   });
 
   it('returns error object when cypher fails', async () => {
@@ -5828,13 +5828,14 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     });
     expect(tabular).toMatchObject({ row_count: 1, staleness: { commitsBehind: 3 } });
 
-    // Empty result -> formatCypherAsMarkdown passes the raw array through unchanged.
+    // Empty results use the same envelope, including freshness, as populated tables.
     lbugMocks.executeParameterized.mockResolvedValueOnce([]);
-    const raw = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
-    expect(Array.isArray(raw)).toBe(true);
-    expect(raw).toHaveLength(0);
-    expect(raw).not.toHaveProperty('graph_integrity');
-    expect(JSON.stringify(raw)).toBe('[]');
+    const empty = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
+    expect(empty).toMatchObject({
+      markdown: '',
+      row_count: 0,
+      staleness: { commitsBehind: 3 },
+    });
     for (const rows of [[1, null, 'legacy'], [{}]]) {
       lbugMocks.executeParameterized.mockResolvedValueOnce(rows);
       const nonTabular = await backend.callTool('cypher', {

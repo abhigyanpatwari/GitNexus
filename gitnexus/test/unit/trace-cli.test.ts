@@ -19,7 +19,10 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
   VALID_NODE_LABELS: new Set(['Function', 'Class', 'Interface', 'Method', 'Constructor']),
 }));
 
-vi.mock('node:fs', () => ({ writeSync: vi.fn() }));
+// Report every byte written, as the real call does; output() loops until all land.
+vi.mock('node:fs', () => ({
+  writeSync: vi.fn((_fd: number, bytes: Buffer, offset = 0) => bytes.length - offset),
+}));
 
 vi.mock('../../src/core/lbug/native-check.js', () => ({
   checkLbugNative: () => ({ ok: true }),
