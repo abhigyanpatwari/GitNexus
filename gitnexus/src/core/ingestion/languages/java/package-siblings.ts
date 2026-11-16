@@ -11,5 +11,7 @@ export const populateJavaPackageSiblings = javaPackageSiblingVisibility.populate
 export const isJavaPackageSiblingVisibilityIncomplete =
   javaPackageSiblingVisibility.isVisibilityIncomplete;
 
+export const hasJavaSamePackageType = javaPackageSiblingVisibility.hasSamePackageType;
+
 export const resolveJavaSamePackageBase =
   javaPackageSiblingVisibility.resolveImplicitInheritanceBase;

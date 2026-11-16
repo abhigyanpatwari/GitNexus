@@ -16,6 +16,10 @@ class Generic<T extends Base> {
   void bounded(T[] values) { values[0].save(); }
 }
 class Source { Element make() { return new Element(); } }
+class User { void save() {} }
+class Decoy { void save() {} }
+class Service { User[] getUsers() { return null; } }
+class DecoyService { Decoy[] getUsers() { return null; } }
 class ArraySource {
   Element[] onlyArgument(int selector) { return null; }
   private Element[] hidden() { return null; }
@@ -30,6 +34,10 @@ class App {
   void varargsExplicit(ArraySource source) { source.varargs()[0].save(); }
   void cloneChain(Element[] values) { values.clone().save(); }
   void partialCloneChain(Element[][] values) { values[0].clone().save(); }
+  void elementCloneChain(Element[] values) { values[0].clone().save(); }
+  void elementProducer(Service[] services) { services[0].getUsers()[0].save(); }
+  void decoyElementProducer(DecoyService[] services) { services[0].getUsers()[0].save(); }
+  void arrayProducerReceiver(Service[][] services) { services[0].getUsers()[0].save(); }
   void parenthesizedArray(Element[] values) { ((values))[0].save(); }
   void copyArray(Element[] values) { var copy = values; copy[0].save(); }
   void copyArrayNegative(Element[] values) { var copy = values; copy.save(); }
@@ -58,9 +66,12 @@ class Qualified {
       .map((edge) => edge.rel.targetId)
       .sort();
 
+  // `values[0]` of an `Element[][]` is an `Element[]`, whose clone() is an
+  // array again; `services[0]` of a `Service[][]` is an array with no members.
   it.each([
     'cloneChain',
     'partialCloneChain',
+    'arrayProducerReceiver',
     'copyArrayNegative',
     'inapplicableExplicit',
     'inaccessibleExplicit',
@@ -75,6 +86,23 @@ class Qualified {
     'varargsExplicit',
   ])('%s preserves the exact selected owner', (caller) => {
     expect(targets('Main.java:App', caller)).toEqual(['Method:Main.java:Element.save#0']);
+  });
+  // An array element is typed as the operand's component type, one dimension
+  // per index, so a producer invoked on it is selected on its real owner.
+  it.each([
+    ['elementCloneChain', 'Method:Main.java:Element.save#0'],
+    ['elementProducer', 'Method:Main.java:User.save#0'],
+    ['decoyElementProducer', 'Method:Main.java:Decoy.save#0'],
+  ])('%s calls exactly %s through an array-element producer receiver', (caller, target) => {
+    expect(targets('Main.java:App', caller)).toEqual([target]);
+  });
+  it('never routes an array-element producer to a same-named producer on another owner', () => {
+    expect(targets('Main.java:App', 'elementProducer')).not.toContain(
+      'Method:Main.java:Decoy.save#0',
+    );
+    expect(targets('Main.java:App', 'decoyElementProducer')).not.toContain(
+      'Method:Main.java:User.save#0',
+    );
   });
   it('never redirects a written qualified array element to an imported same-name owner', () => {
     expect(targets('Qualified.java:Qualified', 'positive')).not.toContain(

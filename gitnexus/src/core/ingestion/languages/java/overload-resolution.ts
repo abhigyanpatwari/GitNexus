@@ -42,10 +42,14 @@ interface TypeContext {
   readonly filePath: string;
   readonly at: Range;
 }
+type JavaImportFact = JavaOverloadFileFacts['imports'][number];
 interface FileFactIndex {
   readonly methods: Map<string, JavaOverloadMethodFact[]>;
   readonly ownedMethods: Map<string, Map<string, JavaOverloadMethodFact[]>>;
   readonly typeParameters: Map<string, { starts: Range[]; widest: Range[] }>;
+  /** Single-type and single-static imports, by the simple name they import. */
+  readonly singleImports: Map<string, JavaImportFact[]>;
+  readonly onDemandImports: JavaImportFact[];
 }
 interface State {
   readonly model: SemanticModel;
@@ -141,7 +145,19 @@ function fileFactIndex(facts: JavaOverloadFileFacts, state: State): FileFactInde
     methods: new Map(),
     ownedMethods: new Map(),
     typeParameters: new Map(),
+    singleImports: new Map(),
+    onDemandImports: [],
   };
+  for (const item of facts.imports) {
+    if (item.wildcard) {
+      index.onDemandImports.push(item);
+      continue;
+    }
+    const name = item.name.slice(item.name.lastIndexOf('.') + 1);
+    const named = index.singleImports.get(name) ?? [];
+    named.push(item);
+    index.singleImports.set(name, named);
+  }
   for (const method of facts.methods) {
     const named = index.methods.get(method.name) ?? [];
     named.push(method);
@@ -275,6 +291,108 @@ function qualifiedReference(name: string, state: State): JavaType {
   return { kind: 'reference', name, arguments: [] };
 }
 
+/** Simple names of the member types workspace classes declare, so a
+ * qualifier root skips the inheritance walk when no class declares one. */
+const memberTypeNamesByState = new WeakMap<State, ReadonlySet<string>>();
+function memberTypeNames(state: State): ReadonlySet<string> {
+  const cached = memberTypeNamesByState.get(state);
+  if (cached !== undefined) return cached;
+  const names = new Set<string>();
+  for (const definition of state.scopes.defs.byId.values()) {
+    if (
+      definition.ownerId === undefined ||
+      !(isClassLike(definition.type) || definition.type === 'Annotation')
+    )
+      continue;
+    const spelling = definition.qualifiedName ?? definition.nodeId;
+    names.add(spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1));
+  }
+  memberTypeNamesByState.set(state, names);
+  return names;
+}
+
+/** Whether a class enclosing `context` inherits a member type named `name`,
+ * which shadows every file- and package-level type of that name (JLS 6.4.1). */
+function inheritsMemberTypeNamed(
+  name: string,
+  context: TypeContext,
+  facts: JavaOverloadFileFacts,
+  state: State,
+): boolean {
+  for (const enclosing of facts.types.filter((type) => javaRangeContains(type.range, context.at))) {
+    for (const owner of sourceDefinitions(enclosing.name, state).filter(
+      (definition) => definition.filePath === context.filePath,
+    )) {
+      for (const ancestorId of state.scopes.methodDispatch.mroFor(owner.nodeId)) {
+        const ancestor = state.scopes.defs.get(ancestorId);
+        const ancestorFact = ancestor === undefined ? undefined : typeFact(ancestor, state);
+        if (
+          ancestor !== undefined &&
+          ancestorFact !== undefined &&
+          getJavaOverloadFacts(ancestor.filePath)?.types.some(
+            (type) =>
+              type.simpleName === name &&
+              type.name !== ancestorFact.name &&
+              javaRangeContains(ancestorFact.range, type.range),
+          )
+        )
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * What the first identifier of a dotted type spelling names when no type
+ * declared in this file claims it. A type in scope there makes the spelling a
+ * member path, and a package of that name is then never read (JLS 6.5.4.1):
+ * a single-type import, then a same-package top-level type, then a type from
+ * an on-demand import of a workspace package. Returns `package` when no such
+ * type is in scope, and `unknown` when the root is ambiguous or may be a type
+ * this workspace cannot see (a static import or an inherited member type).
+ * Mirrors `qualifiedTypeKey` in qualified-type-bindings.ts.
+ */
+function qualifierRoot(
+  root: string,
+  context: TypeContext,
+  facts: JavaOverloadFileFacts,
+  state: State,
+): JavaReferenceType | 'package' | 'unknown' {
+  const index = fileFactIndex(facts, state);
+  if (hasTypeParameter(index, root, context.at)) return 'unknown';
+  if (memberTypeNames(state).has(root) && inheritsMemberTypeNamed(root, context, facts, state))
+    return 'unknown';
+  const single = index.singleImports.get(root) ?? [];
+  if (single.length > 0) {
+    if (single.length > 1 || single[0]!.static) return 'unknown';
+    const imported = qualifiedReference(single[0]!.name, state);
+    return imported.kind === 'reference' ? imported : 'unknown';
+  }
+  const unique = (definitions: readonly SymbolDefinition[]): SymbolDefinition[] => [
+    ...new Map(definitions.map((definition) => [definition.nodeId, definition])).values(),
+  ];
+  const named = sourceDefinitions(root, state);
+  const inPackage = facts.packageName === '' ? root : `${facts.packageName}.${root}`;
+  const local = unique(named.filter((definition) => sourceQualifiedName(definition) === inPackage));
+  if (local.length > 0) return local.length === 1 ? sourceReference(local[0]!) : 'unknown';
+  const onDemand: SymbolDefinition[] = [];
+  for (const item of index.onDemandImports) {
+    const matches = named.filter(
+      (definition) => sourceQualifiedName(definition) === `${item.name}.${root}`,
+    );
+    // A static on-demand import also imports its owner's member types.
+    if (item.static && matches.length > 0) return 'unknown';
+    if (!item.static) onDemand.push(...matches);
+  }
+  const imported = unique(onDemand);
+  if (imported.length === 0) return 'package';
+  // On-demand imports bring in accessible types only (JLS 7.5.2).
+  return imported.length === 1 && typeFact(imported[0]!, state)?.modifiers?.includes('public')
+    ? sourceReference(imported[0]!)
+    : 'unknown';
+}
+
 function resolveTypeName(name: string, context: TypeContext, state: State): JavaType {
   const facts = getJavaOverloadFacts(context.filePath);
   if (facts === undefined)
@@ -303,7 +421,23 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     ];
     return unique.length === 1 ? sourceReference(unique[0]!) : UNKNOWN_JAVA_TYPE;
   }
-  if (name.includes('.')) return qualifiedReference(name, state);
+  if (name.includes('.')) {
+    const root = qualifierRoot(first, context, facts, state);
+    if (root === 'unknown') return UNKNOWN_JAVA_TYPE;
+    if (root === 'package') return qualifiedReference(name, state);
+    const rest = name.slice(first.length);
+    if (root.sourceId === undefined)
+      return { kind: 'reference', name: `${root.name}${rest}`, arguments: [] };
+    const owner = state.scopes.defs.get(root.sourceId);
+    const ownerName = owner === undefined ? undefined : sourceQualifiedName(owner);
+    const member =
+      ownerName === undefined
+        ? UNKNOWN_JAVA_TYPE
+        : qualifiedReference(`${ownerName}${rest}`, state);
+    return member.kind === 'reference' && member.sourceId !== undefined
+      ? member
+      : UNKNOWN_JAVA_TYPE;
+  }
   // Static imports can name types, values or methods. Require a source type
   // identity before resolving one; an unproven import must not become a JDK type.
   if (
@@ -320,27 +454,7 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     }
     return UNKNOWN_JAVA_TYPE;
   }
-  for (const enclosing of facts.types.filter((type) => javaRangeContains(type.range, context.at))) {
-    for (const owner of sourceDefinitions(enclosing.name, state).filter(
-      (definition) => definition.filePath === context.filePath,
-    )) {
-      for (const ancestorId of state.scopes.methodDispatch.mroFor(owner.nodeId)) {
-        const ancestor = state.scopes.defs.get(ancestorId);
-        const ancestorFact = ancestor === undefined ? undefined : typeFact(ancestor, state);
-        if (
-          ancestor !== undefined &&
-          ancestorFact !== undefined &&
-          getJavaOverloadFacts(ancestor.filePath)?.types.some(
-            (type) =>
-              type.simpleName === name &&
-              type.name !== ancestorFact.name &&
-              javaRangeContains(ancestorFact.range, type.range),
-          )
-        )
-          return UNKNOWN_JAVA_TYPE;
-      }
-    }
-  }
+  if (inheritsMemberTypeNamed(name, context, facts, state)) return UNKNOWN_JAVA_TYPE;
   const explicit = facts.imports.filter(
     (item) => !item.static && !item.wildcard && item.name.split('.').at(-1) === name,
   );

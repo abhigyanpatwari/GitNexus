@@ -1,17 +1,17 @@
-import type { ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import type { ParsedFile, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import {
-  bindsTypeParameter,
-  isClassLike,
-  lookupNameClaim,
-} from '../../scope-resolution/scope/walkers.js';
+import { bindsTypeParameter, lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import { javaReturnElementFacts, type JavaCaptureSideChannel } from './capture-side-channel.js';
 import {
   javaReturnElementRef,
   type ContainerProof,
   type JavaContainerProofFact,
 } from './declared-type-captures.js';
-import { isJavaPackageSiblingVisibilityIncomplete } from './package-siblings.js';
+import {
+  hasJavaSamePackageType,
+  isJavaPackageSiblingVisibilityIncomplete,
+} from './package-siblings.js';
+import { inheritsJavaMemberTypeNamed } from './qualified-type-bindings.js';
 
 type Position = TypeRef['lookupPosition'];
 
@@ -38,8 +38,9 @@ const returnElementKey = (filePath: string, line: number, col: number): string =
  *   - every proof: no enclosing class inherits a member type of that name;
  *   - a raw `java.*` spelling (`root`) or an on-demand import: no visible type
  *     of that name, including a same-package sibling or a type parameter.
- * Run after package sibling injection. A base outside the workspace has no
- * inventory, so it is treated as contributing no member types.
+ * Run after package sibling injection. Where that injection was capped, the
+ * uncapped same-package name index answers instead. A base outside the
+ * workspace has no inventory, so it is treated as contributing no member types.
  *
  * Each proof is keyed by its binding's lookup anchor. Aliases retain the
  * anchor (and TypeRef) of the inferred binding they followed, so removing a
@@ -56,35 +57,23 @@ export function validateJavaQualifiedContextualBindings(
 ): void {
   const validity = new Map<TypeRef, boolean>();
   const returns = new Map<string, ProvenReturnElements>();
-  let memberTypes: ReadonlyMap<string, ReadonlySet<string>> | undefined;
-  const inheritsMemberType = (scopeId: ScopeId, name: string): boolean => {
-    memberTypes ??= memberTypeNamesByOwner(indexes);
-    const seen = new Set<ScopeId>();
-    for (
-      let scope = indexes.scopeTree.getScope(scopeId);
-      scope !== undefined && !seen.has(scope.id);
-      scope = scope.parent === null ? undefined : indexes.scopeTree.getScope(scope.parent)
-    ) {
-      seen.add(scope.id);
-      if (scope.kind !== 'Class') continue;
-      const owner = scope.ownedDefs.find((def) => isClassLike(def.type));
-      if (owner === undefined) continue;
-      for (const ancestor of indexes.methodDispatch.mroFor(owner.nodeId))
-        if (memberTypes.get(ancestor)?.has(name) === true) return true;
-    }
-    return false;
-  };
   const holds = (proof: ContainerProof, file: string, position: Position): boolean => {
     if (indexes.scopeTree.getScope(proof.scope) === undefined) return false;
-    if (inheritsMemberType(proof.scope, proof.name)) return false;
+    if (inheritsJavaMemberTypeNamed(proof.scope, proof.name, indexes)) return false;
     if (proof.kind === 'single') return true;
-    return (
-      !isJavaPackageSiblingVisibilityIncomplete(file) &&
-      !bindsTypeParameter(proof.scope, proof.name, indexes) &&
+    if (
+      bindsTypeParameter(proof.scope, proof.name, indexes) ||
       lookupNameClaim(proof.scope, proof.name, indexes, {
         purpose: 'type',
         ...(proof.kind === 'root' ? { position } : {}),
-      }).status === 'absent'
+      }).status !== 'absent'
+    )
+      return false;
+    // Sibling injection is capped for cost, so a large package may leave a
+    // same-package type out of the lookup above. Its name is still known.
+    return (
+      !isJavaPackageSiblingVisibilityIncomplete(file) ||
+      hasJavaSamePackageType(file, proof.name) === false
     );
   };
   for (const parsed of parsedFiles) {
@@ -150,20 +139,4 @@ export function javaCallResultElementType(
   return proven !== undefined && proven.written === callee.returnType
     ? proven.routes.get(route)
     : undefined;
-}
-
-/** Simple names of the member types each workspace class declares. */
-function memberTypeNamesByOwner(
-  indexes: ScopeResolutionIndexes,
-): ReadonlyMap<string, ReadonlySet<string>> {
-  const names = new Map<string, Set<string>>();
-  for (const def of indexes.defs.byId.values()) {
-    if (def.ownerId === undefined || !(isClassLike(def.type) || def.type === 'Annotation'))
-      continue;
-    const spelling = def.qualifiedName ?? def.nodeId;
-    const owned = names.get(def.ownerId) ?? new Set<string>();
-    owned.add(spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1));
-    names.set(def.ownerId, owned);
-  }
-  return names;
 }

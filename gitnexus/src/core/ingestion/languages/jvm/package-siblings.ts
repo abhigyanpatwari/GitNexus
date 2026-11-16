@@ -43,6 +43,14 @@ export interface JvmPackageSiblingVisibility {
     },
   ) => void;
   readonly isVisibilityIncomplete: (filePath: string) => boolean;
+  /**
+   * Whether a top-level type named `simpleName` is declared anywhere in this
+   * file's package, this file included. Built from every package member, so
+   * the injection cap and the large-package skip above do not hide a name.
+   * `undefined` when a workspace file has no reliable package, because such a
+   * file may declare that name in any package.
+   */
+  readonly hasSamePackageType: (filePath: string, simpleName: string) => boolean | undefined;
   /** `ScopeResolver.resolveImplicitInheritanceBase`: an unqualified base bound
    *  by the same-package rule, which the sibling bindings above only provide
    *  after the inheritance pre-pass has run. */
@@ -63,6 +71,9 @@ export function createJvmPackageSiblingVisibility(
   options: JvmPackageSiblingOptions,
 ): JvmPackageSiblingVisibility {
   const incompleteFiles = new Set<string>();
+  const packageOfFile = new Map<string, string>();
+  const typeNamesByPackage = new Map<string, Set<string>>();
+  let packageFactsUnknown = false;
 
   function populateNamespaceSiblings(
     parsedFiles: readonly ParsedFile[],
@@ -72,6 +83,8 @@ export function createJvmPackageSiblingVisibility(
     },
   ): void {
     incompleteFiles.clear();
+    packageOfFile.clear();
+    typeNamesByPackage.clear();
     const buckets = new Map<string, PackageBucket>();
     const unknownPackageFiles = new Set<string>();
     const parsedPaths = new Set(parsedFiles.map((parsed) => parsed.filePath));
@@ -98,7 +111,22 @@ export function createJvmPackageSiblingVisibility(
       if (moduleScope !== undefined) {
         bucket.moduleScopes.push({ filePath: parsed.filePath, scope: moduleScope });
       }
+      packageOfFile.set(parsed.filePath, packageName);
+      let names = typeNamesByPackage.get(packageName);
+      if (names === undefined) typeNamesByPackage.set(packageName, (names = new Set()));
+      for (const scope of parsed.scopes) {
+        if (scope.kind !== 'Class' || scope.parent !== moduleScope?.id) continue;
+        const def = scope.ownedDefs.find(
+          (candidate) => isClassLike(candidate.type) || candidate.type === 'Annotation',
+        );
+        const spelling = def === undefined ? undefined : (def.qualifiedName ?? def.nodeId);
+        if (spelling !== undefined)
+          names.add(
+            spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1),
+          );
+      }
     }
+    packageFactsUnknown = unknownPackageFiles.size > 0;
 
     // A file whose package cannot be proven may shadow a wildcard-imported
     // type in any package. Conservatively disable wildcard attribution for the
@@ -302,6 +330,11 @@ export function createJvmPackageSiblingVisibility(
   return {
     populateNamespaceSiblings,
     isVisibilityIncomplete: (filePath) => incompleteFiles.has(filePath),
+    hasSamePackageType: (filePath, simpleName) => {
+      const packageName = packageOfFile.get(filePath);
+      if (packageFactsUnknown || packageName === undefined) return undefined;
+      return typeNamesByPackage.get(packageName)?.has(simpleName) === true;
+    },
     resolveImplicitInheritanceBase: (baseName, derivingClass, scopes, site) => {
       // An explicit typealias/non-class import can resolve without producing a
       // class binding. Its claim still takes precedence over package siblings.

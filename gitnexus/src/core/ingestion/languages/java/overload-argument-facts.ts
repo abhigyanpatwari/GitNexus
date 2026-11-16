@@ -641,6 +641,16 @@ export function captureJavaOverloadFacts(
         return node.namedChildren[0] === undefined
           ? UNKNOWN
           : expression(node.namedChildren[0], depth + 1);
+      case 'array_access': {
+        // JLS 15.10.3: the element type is the operand's component type. Peel
+        // exactly one written dimension per index, read in the declaration's
+        // own type context; anything else (a call, a `var`) stays unknown.
+        const array = node.childForFieldName('array');
+        const value = array === null ? UNKNOWN : expression(array, depth + 1);
+        if (value.kind !== 'typed') return UNKNOWN;
+        const component = /^(.*\S)\s*\[\s*\]\s*$/s.exec(value.spelling)?.[1];
+        return component === undefined ? UNKNOWN : typed(component, value.at);
+      }
       case 'cast_expression':
       case 'object_creation_expression': {
         const type = node.childForFieldName('type');
