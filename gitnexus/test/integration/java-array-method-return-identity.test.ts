@@ -36,6 +36,10 @@ class Service { Other[] getUsers() { return null; } }
     expect(targets).toEqual([`Method:Main.java:${owner}.save#0`]);
   });
 
+  // javac selects the zero-argument `getUsers()` (User[]), but the receiver is
+  // typed before overload selection, by member name, and the two `getUsers`
+  // declarations disagree on the return type. The receiver therefore stays
+  // unresolved (receiver-unresolved, chain-unwrap) rather than guessing.
   it('does not select a competing return from an intermediate overload set', () => {
     const targets = getRelationships(result(), 'CALLS')
       .filter(
@@ -43,6 +47,6 @@ class Service { Other[] getUsers() { return null; } }
           edge.rel.sourceId === 'Method:Main.java:Ambiguous.overloaded#0' && edge.target === 'save',
       )
       .map((edge) => edge.rel.targetId);
-    expect(targets).not.toContain('Method:Main.java:Other.save#0');
+    expect(targets).toEqual([]);
   });
 });

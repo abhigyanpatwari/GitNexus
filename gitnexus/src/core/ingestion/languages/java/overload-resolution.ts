@@ -861,6 +861,68 @@ function selectCallOverload(
   );
 }
 
+/** The class a `this` (JLS 15.8.3) or `super` (JLS 15.11.2) receiver names at
+ * a site. Only the innermost class body counts, anonymous bodies included; a
+ * body without an indexed class definition stops the lookup instead of
+ * escaping to an outer class. `super` is the direct superclass, which a class
+ * declaration spells before its interfaces; an implicit `Object`, an
+ * interface-only base list, an anonymous body or an unresolved first base
+ * leaves it unknown. */
+function lexicalReceiverOwner(
+  spelling: 'this' | 'super',
+  scopeId: ReferenceSite['inScope'],
+  state: State,
+): SymbolDefinition | undefined {
+  let current: ReferenceSite['inScope'] | null = scopeId;
+  const visited = new Set<ReferenceSite['inScope']>();
+  let enclosing: SymbolDefinition | undefined;
+  while (current !== null && !visited.has(current)) {
+    visited.add(current);
+    const scope = state.scopes.scopeTree.getScope(current);
+    if (scope === undefined) return undefined;
+    if (scope.kind === 'Class') {
+      enclosing = scope.ownedDefs.find((definition) => isClassLike(definition.type));
+      break;
+    }
+    current = scope.parent;
+  }
+  if (enclosing === undefined || spelling === 'this') return enclosing;
+  const fact = typeFact(enclosing, state);
+  const first = fact?.kind === 'class_declaration' ? fact.bases[0] : undefined;
+  if (fact === undefined || first === undefined) return undefined;
+  const base = parseType(first, { filePath: enclosing.filePath, at: fact.range }, state);
+  const superclass =
+    base.kind === 'reference' && base.sourceId !== undefined
+      ? state.scopes.defs.get(base.sourceId)
+      : undefined;
+  return superclass !== undefined && typeFact(superclass, state)?.kind === 'class_declaration'
+    ? superclass
+    : undefined;
+}
+
+/** The source class named by a method's declared return type after `dimensions`
+ * array accesses, read in the declaring method's own type context. */
+function producedElementId(
+  definition: SymbolDefinition,
+  dimensions: number,
+  state: State,
+): string | undefined {
+  if (definition.returnType === undefined) return undefined;
+  let type = parseType(
+    definition.returnType,
+    {
+      filePath: definition.filePath,
+      at: methodFact(definition, state)?.range ?? definition.declarationRange ?? UNKNOWN_RANGE,
+    },
+    state,
+  );
+  for (let remaining = dimensions; remaining > 0; remaining--) {
+    if (type.kind !== 'array') return undefined;
+    type = type.component;
+  }
+  return type.kind === 'reference' ? type.sourceId : undefined;
+}
+
 /** Java claims full overload families before shared owner/rank pruning. A
  * complete original singleton with opaque arguments may retain the historical
  * unique-member inference; no pruned singleton or incomplete inventory may. */
@@ -906,9 +968,11 @@ export function resolveJavaReceiverMember(
               ? parseType(producer.receiverSpelling, { filePath, at: producer.range }, state)
               : UNKNOWN_JAVA_TYPE;
         const producerOwner =
-          type.kind === 'reference' && type.sourceId !== undefined
-            ? scopes.defs.get(type.sourceId)
-            : undefined;
+          producer.receiverSpelling === 'this' || producer.receiverSpelling === 'super'
+            ? lexicalReceiverOwner(producer.receiverSpelling, site.inScope, state)
+            : type.kind === 'reference' && type.sourceId !== undefined
+              ? scopes.defs.get(type.sourceId)
+              : undefined;
         if (producerOwner !== undefined)
           decision = resolveJavaReceiverMember(
             producerOwner,
@@ -919,7 +983,17 @@ export function resolveJavaReceiverMember(
           );
       }
     }
-    if (decision?.kind !== 'resolved') {
+    // The shared fold types the producer by name. Bind the member only when
+    // the selected producer's own return type, indexed once per trailing
+    // index step, names the same owner (e.g. not an outer class's same-named
+    // method seen from an anonymous class body).
+    const steps = decodeReceiverChain(site.receiverChain)?.steps ?? [];
+    let indexSteps = 0;
+    while (steps[steps.length - 1 - indexSteps]?.kind === 'index') indexSteps++;
+    if (
+      decision?.kind !== 'resolved' ||
+      producedElementId(decision.definition, indexSteps, state) !== ownerDef.nodeId
+    ) {
       return {
         kind: 'unknown',
         candidateIds: model.methods

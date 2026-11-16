@@ -472,11 +472,9 @@
     "pipelineCache": "cold on every pass"
   },
   "recordedRuntime": {
-    "root": "/Users/abhinav/SWE/gnx/GitNexus/gitnexus",
     "runnerIdentity": {
       "schemaVersion": 4,
       "runtime": {
-        "executablePath": "/opt/homebrew/Cellar/node/26.9.0/bin/node",
         "version": "v26.9.0",
         "platform": "darwin",
         "architecture": "arm64",
@@ -485,18 +483,14 @@
       },
       "cliVersion": "1.6.12",
       "invokedArtifact": {
-        "path": "/Users/abhinav/SWE/gnx/GitNexus/gitnexus/dist/cli/index.js",
         "digest": "sha256:bbe15b031c0c4b7674ec89d9c2d6ecfafdb42a8bdb42c18567306856629efe38"
       },
       "build": {
         "kind": "distribution",
-        "rootPath": "/Users/abhinav/SWE/gnx/GitNexus/gitnexus/dist",
         "canonicalization": "gitnexus-analyzer-build-v2",
         "digest": "sha256:0b08b960803d53f378451f43454e67588cefbcdd31c6ca5ab0ae44a3b7c6d605"
       },
       "dependencyRuntime": {
-        "manifestPath": "/Users/abhinav/SWE/gnx/GitNexus/gitnexus/package.json",
-        "lockfilePath": "/Users/abhinav/SWE/gnx/GitNexus/gitnexus/package-lock.json",
         "canonicalization": "gitnexus-analyzer-dependency-runtime-v4",
         "packageCount": 238,
         "artifactCount": 10558,

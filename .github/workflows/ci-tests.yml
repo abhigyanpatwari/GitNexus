@@ -1801,6 +1801,11 @@ jobs:
       - name: Check Java overload and ingestion scaling
         run: node bench/java-overload-resolution/measure.js --check --output java-overload-resolution-benchmark.json
         working-directory: gitnexus
+      # Exact-target, capture and graph fingerprints plus normalized growth
+      # budgets (no absolute milliseconds); about one minute locally.
+      - name: Check Java ingestion correctness and scaling baseline
+        run: node bench/java-ingestion/measure.mjs --check --output java-ingestion-benchmark.json
+        working-directory: gitnexus
       - name: Upload scope-resolution measurements
         if: always()
         uses: ./.github/actions/upload-test-artifact
@@ -1814,6 +1819,7 @@ jobs:
             gitnexus/scope-resolution-wildcard-java.log
             gitnexus/scope-resolution-wildcard-java-closure.log
             gitnexus/java-overload-resolution-benchmark.json
+            gitnexus/java-ingestion-benchmark.json
           retention-days: 5
 
   # Locked eval suite. setup-uv and uv itself are immutable so CI exercises

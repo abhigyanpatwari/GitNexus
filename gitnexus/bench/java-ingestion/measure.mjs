@@ -2,7 +2,7 @@
 /** Java provider correctness and bounded scaling. Build the selected runtime first. */
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -272,6 +272,36 @@ function correctness(input, result) {
   };
 }
 
+/** Recording provenance for the committed baseline: digests, Node version/ABI,
+ * platform/arch and the git head. Machine-specific locations (checkout root,
+ * Node executable, dist, manifest and lockfile paths) are never persisted;
+ * `--check` reads only `shapes` and `budgets`. */
+function portableRuntime({ runnerIdentity, git }) {
+  const { runtime, invokedArtifact, build, dependencyRuntime } = runnerIdentity;
+  return {
+    runnerIdentity: {
+      schemaVersion: runnerIdentity.schemaVersion,
+      runtime: {
+        version: runtime.version,
+        platform: runtime.platform,
+        architecture: runtime.architecture,
+        modulesAbi: runtime.modulesAbi,
+        libc: runtime.libc,
+      },
+      cliVersion: runnerIdentity.cliVersion,
+      invokedArtifact: { digest: invokedArtifact.digest },
+      build: { kind: build.kind, canonicalization: build.canonicalization, digest: build.digest },
+      dependencyRuntime: {
+        canonicalization: dependencyRuntime.canonicalization,
+        packageCount: dependencyRuntime.packageCount,
+        artifactCount: dependencyRuntime.artifactCount,
+        digest: dependencyRuntime.digest,
+      },
+    },
+    git,
+  };
+}
+
 function stable(shape, name, actual) {
   const previous = report.shapes[shape][name];
   if (previous === undefined) report.shapes[shape][name] = actual;
@@ -493,18 +523,42 @@ try {
   if (!correctnessOnly) report.peakProcessRssBytes = process.resourceUsage().maxRSS * 1024;
   if (values.record) {
     assert.ok(report.pass, 'refusing to record a failing correctness or scaling run');
-    assert.ok(
-      !fs.existsSync(baselinePath) || !fs.lstatSync(baselinePath).isSymbolicLink(),
-      'baseline symlink refused',
-    );
-    fs.writeFileSync(
-      baselinePath,
-      JSON.stringify(
-        { schemaVersion: 1, shapes: contracts, budgets, profile, recordedRuntime: report.runtime },
-        null,
-        2,
-      ) + '\n',
-    );
+    let linked = false;
+    try {
+      linked = fs.lstatSync(baselinePath).isSymbolicLink();
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error;
+    }
+    assert.ok(!linked, 'baseline symlink refused');
+    // Write an exclusively created sibling, then rename it over the baseline:
+    // rename replaces whatever leaf is there (even a symlink planted after the
+    // check above) and never writes through it.
+    const temporary = path.join(directory, `.baseline.${randomBytes(8).toString('hex')}.tmp`);
+    const temporaryFd = fs.openSync(temporary, 'wx', 0o644);
+    try {
+      try {
+        fs.writeFileSync(
+          temporaryFd,
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              shapes: contracts,
+              budgets,
+              profile,
+              recordedRuntime: portableRuntime(report.runtime),
+            },
+            null,
+            2,
+          ) + '\n',
+        );
+      } finally {
+        fs.closeSync(temporaryFd);
+      }
+      fs.renameSync(temporary, baselinePath);
+    } catch (error) {
+      fs.rmSync(temporary, { force: true });
+      throw error;
+    }
   }
   if (!report.pass && !values.observe) process.exitCode = 1;
 } catch (error) {

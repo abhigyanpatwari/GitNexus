@@ -126,8 +126,13 @@ node bench/java-ingestion/measure.mjs --check --output /tmp/java-ingestion-check
 ```
 
 Recording is never automatic and is disabled in CI. It requires every correctness,
-workload, stability and scaling check to pass. Checking requires an existing
-reviewed `baseline.json`. The minimum recording/checking profile is five capture
+workload, stability and scaling check to pass. The recorded `recordedRuntime`
+keeps only portable provenance: identity digests, Node version/ABI,
+platform/architecture and the Git revision/status digest. Checkout, executable,
+`dist`, manifest and lockfile paths are not persisted, and `--check` reads only
+`shapes` and `budgets`. The baseline is written to an exclusively created
+temporary file and renamed into place; a symlinked `baseline.json` is refused.
+Checking requires an existing reviewed `baseline.json`. The minimum recording/checking profile is five capture
 samples, one capture warmup and two pipeline samples. Diagnostic overrides
 `--samples`, `--warmup` and `--pipeline-samples` can shorten exploratory runs;
 undersampled runs cannot certify or record a baseline.

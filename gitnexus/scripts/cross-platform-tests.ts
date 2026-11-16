@@ -406,6 +406,10 @@ const WORKER_THREADS = [
   'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
   'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
+  // Lombok accessor, constructor-DI and workspace-proof facts through a real
+  // parse worker (cold) and the warm cache replay.
+  'test/integration/java-lombok-value-constructor-di.test.ts',
+  'test/integration/java-lombok-workspace-proof-lifecycle.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
