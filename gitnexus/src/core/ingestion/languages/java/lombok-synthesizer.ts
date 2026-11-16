@@ -8,7 +8,7 @@
  * under the supported subset.
  *
  * ## Supported subset (v1)
- * - Proven `lombok.Data` / `lombok.Getter` / `lombok.Setter` (FQN or import).
+ * - Proven `lombok.Data` / `lombok.Value` / `lombok.Getter` / `lombok.Setter`.
  * - Class- or field-level enable; `AccessLevel.NONE` disables.
  * - Default JavaBeans naming; primitive `boolean isX` → `isX` / `setX`.
  * - Access levels PUBLIC/PROTECTED/PRIVATE/PACKAGE.
@@ -80,6 +80,7 @@ interface LombokField {
   fieldSetter: AccessorConfig | null;
   accessors: AccessorsOptions;
   accessorsPresent: boolean;
+  nonFinal: boolean;
 }
 
 interface LombokClass {
@@ -94,9 +95,17 @@ interface LombokClass {
 
 const LOMBOK_ANNOTATION_PACKAGE = new Map<string, string>([
   ['Data', 'lombok'],
+  ['Value', 'lombok'],
   ['Getter', 'lombok'],
   ['Setter', 'lombok'],
+  ['RequiredArgsConstructor', 'lombok'],
+  ['AllArgsConstructor', 'lombok'],
+  ['NoArgsConstructor', 'lombok'],
+  ['NonNull', 'lombok'],
+  ['Builder', 'lombok'],
   ['Accessors', 'lombok.experimental'],
+  ['NonFinal', 'lombok.experimental'],
+  ['SuperBuilder', 'lombok.experimental'],
   ['Tolerate', 'lombok.experimental'],
 ]);
 
@@ -114,19 +123,62 @@ function annotationSimpleName(nameText: string): string {
   return nameText.split('.').pop() ?? nameText;
 }
 
-interface LombokImportIndex {
+export interface LombokImportIndex {
   bySimple: Map<string, string>;
   starPackages: Set<string>;
   shadowedSimpleNames: Set<string>;
+  /** Compilation-unit lifetime only; never retained across AST edits. */
+  memberTypeNamesByOwner: ReadonlyMap<number, ReadonlySet<string>>;
+  workspaceProof?: JavaLombokAnnotationWorkspaceProof;
+}
+
+/** A derived veto, used only while one compilation unit is being re-extracted. */
+export type JavaLombokAnnotationWorkspaceProof = (
+  writtenName: string,
+  qualifiedName: string,
+  context: Parser.SyntaxNode | undefined,
+) => boolean;
+
+let activeWorkspaceProof:
+  | {
+      tree: Parser.Tree;
+      proof: JavaLombokAnnotationWorkspaceProof;
+    }
+  | undefined;
+
+/** Synchronous, exception-safe context; no tree or proof survives this call. */
+export function withJavaLombokWorkspaceProof<T>(
+  tree: Parser.Tree,
+  proof: JavaLombokAnnotationWorkspaceProof,
+  run: () => T,
+): T {
+  const previous = activeWorkspaceProof;
+  activeWorkspaceProof = { tree, proof };
+  try {
+    return run();
+  } finally {
+    activeWorkspaceProof = previous;
+  }
 }
 
 /**
  * Compilation-unit imports only — Java `import` is never nested in a type body.
  */
-function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex {
+export function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex {
   const bySimple = new Map<string, string>();
   const starPackages = new Set<string>();
   const shadowedSimpleNames = new Set<string>();
+  const memberTypeNamesByOwner = new Map<number, Set<string>>();
+  for (const owner of root.descendantsOfType([...JAVA_TYPE_DECLS, 'annotation_type_declaration'])) {
+    const names = new Set<string>();
+    for (const member of owner.childForFieldName('body')?.namedChildren ?? []) {
+      if (!JAVA_TYPE_DECLS.has(member.type) && member.type !== 'annotation_type_declaration')
+        continue;
+      const name = member.childForFieldName('name');
+      if (name !== null) names.add(name.text);
+    }
+    if (names.size > 0) memberTypeNamesByOwner.set(owner.id, names);
+  }
   for (const child of root.children) {
     if (!JAVA_TYPE_DECLS.has(child.type) && child.type !== 'annotation_type_declaration') continue;
     const name = child.childForFieldName('name')?.text;
@@ -141,26 +193,82 @@ function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex {
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .replace(/\s+/g, '')
       .trim();
-    if (text === 'lombok.*') {
-      starPackages.add('lombok');
-    } else if (text === 'lombok.experimental.*') {
-      starPackages.add('lombok.experimental');
-    } else if (!text.endsWith('.*')) {
+    if (text.endsWith('.*')) {
+      starPackages.add(text.slice(0, -2));
+    } else {
       bySimple.set(annotationSimpleName(text), text);
     }
   }
-  return { bySimple, starPackages, shadowedSimpleNames };
+  return {
+    bySimple,
+    starPackages,
+    shadowedSimpleNames,
+    memberTypeNamesByOwner,
+    ...(activeWorkspaceProof?.tree === root.tree
+      ? { workspaceProof: activeWorkspaceProof.proof }
+      : {}),
+  };
 }
 
-function isProvenLombokAnnotation(nameText: string, imports: LombokImportIndex): boolean {
+export function isProvenLombokAnnotation(
+  nameText: string,
+  imports: LombokImportIndex,
+  context?: Parser.SyntaxNode,
+): boolean {
   const simple = annotationSimpleName(nameText);
   const packageName = LOMBOK_ANNOTATION_PACKAGE.get(simple);
   if (packageName === undefined) return false;
-  if (nameText.includes('.')) return nameText === `${packageName}.${simple}`;
+  return isProvenJavaAnnotation(nameText, `${packageName}.${simple}`, imports, context);
+}
+
+/** Shared Java-local annotation proof for accessors and generated constructors. */
+export function isProvenJavaAnnotation(
+  nameText: string,
+  qualifiedName: string,
+  imports: LombokImportIndex,
+  context?: Parser.SyntaxNode,
+): boolean {
+  if (imports.workspaceProof?.(nameText, qualifiedName, context) === false) return false;
+  if (nameText.includes('.')) {
+    const root = nameText.split('.')[0]!;
+    if (imports.bySimple.has(root) || imports.shadowedSimpleNames.has(root)) return false;
+    for (
+      let owner = context;
+      owner !== undefined && owner !== null;
+      owner = owner.parent ?? undefined
+    ) {
+      const body = owner.childForFieldName('body');
+      if (context !== undefined && body !== null && context.startIndex < body.startIndex) continue;
+      if (imports.memberTypeNamesByOwner.get(owner.id)?.has(root)) return false;
+    }
+    return nameText === qualifiedName;
+  }
+  const simple = annotationSimpleName(qualifiedName);
+  if (nameText !== simple || imports.shadowedSimpleNames.has(simple)) return false;
+  // A member annotation/type hides imports in nested type bodies as well.
+  for (
+    let owner = context;
+    owner !== undefined && owner !== null;
+    owner = owner.parent ?? undefined
+  ) {
+    if (!JAVA_TYPE_DECLS.has(owner.type) && owner.type !== 'annotation_type_declaration') continue;
+    if (owner.childForFieldName('name')?.text === simple) return false;
+    const body = owner.childForFieldName('body');
+    if (context !== undefined && body !== null && context.startIndex < body.startIndex) continue;
+    if (imports.memberTypeNamesByOwner.get(owner.id)?.has(simple)) return false;
+  }
   const imported = imports.bySimple.get(simple);
-  if (imported !== undefined) return imported === `${packageName}.${simple}`;
-  if (imports.shadowedSimpleNames.has(simple)) return false;
-  return imports.starPackages.has(packageName);
+  if (imported !== undefined) return imported === qualifiedName;
+  const packageName = qualifiedName.slice(0, qualifiedName.lastIndexOf('.'));
+  if (!imports.starPackages.has(packageName)) return false;
+  // A second unknown wildcard package could declare the same annotation.
+  // The two supported Lombok packages have a known, disjoint annotation set.
+  return [...imports.starPackages].every(
+    (other) =>
+      other === packageName ||
+      ((other === 'lombok' || other === 'lombok.experimental') &&
+        LOMBOK_ANNOTATION_PACKAGE.get(simple) !== other),
+  );
 }
 
 // ── AccessLevel / Accessors structural parse ──────────────────────────────
@@ -244,6 +352,8 @@ interface ParsedAnnotations {
   accessors: AccessorsOptions;
   accessorsPresent: boolean;
   tolerate: boolean;
+  value: boolean;
+  nonFinal: boolean;
 }
 
 function parseModifierAnnotations(
@@ -256,6 +366,8 @@ function parseModifierAnnotations(
     accessors: defaultAccessors(),
     accessorsPresent: false,
     tolerate: false,
+    value: false,
+    nonFinal: false,
   };
   if (!modifiersNode) return result;
 
@@ -263,11 +375,20 @@ function parseModifierAnnotations(
     if (child.type !== 'marker_annotation' && child.type !== 'annotation') continue;
     const nameNode = child.childForFieldName('name');
     const nameText = nameNode?.text ?? '';
-    if (!isProvenLombokAnnotation(nameText, imports)) continue;
+    if (!isProvenLombokAnnotation(nameText, imports, modifiersNode)) continue;
     const simple = annotationSimpleName(nameText);
 
     if (simple === 'Tolerate') {
       result.tolerate = true;
+      continue;
+    }
+    if (simple === 'NonFinal') {
+      result.nonFinal = true;
+      continue;
+    }
+    if (simple === 'Value') {
+      result.value = true;
+      result.getter ??= { enabled: true, visibility: 'public' };
       continue;
     }
     if (simple === 'Accessors') {
@@ -345,7 +466,7 @@ function parseFieldDeclaration(
     if (!nameNode) continue;
     out.push({
       name: nameNode.text,
-      type: fieldType,
+      type: fieldType + (declaratorNode.childForFieldName('dimensions')?.text ?? ''),
       isStatic,
       isFinal,
       startLine,
@@ -355,6 +476,7 @@ function parseFieldDeclaration(
       fieldSetter: fieldAnn.setter,
       accessors: fieldAnn.accessors,
       accessorsPresent: fieldAnn.accessorsPresent,
+      nonFinal: fieldAnn.nonFinal,
     });
   }
   return out;
@@ -422,6 +544,14 @@ function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex):
             if (child.type === 'field_declaration') {
               for (const f of parseFieldDeclaration(child, imports)) {
                 if (f.isStatic) continue;
+                if (
+                  classAnn.value &&
+                  f.name.startsWith('$') &&
+                  f.fieldGetter === null &&
+                  f.fieldSetter === null
+                )
+                  continue;
+                if (classAnn.value && !f.nonFinal) f.isFinal = true;
                 fields.push(f);
               }
             } else if (child.type === 'enum_body_declarations') {

@@ -23,6 +23,7 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { followChainPostFinalize } from '../../scope-resolution/passes/imported-return-types.js';
 import { javaProvider } from '../java.js';
+import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   javaArityCompatibility,
   javaMergeBindings,
@@ -30,6 +31,16 @@ import {
   type JavaResolveContext,
 } from './index.js';
 import { javaOnDemandImportTargets } from './on-demand-imports.js';
+import { javaArrayElementType } from './type-spelling.js';
+import {
+  javaQualifiedTypeLookupSpelling,
+  populateJavaQualifiedTypeBindings,
+} from './qualified-type-bindings.js';
+import { validateJavaQualifiedContextualBindings } from './qualified-contextual-bindings.js';
+import {
+  reconcileJavaLombokWorkspaceProof,
+  emitJavaLombokWorkspaceCorrections,
+} from './lombok-workspace-proof.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringAopMetadata } from './spring-aop.js';
@@ -85,12 +96,22 @@ const javaScopeResolver: ScopeResolver = {
   buildMro: buildJavaMro,
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateWorkspaceReferences: reconcileJavaLombokWorkspaceProof,
+  emitHeritageEdges: emitJavaLombokWorkspaceCorrections,
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
   resolveReceiverMember: resolveJavaReceiverMember,
   resolveUnqualifiedCall: resolveJavaUnqualifiedCall,
   resolveSelectedMethodImplementation: resolveJavaSelectedMethodImplementation,
   receiverMemberLookupCoversAllCalls: true,
-  receiverCallSite: resolveJavaReceiverCallSite,
+  // An indexed producer yields an array before the index. Let the structural
+  // fold peel it; resolveJavaReceiverMember validates the exact producer call.
+  receiverCallSite: (site, scopes) =>
+    decodeReceiverChain(site.receiverChain)?.steps.some((step) => step.kind === 'index')
+      ? undefined
+      : resolveJavaReceiverCallSite(site, scopes),
+  elementTypeOf: javaArrayElementType,
+  qualifiedTypeLookupSpelling: javaQualifiedTypeLookupSpelling,
+  hoistedTypeBindingsRequireOwner: true,
 
   isSuperReceiver: (text) => text.trim() === 'super',
 
@@ -106,7 +127,11 @@ const javaScopeResolver: ScopeResolver = {
   // class's method). C# is the intended next adopter.
   freeCallsRequireInstanceOwnership: true,
 
-  populateNamespaceSiblings: populateJavaPackageSiblings,
+  populateNamespaceSiblings: (parsedFiles, indexes, ctx) => {
+    populateJavaPackageSiblings(parsedFiles, indexes, ctx);
+    populateJavaQualifiedTypeBindings(parsedFiles, indexes);
+    validateJavaQualifiedContextualBindings(parsedFiles, indexes);
+  },
   resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
   populateRangeBindings: populateJavaCrossFileReturnTypes,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes, ctx) => {

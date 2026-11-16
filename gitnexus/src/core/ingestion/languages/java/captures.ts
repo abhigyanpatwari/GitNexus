@@ -63,9 +63,15 @@ import {
   type JavaSpringNonHttpHandlerFact,
 } from './spring-non-http-handlers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
-import { synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
+import { collectLombokImports, synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 import { captureJavaOverloadFacts, setJavaOverloadFacts } from './overload-argument-facts.js';
 import { captureJavaImportUses } from './import-use-facts.js';
+import { javaTypeText, javaTrailingDimensions } from './type-spelling.js';
+import { synthesizeJavaLexicalCaptures } from './lexical-captures.js';
+import { synthesizeJavaFactoryAliasCaptures } from './factory-alias-captures.js';
+import { synthesizeJavaDeclaredTypeCaptures } from './declared-type-captures.js';
+import { createJavaImplicitArrayReceiverChainSynthesizer } from './implicit-array-receiver-captures.js';
+import { applyJavaLocalNameClaims } from './local-name-claims.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -149,6 +155,10 @@ export function emitJavaScopeCaptures(
   setJavaOverloadFacts(filePath, captureJavaOverloadFacts(tree.rootNode, accessorCaptures));
 
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
+  const synthesizeImplicitArrayReceiverChain = createJavaImplicitArrayReceiverChainSynthesizer(
+    tree.rootNode,
+  );
+  const lombokImports = collectLombokImports(tree.rootNode);
   const out: CaptureMatch[] = [];
   const classAnnotations = new Map<ScopeId, Set<string>>();
   const springAopFacts: JavaSpringAopFact[] = [];
@@ -180,6 +190,26 @@ export function emitJavaScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
 
+    const bindingType = nodeMap['@type-binding.type'];
+    const bindingName = nodeMap['@type-binding.name'];
+    const bindingDeclaration =
+      nodeMap['@type-binding.parameter'] ??
+      nodeMap['@type-binding.annotation'] ??
+      nodeMap['@type-binding.return'] ??
+      nodeMap['@type-binding.constructor'];
+    if (bindingType !== undefined && bindingDeclaration !== undefined) {
+      const declarator =
+        bindingName?.parent?.type === 'variable_declarator' ? bindingName.parent : undefined;
+      grouped['@type-binding.type'] = syntheticCapture(
+        '@type-binding.type',
+        bindingType,
+        javaTypeText(bindingType) +
+          javaTrailingDimensions(bindingDeclaration) +
+          javaTrailingDimensions(declarator) +
+          (bindingDeclaration.type === 'spread_parameter' ? '[]' : ''),
+      );
+    }
+
     // One visit per member call node: the same invocation can back several
     // query matches, and both Spring call-shape captures must see it once.
     const memberCallNode = nodeIfType(nodeMap['@reference.call.member'], 'method_invocation');
@@ -209,7 +239,7 @@ export function emitJavaScopeCaptures(
       springNonHttpHandlerFacts.push(
         ...captureJavaSpringNonHttpHandlerFacts(springDiClassNode, filePath),
       );
-      const fact = captureJavaSpringDiClassFact(springDiClassNode, filePath);
+      const fact = captureJavaSpringDiClassFact(springDiClassNode, filePath, lombokImports);
       if (fact !== null) springDiFacts.push(fact);
     }
 
@@ -468,6 +498,7 @@ export function emitJavaScopeCaptures(
     // instead of re-parsing the receiver's source text. Self-gating: a
     // non-call match, an absent receiver, or a chain with no nameable base
     // all leave `grouped` untouched.
+    synthesizeImplicitArrayReceiverChain(grouped, nodeMap['@reference.receiver']);
     synthesizeReceiverChainCapture(grouped, nodeMap['@reference.receiver']);
     out.push(grouped);
   }
@@ -484,15 +515,18 @@ export function emitJavaScopeCaptures(
   setJavaSpringNonHttpHandlerFacts(filePath, springNonHttpHandlerFacts);
   setJavaSpringMessageProducerFacts(filePath, springMessageProducerFacts);
 
-  return [
-    ...resolveVarTypeBindings(out),
+  return applyJavaLocalNameClaims(tree.rootNode, [
+    ...out,
+    ...synthesizeJavaLexicalCaptures(tree.rootNode),
+    ...synthesizeJavaFactoryAliasCaptures(tree.rootNode),
+    ...synthesizeJavaDeclaredTypeCaptures(tree.rootNode, filePath),
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
     ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
     ...accessorCaptures,
     ...synthesizeLombokAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
-  ];
+  ]);
 }
 
 /**
@@ -849,121 +883,6 @@ function javaBaseLookupNameNode(node: SyntaxNode): SyntaxNode | null {
     default:
       return null;
   }
-}
-
-function resolveVarTypeBindings(matches: CaptureMatch[]): CaptureMatch[] {
-  const returnTypes = new Map<string, string>();
-  const varTypes = new Map<string, string>();
-  const ambiguousReturns = new Set<string>();
-  const ambiguousVars = new Set<string>();
-
-  for (const m of matches) {
-    if (
-      m['@type-binding.return'] !== undefined &&
-      m['@type-binding.type'] !== undefined &&
-      m['@type-binding.name'] !== undefined
-    ) {
-      const name = m['@type-binding.name'].text;
-      const type = m['@type-binding.type'].text;
-      const existing = returnTypes.get(name);
-      if (existing !== undefined && existing !== type) {
-        ambiguousReturns.add(name);
-        returnTypes.delete(name);
-      } else if (!ambiguousReturns.has(name)) {
-        returnTypes.set(name, type);
-      }
-    }
-    if (
-      m['@type-binding.annotation'] !== undefined &&
-      m['@type-binding.type'] !== undefined &&
-      m['@type-binding.name'] !== undefined
-    ) {
-      const name = m['@type-binding.name'].text;
-      const t = m['@type-binding.type'].text;
-      if (t !== 'var') {
-        const existing = varTypes.get(name);
-        if (existing !== undefined && existing !== t) {
-          ambiguousVars.add(name);
-          varTypes.delete(name);
-        } else if (!ambiguousVars.has(name)) {
-          varTypes.set(name, t);
-        }
-      }
-    }
-    if (
-      m['@type-binding.constructor'] !== undefined &&
-      m['@type-binding.type'] !== undefined &&
-      m['@type-binding.name'] !== undefined
-    ) {
-      const name = m['@type-binding.name'].text;
-      const type = m['@type-binding.type'].text;
-      const existing = varTypes.get(name);
-      if (existing !== undefined && existing !== type) {
-        ambiguousVars.add(name);
-        varTypes.delete(name);
-      } else if (!ambiguousVars.has(name)) {
-        varTypes.set(name, type);
-      }
-    }
-  }
-
-  const resolved: CaptureMatch[] = [];
-  for (const m of matches) {
-    if (m['@type-binding.call-result'] !== undefined && m['@type-binding.type'] !== undefined) {
-      const methodName = m['@type-binding.type'].text;
-      const resolvedType = returnTypes.get(methodName);
-      if (resolvedType !== undefined) {
-        const patched: Record<string, Capture> = { ...m };
-        patched['@type-binding.type'] = { ...m['@type-binding.type']!, text: resolvedType };
-        patched['@type-binding.annotation'] = m['@type-binding.call-result']!;
-        delete patched['@type-binding.call-result'];
-        resolved.push(patched);
-        continue;
-      }
-    }
-    if (m['@type-binding.alias'] !== undefined && m['@type-binding.type'] !== undefined) {
-      const sourceName = m['@type-binding.type'].text;
-      const resolvedType = varTypes.get(sourceName);
-      if (resolvedType !== undefined) {
-        const patched: Record<string, Capture> = { ...m };
-        patched['@type-binding.type'] = { ...m['@type-binding.type']!, text: resolvedType };
-        patched['@type-binding.annotation'] = m['@type-binding.alias']!;
-        delete patched['@type-binding.alias'];
-        resolved.push(patched);
-        continue;
-      }
-    }
-    if (m['@reference.arg-names'] !== undefined && m['@reference.parameter-types'] !== undefined) {
-      try {
-        const types: string[] = JSON.parse(m['@reference.parameter-types'].text);
-        const names: string[] = JSON.parse(m['@reference.arg-names'].text);
-        let patched = false;
-        for (let i = 0; i < types.length; i++) {
-          if (types[i] === '' && names[i] !== undefined && names[i] !== '') {
-            const rt = varTypes.get(names[i]!);
-            if (rt !== undefined) {
-              types[i] = rt;
-              patched = true;
-            }
-          }
-        }
-        if (patched) {
-          const patchedMatch: Record<string, Capture> = { ...m };
-          patchedMatch['@reference.parameter-types'] = {
-            ...m['@reference.parameter-types']!,
-            text: JSON.stringify(types),
-          };
-          delete patchedMatch['@reference.arg-names'];
-          resolved.push(patchedMatch);
-          continue;
-        }
-      } catch {
-        // pass through
-      }
-    }
-    resolved.push(m);
-  }
-  return resolved;
 }
 
 type SyntaxNode = ReturnType<ReturnType<typeof getJavaParser>['parse']>['rootNode'];

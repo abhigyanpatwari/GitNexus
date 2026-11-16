@@ -8,6 +8,7 @@ import {
   lookupNameClaim,
 } from '../../scope-resolution/scope/walkers.js';
 import { getJavaPackageFact } from './package-facts.js';
+import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   getJavaOverloadCall,
   getJavaOverloadFacts,
@@ -875,6 +876,60 @@ export function resolveJavaReceiverMember(
   const filePath = scopes.scopeTree.getScope(site.inScope)?.filePath;
   const call =
     filePath === undefined ? undefined : getJavaOverloadCall(filePath, site.atRange, site.name);
+  if (
+    filePath !== undefined &&
+    call?.receiverCall !== undefined &&
+    decodeReceiverChain(site.receiverChain)?.steps.some((step) => step.kind === 'index')
+  ) {
+    const producer = getJavaOverloadCall(filePath, call.receiverCall.range, call.receiverCall.name);
+    let decision: ReceiverMemberResolution | undefined;
+    if (producer !== undefined) {
+      // Reuse the JLS selector at the exact producer site. A unique method name
+      // is insufficient evidence that a call is applicable or accessible.
+      const producerSite: ReferenceSite = {
+        ...site,
+        name: producer.name,
+        atRange: producer.range,
+        arity: producer.arguments.length,
+        callForm: producer.receiver === undefined ? 'free' : 'member',
+        explicitReceiver:
+          producer.receiverSpelling === undefined ? undefined : { name: producer.receiverSpelling },
+        receiverChain: undefined,
+      };
+      if (producer.receiver === undefined) {
+        decision = resolveJavaUnqualifiedCall(producerSite, scopes, model);
+      } else {
+        const type =
+          producer.receiver.kind === 'typed'
+            ? argumentType(producer.receiver, filePath, state)
+            : !producer.receiverIsValue && producer.receiverSpelling !== undefined
+              ? parseType(producer.receiverSpelling, { filePath, at: producer.range }, state)
+              : UNKNOWN_JAVA_TYPE;
+        const producerOwner =
+          type.kind === 'reference' && type.sourceId !== undefined
+            ? scopes.defs.get(type.sourceId)
+            : undefined;
+        if (producerOwner !== undefined)
+          decision = resolveJavaReceiverMember(
+            producerOwner,
+            producer.name,
+            producerSite,
+            scopes,
+            model,
+          );
+      }
+    }
+    if (decision?.kind !== 'resolved') {
+      return {
+        kind: 'unknown',
+        candidateIds: model.methods
+          .lookupAllByOwner(ownerDef.nodeId, memberName)
+          .map((method) => method.nodeId),
+        candidateSetComplete: false,
+        detail: 'Indexed Java receiver producer lacks an applicable, accessible method selection',
+      };
+    }
+  }
   let owner = ownerDef;
   let runnableReceiver = false;
   if (call?.receiver?.kind === 'typed' && filePath !== undefined) {
@@ -917,7 +972,22 @@ export function resolveJavaReceiverMember(
   const inventory = receiverInventory(owner, memberName, site, call, state);
   if (inventory.declarations.length === 0) return undefined;
   const candidateIds = inventory.declarations.map((candidate) => candidate.nodeId);
-  if (!inventory.complete)
+  // A declared fixed zero-argument method owns that exact signature even when
+  // an external ancestor's other overloads are unavailable. An inherited
+  // zero-argument signature is overridden; varargs apply only in a later phase.
+  // Require the original singleton, its own arity metadata, and proven access:
+  // this does not promote a pruned singleton or an inferred/variadic signature.
+  const original = inventory.normalized[0];
+  const exactOwnNoArg =
+    call?.arguments.length === 0 &&
+    inventory.originalDeclarationCount === 1 &&
+    inventory.normalized.length === 1 &&
+    original?.definition.ownerId === owner.nodeId &&
+    original.definition.parameterCount === 0 &&
+    original.parameters.length === 0 &&
+    !original.variadic &&
+    eligible(original.definition, owner, site, call, state) === 'yes';
+  if (!inventory.complete && !exactOwnNoArg)
     return {
       kind: 'unknown',
       candidateIds,

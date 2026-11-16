@@ -263,12 +263,13 @@ export function captureJavaOverloadFacts(
     depth: number,
     available: number,
     field = false,
+    visibleRange?: Range,
   ) => {
     if (name === undefined) return;
     const binding: Binding = {
       type,
       at: rangeOf(node),
-      scope: rangeOf(scope),
+      scope: visibleRange ?? rangeOf(scope),
       depth,
       available,
       owner: enclosing(node, isType),
@@ -455,6 +456,22 @@ export function captureJavaOverloadFacts(
           field ? scope.startIndex : node.startIndex,
           field,
         );
+    } else if (node.type === 'resource') {
+      const statement = enclosing(node, (parent) => parent.type === 'try_with_resources_statement');
+      const body = statement?.childForFieldName('body');
+      const type = node.childForFieldName('type');
+      if (statement !== undefined && body !== null && body !== undefined) {
+        addBinding(
+          node.childForFieldName('name')?.text,
+          type === null || type.text === 'var' ? undefined : type.text,
+          node,
+          statement,
+          depth,
+          node.startIndex,
+          false,
+          { ...rangeOf(node), endLine: body.endPosition.row + 1, endCol: body.endPosition.column },
+        );
+      }
     } else if (node.type === 'enhanced_for_statement') {
       const type = node.childForFieldName('type')?.text;
       const body = node.childForFieldName('body');
@@ -681,8 +698,14 @@ export function captureJavaOverloadFacts(
   const calls = callNodes.map((node): JavaOverloadCallFact => {
     const receiver = node.childForFieldName('object');
     let directReceiver = receiver;
-    while (directReceiver?.type === 'parenthesized_expression')
-      directReceiver = directReceiver.namedChildren[0] ?? null;
+    while (
+      directReceiver?.type === 'parenthesized_expression' ||
+      directReceiver?.type === 'array_access'
+    )
+      directReceiver =
+        directReceiver.type === 'array_access'
+          ? directReceiver.childForFieldName('array')
+          : (directReceiver.namedChildren[0] ?? null);
     const receiverName =
       directReceiver?.type === 'method_invocation'
         ? directReceiver.childForFieldName('name')?.text
