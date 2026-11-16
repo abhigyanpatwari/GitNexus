@@ -29,9 +29,7 @@ class Outer {
   it.each(['callback', 'loop'])(
     'never rebinds an outer container argument inside Inner.%s',
     (caller) => {
-      const actual = targets(`Inner.${caller}`);
-      expect(actual).not.toContain('Method:Outer.java:User.save#0');
-      for (const target of actual) expect(target).toBe('Method:a/User.java:User.save#0');
+      expect(targets(`Inner.${caller}`)).toEqual(['Method:a/User.java:User.save#0']);
     },
   );
 });
@@ -53,7 +51,12 @@ class Outer {
   }
 }`,
   });
-  it.each(['callback', 'loop'])('does not borrow the imported User in %s', (caller) => {
+  // A local class is in scope for the rest of its block (JLS 6.3): it, not the
+  // imported decoy, is the element type the raw `java.util.List` proves.
+  it.each([
+    ['callback', 'Method:Outer.java:Outer$1User.save#0'],
+    ['loop', 'Method:Outer.java:Outer$2User.save#0'],
+  ])('resolves the local User, not the imported decoy, in %s', (caller, local) => {
     expect(
       getRelationships(result(), 'CALLS')
         .filter(
@@ -61,6 +64,6 @@ class Outer {
             edge.rel.sourceId === `Method:Outer.java:Outer.${caller}#0` && edge.target === 'save',
         )
         .map((edge) => edge.rel.targetId),
-    ).toEqual([]);
+    ).toEqual([local]);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { makeScopeId, type ParsedFile } from 'gitnexus-shared';
 import { emitJavaScopeCaptures } from '../../../../src/core/ingestion/languages/java/captures.js';
+import { getJavaContainerProofs } from '../../../../src/core/ingestion/languages/java/declared-type-captures.js';
 import { getJavaOverloadFacts } from '../../../../src/core/ingestion/languages/java/overload-argument-facts.js';
 import { javaProvider } from '../../../../src/core/ingestion/languages/java.js';
 import { extract } from '../../../../src/core/ingestion/scope-extractor.js';
@@ -81,11 +82,28 @@ class Outer {
   java.util.List<java.util.List<User[]>> groups;
   void run() { groups.forEach(list -> list.forEach(array -> { for (var item : array) item.save(); })); }
 }`);
-    const outer = getJavaOverloadFacts(file)!.types.find((type) => type.simpleName === 'Outer')!;
+    const types = getJavaOverloadFacts(file)!.types;
+    const outer = types.find((type) => type.simpleName === 'Outer')!;
+    const user = types.find((type) => type.simpleName === 'User')!;
     const outerScope = makeScopeId({ filePath: file, range: outer.range, kind: 'Class' });
+    const userScope = makeScopeId({ filePath: file, range: user.range, kind: 'Class' });
+    // The element keeps its own anchor; the root proof names the container's.
+    expect(['list', 'array', 'item'].map((name) => refs(parsed, name)[0]?.declaredAtScope)).toEqual(
+      [outerScope, userScope, userScope],
+    );
+    const proofs = getJavaContainerProofs(file);
     for (const name of ['list', 'array', 'item']) {
-      expect(refs(parsed, name)[0]?.source).toBe('receiver-propagated');
-      expect(refs(parsed, name)[0]?.declaredAtScope).toBe(outerScope);
+      const ref = refs(parsed, name)[0]!;
+      expect(ref.source).toBe('receiver-propagated');
+      expect(
+        proofs
+          .filter(
+            (proof) =>
+              proof.line === ref.lookupPosition?.startLine &&
+              proof.col === ref.lookupPosition?.startCol,
+          )
+          .map((proof) => [proof.kind, proof.name, proof.scope]),
+      ).toContainEqual(['root', 'java', outerScope]);
     }
   });
 

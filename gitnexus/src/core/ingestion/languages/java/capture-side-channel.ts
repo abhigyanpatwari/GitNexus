@@ -18,6 +18,11 @@ import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lo
 import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
 import type { JavaSpringNonHttpHandlerFact } from './spring-non-http-handlers.js';
 import {
+  clearJavaContainerProofs,
+  getJavaContainerProofs,
+  type JavaContainerProofFact,
+} from './declared-type-captures.js';
+import {
   clearJavaOverloadFacts,
   getJavaOverloadFacts,
   isJavaOverloadFileFacts,
@@ -31,6 +36,8 @@ export interface JavaCaptureSideChannel {
   readonly kind: 'java';
   readonly importUses?: JavaImportUses;
   readonly overloadFacts?: JavaOverloadFileFacts;
+  /** JDK container identities that inferred element bindings depend on. */
+  readonly containerProofs?: readonly JavaContainerProofFact[];
   readonly packageFact: JvmPackageFact;
   readonly classAnnotations: readonly JavaClassAnnotationFact[];
   readonly springAopFacts?: readonly JavaSpringAopFact[];
@@ -65,6 +72,7 @@ const springMessageProducerFacts = new Map<string, readonly SpringMessageProduce
 export function clearJavaClassAnnotationFacts(): void {
   importUses.clear();
   clearJavaOverloadFacts();
+  clearJavaContainerProofs();
   classAnnotations.clear();
   springAopFacts.clear();
   springConfigConsumers.clear();
@@ -188,8 +196,10 @@ export function collectJavaCaptureSideChannel(
   const nonHttpHandlerFacts = springNonHttpHandlerFacts.get(filePath) ?? [];
   const messageProducerFacts = springMessageProducerFacts.get(filePath) ?? [];
   const packageFact = getJavaPackageFact(filePath);
+  const containerProofs = getJavaContainerProofs(filePath);
   if (
     overloadFacts === undefined &&
+    containerProofs.length === 0 &&
     facts.length === 0 &&
     aopFacts.length === 0 &&
     configConsumers.length === 0 &&
@@ -206,6 +216,7 @@ export function collectJavaCaptureSideChannel(
     kind: 'java',
     importUses: importUses.get(filePath),
     ...(overloadFacts === undefined ? {} : { overloadFacts }),
+    ...(containerProofs.length > 0 ? { containerProofs } : {}),
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: facts,
     ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),

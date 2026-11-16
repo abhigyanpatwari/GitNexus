@@ -6,7 +6,7 @@ import {
   type Range,
   type ScopeId,
 } from 'gitnexus-shared';
-import { javaLocalTypeDeclarationContainer, nodeToCapture } from '../../utils/ast-helpers.js';
+import { nodeToCapture } from '../../utils/ast-helpers.js';
 import { javaTrailingDimensions, javaTypeText } from './type-spelling.js';
 import {
   getJavaOverloadFacts,
@@ -20,9 +20,30 @@ interface DeclaredBinding {
   readonly start: number;
   readonly end: number;
   readonly type?: string;
-  readonly contextualQualified?: boolean;
+  /** Workspace facts an inferred element type depends on. */
+  readonly proofs?: readonly ContainerProof[];
   readonly typeSource: SyntaxNode;
   readonly evidence?: TypeEvidence;
+}
+
+/**
+ * A JDK container identity that only resolution can confirm: what a simple
+ * name means where the container type was written. `root` is a raw `java.*`
+ * spelling, `single` a single-type import, `on-demand` a type-import-on-demand
+ * (including implicit `java.lang`). Inherited member types shadow all three;
+ * same-package and other workspace types also shadow an on-demand import
+ * (JLS 6.4.1, 7.5.2). Each proof is keyed by its binding's lookup anchor.
+ */
+interface ContainerProof {
+  readonly kind: 'root' | 'single' | 'on-demand';
+  readonly name: string;
+  readonly scope: ScopeId;
+}
+
+export interface JavaContainerProofFact extends ContainerProof {
+  /** `TypeRef.lookupPosition` of the dependent binding (1-based line). */
+  readonly line: number;
+  readonly col: number;
 }
 
 /** Ephemeral proof tree: no AST nodes or new fields enter ParsedFile. */
@@ -34,30 +55,107 @@ interface TypeEvidence {
   readonly lookupScope: ScopeId;
   readonly source: SyntaxNode;
   readonly writtenQualified: boolean;
+  /** How a simple-name base was proven to be a JDK container. */
+  readonly imported?: 'single' | 'on-demand';
 }
 
+// A switch-group local is in scope for the rest of its switch block (JLS 6.3),
+// and record components are fields of the record body only.
 const LEXICAL_CONTAINERS = new Set([
   'program',
   'class_body',
   'interface_body',
   'enum_body',
   'annotation_type_body',
+  'record_declaration',
   'block',
+  'switch_block',
   'method_declaration',
   'constructor_declaration',
+  'compact_constructor_declaration',
   'lambda_expression',
   'for_statement',
   'enhanced_for_statement',
   'catch_clause',
   'try_with_resources_statement',
 ]);
+// Each type's single type parameter is its Iterable element type.
 const ITERABLE_TYPES = new Set([
   'java.lang.Iterable',
-  'java.util.Collection',
-  'java.util.List',
-  'java.util.Set',
+  ...[
+    'Collection',
+    'SequencedCollection',
+    'List',
+    'Set',
+    'SequencedSet',
+    'SortedSet',
+    'NavigableSet',
+    'Queue',
+    'Deque',
+    'AbstractCollection',
+    'AbstractList',
+    'AbstractSequentialList',
+    'AbstractSet',
+    'AbstractQueue',
+    'ArrayList',
+    'LinkedList',
+    'Vector',
+    'Stack',
+    'HashSet',
+    'LinkedHashSet',
+    'TreeSet',
+    'EnumSet',
+    'ArrayDeque',
+    'PriorityQueue',
+  ].map((name) => `java.util.${name}`),
+  ...[
+    'BlockingQueue',
+    'BlockingDeque',
+    'ArrayBlockingQueue',
+    'LinkedBlockingQueue',
+    'LinkedBlockingDeque',
+    'PriorityBlockingQueue',
+    'ConcurrentLinkedQueue',
+    'ConcurrentLinkedDeque',
+    'ConcurrentSkipListSet',
+    'CopyOnWriteArrayList',
+    'CopyOnWriteArraySet',
+  ].map((name) => `java.util.concurrent.${name}`),
+]);
+// Each type's parameters are <K, V>: `keySet()` yields K, `values()` V.
+const MAP_TYPES = new Set([
+  ...[
+    'Map',
+    'SortedMap',
+    'NavigableMap',
+    'SequencedMap',
+    'AbstractMap',
+    'HashMap',
+    'LinkedHashMap',
+    'TreeMap',
+    'Hashtable',
+    'WeakHashMap',
+    'IdentityHashMap',
+    'EnumMap',
+  ].map((name) => `java.util.${name}`),
+  ...['ConcurrentMap', 'ConcurrentNavigableMap', 'ConcurrentHashMap', 'ConcurrentSkipListMap'].map(
+    (name) => `java.util.concurrent.${name}`,
+  ),
 ]);
 const STREAM_TYPE = 'java.util.stream.Stream';
+const JDK_CONTAINERS = new Set([...ITERABLE_TYPES, ...MAP_TYPES, STREAM_TYPE]);
+
+// Worker-local until `collectJavaCaptureSideChannel` snapshots it for the
+// ParsedFile; resolution reads the snapshot, never this map.
+const containerProofs = new Map<string, readonly JavaContainerProofFact[]>();
+
+export function getJavaContainerProofs(filePath: string): readonly JavaContainerProofFact[] {
+  return containerProofs.get(filePath) ?? [];
+}
+
+export function clearJavaContainerProofs(): void {
+  containerProofs.clear();
+}
 
 /** Keep container types on ordinary receivers. Element types are available
  * only at an array/Iterable iteration or a bounded, proven JDK callback. */
@@ -68,9 +166,16 @@ export function synthesizeJavaDeclaredTypeCaptures(
   const out: CaptureMatch[] = [];
   const bindings = new Map<number, Map<string, DeclaredBinding[]>>();
   const imports = new Map<string, Set<string>>();
+  // `java.lang` is implicitly imported on demand (JLS 7.3).
+  const onDemandPackages = new Set<string>(['java.lang']);
+  const proofs: JavaContainerProofFact[] = [];
   const localTypes = new Set<string>();
-  const localTypeScopes = new Set<ScopeId>();
-  const typeParameters = new Set<string>();
+  // A type parameter is in scope only within its generic declaration (JLS 6.3).
+  const typeParameters = new Map<string, { readonly start: number; readonly end: number }[]>();
+  const isTypeParameter = (name: string, at: SyntaxNode): boolean =>
+    typeParameters
+      .get(name)
+      ?.some((range) => range.start <= at.startIndex && at.startIndex < range.end) === true;
   const ownerCache = new Map<number, SyntaxNode>();
   const sourceTypes = new Map<string, JavaOverloadTypeFact[]>();
   for (const fact of getJavaOverloadFacts(filePath)?.types ?? []) {
@@ -116,7 +221,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     type?: string,
     start = name.startIndex,
     end = owner.endIndex,
-    contextualQualified = false,
+    dependsOn: readonly ContainerProof[] = [],
     typeSource = name,
     evidence?: TypeEvidence,
   ) => {
@@ -127,7 +232,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
       start,
       end,
       ...(type === undefined ? {} : { type }),
-      ...(contextualQualified ? { contextualQualified: true } : {}),
+      ...(dependsOn.length === 0 ? {} : { proofs: dependsOn }),
       typeSource,
       ...(evidence === undefined ? {} : { evidence }),
     });
@@ -152,6 +257,9 @@ export function synthesizeJavaDeclaredTypeCaptures(
       }
       // An unknown declaration still stops the walk; do not borrow an outer type.
       if (selected !== undefined) return selected;
+      // An inherited member shadows an enclosing declaration (JLS 6.4.1), and
+      // supertypes are not inventoried here: the name may be inherited.
+      if (inheritsMembers(current)) return undefined;
       current = current.parent;
     }
     return undefined;
@@ -166,11 +274,18 @@ export function synthesizeJavaDeclaredTypeCaptures(
         targets.add(imported);
         imports.set(tail, targets);
       }
+      const onDemand = /^import\s+([\w.$]+)\s*\.\s*\*\s*;$/.exec(node.text)?.[1];
+      if (onDemand !== undefined) onDemandPackages.add(onDemand);
     } else if (node.type === 'type_parameter') {
       const name =
         node.childForFieldName('name') ??
         node.namedChildren.find((child) => child.type === 'type_identifier');
-      if (name !== undefined && name !== null) typeParameters.add(name.text);
+      const declaration = node.parent?.parent;
+      if (name !== undefined && name !== null && declaration != null) {
+        const ranges = typeParameters.get(name.text) ?? [];
+        ranges.push({ start: declaration.startIndex, end: declaration.endIndex });
+        typeParameters.set(name.text, ranges);
+      }
     } else if (
       node.type.endsWith('_declaration') &&
       node.childForFieldName('body') !== null &&
@@ -186,10 +301,6 @@ export function synthesizeJavaDeclaredTypeCaptures(
         ].includes(node.type)
       ) {
         localTypes.add(node.childForFieldName('name')!.text);
-        if (javaLocalTypeDeclarationContainer(node) !== null)
-          localTypeScopes.add(
-            makeScopeId({ filePath, range: nodeToCapture('', node).range, kind: 'Class' }),
-          );
       }
     }
 
@@ -214,7 +325,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
           type === null ? undefined : javaTypeText(type) + javaTrailingDimensions(declarator),
           node.type === 'field_declaration' ? -1 : name.startIndex,
           owner.endIndex,
-          false,
+          [],
           type ?? name,
         );
       }
@@ -232,9 +343,13 @@ export function synthesizeJavaDeclaredTypeCaptures(
               (child) => child.type !== 'modifiers' && child.type !== 'variable_declarator',
             )
           : undefined);
+      let owner = ownerOf(node.parent ?? root);
+      // A record component is a field of the record body (and the compact
+      // constructor's parameter inside it), never of the enclosing container.
+      if (owner.type === 'record_declaration') owner = owner.childForFieldName('body') ?? owner;
       if (name !== undefined && name !== null)
         add(
-          ownerOf(node.parent ?? root),
+          owner,
           name,
           type === undefined || type === null || type.text === 'var'
             ? undefined
@@ -242,8 +357,8 @@ export function synthesizeJavaDeclaredTypeCaptures(
                 javaTrailingDimensions(node) +
                 (node.type === 'spread_parameter' ? '[]' : ''),
           -1,
-          ownerOf(node.parent ?? root).endIndex,
-          false,
+          owner.endIndex,
+          [],
           type ?? name,
         );
     } else if (node.type === 'lambda_expression') {
@@ -262,7 +377,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
           type.text === 'var' ? undefined : javaTypeText(type),
           name.startIndex,
           body?.endIndex ?? owner.endIndex,
-          false,
+          [],
           type,
         );
     }
@@ -318,7 +433,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     const core = spelling.slice(0, spelling.length - array.length);
     const generic = core.indexOf('<');
     const raw = generic < 0 ? core : core.slice(0, generic);
-    if (!/^[\w.$]+$/.test(raw) || typeParameters.has(raw)) return undefined;
+    if (!/^[\w.$]+$/.test(raw) || isTypeParameter(raw, source)) return undefined;
     const argumentsText =
       generic < 0 ? [] : core.endsWith('>') ? splitArguments(core.slice(generic + 1, -1)) : [];
     if (generic >= 0 && argumentsText.length === 0) return undefined;
@@ -327,6 +442,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     let lookupScope = inheritedScope ?? producerScope(source);
     if (lookupScope === undefined) return undefined;
     let base = raw;
+    let imported: TypeEvidence['imported'];
     if (!raw.includes('.')) {
       const named = sourceTypes.get(raw) ?? [];
       const visible = named
@@ -350,9 +466,11 @@ export function synthesizeJavaDeclaredTypeCaptures(
           return undefined;
         lookupScope = makeScopeId({ filePath, range: nearest.range, kind: 'Class' });
       } else {
-        const imported = imports.get(raw);
-        if (imported?.size === 1) base = [...imported][0]!;
-        else if (imported !== undefined || (localTypes.has(raw) && named.length === 0))
+        const single = imports.get(raw);
+        if (single?.size === 1) {
+          base = [...single][0]!;
+          imported = 'single';
+        } else if (single !== undefined || (localTypes.has(raw) && named.length === 0))
           return undefined;
         else if (
           named.some(
@@ -362,6 +480,17 @@ export function synthesizeJavaDeclaredTypeCaptures(
           )
         )
           return undefined;
+        else if (named.length === 0) {
+          // Only a known JDK container; resolution confirms that no other
+          // type with this simple name is visible where it was written.
+          const packages = [...onDemandPackages].filter((pkg) =>
+            JDK_CONTAINERS.has(`${pkg}.${raw}`),
+          );
+          if (packages.length === 1) {
+            base = `${packages[0]}.${raw}`;
+            imported = 'on-demand';
+          }
+        }
       }
     }
     const proven = args as TypeEvidence[];
@@ -372,8 +501,11 @@ export function synthesizeJavaDeclaredTypeCaptures(
       lookupScope,
       source,
       writtenQualified: raw.startsWith('java.'),
+      ...(imported === undefined ? {} : { imported }),
+      // An on-demand base only decides container shape; a binding keeps the
+      // written simple name, which ordinary lookup already resolves.
       spelling:
-        base +
+        (imported === 'on-demand' ? raw : base) +
         (generic < 0 ? '' : `<${proven.map((argument) => argument.spelling).join(',')}>`) +
         array,
     };
@@ -386,28 +518,64 @@ export function synthesizeJavaDeclaredTypeCaptures(
     if (written === undefined || written.length > 512) return undefined;
     if (
       !/^[\w.$<>\[\],]+$/.test(written) ||
-      written.split(/[^\w$]+/).some((token) => typeParameters.has(token))
+      written.split(/[^\w$]+/).some((token) => isTypeParameter(token, binding.typeSource))
     )
       return undefined;
     return binding.evidence ?? identify(written, binding.typeSource, use);
   };
+  /** What resolution must confirm about how `evidence` names its base type. */
+  const proofOf = (evidence: TypeEvidence): ContainerProof | undefined => {
+    const scope = producerScope(evidence.source) ?? evidence.lookupScope;
+    if (evidence.writtenQualified) return { kind: 'root', name: 'java', scope };
+    if (evidence.imported === undefined || !JDK_CONTAINERS.has(evidence.base)) return undefined;
+    const name = evidence.base.slice(evidence.base.lastIndexOf('.') + 1);
+    return { kind: evidence.imported, name, scope };
+  };
+  const withProof = (
+    inherited: readonly ContainerProof[] | undefined,
+    evidence: TypeEvidence | undefined,
+  ): readonly ContainerProof[] => {
+    const own = evidence === undefined ? undefined : proofOf(evidence);
+    return own === undefined ? (inherited ?? []) : [...(inherited ?? []), own];
+  };
   const container = (
     binding: DeclaredBinding | undefined,
     use: SyntaxNode,
-  ): { base: string; args: readonly TypeEvidence[]; contextualQualified: boolean } | undefined => {
+  ):
+    | { base: string; args: readonly TypeEvidence[]; proofs: readonly ContainerProof[] }
+    | undefined => {
     const evidence = evidenceFor(binding, use);
     if (
       evidence === undefined ||
       evidence.dimensions !== 0 ||
       evidence.args.length === 0 ||
+      !JDK_CONTAINERS.has(evidence.base) ||
       localTypes.has(evidence.base.split('.')[0]!)
     )
       return undefined;
     return {
       base: evidence.base,
       args: evidence.args,
-      contextualQualified: binding?.contextualQualified === true || evidence.writtenQualified,
+      proofs: withProof(binding?.proofs, evidence),
     };
+  };
+  const emit = (
+    name: SyntaxNode,
+    inferred: TypeEvidence,
+    dependsOn: readonly ContainerProof[],
+    body?: SyntaxNode,
+  ) => {
+    const capture = bindingCapture(
+      name,
+      inferred.spelling,
+      body,
+      dependsOn.some((proof) => proof.kind === 'root'),
+      inferred.lookupScope,
+    );
+    const anchor = capture['@type-binding.parameter']!.range;
+    for (const proof of dependsOn)
+      proofs.push({ ...proof, line: anchor.startLine, col: anchor.startCol });
+    out.push(capture);
   };
 
   // Native descendants are in source order: outer operations publish their
@@ -424,14 +592,15 @@ export function synthesizeJavaDeclaredTypeCaptures(
       const writtenEvidence = evidenceFor(binding, node);
       const iterable = container(binding, node);
       let mapElement: TypeEvidence | undefined;
-      let mapQualified = false;
+      let mapProofs: readonly ContainerProof[] = [];
       if (value.type === 'method_invocation') {
         const receiver = value.childForFieldName('object');
         const args = value.childForFieldName('arguments');
         const member = value.childForFieldName('name')?.text;
         const map = receiver === null ? undefined : container(lookup(receiver), node);
         if (
-          map?.base === 'java.util.Map' &&
+          map !== undefined &&
+          MAP_TYPES.has(map.base) &&
           map.args.length === 2 &&
           args !== null &&
           args.namedChildren.every(
@@ -440,10 +609,12 @@ export function synthesizeJavaDeclaredTypeCaptures(
         ) {
           if (member === 'values') mapElement = map.args[1];
           else if (member === 'keySet') mapElement = map.args[0];
-          if (mapElement !== undefined) mapQualified = map.contextualQualified;
+          if (mapElement !== undefined) mapProofs = map.proofs;
         }
       }
-      const candidate =
+      const elementOfIterable =
+        iterable !== undefined && ITERABLE_TYPES.has(iterable.base) && iterable.args.length === 1;
+      const inferred =
         type.text !== 'var'
           ? identify(javaTypeText(type), type, node)
           : writtenEvidence !== undefined && writtenEvidence.dimensions > 0
@@ -452,50 +623,32 @@ export function synthesizeJavaDeclaredTypeCaptures(
                 spelling: writtenEvidence.spelling.slice(0, -2),
                 dimensions: writtenEvidence.dimensions - 1,
               }
-            : iterable !== undefined &&
-                ITERABLE_TYPES.has(iterable.base) &&
-                iterable.args.length === 1
+            : elementOfIterable
               ? iterable.args[0]
               : mapElement;
       out.push(loopScope(body, name));
-      const contextualQualified =
-        type.text === 'var' &&
-        (written?.endsWith('[]')
-          ? binding?.contextualQualified === true || writtenEvidence?.writtenQualified === true
-          : iterable !== undefined &&
-              ITERABLE_TYPES.has(iterable.base) &&
-              iterable.args.length === 1
-            ? iterable.contextualQualified
-            : mapQualified);
-      // A raw JDK spelling needs validation in the container's environment.
-      // Re-anchoring a local element there loses its synthetic visibility
-      // scope. Keep the lexical barrier until both proofs can be retained.
-      const inferred =
-        contextualQualified && candidate !== undefined && localTypeScopes.has(candidate.lookupScope)
-          ? undefined
-          : candidate;
+      // A `var` element is only as certain as the container identity it
+      // came through. Each proof is checked where that container was written,
+      // so the element keeps its own lookup anchor (and local visibility).
+      const dependsOn =
+        type.text !== 'var'
+          ? []
+          : written?.endsWith('[]')
+            ? withProof(binding?.proofs, writtenEvidence)
+            : elementOfIterable
+              ? iterable.proofs
+              : mapProofs;
       add(
         body,
         name,
         inferred?.spelling,
         body.startIndex,
         body.endIndex,
-        contextualQualified,
+        dependsOn,
         inferred?.source ?? type,
         inferred,
       );
-      if (inferred !== undefined)
-        out.push(
-          bindingCapture(
-            name,
-            inferred.spelling,
-            body,
-            contextualQualified,
-            contextualQualified
-              ? (producerScope(inferred.source) ?? inferred.lookupScope)
-              : inferred.lookupScope,
-          ),
-        );
+      if (inferred !== undefined) emit(name, inferred, dependsOn, body);
     } else if (node.type === 'lambda_expression') {
       const argumentsNode = node.parent;
       const call = argumentsNode?.parent;
@@ -515,7 +668,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
       if (owner === undefined) continue;
       const parameters = lambdaParameters(node);
       const expected =
-        owner.base === 'java.util.Map' && member === 'forEach' && owner.args.length === 2
+        MAP_TYPES.has(owner.base) && member === 'forEach' && owner.args.length === 2
           ? owner.args
           : ((ITERABLE_TYPES.has(owner.base) && member === 'forEach') ||
                 (owner.base === STREAM_TYPE &&
@@ -532,37 +685,41 @@ export function synthesizeJavaDeclaredTypeCaptures(
           parameter.type === 'identifier' ? parameter : parameter.childForFieldName('name');
         if (name === null) continue;
         const inferred = expected[i]!;
-        if (owner.contextualQualified && localTypeScopes.has(inferred.lookupScope)) {
-          add(node, name, undefined, -1, node.endIndex);
-          continue;
-        }
         add(
           node,
           name,
           inferred.spelling,
           -1,
           node.endIndex,
-          owner.contextualQualified,
+          owner.proofs,
           inferred.source,
           inferred,
         );
-        out.push(
-          bindingCapture(
-            name,
-            inferred.spelling,
-            undefined,
-            owner.contextualQualified,
-            // Raw-JDK validation must inspect the container's original
-            // declaration environment, including inherited/package roots.
-            owner.contextualQualified
-              ? (producerScope(inferred.source) ?? inferred.lookupScope)
-              : inferred.lookupScope,
-          ),
-        );
+        emit(name, inferred, owner.proofs);
       }
     }
   }
+  if (proofs.length === 0) containerProofs.delete(filePath);
+  else containerProofs.set(filePath, proofs);
   return out;
+}
+
+/** Whether a type body can inherit members from a supertype. Anonymous and
+ * enum-constant bodies always have one; `Object` and `Annotation` add none. */
+function inheritsMembers(body: SyntaxNode): boolean {
+  const owner = body.parent;
+  if (owner === null) return false;
+  if (body.type === 'class_body')
+    return (
+      owner.type === 'object_creation_expression' ||
+      owner.type === 'enum_constant' ||
+      owner.childForFieldName('superclass') !== null ||
+      owner.childForFieldName('interfaces') !== null
+    );
+  if (body.type === 'enum_body') return owner.childForFieldName('interfaces') !== null;
+  if (body.type === 'interface_body')
+    return owner.namedChildren.some((child) => child.type === 'extends_interfaces');
+  return false;
 }
 
 function lambdaParameters(lambda: SyntaxNode): SyntaxNode[] {
