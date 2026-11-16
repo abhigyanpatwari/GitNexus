@@ -43,6 +43,8 @@ it('corrects only workspace-shadowed annotation plans and restores an explicit s
       'q/lombok.java': 'package q; public class lombok { public @interface Value {} }',
       'q/Model.java': `package q;
 @org.springframework.stereotype.Service @lombok.Value class Model { p.Repo repo; }`,
+      // A workspace `lombok` package must not undo the q.lombok type shadow.
+      'lombok/Placeholder.java': 'package lombok; public class Placeholder {}',
       'r/Model.java': `package r;
 @org.springframework.stereotype.Service @lombok.Value class Model { p.Repo repo; }`,
       's/Base.java': 'package s; public class Base { public @interface Getter {} }',

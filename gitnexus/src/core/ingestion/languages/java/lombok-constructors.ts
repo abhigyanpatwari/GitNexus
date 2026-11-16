@@ -8,7 +8,9 @@ import { hasRecoveredSyntax } from '../../utils/ast-helpers.js';
 import {
   collectLombokImports,
   isProvenJavaAnnotation,
-  isProvenLombokAnnotation,
+  javaMemberTypeDeclarations,
+  lombokAnnotationProof,
+  readLombokFieldDefaultsMakeFinal,
   type LombokImportIndex,
 } from './lombok-synthesizer.js';
 
@@ -41,6 +43,7 @@ const CONSTRUCTOR_RELATED = new Set([
   'Value',
   'Builder',
   'SuperBuilder',
+  'FieldDefaults',
 ]);
 
 function annotationsOf(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
@@ -145,7 +148,7 @@ function constructorTypeShadows(node: Parser.SyntaxNode): Set<string> {
               'record_declaration',
               'annotation_type_declaration',
             ].includes(owner.type)
-          ? (owner.childForFieldName('body')?.namedChildren ?? [])
+          ? javaMemberTypeDeclarations(owner.childForFieldName('body'))
           : [];
     for (const member of members) {
       if (
@@ -189,9 +192,16 @@ export function collectJavaLombokConstructors(
     while (root.parent !== null) root = root.parent;
     imports = collectLombokImports(root);
   }
-  const proven = classAnnotations.filter((annotation) =>
-    isProvenLombokAnnotation(annotationName(annotation), imports, classNode),
-  );
+  // Every Lombok-named annotation, with its proof at its own position. An
+  // uncertain one may change generation in a way we cannot describe.
+  let complete = true;
+  const provenAt = (annotations: readonly Parser.SyntaxNode[], context: Parser.SyntaxNode) =>
+    annotations.filter((annotation) => {
+      const proof = lombokAnnotationProof(annotationName(annotation), imports, context);
+      if (proof === 'uncertain') complete = false;
+      return proof === true;
+    });
+  const proven = provenAt(classAnnotations, classNode);
   const body = classNode.childForFieldName('body');
   if (body === null) return empty;
   const explicit = body.namedChildren.filter((child) => child.type === 'constructor_declaration');
@@ -202,25 +212,42 @@ export function collectJavaLombokConstructors(
   const implied = proven.filter((annotation) =>
     ['Data', 'Value'].includes(simpleAnnotationName(annotation)),
   );
-  let complete = !proven.some((annotation) =>
-    ['Builder', 'SuperBuilder'].includes(simpleAnnotationName(annotation)),
-  );
+  const builder = proven.find((annotation) => simpleAnnotationName(annotation) === 'Builder');
+  // SuperBuilder always adds a constructor taking its builder type.
+  if (proven.some((annotation) => simpleAnnotationName(annotation) === 'SuperBuilder'))
+    complete = false;
+  // FieldDefaults(makeFinal=true) adds `final` like Value; unreadable options
+  // might, so they leave the generated parameter list unknown.
+  let makeFinal = false;
+  for (const annotation of proven) {
+    if (simpleAnnotationName(annotation) !== 'FieldDefaults') continue;
+    const written = readLombokFieldDefaultsMakeFinal(annotation);
+    if (written === undefined) complete = false;
+    else makeFinal ||= written;
+  }
 
   // Tolerate hides a constructor from Lombok, but not from Spring's inventory.
   // Do not infer a sole constructor when that generation policy is uncertain.
   if (
     explicit.some((constructor) =>
-      annotationsOf(constructor).some(
-        (annotation) =>
-          simpleAnnotationName(annotation) === 'Tolerate' &&
-          isProvenLombokAnnotation(annotationName(annotation), imports, constructor),
+      provenAt(annotationsOf(constructor), constructor).some(
+        (annotation) => simpleAnnotationName(annotation) === 'Tolerate',
       ),
     )
   )
     complete = false;
+  let builderGenerates = false;
   if (generators.length === 0 && explicit.length === 0) {
-    if (implied.length > 1) complete = false;
-    generators.push(...implied);
+    if (builder !== undefined) {
+      // Class-level Builder writes its all-args constructor only when no
+      // constructor is written and no XArgsConstructor is present; it then
+      // also suppresses the Data/Value constructor.
+      builderGenerates = true;
+      generators.push(builder);
+    } else {
+      if (implied.length > 1) complete = false;
+      generators.push(...implied);
+    }
   }
 
   const fields: Array<{
@@ -236,18 +263,22 @@ export function collectJavaLombokConstructors(
     const modifiers = field.namedChildren.find((child) => child.type === 'modifiers');
     if (modifiers?.children.some((modifier) => modifier.text === 'static')) continue;
     const annotations = annotationsOf(field);
-    const nonFinal = annotations.some(
-      (annotation) =>
-        simpleAnnotationName(annotation) === 'NonFinal' &&
-        isProvenLombokAnnotation(annotationName(annotation), imports, field),
+    const fieldLombok = provenAt(annotations, field);
+    // Builder.Default moves the initializer into the builder; the generated
+    // constructor then takes that field even when it is final.
+    if (
+      builderGenerates &&
+      annotations.some((annotation) => simpleAnnotationName(annotation) === 'Default')
+    )
+      complete = false;
+    const nonFinal = fieldLombok.some(
+      (annotation) => simpleAnnotationName(annotation) === 'NonFinal',
     );
     const final =
       modifiers?.children.some((modifier) => modifier.text === 'final') === true ||
-      (value && !nonFinal);
-    const nonNull = annotations.some(
-      (annotation) =>
-        simpleAnnotationName(annotation) === 'NonNull' &&
-        isProvenLombokAnnotation(annotationName(annotation), imports, field),
+      ((value || makeFinal) && !nonFinal);
+    const nonNull = fieldLombok.some(
+      (annotation) => simpleAnnotationName(annotation) === 'NonNull',
     );
     const type = field.childForFieldName('type');
     if (type === null || hasRecoveredSyntax(field)) {
@@ -275,9 +306,11 @@ export function collectJavaLombokConstructors(
 
   const generated: GeneratedConstructor[] = [];
   for (const annotation of generators) {
-    if (!hasDefaultOptions(annotation)) complete = false;
     const kind = simpleAnnotationName(annotation);
-    const allArgs = kind === 'AllArgsConstructor' || kind === 'Value';
+    // Builder options configure the builder, never its all-args constructor.
+    if (kind === 'Builder' ? hasRecoveredSyntax(annotation) : !hasDefaultOptions(annotation))
+      complete = false;
+    const allArgs = kind === 'AllArgsConstructor' || kind === 'Value' || kind === 'Builder';
     const noArgs = kind === 'NoArgsConstructor';
     if (noArgs && fields.some((field) => field.final && !field.initialized)) complete = false;
     const selected = noArgs

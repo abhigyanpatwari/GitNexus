@@ -12,6 +12,8 @@
  * - Class- or field-level enable; `AccessLevel.NONE` disables.
  * - Default JavaBeans naming; primitive `boolean isX` → `isX` / `setX`.
  * - Access levels PUBLIC/PROTECTED/PRIVATE/PACKAGE.
+ * - `@Value` and `@FieldDefaults(makeFinal=true)` make fields final (no setter)
+ *   unless `@NonFinal`; unreadable FieldDefaults options suppress setters.
  * - `@Accessors(chain=true)` modeled as setter return = declaring type.
  * - `@Accessors(fluent=true)` / `prefix=…`: omit affected accessors (names
  *   cannot be proven without full Lombok config).
@@ -25,6 +27,7 @@
 
 import type Parser from 'tree-sitter';
 import type { CaptureMatch } from 'gitnexus-shared';
+import { hasRecoveredSyntax } from '../../utils/ast-helpers.js';
 import { jvmGetterName, jvmSetterName } from '../jvm/beanspec.js';
 import {
   createExistingMethodIndex,
@@ -81,6 +84,8 @@ interface LombokField {
   accessors: AccessorsOptions;
   accessorsPresent: boolean;
   nonFinal: boolean;
+  /** An unprovable field annotation might suppress accessors: emit none. */
+  uncertain: boolean;
 }
 
 interface LombokClass {
@@ -104,9 +109,56 @@ const LOMBOK_ANNOTATION_PACKAGE = new Map<string, string>([
   ['NonNull', 'lombok'],
   ['Builder', 'lombok'],
   ['Accessors', 'lombok.experimental'],
+  ['FieldDefaults', 'lombok.experimental'],
   ['NonFinal', 'lombok.experimental'],
   ['SuperBuilder', 'lombok.experimental'],
   ['Tolerate', 'lombok.experimental'],
+]);
+
+/** Simple names of every Lombok annotation this provider models. */
+export const LOMBOK_ANNOTATION_NAMES: ReadonlySet<string> = new Set(
+  LOMBOK_ANNOTATION_PACKAGE.keys(),
+);
+
+/**
+ * Other packages known to declare a simple name that a modelled annotation
+ * also uses. Two type-import-on-demand declarations that both supply a name
+ * used in the file do not compile, so an unrelated second wildcard (for
+ * example `java.util.*` or `javax.persistence.*`) cannot change what the name
+ * means. Only a package listed here refuses the wildcard proof. Same-package,
+ * member, single-type and single-static-import shadows are modelled separately.
+ */
+const KNOWN_ON_DEMAND_DECLARERS = new Map<string, ReadonlySet<string>>([
+  [
+    'Value',
+    new Set([
+      'lombok',
+      'org.springframework.beans.factory.annotation',
+      'io.micronaut.context.annotation',
+      'org.immutables.value',
+    ]),
+  ],
+  [
+    'NonNull',
+    new Set([
+      'lombok',
+      'org.springframework.lang',
+      'androidx.annotation',
+      'android.support.annotation',
+      'edu.umd.cs.findbugs.annotations',
+      'org.checkerframework.checker.nullness.qual',
+      'org.eclipse.jdt.annotation',
+      'io.micronaut.core.annotation',
+      'reactor.util.annotation',
+      'io.reactivex.annotations',
+      'io.reactivex.rxjava3.annotations',
+    ]),
+  ],
+  ['Builder', new Set(['lombok', 'org.immutables.builder'])],
+  [
+    'Qualifier',
+    new Set(['org.springframework.beans.factory.annotation', 'javax.inject', 'jakarta.inject']),
+  ],
 ]);
 
 export function getterName(fieldName: string, fieldType: string): string {
@@ -127,17 +179,26 @@ export interface LombokImportIndex {
   bySimple: Map<string, string>;
   starPackages: Set<string>;
   shadowedSimpleNames: Set<string>;
+  /** Simple names of single-static-imports; a static member type hides wildcards. */
+  staticImportedSimpleNames: Set<string>;
   /** Compilation-unit lifetime only; never retained across AST edits. */
   memberTypeNamesByOwner: ReadonlyMap<number, ReadonlySet<string>>;
   workspaceProof?: JavaLombokAnnotationWorkspaceProof;
 }
+
+/**
+ * Annotation identity: `true` proven, `false` refused, `uncertain` when an
+ * unresolved inherited scope might hide the name. An uncertain annotation
+ * must neither enable a member nor let a class-level default fall through.
+ */
+export type JavaAnnotationProof = boolean | 'uncertain';
 
 /** A derived veto, used only while one compilation unit is being re-extracted. */
 export type JavaLombokAnnotationWorkspaceProof = (
   writtenName: string,
   qualifiedName: string,
   context: Parser.SyntaxNode | undefined,
-) => boolean;
+) => JavaAnnotationProof;
 
 let activeWorkspaceProof:
   | {
@@ -161,6 +222,19 @@ export function withJavaLombokWorkspaceProof<T>(
   }
 }
 
+/** Member type declarations of a type body, including those after an enum's constants. */
+export function javaMemberTypeDeclarations(body: Parser.SyntaxNode | null): Parser.SyntaxNode[] {
+  const members: Parser.SyntaxNode[] = [];
+  for (const member of body?.namedChildren ?? []) {
+    if (member.type === 'enum_body_declarations') {
+      members.push(...javaMemberTypeDeclarations(member));
+    } else if (JAVA_TYPE_DECLS.has(member.type) || member.type === 'annotation_type_declaration') {
+      members.push(member);
+    }
+  }
+  return members;
+}
+
 /**
  * Compilation-unit imports only — Java `import` is never nested in a type body.
  */
@@ -168,12 +242,11 @@ export function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex
   const bySimple = new Map<string, string>();
   const starPackages = new Set<string>();
   const shadowedSimpleNames = new Set<string>();
+  const staticImportedSimpleNames = new Set<string>();
   const memberTypeNamesByOwner = new Map<number, Set<string>>();
   for (const owner of root.descendantsOfType([...JAVA_TYPE_DECLS, 'annotation_type_declaration'])) {
     const names = new Set<string>();
-    for (const member of owner.childForFieldName('body')?.namedChildren ?? []) {
-      if (!JAVA_TYPE_DECLS.has(member.type) && member.type !== 'annotation_type_declaration')
-        continue;
+    for (const member of javaMemberTypeDeclarations(owner.childForFieldName('body'))) {
       const name = member.childForFieldName('name');
       if (name !== null) names.add(name.text);
     }
@@ -186,15 +259,24 @@ export function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex
   }
   for (const child of root.children) {
     if (child.type !== 'import_declaration') continue;
-    if (/^import\s+static\b/.test(child.text)) continue;
-    const text = child.text
-      .replace(/^import\s+/, '')
-      .replace(/;\s*$/, '')
+    const nameNode = child.namedChildren.find(
+      (part) => part.type === 'scoped_identifier' || part.type === 'identifier',
+    );
+    if (nameNode === undefined) continue;
+    const text = nameNode.text
       .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\s+/g, '')
-      .trim();
-    if (text.endsWith('.*')) {
-      starPackages.add(text.slice(0, -2));
+      .replace(/\/\/[^\n]*/g, '')
+      .replace(/\s+/g, '');
+    const wildcard = child.namedChildren.some((part) => part.type === 'asterisk');
+    if (child.children.some((part) => part.type === 'static')) {
+      // `import static a.Tags.Value;` may import a member type named Value,
+      // which shadows every type-import-on-demand (JLS 6.4.1). A static
+      // wildcard is itself on-demand and cannot shadow `lombok.*`.
+      if (!wildcard) staticImportedSimpleNames.add(annotationSimpleName(text));
+      continue;
+    }
+    if (wildcard) {
+      starPackages.add(text);
     } else {
       bySimple.set(annotationSimpleName(text), text);
     }
@@ -203,6 +285,7 @@ export function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex
     bySimple,
     starPackages,
     shadowedSimpleNames,
+    staticImportedSimpleNames,
     memberTypeNamesByOwner,
     ...(activeWorkspaceProof?.tree === root.tree
       ? { workspaceProof: activeWorkspaceProof.proof }
@@ -210,15 +293,16 @@ export function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex
   };
 }
 
-export function isProvenLombokAnnotation(
+/** Tri-state Lombok identity; see {@link JavaAnnotationProof}. */
+export function lombokAnnotationProof(
   nameText: string,
   imports: LombokImportIndex,
   context?: Parser.SyntaxNode,
-): boolean {
+): JavaAnnotationProof {
   const simple = annotationSimpleName(nameText);
   const packageName = LOMBOK_ANNOTATION_PACKAGE.get(simple);
   if (packageName === undefined) return false;
-  return isProvenJavaAnnotation(nameText, `${packageName}.${simple}`, imports, context);
+  return javaAnnotationProof(nameText, `${packageName}.${simple}`, imports, context);
 }
 
 /** Shared Java-local annotation proof for accessors and generated constructors. */
@@ -228,10 +312,36 @@ export function isProvenJavaAnnotation(
   imports: LombokImportIndex,
   context?: Parser.SyntaxNode,
 ): boolean {
-  if (imports.workspaceProof?.(nameText, qualifiedName, context) === false) return false;
+  return javaAnnotationProof(nameText, qualifiedName, imports, context) === true;
+}
+
+/** File-local proof, narrowed by the workspace veto when one is active. */
+function javaAnnotationProof(
+  nameText: string,
+  qualifiedName: string,
+  imports: LombokImportIndex,
+  context?: Parser.SyntaxNode,
+): JavaAnnotationProof {
+  const workspace = imports.workspaceProof?.(nameText, qualifiedName, context) ?? true;
+  if (workspace === false) return false;
+  if (!isLocallyProvenJavaAnnotation(nameText, qualifiedName, imports, context)) return false;
+  return workspace;
+}
+
+function isLocallyProvenJavaAnnotation(
+  nameText: string,
+  qualifiedName: string,
+  imports: LombokImportIndex,
+  context?: Parser.SyntaxNode,
+): boolean {
   if (nameText.includes('.')) {
     const root = nameText.split('.')[0]!;
-    if (imports.bySimple.has(root) || imports.shadowedSimpleNames.has(root)) return false;
+    if (
+      imports.bySimple.has(root) ||
+      imports.shadowedSimpleNames.has(root) ||
+      imports.staticImportedSimpleNames.has(root)
+    )
+      return false;
     for (
       let owner = context;
       owner !== undefined && owner !== null;
@@ -259,16 +369,43 @@ export function isProvenJavaAnnotation(
   }
   const imported = imports.bySimple.get(simple);
   if (imported !== undefined) return imported === qualifiedName;
+  if (imports.staticImportedSimpleNames.has(simple)) return false;
   const packageName = qualifiedName.slice(0, qualifiedName.lastIndexOf('.'));
   if (!imports.starPackages.has(packageName)) return false;
-  // A second unknown wildcard package could declare the same annotation.
-  // The two supported Lombok packages have a known, disjoint annotation set.
-  return [...imports.starPackages].every(
-    (other) =>
-      other === packageName ||
-      ((other === 'lombok' || other === 'lombok.experimental') &&
-        LOMBOK_ANNOTATION_PACKAGE.get(simple) !== other),
-  );
+  // Refuse only a second wildcard package known to declare the same name.
+  const declarers = KNOWN_ON_DEMAND_DECLARERS.get(simple);
+  if (declarers === undefined) return true;
+  for (const other of imports.starPackages) {
+    if (other !== packageName && declarers.has(other)) return false;
+  }
+  return true;
+}
+
+/**
+ * `@FieldDefaults` makeFinal as written: `false` for the default, `undefined`
+ * when the options cannot be read exactly (constants, unknown elements or
+ * recovered syntax). `level` changes field access only, never members.
+ */
+export function readLombokFieldDefaultsMakeFinal(
+  annotation: Parser.SyntaxNode,
+): boolean | undefined {
+  if (annotation.type === 'marker_annotation') return false;
+  const argumentsNode = annotation.childForFieldName('arguments');
+  if (argumentsNode === null || hasRecoveredSyntax(annotation)) return undefined;
+  let makeFinal = false;
+  for (const child of argumentsNode.namedChildren) {
+    if (child.type === 'line_comment' || child.type === 'block_comment') continue;
+    if (child.type !== 'element_value_pair') return undefined;
+    const key = child.childForFieldName('key')?.text;
+    const value = child.childForFieldName('value');
+    if (key === 'level' && value !== null) continue;
+    if (key === 'makeFinal' && (value?.type === 'true' || value?.type === 'false')) {
+      makeFinal = value.type === 'true';
+      continue;
+    }
+    return undefined;
+  }
+  return makeFinal;
 }
 
 // ── AccessLevel / Accessors structural parse ──────────────────────────────
@@ -354,6 +491,10 @@ interface ParsedAnnotations {
   tolerate: boolean;
   value: boolean;
   nonFinal: boolean;
+  /** `@FieldDefaults` makes fields final: true when proven or unreadable. */
+  makeFinal: boolean;
+  /** Some Lombok-named annotation here could not be proven or refused. */
+  uncertain: boolean;
 }
 
 function parseModifierAnnotations(
@@ -368,6 +509,8 @@ function parseModifierAnnotations(
     tolerate: false,
     value: false,
     nonFinal: false,
+    makeFinal: false,
+    uncertain: false,
   };
   if (!modifiersNode) return result;
 
@@ -375,7 +518,9 @@ function parseModifierAnnotations(
     if (child.type !== 'marker_annotation' && child.type !== 'annotation') continue;
     const nameNode = child.childForFieldName('name');
     const nameText = nameNode?.text ?? '';
-    if (!isProvenLombokAnnotation(nameText, imports, modifiersNode)) continue;
+    const proof = lombokAnnotationProof(nameText, imports, modifiersNode);
+    if (proof === 'uncertain') result.uncertain = true;
+    if (proof !== true) continue;
     const simple = annotationSimpleName(nameText);
 
     if (simple === 'Tolerate') {
@@ -384,6 +529,11 @@ function parseModifierAnnotations(
     }
     if (simple === 'NonFinal') {
       result.nonFinal = true;
+      continue;
+    }
+    if (simple === 'FieldDefaults') {
+      // An unreadable makeFinal may add `final`: never let it enable a setter.
+      result.makeFinal = readLombokFieldDefaultsMakeFinal(child) !== false;
       continue;
     }
     if (simple === 'Value') {
@@ -477,6 +627,7 @@ function parseFieldDeclaration(
       accessors: fieldAnn.accessors,
       accessorsPresent: fieldAnn.accessorsPresent,
       nonFinal: fieldAnn.nonFinal,
+      uncertain: fieldAnn.uncertain,
     });
   }
   return out;
@@ -535,7 +686,8 @@ function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex):
     const classAnn = parseModifierAnnotations(modifiers, imports);
     const nameNode = node.childForFieldName('name');
     const className = nameNode?.text ?? '';
-    if (className) {
+    // An uncertain class-level annotation could be a suppressing one.
+    if (className && !classAnn.uncertain) {
       const body = findTypeBody(node);
       const fields: LombokField[] = [];
       if (body) {
@@ -543,7 +695,7 @@ function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex):
           for (const child of container.children) {
             if (child.type === 'field_declaration') {
               for (const f of parseFieldDeclaration(child, imports)) {
-                if (f.isStatic) continue;
+                if (f.isStatic || f.uncertain) continue;
                 if (
                   classAnn.value &&
                   f.name.startsWith('$') &&
@@ -551,7 +703,7 @@ function findLombokClasses(root: Parser.SyntaxNode, imports: LombokImportIndex):
                   f.fieldSetter === null
                 )
                   continue;
-                if (classAnn.value && !f.nonFinal) f.isFinal = true;
+                if ((classAnn.value || classAnn.makeFinal) && !f.nonFinal) f.isFinal = true;
                 fields.push(f);
               }
             } else if (child.type === 'enum_body_declarations') {

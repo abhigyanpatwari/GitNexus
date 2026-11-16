@@ -11,6 +11,10 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 import { javaProvider } from '../java.js';
 import { getJavaParser } from './query.js';
+import {
+  applyJavaCaptureSideChannel,
+  collectJavaCaptureSideChannel,
+} from './capture-side-channel.js';
 import { getJavaPackageFact } from './package-facts.js';
 import {
   getJavaOverloadFacts,
@@ -19,6 +23,7 @@ import {
 } from './overload-argument-facts.js';
 import { eraseJavaTypeArguments } from './type-spelling.js';
 import {
+  LOMBOK_ANNOTATION_NAMES,
   synthesizeLombokAccessors,
   withJavaLombokWorkspaceProof,
   type JavaLombokAnnotationWorkspaceProof,
@@ -31,21 +36,14 @@ const TYPE_NODES = new Set([
   'record_declaration',
   'annotation_type_declaration',
 ]);
-const LOMBOK_NAMES = new Set([
-  'Value',
-  'Data',
-  'Getter',
-  'Setter',
-  'RequiredArgsConstructor',
-  'AllArgsConstructor',
-  'NoArgsConstructor',
-  'NonNull',
-  'Accessors',
-  'NonFinal',
-  'Builder',
-  'SuperBuilder',
-  'Tolerate',
-]);
+/** Whitespace or a comment, as Java allows between `@`, name parts and dots. */
+const GAP = String.raw`(?:\s|/\*[\s\S]*?\*/|//[^\n]*)*`;
+const ANNOTATION_NAME = new RegExp(String.raw`@${GAP}([\w$]+(?:${GAP}\.${GAP}[\w$]+)*)`, 'g');
+const stripGaps = (text: string) =>
+  text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/\s+/g, '');
 const rangeKey = (range: Range) =>
   `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
 const nodeRange = (node: Parser.SyntaxNode): Range => ({
@@ -74,12 +72,29 @@ interface TypeEntry {
   readonly packageName: string;
   readonly fact: JavaOverloadTypeFact;
   readonly facts: JavaOverloadFileFacts;
+  /** Lexical member type names, any access. */
   readonly memberNames: Set<string>;
+  readonly members: TypeEntry[];
   parent?: TypeEntry;
 }
 interface InheritedNames {
+  /** Member types inherited from supertypes, filtered by access (JLS 8.5). */
+  readonly members: readonly TypeEntry[];
   readonly names: ReadonlySet<string>;
+  /** A supertype could not be decided, so any name may be inherited. */
   readonly unknown: boolean;
+}
+/** `external`: not declared in this workspace, so it adds no workspace names. */
+type ResolvedBase = TypeEntry | 'object' | 'external' | 'unknown';
+
+/** Private member types are never inherited; package access stays in its package. */
+function inheritsMemberType(member: TypeEntry, heir: TypeEntry): boolean {
+  const modifiers = member.fact.modifiers;
+  // Unrecorded access cannot exclude the name.
+  if (modifiers === undefined) return true;
+  if (modifiers.includes('private')) return false;
+  if (modifiers.includes('public') || modifiers.includes('protected')) return true;
+  return member.packageName === heir.packageName;
 }
 interface Correction {
   readonly tree: Parser.Tree;
@@ -91,7 +106,9 @@ const corrections = new WeakMap<ParsedFile, Correction>();
 function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   const byFile = new Map<string, Map<string, TypeEntry>>();
   const byFqn = new Map<string, TypeEntry[]>();
-  const packageTypes = new Map<string, TypeEntry[]>();
+  /** Top-level types by package, then simple name: one index per reconcile. */
+  const packageTypes = new Map<string, Map<string, TypeEntry[]>>();
+  const simpleNames = new Set<string>();
   for (const parsed of parsedFiles) {
     const pkg = getJavaPackageFact(parsed.filePath);
     const facts = getJavaOverloadFacts(parsed.filePath);
@@ -108,16 +125,20 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
         fact,
         facts,
         memberNames: new Set(),
+        members: [],
       };
       entries.set(rangeKey(fact.range), entry);
       byScope.set(scope.id, entry);
+      simpleNames.add(fact.simpleName);
       const fqn = pkg.packageName === '' ? fact.name : `${pkg.packageName}.${fact.name}`;
       const candidates = byFqn.get(fqn) ?? [];
       candidates.push(entry);
       byFqn.set(fqn, candidates);
       if (scope.parent === parsed.moduleScope) {
-        const top = packageTypes.get(pkg.packageName) ?? [];
-        top.push(entry);
+        const top = packageTypes.get(pkg.packageName) ?? new Map<string, TypeEntry[]>();
+        const named = top.get(fact.simpleName) ?? [];
+        named.push(entry);
+        top.set(fact.simpleName, named);
         packageTypes.set(pkg.packageName, top);
       }
     }
@@ -127,6 +148,7 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       if (parent !== undefined) {
         entry.parent = parent;
         parent.memberNames.add(entry.fact.simpleName);
+        parent.members.push(entry);
       }
     }
     byFile.set(parsed.filePath, entries);
@@ -135,14 +157,14 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   const visible = (from: TypeEntry, target: TypeEntry) =>
     isJvmSourceVisible(from.filePath, target.filePath) &&
     (from.packageName === target.packageName || target.fact.modifiers?.includes('public') === true);
-  const resolveBase = (entry: TypeEntry, written: string): TypeEntry | 'object' | undefined => {
+  const resolveBase = (entry: TypeEntry, written: string): ResolvedBase => {
     const raw = eraseJavaTypeArguments(written).replace(/\s+/g, '');
-    if (!/^[\w$.]+$/.test(raw)) return undefined;
+    if (!/^[\w$.]+$/.test(raw)) return 'unknown';
     const imports = entry.facts.imports.filter((item) => !item.static && !item.wildcard);
     const head = raw.split('.')[0]!;
     const explicit = imports.filter((item) => item.name.split('.').pop() === head);
     let spellings: string[];
-    if (explicit.length > 1) return undefined;
+    if (explicit.length > 1) return 'unknown';
     if (explicit.length === 1) spellings = [explicit[0]!.name + raw.slice(head.length)];
     else if (raw.includes('.')) spellings = [raw];
     else {
@@ -180,31 +202,42 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
         (raw === 'Object' && explicit.length === 0 && !byFqn.has(`${entry.packageName}.Object`)))
     )
       return 'object';
-    return undefined;
+    if (candidates.length > 1) return 'unknown';
+    // A base absent from the workspace (`RuntimeException`, `java.io.Serializable`,
+    // any library type) declares no workspace member types. Only a qualified
+    // spelling read literally (`Outer.Inner` of a same-package Outer) may
+    // still name a workspace type that the lookup above missed.
+    return explicit.length === 0 && raw.includes('.') && simpleNames.has(raw.split('.').pop()!)
+      ? 'unknown'
+      : 'external';
   };
   const inherited = new Map<TypeEntry, InheritedNames>();
   const visiting = new Set<TypeEntry>();
   const namesOf = (entry: TypeEntry): InheritedNames => {
     const cached = inherited.get(entry);
     if (cached !== undefined) return cached;
-    if (visiting.has(entry)) return { names: new Set(), unknown: true };
+    if (visiting.has(entry)) return { members: [], names: new Set(), unknown: true };
     visiting.add(entry);
-    const names = new Set<string>();
+    const members = new Set<TypeEntry>();
     let unknown = false;
     for (const base of entry.fact.bases) {
       const target = resolveBase(entry, base);
-      if (target === 'object') continue;
-      if (target === undefined) {
+      if (target === 'object' || target === 'external') continue;
+      if (target === 'unknown') {
         unknown = true;
         continue;
       }
-      for (const name of target.memberNames) names.add(name);
       const ancestors = namesOf(target);
-      for (const name of ancestors.names) names.add(name);
+      for (const member of [...target.members, ...ancestors.members])
+        if (inheritsMemberType(member, entry)) members.add(member);
       unknown ||= ancestors.unknown;
     }
     visiting.delete(entry);
-    const result = { names, unknown };
+    const result = {
+      members: [...members],
+      names: new Set([...members].map((member) => member.fact.simpleName)),
+      unknown,
+    };
     inherited.set(entry, result);
     return result;
   };
@@ -239,9 +272,10 @@ export function reconcileJavaLombokWorkspaceProof(
     const linesByRoot = new Map<string, number[]>();
     let cursor = 0,
       line = 1;
-    for (const match of source.matchAll(/@\s*([\w$]+(?:\.[\w$]+)*)/g)) {
-      const name = match[1]!;
-      if (!LOMBOK_NAMES.has(name.split('.').pop()!)) continue;
+    // Comments may sit between `@`, the name parts and the dots: `@/*c*/Value`.
+    for (const match of source.matchAll(ANNOTATION_NAME)) {
+      const name = stripGaps(match[1]!);
+      if (!LOMBOK_ANNOTATION_NAMES.has(name.split('.').pop()!)) continue;
       // One forward scan for every relevant annotation, never prefix slicing
       // per site. Tree-sitter rows and this filter both advance on LF.
       while (cursor < match.index) if (source.charCodeAt(cursor++) === 10) line++;
@@ -253,31 +287,24 @@ export function reconcileJavaLombokWorkspaceProof(
       linesByRoot.set(root, lines);
     }
     if (annotations.length === 0) continue;
-    const siblings = new Set(
-      (inventory.packageTypes.get(pkg.packageName) ?? [])
-        .filter((entry) => isJvmSourceVisible(original.filePath, entry.filePath))
-        .map((entry) => entry.fact.simpleName),
-    );
-    // The leaf import proof already sees declarations in its own file. Only
-    // foreign siblings can change that part of the annotation decision.
-    const foreignSiblings = new Set(
-      (inventory.packageTypes.get(pkg.packageName) ?? [])
-        .filter(
-          (entry) =>
-            entry.filePath !== original.filePath &&
-            isJvmSourceVisible(original.filePath, entry.filePath),
-        )
-        .map((entry) => entry.fact.simpleName),
-    );
-    const named = new Map(
-      facts.imports
-        .filter((item) => !item.static && !item.wildcard)
-        .map((item) => [item.name.split('.').pop()!, item.name]),
+    // Look up only the names this file uses in the per-reconcile package index.
+    const packageIndex = inventory.packageTypes.get(pkg.packageName);
+    const hasSibling = (name: string, foreignOnly: boolean) =>
+      (packageIndex?.get(name) ?? []).some(
+        (entry) =>
+          // The leaf import proof already sees declarations in its own file.
+          (!foreignOnly || entry.filePath !== original.filePath) &&
+          isJvmSourceVisible(original.filePath, entry.filePath),
+      );
+    // A single-static-import may name a member type; it shadows package
+    // siblings, and the leaf proof refuses it against wildcard imports.
+    const named = new Set(
+      facts.imports.filter((item) => !item.wildcard).map((item) => item.name.split('.').pop()!),
     );
     const packageCanShadow = annotations.some((name) =>
       name.includes('.')
-        ? foreignSiblings.has(name.split('.')[0]!)
-        : foreignSiblings.has(name) && !named.has(name),
+        ? hasSibling(name.split('.')[0]!, true)
+        : hasSibling(name, true) && !named.has(name),
     );
     // Anonymous/local type facts can lack an equal-range extracted scope.
     // Keep the prior trigger in that case; narrower coverage is not proof.
@@ -296,8 +323,15 @@ export function reconcileJavaLombokWorkspaceProof(
     if (!packageCanShadow && !inheritedCanShadow) continue;
     const proof: JavaLombokAnnotationWorkspaceProof = (written, _qualified, context) => {
       const root = written.split('.')[0]!;
-      if (written.includes('.') ? siblings.has(root) : siblings.has(written) && !named.has(written))
+      if (
+        written.includes('.')
+          ? hasSibling(root, false)
+          : hasSibling(written, false) && !named.has(written)
+      )
         return false;
+      // A definite shadow at any level refuses. An undecidable level only
+      // makes the answer uncertain: it may hide the name or not.
+      let uncertain = false;
       for (
         let owner = context;
         owner !== undefined && owner !== null;
@@ -317,24 +351,36 @@ export function reconcileJavaLombokWorkspaceProof(
         if (context !== undefined && body !== null && context.startIndex < body.startIndex)
           continue;
         const entry = entries.get(rangeKey(nodeRange(owner)));
-        if (entry === undefined) return false;
+        if (entry === undefined) {
+          uncertain = true;
+          continue;
+        }
         const inherited = inventory.namesOf(entry);
-        if (inherited.unknown || inherited.names.has(root)) return false;
+        if (inherited.names.has(root)) return false;
+        if (inherited.unknown) uncertain = true;
       }
-      return true;
+      return uncertain ? 'uncertain' : true;
     };
     const tree =
       (ctx.treeCache?.get(original.filePath) as Parser.Tree | undefined) ??
       parseSourceSafe(getJavaParser(), source, undefined, {
         bufferSize: getTreeSitterBufferSize(source),
       });
+    // Re-extraction rewrites this file's module-level facts; a failed one may
+    // leave them partial, so restore the snapshot taken here.
+    const capturedBefore = collectJavaCaptureSideChannel(original.filePath);
     const corrected = withJavaLombokWorkspaceProof(tree, proof, () => {
       const parsed = extractParsedFile(javaProvider, source, original.filePath, undefined, tree);
-      if (parsed === undefined)
-        throw new Error(`Cannot verify Lombok annotation identity: ${original.filePath}`);
+      if (parsed === undefined) return undefined;
       const captureSideChannel = javaProvider.collectCaptureSideChannel?.(original.filePath);
       return { ...parsed, ...(captureSideChannel === undefined ? {} : { captureSideChannel }) };
     });
+    // A failed re-extraction cannot verify a veto: keep the file-local result
+    // (and its captured facts) rather than fail every Java file in this pass.
+    if (corrected === undefined) {
+      applyJavaCaptureSideChannel({ ...original, captureSideChannel: capturedBefore });
+      continue;
+    }
     populateClassOwnedMembers(corrected);
     const retained = new Set(corrected.localDefs.map((def) => def.nodeId));
     const removed = original.localDefs.filter(
