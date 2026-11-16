@@ -401,15 +401,15 @@ function findRegisteredRepo(cwd) {
   if (!Array.isArray(entries)) return null;
 
   let best = null;
-  let bestLen = -1;
+  let bestRank = Infinity;
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (typeof entry.path !== 'string') continue;
     if (entry.path.includes('\0') || !path.isAbsolute(entry.path)) continue;
     const registeredPath = canonicalize(entry.path);
-    if (!registeredPath || !repoPaths.some((repoPath) => samePath(repoPath, registeredPath))) {
-      continue;
-    }
+    if (!registeredPath) continue;
+    const rank = repoPaths.findIndex((repoPath) => samePath(repoPath, registeredPath));
+    if (rank === -1) continue;
     const storagePath = resolveEntryStoragePath(entry);
     if (!storagePath) continue;
     const repositoryLocal = samePath(
@@ -427,8 +427,8 @@ function findRegisteredRepo(cwd) {
       : storagePath;
     const indexMetadata = branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata;
     const lbugPath = resolveGraphPath(indexDir, indexMetadata);
-    if (registeredPath.length > bestLen) {
-      bestLen = registeredPath.length;
+    if (rank < bestRank) {
+      bestRank = rank;
       best = {
         path: entry.path,
         storagePath,
