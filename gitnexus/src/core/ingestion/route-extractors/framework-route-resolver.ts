@@ -63,6 +63,69 @@ export function resolveFrameworkRouteFacts(
     const targets = moduleTargets.get(key)!;
     return targets.length === 1 && byFile.has(targets[0]) ? targets[0] : undefined;
   };
+  // Which names a file can publish, directly or through `export *`. `opaque`: some star
+  // source is unresolved, so it may publish anything. `null`: the file reaches an
+  // `export *` cycle, so lookups there keep walking every star source.
+  type Published = { readonly names: ReadonlySet<string>; readonly opaque: boolean } | null;
+  const published = new Map<string, Published>();
+  const publishedBy = (filePath: string, active = new Set<string>()): Published => {
+    if (published.has(filePath)) return published.get(filePath)!;
+    const file = byFile.get(filePath);
+    if (!file || active.has(filePath)) return null;
+    active.add(filePath);
+    const names = new Set(file.exports.map((entry) => entry.name));
+    let opaque = false;
+    let cyclic = false;
+    for (const source of file.starExports) {
+      const target = targetFor(filePath, source);
+      const inner = target === undefined ? undefined : publishedBy(target, active);
+      if (inner === null) {
+        cyclic = true;
+        break;
+      }
+      if (inner === undefined || inner.opaque) opaque = true;
+      else for (const name of inner.names) if (name !== 'default') names.add(name);
+    }
+    active.delete(filePath);
+    const result = cyclic ? null : { names, opaque };
+    published.set(filePath, result);
+    return result;
+  };
+  // Per file: name -> the star sources that can publish it, plus the sources that may
+  // publish anything. A lookup through a wide `export *` barrel visits only those, not
+  // every star source per lookup (O(N^2) over N consumers of one barrel).
+  type StarIndex = { readonly byName: Map<string, string[]>; readonly always: string[] } | null;
+  const starIndexes = new Map<string, StarIndex>();
+  const buildStarIndex = (filePath: string, file: FrameworkRouteFacts): StarIndex => {
+    const index = { byName: new Map<string, string[]>(), always: [] as string[] };
+    for (const source of file.starExports) {
+      const target = targetFor(filePath, source);
+      const inner = target === undefined ? undefined : publishedBy(target);
+      if (inner === null) return null;
+      if (inner === undefined || inner.opaque) {
+        index.always.push(source);
+        continue;
+      }
+      for (const name of inner.names) {
+        if (name === 'default') continue;
+        const sources = index.byName.get(name);
+        if (sources) sources.push(source);
+        else index.byName.set(name, [source]);
+      }
+    }
+    return index;
+  };
+  const starSources = (
+    filePath: string,
+    file: FrameworkRouteFacts,
+    name: string,
+  ): readonly string[] => {
+    if (!starIndexes.has(filePath)) starIndexes.set(filePath, buildStarIndex(filePath, file));
+    const index = starIndexes.get(filePath)!;
+    if (index === null) return file.starExports;
+    const named = index.byName.get(name);
+    return named === undefined ? index.always : [...index.always, ...named];
+  };
   const exportValue = (
     filePath: string,
     name: string,
@@ -88,7 +151,7 @@ export function resolveFrameworkRouteFacts(
     // A star export never republishes default. Explicit exports above win.
     if (name === 'default') return { found: false };
     const candidates: ExportResult[] = [];
-    for (const source of file.starExports) {
+    for (const source of starSources(filePath, file, name)) {
       const target = targetFor(filePath, source);
       if (!target) {
         candidates.push({ found: true });
