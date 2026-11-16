@@ -81,6 +81,24 @@ interface DirectoryRanking {
   readonly pathsByNextSegment: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
+interface SiblingTypeBinding {
+  readonly name: string;
+  readonly ref: TypeRef;
+}
+
+interface SiblingTypeBindingIndex {
+  /** The untruncated merge: every other sibling's module bindings, then every
+   *  other sibling's non-self class bindings, in path order; a name keeps the
+   *  first binding it meets. */
+  readonly mergeAll: (filePath: string, typeBindings: Map<string, TypeRef>) => void;
+  /** Record bindings a merge outside the index appended past `sizeBefore`. */
+  readonly recordAppended: (
+    filePath: string,
+    typeBindings: ReadonlyMap<string, TypeRef>,
+    sizeBefore: number,
+  ) => void;
+}
+
 export function createJvmPackageSiblingVisibility(
   options: JvmPackageSiblingOptions,
 ): JvmPackageSiblingVisibility {
@@ -192,6 +210,14 @@ export function createJvmPackageSiblingVisibility(
       }
       for (const sibling of bucket.moduleScopes) moduleScopeByPath.set(sibling.filePath, sibling);
       const allSiblingPaths = [...parsedByPath.keys()];
+      // The index addresses siblings by path and records appends per module
+      // map, so it needs one file per path and one map per module scope.
+      const bindingIndex =
+        allSiblingPaths.length === bucket.parsed.length &&
+        new Set(bucket.moduleScopes.map((sibling) => sibling.scope.typeBindings)).size ===
+          bucket.moduleScopes.length
+          ? createSiblingTypeBindingIndex(allSiblingPaths, moduleScopeByPath, parsedByPath)
+          : undefined;
       // Proximity depends only on the two paths, so files sharing a directory
       // share one ranking; rank once per directory instead of once per file.
       const rankingByDirectory = new Map<string, DirectoryRanking>();
@@ -262,6 +288,11 @@ export function createJvmPackageSiblingVisibility(
         // untruncated scope merges every sibling as before, including ones that
         // contribute no class-like def.
         const typeBindings = scope.typeBindings as Map<string, TypeRef>;
+        if (!truncated && bindingIndex !== undefined) {
+          bindingIndex.mergeAll(filePath, typeBindings);
+          continue;
+        }
+        const sizeBefore = typeBindings.size;
         const mergePaths = truncated ? injectedPaths : allSiblingPaths;
         // Module scopes first, then class scopes: module-level bindings win on
         // a name collision, which the two-pass order (not file order) encodes.
@@ -284,6 +315,7 @@ export function createJvmPackageSiblingVisibility(
             }
           }
         }
+        bindingIndex?.recordAppended(filePath, typeBindings, sizeBefore);
       }
     }
 
@@ -448,6 +480,105 @@ function rankByProximity(
     (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
   );
   return candidates;
+}
+
+/**
+ * The untruncated merge gives each name the binding of the first other sibling
+ * that has it, so a merge only needs those first holders, in walk order: it
+ * then costs the package's distinct names instead of every sibling's bindings.
+ *
+ * A class binding needs its first two holders, for a file that holds it
+ * itself. A module binding needs only its first: the merge writes into the
+ * file's own module map, so a file that holds a name already has it.
+ *
+ * Module maps are read live: each merge appends to its own file's map, and
+ * later merges walk those appends. So every append is recorded here, after the
+ * map's earlier entries. Maps only grow, so a sibling that a lower one has
+ * overtaken for a name never supplies it again; its entry is dropped on the
+ * next walk. Class bindings are never written, so their index is built once.
+ */
+function createSiblingTypeBindingIndex(
+  siblingPaths: readonly string[],
+  moduleScopeByPath: ReadonlyMap<string, PackageBucket['moduleScopes'][number]>,
+  parsedByPath: ReadonlyMap<string, ParsedFile>,
+): SiblingTypeBindingIndex {
+  const indexByPath = new Map<string, number>();
+  const firstModuleHolder = new Map<string, number>();
+  const moduleBindings: SiblingTypeBinding[][] = [];
+  const classBindings: SiblingTypeBinding[][] = [];
+  const classHolderCount = new Map<string, number>();
+
+  const holdModuleBinding = (index: number, name: string, ref: TypeRef): void => {
+    const first = firstModuleHolder.get(name);
+    if (first !== undefined && first < index) return;
+    firstModuleHolder.set(name, index);
+    moduleBindings[index].push({ name, ref });
+  };
+
+  siblingPaths.forEach((path, index) => {
+    indexByPath.set(path, index);
+    moduleBindings.push([]);
+    for (const [name, ref] of moduleScopeByPath.get(path)?.scope.typeBindings ?? []) {
+      holdModuleBinding(index, name, ref);
+    }
+    const ownClassBindings: SiblingTypeBinding[] = [];
+    const seen = new Set<string>();
+    for (const scope of parsedByPath.get(path)?.scopes ?? []) {
+      if (scope.kind !== 'Class') continue;
+      for (const [name, ref] of scope.typeBindings) {
+        if (ref.source === 'self' || seen.has(name)) continue;
+        seen.add(name);
+        const count = classHolderCount.get(name) ?? 0;
+        if (count === 2) continue;
+        classHolderCount.set(name, count + 1);
+        ownClassBindings.push({ name, ref });
+      }
+    }
+    classBindings.push(ownClassBindings);
+  });
+
+  const recordAppends = (filePath: string, appended: readonly SiblingTypeBinding[]): void => {
+    const own = indexByPath.get(filePath);
+    if (own === undefined) return;
+    for (const { name, ref } of appended) holdModuleBinding(own, name, ref);
+  };
+
+  return {
+    mergeAll: (filePath, typeBindings) => {
+      const own = indexByPath.get(filePath);
+      const appended: SiblingTypeBinding[] = [];
+      for (let index = 0; index < moduleBindings.length; index++) {
+        if (index === own) continue;
+        const bindings = moduleBindings[index];
+        let kept = 0;
+        for (const binding of bindings) {
+          if (firstModuleHolder.get(binding.name) !== index) continue;
+          bindings[kept++] = binding;
+          if (typeBindings.has(binding.name)) continue;
+          typeBindings.set(binding.name, binding.ref);
+          appended.push(binding);
+        }
+        bindings.length = kept;
+      }
+      for (let index = 0; index < classBindings.length; index++) {
+        if (index === own) continue;
+        for (const binding of classBindings[index]) {
+          if (typeBindings.has(binding.name)) continue;
+          typeBindings.set(binding.name, binding.ref);
+          appended.push(binding);
+        }
+      }
+      recordAppends(filePath, appended);
+    },
+    recordAppended: (filePath, typeBindings, sizeBefore) => {
+      const appended: SiblingTypeBinding[] = [];
+      let position = 0;
+      for (const [name, ref] of typeBindings) {
+        if (position++ >= sizeBefore) appended.push({ name, ref });
+      }
+      recordAppends(filePath, appended);
+    },
+  };
 }
 
 function sharedSegmentCount(aSegments: readonly string[], bSegments: readonly string[]): number {
