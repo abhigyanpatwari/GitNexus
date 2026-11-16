@@ -91,21 +91,45 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
     ...(config.scopeNameNodeTypes ?? []),
   ]);
 
-  const buildQualifiedName = (node: SyntaxNode, simpleName: string): string => {
-    const readScopeSegments = (scopeNode: SyntaxNode): string[] =>
-      config.extractScopeSegments?.(scopeNode) ??
-      extractScopeSegmentsFromNode(scopeNode, scopeNameNodeTypes);
+  const readScopeSegments = (scopeNode: SyntaxNode): string[] =>
+    config.extractScopeSegments?.(scopeNode) ??
+    extractScopeSegmentsFromNode(scopeNode, scopeNameNodeTypes);
 
-    const fileScopeSegments: string[] = [];
-    if (fileScopeSet.size > 0) {
-      let root = node;
-      while (root.parent) root = root.parent;
-      for (const child of root.namedChildren ?? []) {
-        if (fileScopeSet.has(child.type)) {
-          fileScopeSegments.push(...readScopeSegments(child));
-        }
+  const EMPTY_SEGMENTS: readonly string[] = Object.freeze([]);
+
+  const collectFileScopeSegments = (node: SyntaxNode): readonly string[] => {
+    let root = node;
+    while (root.parent) root = root.parent;
+    const segments: string[] = [];
+    for (const child of root.namedChildren ?? []) {
+      if (fileScopeSet.has(child.type)) {
+        segments.push(...readScopeSegments(child));
       }
     }
+    return Object.freeze(segments);
+  };
+
+  // File-scope segments (the root's file-scope children read through this extractor's
+  // fixed config) are identical for every class in one parse tree, so read them once per
+  // tree rather than re-walking root.namedChildren per class (O(N^2) wrapper allocations
+  // for N top-level classes). Keyed by the Tree object, not the root SyntaxNode: node
+  // wrappers are re-created on navigation and have no stable identity.
+  const fileScopeSegmentsByTree = new WeakMap<SyntaxNode['tree'], readonly string[]>();
+
+  const fileScopeSegmentsFor = (node: SyntaxNode): readonly string[] => {
+    if (fileScopeSet.size === 0) return EMPTY_SEGMENTS;
+    const tree: SyntaxNode['tree'] | undefined = node.tree;
+    if (!tree) return collectFileScopeSegments(node);
+    let segments = fileScopeSegmentsByTree.get(tree);
+    if (segments === undefined) {
+      segments = collectFileScopeSegments(node);
+      fileScopeSegmentsByTree.set(tree, segments);
+    }
+    return segments;
+  };
+
+  const buildQualifiedName = (node: SyntaxNode, simpleName: string): string => {
+    const fileScopeSegments = fileScopeSegmentsFor(node);
 
     const ancestorScopes: string[][] = [];
     let current = node.parent;
