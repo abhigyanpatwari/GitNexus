@@ -368,10 +368,11 @@ describe('loadRPackageConfig shares one work budget across every package it disc
     expect(messages.some((m) => m.includes('further exportPattern() arguments exceeded'))).toBe(
       all.length > MAX_LISTED_DROPPED_PATTERNS,
     );
-    // The warnings say what the assertion above shows: the nodes stay exported.
+    // The warnings say what the assertion above shows: the graph flag stays exported.
     expect(messages.length).toBeGreaterThan(0);
     for (const m of messages) {
-      expect(m).toContain('stay exported');
+      expect(m).toContain('the graph flag stays exported');
+      expect(m).toContain('library() and pkg:: do not attach them');
       expect(m).not.toContain('treated as not exported');
     }
   }, 60_000);

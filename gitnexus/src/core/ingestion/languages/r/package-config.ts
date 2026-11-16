@@ -364,14 +364,14 @@ export function reportRExportPatternProblems(config: RPackageConfig): void {
     for (const { pattern, reason } of info.droppedExportPatterns ?? []) {
       logger.warn(
         `R package ${where}: exportPattern(${quotePattern(pattern)}) was ignored (${reason}); ` +
-          `names it would export are not proven private and stay exported`,
+          `names it would export are not proven private: the graph flag stays exported, but library() and pkg:: do not attach them`,
       );
     }
     if ((info.omittedDroppedExportPatterns ?? 0) > 0) {
       logger.warn(
         `R package ${where}: ${info.omittedDroppedExportPatterns} further exportPattern() ` +
           `arguments were ignored as well and are not listed; names they would export are ` +
-          `not proven private and stay exported`,
+          `not proven private: the graph flag stays exported, but library() and pkg:: do not attach them`,
       );
     }
     const cutShort = info.exportPatternBudget?.cutShort === true;
@@ -387,14 +387,14 @@ export function reportRExportPatternProblems(config: RPackageConfig): void {
       logger.warn(
         `R package ${where}: exportPattern(${quotePattern(matcher.source)}) exceeded its work ` +
           `budget (its own, its package's or the repository's); ` +
-          `names it had not yet been tested against are not proven private and stay exported`,
+          `names it had not yet been tested against are not proven private: the graph flag stays exported, but library() and pkg:: do not attach them`,
       );
     }
     if (unlisted > 0) {
       logger.warn(
         `R package ${where}: ${unlisted} further exportPattern() arguments exceeded their work ` +
           `budget as well and are not listed; names they had not yet been tested against are ` +
-          `not proven private and stay exported`,
+          `not proven private: the graph flag stays exported, but library() and pkg:: do not attach them`,
       );
     }
   }
