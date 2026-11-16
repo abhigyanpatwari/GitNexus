@@ -16,7 +16,10 @@ import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 import { getJavaOverloadFacts } from './overload-argument-facts.js';
 import { getJavaPackageFact } from './package-facts.js';
 import { eraseJavaTypeArguments } from './type-spelling.js';
-import { isJavaPackageSiblingVisibilityIncomplete } from './package-siblings.js';
+import {
+  hasJavaSamePackageType,
+  isJavaPackageSiblingVisibilityIncomplete,
+} from './package-siblings.js';
 import { javaReturnElementFacts } from './capture-side-channel.js';
 import { javaReturnElementRef } from './declared-type-captures.js';
 
@@ -232,8 +235,12 @@ function qualifiedTypeKey(
   const file = indexes.scopeTree.getScope(ref.declaredAtScope)?.filePath;
   if (
     file === undefined ||
-    isJavaPackageSiblingVisibilityIncomplete(file) ||
-    bindsTypeParameter(ref.declaredAtScope, root, indexes)
+    bindsTypeParameter(ref.declaredAtScope, root, indexes) ||
+    // Sibling injection is capped for cost and skips very large packages, so
+    // the lookup below may miss a same-package type named `root`. Sibling
+    // injection binds nothing else, so the lookup is exact for a name the
+    // uncapped package index does not hold.
+    (isJavaPackageSiblingVisibilityIncomplete(file) && hasJavaSamePackageType(file, root) !== false)
   )
     return null;
   const claim = lookupNameClaim(ref.declaredAtScope, root, indexes, {
