@@ -75,9 +75,10 @@ function isDeclaredByNamingCall(def: SymbolDefinition): boolean {
 }
 
 /**
- * Graph id of the placeholder owned by `filePath`. The segment `<virtual>` cannot be an R
- * identifier, so it never meets the id of a real class named `VIRTUAL` in the same file
- * (`Class:<file>:VIRTUAL`).
+ * Graph id of the placeholder owned by `filePath`. The segment `<virtual>` is not a plain R
+ * identifier, so it does not meet the id of a real class named `VIRTUAL` in the same file
+ * (`Class:<file>:VIRTUAL`). It could meet a class whose name is that very text, written as a
+ * string or in backticks (`setClass("<virtual>")`); no real code names a class that way.
  */
 function virtualPlaceholderId(filePath: string): string {
   return generateId('Class', `${filePath}:<${VIRTUAL_CLASS_NAME.toLowerCase()}>`);
