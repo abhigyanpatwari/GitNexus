@@ -3,6 +3,11 @@
  * with no R file never requires the native binding (and so never logs a missing one in every
  * worker). The worker is spawned directly with a preload that reports each `require` of the R
  * grammar package back to the test.
+ *
+ * Requires a built worker (`dist/core/ingestion/workers/parse-worker.js`, from `node scripts/build.js`
+ * in `gitnexus/`; `pretest:integration` does it) that is current with `src/`: the test runs the compiled file, so a stale build
+ * tests old code. Without a build the suite is skipped (so `npm test` does not fail on a fresh
+ * checkout) and a warning says so.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -56,7 +61,14 @@ function parseInFreshWorker(files: { path: string; content: string }[]): Promise
   });
 }
 
-describe.skipIf(!distWorkerExists())('parse-worker lazy R grammar', () => {
+const distPresent = distWorkerExists();
+if (!distPresent) {
+  console.warn(
+    'parse-worker-lazy-r-grammar: SKIPPED, no built parse worker. Run `node scripts/build.js` in gitnexus/.',
+  );
+}
+
+describe.skipIf(!distPresent)('parse-worker lazy R grammar', () => {
   it('does not load the R grammar when no R file is parsed', async () => {
     const seen = await parseInFreshWorker([{ path: 'a.py', content: 'def f():\n    pass\n' }]);
     expect(seen).toContain('result');
