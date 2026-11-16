@@ -11,9 +11,13 @@ const result = useFixture('java-qualified-type-root-shadow', {
 }`,
 });
 
+// `prefix.User` names the member type `p.prefix.User`, because the root
+// `prefix` is a class visible from the same package. A root that names a type
+// declared in another file is refused rather than read as a member path, so
+// the exact expected set is empty: no edge, and never the package `prefix`.
 it('does not reinterpret a visible type qualifier as an unrelated package', () => {
   const targets = getRelationships(result(), 'CALLS')
     .filter((edge) => edge.rel.sourceId === 'Method:p/App.java:App.run#1' && edge.target === 'save')
     .map((edge) => edge.rel.targetId);
-  expect(targets).not.toContain('Method:prefix/User.java:User.save#0');
+  expect(targets).toEqual([]);
 });
