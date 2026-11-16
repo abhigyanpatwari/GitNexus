@@ -23,7 +23,6 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { followChainPostFinalize } from '../../scope-resolution/passes/imported-return-types.js';
 import { javaProvider } from '../java.js';
-import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   javaArityCompatibility,
   javaMergeBindings,
@@ -106,12 +105,10 @@ const javaScopeResolver: ScopeResolver = {
   resolveUnqualifiedCall: resolveJavaUnqualifiedCall,
   resolveSelectedMethodImplementation: resolveJavaSelectedMethodImplementation,
   receiverMemberLookupCoversAllCalls: true,
-  // An indexed producer yields an array before the index. Let the structural
-  // fold peel it; resolveJavaReceiverMember validates the exact producer call.
-  receiverCallSite: (site, scopes) =>
-    decodeReceiverChain(site.receiverChain)?.steps.some((step) => step.kind === 'index')
-      ? undefined
-      : resolveJavaReceiverCallSite(site, scopes),
+  // A producer indexed by trailing subscripts (`make()[0].save()`) is typed
+  // from its selected overload, one element per index step through
+  // `elementTypeOf`; resolveJavaReceiverMember re-validates that selection.
+  receiverCallSite: resolveJavaReceiverCallSite,
   elementTypeOf: javaArrayElementType,
   // `for (var x : xs)` over a selected method's result: only the element of
   // that method's own proven JDK container return type.

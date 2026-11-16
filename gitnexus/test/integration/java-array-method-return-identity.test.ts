@@ -16,7 +16,10 @@ class App {
 class Ambiguous {
   User[] getUsers() { return null; }
   Other[] getUsers(int value) { return null; }
+  User[] pick(Integer value) { return null; }
+  Other[] pick(String value) { return null; }
   void overloaded() { getUsers()[0].save(); }
+  void tied() { this.pick(null)[0].save(); }
 }
 class Service { Other[] getUsers() { return null; } }
 `,
@@ -36,17 +39,20 @@ class Service { Other[] getUsers() { return null; } }
     expect(targets).toEqual([`Method:Main.java:${owner}.save#0`]);
   });
 
-  // javac selects the zero-argument `getUsers()` (User[]), but the receiver is
-  // typed before overload selection, by member name, and the two `getUsers`
-  // declarations disagree on the return type. The receiver therefore stays
-  // unresolved (receiver-unresolved, chain-unwrap) rather than guessing.
-  it('does not select a competing return from an intermediate overload set', () => {
+  // javac selects the zero-argument `getUsers()` (User[]) although the two
+  // `getUsers` declarations disagree on the return type, so the receiver is
+  // typed from that selected overload. A `null` argument applies to both
+  // `pick` overloads and neither is more specific: no return type is chosen.
+  it.each<[string, string[]]>([
+    ['Ambiguous.overloaded#0', ['Method:Main.java:User.save#0']],
+    ['Ambiguous.tied#0', []],
+  ])('types %s only from the selected overload', (caller, expected) => {
+    expect(result().graph.getNode(`Method:Main.java:${caller}`)).toBeDefined();
     const targets = getRelationships(result(), 'CALLS')
       .filter(
-        (edge) =>
-          edge.rel.sourceId === 'Method:Main.java:Ambiguous.overloaded#0' && edge.target === 'save',
+        (edge) => edge.rel.sourceId === `Method:Main.java:${caller}` && edge.target === 'save',
       )
       .map((edge) => edge.rel.targetId);
-    expect(targets).toEqual([]);
+    expect(targets).toEqual(expected);
   });
 });

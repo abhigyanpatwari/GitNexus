@@ -1764,7 +1764,9 @@ export interface ScopeResolver {
   /** Source identity of a call whose result is this site's immediate receiver.
    * Captured from the AST, never inferred by comparing expression strings.
    * Enables typing from the selected compile-time declaration; an unresolved
-   * producer must not fall back to a name-based return-type guess. */
+   * producer must not fall back to a name-based return-type guess. A producer
+   * returned for a receiver chain that ends in index steps (`make()[0].m()`)
+   * is read through `elementTypeOf`, once per trailing index step. */
   readonly receiverCallSite?: (
     callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,

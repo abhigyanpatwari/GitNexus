@@ -54,8 +54,9 @@ class App {
     }
     expect(targets('existing', 'after')).toEqual(['Method:Main.java:Resource.after#0']);
     // Definite assignment is outside ingestion's contract; the self-read
-    // belongs to the new local and must never reconnect the enclosing field.
-    expect(targets('invalidSelfRead', 'next')).not.toContain('Method:Main.java:Field.next#0');
+    // belongs to the new local, typed `Resource`, and must never reconnect the
+    // enclosing field.
+    expect(targets('invalidSelfRead', 'next')).toEqual(['Method:Main.java:Resource.next#0']);
     expect(targets('successive', 'next')).toEqual(['Method:Main.java:Resource.next#0']);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

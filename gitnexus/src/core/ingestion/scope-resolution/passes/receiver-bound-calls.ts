@@ -197,6 +197,23 @@ function lastTopLevelDot(text: string): number {
   return last;
 }
 
+/** The type a selected producer's result has after the receiver chain's
+ *  trailing index steps (`make()[0][1]`): one `elementTypeOf` peel per step.
+ *  Undefined when a step has no element route. A chain without trailing index
+ *  steps returns `returned` unchanged. */
+function elementAfterTrailingIndexSteps(
+  returned: string,
+  receiverChain: ReferenceSite['receiverChain'],
+  elementTypeOf: ScopeResolver['elementTypeOf'],
+): string | undefined {
+  const steps = decodeReceiverChain(receiverChain)?.steps ?? [];
+  let type: string | undefined = returned;
+  for (let i = steps.length - 1; i >= 0 && steps[i]!.kind === 'index'; i--) {
+    type = type === undefined ? undefined : elementTypeOf?.(type, { kind: 'index' });
+  }
+  return type;
+}
+
 type ReceiverBoundProviderSubset = Pick<
   ScopeResolver,
   | 'isSuperReceiver'
@@ -2011,12 +2028,22 @@ function emitReceiverBoundCallsInPass(
             : options.selectedCalls?.get(selectedCallKey(parsed.filePath, producer.range));
         const returned =
           selected == null ? undefined : index.declaredReturnTypeByCallableId.get(selected.nodeId);
-        const returnedClass =
+        // Index steps after the producer (`make()[0].m()`) read an element of
+        // its result: one `elementTypeOf` peel per step, or no type at all.
+        const producedSpelling =
           returned === undefined
+            ? undefined
+            : elementAfterTrailingIndexSteps(
+                returned.declaredSpelling ?? returned.rawName,
+                site.receiverChain,
+                provider.elementTypeOf,
+              );
+        const returnedClass =
+          returned === undefined || producedSpelling === undefined
             ? undefined
             : resolveClassBindingForName(
                 returned.declaredAtScope,
-                returned.declaredSpelling ?? returned.rawName,
+                producedSpelling,
                 scopes,
                 provider.stripTypePreservingDecoration,
                 {
@@ -2033,10 +2060,7 @@ function emitReceiverBoundCallsInPass(
               })
             : returnedClass === undefined
               ? undefined
-              : {
-                  def: returnedClass,
-                  declaredSpelling: returned?.declaredSpelling ?? returned?.rawName,
-                };
+              : { def: returnedClass, declaredSpelling: producedSpelling };
         if (producer !== undefined && resolved === undefined) {
           // Defer without claiming the shared start-position key: the inner
           // free call may still need that key during this pass. Finalization

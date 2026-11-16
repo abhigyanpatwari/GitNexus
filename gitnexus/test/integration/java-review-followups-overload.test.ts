@@ -12,6 +12,8 @@ class Base {
   private Other[] hidden() { return null; }
   User[] over() { return null; }
   Other[] over(int value) { return null; }
+  User[] pick(Integer value) { return null; }
+  Other[] pick(String value) { return null; }
 }
 class Sub extends Base {
   User[] own() { return null; }
@@ -19,6 +21,7 @@ class Sub extends Base {
   void viaThis() { this.own()[0].save(); }
   void privateSuper() { super.hidden()[0].save(); }
   void overloadedSuper() { super.over()[0].save(); }
+  void ambiguousSuper() { super.pick(null)[0].save(); }
   void anonymous() {
     new Runnable() {
       Other[] own() { return null; }
@@ -41,7 +44,7 @@ class Lone implements Marker {
       .map((edge) => edge.rel.targetId)
       .sort();
 
-  it.each([['Sub.viaSuper#0'], ['Sub.viaThis#0']])(
+  it.each([['Sub.viaSuper#0'], ['Sub.viaThis#0'], ['Sub.overloadedSuper#0']])(
     'binds the element of the producer selected through %s',
     (caller) => {
       expect(saveTargets(caller)).toEqual(['Method:Main.java:User.save#0']);
@@ -50,10 +53,11 @@ class Lone implements Marker {
 
   it.each([
     ['Sub.privateSuper#0'],
-    ['Sub.overloadedSuper#0'],
+    ['Sub.ambiguousSuper#0'],
     ['Sub$1.run#0'],
     ['Lone.viaObjectSuper#0'],
   ])('leaves %s unresolved when the producer cannot be proven', (caller) => {
+    expect(result().graph.getNode(`Method:Main.java:${caller}`)).toBeDefined();
     expect(saveTargets(caller)).toEqual([]);
   });
 });

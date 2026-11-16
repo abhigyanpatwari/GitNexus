@@ -84,26 +84,31 @@ function collectNamedTypes(
   return result;
 }
 
-const memberTypeNamesByIndexes = new WeakMap<
-  ScopeResolutionIndexes,
-  ReadonlyMap<string, ReadonlySet<string>>
->();
+interface MemberTypeNames {
+  readonly byOwner: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Every member type name in the workspace, so most roots skip the walk. */
+  readonly all: ReadonlySet<string>;
+}
+
+const memberTypeNamesByIndexes = new WeakMap<ScopeResolutionIndexes, MemberTypeNames>();
 
 /** Simple names of the member types each workspace class declares. */
-function memberTypeNamesByOwner(
-  indexes: ScopeResolutionIndexes,
-): ReadonlyMap<string, ReadonlySet<string>> {
+function memberTypeNamesByOwner(indexes: ScopeResolutionIndexes): MemberTypeNames {
   const cached = memberTypeNamesByIndexes.get(indexes);
   if (cached !== undefined) return cached;
-  const names = new Map<string, Set<string>>();
+  const byOwner = new Map<string, Set<string>>();
+  const all = new Set<string>();
   for (const def of indexes.defs.byId.values()) {
     if (def.ownerId === undefined || !(isClassLike(def.type) || def.type === 'Annotation'))
       continue;
     const spelling = def.qualifiedName ?? def.nodeId;
-    const owned = names.get(def.ownerId) ?? new Set<string>();
-    owned.add(spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1));
-    names.set(def.ownerId, owned);
+    const name = spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1);
+    const owned = byOwner.get(def.ownerId) ?? new Set<string>();
+    owned.add(name);
+    byOwner.set(def.ownerId, owned);
+    all.add(name);
   }
+  const names = { byOwner, all };
   memberTypeNamesByIndexes.set(indexes, names);
   return names;
 }
@@ -117,6 +122,7 @@ export function inheritsJavaMemberTypeNamed(
   indexes: ScopeResolutionIndexes,
 ): boolean {
   const memberTypes = memberTypeNamesByOwner(indexes);
+  if (!memberTypes.all.has(name)) return false;
   const seen = new Set<ScopeId>();
   for (
     let scope = indexes.scopeTree.getScope(scopeId);
@@ -128,7 +134,7 @@ export function inheritsJavaMemberTypeNamed(
     const owner = scope.ownedDefs.find((def) => isClassLike(def.type));
     if (owner === undefined) continue;
     for (const ancestor of indexes.methodDispatch.mroFor(owner.nodeId))
-      if (memberTypes.get(ancestor)?.has(name) === true) return true;
+      if (memberTypes.byOwner.get(ancestor)?.has(name) === true) return true;
   }
   return false;
 }
@@ -206,7 +212,8 @@ function importIndex(file: string): ImportIndex {
 /**
  * The FQN a dotted type spelling names at its own use site, or `null`.
  *
- * An unclaimed root is a package (`models.User`). A root that names one type
+ * An unclaimed root is a package (`models.User`), unless an enclosing class
+ * inherits a member type of that name, which refuses. A root that names one type
  * declared in this file and in scope here makes the rest member types of that
  * type (`Outer.Inner`). A member type's name is also bound at file level, so
  * that binding is ignored outside the type that declares it, unless the use
@@ -234,10 +241,13 @@ function qualifiedTypeKey(
     position: ref.lookupPosition,
   });
   if (claim.status === 'absent') {
+    // Name lookup binds no inherited member type, yet one shadows a package of
+    // that name too (JLS 6.4.1): refuse before reading the root as a package.
+    if (inheritsJavaMemberTypeNamed(ref.declaredAtScope, root, indexes)) return null;
     const imported = onDemandQualifier(file, root, indexes);
     return imported === 'package'
       ? spelling
-      : imported === null || inheritsJavaMemberTypeNamed(ref.declaredAtScope, root, indexes)
+      : imported === null
         ? null
         : `${imported.fqn}${spelling.slice(root.length)}`;
   }

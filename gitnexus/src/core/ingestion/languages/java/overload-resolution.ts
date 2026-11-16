@@ -1378,14 +1378,30 @@ export function resolveJavaUnqualifiedCall(
   return undefined;
 }
 
+/** The call whose selected declaration types this site's receiver. Its result
+ * may reach the receiver through array accesses only when every index step
+ * trails the chain (`make()[0].save()`), so the shared selected-call path peels
+ * one element per step; an index anywhere else keeps the structural fold. */
 export function resolveJavaReceiverCallSite(
   site: ReferenceSite,
   scopes: ScopeResolutionIndexes,
 ): { readonly name: string; readonly range: Range } | undefined {
   const filePath = scopes.scopeTree.getScope(site.inScope)?.filePath;
-  return filePath === undefined
-    ? undefined
-    : getJavaOverloadCall(filePath, site.atRange, site.name)?.receiverCall;
+  const producer =
+    filePath === undefined
+      ? undefined
+      : getJavaOverloadCall(filePath, site.atRange, site.name)?.receiverCall;
+  const steps = decodeReceiverChain(site.receiverChain)?.steps ?? [];
+  let end = steps.length;
+  while (end > 0 && steps[end - 1]!.kind === 'index') end--;
+  if (end === steps.length)
+    return steps.some((step) => step.kind === 'index') ? undefined : producer;
+  const last = steps[end - 1];
+  return last?.kind === 'call' &&
+    last.name === producer?.name &&
+    steps.slice(0, end).every((step) => step.kind !== 'index')
+    ? producer
+    : undefined;
 }
 
 /** Ground only a whole formal owner type variable from explicit source
