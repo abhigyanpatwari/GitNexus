@@ -260,9 +260,12 @@ export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void
     if (node.endIndex - node.startIndex !== 7 || node.text !== '__all__') return;
     const assignment = literalAllAssignment(node);
     if (assignment === undefined) literal = false;
+    else if (assignment.reset) names = [...assignment.names];
+    // A `+=` before any literal `=` extends a value bound elsewhere (a star
+    // import, for one), so the full list is unknown.
+    else if (names === undefined) literal = false;
     // Append in place: copying the list on every `+=` is quadratic in the
     // number of statements.
-    else if (assignment.reset || names === undefined) names = [...assignment.names];
     else names.push(...assignment.names);
   });
   if (literal && names !== undefined) literalAllByFile.set(filePath, names);

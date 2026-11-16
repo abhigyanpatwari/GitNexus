@@ -309,6 +309,7 @@ describe('Python module accessor capture facts', () => {
 
   it.each([
     ['a computed value', 'base = []\n__all__ = base + ["x"]'],
+    ['an extension of an unseen value', 'from other import *\n__all__ += ["x"]'],
     ['a method call', '__all__ = []\n__all__.extend(["x"])'],
     ['a block assignment', 'if flag:\n    __all__ = ["x"]'],
     ['a function assignment', 'def configure():\n    global __all__\n    __all__ = ["x"]'],
