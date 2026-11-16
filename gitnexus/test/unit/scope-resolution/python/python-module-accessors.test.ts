@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ParsedFile } from 'gitnexus-shared';
 import { pythonProvider } from '../../../../src/core/ingestion/languages/python.js';
 import { emitPythonScopeCaptures } from '../../../../src/core/ingestion/languages/python/captures.js';
+import { expandPythonWildcardNames } from '../../../../src/core/ingestion/languages/python/expand-wildcards.js';
 import type { PythonCaptureSideChannel } from '../../../../src/core/ingestion/languages/python/module-accessors.js';
 import { pythonScopeResolver } from '../../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { collectPythonSubtypeDispatchSideChannel } from '../../../../src/core/ingestion/languages/python/subtype-dispatch.js';
@@ -322,6 +323,36 @@ describe('Python module accessor capture facts', () => {
   ])('omits literal __all__ names for %s', (_label, source) => {
     emitPythonScopeCaptures(source, 'exports.py');
     expect(snapshot('exports.py') ?? {}).not.toHaveProperty('literalAll');
+  });
+
+  it.each([
+    [
+      'a valid python-capture snapshot',
+      {
+        kind: 'python-capture',
+        moduleAccessors: [],
+        callResultAssignments: [],
+        literalAll: ['pub'],
+      },
+      ['pub'],
+    ],
+    ['a snapshot without a kind', { literalAll: ['pub'] }, []],
+    ['a snapshot of another kind', { kind: 'other', literalAll: ['pub'] }, []],
+    [
+      'a non-string name list',
+      { kind: 'python-capture', moduleAccessors: [], callResultAssignments: [], literalAll: [1] },
+      [],
+    ],
+  ])('expands a restored literal __all__ only from %s', (_label, captureSideChannel, expected) => {
+    const parsed = extractParsedFile(
+      pythonProvider,
+      ['__all__ = ["pub"]', 'def pub():', '    pass', 'def other():', '    pass'].join('\n'),
+      'restored.py',
+    )!;
+    const restored: ParsedFile = { ...parsed, captureSideChannel };
+    expect(expandPythonWildcardNames(restored.moduleScope, [restored], ['pub', 'other'])).toEqual(
+      expected,
+    );
   });
 
   it('omits stale literal __all__ names when a recapture rejects the same path', () => {

@@ -329,6 +329,13 @@ describe('resolvePythonImportTarget — src layout (#3949)', () => {
       parsed: mkImport('django.apps'),
       expected: null,
     },
+    {
+      name: 'a src/ that is itself a package is not an import root',
+      fromFile: 'tests/test_mail.py',
+      files: ['tests/test_mail.py', 'src/__init__.py', 'src/email/utils.py'],
+      parsed: mkImport('email.utils'),
+      expected: null,
+    },
   ])('resolves into src/ — $name', ({ fromFile, files, parsed, expected }) => {
     expect(resolvePythonImportTarget(parsed, { fromFile, allFilePaths: new Set(files) })).toBe(
       expected,

@@ -384,6 +384,9 @@ function resolveFromSrcRoots(
   for (let i = 0; i <= ancestors.length; i++) {
     const root = i < ancestors.length ? `${ancestors[i]}/src/` : 'src/';
     if (!index.dirPrefixes.has(`${root}${leading}/`)) continue;
+    // A src/ that is itself a package is imported as `src.x`, not a sys.path
+    // root, so `email.utils` must not bind to its `src/email/utils.py`.
+    if (index.normSet.has(`${root}__init__.py`)) continue;
     const candidateFile = `${root}${pathLike}.py`;
     if (mayBeModule && allFilePaths.has(candidateFile)) return candidateFile;
     const candidatePkg = `${root}${pathLike}/__init__.py`;

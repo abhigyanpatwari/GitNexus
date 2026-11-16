@@ -29,10 +29,12 @@ export function pythonModuleExports(parsed: ParsedFile): ReadonlyMap<string, Sym
   return exports;
 }
 
-/** Restored side channels are plain data: anything but a string array is absent. */
-function literalAll(parsed: ParsedFile): ReadonlySet<string> | undefined {
-  const names = (parsed.captureSideChannel as Partial<PythonCaptureSideChannel> | undefined)
-    ?.literalAll;
+/** Restored side channels are plain data: anything but a Python snapshot's
+ * string array is absent. */
+function readLiteralAll(parsed: ParsedFile): ReadonlySet<string> | undefined {
+  const channel = parsed.captureSideChannel as Partial<PythonCaptureSideChannel> | undefined;
+  if (channel?.kind !== 'python-capture') return undefined;
+  const names = channel.literalAll;
   return Array.isArray(names) && names.every((name) => typeof name === 'string')
     ? new Set(names)
     : undefined;
@@ -62,25 +64,19 @@ export function expandPythonWildcardNames(
           edge.localName === '__all__' &&
           (edge.declaredAtScope === undefined || edge.declaredAtScope === parsed.moduleScope),
       );
-      const all = literalAll(parsed);
-      collected.set(
-        parsed.moduleScope,
-        importsAll || (all === undefined && names.includes('__all__'))
-          ? null
-          : { names, literalAll: all },
-      );
+      const literalAll = readLiteralAll(parsed);
+      const unknownExports = importsAll || (literalAll === undefined && names.includes('__all__'));
+      collected.set(parsed.moduleScope, unknownExports ? null : { names, literalAll });
     }
     byScope = collected;
     namesByWorkspace.set(parsedFiles, byScope);
   }
   const surface = byScope.get(targetModuleScope);
   if (surface == null) return [];
-  const all = surface.literalAll;
-  return [
-    ...new Set(
-      (availableNames ?? surface.names).filter((name) =>
-        all === undefined ? name.length > 0 && !name.startsWith('_') : all.has(name),
-      ),
-    ),
-  ];
+  const listed = surface.literalAll;
+  const exported =
+    listed === undefined
+      ? (name: string) => name.length > 0 && !name.startsWith('_')
+      : (name: string) => listed.has(name);
+  return [...new Set((availableNames ?? surface.names).filter(exported))];
 }

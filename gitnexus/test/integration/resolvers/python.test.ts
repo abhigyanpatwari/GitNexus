@@ -1629,6 +1629,18 @@ def make_qualified():
 
 INSTANCE = Plain(5)
 `,
+    'star_classes.py': `class Shadowed:
+    pass
+`,
+    'star_values.py': `Shadowed = 1
+`,
+    'star_shadow.py': `from star_classes import *
+from star_values import *
+
+
+def make_star_shadowed():
+    return Shadowed(1)
+`,
   });
 
   it.each([
@@ -1657,6 +1669,7 @@ INSTANCE = Plain(5)
       targets: ['Function:shadow.py:Plain:local-call'],
     },
     { caller: 'make_codec', file: 'conditional.py', targets: [] },
+    { caller: 'make_star_shadowed', file: 'star_shadow.py', targets: [] },
     {
       caller: 'make_qualified',
       file: 'qualified.py',

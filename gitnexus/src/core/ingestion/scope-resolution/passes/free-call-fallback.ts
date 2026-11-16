@@ -757,11 +757,16 @@ export function emitFreeCallFallback(
           }
         }
       }
-      // Bare-call construction (`Plain(1)`): no callable answers the name, but
-      // exactly one class does, so the call constructs it.
+      // Bare-call construction (`Plain(1)`): no callable answers the name, and
+      // every binding of it is one class, so the call constructs it. A value
+      // sharing the name (`Plain = 1` from another star import) leaves it open.
       if (fnDef === undefined && options.bareCallConstructs === true) {
         const [cls, ...others] = classBindingsOf(nameClaim.bindings);
-        if (cls !== undefined && others.length === 0) {
+        if (
+          cls !== undefined &&
+          others.length === 0 &&
+          nameClaim.bindings.every((binding) => binding.def.nodeId === cls.nodeId)
+        ) {
           writtenDefinition = cls;
           // Drop the callable lookup's empty list, which would otherwise record
           // the site as an incompatible free call.
