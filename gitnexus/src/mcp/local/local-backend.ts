@@ -4989,7 +4989,8 @@ export class LocalBackend {
    * Falls back to raw result if rows aren't tabular objects.
    */
   private formatCypherAsMarkdown(result: any): any {
-    if (!Array.isArray(result) || result.length === 0) return result;
+    if (!Array.isArray(result)) return result;
+    if (result.length === 0) return { markdown: '', row_count: 0 };
 
     const firstRow = result[0];
     if (typeof firstRow !== 'object' || firstRow === null) return result;
