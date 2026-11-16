@@ -1794,7 +1794,15 @@ function pass7CollectCallResultAssignments(
     const call = match['@call-result-assignment.call'];
     const lhs = match['@call-result-assignment.lhs'];
     if (call === undefined || lhs === undefined || !nonEmpty(lhs.text)) continue;
-    const inScope = positionIndex.atPosition(filePath, call.range.startLine, call.range.startCol);
+    // The binding belongs to the scope that declares the assigned name. That
+    // is the call's scope unless the provider anchors a copy elsewhere (an
+    // alias in a nested block that still carries an outer call's result).
+    const anchor = match['@call-result-assignment.scope'] ?? call;
+    const inScope = positionIndex.atPosition(
+      filePath,
+      anchor.range.startLine,
+      anchor.range.startCol,
+    );
     if (inScope === undefined) continue;
     out.push({ callSite: call.range, inScope, lhs: lhs.text });
   }

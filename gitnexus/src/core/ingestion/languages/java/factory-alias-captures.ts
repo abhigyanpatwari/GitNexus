@@ -1,11 +1,23 @@
 import type { CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
+/** An outer declaration a copy read; any write to it refuses the copy. */
+interface Guard {
+  readonly frame: BlockFrame;
+  readonly name: string;
+}
+
+interface Producer {
+  readonly call: SyntaxNode;
+  readonly guards: readonly Guard[];
+}
+
 interface BlockFrame {
   readonly block: SyntaxNode;
   readonly parent: BlockFrame | undefined;
-  readonly producers: Map<string, SyntaxNode>;
+  readonly producers: Map<string, Producer>;
   readonly declarations: Set<string>;
+  readonly written: Set<string>;
 }
 
 type Visit =
@@ -17,6 +29,8 @@ type Visit =
     }
   | { readonly kind: 'leave'; readonly frame: BlockFrame };
 
+const TYPE_BODIES = new Set(['class_body', 'interface_body', 'enum_body', 'annotation_type_body']);
+
 function unwrapJavaAliasInitializer(node: SyntaxNode | null): SyntaxNode | undefined {
   let current = node ?? undefined;
   while (current?.type === 'parenthesized_expression')
@@ -24,20 +38,46 @@ function unwrapJavaAliasInitializer(node: SyntaxNode | null): SyntaxNode | undef
   return current;
 }
 
+/** A local or anonymous type body between a copy and its source may declare
+ * a same-named field, so the source name no longer denotes the local. */
+function crossesTypeBody(node: SyntaxNode, block: SyntaxNode): boolean {
+  for (let current = node.parent; current !== null; current = current.parent) {
+    if (current.id === block.id) return false;
+    if (TYPE_BODIES.has(current.type)) return true;
+  }
+  return true;
+}
+
 /**
  * Preserve a factory alias's exact producer instead of guessing by method name.
  *
- * Only aliases declared in the producer's own AST block participate: the shared
- * call-result fact takes its scope from the original call's range. Each block
- * starts with an empty producer table, and writes invalidate the nearest local
- * producer. Copies retain the original call even if their source is later
- * assigned again. The existing selected-call join supplies the eventual type.
+ * Each block starts with an empty producer table, and writes invalidate the
+ * nearest local producer. A copy in the producer's own block retains the
+ * original call even if its source is later assigned again. A copy in a
+ * nested block (`if (c) { var w = u; }`) may run after a later write to its
+ * source (a loop), so it is kept only when that source is never written. The
+ * fact is anchored at the copy's own name, so the binding lands in the scope
+ * that declares the copy. The existing selected-call join supplies the type.
  */
 export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMatch[] {
-  const captures: CaptureMatch[] = [];
+  const candidates: { readonly capture: CaptureMatch; readonly guards: readonly Guard[] }[] = [];
   const claims = new Map<string, BlockFrame[]>();
   const stack: Visit[] = [{ kind: 'enter', node: root }];
   let current: BlockFrame | undefined;
+
+  const copiedProducer = (
+    source: string,
+    declarator: SyntaxNode,
+    frame: BlockFrame,
+  ): Producer | undefined => {
+    const frames = claims.get(source);
+    const owner = frames?.[frames.length - 1];
+    const producer = owner?.producers.get(source);
+    if (owner === undefined || producer === undefined) return undefined;
+    if (owner === frame) return producer;
+    if (crossesTypeBody(declarator, owner.block)) return undefined;
+    return { call: producer.call, guards: [...producer.guards, { frame: owner, name: source }] };
+  };
 
   while (stack.length > 0) {
     const visit = stack.pop()!;
@@ -58,6 +98,7 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
         parent: current,
         producers: new Map(),
         declarations: new Set(),
+        written: new Set(),
       };
       stack.push({ kind: 'leave', frame: current });
     }
@@ -96,17 +137,28 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
         current.producers.delete(name.text);
         if (parent.childForFieldName('type')?.text === 'var') {
           const value = unwrapJavaAliasInitializer(node.childForFieldName('value'));
-          if (value?.type === 'method_invocation') current.producers.set(name.text, value);
+          if (value?.type === 'method_invocation')
+            current.producers.set(name.text, { call: value, guards: [] });
           else if (value?.type === 'identifier') {
-            const producer = current.producers.get(value.text);
+            const producer = copiedProducer(value.text, node, current);
             if (producer !== undefined) {
               current.producers.set(name.text, producer);
-              captures.push({
-                '@call-result-assignment.call': nodeToCapture(
-                  '@call-result-assignment.call',
-                  producer,
-                ),
-                '@call-result-assignment.lhs': nodeToCapture('@call-result-assignment.lhs', name),
+              candidates.push({
+                guards: producer.guards,
+                capture: {
+                  '@call-result-assignment.call': nodeToCapture(
+                    '@call-result-assignment.call',
+                    producer.call,
+                  ),
+                  '@call-result-assignment.lhs': nodeToCapture(
+                    '@call-result-assignment.lhs',
+                    name,
+                  ),
+                  '@call-result-assignment.scope': nodeToCapture(
+                    '@call-result-assignment.scope',
+                    name,
+                  ),
+                },
               });
             }
           }
@@ -119,7 +171,9 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
           : node.firstNamedChild;
       if (target?.type === 'identifier') {
         const frames = claims.get(target.text);
-        frames?.[frames.length - 1]?.producers.delete(target.text);
+        const owner = frames?.[frames.length - 1];
+        owner?.producers.delete(target.text);
+        owner?.written.add(target.text);
       }
     }
 
@@ -127,5 +181,7 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
     for (let i = children.length - 1; i >= 0; i--)
       stack.push({ kind: 'enter', node: children[i]!, parent: node, grandparent: parent });
   }
-  return captures;
+  return candidates
+    .filter(({ guards }) => guards.every(({ frame, name }) => !frame.written.has(name)))
+    .map(({ capture }) => capture);
 }

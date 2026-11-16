@@ -38,6 +38,41 @@ class Holder { Other[] items() { return null; } }`,
     values[0].save();
   }
 }`,
+    'Aliases.java': `class Aliases {
+  void nestedCopy(Factory f, boolean c) {
+    var u = f.make();
+    if (c) { var w = u; w.save(); }
+  }
+  void deeplyNestedCopy(Factory f, boolean c) {
+    var u = f.make();
+    if (c) { while (c) { var w = u; { var x = w; x.save(); } } }
+  }
+  void lambdaCopy(Factory f) {
+    var u = f.make();
+    Runnable r = () -> { var w = u; w.save(); };
+  }
+  void reassignedBeforeCopy(Factory f, OtherFactory g, boolean c) {
+    var u = f.make();
+    if (c) { u = g.make(); var w = u; w.save(); }
+  }
+  void reassignedLaterInLoop(Factory f, boolean c) {
+    var u = f.make();
+    while (c) { var w = u; w.save(); u = null; }
+  }
+  void anonymousFieldShadow(Factory f) {
+    var u = f.make();
+    new Object() {
+      Other u;
+      void m() { var w = u; w.save(); }
+    };
+  }
+  void outerRedeclaration(Factory f, OtherFactory g, boolean c) {
+    var u = f.make();
+    if (c) { var w = u; w.save(); }
+    var w = g.make();
+    w.store();
+  }
+}`,
   });
   const targets = (source: string, member = 'save') =>
     getRelationships(result(), 'CALLS')
@@ -69,6 +104,35 @@ class Holder { Other[] items() { return null; } }`,
       ]);
     },
   );
+
+  it.each(['nestedCopy', 'deeplyNestedCopy', 'lambdaCopy'])(
+    '%s keeps the producer of an unwritten source copied in a nested block',
+    (caller) => {
+      expect(targets(`Method:Aliases.java:Aliases.${caller}#`)).toEqual([
+        'Method:Model.java:User.save#0',
+      ]);
+    },
+  );
+
+  it.each(['reassignedBeforeCopy', 'reassignedLaterInLoop'])(
+    '%s refuses a nested copy of a written source',
+    (caller) => {
+      expect(targets(`Method:Aliases.java:Aliases.${caller}#`)).toEqual([]);
+    },
+  );
+
+  it('does not read an outer local through a same-named anonymous class field', () => {
+    expect(targets('Method:Aliases.java:Aliases$1.m#')).toEqual(['Method:Model.java:Other.save#0']);
+  });
+
+  it('keeps a nested copy out of a later same-named outer declaration', () => {
+    expect(targets('Method:Aliases.java:Aliases.outerRedeclaration#')).toEqual([
+      'Method:Model.java:User.save#0',
+    ]);
+    expect(targets('Method:Aliases.java:Aliases.outerRedeclaration#', 'store')).toEqual([
+      'Method:Model.java:Other.store#0',
+    ]);
+  });
 });
 
 describe('Java local name claims merge with existing scope claims', () => {

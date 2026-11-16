@@ -46,7 +46,33 @@ describe('Java factory alias producer identity', () => {
       { var value = other.make(); }
       var copy = value;
     } }`).map(({ name, call }) => ({ name, call })),
-    ).toEqual([{ name: 'copy', call: 'factory.make()' }]);
+    ).toEqual([
+      { name: 'copy', call: 'factory.make()' },
+      { name: 'copy', call: 'factory.make()' },
+    ]);
+  });
+
+  it('anchors a nested-block copy at its own name, not at the outer call', () => {
+    const tree = getJavaParser().parse(`class App { void run() {
+      var value = factory.make();
+      if (ready) { var copy = value; }
+    } }`);
+    const [capture] = synthesizeJavaFactoryAliasCaptures(tree.rootNode);
+    expect(capture?.['@call-result-assignment.call']?.text).toBe('factory.make()');
+    expect(capture?.['@call-result-assignment.scope']?.range).toEqual(
+      capture?.['@call-result-assignment.lhs']?.range,
+    );
+  });
+
+  it.each([
+    'if (ready) { value = other.make(); var copy = value; }',
+    'while (ready) { var copy = value; value = other.make(); }',
+    'if (ready) { var copy = value; } value++;',
+    'new Object() { void m() { var copy = value; } };',
+  ])('refuses a nested copy of a written or differently owned source: %s', (body) => {
+    expect(
+      producerAliases(`class App { void run() { var value = factory.make(); ${body} } }`),
+    ).toEqual([]);
   });
 
   it.each(['value = other.make();', 'if (condition) { value = other.make(); }', 'value++;'])(
