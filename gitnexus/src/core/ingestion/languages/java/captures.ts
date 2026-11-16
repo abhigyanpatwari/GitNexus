@@ -28,7 +28,10 @@ import {
 } from '../../utils/ast-helpers.js';
 import { splitImportDeclaration } from './import-decomposer.js';
 import { computeJavaArityMetadata } from './arity-metadata.js';
-import { synthesizeJavaReceiverBinding } from './receiver-binding.js';
+import {
+  synthesizeJavaInitializerReceiverBindings,
+  synthesizeJavaReceiverBinding,
+} from './receiver-binding.js';
 import { getJavaParser, getJavaScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
@@ -196,7 +199,9 @@ export function emitJavaScopeCaptures(
       nodeMap['@type-binding.parameter'] ??
       nodeMap['@type-binding.annotation'] ??
       nodeMap['@type-binding.return'] ??
-      nodeMap['@type-binding.constructor'];
+      nodeMap['@type-binding.constructor'] ??
+      // `o instanceof @Ann User u` and `p.@Ann User` keep only the type.
+      nodeMap['@type-binding.pattern'];
     if (bindingType !== undefined && bindingDeclaration !== undefined) {
       const declarator =
         bindingName?.parent?.type === 'variable_declarator' ? bindingName.parent : undefined;
@@ -519,6 +524,9 @@ export function emitJavaScopeCaptures(
     ...out,
     ...synthesizeJavaLexicalCaptures(tree.rootNode),
     ...synthesizeJavaFactoryAliasCaptures(tree.rootNode),
+    ...synthesizeJavaInitializerReceiverBindings(
+      synthesizeImplicitArrayReceiverChain.initializerContexts(),
+    ),
     ...synthesizeJavaDeclaredTypeCaptures(tree.rootNode, filePath),
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),

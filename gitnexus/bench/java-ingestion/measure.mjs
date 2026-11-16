@@ -118,8 +118,11 @@ process.env.TMPDIR = path.join(privateRoot, 'tmp');
 for (const name of ['GITNEXUS_STORAGE_PATH', 'GITNEXUS_STORAGE_ROOT', 'GITNEXUS_SHARED_STORE'])
   delete process.env[name];
 
+// Fingerprint inputs must not depend on the runtime's default collation.
+const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 function workload(shape, input) {
-  const files = Object.entries(input.files).sort(([a], [b]) => a.localeCompare(b));
+  const files = Object.entries(input.files).sort(([a], [b]) => byCodeUnit(a, b));
   const stats = {
     ...input.stats,
     files: files.length,
@@ -257,7 +260,7 @@ function correctness(input, result) {
   const nodes = allNodes.map((node) => node.id).sort();
   const triples = edges
     .map((edge) => [edge.sourceId, edge.type, edge.targetId])
-    .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+    .sort((a, b) => byCodeUnit(JSON.stringify(a), JSON.stringify(b)));
   return {
     cases: rows.length,
     passedCases,
@@ -351,7 +354,7 @@ try {
     const trees = [];
     let declaredFields = 0;
     for (const [file, content] of Object.entries(input.files).sort(([a], [b]) =>
-      a.localeCompare(b),
+      byCodeUnit(a, b),
     )) {
       assert.ok(
         !path.isAbsolute(file) && !file.split(/[\\/]/).includes('..'),

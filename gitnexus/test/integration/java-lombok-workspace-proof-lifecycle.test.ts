@@ -85,9 +85,14 @@ it('corrects only workspace-shadowed annotation plans and restores an explicit s
 }, 120_000);
 
 it('recomputes proof for an unchanged cached model when a package shadow is added and removed', async () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-lombok-shadow-replay-'));
-  const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-lombok-shadow-cache-'));
+  // One temporary parent holds the repository and its cache, so no setup
+  // failure can leave a directory outside the cleanup below.
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-lombok-shadow-replay-'));
   try {
+    const root = path.join(scratch, 'repo');
+    const storage = path.join(scratch, 'cache');
+    fs.mkdirSync(root);
+    fs.mkdirSync(storage);
     writeFixtureRepo(root, {
       'p/Repo.java': 'package p; @org.springframework.stereotype.Repository public class Repo {}',
       'p/Model.java': `package p; import lombok.*;
@@ -143,7 +148,6 @@ it('recomputes proof for an unchanged cached model when a package shadow is adde
     expect(hasGetter(removed)).toBe(true);
     expect(edges(removed, 'INJECTS')).toEqual(expectedInjection);
   } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-    fs.rmSync(storage, { recursive: true, force: true });
+    fs.rmSync(scratch, { recursive: true, force: true });
   }
 }, 120_000);

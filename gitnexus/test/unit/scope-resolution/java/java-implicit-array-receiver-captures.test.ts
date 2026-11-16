@@ -5,10 +5,10 @@ import { nodeToCapture } from '../../../../src/core/ingestion/utils/ast-helpers.
 import { decodeReceiverChain } from '../../../../src/core/ingestion/utils/receiver-chain-codec.js';
 import type { Capture } from 'gitnexus-shared';
 
-function chains(source: string) {
+function synthesizeSaves(source: string) {
   const tree = getJavaParser().parse(source);
   const synthesize = createJavaImplicitArrayReceiverChainSynthesizer(tree.rootNode);
-  return tree.rootNode
+  const decoded = tree.rootNode
     .descendantsOfType('method_invocation')
     .filter((node) => node.childForFieldName('name')?.text === 'save')
     .map((node) => {
@@ -18,6 +18,11 @@ function chains(source: string) {
       synthesize(captures, node.childForFieldName('object'));
       return decodeReceiverChain(captures['@reference.receiver-chain']?.text);
     });
+  return { decoded, contexts: synthesize.initializerContexts() };
+}
+
+function chains(source: string) {
+  return synthesizeSaves(source).decoded;
 }
 
 describe('Java implicit instance array receivers', () => {
@@ -39,6 +44,35 @@ describe('Java implicit instance array receivers', () => {
   });
 
   it.each([
+    ['class App { Object first = getUsers()[0].save(); }', ['this']],
+    ['class App { { getUsers()[0].save(); } }', ['this']],
+    [
+      'enum App { A; Object first = getUsers()[0].save(); { getUsers()[0].save(); } }',
+      ['this', 'this'],
+    ],
+  ])('adds the lexical this base in an instance initializer: %s', (source, bases) => {
+    expect(chains(source).map((chain) => chain?.baseReceiverName)).toEqual(bases);
+  });
+
+  it('reports only the initializer contexts whose chain was attached', () => {
+    const { contexts } = synthesizeSaves(`class App {
+      Object first = getUsers()[0].save(), plain = getUsers()[0];
+      { getUsers()[0].save(); }
+      void run() { getUsers()[0].save(); }
+    }`);
+    expect(
+      contexts.map(({ node, type }) => [node.type, type.childForFieldName('name')?.text]),
+    ).toEqual([
+      ['method_invocation', 'App'],
+      ['block', 'App'],
+    ]);
+  });
+
+  it.each([
+    'class App { static Object first = getUsers()[0].save(); }',
+    'class App { static { getUsers()[0].save(); } }',
+    'interface App { Object FIRST = getUsers()[0].save(); }',
+    'class App { void run() { Object value = new Object() { Object first = getUsers()[0].save(); }; } }',
     'class App { static void run() { getUsers()[0].save(); } }',
     'class App { void run() { service.getUsers()[0].save(); } }',
     'class App { void run() { getUsers(1)[0].save(); } }',

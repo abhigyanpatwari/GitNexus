@@ -46,52 +46,110 @@ function implicitArrayChain(node: SyntaxNode): string | undefined {
     : encodeReceiverChain('this', [{ kind: 'call', name }, ...indices]);
 }
 
+/** A named type's body members. Interface and annotation fields are static. */
+const INSTANCE_MEMBER_BODIES = new Set(['class_body', 'enum_body_declarations']);
+
+function isStatic(node: SyntaxNode): boolean {
+  const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
+  return modifiers?.children.some((child) => child.type === 'static') ?? false;
+}
+
+/** An instance context with no method scope to carry `this`: an instance
+ * initializer block, or the initializer of an instance field. */
+export interface JavaInitializerReceiverContext {
+  readonly node: SyntaxNode;
+  /** The named type whose instance `this` denotes there. */
+  readonly type: SyntaxNode;
+}
+
+export interface JavaImplicitArrayReceiverChainSynthesizer {
+  (grouped: Record<string, Capture>, receiverNode: SyntaxNode | null | undefined): void;
+  /** Initializer contexts that received a chain. Read after every match. */
+  initializerContexts(): readonly JavaInitializerReceiverContext[];
+}
+
+interface Visit {
+  readonly node: SyntaxNode;
+  readonly parent: SyntaxNode | undefined;
+  /** The named type whose instance `this` denotes, if any. */
+  readonly type: SyntaxNode | undefined;
+  readonly instance: boolean;
+  readonly initializer: SyntaxNode | undefined;
+}
+
 /**
  * Complete a Java array receiver rooted at an implicit instance call.
  *
  * The shared chain extractor deliberately refuses a bare call's missing base.
- * Java can prove that base is lexical `this` inside an instance method. Prepare
- * eligible nodes once so deeply nested references do not repeat ancestor walks.
- * Anonymous types and static methods refuse because the existing named-type
- * receiver binding cannot establish their `this` identity.
+ * Java can prove that base is lexical `this` in an instance context: an
+ * instance method, constructor or compact constructor, an instance initializer
+ * block, or an instance field's initializer. Prepare eligible nodes once so
+ * deeply nested references do not repeat ancestor walks. Anonymous types,
+ * static members and static initializers refuse because the existing
+ * named-type receiver binding cannot establish their `this` identity.
  */
-export function createJavaImplicitArrayReceiverChainSynthesizer(root: SyntaxNode) {
+export function createJavaImplicitArrayReceiverChainSynthesizer(
+  root: SyntaxNode,
+): JavaImplicitArrayReceiverChainSynthesizer {
   const chains = new Map<number, string>();
-  const stack = [
-    { node: root, parent: undefined as SyntaxNode | undefined, namedType: false, instance: false },
+  const contextOf = new Map<number, JavaInitializerReceiverContext>();
+  const used = new Map<number, JavaInitializerReceiverContext>();
+  const stack: Visit[] = [
+    { node: root, parent: undefined, type: undefined, instance: false, initializer: undefined },
   ];
   while (stack.length > 0) {
     const visit = stack.pop()!;
     const { node, parent } = visit;
-    let { namedType, instance } = visit;
+    let { type, instance, initializer } = visit;
     if (NAMED_TYPES.has(node.type)) {
-      namedType = true;
+      type = node;
       instance = false;
+      initializer = undefined;
     } else if (
       node.type === 'class_body' &&
       ['object_creation_expression', 'enum_constant'].includes(parent?.type ?? '')
     ) {
-      namedType = false;
+      type = undefined;
       instance = false;
+      initializer = undefined;
     } else if (
       node.type === 'method_declaration' ||
       node.type === 'constructor_declaration' ||
       // A record's compact canonical constructor is an instance context.
       node.type === 'compact_constructor_declaration'
     ) {
-      const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
-      instance = namedType && !modifiers?.children.some((child) => child.type === 'static');
-    }
+      instance = type !== undefined && !isStatic(node);
+      initializer = undefined;
+    } else if (type !== undefined && INSTANCE_MEMBER_BODIES.has(parent?.type ?? '')) {
+      // A `static { }` initializer is its own node; a bare block is instance.
+      if (node.type === 'block') {
+        instance = true;
+        initializer = node;
+      } else if (node.type === 'field_declaration' && !isStatic(node)) instance = true;
+    } else if (
+      instance &&
+      node.type === 'variable_declarator' &&
+      parent?.type === 'field_declaration'
+    )
+      initializer = node.childForFieldName('value') ?? undefined;
+
     if (instance && node.type === 'array_access') {
       const encoded = implicitArrayChain(node);
-      if (encoded !== undefined) chains.set(node.id, encoded);
+      if (encoded !== undefined) {
+        chains.set(node.id, encoded);
+        if (initializer !== undefined && type !== undefined)
+          contextOf.set(node.id, { node: initializer, type });
+      }
     }
     const children = node.namedChildren;
     for (let i = children.length - 1; i >= 0; i--)
-      stack.push({ node: children[i]!, parent: node, namedType, instance });
+      stack.push({ node: children[i]!, parent: node, type, instance, initializer });
   }
 
-  return (grouped: Record<string, Capture>, receiverNode: SyntaxNode | null | undefined): void => {
+  const synthesize = (
+    grouped: Record<string, Capture>,
+    receiverNode: SyntaxNode | null | undefined,
+  ): void => {
     if (
       grouped['@reference.call.member'] === undefined ||
       grouped['@reference.receiver-chain'] !== undefined
@@ -100,11 +158,14 @@ export function createJavaImplicitArrayReceiverChainSynthesizer(root: SyntaxNode
     const receiver = unwrap(receiverNode);
     if (receiver === undefined || receiverNode == null) return;
     const encoded = chains.get(receiver.id);
-    if (encoded !== undefined)
-      grouped['@reference.receiver-chain'] = syntheticCapture(
-        '@reference.receiver-chain',
-        receiverNode,
-        encoded,
-      );
+    if (encoded === undefined) return;
+    grouped['@reference.receiver-chain'] = syntheticCapture(
+      '@reference.receiver-chain',
+      receiverNode,
+      encoded,
+    );
+    const context = contextOf.get(receiver.id);
+    if (context !== undefined) used.set(context.node.id, context);
   };
+  return Object.assign(synthesize, { initializerContexts: () => [...used.values()] });
 }

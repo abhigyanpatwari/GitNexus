@@ -16,6 +16,8 @@ interface Producer {
 interface BlockFrame {
   readonly block: SyntaxNode;
   readonly parent: BlockFrame | undefined;
+  /** How many type bodies enclose the block; a deeper body is another class. */
+  readonly typeDepth: number;
   readonly producers: Map<string, Producer>;
   readonly declarations: Set<string>;
   readonly written: Set<string>;
@@ -25,12 +27,17 @@ type Visit =
   | {
       readonly kind: 'enter';
       readonly node: SyntaxNode;
+      /** A switch statement group stands for its switch block here. */
       readonly parent?: SyntaxNode;
       readonly grandparent?: SyntaxNode;
+      readonly typeDepth: number;
     }
   | { readonly kind: 'leave'; readonly frame: BlockFrame };
 
 const TYPE_BODIES = new Set(['class_body', 'interface_body', 'enum_body', 'annotation_type_body']);
+// A switch block is one lexical block for all its statement groups (JLS 6.3),
+// and a lambda's parameters hide every outer local of the same name.
+const FRAMES = new Set(['block', 'constructor_body', 'switch_block', 'lambda_expression']);
 
 function unwrapJavaAliasInitializer(node: SyntaxNode | null): SyntaxNode | undefined {
   let current = node ?? undefined;
@@ -59,14 +66,24 @@ function elementRoute(
   return { source: receiver.text, element: member };
 }
 
-/** A local or anonymous type body between a copy and its source may declare
- * a same-named field, so the source name no longer denotes the local. */
-function crossesTypeBody(node: SyntaxNode, block: SyntaxNode): boolean {
-  for (let current = node.parent; current !== null; current = current.parent) {
-    if (current.id === block.id) return false;
-    if (TYPE_BODIES.has(current.type)) return true;
+/** The names a lambda's parameters declare: `x ->`, `(x, y) ->`, `(T x) ->`. */
+function lambdaParameterNames(lambda: SyntaxNode): string[] {
+  const parameters = lambda.childForFieldName('parameters');
+  if (parameters === null) return [];
+  if (parameters.type === 'identifier') return [parameters.text];
+  const names: string[] = [];
+  for (const parameter of parameters.namedChildren) {
+    const name =
+      parameter.type === 'identifier'
+        ? parameter
+        : (parameter.childForFieldName('name') ??
+          parameter.namedChildren
+            .find((child) => child.type === 'variable_declarator')
+            ?.childForFieldName('name') ??
+          null);
+    if (name?.type === 'identifier') names.push(name.text);
   }
-  return true;
+  return names;
 }
 
 /**
@@ -80,6 +97,12 @@ function crossesTypeBody(node: SyntaxNode, block: SyntaxNode): boolean {
  * fact is anchored at the copy's own name, so the binding lands in the scope
  * that declares the copy. The existing selected-call join supplies the type.
  *
+ * A constructor body is a block, and so is a switch block: the statements of
+ * an old-style `case 1:` group belong to the switch block, which is the scope
+ * of a local declared there. Inside a local or anonymous type body an outer
+ * local's name may denote a field of that type, so such a body neither reads
+ * nor writes the outer local. A lambda parameter likewise hides it.
+ *
  * A `var` for-each over such a local (`for (var x : xs)`), or over a Map
  * local's `values()` / `keySet()`, records the same producer with an element
  * route, anchored at the loop body that declares the variable. Resolution
@@ -88,20 +111,33 @@ function crossesTypeBody(node: SyntaxNode, block: SyntaxNode): boolean {
 export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMatch[] {
   const candidates: { readonly capture: CaptureMatch; readonly guards: readonly Guard[] }[] = [];
   const claims = new Map<string, BlockFrame[]>();
-  const stack: Visit[] = [{ kind: 'enter', node: root }];
+  const stack: Visit[] = [{ kind: 'enter', node: root, typeDepth: 0 }];
   let current: BlockFrame | undefined;
+
+  const declare = (name: string, frame: BlockFrame): void => {
+    if (frame.declarations.has(name)) return;
+    const frames = claims.get(name) ?? [];
+    frames.push(frame);
+    claims.set(name, frames);
+    frame.declarations.add(name);
+  };
+
+  /** The frame whose local `name` denotes at this depth, if it is a local. */
+  const ownerOf = (name: string, typeDepth: number): BlockFrame | undefined => {
+    const frames = claims.get(name);
+    const owner = frames?.[frames.length - 1];
+    return owner?.typeDepth === typeDepth ? owner : undefined;
+  };
 
   const copiedProducer = (
     source: string,
-    declarator: SyntaxNode,
     frame: BlockFrame,
+    typeDepth: number,
   ): Producer | undefined => {
-    const frames = claims.get(source);
-    const owner = frames?.[frames.length - 1];
+    const owner = ownerOf(source, typeDepth);
     const producer = owner?.producers.get(source);
     if (owner === undefined || producer === undefined) return undefined;
     if (owner === frame) return producer;
-    if (crossesTypeBody(declarator, owner.block)) return undefined;
     return { call: producer.call, guards: [...producer.guards, { frame: owner, name: source }] };
   };
 
@@ -117,34 +153,24 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
       continue;
     }
 
-    const { node, parent, grandparent } = visit;
-    if (node.type === 'block') {
+    const { node, parent, grandparent, typeDepth } = visit;
+    if (FRAMES.has(node.type)) {
       current = {
         block: node,
         parent: current,
+        typeDepth,
         producers: new Map(),
         declarations: new Set(),
         written: new Set(),
       };
       stack.push({ kind: 'leave', frame: current });
+      if (node.type === 'lambda_expression')
+        for (const name of lambdaParameterNames(node)) declare(name, current);
     }
 
-    // Local types introduce a provider-synthesized visibility scope extending
-    // to the end of this block. Calls before it and aliases after it therefore
-    // have different extracted scopes despite sharing the same AST block.
-    if (
-      current !== undefined &&
-      parent?.id === current.block.id &&
-      [
-        'class_declaration',
-        'interface_declaration',
-        'enum_declaration',
-        'record_declaration',
-        'annotation_type_declaration',
-      ].includes(node.type)
-    )
-      current.producers.clear();
-
+    // A local type declared between a producer and its copy needs no reset:
+    // the copy's binding is anchored at its own name, inside the type's
+    // visibility scope, and the producer is still typed at its own call.
     if (
       current !== undefined &&
       node.type === 'variable_declarator' &&
@@ -153,12 +179,7 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
     ) {
       const name = node.childForFieldName('name');
       if (name !== null) {
-        if (!current.declarations.has(name.text)) {
-          const frames = claims.get(name.text) ?? [];
-          frames.push(current);
-          claims.set(name.text, frames);
-          current.declarations.add(name.text);
-        }
+        declare(name.text, current);
         // The new declaration owns its own initializer, including a self-read.
         current.producers.delete(name.text);
         if (parent.childForFieldName('type')?.text === 'var') {
@@ -166,7 +187,7 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
           if (value?.type === 'method_invocation')
             current.producers.set(name.text, { call: value, guards: [] });
           else if (value?.type === 'identifier') {
-            const producer = copiedProducer(value.text, node, current);
+            const producer = copiedProducer(value.text, current, typeDepth);
             if (producer !== undefined) {
               current.producers.set(name.text, producer);
               candidates.push({
@@ -196,7 +217,7 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
       const body = node.childForFieldName('body');
       const route = elementRoute(unwrapJavaAliasInitializer(node.childForFieldName('value')));
       const producer =
-        route === undefined ? undefined : copiedProducer(route.source, node, current);
+        route === undefined ? undefined : copiedProducer(route.source, current, typeDepth);
       if (name !== null && body !== null && route !== undefined && producer !== undefined)
         candidates.push({
           // Unless the loop is a statement of the producer's own block, it may
@@ -224,16 +245,23 @@ export function synthesizeJavaFactoryAliasCaptures(root: SyntaxNode): CaptureMat
           ? node.childForFieldName('left')
           : node.firstNamedChild;
       if (target?.type === 'identifier') {
-        const frames = claims.get(target.text);
-        const owner = frames?.[frames.length - 1];
+        const owner = ownerOf(target.text, typeDepth);
         owner?.producers.delete(target.text);
         owner?.written.add(target.text);
       }
     }
 
     const children = node.namedChildren;
+    const childParent = node.type === 'switch_block_statement_group' ? parent : node;
+    const childDepth = TYPE_BODIES.has(node.type) ? typeDepth + 1 : typeDepth;
     for (let i = children.length - 1; i >= 0; i--)
-      stack.push({ kind: 'enter', node: children[i]!, parent: node, grandparent: parent });
+      stack.push({
+        kind: 'enter',
+        node: children[i]!,
+        parent: childParent,
+        grandparent: parent,
+        typeDepth: childDepth,
+      });
   }
   return candidates
     .filter(({ guards }) => guards.every(({ frame, name }) => !frame.written.has(name)))

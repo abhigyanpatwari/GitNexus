@@ -95,13 +95,56 @@ describe('Java factory alias producer identity', () => {
     ).toEqual([]);
   });
 
-  it('does not cross a local type visibility scope', () => {
-    expect(
-      producerAliases(`class App { void run() {
+  it('keeps a copy after a local type, anchored at the copy inside its visibility scope', () => {
+    const tree = getJavaParser().parse(`class App { void run() {
       var value = factory.make();
       class Local {}
       var copy = value;
-    } }`),
+    } }`);
+    const [capture] = synthesizeJavaFactoryAliasCaptures(tree.rootNode);
+    expect(capture?.['@call-result-assignment.call']?.text).toBe('factory.make()');
+    expect(capture?.['@call-result-assignment.scope']?.range).toEqual(
+      capture?.['@call-result-assignment.lhs']?.range,
+    );
+  });
+
+  it.each([
+    'switch (k) { case 1: var copy = value; }',
+    'int r = switch (k) { case 1: var copy = value; yield 1; default: yield 0; };',
+  ])('treats an unbraced switch group as part of its switch block: %s', (body) => {
+    expect(
+      producerAliases(`class App { void run(int k) { var value = factory.make(); ${body} } }`).map(
+        ({ name, call }) => ({ name, call }),
+      ),
+    ).toEqual([{ name: 'copy', call: 'factory.make()' }]);
+  });
+
+  it.each([
+    'switch (k) { case 1: value = other.make(); var copy = value; }',
+    'switch (k) { case 1: var copy = value; break; case 2: value = other.make(); }',
+  ])('refuses a switch-group copy of a written source: %s', (body) => {
+    expect(
+      producerAliases(`class App { void run(int k) { var value = factory.make(); ${body} } }`),
     ).toEqual([]);
+  });
+
+  it('reads a copy in a constructor body', () => {
+    expect(
+      producerAliases(`class App { App() { var value = factory.make(); var copy = value; } }`).map(
+        ({ name, call }) => ({ name, call }),
+      ),
+    ).toEqual([{ name: 'copy', call: 'factory.make()' }]);
+  });
+
+  it.each([
+    'if (ready) { var copy = value; } class Local { Repo value; void f() { value = null; } }',
+    'if (ready) { var copy = value; } new Object() { Repo value; void f() { value = null; } };',
+    'if (ready) { var copy = value; } Consumer<Repo> c = (Repo value) -> { value = null; };',
+  ])('does not treat a same-named field or parameter write as a write to the local: %s', (body) => {
+    expect(
+      producerAliases(`class App { void run() { var value = factory.make(); ${body} } }`).map(
+        ({ name, call }) => ({ name, call }),
+      ),
+    ).toEqual([{ name: 'copy', call: 'factory.make()' }]);
   });
 });

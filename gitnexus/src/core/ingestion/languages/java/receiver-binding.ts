@@ -1,14 +1,21 @@
 /**
- * Synthesize `@type-binding.self` captures for Java instance methods —
- * one for `this` (always on non-static methods inside a type
- * declaration) and optionally one for `super` (only on class methods
- * when the enclosing class has a `superclass`).
+ * Synthesize `@type-binding.self` captures for Java instance contexts —
+ * one for `this` (always on non-static methods, constructors and record
+ * compact constructors inside a type declaration) and optionally one for
+ * `super` (only on class methods when the enclosing class has a
+ * `superclass`).
+ *
+ * Instance initializer blocks and instance field initializers have no
+ * method scope. They get a `this` binding only where a synthesized
+ * implicit-`this` array receiver reads it (see
+ * `implicit-array-receiver-captures.ts`).
  *
  * Mirrors `languages/csharp/receiver-binding.ts` in structure.
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import type { JavaInitializerReceiverContext } from './implicit-array-receiver-captures.js';
 
 const TYPE_DECL_NODE_TYPES = new Set([
   'class_declaration',
@@ -17,7 +24,6 @@ const TYPE_DECL_NODE_TYPES = new Set([
   'record_declaration',
 ]);
 
-// A record's compact canonical constructor is an instance context too.
 const FUNCTION_NODE_TYPES = new Set([
   'method_declaration',
   'constructor_declaration',
@@ -105,4 +111,36 @@ function buildReceiverMatch(anchorNode: SyntaxNode, name: string, typeText: stri
     '@type-binding.type': syntheticCapture('@type-binding.type', anchorNode, typeText),
   };
   return m;
+}
+
+/** A zero-width capture at `node`'s start: inside the scope that starts there,
+ * yet never equal to that scope's range, so the binding is not hoisted out. */
+function pointCapture(name: string, node: SyntaxNode, text: string): Capture {
+  const startLine = node.startPosition.row + 1;
+  const startCol = node.startPosition.column;
+  return { name, range: { startLine, startCol, endLine: startLine, endCol: startCol }, text };
+}
+
+/**
+ * `this` for instance initializer contexts that received an implicit-`this`
+ * chain. An initializer block already has its own block scope. A field
+ * initializer gets one over its value, so the binding reaches neither the
+ * field's declaration nor a sibling member; a lambda value already has one.
+ */
+export function synthesizeJavaInitializerReceiverBindings(
+  contexts: readonly JavaInitializerReceiverContext[],
+): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  for (const { node, type } of contexts) {
+    const enclosingName = typeName(type);
+    if (enclosingName === null) continue;
+    if (node.type !== 'block' && node.type !== 'lambda_expression')
+      out.push({ '@scope.block': nodeToCapture('@scope.block', node) });
+    out.push({
+      '@type-binding.self': pointCapture('@type-binding.self', node, ''),
+      '@type-binding.name': pointCapture('@type-binding.name', node, 'this'),
+      '@type-binding.type': pointCapture('@type-binding.type', node, enclosingName),
+    });
+  }
+  return out;
 }
