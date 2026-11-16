@@ -15,31 +15,34 @@ const TARGET_WRAPPERS = new Set([
 ]);
 
 let typeQuery: Parser.Query | undefined;
-/** Per parse tree: sorted, disjoint [start, end) byte spans covered by `type` nodes. */
-const typeSpansMemo = new WeakMap<object, number[]>();
+/** Per parse tree: keys of every identifier and attribute inside a `type` node. */
+const annotatedMemo = new WeakMap<object, Set<string>>();
+const nodeKey = (node: SyntaxNode): string => `${node.startIndex}:${node.endIndex}:${node.type}`;
 
-function typeSpansFor(tree: { rootNode: SyntaxNode }): number[] {
-  let spans = typeSpansMemo.get(tree);
-  if (spans !== undefined) return spans;
+function annotatedNodesFor(tree: { rootNode: SyntaxNode }): Set<string> {
+  let keys = annotatedMemo.get(tree);
+  if (keys !== undefined) return keys;
   typeQuery ??= new Parser.Query(Python as Parameters<Parser['setLanguage']>[0], '(type) @type');
-  spans = [];
-  // Captures arrive in document order; a nested `type` merges into its outer span.
+  keys = new Set();
+  let outerEnd = -1;
+  // Captures arrive in document order. A `type` inside an annotation already
+  // collected adds nothing, and skipping it keeps nested generics linear.
   for (const { node } of typeQuery.captures(tree.rootNode)) {
-    const last = spans.length - 1;
-    if (spans.length > 0 && node.startIndex < spans[last]!) {
-      spans[last] = Math.max(spans[last]!, node.endIndex);
-    } else spans.push(node.startIndex, node.endIndex);
+    if (node.endIndex <= outerEnd) continue;
+    outerEnd = node.endIndex;
+    for (const inner of node.descendantsOfType(['identifier', 'attribute']))
+      keys.add(nodeKey(inner));
   }
-  typeSpansMemo.set(tree, spans);
-  return spans;
+  annotatedMemo.set(tree, keys);
+  return keys;
 }
 
 /**
  * True when `node` (an identifier or attribute) sits inside a `type` annotation.
- * Expressions never contain a block, so lying inside a `type` node's byte span
- * is equivalent to having a `type` ancestor below the nearest block.
- * tree-sitter nodes have no parent pointer: each `.parent` walks down from the
- * root, so climbing ancestors per read cost O(depth^2) per read.
+ * Expressions never contain a block, so any `type` ancestor lies below the
+ * nearest block. tree-sitter nodes have no parent pointer: each `.parent`
+ * walks down from the root, so climbing ancestors per read cost O(depth^2).
+ * The per-tree set makes each check one hash lookup.
  */
 export function isPythonTypeAnnotation(node: SyntaxNode): boolean {
   const tree = (node as { tree?: { rootNode: SyntaxNode } }).tree;
@@ -50,19 +53,7 @@ export function isPythonTypeAnnotation(node: SyntaxNode): boolean {
     }
     return false;
   }
-  const spans = typeSpansFor(tree);
-  // Find the last span starting at or before the node.
-  let lo = 0;
-  let hi = spans.length / 2 - 1;
-  let found = -1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (spans[2 * mid]! <= node.startIndex) {
-      found = mid;
-      lo = mid + 1;
-    } else hi = mid - 1;
-  }
-  return found >= 0 && node.endIndex <= spans[2 * found + 1]!;
+  return annotatedNodesFor(tree).has(nodeKey(node));
 }
 
 /** Python Language Reference §§6.3.1, 7.2 and 7.5: a target is not a read,
