@@ -16,8 +16,8 @@
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import {
   nodeToCapture,
-  synthesizeJavaTypeIdentity,
   syntheticCapture,
+  type JavaSynthesizedTypeIdentity,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import type { JavaInitializerReceiverContext } from './implicit-array-receiver-captures.js';
@@ -36,16 +36,19 @@ const FUNCTION_NODE_TYPES = new Set([
 ]);
 
 /** Walk up to the enclosing type: a named declaration, or the host of an
- *  anonymous class body (`new T() { ... }`, a bodied enum constant). */
+ *  anonymous class body (`new T() { ... }`, a bodied enum constant), reached
+ *  from that body. Each ancestor's `parent` is read once, as before. */
 function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
+  let below = node;
   let cur: SyntaxNode | null = node.parent;
   while (cur !== null) {
     if (TYPE_DECL_NODE_TYPES.has(cur.type)) return cur;
     if (
-      cur.type === 'class_body' &&
-      (cur.parent?.type === 'object_creation_expression' || cur.parent?.type === 'enum_constant')
+      below.type === 'class_body' &&
+      (cur.type === 'object_creation_expression' || cur.type === 'enum_constant')
     )
-      return cur.parent;
+      return cur;
+    below = cur;
     cur = cur.parent;
   }
   return null;
@@ -86,7 +89,15 @@ function isStaticMethod(fnNode: SyntaxNode): boolean {
   return false;
 }
 
-export function synthesizeJavaReceiverBinding(fnNode: SyntaxNode): CaptureMatch[] {
+/**
+ * @param anonymousIdentity the synthesized identity of an anonymous class
+ *   host; the caller shares one answer per host with the anonymous class
+ *   declaration it emits, so a method adds no ancestor walk of its own.
+ */
+export function synthesizeJavaReceiverBinding(
+  fnNode: SyntaxNode,
+  anonymousIdentity: (host: SyntaxNode) => JavaSynthesizedTypeIdentity | undefined,
+): CaptureMatch[] {
   if (!FUNCTION_NODE_TYPES.has(fnNode.type)) return [];
   if (isStaticMethod(fnNode)) return [];
 
@@ -100,7 +111,7 @@ export function synthesizeJavaReceiverBinding(fnNode: SyntaxNode): CaptureMatch[
   const anonymous =
     enclosingType.type === 'object_creation_expression' || enclosingType.type === 'enum_constant';
   const enclosingName = anonymous
-    ? (synthesizeJavaTypeIdentity(enclosingType)?.name ?? null)
+    ? (anonymousIdentity(enclosingType)?.name ?? null)
     : typeName(enclosingType);
   if (enclosingName === null) return [];
 

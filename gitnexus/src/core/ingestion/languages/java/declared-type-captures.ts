@@ -1146,9 +1146,13 @@ export function synthesizeJavaDeclaredTypeCaptures(
   return out;
 }
 
-/** The Class scope of the type a body belongs to. */
-export function javaClassScopeOfBody(body: SyntaxNode, filePath: string): ScopeId | undefined {
-  const owner = body.parent;
+/** The Class scope of the type a body belongs to; `owner` is the body's
+ * parent, passed by a caller that already has it. */
+export function javaClassScopeOfBody(
+  body: SyntaxNode,
+  filePath: string,
+  owner: SyntaxNode | null = body.parent,
+): ScopeId | undefined {
   if (owner === null) return undefined;
   // Anonymous and enum-constant classes are scoped by their body.
   const node =

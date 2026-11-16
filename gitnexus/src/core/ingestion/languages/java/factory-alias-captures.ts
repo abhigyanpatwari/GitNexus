@@ -24,7 +24,7 @@ interface Guard {
 
 /** A local or anonymous class body a value was read into, under `name`. */
 interface Crossing {
-  readonly body: SyntaxNode;
+  readonly type: TypeBody;
   readonly name: string;
 }
 
@@ -44,9 +44,11 @@ interface BlockFrame {
   readonly written: Set<string>;
 }
 
-/** The type bodies enclosing a node, innermost first. */
+/** The type bodies enclosing a node, innermost first. The owner is recorded
+ * on the way down, so no ancestor is read back. */
 interface TypeBody {
   readonly body: SyntaxNode;
+  readonly owner: SyntaxNode | undefined;
   readonly depth: number;
   readonly outer: TypeBody | undefined;
 }
@@ -150,9 +152,8 @@ function declaredNames(node: SyntaxNode): readonly string[] {
  * anonymous class, or a non-static class (a local class or an inner class of
  * one). Interfaces, enums and records are static contexts (JLS 8.1.3, 14.3).
  */
-function readsEnclosingLocals(body: SyntaxNode): boolean {
-  const owner = body.parent;
-  if (body.type !== 'class_body' || owner === null) return false;
+function readsEnclosingLocals({ body, owner }: TypeBody): boolean {
+  if (body.type !== 'class_body' || owner === undefined) return false;
   if (owner.type === 'object_creation_expression') return true;
   return (
     owner.type === 'class_declaration' &&
@@ -238,8 +239,8 @@ export function synthesizeJavaFactoryAliasCaptures(
     if (!throughBodies) return undefined;
     const crossings = [...producer.crossings];
     for (let type = types; type !== undefined && type.depth > owner.typeDepth; type = type.outer) {
-      if (!readsEnclosingLocals(type.body)) return undefined;
-      crossings.push({ body: type.body, name: source });
+      if (!readsEnclosingLocals(type)) return undefined;
+      crossings.push({ type, name: source });
     }
     return { call: producer.call, guards, crossings };
   };
@@ -371,7 +372,7 @@ export function synthesizeJavaFactoryAliasCaptures(
     const childParent = node.type === 'switch_block_statement_group' ? parent : node;
     let childTypes = types;
     if (TYPE_BODIES.has(node.type)) {
-      childTypes = { body: node, depth: typeDepth + 1, outer: types };
+      childTypes = { body: node, owner: parent, depth: typeDepth + 1, outer: types };
       // Only a body inside a block can read an enclosing method's locals.
       if (current !== undefined) declaredIn.set(node.id, new Set());
     }
@@ -393,13 +394,13 @@ export function synthesizeJavaFactoryAliasCaptures(
     }
     // A variable of that name declared anywhere in a crossed body may be what
     // the copy reads; refuse rather than track each declaration's scope.
-    const hidden = crossings.some(({ body, name }) => {
-      const declared = declaredIn.get(body.id);
+    const hidden = crossings.some(({ type, name }) => {
+      const declared = declaredIn.get(type.body.id);
       return declared === undefined || declared.has(name);
     });
     if (hidden) continue;
-    const proofs: [ScopeId | undefined, string][] = crossings.map(({ body, name }) => [
-      javaClassScopeOfBody(body, filePath),
+    const proofs: [ScopeId | undefined, string][] = crossings.map(({ type, name }) => [
+      type.owner === undefined ? undefined : javaClassScopeOfBody(type.body, filePath, type.owner),
       name,
     ]);
     const route = JAVA_ENCLOSING_LOCAL_ROUTE + JSON.stringify(proofs);

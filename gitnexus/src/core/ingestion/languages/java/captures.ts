@@ -25,6 +25,7 @@ import {
   nodeToCapture,
   synthesizeJavaTypeIdentity,
   syntheticCapture,
+  type JavaSynthesizedTypeIdentity,
 } from '../../utils/ast-helpers.js';
 import { splitImportDeclaration } from './import-decomposer.js';
 import { computeJavaArityMetadata } from './arity-metadata.js';
@@ -156,6 +157,15 @@ export function emitJavaScopeCaptures(
   setJavaImportUses(filePath, captureJavaImportUses(tree.rootNode));
   const accessorCaptures = synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode);
   setJavaOverloadFacts(filePath, captureJavaOverloadFacts(tree.rootNode, accessorCaptures));
+
+  // One synthesized identity per anonymous class host, shared by the
+  // receiver binding of each of its methods and by its declaration.
+  const anonymousIdentities = new Map<number, JavaSynthesizedTypeIdentity | undefined>();
+  const anonymousIdentity = (host: SyntaxNode): JavaSynthesizedTypeIdentity | undefined => {
+    if (!anonymousIdentities.has(host.id))
+      anonymousIdentities.set(host.id, synthesizeJavaTypeIdentity(host));
+    return anonymousIdentities.get(host.id);
+  };
 
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const synthesizeImplicitArrayReceiverChain = createJavaImplicitArrayReceiverChainSynthesizer(
@@ -359,7 +369,7 @@ export function emitJavaScopeCaptures(
       // `@scope.function` is captured directly on the method/constructor node.
       const fnNode = findFunctionNode(nodeMap['@scope.function']);
       if (fnNode !== null) {
-        for (const synth of synthesizeJavaReceiverBinding(fnNode)) {
+        for (const synth of synthesizeJavaReceiverBinding(fnNode, anonymousIdentity)) {
           out.push(synth);
         }
       }
@@ -530,7 +540,7 @@ export function emitJavaScopeCaptures(
     ...synthesizeJavaDeclaredTypeCaptures(tree.rootNode, filePath),
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
-    ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode),
+    ...synthesizeJavaAnonymousClassDeclarations(tree.rootNode, anonymousIdentity),
     ...accessorCaptures,
     ...synthesizeLombokAccessorCaptures(tree.rootNode),
     ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
@@ -550,10 +560,13 @@ export function emitJavaScopeCaptures(
  * class's methods) and the name auto-hoists to the enclosing scope —
  * exactly the binding shape a named class declaration produces.
  */
-function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): CaptureMatch[] {
+function synthesizeJavaAnonymousClassDeclarations(
+  rootNode: SyntaxNode,
+  anonymousIdentity: (host: SyntaxNode) => JavaSynthesizedTypeIdentity | undefined,
+): CaptureMatch[] {
   const out: CaptureMatch[] = [];
   for (const oce of rootNode.descendantsOfType('object_creation_expression')) {
-    const identity = synthesizeJavaTypeIdentity(oce);
+    const identity = anonymousIdentity(oce);
     if (identity === undefined) continue;
     const body = oce.namedChildren.find((c) => c.type === 'class_body');
     if (body === undefined) continue;
@@ -617,7 +630,7 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
     const hostEnum = javaEnclosingEnumNameOf(constant);
     const bodyNode = constant.childForFieldName?.('body');
     const isBodied = bodyNode !== null && bodyNode !== undefined && bodyNode.type === 'class_body';
-    const bodiedIdentity = synthesizeJavaTypeIdentity(constant);
+    const bodiedIdentity = anonymousIdentity(constant);
     if (bodiedIdentity !== undefined && isBodied) {
       out.push({
         '@declaration.class': nodeToCapture('@declaration.class', bodyNode),
