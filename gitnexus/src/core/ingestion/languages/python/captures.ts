@@ -51,6 +51,7 @@ import {
 } from './subtype-dispatch.js';
 import {
   beginPythonModuleAccessorCapture,
+  recordPythonLiteralAll,
   recordPythonModuleAccessor,
   synthesizePythonCallResultAssignment,
 } from './module-accessors.js';
@@ -131,6 +132,7 @@ export function emitPythonScopeCaptures(
   } else {
     recordCacheHit();
   }
+  if (parseText.includes('__all__')) recordPythonLiteralAll(filePath, tree.rootNode);
 
   let rawMatches: ReturnType<ReturnType<typeof getPythonScopeQuery>['matches']>;
   try {
