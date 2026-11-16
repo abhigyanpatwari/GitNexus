@@ -82,8 +82,12 @@ class Sub extends Base { void inherited(models.User u) { u.save(); } }
 class Plain { void unrelated(models.User u) { u.save(); } }`,
   });
 
-  it('refuses a root that a subclass may inherit as a member type', () => {
-    expect(callTargets(result(), 'Method:app/App.java:Sub.inherited#1', 'save')).toEqual([]);
+  // JLS 6.4.1 / 8.5: `Sub` inherits the accessible member type `Base.models`,
+  // which shadows the package `models` in its body.
+  it('reads a root a subclass inherits as a member type as that member type', () => {
+    expect(callTargets(result(), 'Method:app/App.java:Sub.inherited#1', 'save')).toEqual([
+      'Method:app/App.java:User.save#0',
+    ]);
   });
 
   it('keeps the package reading where no enclosing type inherits the member', () => {

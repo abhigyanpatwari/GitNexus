@@ -37,10 +37,11 @@ public class Plain {
   });
 
   it.each([['Method:app/Child.java:Child.run#1'], ['Method:app/Child.java:Nested.run#1']])(
-    'does not read the inherited member root as a package in %s',
+    'reads the inherited member root as that member type in %s',
     (caller) => {
-      expect(result().graph.getNode(caller)).toBeDefined();
-      expect(saveTargets(getRelationships(result(), 'CALLS'), caller)).toEqual([]);
+      expect(saveTargets(getRelationships(result(), 'CALLS'), caller)).toEqual([
+        'Method:app/Base.java:User.save#0',
+      ]);
     },
   );
 

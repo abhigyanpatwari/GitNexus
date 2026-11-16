@@ -8,6 +8,10 @@ import {
   lookupNameClaim,
 } from '../../scope-resolution/scope/walkers.js';
 import { getJavaPackageFact } from './package-facts.js';
+import {
+  javaInheritedMemberType,
+  javaStaticOnDemandImportBringsNoType,
+} from './qualified-type-bindings.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   getJavaOverloadCall,
@@ -343,14 +347,42 @@ function inheritsMemberTypeNamed(
   return false;
 }
 
+/** The class definitions enclosing `context`, innermost first; `undefined`
+ * for a class body without exactly one indexed definition. */
+function enclosingClassIds(
+  context: TypeContext,
+  facts: JavaOverloadFileFacts,
+  state: State,
+): (string | undefined)[] {
+  return facts.types
+    .filter((type) => javaRangeContains(type.range, context.at))
+    .sort((a, b) => b.range.startLine - a.range.startLine || b.range.startCol - a.range.startCol)
+    .map((type) => {
+      const ids = new Set(
+        [...sourceDefinitions(type.name, state), ...sourceDefinitions(type.simpleName, state)]
+          .filter(
+            (definition) =>
+              definition.filePath === context.filePath && typeFact(definition, state) === type,
+          )
+          .map((definition) => definition.nodeId),
+      );
+      const [id] = ids;
+      return ids.size === 1 ? id : undefined;
+    });
+}
+
 /**
  * What the first identifier of a dotted type spelling names when no type
- * declared in this file claims it. A type in scope there makes the spelling a
- * member path, and a package of that name is then never read (JLS 6.5.4.1):
- * a single-type import, then a same-package top-level type, then a type from
- * an on-demand import of a workspace package. Returns `package` when no such
- * type is in scope, and `unknown` when the root is ambiguous or may be a type
- * this workspace cannot see (a static import or an inherited member type).
+ * declared in this file claims it. A member type an enclosing class inherits
+ * comes first: it shadows every file- and package-level type and package of
+ * that name (JLS 6.4.1), so the spelling is a member path of the supertype that
+ * declares it. Otherwise a type in scope there makes the spelling a member
+ * path, and a package of that name is then never read (JLS 6.5.4.1): a
+ * single-type import, then a same-package top-level type, then a type from an
+ * on-demand import of a workspace package. Returns `package` when no such type
+ * is in scope, and `unknown` when the root is ambiguous or may be a type this
+ * workspace cannot see (a static import whose owner is not fully known, or an
+ * inherited member type that is ambiguous or inaccessible).
  * Mirrors `qualifiedTypeKey` in qualified-type-bindings.ts.
  */
 function qualifierRoot(
@@ -361,8 +393,19 @@ function qualifierRoot(
 ): JavaReferenceType | 'package' | 'unknown' {
   const index = fileFactIndex(facts, state);
   if (hasTypeParameter(index, root, context.at)) return 'unknown';
-  if (memberTypeNames(state).has(root) && inheritsMemberTypeNamed(root, context, facts, state))
-    return 'unknown';
+  if (memberTypeNames(state).has(root)) {
+    const inherited = javaInheritedMemberType(
+      enclosingClassIds(context, facts, state),
+      root,
+      context.filePath,
+      state.scopes,
+    );
+    if (inherited === null) return 'unknown';
+    if (inherited !== undefined) {
+      const definition = state.scopes.defs.get(inherited.id);
+      return definition === undefined ? 'unknown' : sourceReference(definition);
+    }
+  }
   const single = index.singleImports.get(root) ?? [];
   if (single.length > 0) {
     if (single.length > 1 || single[0]!.static) return 'unknown';
@@ -378,12 +421,15 @@ function qualifierRoot(
   if (local.length > 0) return local.length === 1 ? sourceReference(local[0]!) : 'unknown';
   const onDemand: SymbolDefinition[] = [];
   for (const item of index.onDemandImports) {
-    const matches = named.filter(
-      (definition) => sourceQualifiedName(definition) === `${item.name}.${root}`,
+    // A static on-demand import also imports its owner's member types,
+    // inherited ones included, which an owner outside the workspace hides.
+    if (item.static) {
+      if (!javaStaticOnDemandImportBringsNoType(item.name, root, state.scopes)) return 'unknown';
+      continue;
+    }
+    onDemand.push(
+      ...named.filter((definition) => sourceQualifiedName(definition) === `${item.name}.${root}`),
     );
-    // A static on-demand import also imports its owner's member types.
-    if (item.static && matches.length > 0) return 'unknown';
-    if (!item.static) onDemand.push(...matches);
   }
   const imported = unique(onDemand);
   if (imported.length === 0) return 'package';

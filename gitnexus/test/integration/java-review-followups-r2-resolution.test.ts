@@ -58,14 +58,19 @@ public class Inherits extends Base { void run(prefix.User value) { value.save();
     ]);
   });
 
-  // Two on-demand imports both supply `prefix`, and an inherited member type
-  // `prefix` shadows the same-package one: neither may fall back to a package.
-  it.each(['Method:s/Ambiguous.java:Ambiguous.run#1', 'Method:p/Inherits.java:Inherits.run#1'])(
-    '%s refuses an ambiguous or shadowed root',
-    (caller) => {
-      expect(saveTargets(result(), caller)).toEqual([]);
-    },
-  );
+  // Two on-demand imports both supply `prefix`: the root is ambiguous and may
+  // not fall back to a package.
+  it('refuses an ambiguous root', () => {
+    expect(saveTargets(result(), 'Method:s/Ambiguous.java:Ambiguous.run#1')).toEqual([]);
+  });
+
+  // The inherited member type `Base.prefix` shadows the same-package `prefix`
+  // and the package `prefix` (JLS 6.4.1).
+  it('reads an inherited member root as that member type', () => {
+    expect(saveTargets(result(), 'Method:p/Inherits.java:Inherits.run#1')).toEqual([
+      'Method:p/Base.java:User.save#0',
+    ]);
+  });
 });
 
 describe('Java private member types across top-level classes in one file', () => {
