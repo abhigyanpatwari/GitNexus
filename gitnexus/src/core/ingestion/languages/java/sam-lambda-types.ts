@@ -1,5 +1,4 @@
 import type {
-  CaptureMatch,
   ParsedFile,
   Range,
   ReferenceSite,
@@ -7,7 +6,6 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
-import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { ReceiverMemberResolution } from '../../scope-resolution/contract/scope-resolver.js';
 import {
@@ -22,7 +20,12 @@ import {
   type JavaOverloadMethodFact,
   type JavaOverloadTypeFact,
 } from './overload-argument-facts.js';
-import { splitJavaTypeArguments } from './overload-types.js';
+import { KNOWN_JAVA_PLATFORM_TYPES, splitJavaTypeArguments } from './overload-types.js';
+import {
+  inheritsJavaMemberTypeNamed,
+  javaQualifiedTypeLookupSpelling,
+} from './qualified-type-bindings.js';
+import { JAVA_SAM_LAMBDA_ROUTE as LAMBDA_ROUTE } from './sam-lambda-captures.js';
 import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
@@ -34,15 +37,16 @@ import {
  * Java gives `x` in `accept(x -> x.audit())` the type of the corresponding
  * parameter of the target's function type (JLS 15.27.3, 9.9). The target is
  * the parameter type of the method javac selects for the enclosing call, so the
- * fact is recorded at extraction as a call-result assignment on that call and
- * answered only from the exactly selected declaration. Every uncertain step
- * leaves the parameter unbound, which keeps it from borrowing an outer name.
+ * fact is recorded at extraction as a call-result assignment on that call
+ * (`sam-lambda-captures.ts`) and answered here only from the exactly selected
+ * declaration. Every uncertain step leaves the parameter unbound, which keeps
+ * it from borrowing an outer name.
  */
 
-const LAMBDA_ROUTE = /^lambda:(\d+):(\d+):(\d+):(\d+)$/;
 const SIMPLE_NAME = /^[\p{L}_$][\p{L}\p{N}_$]*$/u;
-const GENERIC_NAME = /^([\p{L}_$][\p{L}\p{N}_$]*)\s*(?:<([\s\S]*)>)?$/u;
-const COMMENTS = new Set(['line_comment', 'block_comment']);
+const TYPE_NAME =
+  /^([\p{L}_$][\p{L}\p{N}_$]*(?:\s*\.\s*[\p{L}_$][\p{L}\p{N}_$]*)*)\s*(?:<([\s\S]*)>)?$/u;
+const IDENTIFIERS = /[\p{L}_$][\p{L}\p{N}_$]*/gu;
 const PRIMITIVES = new Set([
   'boolean',
   'byte',
@@ -55,65 +59,6 @@ const PRIMITIVES = new Set([
   'void',
   'var',
 ]);
-
-/** The names an implicitly typed lambda declares (`x`, `(x, y)`, `(var x)`);
- * `undefined` for an explicitly typed or empty parameter list. */
-function implicitParameterNames(lambda: SyntaxNode): SyntaxNode[] | undefined {
-  const parameters = lambda.childForFieldName('parameters');
-  if (parameters === null) return undefined;
-  if (parameters.type === 'identifier') return [parameters];
-  const names: SyntaxNode[] = [];
-  for (const parameter of parameters.namedChildren) {
-    if (COMMENTS.has(parameter.type)) continue;
-    if (parameters.type === 'inferred_parameters' && parameter.type === 'identifier') {
-      names.push(parameter);
-      continue;
-    }
-    const name = parameter.childForFieldName('name');
-    if (
-      parameters.type !== 'formal_parameters' ||
-      parameter.type !== 'formal_parameter' ||
-      parameter.childForFieldName('type')?.text !== 'var' ||
-      parameter.childForFieldName('dimensions') !== null ||
-      name?.type !== 'identifier'
-    )
-      return undefined;
-    names.push(name);
-  }
-  return names.length > 0 && new Set(names.map((name) => name.text)).size === names.length
-    ? names
-    : undefined;
-}
-
-/**
- * One call-result assignment per parameter of an implicitly typed lambda that
- * is a direct argument of a method invocation. The route records the
- * argument's position, the call's argument count and the lambda's arity; the
- * binding is anchored at the parameter, inside the lambda's own scope.
- */
-export function synthesizeJavaSamLambdaCaptures(lambda: SyntaxNode): CaptureMatch[] {
-  const argumentList = lambda.parent;
-  const call = argumentList?.parent;
-  if (
-    argumentList?.type !== 'argument_list' ||
-    call?.type !== 'method_invocation' ||
-    call.childForFieldName('arguments')?.id !== argumentList.id
-  )
-    return [];
-  const args = argumentList.namedChildren.filter((child) => !COMMENTS.has(child.type));
-  const position = args.findIndex((child) => child.id === lambda.id);
-  const names = implicitParameterNames(lambda);
-  if (position < 0 || names === undefined) return [];
-  return names.map((name, index) => ({
-    '@call-result-assignment.call': nodeToCapture('@call-result-assignment.call', call),
-    '@call-result-assignment.lhs': nodeToCapture('@call-result-assignment.lhs', name),
-    '@call-result-assignment.scope': nodeToCapture('@call-result-assignment.scope', name),
-    '@call-result-assignment.element': {
-      ...nodeToCapture('@call-result-assignment.element', lambda),
-      text: `lambda:${position}:${args.length}:${index}:${names.length}`,
-    },
-  }));
-}
 
 interface AbstractMethod {
   readonly fact: JavaOverloadMethodFact;
@@ -129,6 +74,12 @@ interface SamIndex {
   /** Per call with implicitly typed lambda arguments: each argument's lambda
    * arity, `undefined` for any other argument. */
   readonly lambdaCalls: ReadonlyMap<string, readonly (number | undefined)[]>;
+  /** Packages that declare at least one workspace file. */
+  readonly packages: ReadonlySet<string>;
+  /** A simple type name a file's on-demand imports supply, per file and name. */
+  readonly onDemand: Map<string, SymbolDefinition | null>;
+  /** A type body's method scopes, by the method declaration's start. */
+  readonly methodScopes: Map<ScopeId, ReadonlyMap<string, ScopeId>>;
   readonly abstractMethods: Map<string, readonly AbstractMethod[] | null>;
   readonly types: Map<string, SymbolDefinition | null>;
   readonly ownedMethods: Map<string, ReadonlyMap<string, readonly JavaOverloadMethodFact[]>>;
@@ -147,7 +98,10 @@ export function indexJavaSamLambdaTargets(
 ): void {
   const classScopes = new Map<string, ScopeId>();
   const lambdaCalls = new Map<string, (number | undefined)[]>();
+  const packages = new Set<string>();
   for (const parsed of parsedFiles) {
+    const packageName = packageOf(parsed.filePath);
+    if (packageName !== undefined) packages.add(packageName);
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Class') continue;
       const owner = scope.ownedDefs.find((definition) => isClassLike(definition.type));
@@ -172,6 +126,9 @@ export function indexJavaSamLambdaTargets(
   samIndexes.set(indexes, {
     classScopes,
     lambdaCalls,
+    packages,
+    onDemand: new Map(),
+    methodScopes: new Map(),
     abstractMethods: new Map(),
     types: new Map(),
     ownedMethods: new Map(),
@@ -256,9 +213,66 @@ function packageOf(filePath: string): string | undefined {
 }
 
 /**
+ * The workspace top-level type a file's type-import-on-demand declarations
+ * supply for `name` (JLS 7.5.2), reached only when no declaration, single-type
+ * import or same-package type claims it (JLS 6.4.1). Two candidates are
+ * ambiguous. A static import that may name a member type, a `java.lang` type
+ * of that name, or an on-demand package with no workspace file (whose types
+ * cannot be listed) answers nothing.
+ */
+function onDemandType(
+  name: string,
+  filePath: string,
+  scopes: ScopeResolutionIndexes,
+  index: SamIndex,
+): SymbolDefinition | undefined {
+  const key = `${filePath}\0${name}`;
+  let found = index.onDemand.get(key);
+  if (found === undefined) {
+    found = null;
+    const imports = getJavaOverloadFacts(filePath)?.imports ?? [];
+    const candidates = new Map<string, SymbolDefinition>();
+    let decidable =
+      !KNOWN_JAVA_PLATFORM_TYPES.has(`java.lang.${name}`) &&
+      !imports.some(
+        (item) => item.static && (item.wildcard || item.name.split('.').at(-1) === name),
+      );
+    for (const item of imports) {
+      if (!decidable) break;
+      if (item.static || !item.wildcard) continue;
+      let supplied = false;
+      for (const id of scopes.qualifiedNames.get(name)) {
+        const definition = scopes.defs.get(id);
+        if (
+          definition !== undefined &&
+          isClassLike(definition.type) &&
+          definition.ownerId === undefined &&
+          packageOf(definition.filePath) === item.name
+        ) {
+          candidates.set(definition.nodeId, definition);
+          supplied = true;
+        }
+      }
+      if (
+        !supplied &&
+        (KNOWN_JAVA_PLATFORM_TYPES.has(`${item.name}.${name}`) ||
+          (!index.packages.has(item.name) &&
+            !['java.lang', 'java.util', 'java.io'].includes(item.name)))
+      )
+        decidable = false;
+    }
+    const [only] = candidates.values();
+    if (decidable && candidates.size === 1 && only !== undefined) found = only;
+    index.onDemand.set(key, found);
+  }
+  return found ?? undefined;
+}
+
+/**
  * The single class-like workspace declaration a simple type name denotes from
- * `scope`. A type parameter, an ambiguous name, or a lookup that a capped
- * same-package sibling could still shadow answers nothing.
+ * `scope`: the scope chain's own claim, else the file's on-demand imports. A
+ * type parameter, an inherited member type, an ambiguous name, or a lookup
+ * that a capped same-package sibling could still shadow answers nothing.
  */
 function resolveType(
   scope: ScopeId,
@@ -274,13 +288,16 @@ function resolveType(
   const key = `${scope}\0${name}`;
   let found = index.types.get(key);
   if (found === undefined) {
+    const claim = lookupNameClaim(scope, name, scopes, { purpose: 'type' });
     const definitions = new Map<string, SymbolDefinition>();
-    for (const binding of lookupNameClaim(scope, name, scopes, { purpose: 'type' }).bindings)
+    for (const binding of claim.bindings)
       if (isClassLike(binding.def.type)) definitions.set(binding.def.nodeId, binding.def);
-    const [only] = definitions.values();
+    const [claimed] = definitions.values();
+    const only = claim.status === 'absent' ? onDemandType(name, filePath, scopes, index) : claimed;
     found =
-      definitions.size !== 1 ||
+      (claim.status !== 'absent' && definitions.size !== 1) ||
       only === undefined ||
+      inheritsJavaMemberTypeNamed(scope, name, scopes) ||
       (isJavaPackageSiblingVisibilityIncomplete(filePath) &&
         hasJavaSamePackageType(filePath, name) !== false &&
         packageOf(only.filePath) !== packageOf(filePath))
@@ -375,6 +392,70 @@ function collectAbstractMethods(
   return [...methods.values()];
 }
 
+/** The scope of the method declared in type body `classScope` at `at`. */
+function methodScope(
+  classScope: ScopeId,
+  at: Range,
+  scopes: ScopeResolutionIndexes,
+  index: SamIndex,
+): ScopeId | undefined {
+  let byStart = index.methodScopes.get(classScope);
+  if (byStart === undefined) {
+    const starts = new Map<string, ScopeId>();
+    for (const child of scopes.scopeTree.getChildren(classScope)) {
+      const scope = scopes.scopeTree.getScope(child);
+      if (scope?.kind === 'Function')
+        starts.set(`${scope.range.startLine}:${scope.range.startCol}`, scope.id);
+    }
+    index.methodScopes.set(classScope, (byStart = starts));
+  }
+  return byStart.get(`${at.startLine}:${at.startCol}`);
+}
+
+const compact = (spelling: string): string => spelling.replace(/\s+/g, '');
+
+/** The declared type a method scope records for a parameter written `spelling`.
+ * Parameters written alike in one declaration denote the same type. */
+function parameterRef(
+  scope: ScopeId,
+  spelling: string,
+  scopes: ScopeResolutionIndexes,
+): TypeRef | undefined {
+  const written = compact(spelling);
+  for (const ref of scopes.scopeTree.getScope(scope)?.typeBindings.values() ?? [])
+    if (
+      ref.source === 'parameter-annotation' &&
+      compact(ref.declaredSpelling ?? ref.rawName) === written
+    )
+      return ref;
+  return undefined;
+}
+
+/** The workspace type a method parameter's written type names, read in that
+ * method's scope. A qualified spelling takes the provider's qualified lookup
+ * for the parameter's own declared type, never its simple name. */
+function parameterType(
+  written: string,
+  name: string,
+  scope: ScopeId,
+  filePath: string,
+  at: Range,
+  scopes: ScopeResolutionIndexes,
+  index: SamIndex,
+): SymbolDefinition | undefined {
+  if (!name.includes('.')) return resolveType(scope, name, filePath, at, scopes, index);
+  const ref = parameterRef(scope, written, scopes);
+  const key = ref === undefined ? undefined : javaQualifiedTypeLookupSpelling(ref, scopes);
+  if (typeof key !== 'string') return undefined;
+  let module = scopes.scopeTree.getScope(scope);
+  while (module !== undefined && module.kind !== 'Module')
+    module = module.parent === null ? undefined : scopes.scopeTree.getScope(module.parent);
+  const bindings =
+    module === undefined ? undefined : scopes.bindingAugmentations.get(module.id)?.get(key);
+  const definition = bindings?.length === 1 ? bindings[0]!.def : undefined;
+  return definition !== undefined && isClassLike(definition.type) ? definition : undefined;
+}
+
 /** What a written parameter type offers an implicitly typed lambda. `sam`:
  * a workspace functional interface; `none`: a workspace type proven not to be
  * one; `undefined`: anything this provider cannot decide. */
@@ -396,9 +477,17 @@ function functionalTarget(
   scopes: ScopeResolutionIndexes,
   index: SamIndex,
 ): FunctionalTarget | undefined {
-  const target = GENERIC_NAME.exec(written.trim());
+  const target = TYPE_NAME.exec(written.trim());
   if (target === null) return undefined;
-  const functional = resolveType(scope, target[1]!, filePath, at, scopes, index);
+  const functional = parameterType(
+    written,
+    compact(target[1]!),
+    scope,
+    filePath,
+    at,
+    scopes,
+    index,
+  );
   if (functional === undefined) return undefined;
   if (functional.type !== 'Interface') return { kind: 'none' };
   const methods = abstractMethodsOf(functional, scopes, index);
@@ -467,12 +556,36 @@ export function javaSamLambdaParameterType(
     samTypes.length !== arity
   )
     return undefined;
-  const written = samTypes[parameter]?.trim() ?? '';
-  if (!SIMPLE_NAME.test(written) || PRIMITIVES.has(written)) return undefined;
+  const written = compact(samTypes[parameter] ?? '');
+  if (written.length === 0 || PRIMITIVES.has(written)) return undefined;
   const typeParameter = sam.declaringFact.typeParameters.indexOf(written);
   if (typeParameter < 0) {
-    if (isTypeParameterAt(sam.declaring.filePath, written, sam.fact.range, index)) return undefined;
-    return { rawName: written, declaredAtScope: sam.scope, source: 'assignment-inferred' };
+    // The parameter has the abstract method's own declared parameter type:
+    // the same binding, read where it was written. A type variable anywhere
+    // in it would need a substitution this does not make.
+    if (
+      (written.match(IDENTIFIERS) ?? []).some(
+        (name) =>
+          sam.declaringFact.typeParameters.includes(name) ||
+          isTypeParameterAt(sam.declaring.filePath, name, sam.fact.range, index),
+      )
+    )
+      return undefined;
+    const samScope = methodScope(sam.scope, sam.fact.range, scopes, index);
+    const declared = samScope === undefined ? undefined : parameterRef(samScope, written, scopes);
+    if (declared === undefined)
+      return SIMPLE_NAME.test(written)
+        ? { rawName: written, declaredAtScope: sam.scope, source: 'assignment-inferred' }
+        : undefined;
+    return {
+      rawName: declared.rawName,
+      ...(declared.declaredSpelling === undefined
+        ? {}
+        : { declaredSpelling: declared.declaredSpelling }),
+      declaredAtScope: declared.declaredAtScope,
+      ...(declared.lookupPosition === undefined ? {} : { lookupPosition: declared.lookupPosition }),
+      source: 'assignment-inferred',
+    };
   }
   // Substitution needs the argument written for the declaring interface itself.
   if (sam.declaring.nodeId !== functional.nodeId || target.typeArguments === undefined)
@@ -499,8 +612,12 @@ function lambdaApplicable(
   index: SamIndex,
 ): 'yes' | 'no' | 'unknown' {
   const fact = definition === undefined ? undefined : fixedParameters(definition);
-  const scope =
+  const owner =
     definition?.ownerId === undefined ? undefined : index.classScopes.get(definition.ownerId);
+  const scope =
+    owner === undefined || fact === undefined
+      ? undefined
+      : methodScope(owner, fact.range, scopes, index);
   if (definition === undefined || fact === undefined || scope === undefined) return 'unknown';
   if (fact.parameterTypes.length !== arities.length) return 'no';
   let verdict: 'yes' | 'unknown' = 'yes';

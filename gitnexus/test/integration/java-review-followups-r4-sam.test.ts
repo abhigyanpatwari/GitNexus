@@ -187,3 +187,100 @@ class StaticContext {
     expect(targets(getRelationships(result(), 'CALLS'), caller, member)).toEqual([]);
   });
 });
+
+// The functional interfaces live in another package than the method that
+// takes them, and reach it only through `import cb.*;` (JLS 7.5.2), or through
+// a qualified parameter type. The caller's field `x` has another type.
+describe('Java SAM lambda targets reached through on-demand imports and qualified types', () => {
+  const result = useFixture('java-r4-sam-on-demand', {
+    'src/models/User.java': `package models;
+public class User {
+  public void save() {}
+  public String getName() { return ""; }
+}
+`,
+    'src/models/Other.java': `package models;
+public class Other {
+  public void save() {}
+  public String getName() { return ""; }
+}
+`,
+    'src/cb/Cb0.java': `package cb;
+import models.User;
+public interface Cb0 { void accept(User value); }
+`,
+    'src/cb/UserCb.java': `package cb;
+import models.User;
+public interface UserCb { void accept(User value); }
+`,
+    'src/cb/PairCb.java': `package cb;
+import models.User;
+import models.Other;
+public interface PairCb { void accept(Other a, User b); }
+`,
+    'src/cb/QualifiedCb.java': `package cb;
+public interface QualifiedCb { void accept(models.User value); }
+`,
+    'src/h/Harness.java': `package h;
+import cb.*;
+public class Harness {
+  public void accept(UserCb cb) {}
+  public void accept(PairCb cb) {}
+  public void take0(Cb0 cb) {}
+  public void qualified(cb.QualifiedCb callback) {}
+}
+`,
+    'src/h/Caller.java': `package h;
+public class Caller {
+  models.Other x;
+  void c0(Harness h) {
+    h.take0(x -> x.save());
+    h.accept(x -> x.getName());
+    h.accept((a, b) -> a.save());
+  }
+  void take(Harness h) { h.take0(x -> x.save()); }
+  void single(Harness h) { h.accept(x -> x.save()); }
+  void pair(Harness h) { h.accept((a, b) -> a.getName()); }
+  void qualified(Harness h) { h.qualified(x -> x.save()); }
+}
+`,
+  });
+
+  const caller = (name: string): string => `Method:src/h/Caller.java:Caller.${name}#1`;
+  const userSave = 'Method:src/models/User.java:User.save#0';
+  const otherSave = 'Method:src/models/Other.java:Other.save#0';
+
+  it('resolves every call of the scaling shape exactly', () => {
+    const edges = getRelationships(result(), 'CALLS')
+      .filter((edge) => edge.rel.sourceId === caller('c0'))
+      .map((edge) => edge.rel.targetId)
+      .sort();
+    expect(edges).toEqual([
+      'Method:src/h/Harness.java:Harness.accept#1~PairCb',
+      'Method:src/h/Harness.java:Harness.accept#1~UserCb',
+      'Method:src/h/Harness.java:Harness.take0#1',
+      otherSave,
+      'Method:src/models/User.java:User.getName#0',
+      userSave,
+    ]);
+  });
+
+  it.each([['take'], ['single'], ['qualified']])(
+    'types the lambda parameter from the interface, not the field, in %s',
+    (name) => {
+      expect(targets(getRelationships(result(), 'CALLS'), caller(name), 'save')).toEqual([
+        userSave,
+      ]);
+    },
+  );
+
+  it('types each parameter of the selected two-parameter interface', () => {
+    const edges = getRelationships(result(), 'CALLS');
+    expect(targets(edges, caller('pair'), 'accept')).toEqual([
+      'Method:src/h/Harness.java:Harness.accept#1~PairCb',
+    ]);
+    expect(targets(edges, caller('pair'), 'getName')).toEqual([
+      'Method:src/models/Other.java:Other.getName#0',
+    ]);
+  });
+});

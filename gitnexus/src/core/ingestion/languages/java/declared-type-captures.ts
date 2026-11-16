@@ -9,7 +9,7 @@ import {
 } from 'gitnexus-shared';
 import { nodeToCapture } from '../../utils/ast-helpers.js';
 import { eraseJavaTypeArguments, javaTrailingDimensions, javaTypeText } from './type-spelling.js';
-import { synthesizeJavaSamLambdaCaptures } from './sam-lambda-types.js';
+import { synthesizeJavaSamLambdaCaptures } from './sam-lambda-captures.js';
 import {
   getJavaOverloadFacts,
   javaRangeContains,
