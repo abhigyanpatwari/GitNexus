@@ -400,8 +400,12 @@ export function getPythonScopeQuery(): Parser.Query {
   return _query;
 }
 
-/** The raw matches of the scope query under `root`: see expandPythonScopeMatches(). */
-export function matchPythonScopeQuery(root: Parser.SyntaxNode): Parser.QueryMatch[] {
+/**
+ * The raw matches of the scope query under `root`: see expandPythonScopeMatches().
+ * Its name must not end in `ScopeQuery`: the grammar-literal gate calls every
+ * such export with no arguments to compile the query.
+ */
+export function pythonScopeQueryMatches(root: Parser.SyntaxNode): Parser.QueryMatch[] {
   return getPythonScopeQuery().matches(root, { maxStartDepth: PYTHON_QUERY_MAX_START_DEPTH });
 }
 

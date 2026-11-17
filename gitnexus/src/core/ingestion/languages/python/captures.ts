@@ -23,7 +23,7 @@ import {
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
-import { expandPythonScopeMatches, getPythonParser, matchPythonScopeQuery } from './query.js';
+import { expandPythonScopeMatches, getPythonParser, pythonScopeQueryMatches } from './query.js';
 import {
   extractNotebookPython,
   isNotebookPath,
@@ -134,9 +134,9 @@ export function emitPythonScopeCaptures(
   }
   if (parseText.includes('__all__')) recordPythonLiteralAll(filePath, tree.rootNode);
 
-  let rawMatches: ReturnType<typeof matchPythonScopeQuery>;
+  let rawMatches: ReturnType<typeof pythonScopeQueryMatches>;
   try {
-    rawMatches = matchPythonScopeQuery(tree.rootNode);
+    rawMatches = pythonScopeQueryMatches(tree.rootNode);
   } catch (err) {
     throw scopeExtractionError('scope query', filePath, err);
   }

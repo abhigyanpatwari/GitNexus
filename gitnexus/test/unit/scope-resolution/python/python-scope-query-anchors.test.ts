@@ -5,7 +5,7 @@ import {
   PYTHON_SCOPE_QUERY,
   expandPythonScopeMatches,
   getPythonParser,
-  matchPythonScopeQuery,
+  pythonScopeQueryMatches,
 } from '../../../../src/core/ingestion/languages/python/query.js';
 import { getTreeSitterBufferSize } from '../../../../src/core/ingestion/constants.js';
 import { parseSourceSafe } from '../../../../src/core/tree-sitter/safe-parse.js';
@@ -98,7 +98,7 @@ const matchKey = (captures: readonly Parser.QueryCapture[]): string =>
   captures.map((capture) => `${capture.name}:${capture.node.id}`).join(' ');
 
 const anchoredMatches = (root: Parser.SyntaxNode): string[] =>
-  [...expandPythonScopeMatches(matchPythonScopeQuery(root))].map(matchKey);
+  [...expandPythonScopeMatches(pythonScopeQueryMatches(root))].map(matchKey);
 
 const parentRootedMatches = (root: Parser.SyntaxNode): string[] =>
   parentRootedQuery.matches(root).map((match) => matchKey(match.captures));
@@ -183,7 +183,7 @@ describe('Python scope query: end-anchored rules', () => {
   // call before the member read, the read of an argument before its value-ref.
   it('yields the matches of a member call with arguments in the established order', () => {
     const matches = [
-      ...expandPythonScopeMatches(matchPythonScopeQuery(rootOf('x = a.b(c, k=d)\n'))),
+      ...expandPythonScopeMatches(pythonScopeQueryMatches(rootOf('x = a.b(c, k=d)\n'))),
     ];
     expect(
       matches.map((match) => match.map(({ name, node }) => `${name}=${node.text}`).join(' ')),
@@ -308,7 +308,7 @@ describe('Python scope query: matches open at once', () => {
 describe('Python scope query on wide syntax', () => {
   const WIDTH = 70_000;
   const matchCount = (source: string, capture: string): number =>
-    [...expandPythonScopeMatches(matchPythonScopeQuery(rootOf(source)))].filter((match) =>
+    [...expandPythonScopeMatches(pythonScopeQueryMatches(rootOf(source)))].filter((match) =>
       match.some(({ name }) => name === capture),
     ).length;
 
@@ -354,7 +354,9 @@ describe('Python scope query on a tree deeper than the cursor can count', () => 
   let matches: (readonly Parser.QueryCapture[])[];
   beforeAll(() => {
     matches = [
-      ...expandPythonScopeMatches(matchPythonScopeQuery(rootOf(`x = a${'.f(p)'.repeat(LINKS)}\n`))),
+      ...expandPythonScopeMatches(
+        pythonScopeQueryMatches(rootOf(`x = a${'.f(p)'.repeat(LINKS)}\n`)),
+      ),
     ];
   });
   const sites = (capture: string): number[] =>
