@@ -291,13 +291,15 @@ export function createJvmPackageSiblingVisibility(
           truncatedFiles++;
         }
 
+        // The language opted out of the type-binding copy (see the option).
+        if (!mergeTypeBindings) continue;
+
         // Keep the two halves of "what this file can see" in agreement: when
         // the cap truncated the binding set, merge type bindings from the same
         // bounded sibling set only — and iterate that set directly, so the cap
         // bounds the merge work too instead of just filtering a full scan. An
         // untruncated scope merges every sibling as before, including ones that
         // contribute no class-like def.
-        if (!mergeTypeBindings) continue;
         const typeBindings = scope.typeBindings as Map<string, TypeRef>;
         if (!truncated && bindingIndex !== undefined) {
           bindingIndex.mergeAll(filePath, typeBindings);

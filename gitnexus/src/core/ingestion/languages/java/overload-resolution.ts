@@ -16,8 +16,10 @@ import {
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
   getJavaOverloadCall,
+  endsAtOrAfter,
   getJavaOverloadFacts,
   javaRangeContains,
+  startsAtOrBefore,
   type JavaArgumentFact,
   type JavaOverloadCallFact,
   type JavaOverloadFileFacts,
@@ -161,17 +163,6 @@ interface FirstContainingSearch<T> {
   /** Per index, the range with the greatest end up to it; `undefined` when
    * the starts ever decrease in list order, and the lookup scans instead. */
   readonly widest: readonly Range[] | undefined;
-}
-
-function startsAtOrBefore(range: Range, at: Range): boolean {
-  return (
-    range.startLine < at.startLine ||
-    (range.startLine === at.startLine && range.startCol <= at.startCol)
-  );
-}
-
-function endsAtOrAfter(range: Range, at: Range): boolean {
-  return range.endLine > at.endLine || (range.endLine === at.endLine && range.endCol >= at.endCol);
 }
 
 export function firstContainingSearch<T>(
@@ -335,12 +326,7 @@ function hasTypeParameter(index: FileFactIndex, name: string, at: Range): boolea
     high = ranges.starts.length;
   while (low < high) {
     const mid = (low + high) >>> 1;
-    const start = ranges.starts[mid]!;
-    if (
-      start.startLine < at.startLine ||
-      (start.startLine === at.startLine && start.startCol <= at.startCol)
-    )
-      low = mid + 1;
+    if (startsAtOrBefore(ranges.starts[mid]!, at)) low = mid + 1;
     else high = mid;
   }
   return low > 0 && javaRangeContains(ranges.widest[low - 1]!, at);

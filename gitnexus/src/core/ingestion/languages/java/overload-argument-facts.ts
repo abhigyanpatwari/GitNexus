@@ -126,13 +126,19 @@ export function getJavaOverloadCall(
   return index.get(`${javaOverloadRangeKey(range)}:${name}`);
 }
 
-export function javaRangeContains(outer: Range, inner: Range): boolean {
+export function startsAtOrBefore(range: Range, at: Range): boolean {
   return (
-    (outer.startLine < inner.startLine ||
-      (outer.startLine === inner.startLine && outer.startCol <= inner.startCol)) &&
-    (outer.endLine > inner.endLine ||
-      (outer.endLine === inner.endLine && outer.endCol >= inner.endCol))
+    range.startLine < at.startLine ||
+    (range.startLine === at.startLine && range.startCol <= at.startCol)
   );
+}
+
+export function endsAtOrAfter(range: Range, at: Range): boolean {
+  return range.endLine > at.endLine || (range.endLine === at.endLine && range.endCol >= at.endCol);
+}
+
+export function javaRangeContains(outer: Range, inner: Range): boolean {
+  return startsAtOrBefore(outer, inner) && endsAtOrAfter(outer, inner);
 }
 
 function rangeOf(node: SyntaxNode): Range {

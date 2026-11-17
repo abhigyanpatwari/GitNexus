@@ -235,7 +235,7 @@ function populateJavaCrossFileReturnTypes(
 
     const ambiguousMirrors = new Set<string>();
     ambiguousByFile.set(parsed.filePath, ambiguousMirrors);
-    const importedFamilies: string[][] = [];
+    const importedFamilies: { readonly files: string[]; readonly key: string }[] = [];
     // Mirroring a family or a file's class scopes a second time changes
     // nothing (a name is only set when absent, and ambiguity is permanent), so
     // N imports of one file mirror it once instead of N times.
@@ -257,41 +257,41 @@ function populateJavaCrossFileReturnTypes(
           if (ancestor !== undefined) sourceFiles.add(ancestor.filePath);
         }
         const family = [...sourceFiles];
-        importedFamilies.push(family);
         const familyKey = family.join('\0');
-        const mirrorFamily = !mirroredFamilies.has(familyKey);
-        mirroredFamilies.add(familyKey);
-        const familyNames = new Set<string>();
-        for (const sourceFile of mirrorFamily ? sourceFiles : []) {
-          for (const [srcName, srcRef] of moduleReturnTypesByFile.get(sourceFile) ?? []) {
-            if (familyNames.has(srcName)) continue;
-            familyNames.add(srcName);
-            if (ambiguousMirrors.has(srcName)) continue;
-            const existing = tb.get(srcName);
-            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
-              ambiguousMirrors.add(srcName);
-              tb.delete(srcName);
-              continue;
+        importedFamilies.push({ files: family, key: familyKey });
+        if (!mirroredFamilies.has(familyKey)) {
+          mirroredFamilies.add(familyKey);
+          const familyNames = new Set<string>();
+          for (const sourceFile of sourceFiles) {
+            for (const [srcName, srcRef] of moduleReturnTypesByFile.get(sourceFile) ?? []) {
+              if (familyNames.has(srcName)) continue;
+              familyNames.add(srcName);
+              if (ambiguousMirrors.has(srcName)) continue;
+              const existing = tb.get(srcName);
+              if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+                ambiguousMirrors.add(srcName);
+                tb.delete(srcName);
+                continue;
+              }
+              if (existing === undefined) tb.set(srcName, srcRef);
             }
-            if (existing === undefined) tb.set(srcName, srcRef);
           }
         }
 
-        const mirrorClasses = !mirroredClassFiles.has(ref.def.filePath);
-        mirroredClassFiles.add(ref.def.filePath);
-        for (const classScope of mirrorClasses
-          ? (classScopesByFile.get(ref.def.filePath) ?? [])
-          : []) {
-          for (const [srcName, srcRef] of classScope.typeBindings) {
-            if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
-            if (ambiguousMirrors.has(srcName)) continue;
-            const existing = tb.get(srcName);
-            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
-              ambiguousMirrors.add(srcName);
-              tb.delete(srcName);
-              continue;
+        if (!mirroredClassFiles.has(ref.def.filePath)) {
+          mirroredClassFiles.add(ref.def.filePath);
+          for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
+            for (const [srcName, srcRef] of classScope.typeBindings) {
+              if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
+              if (ambiguousMirrors.has(srcName)) continue;
+              const existing = tb.get(srcName);
+              if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+                ambiguousMirrors.add(srcName);
+                tb.delete(srcName);
+                continue;
+              }
+              if (existing === undefined) tb.set(srcName, srcRef);
             }
-            if (existing === undefined) tb.set(srcName, srcRef);
           }
         }
       }
@@ -301,10 +301,10 @@ function populateJavaCrossFileReturnTypes(
     const seenFamilies = new Set<string>();
     const distinctFamilies: string[][] = [];
     for (let i = importedFamilies.length - 1; i >= 0; i--) {
-      const key = importedFamilies[i]!.join('\0');
+      const { files, key } = importedFamilies[i]!;
       if (seenFamilies.has(key)) continue;
       seenFamilies.add(key);
-      distinctFamilies.push(importedFamilies[i]!);
+      distinctFamilies.push(files);
     }
     importedFamiliesByFile.set(parsed.filePath, distinctFamilies.reverse());
   }

@@ -209,13 +209,13 @@ export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex
     if (typeof name !== 'string' || name.length === 0) continue;
     const filePath = node.properties.filePath;
     if (typeof filePath !== 'string') continue;
+    if (indexed.has(node.id)) continue;
+    indexed.add(node.id);
     const candidate: PropertyCandidate = {
       id: node.id,
       filePath,
       fromReturnShape: node.properties.fromReturnShape === true,
     };
-    if (indexed.has(node.id)) continue;
-    indexed.add(node.id);
     const existing = byName.get(name);
     if (existing === undefined) byName.set(name, [candidate]);
     else existing.push(candidate);
