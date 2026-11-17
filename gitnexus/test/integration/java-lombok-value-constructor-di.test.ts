@@ -90,7 +90,7 @@ class CacheHarness {
     field.after();
   }
   void typedLambda() { accept((CacheOther x) -> x.save()); }
-  void unknownLambda() { accept(x -> x.audit()); }
+  void implicitLambda() { accept(x -> x.audit()); }
   void callback(List<CacheItem> values) { values.forEach(x -> x.save()); }
   void rawCallback(List values) { values.forEach(x -> x.save()); }
 }`,
@@ -214,7 +214,11 @@ describe('Lombok Value and generated constructor DI through worker/cache paths',
       expect(targets('CacheProbe.java', 'CacheHarness.typedLambda#0')).toEqual([
         'Method:CacheProbe.java:CacheOther.save#0',
       ]);
-      expect(targets('CacheProbe.java', 'CacheHarness.unknownLambda#0', ['audit'])).toEqual([]);
+      // `x` is the parameter `Consumer<CacheOther>.accept` gives it (JLS 15.27.3),
+      // never the field `x` of type CacheItem.
+      expect(targets('CacheProbe.java', 'CacheHarness.implicitLambda#0', ['audit'])).toEqual([
+        'Method:CacheProbe.java:CacheOther.audit#0',
+      ]);
       expect(targets('CacheProbe.java', 'CacheHarness.callback#1')).toEqual([
         'Method:CacheProbe.java:CacheItem.save#0',
       ]);

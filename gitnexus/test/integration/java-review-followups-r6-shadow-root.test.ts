@@ -7,8 +7,9 @@ import { getRelationships, useFixture, type RelEdge } from './resolvers/helpers.
  * reads the spelling as the JDK container and types the lambda parameter by its
  * element, behind a proof that resolution refutes. The refuted lambda then takes
  * its parameter type from the selected `forEach` itself: the single abstract
- * method of the workspace functional interface that `forEach` declares
- * (JLS 15.27.3). Where the JDK reading stands, that element type is kept.
+ * method of the functional interface that `forEach` declares, a JDK
+ * `java.util.function` one or a workspace one (JLS 15.27.3). Where the JDK
+ * container reading stands, that element type is kept.
  */
 describe('Java lambda parameters behind a refuted JDK container reading', () => {
   const result = useFixture('java-r6-shadow-root', {
@@ -19,10 +20,15 @@ describe('Java lambda parameters behind a refuted JDK container reading', () => 
     'shadow/ShadowOther.java': 'package shadow; public class ShadowOther { public void save() {} }',
     'shadow/ShadowCallback.java':
       'package shadow; public interface ShadowCallback<T> { void accept(T value); }',
-    'shadow/java.java': `package shadow;
+    // An import names its type from the package root (JLS 7.5.1), so this
+    // `Consumer` is the JDK interface even inside package `shadow`.
+    'shadow/java.java': `package shadow; import java.util.function.Consumer;
 public class java {
   public static class util {
     public static class List<T> {
+      public void forEach(Consumer<ShadowOther> callback) {}
+    }
+    public static class Set<T> {
       public void forEach(ShadowCallback<ShadowOther> callback) {}
     }
   }
@@ -31,6 +37,7 @@ public class java {
 class ShadowProbe {
   ShadowItem value;
   void raw(java.util.List<ShadowItem> values) { values.forEach(value -> value.save()); }
+  void callback(java.util.Set<ShadowItem> values) { values.forEach(value -> value.save()); }
 }`,
     // A same-package type shadows a type-import-on-demand (JLS 6.4.1).
     'ondemand/Item.java': 'package ondemand; public class Item { public void save() {} }',
@@ -76,8 +83,13 @@ class Use {
 
   it.each([
     [
-      'a shadowed java root',
+      'a shadowed java root with a JDK Consumer',
       'Method:shadow/ShadowProbe.java:ShadowProbe.raw#1',
+      'Method:shadow/ShadowOther.java:ShadowOther.save#0',
+    ],
+    [
+      'a shadowed java root with a workspace callback',
+      'Method:shadow/ShadowProbe.java:ShadowProbe.callback#1',
       'Method:shadow/ShadowOther.java:ShadowOther.save#0',
     ],
     [

@@ -27,12 +27,16 @@ export function createJavaIngestionCorpus({ shape = 'small', units } = {}) {
     'shadow/ShadowCallback.java':
       'package shadow; public interface ShadowCallback<T> { void accept(T value); }',
     // A type obscures a package (JLS 6.4.2): in package `shadow`, the root of
-    // `java.util.List` is the class `shadow.java`, so the lambda below takes
-    // this `forEach`'s workspace functional interface, never a JDK element.
-    'shadow/java.java': `package shadow;
+    // `java.util.List` is the class `shadow.java`, so each lambda below takes
+    // its `forEach`'s functional interface parameter type, never a JDK
+    // element. The import names the JDK `Consumer` from the package root.
+    'shadow/java.java': `package shadow; import java.util.function.Consumer;
 public class java {
   public static class util {
     public static class List<T> {
+      public void forEach(Consumer<ShadowOther> callback) {}
+    }
+    public static class Set<T> {
       public void forEach(ShadowCallback<ShadowOther> callback) {}
     }
   }
@@ -41,6 +45,7 @@ public class java {
 class ShadowProbe {
   ShadowItem value;
   void raw(java.util.List<ShadowItem> values) { values.forEach(value -> value.save()); }
+  void callback(java.util.Set<ShadowItem> values) { values.forEach(value -> value.save()); }
 }`,
   };
   const expectations = [
@@ -48,6 +53,15 @@ class ShadowProbe {
       id: 'shared/java-root-shadow',
       feature: 'P3/P4 package-root identity',
       sourceId: method('shadow/ShadowProbe.java', 'ShadowProbe', 'raw', 1),
+      relation: 'CALLS',
+      members: ['save'],
+      targetIds: [method('shadow/ShadowOther.java', 'ShadowOther', 'save')],
+      forbiddenTargetIds: [method('shadow/ShadowItem.java', 'ShadowItem', 'save')],
+    },
+    {
+      id: 'shared/java-root-shadow-callback',
+      feature: 'P3/P4 package-root identity',
+      sourceId: method('shadow/ShadowProbe.java', 'ShadowProbe', 'callback', 1),
       relation: 'CALLS',
       members: ['save'],
       targetIds: [method('shadow/ShadowOther.java', 'ShadowOther', 'save')],

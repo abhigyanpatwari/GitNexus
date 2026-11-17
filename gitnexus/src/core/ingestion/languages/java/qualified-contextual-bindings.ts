@@ -170,6 +170,46 @@ const returnElementKey = (filePath: string, line: number, col: number): string =
   `${filePath}:${line}:${col}`;
 
 /**
+ * Whether a JDK name proof captured in `file` holds where it was written:
+ * nothing in the workspace gives the proving name another meaning there
+ * (JLS 6.4.1, 7.5). Every proof needs that no enclosing class inherits a
+ * member type of that name. A `root` (the `java` of a raw `java.*` spelling)
+ * or an `on-demand` proof also needs that no type of that name is visible,
+ * including a same-package sibling or a type parameter. A `single` proof's
+ * file-local shadowing is the capturer's to check. Run after package sibling
+ * injection; where that injection was capped, the uncapped same-package name
+ * index answers instead.
+ */
+export function javaContainerProofHolds(
+  proof: ContainerProof,
+  file: string,
+  position: Position,
+  indexes: ScopeResolutionIndexes,
+): boolean {
+  if (indexes.scopeTree.getScope(proof.scope) === undefined) return false;
+  if (inheritsJavaMemberTypeNamed(proof.scope, proof.name, indexes)) return false;
+  if (proof.kind === 'single') return true;
+  // A proof name is always written in a type (a JDK type's simple name or the
+  // `java` root of its qualified one), where no variable obscures it.
+  if (
+    bindsTypeParameter(proof.scope, proof.name, indexes) ||
+    lookupJavaTypeNameClaim(
+      proof.scope,
+      proof.name,
+      indexes,
+      proof.kind === 'root' ? position : undefined,
+    ).status !== 'absent'
+  )
+    return false;
+  // Sibling injection is capped for cost, so a large package may leave a
+  // same-package type out of the lookup above. Its name is still known.
+  return (
+    !isJavaPackageSiblingVisibilityIncomplete(file) ||
+    hasJavaSamePackageType(file, proof.name) === false
+  );
+}
+
+/**
  * An inferred element type is only as certain as the JDK container identity it
  * came through. Capture proves the spelling inside the file; this confirms,
  * where the container type was written, that nothing in the workspace gives
@@ -204,29 +244,8 @@ export function validateJavaQualifiedContextualBindings(
   const settled = new Map<TypeRef, TypeRef | null>();
   const returns = new Map<string, ProvenReturnElements>();
   const inheritedField = inheritedFieldResolver(parsedFiles, indexes);
-  const holds = (proof: ContainerProof, file: string, position: Position): boolean => {
-    if (indexes.scopeTree.getScope(proof.scope) === undefined) return false;
-    if (inheritsJavaMemberTypeNamed(proof.scope, proof.name, indexes)) return false;
-    if (proof.kind === 'single') return true;
-    // A proof name is always written in a type (a JDK container's simple name
-    // or the `java` root of its qualified one), where no variable obscures it.
-    if (
-      bindsTypeParameter(proof.scope, proof.name, indexes) ||
-      lookupJavaTypeNameClaim(
-        proof.scope,
-        proof.name,
-        indexes,
-        proof.kind === 'root' ? position : undefined,
-      ).status !== 'absent'
-    )
-      return false;
-    // Sibling injection is capped for cost, so a large package may leave a
-    // same-package type out of the lookup above. Its name is still known.
-    return (
-      !isJavaPackageSiblingVisibilityIncomplete(file) ||
-      hasJavaSamePackageType(file, proof.name) === false
-    );
-  };
+  const holds = (proof: ContainerProof, file: string, position: Position): boolean =>
+    javaContainerProofHolds(proof, file, position, indexes);
   /** The binding a supertype's field gives in place of `ref`, by `route`. */
   const inheritedElement = (
     ref: TypeRef,

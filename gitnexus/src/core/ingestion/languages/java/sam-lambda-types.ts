@@ -22,6 +22,7 @@ import {
   type JavaOverloadTypeFact,
 } from './overload-argument-facts.js';
 import { KNOWN_JAVA_PLATFORM_TYPES, splitJavaTypeArguments } from './overload-types.js';
+import { javaContainerProofHolds } from './qualified-contextual-bindings.js';
 import {
   inheritsJavaMemberTypeNamed,
   javaQualifiedTypeLookupSpelling,
@@ -91,6 +92,21 @@ interface SamIndex {
   readonly types: Map<string, SymbolDefinition | null>;
   readonly ownedMethods: Map<string, ReadonlyMap<string, readonly JavaOverloadMethodFact[]>>;
   readonly typeParameters: Map<string, ReadonlyMap<string, readonly Range[]>>;
+  /** Each file's type imports and its own declared types, by simple name. */
+  readonly files: Map<string, FileTypeNames>;
+}
+
+interface FileTypeNames {
+  /** Single-type import canonical names, by simple name. */
+  readonly single: ReadonlyMap<string, readonly string[]>;
+  /** Packages imported on demand. */
+  readonly onDemand: ReadonlySet<string>;
+  /** Whether a static import may bring in a member type of a simple name:
+   * every name for a static import on demand. */
+  readonly staticNames: ReadonlySet<string>;
+  readonly staticOnDemand: boolean;
+  /** Types this file declares, by simple name, with where each is in scope. */
+  readonly declared: ReadonlyMap<string, readonly Range[]>;
 }
 
 const samIndexes = new WeakMap<ScopeResolutionIndexes, SamIndex>();
@@ -140,6 +156,7 @@ export function indexJavaSamLambdaTargets(
     types: new Map(),
     ownedMethods: new Map(),
     typeParameters: new Map(),
+    files: new Map(),
   });
 }
 
@@ -278,8 +295,9 @@ function onDemandType(
 /**
  * The single class-like workspace declaration a simple type name denotes from
  * `scope`: the scope chain's own claim, else the file's on-demand imports. A
- * type parameter, an inherited member type, an ambiguous name, or a lookup
- * that a capped same-package sibling could still shadow answers nothing.
+ * type parameter, an inherited member type, an ambiguous name, a top-level
+ * type a single-type import of another type shadows, or a lookup that a
+ * capped same-package sibling could still shadow answers nothing.
  */
 function resolveType(
   scope: ScopeId,
@@ -296,14 +314,25 @@ function resolveType(
   let found = index.types.get(key);
   if (found === undefined) {
     const claim = lookupNameClaim(scope, name, scopes, { purpose: 'type' });
+    // A single-type import shadows a top-level type another file declares,
+    // from the same package or an on-demand import, unless it imports that
+    // very type (JLS 6.4.1).
+    const imported = fileTypeNames(filePath, index).single.get(name);
+    const shadowed = (definition: SymbolDefinition): boolean =>
+      imported !== undefined &&
+      definition.ownerId === undefined &&
+      definition.filePath !== filePath &&
+      !imported.includes(`${packageOf(definition.filePath)}.${name}`);
     const definitions = new Map<string, SymbolDefinition>();
     for (const binding of claim.bindings)
-      if (isClassLike(binding.def.type)) definitions.set(binding.def.nodeId, binding.def);
+      if (isClassLike(binding.def.type) && !shadowed(binding.def))
+        definitions.set(binding.def.nodeId, binding.def);
     const [claimed] = definitions.values();
     const only = claim.status === 'absent' ? onDemandType(name, filePath, scopes, index) : claimed;
     found =
       (claim.status !== 'absent' && definitions.size !== 1) ||
       only === undefined ||
+      shadowed(only) ||
       inheritsJavaMemberTypeNamed(scope, name, scopes) ||
       (isJavaPackageSiblingVisibilityIncomplete(filePath) &&
         hasJavaSamePackageType(filePath, name) !== false &&
@@ -509,6 +538,128 @@ function functionalTarget(
     : undefined;
 }
 
+/**
+ * JDK functional interfaces (`java.util.function`), by canonical name: the
+ * number of type arguments each takes, and for each parameter of its single
+ * abstract method the type argument that parameter has, or `null` for a
+ * primitive one. `UnaryOperator<T>` and `BinaryOperator<T>` take `apply` from
+ * `Function<T,T>` and `BiFunction<T,T,T>`.
+ */
+interface JdkFunctionalInterface {
+  readonly typeArguments: number;
+  readonly parameters: readonly (number | null)[];
+}
+
+const JDK_FUNCTION_PACKAGE = 'java.util.function';
+const JDK_FUNCTIONAL_INTERFACES: ReadonlyMap<string, JdkFunctionalInterface> = new Map(
+  (
+    [
+      ['Consumer', 1, [0]],
+      ['BiConsumer', 2, [0, 1]],
+      ['Function', 2, [0]],
+      ['BiFunction', 3, [0, 1]],
+      ['Predicate', 1, [0]],
+      ['BiPredicate', 2, [0, 1]],
+      ['UnaryOperator', 1, [0]],
+      ['BinaryOperator', 1, [0, 0]],
+      ['ToIntFunction', 1, [0]],
+      ['ToLongFunction', 1, [0]],
+      ['ToDoubleFunction', 1, [0]],
+      ['ObjIntConsumer', 1, [0, null]],
+      ['ObjLongConsumer', 1, [0, null]],
+      ['ObjDoubleConsumer', 1, [0, null]],
+    ] as const
+  ).map(([name, typeArguments, parameters]) => [
+    `${JDK_FUNCTION_PACKAGE}.${name}`,
+    { typeArguments, parameters },
+  ]),
+);
+
+/** A file's type imports and declared type names, indexed once per file. */
+function fileTypeNames(filePath: string, index: SamIndex): FileTypeNames {
+  let names = index.files.get(filePath);
+  if (names === undefined) {
+    const facts = getJavaOverloadFacts(filePath);
+    const single = new Map<string, string[]>();
+    const onDemand = new Set<string>();
+    const staticNames = new Set<string>();
+    let staticOnDemand = false;
+    for (const item of facts?.imports ?? []) {
+      const simple = item.name.split('.').at(-1) ?? '';
+      if (item.static) {
+        if (item.wildcard) staticOnDemand = true;
+        else staticNames.add(simple);
+      } else if (item.wildcard) onDemand.add(item.name);
+      else {
+        const names = single.get(simple);
+        if (names === undefined) single.set(simple, [item.name]);
+        else names.push(item.name);
+      }
+    }
+    const declared = new Map<string, Range[]>();
+    for (const type of facts?.types ?? []) {
+      const visible = declared.get(type.simpleName);
+      if (visible === undefined) declared.set(type.simpleName, [type.visible]);
+      else visible.push(type.visible);
+    }
+    index.files.set(
+      filePath,
+      (names = { single, onDemand, staticNames, staticOnDemand, declared }),
+    );
+  }
+  return names;
+}
+
+/**
+ * The JDK functional interface a parameter type written `name` (erased)
+ * denotes in `scope`, the callee's own method scope, at `at`. The name must
+ * be proven to denote the JDK type there, by the proofs a JDK container
+ * spelling takes (`javaContainerProofHolds`): a canonical
+ * `java.util.function.X` whose `java` root no type obscures; a single-type
+ * import of it; or a `java.util.function.*` import with no type of that
+ * simple name declared in the workspace and visible here, no single-type or
+ * static import of it, no type parameter and no inherited member type
+ * (JLS 6.4.1, 7.5). A type of this file in scope here shadows any import.
+ */
+function jdkFunctionalInterface(
+  name: string,
+  scope: ScopeId,
+  filePath: string,
+  at: Range,
+  scopes: ScopeResolutionIndexes,
+  index: SamIndex,
+): JdkFunctionalInterface | undefined {
+  const position = { startLine: at.startLine, startCol: at.startCol };
+  if (name.includes('.')) {
+    const qualified = JDK_FUNCTIONAL_INTERFACES.get(name);
+    return qualified !== undefined &&
+      javaContainerProofHolds({ kind: 'root', name: 'java', scope }, filePath, position, scopes)
+      ? qualified
+      : undefined;
+  }
+  const canonical = `${JDK_FUNCTION_PACKAGE}.${name}`;
+  const known = JDK_FUNCTIONAL_INTERFACES.get(canonical);
+  if (known === undefined || isTypeParameterAt(filePath, name, at, index)) return undefined;
+  const names = fileTypeNames(filePath, index);
+  if (names.declared.get(name)?.some((visible) => javaRangeContains(visible, at)) === true)
+    return undefined;
+  const single = names.single.get(name);
+  const kind =
+    single !== undefined
+      ? single.length === 1 && single[0] === canonical
+        ? 'single'
+        : undefined
+      : names.onDemand.has(JDK_FUNCTION_PACKAGE) &&
+          !names.staticOnDemand &&
+          !names.staticNames.has(name)
+        ? 'on-demand'
+        : undefined;
+  return kind !== undefined &&
+    javaContainerProofHolds({ kind, name, scope }, filePath, position, scopes)
+    ? known
+    : undefined;
+}
+
 /** A non-generic, fixed-arity method's written parameter types. */
 function fixedParameters(definition: SymbolDefinition): JavaOverloadMethodFact | undefined {
   if (definition.type !== 'Method' || definition.isSynthetic === true) return undefined;
@@ -523,10 +674,12 @@ function fixedParameters(definition: SymbolDefinition): JavaOverloadMethodFact |
 /**
  * The type of parameter `j` of an implicitly typed lambda passed as argument
  * `i` of a call whose exactly selected declaration is `callee`: the `j`-th
- * parameter of the single abstract method of the workspace interface that
- * `callee` declares for parameter `i`, read where that interface was written.
- * A type parameter of the interface is substituted only by a plain class name
- * written as its type argument; raw, wildcard and nested uses answer nothing.
+ * parameter of the single abstract method of the functional interface that
+ * `callee` declares for parameter `i`. For a workspace interface it is read
+ * where that interface was written; for a proven JDK `java.util.function`
+ * interface it is the type argument that parameter takes. A type parameter
+ * is substituted only by a plain class name written as its type argument;
+ * raw, wildcard and nested uses answer nothing.
  */
 export function javaSamLambdaParameterType(
   callee: SymbolDefinition,
@@ -549,8 +702,31 @@ export function javaSamLambdaParameterType(
   // is where the callee's parameter types (and their type arguments) were
   // written, never the scope of the call.
   const calleeScope = returned.declaredAtScope;
+  const writtenTarget = fact.parameterTypes[argument] ?? '';
+  const shape = TYPE_NAME.exec(writtenTarget.trim());
+  // A single-type import of the JDK name shadows a same-package or on-demand
+  // workspace type of that name (JLS 6.4.1). Any type that could shadow the
+  // JDK name refutes its proof, and the workspace reading below applies.
+  const jdk =
+    shape === null
+      ? undefined
+      : jdkFunctionalInterface(
+          compact(shape[1]!),
+          calleeScope,
+          callee.filePath,
+          fact.range,
+          scopes,
+          index,
+        );
+  if (jdk !== undefined) {
+    const chosen = jdk.parameters.length === arity ? jdk.parameters[parameter] : undefined;
+    const typeArguments = shape?.[2] === undefined ? undefined : splitJavaTypeArguments(shape[2]);
+    return chosen == null || typeArguments?.length !== jdk.typeArguments
+      ? undefined
+      : plainTypeArgument(typeArguments[chosen], callee, fact, calleeScope, scopes, index);
+  }
   const target = functionalTarget(
-    fact.parameterTypes[argument] ?? '',
+    writtenTarget,
     calleeScope,
     callee.filePath,
     fact.range,
@@ -601,16 +777,29 @@ export function javaSamLambdaParameterType(
   if (sam.declaring.nodeId !== functional.nodeId || target.typeArguments === undefined)
     return undefined;
   const typeArguments = splitJavaTypeArguments(target.typeArguments);
-  const chosen = typeArguments?.[typeParameter]?.trim() ?? '';
-  if (
-    typeArguments?.length !== sam.declaringFact.typeParameters.length ||
-    !SIMPLE_NAME.test(chosen) ||
+  return typeArguments?.length === sam.declaringFact.typeParameters.length
+    ? plainTypeArgument(typeArguments[typeParameter], callee, fact, calleeScope, scopes, index)
+    : undefined;
+}
+
+/** A type argument written at the callee's parameter, as a binding read in
+ * the callee's scope: only a plain class name, never a primitive, wildcard,
+ * qualified, generic or type-variable spelling. */
+function plainTypeArgument(
+  written: string | undefined,
+  callee: SymbolDefinition,
+  fact: JavaOverloadMethodFact,
+  calleeScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  index: SamIndex,
+): TypeRef | undefined {
+  const chosen = written?.trim() ?? '';
+  return !SIMPLE_NAME.test(chosen) ||
     PRIMITIVES.has(chosen) ||
     isTypeParameterAt(callee.filePath, chosen, fact.range, index) ||
     bindsTypeParameter(calleeScope, chosen, scopes)
-  )
-    return undefined;
-  return { rawName: chosen, declaredAtScope: calleeScope, source: 'assignment-inferred' };
+    ? undefined
+    : { rawName: chosen, declaredAtScope: calleeScope, source: 'assignment-inferred' };
 }
 
 /**
