@@ -6,9 +6,9 @@
         "shape": "small",
         "units": 8,
         "files": 31,
-        "sourceBytes": 57365,
-        "expectations": 413,
-        "positiveCases": 273,
+        "sourceBytes": 57594,
+        "expectations": 414,
+        "positiveCases": 274,
         "negativeCases": 140,
         "densityFieldsPerUnit": 8,
         "densityClassesPerUnit": 1,
@@ -18,27 +18,27 @@
         "syntheticAccessorMethods": 129,
         "provisionalSyntheticAccessorMethods": 131
       },
-      "corpusFingerprint": "f69cfa6faa59cfe4b3ece1594c579b09f9e6eae1cffa619d79a425d6295e8c3d",
+      "corpusFingerprint": "75b48001e107bd810e8982c0ad888478a16e0198fe58bad96937d7551e004476",
       "capture": {
-        "matches": 5987,
-        "scopes": 1640,
-        "typeBindings": 1530,
+        "matches": 6009,
+        "scopes": 1646,
+        "typeBindings": 1535,
         "nameClaims": 139,
-        "lexicalNames": 158,
+        "lexicalNames": 159,
         "syntheticMethodCandidates": 131,
-        "fingerprint": "6152e27ca5fbf6c2edfe366e1e7874e198d12f89f61256e4d53b2c702c06418b"
+        "fingerprint": "00a4898f4439f34bb6b771072473d28ba20e131e0741591d83a312fdb5b9a854"
       },
       "quality": {
-        "cases": 413,
-        "passedCases": 413,
-        "nodes": 1302,
-        "edges": 1833,
+        "cases": 414,
+        "passedCases": 414,
+        "nodes": 1305,
+        "edges": 1838,
         "danglingEdges": 0,
         "syntheticAccessorMethods": 129,
         "features": {
           "P3/P4 package-root identity": {
-            "cases": 1,
-            "passed": 1
+            "cases": 2,
+            "passed": 2
           },
           "P4 Lombok annotation identity": {
             "cases": 6,
@@ -149,8 +149,8 @@
             "passed": 64
           }
         },
-        "semanticFingerprint": "b9fd4aaf314abf597dba3d14a981785d1b9168ad91b6ab13aa4876d51fbcddb4",
-        "graphFingerprint": "adf9db6ae26781dcf3aaaad604063a6a634e81dd9b98ce4fea99b90a5d016e25",
+        "semanticFingerprint": "7e50bf869bd6ca784646bb34fd015902e98e961861d2b7292ba59b79ad73f26b",
+        "graphFingerprint": "08df2c67d7f6c9e52579b013d0833774d9d7bdafbd4cb96de0b71fdec8cbb821",
         "errors": []
       }
     },
@@ -159,9 +159,9 @@
         "shape": "large",
         "units": 32,
         "files": 55,
-        "sourceBytes": 221261,
-        "expectations": 1613,
-        "positiveCases": 1065,
+        "sourceBytes": 221490,
+        "expectations": 1614,
+        "positiveCases": 1066,
         "negativeCases": 548,
         "densityFieldsPerUnit": 8,
         "densityClassesPerUnit": 1,
@@ -171,27 +171,27 @@
         "syntheticAccessorMethods": 513,
         "provisionalSyntheticAccessorMethods": 515
       },
-      "corpusFingerprint": "9d8989bfa3c1e9f081736bf026e01e6ef008bfda1a749d5019b88961abbe121f",
+      "corpusFingerprint": "d91602fe621d5dbad7977135ced4e69a06f7421aa7765bae8f2eb7f5276faf00",
       "capture": {
-        "matches": 23195,
-        "scopes": 6248,
-        "typeBindings": 5994,
+        "matches": 23217,
+        "scopes": 6254,
+        "typeBindings": 5999,
         "nameClaims": 547,
-        "lexicalNames": 614,
+        "lexicalNames": 615,
         "syntheticMethodCandidates": 515,
-        "fingerprint": "ecb1344c1799ccb28efb45a934933c220204bd393bc3127d1128dc862d22154e"
+        "fingerprint": "d806000addd1010b6a7e86259ab873d480acd6599e4afa7598bbcb008c8a2b6a"
       },
       "quality": {
-        "cases": 1613,
-        "passedCases": 1613,
-        "nodes": 4926,
-        "edges": 7041,
+        "cases": 1614,
+        "passedCases": 1614,
+        "nodes": 4929,
+        "edges": 7046,
         "danglingEdges": 0,
         "syntheticAccessorMethods": 513,
         "features": {
           "P3/P4 package-root identity": {
-            "cases": 1,
-            "passed": 1
+            "cases": 2,
+            "passed": 2
           },
           "P4 Lombok annotation identity": {
             "cases": 6,
@@ -302,8 +302,8 @@
             "passed": 256
           }
         },
-        "semanticFingerprint": "d665be3f1ab9c8c92a3d4359d60dad762f39c35bab4e9cb7af4699d864ace902",
-        "graphFingerprint": "8e7bcc147d8a228c978ab630ddd915a83779468f0627f2eea34a6937ab073822",
+        "semanticFingerprint": "81904a61118863139e6f775e2653a1dde1dd977a379fa2e47c5448192924a459",
+        "graphFingerprint": "256ee9733b402a390493a51cfbdfa312abd086664a8ee8f1d44e1fc3c2a66e5a",
         "errors": []
       }
     },
@@ -312,9 +312,9 @@
         "shape": "dense",
         "units": 32,
         "files": 55,
-        "sourceBytes": 332461,
-        "expectations": 2061,
-        "positiveCases": 1513,
+        "sourceBytes": 332690,
+        "expectations": 2062,
+        "positiveCases": 1514,
         "negativeCases": 548,
         "densityFieldsPerUnit": 64,
         "densityClassesPerUnit": 8,
@@ -324,27 +324,27 @@
         "syntheticAccessorMethods": 4097,
         "provisionalSyntheticAccessorMethods": 4099
       },
-      "corpusFingerprint": "7dcb1fc628de1a5cfb16a2261ddc5bf310573ddeac7a30fec4fa3e633b4ce984",
+      "corpusFingerprint": "8a34b2aa16ecdc42cd914709041873946fa79b7cd0fb47e68b3670d8168f22dc",
       "capture": {
-        "matches": 32379,
-        "scopes": 6920,
-        "typeBindings": 8234,
+        "matches": 32401,
+        "scopes": 6926,
+        "typeBindings": 8239,
         "nameClaims": 547,
-        "lexicalNames": 614,
+        "lexicalNames": 615,
         "syntheticMethodCandidates": 4099,
-        "fingerprint": "c8c8f9e652cf26a681fc11a9597398928107f80b78b05178199b9851e18f9ff6"
+        "fingerprint": "1d8939f9d7467a4fc7937c51988e81b905a09f1d6e07dbc5799faab4dd927cd8"
       },
       "quality": {
-        "cases": 2061,
-        "passedCases": 2061,
-        "nodes": 10750,
-        "edges": 13313,
+        "cases": 2062,
+        "passedCases": 2062,
+        "nodes": 10753,
+        "edges": 13318,
         "danglingEdges": 0,
         "syntheticAccessorMethods": 4097,
         "features": {
           "P3/P4 package-root identity": {
-            "cases": 1,
-            "passed": 1
+            "cases": 2,
+            "passed": 2
           },
           "P4 Lombok annotation identity": {
             "cases": 6,
@@ -463,8 +463,8 @@
             "passed": 224
           }
         },
-        "semanticFingerprint": "8da1869b160ed4510a3948c44a24a7e60bc826734b2a4bb70aa6353216ac404c",
-        "graphFingerprint": "49215e077efe26e19be897754ca4330556751000444883c8dc875891e769f587",
+        "semanticFingerprint": "8c994d193c78a9ea5f38a69d84f8e8d8fe7583a16a1b9cefd3ece175584e32f1",
+        "graphFingerprint": "583ae28864d0caea3e528017959f650e5470497df574316fe9e93220f4eaf445",
         "errors": []
       }
     }
@@ -500,7 +500,7 @@
       "build": {
         "kind": "distribution",
         "canonicalization": "gitnexus-analyzer-build-v2",
-        "digest": "sha256:9a8b27bacf01dffca4fadb0de820dccc0d67fa8fb588fadacf0d6957da228cf0"
+        "digest": "sha256:b4d7c44789b1e1654fc201bcadd70c6c66b4df99c4ea2d461fd8b0c4e6a0fc6e"
       },
       "dependencyRuntime": {
         "canonicalization": "gitnexus-analyzer-dependency-runtime-v4",
@@ -510,7 +510,7 @@
       }
     },
     "git": {
-      "head": "ed47135e742eed874aef094ef10675f54c7e8e69",
+      "head": "5590fafcf4df48b3a9492f172087d535df8e16ff",
       "statusDigest": "12ae32cb1ec02d01eda3581b127c1fee3b0dc53572ed6baf239721a03d82e126"
     }
   }
