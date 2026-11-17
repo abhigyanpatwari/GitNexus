@@ -126,11 +126,13 @@ export function lookupNameClaim(
           scopes.workspaceFqnBindings?.get(spelling) ?? EMPTY_BINDINGS,
           options.classCandidateFilter,
         );
-        if (
-          local.length + indexed.length + augmented.length + namespace.length + workspace.length ===
-          0
-        )
-          return EMPTY_BINDINGS;
+        const total =
+          local.length + indexed.length + augmented.length + namespace.length + workspace.length;
+        if (total === 0) return EMPTY_BINDINGS;
+        // The finalized bucket alone is returned by reference, as
+        // `lookupBindingsAt` does: the shared lookup only reads it, and keeps
+        // its identity so per-array facts are computed once (finalize freezes it).
+        if (indexed.length === total) return indexed;
         return [...local, ...indexed, ...augmented, ...namespace, ...workspace];
       },
     },

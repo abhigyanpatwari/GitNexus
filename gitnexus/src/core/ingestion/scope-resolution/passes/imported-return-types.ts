@@ -40,6 +40,7 @@
  */
 
 import type {
+  BindingRef,
   ImportEdge,
   ParsedFile,
   Scope,
@@ -136,6 +137,38 @@ export function producerTypeRef(
   return owner === undefined
     ? undefined
     : scopes.scopeTree.getScope(owner.scope)?.typeBindings.get(owner.name);
+}
+
+/** Per run, per frozen binding array: the bindings whose definition owns a type fact. */
+const producerBindingsByArray = new WeakMap<
+  ScopeResolutionIndexes,
+  WeakMap<readonly BindingRef[], readonly BindingRef[]>
+>();
+
+/**
+ * The bindings `producerTypeRef` can answer for, in their original order; for
+ * every other binding it returns `undefined`. The owner table never changes
+ * once built, and a frozen array never changes, so the subset is computed once
+ * per array. Until the table exists every binding is walked, so the same first
+ * `producerTypeRef` call builds it, against the same type facts.
+ */
+function producerCandidateBindings(
+  bindings: readonly BindingRef[],
+  scopes: ScopeResolutionIndexes,
+): readonly BindingRef[] {
+  const owners = typeFactOwners.get(scopes);
+  if (owners === undefined || !Object.isFrozen(bindings)) return bindings;
+  let byArray = producerBindingsByArray.get(scopes);
+  if (byArray === undefined) {
+    byArray = new WeakMap();
+    producerBindingsByArray.set(scopes, byArray);
+  }
+  let owned = byArray.get(bindings);
+  if (owned === undefined) {
+    owned = bindings.filter((binding) => owners.has(binding.def.nodeId));
+    byArray.set(bindings, owned);
+  }
+  return owned;
 }
 
 /**
@@ -410,7 +443,7 @@ export function followChainPostFinalize(
     let next = claim.typeBinding;
     if (next === undefined || claim.bindings.some((binding) => binding.origin !== 'local')) {
       const candidates = new Map<string, TypeRef>();
-      for (const binding of claim.bindings) {
+      for (const binding of producerCandidateBindings(claim.bindings, scopes)) {
         // A member exposed through an import bucket must not replace a
         // return fact anchored on the module's own free function.
         if (binding.def.type === 'Method' && next?.source === 'return-annotation') {
