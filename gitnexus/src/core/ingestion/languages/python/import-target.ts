@@ -189,32 +189,46 @@ function pythonFileExportsName(
   parsedFiles: readonly ParsedFile[] | undefined,
 ): boolean {
   if (parsedFiles === undefined) return false;
-  const parsed = parsedFileByPath(parsedFiles).get(targetFile);
-  if (parsed === undefined) return false;
-  return parsed.localDefs.some((def) => {
+  const entry = parsedFileByPath(parsedFiles).get(targetFile);
+  if (entry === undefined) return false;
+  const exports = (entry.exports ??= { names: new Set<string>(), nextDefinition: 0 });
+  if (exports.names.has(importedName)) return true;
+  // Continue the original short-circuit scan, remembering the prefix already
+  // visited. Across this pass, D definitions and I imports cost O(D + I).
+  while (exports.nextDefinition < entry.file.localDefs.length) {
+    const def = entry.file.localDefs[exports.nextDefinition]!;
     const qualifiedName = def.qualifiedName;
-    if (qualifiedName === undefined || qualifiedName.length === 0) return false;
+    exports.nextDefinition++;
+    if (qualifiedName === undefined || qualifiedName.length === 0) continue;
     const dot = qualifiedName.lastIndexOf('.');
-    return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === importedName;
-  });
+    const name = dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
+    exports.names.add(name);
+    if (name === importedName) return true;
+  }
+  return false;
+}
+
+interface ParsedFileExports {
+  file: ParsedFile;
+  exports?: { names: Set<string>; nextDefinition: number };
 }
 
 /**
- * `filePath -> ParsedFile`, memoized on the identity of the pass's
+ * `filePath -> ParsedFileExports`, memoized on the identity of the pass's
  * `parsedFiles` array — the second stable object the orchestrator threads
  * through `resolveImportTarget`, beside the path Set.
  *
  * FIRST WINS on a duplicated path, which is what `Array.prototype.find`
  * returned, so the answer is unchanged for a workspace that somehow parsed one
- * path twice. Values are references to the array's own elements: the Map costs
- * one pointer per parsed file and, living in a `WeakMap` keyed on the array,
- * is reclaimed with the pass rather than accumulating across runs (#2649).
+ * path twice. Export-name indexes are allocated only for files queried by an
+ * import. They live with this pass, even if a later pass reuses ParsedFiles or
+ * definition arrays; the WeakMap releases the whole index with the pass (#2649).
  */
 const parsedFileByPath = perFileSet(
-  (parsedFiles: readonly ParsedFile[]): Map<string, ParsedFile> => {
-    const byPath = new Map<string, ParsedFile>();
+  (parsedFiles: readonly ParsedFile[]): Map<string, ParsedFileExports> => {
+    const byPath = new Map<string, ParsedFileExports>();
     for (const file of parsedFiles) {
-      if (!byPath.has(file.filePath)) byPath.set(file.filePath, file);
+      if (!byPath.has(file.filePath)) byPath.set(file.filePath, { file });
     }
     return byPath;
   },
