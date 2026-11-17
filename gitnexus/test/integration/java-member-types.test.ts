@@ -1,10 +1,28 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getRelationships, useFixture } from './resolvers/helpers.js';
+import {
+  getRelationships,
+  runPipelineFromRepo,
+  useFixture,
+  writeFixtureRepo,
+  type RelEdge,
+} from './resolvers/helpers.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';
+
+// Java member types: inherited, protected, private and hidden member types, producer
+// return types, and fields inherited from a same-package base.
 
 const callTargets = (result: PipelineResult, caller: string, name: string): string[] =>
   getRelationships(result, 'CALLS')
     .filter((edge) => edge.rel.sourceId === caller && edge.target === name)
+    .map((edge) => edge.rel.targetId)
+    .sort();
+
+const saveTargets = (result: PipelineResult, caller: string): string[] =>
+  getRelationships(result, 'CALLS')
+    .filter((edge: RelEdge) => edge.rel.sourceId === caller && edge.target === 'save')
     .map((edge) => edge.rel.targetId)
     .sort();
 
@@ -186,78 +204,6 @@ class Impl implements ia.I {
   });
 });
 
-// JLS 7.5.3 / 6.4.1: `import static p.Outer.Inner;` imports the static member
-// type `Inner`, which shadows a same-package top-level `Inner`, so
-// `Inner.Nested` is `p.Outer.Inner.Nested`. A static import of a field or
-// method brings in no type; an import whose owner may bring in an unseen
-// type, or two imports of the name, refuse.
-describe('Java qualified roots named by a single static import', () => {
-  const result = useFixture('java-r6-static-single-root', {
-    'p/Outer.java': `package p;
-public class Outer { public static class Inner { public static class Nested { public void save() {} } } }`,
-    'p/Other.java': `package p;
-public class Other { public static class Inner { public static class Nested { public void save() {} } } }`,
-    'p/Consts.java': 'package p; public class Consts { public static final int Inner = 1; }',
-    'p/Derived.java': 'package p; public class Derived extends lib.Base {}',
-    'p/Hidden.java': `package p;
-public class Hidden { static class Inner { public static class Nested { public void save() {} } } }`,
-    'q/Inner.java': `package q;
-public class Inner { public static class Nested { public void save() {} } }`,
-    'q/Use.java': `package q;
-import static p.Outer.Inner;
-class Use {
-  void run(Inner.Nested n) { n.save(); }
-  void local() { Inner.Nested n = null; n.save(); }
-  void take(Inner.Nested n) {}
-  void take(q.Inner.Nested n) {}
-  void pass(Inner.Nested n) { take(n); }
-}`,
-    'q/ConstUse.java': `package q;
-import static p.Consts.Inner;
-class ConstUse { void run(Inner.Nested n) { n.save(); } }`,
-    'q/ExtUse.java': `package q;
-import static lib.Ext.Inner;
-class ExtUse { void run(Inner.Nested n) { n.save(); } }`,
-    'q/DerivedUse.java': `package q;
-import static p.Derived.Inner;
-class DerivedUse { void run(Inner.Nested n) { n.save(); } }`,
-    'q/HiddenUse.java': `package q;
-import static p.Hidden.Inner;
-class HiddenUse { void run(Inner.Nested n) { n.save(); } }`,
-    'q/TwoUse.java': `package q;
-import static p.Outer.Inner;
-import static p.Other.Inner;
-class TwoUse { void run(Inner.Nested n) { n.save(); } }`,
-  });
-
-  it.each([
-    ['Method:q/Use.java:Use.run#1', 'Method:p/Outer.java:Nested.save#0'],
-    ['Method:q/Use.java:Use.local#0', 'Method:p/Outer.java:Nested.save#0'],
-    ['Method:q/ConstUse.java:ConstUse.run#1', 'Method:q/Inner.java:Nested.save#0'],
-  ])('types the receiver in %s as %s', (caller, target) => {
-    expect(callTargets(result(), caller, 'save')).toEqual([target]);
-  });
-
-  it('selects the overload by the statically imported member type', () => {
-    expect(callTargets(result(), 'Method:q/Use.java:Use.pass#1', 'take')).toEqual([
-      'Method:q/Use.java:Use.take#1~Inner.Nested',
-    ]);
-  });
-
-  // The owner is outside the workspace, names a supertype outside it, declares
-  // the member type package-private in another package, or two static imports
-  // name it.
-  it.each([
-    ['Method:q/ExtUse.java:ExtUse.run#1'],
-    ['Method:q/DerivedUse.java:DerivedUse.run#1'],
-    ['Method:q/HiddenUse.java:HiddenUse.run#1'],
-    ['Method:q/TwoUse.java:TwoUse.run#1'],
-  ])('leaves %s unresolved', (caller) => {
-    expect(result().graph.getNode(caller)).toBeDefined();
-    expect(callTargets(result(), caller, 'save')).toEqual([]);
-  });
-});
-
 // JLS 8.5: a member type a class declares hides every inherited member type of
 // that name, so a class inherits from each direct supertype only the member
 // types visible there. `Builder` in `C extends B` is `B.Builder`, never the
@@ -322,5 +268,274 @@ class G implements K1, K2 {
       expect(result().graph.getNode(caller)).toBeDefined();
       expect(callTargets(result(), caller, 'go')).toEqual([]);
     },
+  );
+});
+
+describe('Java private member types across top-level classes in one file', () => {
+  const result = useFixture('java-r2-private-member-type', {
+    'Main.java': `
+class Outer {
+  private static class Hidden { void save() {} }
+  static class Shown { void save() {} }
+  void inside(Outer.Hidden h) { h.save(); }
+  static class Nested { void nested(Outer.Hidden h) { h.save(); } }
+}
+class Other {
+  void outside(Outer.Hidden h) { h.save(); }
+  void shown(Outer.Shown h) { h.save(); }
+}
+class Decoy { void save() {} }
+`,
+  });
+
+  it.each([
+    ['Method:Main.java:Outer.inside#1', 'Method:Main.java:Hidden.save#0'],
+    ['Method:Main.java:Nested.nested#1', 'Method:Main.java:Hidden.save#0'],
+    ['Method:Main.java:Other.shown#1', 'Method:Main.java:Shown.save#0'],
+  ])('%s resolves an accessible member type to %s', (caller, target) => {
+    expect(saveTargets(result(), caller)).toEqual([target]);
+  });
+
+  // JLS 6.6.1: a private member type is accessible only within the body of
+  // its own top-level class, not from another top-level class in the file.
+  it('does not resolve a private member type from another top-level class', () => {
+    expect(saveTargets(result(), 'Method:Main.java:Other.outside#1')).toEqual([]);
+  });
+});
+
+// An indexed producer is typed from the overload javac selects at that call,
+// one array dimension per index step; ambiguous or unknown selections stay
+// unresolved instead of picking either return type.
+describe('Java overloaded producers before an array index', () => {
+  const result = useFixture('java-r3-indexed-overloads', {
+    'Main.java': `
+class User { void save() {} }
+class Other { void save() {} }
+class Base {
+  User[] over() { return null; }
+  Other[] over(int value) { return null; }
+}
+class Sub extends Base {
+  void viaSuper() { super.over()[0].save(); }
+  void viaThis() { this.over(1)[0].save(); }
+}
+class Holder {
+  Other[] make() { return null; }
+  User[] make(int value) { return null; }
+  User[][] grid() { return null; }
+  Other[][] grid(int value) { return null; }
+  User[] pick(Integer value) { return null; }
+  Other[] pick(String value) { return null; }
+}
+class Free {
+  User[] all() { return null; }
+  Other[] all(int value) { return null; }
+  void none() { all()[0].save(); }
+}
+class Use {
+  void typedNoArg(Holder h) { h.make()[0].save(); }
+  void typedInt(Holder h) { h.make(1)[0].save(); }
+  void twoDims(Holder h) { h.grid()[0][1].save(); }
+  void tooFewDims(Holder h) { h.grid()[0].save(); }
+  void ambiguousNull(Holder h) { h.pick(null)[0].save(); }
+  void unknownArgument(Holder h, Missing m) { h.pick(m.value())[0].save(); }
+}
+`,
+  });
+
+  it.each([
+    ['Sub.viaSuper#0', 'User'],
+    ['Sub.viaThis#0', 'Other'],
+    ['Free.none#0', 'User'],
+    ['Use.typedNoArg#1', 'Other'],
+    ['Use.typedInt#1', 'User'],
+    ['Use.twoDims#1', 'User'],
+  ])('binds %s to the element of the selected overload', (caller, owner) => {
+    expect(saveTargets(result(), `Method:Main.java:${caller}`)).toEqual([
+      `Method:Main.java:${owner}.save#0`,
+    ]);
+  });
+
+  it.each([['Use.tooFewDims#1'], ['Use.ambiguousNull#1'], ['Use.unknownArgument#2']])(
+    'leaves %s unresolved',
+    (caller) => {
+      expect(result().graph.getNode(`Method:Main.java:${caller}`)).toBeDefined();
+      expect(saveTargets(result(), `Method:Main.java:${caller}`)).toEqual([]);
+    },
+  );
+});
+
+/**
+ * `users()[0].save()` peels the producer's declared return type to its element.
+ * Type annotations and comments are not part of a Java type's spelling, so a
+ * return type written `User @Mark []` or `User /* c *\/ []` (or with its
+ * dimensions after the parameter list, or as a record component's type) types
+ * the element exactly as `User[]`.
+ */
+describe('Java producer return types written with annotations or comments', () => {
+  const result = useFixture('java-r6-annotated-producer-returns', {
+    'e/User.java': 'package e; public class User { public void save() {} }',
+    'e/Mark.java': `package e;
+@java.lang.annotation.Target(java.lang.annotation.ElementType.TYPE_USE)
+public @interface Mark {}`,
+    'e/Repo.java': `package e;
+class Repo {
+  User @Mark [] annotated() { return null; }
+  User /* c */ [] blockComment() { return null; }
+  User // c
+    [] lineComment() { return null; }
+  User trailing() @Mark [] { return null; }
+  User @Mark [] [] nested() { return null; }
+  User @Mark [] split() /* c */ [] { return null; }
+  User plain()[] { return null; }
+  void callAnnotated() { annotated()[0].save(); }
+  void callBlockComment() { blockComment()[0].save(); }
+  void callLineComment() { lineComment()[0].save(); }
+  void callTrailing() { trailing()[0].save(); }
+  void callNested() { nested()[0][0].save(); }
+  void callSplit() { split()[0][0].save(); }
+  void callPlain() { plain()[0].save(); }
+}`,
+    'e/Rec.java': `package e;
+record Rec(User @Mark [] users) { void callRecord() { users()[0].save(); } }`,
+  });
+
+  it.each([
+    'e/Repo.java:Repo.callAnnotated#0',
+    'e/Repo.java:Repo.callBlockComment#0',
+    'e/Repo.java:Repo.callLineComment#0',
+    'e/Repo.java:Repo.callTrailing#0',
+    'e/Repo.java:Repo.callNested#0',
+    'e/Repo.java:Repo.callSplit#0',
+    'e/Repo.java:Repo.callPlain#0',
+    'e/Rec.java:Rec.callRecord#0',
+  ])('types the producer element in %s as User', (caller) => {
+    expect(saveTargets(result(), `Method:${caller}`)).toEqual(['Method:e/User.java:User.save#0']);
+  });
+});
+
+/**
+ * `make()[0].save()` over a producer whose return type names a member type
+ * (`Outer.Inner[]`). The peeled element is a qualified spelling written where
+ * the return type was declared, so it takes the qualified lookup a declared
+ * `Outer.Inner` takes there: a same-package top-level `Inner` is never the
+ * owner, and a qualifier the lookup refuses leaves the call unresolved.
+ */
+describe('Java producer return types written as qualified member-type arrays', () => {
+  const result = useFixture('java-r6-qualified-producer-returns', {
+    'f/Model.java': `package f;
+public class Model {}
+class Outer { static class Inner { void save() {} } }`,
+    'f/Inner.java': 'package f; class Inner { void save() {} }',
+    'g/Outer2.java': `package g;
+public class Outer2 { public static class Inner { public void save() {} } }`,
+    'f/Prod.java': `package f;
+import g.Outer2;
+public class Prod {
+  Outer.Inner[] samePackage() { return null; }
+  Outer2.Inner[] imported() { return null; }
+  g.Outer2.Inner[] fullyQualified() { return null; }
+  Outer.Inner[][] grid() { return null; }
+  Inner[] simple() { return null; }
+  protected Outer.Inner[] shared() { return null; }
+  void callSamePackage() { samePackage()[0].save(); }
+  void callImported() { imported()[0].save(); }
+  void callFullyQualified() { fullyQualified()[0].save(); }
+  void callGrid() { grid()[0][0].save(); }
+  void callSimple() { simple()[0].save(); }
+}`,
+    // The return type means what it meant where it was written: this package's
+    // own Outer does not rebind the inherited producer's element.
+    'h/Outer.java': 'package h; class Outer { static class Inner { void save() {} } }',
+    'h/Caller.java': `package h;
+class Caller extends f.Prod { void callShared() { shared()[0].save(); } }`,
+    // The inherited member type Outer shadows the same-package top-level Outer
+    // (JLS 6.4.1) where the return type was written.
+    'f/Single.java': `package f;
+class SingleBase { static class Outer { static class Inner { void save() {} } } }
+class Single extends SingleBase {
+  Outer.Inner[] make() { return null; }
+  void run() { make()[0].save(); }
+}`,
+    // Outer is inherited from both a superclass and an interface: the name is
+    // ambiguous (JLS 8.5), so the qualified lookup refuses.
+    'f/BaseB.java': 'package f; interface BaseB { class Outer { class Inner { void save() {} } } }',
+    'f/Ambiguous.java': `package f;
+class BaseA { static class Outer { static class Inner { void save() {} } } }
+class Ambiguous extends BaseA implements BaseB {
+  Outer.Inner[] make() { return null; }
+  void run() { make()[0].save(); }
+}`,
+  });
+
+  it.each([
+    ['f/Prod.java:Prod.callSamePackage#0', 'Method:f/Model.java:Inner.save#0'],
+    ['f/Prod.java:Prod.callImported#0', 'Method:g/Outer2.java:Inner.save#0'],
+    ['f/Prod.java:Prod.callFullyQualified#0', 'Method:g/Outer2.java:Inner.save#0'],
+    ['f/Prod.java:Prod.callGrid#0', 'Method:f/Model.java:Inner.save#0'],
+    ['f/Prod.java:Prod.callSimple#0', 'Method:f/Inner.java:Inner.save#0'],
+    ['h/Caller.java:Caller.callShared#0', 'Method:f/Model.java:Inner.save#0'],
+    ['f/Single.java:Single.run#0', 'Method:f/Single.java:Inner.save#0'],
+  ])('types the producer element in %s as the written type: %s', (caller, target) => {
+    expect(saveTargets(result(), `Method:${caller}`)).toEqual([target]);
+  });
+
+  it('leaves the producer element unresolved when the qualified lookup refuses an ambiguous root', () => {
+    expect(saveTargets(result(), 'Method:f/Ambiguous.java:Ambiguous.run#0')).toEqual([]);
+  });
+});
+
+// A bare field read in a subclass (`inner.save()`, an implicit `this.inner`)
+// is typed by the field the class inherits from a base in another file of its
+// package. That must not depend on how many files the package holds: the
+// package-sibling machinery caps and then skips large packages.
+describe('Java fields inherited from a same-package base', () => {
+  it.each([
+    { label: 'small package', extraSiblings: 0 },
+    { label: 'package past the sibling skip', extraSiblings: 501 },
+  ])(
+    'types a bare inherited field in a $label',
+    async ({ extraSiblings }) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-java-inherited-field-'));
+      try {
+        const files: Record<string, string> = {
+          'src/app/Base.java': `package app;
+public class Base {
+  public static class Inner { public void save() {} }
+  protected Inner inner;
+  protected Inner shadow;
+}
+`,
+          'src/app/Other.java': `package app;
+public class Other { public void save() {} }
+`,
+          'src/app/Kid.java': `package app;
+public class Kid extends Base {
+  Other shadow;
+  void run() {
+    inner.save();
+    shadow.save();
+  }
+}
+`,
+        };
+        for (let i = 0; i < extraSiblings; i++)
+          files[`src/app/F${i}.java`] = `package app;\nclass F${i} {}\n`;
+        writeFixtureRepo(root, files);
+        const result = await runPipelineFromRepo(root, () => {}, {});
+        const targets = getRelationships(result, 'CALLS')
+          .filter((edge) => edge.rel.sourceId === 'Method:src/app/Kid.java:Kid.run#0')
+          .map((edge) => edge.rel.targetId)
+          .sort();
+        // The class's own `shadow` hides the inherited one.
+        expect(targets).toEqual([
+          'Method:src/app/Base.java:Inner.save#0',
+          'Method:src/app/Other.java:Other.save#0',
+        ]);
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    120000,
   );
 });

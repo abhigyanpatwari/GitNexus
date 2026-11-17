@@ -1,3 +1,4 @@
+// Java identifiers and written types with non-ASCII names: annotations, comments, overloads, lambdas and Lombok.
 import { describe, expect, it } from 'vitest';
 import { getRelationships, useFixture, type RelEdge } from './resolvers/helpers.js';
 import type { PipelineResult } from '../../src/types/pipeline.js';

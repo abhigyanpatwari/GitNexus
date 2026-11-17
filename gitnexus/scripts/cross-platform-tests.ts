@@ -408,8 +408,7 @@ const WORKER_THREADS = [
   'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
   // Lombok accessor, constructor-DI and workspace-proof facts through a real
   // parse worker (cold) and the warm cache replay.
-  'test/integration/java-lombok-value-constructor-di.test.ts',
-  'test/integration/java-lombok-workspace-proof-lifecycle.test.ts',
+  'test/integration/java-lombok-worker-cache.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
@@ -437,7 +436,7 @@ const FILESYSTEM = [
   'test/integration/resolvers/dart.test.ts',
   // Non-ASCII Java package directories and file names: case- and
   // normalization-insensitive file systems must keep each package apart.
-  'test/integration/java-review-followups-r5-spelling.test.ts',
+  'test/integration/java-non-ascii-names.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',
