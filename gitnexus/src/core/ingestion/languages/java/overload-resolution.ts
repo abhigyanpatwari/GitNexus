@@ -128,12 +128,41 @@ function packageName(filePath: string): string | undefined {
   return fact?.status === 'known' ? fact.packageName : getJavaOverloadFacts(filePath)?.packageName;
 }
 
+/** A file's type facts by name, as indices in file order, so a definition's
+ * candidates are found without a scan of every type in the file. */
+const typeFactIndicesByName = new WeakMap<
+  readonly JavaOverloadTypeFact[],
+  ReadonlyMap<string, readonly number[]>
+>();
+
+function typeFactIndices(
+  facts: readonly JavaOverloadTypeFact[],
+): ReadonlyMap<string, readonly number[]> {
+  const cached = typeFactIndicesByName.get(facts);
+  if (cached !== undefined) return cached;
+  const byName = new Map<string, number[]>();
+  for (const [index, type] of facts.entries()) {
+    const indices = byName.get(type.name);
+    if (indices === undefined) byName.set(type.name, [index]);
+    else indices.push(index);
+  }
+  typeFactIndicesByName.set(facts, byName);
+  return byName;
+}
+
 function typeFact(definition: SymbolDefinition, state: State): JavaOverloadTypeFact | undefined {
   if (state.typeFacts.has(definition.nodeId)) return state.typeFacts.get(definition.nodeId);
   const facts = getJavaOverloadFacts(definition.filePath)?.types ?? [];
-  const candidates = facts.filter(
-    (type) => definition.nodeId.endsWith(`:${type.name}`) || definition.qualifiedName === type.name,
-  );
+  // The facts whose name ends the node id after a `:` (a Java name has none)
+  // or equals the qualified name, in file order.
+  const byName = typeFactIndices(facts);
+  const colon = definition.nodeId.lastIndexOf(':');
+  const suffix = colon < 0 ? undefined : byName.get(definition.nodeId.slice(colon + 1));
+  const qualified =
+    definition.qualifiedName === undefined ? undefined : byName.get(definition.qualifiedName);
+  const candidates = [...new Set([...(suffix ?? []), ...(qualified ?? [])])]
+    .sort((a, b) => a - b)
+    .map((index) => facts[index]!);
   const byPosition =
     definition.declarationRange === undefined
       ? undefined
