@@ -1,8 +1,11 @@
 import Parser from 'tree-sitter';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { emitPythonScopeCaptures } from '../../../../src/core/ingestion/languages/python/index.js';
 import { pythonAttributeAccessKinds } from '../../../../src/core/ingestion/languages/python/attribute-references.js';
-import { getPythonParser } from '../../../../src/core/ingestion/languages/python/query.js';
+import {
+  PYTHON_QUERY_MAX_START_DEPTH,
+  getPythonParser,
+} from '../../../../src/core/ingestion/languages/python/query.js';
 import { getTreeSitterBufferSize } from '../../../../src/core/ingestion/constants.js';
 import { parseSourceSafe } from '../../../../src/core/tree-sitter/safe-parse.js';
 
@@ -116,6 +119,27 @@ describe('Python captures on deep syntax', () => {
     expect(reads).toBeLessThanOrEqual(16);
   });
 
+  // Each assignment asked for its enclosing function by climbing `.parent`
+  // from its own node: n(n+1)/2 + 2n reads for an n-target chain (20,500 at
+  // n = 200), each read a walk down from the root, so the chain cost O(n^3).
+  it.each([
+    { levels: 250, shape: 'assignment-chain targets', source: `${'a = '.repeat(250)}b\n` },
+    { levels: 1000, shape: 'assignment-chain targets', source: `${'a = '.repeat(1000)}b\n` },
+    {
+      levels: 250,
+      shape: 'nested named expressions',
+      source: `${'(a := '.repeat(250)}f()${')'.repeat(250)}\n`,
+    },
+    {
+      levels: 1000,
+      shape: 'nested named expressions',
+      source: `${'(a := '.repeat(1000)}f()${')'.repeat(1000)}\n`,
+    },
+  ])('reads a bounded number of parents for $levels $shape', ({ source }) => {
+    const reads = countParentReads(() => emitPythonScopeCaptures(source, 'deep.py'));
+    expect(reads).toBeLessThanOrEqual(16);
+  });
+
   // The context query must not hold a match open across an assignment target.
   // A two-step pattern (`left: (_) @write right: (_)`) made every capture inside
   // the target wait in tree-sitter's capture buffer: quadratic, and past 65,535
@@ -152,5 +176,26 @@ describe('Python annotation reads', () => {
     },
   ])('$name', ({ source, reads }) => {
     expect(bareReads(source)).toEqual(reads);
+  });
+});
+
+// tree-sitter keeps the depth a match started at in 16 bits. A query run
+// without the limit wraps that depth past level 65,535 and keeps the match open
+// at every later node: the attribute-context pass alone took 36 s on a valid
+// `x = f() or f() or …` of 90,000 operands. Both Python queries share the limit.
+describe('Python queries on trees deeper than the cursor can count', () => {
+  it('runs the scope query and the attribute-context query under one start-depth limit', () => {
+    const matches = vi.spyOn(Parser.Query.prototype, 'matches');
+    const captures = vi.spyOn(Parser.Query.prototype, 'captures');
+    try {
+      emitPythonScopeCaptures('o.x = f(o.y)\n', 'limit.py');
+      expect(
+        [...matches.mock.calls, ...captures.mock.calls].map(
+          ([, options]) => options?.maxStartDepth,
+        ),
+      ).toEqual([PYTHON_QUERY_MAX_START_DEPTH, PYTHON_QUERY_MAX_START_DEPTH]);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

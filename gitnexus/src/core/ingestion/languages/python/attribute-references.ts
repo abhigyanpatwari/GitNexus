@@ -1,6 +1,7 @@
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { PYTHON_QUERY_MAX_START_DEPTH } from './query.js';
 
 type AccessKinds = readonly ('read' | 'write')[];
 
@@ -70,7 +71,11 @@ function accessKindsFor(tree: Parser.Tree): Map<number, AccessKinds> {
   contextQuery ??= new Parser.Query(Python as Parameters<Parser['setLanguage']>[0], CONTEXTS);
   kinds = new Map();
   let annotationEnd = -1;
-  for (const { name, node } of contextQuery.captures(tree.rootNode)) {
+  // The same start-depth limit as the scope query (see query.ts): past depth
+  // 65,535 tree-sitter wraps a match's start depth and keeps it open.
+  for (const { name, node } of contextQuery.captures(tree.rootNode, {
+    maxStartDepth: PYTHON_QUERY_MAX_START_DEPTH,
+  })) {
     const targetKinds = TARGET_KINDS.get(name);
     if (targetKinds === undefined) {
       // `@type`. Captures arrive in document order. A `type` inside an
