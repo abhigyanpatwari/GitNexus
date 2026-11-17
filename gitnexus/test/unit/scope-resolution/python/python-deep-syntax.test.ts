@@ -1,6 +1,10 @@
 import Parser from 'tree-sitter';
 import { describe, expect, it } from 'vitest';
 import { emitPythonScopeCaptures } from '../../../../src/core/ingestion/languages/python/index.js';
+import { pythonAttributeAccessKinds } from '../../../../src/core/ingestion/languages/python/attribute-references.js';
+import { getPythonParser } from '../../../../src/core/ingestion/languages/python/query.js';
+import { getTreeSitterBufferSize } from '../../../../src/core/ingestion/constants.js';
+import { parseSourceSafe } from '../../../../src/core/tree-sitter/safe-parse.js';
 
 // The runtime exports the class; the typings declare SyntaxNode only as an interface.
 const nodePrototype = (Parser as unknown as { SyntaxNode: { prototype: object } }).SyntaxNode
@@ -18,6 +22,30 @@ const moduleClaimNames = (source: string): string[] => {
   )!;
   const claims = JSON.parse(moduleMatch['@scope.name-claims']!.text) as { name: string }[];
   return claims.map((claim) => claim.name);
+};
+
+const memberSites = (source: string): number =>
+  emitPythonScopeCaptures(source, 'deep.py').filter(
+    (match) => match['@reference.read.member'] ?? match['@reference.call.member'],
+  ).length;
+
+// Counts `.parent` reads while `run` executes.
+const countParentReads = (run: () => void): number => {
+  const descriptor = Object.getOwnPropertyDescriptor(nodePrototype, 'parent')!;
+  let reads = 0;
+  Object.defineProperty(nodePrototype, 'parent', {
+    ...descriptor,
+    get() {
+      reads++;
+      return descriptor.get!.call(this);
+    },
+  });
+  try {
+    run();
+  } finally {
+    Object.defineProperty(nodePrototype, 'parent', descriptor);
+  }
+  return reads;
 };
 
 // Syntax depth is input-controlled: generated code can chain thousands of
@@ -55,21 +83,45 @@ describe('Python captures on deep syntax', () => {
   // root. The previous annotation check climbed ancestors from every read,
   // n(n+1)/2 parent reads for an n-term chain (504,506 at n = 1,000).
   it.each([250, 1000])('reads a bounded number of parents for a %i-term chain', (terms) => {
-    const descriptor = Object.getOwnPropertyDescriptor(nodePrototype, 'parent')!;
-    let parentReads = 0;
-    Object.defineProperty(nodePrototype, 'parent', {
-      ...descriptor,
-      get() {
-        parentReads++;
-        return descriptor.get!.call(this);
-      },
-    });
-    try {
-      expect(bareReads(`x = ${'a + '.repeat(terms)}a\n`)).toHaveLength(terms + 1);
-    } finally {
-      Object.defineProperty(nodePrototype, 'parent', descriptor);
-    }
-    expect(parentReads).toBeLessThanOrEqual(16);
+    const reads = countParentReads(() =>
+      expect(bareReads(`x = ${'a + '.repeat(terms)}a\n`)).toHaveLength(terms + 1),
+    );
+    expect(reads).toBeLessThanOrEqual(16);
+  });
+
+  // Classifying a member access read its parent three times, 3n + 3 reads
+  // for n sites (3,003 at n = 1,000), each one a walk down from the root.
+  it.each([
+    {
+      sites: 250,
+      shape: 'member-read terms',
+      source: `x = ${'obj.value + '.repeat(249)}obj.value\n`,
+    },
+    {
+      sites: 1000,
+      shape: 'member-read terms',
+      source: `x = ${'obj.value + '.repeat(999)}obj.value\n`,
+    },
+    { sites: 250, shape: 'member-chain links', source: `x = a${'.f'.repeat(250)}\n` },
+    { sites: 1000, shape: 'member-chain links', source: `x = a${'.f'.repeat(1000)}\n` },
+    { sites: 250, shape: 'call-chain links', source: `x = a${'.f()'.repeat(250)}\n` },
+    { sites: 1000, shape: 'call-chain links', source: `x = a${'.f()'.repeat(1000)}\n` },
+  ])('reads a bounded number of parents for $sites $shape', ({ sites, source }) => {
+    const reads = countParentReads(() => expect(memberSites(source)).toBe(sites));
+    expect(reads).toBeLessThanOrEqual(16);
+  });
+
+  // The context query must not hold a match open across an assignment target.
+  // A two-step pattern (`left: (_) @write right: (_)`) made every capture inside
+  // the target wait in tree-sitter's capture buffer: quadratic, and past 65,535
+  // buffered captures its 16-bit capture-list ids wrap and the process crashes.
+  it('classifies an assignment target behind 70,000 call arguments', () => {
+    const source = `f(${'g(), '.repeat(69_999)}g()).x = 1\n`;
+    const tree = parseSourceSafe(getPythonParser(), source, undefined, {
+      bufferSize: getTreeSitterBufferSize(source),
+    })!;
+    const [target] = tree.rootNode.descendantsOfType('attribute');
+    expect(pythonAttributeAccessKinds(target)).toEqual(['write']);
   });
 
   it('skips a deeply nested annotation but keeps the body reads', () => {
