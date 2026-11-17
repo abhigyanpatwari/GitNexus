@@ -465,3 +465,33 @@ class Importer { void go() { Api.run(x -> x.save()); } }`,
     expect(calleeSaveTargets(caller)).toEqual(['Method:c/Item.java:Item.save#0']);
   });
 });
+
+describe('Java lambdas typed by a qualified type argument of a JDK functional parameter', () => {
+  const result = useFixture('java-sam-qualified-argument', {
+    'app/User.java': 'package app; public class User { public void save() {} }',
+    'app/Other.java': 'package app; public class Other { public void save() {} }',
+    'lib/Box.java': `package lib;
+public class Box<T> {
+  public void forEach(java.util.function.Consumer<app.Other> c) {}
+  public void each(java.util.function.Consumer<app.Missing> c) {}
+}`,
+    'app/Boxed.java': `package app;
+import lib.Box;
+class Boxed {
+  Box<User> xs;
+  void run() { xs.forEach(u -> u.save()); }
+  void missing() { xs.each(u -> u.save()); }
+}`,
+  });
+
+  it.each([
+    [
+      'a workspace type',
+      'Method:app/Boxed.java:Boxed.run#0',
+      ['Method:app/Other.java:Other.save#0'],
+    ],
+    ['a type no file declares', 'Method:app/Boxed.java:Boxed.missing#0', []],
+  ])('types the lambda parameter from %s named app.X', (_label, caller, expected) => {
+    expect(targets(getRelationships(result(), 'CALLS'), caller, 'save')).toEqual(expected);
+  });
+});

@@ -50,6 +50,7 @@ import { JAVA_IDENTIFIER } from './type-spelling.js';
  */
 
 const SIMPLE_NAME = new RegExp(`^${JAVA_IDENTIFIER}$`, 'u');
+const QUALIFIED_NAME = new RegExp(`^${JAVA_IDENTIFIER}(?:\\.${JAVA_IDENTIFIER})+$`, 'u');
 const TYPE_NAME = new RegExp(
   String.raw`^(${JAVA_IDENTIFIER}(?:\s*\.\s*${JAVA_IDENTIFIER})*)\s*(?:<([\s\S]*)>)?$`,
   'u',
@@ -815,6 +816,16 @@ function plainTypeArgument(
   index: SamIndex,
 ): TypeRef | undefined {
   const chosen = written?.trim() ?? '';
+  // A qualified class name (`app.Other`) is looked up as written, where it was
+  // written: `populateJavaQualifiedTypeBindings` registers its key there.
+  const qualified = chosen.replaceAll(/\s+/g, '');
+  if (QUALIFIED_NAME.test(qualified))
+    return {
+      rawName: qualified.slice(qualified.lastIndexOf('.') + 1),
+      declaredSpelling: qualified,
+      declaredAtScope: calleeScope,
+      source: 'assignment-inferred',
+    };
   return !SIMPLE_NAME.test(chosen) ||
     PRIMITIVES.has(chosen) ||
     isTypeParameterAt(callee.filePath, chosen, fact.range, index) ||

@@ -16,7 +16,8 @@ import {
 import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 import { getJavaOverloadFacts } from './overload-argument-facts.js';
 import { getJavaPackageFact } from './package-facts.js';
-import { eraseJavaTypeArguments } from './type-spelling.js';
+import { splitJavaTypeArguments } from './overload-types.js';
+import { eraseJavaTypeArguments, JAVA_IDENTIFIER } from './type-spelling.js';
 import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
@@ -895,6 +896,12 @@ export function populateJavaQualifiedTypeBindings(
     const needed = new Set<string>();
     const need = (ref: TypeRef): void => {
       if (ref.source === 'assignment-inferred' && ref.declaredSpelling === undefined) return;
+      // A qualified type argument (`Consumer<app.Other>`) types a lambda
+      // parameter where it was written (`javaSamLambdaParameterType`).
+      for (const argument of qualifiedTypeArguments(ref.declaredSpelling)) {
+        const key = qualifiedTypeKey(ref, argument, indexes);
+        if (typeof key === 'string') needed.add(key);
+      }
       const known = simpleKeys.get(ref);
       if (known !== undefined) {
         if (known !== null) needed.add(known);
@@ -948,6 +955,19 @@ export function populateJavaQualifiedTypeBindings(
       names.set(key, [visible[0]!.binding]);
     }
   }
+}
+
+const QUALIFIED_NAME = new RegExp(`^${JAVA_IDENTIFIER}(?:\\.${JAVA_IDENTIFIER})+$`, 'u');
+
+/** The top-level type arguments of `spelling` written as qualified class names. */
+function qualifiedTypeArguments(spelling: string | undefined): string[] {
+  const open = spelling?.indexOf('<') ?? -1;
+  const close = spelling?.lastIndexOf('>') ?? -1;
+  if (spelling === undefined || open < 0 || close < open || !spelling.includes('.', open))
+    return [];
+  return (splitJavaTypeArguments(spelling.slice(open + 1, close)) ?? [])
+    .map((argument) => argument.replaceAll(/\s+/g, ''))
+    .filter((argument) => QUALIFIED_NAME.test(argument));
 }
 
 /**

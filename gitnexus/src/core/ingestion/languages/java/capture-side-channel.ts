@@ -217,7 +217,7 @@ export function collectJavaCaptureSideChannel(
     containerProofs.length === 0 &&
     returnElements.length === 0 &&
     importedSpellings.length === 0 &&
-    (typeFields === undefined || typeFields.length === 0) &&
+    typeFields === undefined &&
     facts.length === 0 &&
     aopFacts.length === 0 &&
     configConsumers.length === 0 &&

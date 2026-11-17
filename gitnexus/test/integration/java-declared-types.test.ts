@@ -226,12 +226,15 @@ class Sub2 extends Base {
 }`,
   });
 
+  // The inherited List's own forEach takes Consumer<app.Other>, so its lambda
+  // parameter is Other; that List is not Iterable, so the loop has no element.
   it.each([
-    ['Sub.run', 'Method:app/Sub.java:Sub.run#0'],
-    ['Sub.loop', 'Method:app/Sub.java:Sub.loop#0'],
-    ['Sub2.run', 'Method:app/Sub2.java:Sub2.run#0'],
-  ])('%s does not treat the inherited List as java.util.List', (_label, caller) => {
-    expect(saveTargets(result(), caller)).toEqual([]);
+    ['Sub.run', 'Method:app/Sub.java:Sub.run#0', [OTHER]],
+    ['Sub.loop', 'Method:app/Sub.java:Sub.loop#0', []],
+    ['Sub2.run', 'Method:app/Sub2.java:Sub2.run#0', [OTHER]],
+  ])('%s does not treat the inherited List as java.util.List', (_label, caller, expected) => {
+    expect(saveTargets(result(), caller)).not.toContain(USER);
+    expect(saveTargets(result(), caller)).toEqual(expected);
   });
 
   it('keeps the import proof in a class that inherits no List', () => {

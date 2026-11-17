@@ -421,3 +421,35 @@ class Lone implements Marker {
     },
   );
 });
+
+describe('Java implicit array receivers inside an anonymous class method', () => {
+  const result = useFixture('java-anonymous-implicit-array', {
+    'app/User.java': 'package app; public class User { public void save() {} }',
+    'app/Other.java': 'package app; public class Other { public void save() {} }',
+    'app/Host.java': `package app;
+public class Host {
+  User[] items() { return null; }
+  Runnable task = new Runnable() {
+    Other[] items() { return null; }
+    public void run() { items()[0].save(); }
+  };
+  void named() { items()[0].save(); }
+}`,
+  });
+  const saveTargets = (caller: string): string[] =>
+    getRelationships(result(), 'CALLS')
+      .filter((edge) => edge.rel.sourceId === caller && edge.target === 'save')
+      .map((edge) => edge.rel.targetId)
+      .sort();
+
+  it.each([
+    [
+      'the anonymous class',
+      'Method:app/Host.java:Host$1.run#0',
+      'Method:app/Other.java:Other.save#0',
+    ],
+    ['the named class', 'Method:app/Host.java:Host.named#0', 'Method:app/User.java:User.save#0'],
+  ])('reads items() of %s for an implicit receiver', (_label, caller, target) => {
+    expect(saveTargets(caller)).toEqual([target]);
+  });
+});

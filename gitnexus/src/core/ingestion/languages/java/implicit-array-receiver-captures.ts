@@ -73,6 +73,8 @@ interface Visit {
   readonly parent: SyntaxNode | undefined;
   /** The named type whose instance `this` denotes, if any. */
   readonly type: SyntaxNode | undefined;
+  /** Directly inside an anonymous class body (`type` is then undefined). */
+  readonly anonymous: boolean;
   readonly instance: boolean;
   readonly initializer: SyntaxNode | undefined;
 }
@@ -84,9 +86,11 @@ interface Visit {
  * Java can prove that base is lexical `this` in an instance context: an
  * instance method, constructor or compact constructor, an instance initializer
  * block, or an instance field's initializer. Prepare eligible nodes once so
- * deeply nested references do not repeat ancestor walks. Anonymous types,
- * static members and static initializers refuse because the existing
- * named-type receiver binding cannot establish their `this` identity.
+ * deeply nested references do not repeat ancestor walks. Static members and
+ * static initializers have no `this` and refuse. In an anonymous class body
+ * only methods take part: their `this` binding names the anonymous class
+ * (`synthesizeJavaReceiverBinding`). Its initializers have no such binding,
+ * where `this` could fall back to an enclosing class, so they refuse.
  */
 export function createJavaImplicitArrayReceiverChainSynthesizer(
   root: SyntaxNode,
@@ -95,14 +99,22 @@ export function createJavaImplicitArrayReceiverChainSynthesizer(
   const contextOf = new Map<number, JavaInitializerReceiverContext>();
   const used = new Map<number, JavaInitializerReceiverContext>();
   const stack: Visit[] = [
-    { node: root, parent: undefined, type: undefined, instance: false, initializer: undefined },
+    {
+      node: root,
+      parent: undefined,
+      type: undefined,
+      anonymous: false,
+      instance: false,
+      initializer: undefined,
+    },
   ];
   while (stack.length > 0) {
     const visit = stack.pop()!;
     const { node, parent } = visit;
-    let { type, instance, initializer } = visit;
+    let { type, anonymous, instance, initializer } = visit;
     if (NAMED_TYPES.has(node.type)) {
       type = node;
+      anonymous = false;
       instance = false;
       initializer = undefined;
     } else if (
@@ -110,6 +122,7 @@ export function createJavaImplicitArrayReceiverChainSynthesizer(
       ['object_creation_expression', 'enum_constant'].includes(parent?.type ?? '')
     ) {
       type = undefined;
+      anonymous = true;
       instance = false;
       initializer = undefined;
     } else if (
@@ -118,7 +131,7 @@ export function createJavaImplicitArrayReceiverChainSynthesizer(
       // A record's compact canonical constructor is an instance context.
       node.type === 'compact_constructor_declaration'
     ) {
-      instance = type !== undefined && !isStatic(node);
+      instance = (type !== undefined || anonymous) && !isStatic(node);
       initializer = undefined;
     } else if (type !== undefined && INSTANCE_MEMBER_BODIES.has(parent?.type ?? '')) {
       // A `static { }` initializer is its own node; a bare block is instance.
@@ -143,7 +156,7 @@ export function createJavaImplicitArrayReceiverChainSynthesizer(
     }
     const children = node.namedChildren;
     for (let i = children.length - 1; i >= 0; i--)
-      stack.push({ node: children[i]!, parent: node, type, instance, initializer });
+      stack.push({ node: children[i]!, parent: node, type, anonymous, instance, initializer });
   }
 
   const synthesize = (
