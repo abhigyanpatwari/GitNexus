@@ -3,6 +3,7 @@
  * and the directory whose index they check afterwards.
  */
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
@@ -75,6 +76,29 @@ describe('gitMutationDirectory', () => {
     expect(gitMutationDirectory('git -C packages\\web merge main', CWD)).toBe(
       under('packages', 'web'),
     );
+  });
+
+  // Git changes directory through the filesystem: `link/..` is the parent of
+  // the link's target, where text resolution would give the parent of the link.
+  it.skipIf(process.platform === 'win32')('follows a symlink before stepping up from it', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gn-mutation-link-')));
+    try {
+      const workspace = path.join(root, 'workspace');
+      const packageDir = path.join(root, 'other', 'repo', 'packages');
+      fs.mkdirSync(workspace);
+      fs.mkdirSync(packageDir, { recursive: true });
+      fs.symlinkSync(packageDir, path.join(workspace, 'link'));
+
+      expect(gitMutationDirectory('git -C link/.. commit -m x', workspace)).toBe(
+        path.join(root, 'other', 'repo'),
+      );
+      expect(gitMutationDirectory('git -C link -C .. commit -m x', workspace)).toBe(
+        path.join(root, 'other', 'repo'),
+      );
+      expect(gitMutationDirectory('git -C link commit -m x', workspace)).toBe(packageDir);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // The repository cannot be read from the command: no check rather than a

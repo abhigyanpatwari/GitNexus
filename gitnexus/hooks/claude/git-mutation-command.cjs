@@ -108,6 +108,19 @@ function literalWord(word) {
 }
 
 /**
+ * Where `git -C target` goes from `from`. Git changes directory through the
+ * filesystem, so `link/..` is the parent of the link's target, not the parent
+ * of the link. A path that cannot be walked is resolved by its text.
+ */
+function changeDirectory(from, target) {
+  try {
+    return fs.realpathSync.native(path.isAbsolute(target) ? target : from + path.sep + target);
+  } catch {
+    return path.resolve(from, target);
+  }
+}
+
+/**
  * The directory in which the first git mutation of `command` runs: `cwd`,
  * moved by any `-C` option. Null when the command has no git mutation, or when
  * the repository it changes cannot be read from the command.
@@ -125,7 +138,7 @@ function gitMutationDirectory(command, cwd) {
     const target = literalWord(option.groups.changeDir);
     if (target === null) return null;
     // Like git, read each -C relative to the one before it.
-    directory = path.resolve(directory, target);
+    directory = changeDirectory(directory, target);
   }
   return directory;
 }
