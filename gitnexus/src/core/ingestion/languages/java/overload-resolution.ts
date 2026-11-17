@@ -11,6 +11,7 @@ import { getJavaPackageFact } from './package-facts.js';
 import {
   javaInheritedMemberType,
   javaStaticOnDemandImportBringsNoType,
+  javaStaticSingleImportType,
 } from './qualified-type-bindings.js';
 import { decodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import {
@@ -407,17 +408,70 @@ function inheritsMemberTypeNamed(
   return false;
 }
 
-/** The class definitions enclosing `context`, innermost first; `undefined`
- * for a class body without exactly one indexed definition. */
-function enclosingClassIds(
+/** A file's type declarations as nested in the source, so the classes
+ * enclosing a position take one binary search and a walk outward instead of a
+ * scan of every declaration in the file. */
+interface TypeNesting {
+  /** Declarations by start position, the wider first at one start. */
+  readonly byStart: readonly JavaOverloadTypeFact[];
+  /** The nearest declaration enclosing each one. */
+  readonly parent: ReadonlyMap<JavaOverloadTypeFact, JavaOverloadTypeFact>;
+  /** Each declaration's one indexed definition, once read. */
+  readonly ids: Map<JavaOverloadTypeFact, string | undefined>;
+}
+const typeNestings = new WeakMap<FileFactIndex, TypeNesting>();
+
+function typeNesting(facts: JavaOverloadFileFacts, state: State): TypeNesting {
+  const index = fileFactIndex(facts, state);
+  const cached = typeNestings.get(index);
+  if (cached !== undefined) return cached;
+  const byStart = [...facts.types].sort(
+    (a, b) =>
+      a.range.startLine - b.range.startLine ||
+      a.range.startCol - b.range.startCol ||
+      b.range.endLine - a.range.endLine ||
+      b.range.endCol - a.range.endCol,
+  );
+  const parent = new Map<JavaOverloadTypeFact, JavaOverloadTypeFact>();
+  const open: JavaOverloadTypeFact[] = [];
+  for (const type of byStart) {
+    while (open.length > 0 && !javaRangeContains(open.at(-1)!.range, type.range)) open.pop();
+    const enclosing = open.at(-1);
+    if (enclosing !== undefined) parent.set(type, enclosing);
+    open.push(type);
+  }
+  const nesting: TypeNesting = { byStart, parent, ids: new Map() };
+  typeNestings.set(index, nesting);
+  return nesting;
+}
+
+/** The classes enclosing `context`, innermost first, with their ranges; the
+ * id is `undefined` for a class body without exactly one indexed definition. */
+function enclosingClasses(
   context: TypeContext,
   facts: JavaOverloadFileFacts,
   state: State,
-): (string | undefined)[] {
-  return facts.types
-    .filter((type) => javaRangeContains(type.range, context.at))
-    .sort((a, b) => b.range.startLine - a.range.startLine || b.range.startCol - a.range.startCol)
-    .map((type) => {
+): { readonly id: string | undefined; readonly range: Range }[] {
+  const nesting = typeNesting(facts, state);
+  const at = context.at;
+  // The last declaration starting at or before `at`: declarations nest, so the
+  // innermost one enclosing `at` is it or one of the declarations around it.
+  let low = 0;
+  let high = nesting.byStart.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const start = nesting.byStart[middle]!.range;
+    if (
+      start.startLine < at.startLine ||
+      (start.startLine === at.startLine && start.startCol <= at.startCol)
+    )
+      low = middle + 1;
+    else high = middle;
+  }
+  const classes: { readonly id: string | undefined; readonly range: Range }[] = [];
+  for (let type = nesting.byStart[low - 1]; type !== undefined; type = nesting.parent.get(type)) {
+    if (!javaRangeContains(type.range, at)) continue;
+    if (!nesting.ids.has(type)) {
       const ids = new Set(
         [
           ...sourceDefinitionsInFile(type.name, context.filePath, state),
@@ -427,8 +481,46 @@ function enclosingClassIds(
           .map((definition) => definition.nodeId),
       );
       const [id] = ids;
-      return ids.size === 1 ? id : undefined;
-    });
+      nesting.ids.set(type, ids.size === 1 ? id : undefined);
+    }
+    classes.push({ id: nesting.ids.get(type), range: type.range });
+  }
+  return classes;
+}
+
+/**
+ * The type a simple name written at `context` names through a member type an
+ * enclosing class inherits (JLS 8.5), which shadows every same-file, imported
+ * and same-package type of that name in that class body (JLS 6.4.1). A type
+ * `nearest` declares (lexically visible here) is nearer when it is declared in
+ * or inside the inheriting class, a local class for one. Returns `undefined`
+ * when no inherited reading applies, and the unknown type when it is
+ * ambiguous, inaccessible or unprovable. Mirrors `inheritedSimpleTypeKey` in
+ * qualified-type-bindings.ts.
+ */
+function inheritedSimpleType(
+  name: string,
+  nearest: JavaOverloadTypeFact | undefined,
+  context: TypeContext,
+  facts: JavaOverloadFileFacts,
+  state: State,
+): JavaType | undefined {
+  if (!memberTypeNames(state).has(name)) return undefined;
+  const classes = enclosingClasses(context, facts, state);
+  const inherited = javaInheritedMemberType(
+    classes.map((type) => type.id),
+    name,
+    context.filePath,
+    state.scopes,
+  );
+  if (inherited === null) return UNKNOWN_JAVA_TYPE;
+  if (
+    inherited === undefined ||
+    (nearest !== undefined && javaRangeContains(classes[inherited.depth]!.range, nearest.visible))
+  )
+    return undefined;
+  const definition = state.scopes.defs.get(inherited.id);
+  return definition === undefined ? UNKNOWN_JAVA_TYPE : sourceReference(definition);
 }
 
 /**
@@ -438,12 +530,17 @@ function enclosingClassIds(
  * that name (JLS 6.4.1), so the spelling is a member path of the supertype that
  * declares it. Otherwise a type in scope there makes the spelling a member
  * path, and a package of that name is then never read (JLS 6.5.4.1): a
- * single-type import, then a same-package top-level type, then a type from an
- * on-demand import of a workspace package. Returns `package` when no such type
- * is in scope, and `unknown` when the root is ambiguous or may be a type this
- * workspace cannot see (a static import whose owner is not fully known, or an
- * inherited member type that is ambiguous or inaccessible).
- * Mirrors `qualifiedTypeKey` in qualified-type-bindings.ts.
+ * single-type import or the static member type a single static import brings
+ * in (JLS 7.5.3, `Inner.Nested` after `import static p.Outer.Inner;`), then a
+ * same-package top-level type, then a type from an on-demand import of a
+ * workspace package. A single static import that provably brings in no type
+ * (a static field or method of that name) is passed over. Returns `package`
+ * when no such type is in scope, and `unknown` when the root is ambiguous or
+ * may be a type this workspace cannot see (a static import whose owner is not
+ * fully known, two single imports of the name, or an inherited or statically
+ * imported member type that is ambiguous or inaccessible; see
+ * `javaStaticSingleImportType`). Mirrors `qualifiedTypeKey` and
+ * `staticImportQualifier` in qualified-type-bindings.ts.
  */
 function qualifierRoot(
   root: string,
@@ -455,7 +552,7 @@ function qualifierRoot(
   if (hasTypeParameter(index, root, context.at)) return 'unknown';
   if (memberTypeNames(state).has(root)) {
     const inherited = javaInheritedMemberType(
-      enclosingClassIds(context, facts, state),
+      enclosingClasses(context, facts, state).map((type) => type.id),
       root,
       context.filePath,
       state.scopes,
@@ -467,10 +564,20 @@ function qualifierRoot(
     }
   }
   const single = index.singleImports.get(root) ?? [];
-  if (single.length > 0) {
-    if (single.length > 1 || single[0]!.static) return 'unknown';
+  if (single.length > 1) return 'unknown';
+  if (single.length === 1 && !single[0]!.static) {
     const imported = qualifiedReference(single[0]!.name, state);
     return imported.kind === 'reference' ? imported : 'unknown';
+  }
+  if (single.length === 1) {
+    const statically = javaStaticSingleImportType(single[0]!.name, context.filePath, state.scopes);
+    if (statically === null) return 'unknown';
+    if (statically !== 'none') {
+      const imported = qualifiedReference(statically.fqn, state);
+      return imported.kind === 'reference' && imported.sourceId !== undefined
+        ? imported
+        : 'unknown';
+    }
   }
   const unique = (definitions: readonly SymbolDefinition[]): SymbolDefinition[] => [
     ...new Map(definitions.map((definition) => [definition.nodeId, definition])).values(),
@@ -508,6 +615,10 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   let nearest: JavaOverloadTypeFact | undefined;
   for (const type of lexical)
     if (nearest === undefined || javaRangeContains(nearest.visible, type.visible)) nearest = type;
+  if (!name.includes('.')) {
+    const inherited = inheritedSimpleType(name, nearest, context, facts, state);
+    if (inherited !== undefined) return inherited;
+  }
   if (nearest !== undefined) {
     if (name.includes('.')) return UNKNOWN_JAVA_TYPE; // qualified nested lookup needs a proven identity
     const matches = [

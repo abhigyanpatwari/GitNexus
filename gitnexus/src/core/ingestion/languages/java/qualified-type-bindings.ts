@@ -41,6 +41,18 @@ interface NamedType {
   readonly public: boolean;
   /** Some type on the path from the package is `private`. */
   readonly private: boolean;
+  /** Some type on the path from the package writes no access modifier, so
+   * only its own package reaches it. Like `public`, this does not read the
+   * `public` an interface member implies, which only refuses more. */
+  readonly packageAccess: boolean;
+  /** The enclosing type of each `protected` type on the path. From another
+   * package such a type is accessible only in the body of a subclass of that
+   * enclosing type (JLS 6.6.2.1). */
+  readonly protectedOwners: readonly string[];
+  /** The type is `static`, written or implied: top-level, or a member enum,
+   * record, interface or annotation, or a member of an interface (JLS 8.5.1,
+   * 9.5). Only a static member type can be statically imported (JLS 7.5.3). */
+  readonly static: boolean;
   /** The class scope of the top-level type this one is declared in (itself
    * when top-level): the only body where a private type on the path is
    * accessible (JLS 6.6.1). */
@@ -66,6 +78,8 @@ function collectNamedTypes(
     const key = `${type.range.startLine}:${type.range.startCol}`;
     if (type.kind.endsWith('_declaration') && !declarations.has(key)) declarations.set(key, type);
   }
+  // Declaration kind per resolved scope, so a member type sees its owner's.
+  const kinds = new Map<ScopeId, string>();
   const resolve = (scope: Scope): (NamedType & { readonly def: SymbolDefinition }) | undefined => {
     const known = result.get(scope.id);
     if (known !== undefined || scope.kind !== 'Class' || scope.parent === null) return known;
@@ -78,6 +92,11 @@ function collectNamedTypes(
     if (scope.parent !== module.id && owner === undefined) return undefined;
     const modifiers = fact.modifiers ?? [];
     const prefix = owner?.fqn ?? packageName;
+    const ownerKind = owner === undefined ? undefined : kinds.get(scope.parent);
+    const access = ['public', 'protected', 'private'].some((modifier) =>
+      modifiers.includes(modifier),
+    );
+    kinds.set(scope.id, fact.kind);
     const named = {
       def,
       fqn: prefix === '' ? fact.simpleName : `${prefix}.${fact.simpleName}`,
@@ -87,6 +106,17 @@ function collectNamedTypes(
       ...(owner === undefined ? {} : { ownerId: owner.def.nodeId }),
       public: (owner?.public ?? true) && modifiers.includes('public'),
       private: (owner?.private ?? false) || modifiers.includes('private'),
+      packageAccess: (owner?.packageAccess ?? false) || !access,
+      protectedOwners:
+        owner !== undefined && modifiers.includes('protected')
+          ? [...owner.protectedOwners, owner.def.nodeId]
+          : (owner?.protectedOwners ?? []),
+      static:
+        owner === undefined ||
+        modifiers.includes('static') ||
+        fact.kind !== 'class_declaration' ||
+        ownerKind === 'interface_declaration' ||
+        ownerKind === 'annotation_type_declaration',
       topLevelScope: owner?.topLevelScope ?? scope.id,
     };
     result.set(scope.id, named);
@@ -172,12 +202,17 @@ export interface JavaInheritedMemberType {
  * Returns `undefined` when no enclosing class inherits a workspace member type
  * of that name, or when a nearer class declares one itself (lexical lookup
  * answers that). Returns `null` when the reading is not provable: two
- * declarations are inherited, the member type is private or not accessible
- * from the use site's package, the supertype that declares it is not reached
+ * declarations are inherited, the member type is not accessible from the use
+ * site (private; package access from another package; or, from another
+ * package, a protected type on its path whose enclosing type no class here
+ * extends, JLS 6.6.2.1), the supertype that declares it is not reached
  * through the supertypes the classes on the way actually name (an `extends
  * lib.Base` outside the workspace is not `app.Base`), or a nearer class may
  * inherit an unseen type of that name (a class without a definition, or one
  * that names a supertype yet inherits no workspace member type of that name).
+ * A protected member type is inherited by a subclass in any package (JLS 8.5),
+ * so `Box.Item` in `class Child extends a.Base` names `a.Base.Box.Item` even
+ * when `Box` is `protected`.
  */
 export function javaInheritedMemberType(
   classes: readonly (string | undefined)[],
@@ -210,7 +245,18 @@ export function javaInheritedMemberType(
     if (named === undefined || named.private) return null;
     if (!named.public) {
       const pkg = getJavaPackageFact(filePath);
-      if (pkg?.status !== 'known' || pkg.packageName !== named.packageName) return null;
+      const samePackage = pkg?.status === 'known' && pkg.packageName === named.packageName;
+      if (
+        !samePackage &&
+        (named.packageAccess ||
+          !named.protectedOwners.every((owner) =>
+            classes.some(
+              (enclosing) =>
+                enclosing !== undefined && indexes.methodDispatch.mroFor(enclosing).includes(owner),
+            ),
+          ))
+      )
+        return null;
     }
     if (!reachesThroughWrittenBases(classId, declaringOwner, namedTypes, indexes)) return null;
     return { id, fqn: named.fqn, depth };
@@ -296,6 +342,148 @@ export function javaStaticOnDemandImportBringsNoType(
   );
 }
 
+/**
+ * What a single static import `import static p.Outer.Inner;` (`imported`)
+ * brings into a type context under its simple name (JLS 7.5.3), for a use in
+ * `filePath`. It imports the accessible static member type `Inner` of
+ * `p.Outer`, which shadows a same-package or on-demand type of that name
+ * (JLS 6.4.1); a static field or method of that name names no type
+ * (JLS 6.5.5.2).
+ *
+ * Returns the member type when `p.Outer` is one workspace type that declares
+ * exactly one static member type of that name, accessible from `filePath`
+ * (public, or package access within its own package). Returns `none` when the
+ * import provably brings no type: see `javaStaticOnDemandImportBringsNoType`.
+ * Returns `null` otherwise: an owner outside the workspace, an owner whose
+ * supertypes may supply an inherited member type, or an inaccessible one.
+ * Mirrored by `qualifierRoot` in overload-resolution.ts.
+ */
+export function javaStaticSingleImportType(
+  imported: string,
+  filePath: string,
+  indexes: ScopeResolutionIndexes,
+): { readonly fqn: string } | 'none' | null {
+  const dot = imported.lastIndexOf('.');
+  if (dot < 0) return null;
+  const owner = imported.slice(0, dot);
+  const byFqn = namedTypesByFqnByIndexes.get(indexes);
+  if (byFqn?.get(owner)?.length !== 1) return null;
+  const members = byFqn.get(imported) ?? [];
+  if (members.length === 0)
+    return javaStaticOnDemandImportBringsNoType(owner, imported.slice(dot + 1), indexes)
+      ? 'none'
+      : null;
+  const [member] = members;
+  if (members.length !== 1 || member?.ownerId === undefined || !member.static) return null;
+  if (member.public) return member;
+  const pkg = getJavaPackageFact(filePath);
+  return !member.private && pkg?.status === 'known' && pkg.packageName === member.packageName
+    ? member
+    : null;
+}
+
+/**
+ * The FQN of the member type named `name` that a class enclosing `ref`'s
+ * anchor inherits (JLS 8.5), when no declaration at or inside that class is
+ * nearer: such a member type shadows every same-file, imported and
+ * same-package type of that name, and any package of that name, in the class
+ * body (JLS 6.4.1). `undefined` when no class there inherits one or a nearer
+ * declaration answers (a member of a class on the way, a local class); `null`
+ * when the inherited reading is ambiguous, inaccessible or unprovable (see
+ * `javaInheritedMemberType`). `claim` is the name lookup at the anchor when
+ * the caller has it already. Without one, only the scopes from the anchor out
+ * to the inheriting class are read (`bindsTypeWithin`): the file level, where
+ * every member type in the file is bound, is never nearer, and reading its
+ * bindings on every use would grow with the file.
+ */
+function inheritedTypeReading(
+  ref: TypeRef,
+  name: string,
+  file: string,
+  indexes: ScopeResolutionIndexes,
+  claim?: NameClaimResult,
+): string | null | undefined {
+  const inherited = inheritedMemberTypeAt(ref.declaredAtScope, name, file, indexes);
+  if (inherited === null) return null;
+  if (inherited === undefined) return undefined;
+  if (claim === undefined)
+    return bindsTypeWithin(ref.declaredAtScope, inherited.scope, name, indexes)
+      ? undefined
+      : inherited.fqn;
+  if (claim.status === 'absent') return inherited.fqn;
+  if (claim.scope === undefined) return null;
+  return claim.scope.id === inherited.scope ||
+    indexes.scopeTree.getAncestors(claim.scope.id).includes(inherited.scope)
+    ? undefined
+    : inherited.fqn;
+}
+
+/**
+ * Whether a scope from `scopeId` out to `boundary` (inclusive) binds a type
+ * named `name`, such as a local class, which is nearer than a member type the
+ * class of `boundary` inherits. A binding of another kind never names a type
+ * (JLS 6.5.5.1). Positions are not read, so a local class declared after the
+ * use also counts and leaves the name to the ordinary lookup.
+ */
+function bindsTypeWithin(
+  scopeId: ScopeId,
+  boundary: ScopeId,
+  name: string,
+  indexes: ScopeResolutionIndexes,
+): boolean {
+  const seen = new Set<ScopeId>();
+  for (
+    let scope = indexes.scopeTree.getScope(scopeId);
+    scope !== undefined && !seen.has(scope.id);
+    scope = scope.parent === null ? undefined : indexes.scopeTree.getScope(scope.parent)
+  ) {
+    seen.add(scope.id);
+    for (const bindings of [
+      scope.bindings.get(name),
+      indexes.bindings.get(scope.id)?.get(name),
+      indexes.bindingAugmentations.get(scope.id)?.get(name),
+    ])
+      if (bindings?.some((binding) => isJavaTypeDefinition(binding.def)) === true) return true;
+    if (scope.id === boundary) return false;
+  }
+  return false;
+}
+
+/** Sources whose `rawName` (or `declaredSpelling`) is spelled where the
+ * binding was declared, so it means what it means at `declaredAtScope`. */
+const WRITTEN_TYPE_SOURCES: ReadonlySet<TypeRef['source']> = new Set([
+  'annotation',
+  'parameter-annotation',
+  'return-annotation',
+  'constructor-inferred',
+]);
+/** A bare identifier: no qualifier, array dimension or type annotation. */
+const SIMPLE_TYPE_NAME = /^[^.[\]<>@]+$/u;
+
+/**
+ * The FQN the simple type name `name`, written at `ref`'s anchor, names
+ * through an inherited member type, which the scope lookup does not bind:
+ * `Nested` in `class Child extends g.Base` is `g.Base.Nested` even beside a
+ * same-package or same-file `Nested` or a single-type import of one.
+ * `undefined` leaves the name to the ordinary lookup, as it does for a type
+ * parameter of that name or a spelling not written at the anchor; `null`
+ * refuses it. Gated on the workspace's member type names, so most names cost
+ * one set probe.
+ */
+function inheritedSimpleTypeKey(
+  ref: TypeRef,
+  name: string,
+  indexes: ScopeResolutionIndexes,
+): string | null | undefined {
+  if (!WRITTEN_TYPE_SOURCES.has(ref.source) || !SIMPLE_TYPE_NAME.test(name)) return undefined;
+  const file = indexes.scopeTree.getScope(ref.declaredAtScope)?.filePath;
+  if (file === undefined) return undefined;
+  const key = inheritedTypeReading(ref, name, file, indexes);
+  return key === undefined || bindsTypeParameter(ref.declaredAtScope, name, indexes)
+    ? undefined
+    : key;
+}
+
 function enclosingTypeInherits(
   scopeId: ScopeId,
   ownerId: string,
@@ -326,15 +514,37 @@ const namedTypesByFqnByIndexes = new WeakMap<
 >();
 
 /**
+ * What a qualifier root names through this file's single static import of
+ * that name (JLS 7.5.3), a file-level declaration that shadows same-package
+ * and on-demand types (JLS 6.4.1): the imported member type, which makes the
+ * spelling a member path (`Inner.Nested` after `import static p.Outer.Inner;`
+ * is `p.Outer.Inner.Nested`); `none` when the import provably brings in no
+ * type, so the other file-level readings go on as if it were absent; `null`
+ * when it may bring in a type this workspace cannot name, or two single
+ * imports name the root; `undefined` when no single static import does. See
+ * `javaStaticSingleImportType`. Mirrors `qualifierRoot` in
+ * overload-resolution.ts.
+ */
+function staticImportQualifier(
+  file: string,
+  root: string,
+  indexes: ScopeResolutionIndexes,
+): { readonly fqn: string } | 'none' | null | undefined {
+  const single = importIndex(file).single.get(root);
+  if (single === undefined || !single.some((item) => item.static)) return undefined;
+  return single.length === 1 ? javaStaticSingleImportType(single[0]!.name, file, indexes) : null;
+}
+
+/**
  * What an unclaimed qualifier root names through this file's on-demand
  * imports, which name lookup does not bind: one public workspace type, which
  * makes the spelling a member path; `package` when no imported package
  * declares that name; or `null` when the root is ambiguous, inaccessible, or
  * may be a member type a static import brings in (JLS 6.5.4.1, 7.5.2).
- * A single static import of that name also refuses, and so does a static
- * on-demand import whose owner may bring in a type of that name: an owner
- * outside the workspace, or one whose member types are not all known.
- * Mirrors `qualifierRoot` in overload-resolution.ts.
+ * A static on-demand import whose owner may bring in a type of that name
+ * refuses too: an owner outside the workspace, or one whose member types are
+ * not all known. A single static import of the root is read before this, by
+ * `staticImportQualifier`. Mirrors `qualifierRoot` in overload-resolution.ts.
  */
 function onDemandQualifier(
   file: string,
@@ -342,7 +552,6 @@ function onDemandQualifier(
   indexes: ScopeResolutionIndexes,
 ): NamedType | 'package' | null {
   const imports = importIndex(file);
-  if (imports.staticSingleNames.has(root)) return null;
   const byFqn = namedTypesByFqnByIndexes.get(indexes);
   const matches: NamedType[] = [];
   for (const item of imports.onDemand) {
@@ -356,12 +565,18 @@ function onDemandQualifier(
   return matches.length === 1 && matches[0]!.public ? matches[0]! : null;
 }
 
+interface ImportItem {
+  /** The imported name in full: `p.Outer.Inner`, or `p` for `p.*`. */
+  readonly name: string;
+  readonly static: boolean;
+}
 interface ImportIndex {
-  readonly staticSingleNames: ReadonlySet<string>;
-  readonly onDemand: readonly { readonly name: string; readonly static: boolean }[];
+  /** Single-type and single-static imports, by the simple name they import. */
+  readonly single: ReadonlyMap<string, readonly ImportItem[]>;
+  readonly onDemand: readonly ImportItem[];
 }
 const importIndexes = new WeakMap<object, ImportIndex>();
-const NO_IMPORTS: ImportIndex = { staticSingleNames: new Set(), onDemand: [] };
+const NO_IMPORTS: ImportIndex = { single: new Map(), onDemand: [] };
 
 /** One pass over a file's imports, shared by every qualified spelling in it. */
 function importIndex(file: string): ImportIndex {
@@ -369,13 +584,19 @@ function importIndex(file: string): ImportIndex {
   if (facts === undefined) return NO_IMPORTS;
   const cached = importIndexes.get(facts);
   if (cached !== undefined) return cached;
-  const staticSingleNames = new Set<string>();
-  const onDemand: ImportIndex['onDemand'][number][] = [];
+  const single = new Map<string, ImportItem[]>();
+  const onDemand: ImportItem[] = [];
   for (const item of facts.imports) {
-    if (item.wildcard) onDemand.push(item);
-    else if (item.static) staticSingleNames.add(item.name.slice(item.name.lastIndexOf('.') + 1));
+    if (item.wildcard) {
+      onDemand.push(item);
+      continue;
+    }
+    const name = item.name.slice(item.name.lastIndexOf('.') + 1);
+    const items = single.get(name);
+    if (items === undefined) single.set(name, [item]);
+    else items.push(item);
   }
-  const index = { staticSingleNames, onDemand };
+  const index = { single, onDemand };
   importIndexes.set(facts, index);
   return index;
 }
@@ -432,9 +653,12 @@ export function lookupJavaTypeNameClaim(
  * The FQN a dotted type spelling names at its own use site, or `null`.
  *
  * A root that an enclosing class inherits as a member type names that member
- * type (`models.User` in a subclass of `Base` is `Base.models.User`); an
- * ambiguous, inaccessible or unprovable inherited reading refuses. Otherwise
- * an unclaimed root is a package (`models.User`). A root that names one type
+ * type (`models.User` in a subclass of `Base` is `Base.models.User`), a
+ * protected one included; an ambiguous, inaccessible or unprovable inherited
+ * reading refuses. A single static import of the root comes next, before the
+ * same-package and imported types it shadows (`Inner.Nested` after `import
+ * static p.Outer.Inner;`). Otherwise an unclaimed root is a package
+ * (`models.User`). A root that names one type
  * declared in this file and in scope here makes the rest member types of that
  * type (`Outer.Inner`). A member type's name is also bound at file level, so
  * that binding is ignored outside the type that declares it, unless the use
@@ -486,23 +710,34 @@ function qualifiedTypeKey(
     (isJavaPackageSiblingVisibilityIncomplete(file) && hasJavaSamePackageType(file, root) !== false)
   )
     return null;
-  const claim = lookupJavaTypeNameClaim(ref.declaredAtScope, root, indexes, ref.lookupPosition);
+  let claim = lookupJavaTypeNameClaim(ref.declaredAtScope, root, indexes, ref.lookupPosition);
   const scope = ref.declaredAtScope;
   // Name lookup binds no inherited member type, yet one shadows every type
   // and package of that name from farther out (JLS 6.4.1): the spelling is a
   // member path of the supertype that declares it. A claim at or inside the
   // inheriting class is nearer and keeps its reading below. Mirrors
   // `qualifierRoot` in overload-resolution.ts.
-  const inherited = inheritedMemberTypeAt(scope, root, file, indexes);
+  const inherited = inheritedTypeReading(ref, root, file, indexes, claim);
   if (inherited === null) return null;
-  if (inherited !== undefined) {
-    if (claim.status === 'absent') return `${inherited.fqn}${spelling.slice(root.length)}`;
-    if (claim.scope === undefined) return null;
-    if (
-      claim.scope.id !== inherited.scope &&
-      !indexes.scopeTree.getAncestors(claim.scope.id).includes(inherited.scope)
-    )
-      return `${inherited.fqn}${spelling.slice(root.length)}`;
+  if (inherited !== undefined) return `${inherited}${spelling.slice(root.length)}`;
+  // A single static import of the root is file-level, like the imports and
+  // same-package types the module scope binds, and shadows both (JLS 6.4.1),
+  // so it is read before them; a type declared in this file is not shadowed.
+  // An import that brings in no type leaves the root to the other readings,
+  // without the binding name lookup gave the static field or method. Mirrors
+  // `qualifierRoot` in overload-resolution.ts.
+  if (
+    claim.status === 'absent' ||
+    (claim.scope?.kind === 'Module' &&
+      claim.bindings.every((binding) => binding.origin !== 'local'))
+  ) {
+    const statically = staticImportQualifier(file, root, indexes);
+    if (statically === null) return null;
+    if (statically === 'none') {
+      const bindings = claim.bindings.filter((binding) => binding.origin !== 'import');
+      if (bindings.length !== claim.bindings.length)
+        claim = bindings.length === 0 ? NO_CLAIM : { ...claim, bindings };
+    } else if (statically !== undefined) return `${statically.fqn}${spelling.slice(root.length)}`;
   }
   if (claim.status === 'absent') {
     const imported = onDemandQualifier(file, root, indexes);
@@ -549,10 +784,7 @@ export function populateJavaQualifiedTypeBindings(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
 ): void {
-  const candidates = new Map<
-    string,
-    { binding: BindingRef; packageName: string; public: boolean; private: boolean }[]
-  >();
+  const candidates = new Map<string, { binding: BindingRef; named: NamedType }[]>();
   const namedTypes = new Map<string, NamedType>();
   const namedTypesByFqn = new Map<string, NamedType[]>();
   const importedSpellings = new Map<string, Map<string, JavaImportedSpellingFact['status']>>();
@@ -576,12 +808,7 @@ export function populateJavaQualifiedTypeBindings(
       sameName.push(named);
       namedTypesByFqn.set(named.fqn, sameName);
       const entries = candidates.get(named.fqn) ?? [];
-      entries.push({
-        binding: { def, origin: 'namespace' },
-        packageName: pkg.packageName,
-        public: named.public,
-        private: named.private,
-      });
+      entries.push({ binding: { def, origin: 'namespace' }, named });
       candidates.set(named.fqn, entries);
     }
   }
@@ -600,9 +827,10 @@ export function populateJavaQualifiedTypeBindings(
         /(?:\[\])+$/,
         '',
       );
-      if (!spelling.includes('.')) return;
-      const key = qualifiedTypeKey(ref, spelling, indexes);
-      if (key !== null) needed.add(key);
+      const key = spelling.includes('.')
+        ? qualifiedTypeKey(ref, spelling, indexes)
+        : inheritedSimpleTypeKey(ref, spelling.replaceAll(/\s+/g, ''), indexes);
+      if (typeof key === 'string') needed.add(key);
     };
     for (const scope of parsed.scopes) {
       for (const ref of scope.typeBindings.values()) need(ref);
@@ -622,12 +850,16 @@ export function populateJavaQualifiedTypeBindings(
         if (indexes.scopeTree.getScope(element.scope) !== undefined)
           need(javaReturnElementRef(fact, element));
     for (const key of needed) {
+      // A path whose only non-public types are protected is accessible from
+      // another package in a subclass body only, which each use site checks
+      // (`javaQualifiedTypeLookupSpelling`).
       const visible = (candidates.get(key) ?? []).filter(
-        (candidate) =>
-          (candidate.public ||
-            (candidate.packageName === pkg.packageName &&
-              (!candidate.private || candidate.binding.def.filePath === parsed.filePath))) &&
-          isJvmSourceVisible(parsed.filePath, candidate.binding.def.filePath),
+        ({ binding, named }) =>
+          (named.public ||
+            (named.packageName === pkg.packageName &&
+              (!named.private || binding.def.filePath === parsed.filePath)) ||
+            (!named.private && !named.packageAccess)) &&
+          isJvmSourceVisible(parsed.filePath, binding.def.filePath),
       );
       if (visible.length !== 1) continue;
       let names = augmentations.get(module.id);
@@ -637,30 +869,55 @@ export function populateJavaQualifiedTypeBindings(
   }
 }
 
-/** A missing qualified type is a final refusal, never a simple-name retry. */
+/**
+ * The module-level spelling a Java declared type is looked up by, or `null`
+ * to refuse it. A missing qualified type is a final refusal, never a
+ * simple-name retry. A simple name is renamed only when an enclosing class
+ * inherits a member type of that name (see `inheritedSimpleTypeKey`).
+ */
 export function javaQualifiedTypeLookupSpelling(
   ref: TypeRef,
   indexes?: ScopeResolutionIndexes,
 ): string | null | undefined {
+  const spelling = eraseJavaTypeArguments(ref.declaredSpelling ?? ref.rawName);
+  if (!spelling.includes('.')) {
+    if (indexes === undefined) return undefined;
+    const key = inheritedSimpleTypeKey(ref, spelling.replaceAll(/\s+/g, ''), indexes);
+    return typeof key === 'string' ? moduleTypeKey(ref, key, indexes) : key;
+  }
   if (ref.declaredSpelling === undefined) return undefined;
-  const spelling = eraseJavaTypeArguments(ref.declaredSpelling);
-  if (!spelling.includes('.')) return undefined;
   if (spelling.endsWith('[]') || indexes === undefined) return null;
   const key = qualifiedTypeKey(ref, spelling, indexes);
-  if (key === null) return null;
+  return key === null ? null : moduleTypeKey(ref, key, indexes);
+}
+
+/** `key` when the module-level binding registered for it is accessible where
+ * `ref` was written, else `null`. */
+function moduleTypeKey(ref: TypeRef, key: string, indexes: ScopeResolutionIndexes): string | null {
   let scope = indexes.scopeTree.getScope(ref.declaredAtScope);
   while (scope !== undefined && scope.kind !== 'Module')
     scope = scope.parent === null ? undefined : indexes.scopeTree.getScope(scope.parent);
   const bindings =
     scope === undefined ? undefined : indexes.bindingAugmentations.get(scope.id)?.get(key);
   if (bindings?.length !== 1) return null;
+  const named = namedTypesByIndexes.get(indexes)?.get(bindings[0]!.def.nodeId);
+  if (named === undefined || named.public) return key;
   // The module-level binding serves every use in the file. A private type on
   // the path is accessible only inside its own top-level type's body, not from
   // another top-level type in the same file (JLS 6.6.1).
-  const named = namedTypesByIndexes.get(indexes)?.get(bindings[0]!.def.nodeId);
-  return named?.private !== true ||
-    ref.declaredAtScope === named.topLevelScope ||
-    indexes.scopeTree.getAncestors(ref.declaredAtScope).includes(named.topLevelScope)
+  if (named.private)
+    return ref.declaredAtScope === named.topLevelScope ||
+      indexes.scopeTree.getAncestors(ref.declaredAtScope).includes(named.topLevelScope)
+      ? key
+      : null;
+  // From another package, a protected type on the path is accessible only in
+  // the body of a subclass of the type that declares it (JLS 6.6.2.1).
+  const pkg = scope === undefined ? undefined : getJavaPackageFact(scope.filePath);
+  if (pkg?.status === 'known' && pkg.packageName === named.packageName) return key;
+  return !named.packageAccess &&
+    named.protectedOwners.every((owner) =>
+      enclosingTypeInherits(ref.declaredAtScope, owner, indexes),
+    )
     ? key
     : null;
 }
