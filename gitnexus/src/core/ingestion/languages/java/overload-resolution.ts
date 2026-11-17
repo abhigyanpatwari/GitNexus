@@ -63,6 +63,8 @@ interface FileFactIndex {
   /** Single-type and single-static imports, by the simple name they import. */
   readonly singleImports: Map<string, JavaImportFact[]>;
   readonly onDemandImports: JavaImportFact[];
+  /** Some on-demand import is static. */
+  readonly staticOnDemand: boolean;
 }
 interface State {
   readonly model: SemanticModel;
@@ -189,6 +191,7 @@ function fileFactIndex(facts: JavaOverloadFileFacts, state: State): FileFactInde
     typeParameters: new Map(),
     singleImports: new Map(),
     onDemandImports: [],
+    staticOnDemand: facts.imports.some((item) => item.wildcard && item.static),
   };
   for (const item of facts.imports) {
     if (item.wildcard) {
@@ -407,41 +410,154 @@ function memberTypeNames(state: State): ReadonlySet<string> {
   return names;
 }
 
-/** A file's type declarations as nested in the source, so the classes
- * enclosing a position take one binary search and a walk outward instead of a
- * scan of every declaration in the file. */
-interface TypeNesting {
-  /** Declarations by start position, the wider first at one start. */
+/** Type declarations nested by one of their ranges, so the ones around a
+ * position take one binary search and a walk outward instead of a scan of
+ * every declaration. Equal ranges nest in file order, the later inside. */
+interface RangeNesting {
+  /** Declarations by start, the wider first at one start, else file order. */
   readonly byStart: readonly JavaOverloadTypeFact[];
-  /** The nearest declaration enclosing each one. */
+  /** The nearest declaration whose range encloses each one. */
   readonly parent: ReadonlyMap<JavaOverloadTypeFact, JavaOverloadTypeFact>;
-  /** Each declaration's one indexed definition, once read. */
-  readonly ids: Map<JavaOverloadTypeFact, string | undefined>;
 }
-const typeNestings = new WeakMap<FileFactIndex, TypeNesting>();
 
-function typeNesting(facts: JavaOverloadFileFacts, state: State): TypeNesting {
-  const index = fileFactIndex(facts, state);
-  const cached = typeNestings.get(index);
-  if (cached !== undefined) return cached;
-  const byStart = [...facts.types].sort(
-    (a, b) =>
-      a.range.startLine - b.range.startLine ||
-      a.range.startCol - b.range.startCol ||
-      b.range.endLine - a.range.endLine ||
-      b.range.endCol - a.range.endCol,
-  );
+function nestRanges(
+  types: readonly JavaOverloadTypeFact[],
+  rangeOf: (type: JavaOverloadTypeFact) => Range,
+): RangeNesting {
+  const byStart = [...types].sort((a, b) => {
+    const left = rangeOf(a);
+    const right = rangeOf(b);
+    return (
+      left.startLine - right.startLine ||
+      left.startCol - right.startCol ||
+      right.endLine - left.endLine ||
+      right.endCol - left.endCol
+    );
+  });
   const parent = new Map<JavaOverloadTypeFact, JavaOverloadTypeFact>();
   const open: JavaOverloadTypeFact[] = [];
   for (const type of byStart) {
-    while (open.length > 0 && !javaRangeContains(open.at(-1)!.range, type.range)) open.pop();
+    while (open.length > 0 && !javaRangeContains(rangeOf(open.at(-1)!), rangeOf(type))) open.pop();
     const enclosing = open.at(-1);
     if (enclosing !== undefined) parent.set(type, enclosing);
     open.push(type);
   }
-  const nesting: TypeNesting = { byStart, parent, ids: new Map() };
-  typeNestings.set(index, nesting);
-  return nesting;
+  return { byStart, parent };
+}
+
+/** The declarations whose range encloses `at`, innermost first. The last one
+ * starting at or before `at` is the innermost or nests inside it. */
+function enclosingRanges(
+  nesting: RangeNesting,
+  rangeOf: (type: JavaOverloadTypeFact) => Range,
+  at: Range,
+): JavaOverloadTypeFact[] {
+  let low = 0;
+  let high = nesting.byStart.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const start = rangeOf(nesting.byStart[middle]!);
+    if (
+      start.startLine < at.startLine ||
+      (start.startLine === at.startLine && start.startCol <= at.startCol)
+    )
+      low = middle + 1;
+    else high = middle;
+  }
+  const enclosing: JavaOverloadTypeFact[] = [];
+  for (let type = nesting.byStart[low - 1]; type !== undefined; type = nesting.parent.get(type))
+    if (javaRangeContains(rangeOf(type), at)) enclosing.push(type);
+  return enclosing;
+}
+
+const declarationRange = (type: JavaOverloadTypeFact): Range => type.range;
+const visibleRange = (type: JavaOverloadTypeFact): Range => type.visible;
+
+/** A file's type declarations indexed for per-use lookups, built lazily. */
+interface FileTypeIndex {
+  declarations?: RangeNesting;
+  readonly bySimpleName: ReadonlyMap<string, readonly JavaOverloadTypeFact[]>;
+  /** Per simple name, the declarations nested by where they are visible. */
+  readonly visible: Map<string, RangeNesting>;
+  /** Each declaration's definitions that `typeFact` maps back to it, once read. */
+  readonly classDefinitions: Map<JavaOverloadTypeFact, readonly SymbolDefinition[]>;
+}
+const fileTypeIndexes = new WeakMap<FileFactIndex, FileTypeIndex>();
+
+function fileTypeIndex(facts: JavaOverloadFileFacts, state: State): FileTypeIndex {
+  const index = fileFactIndex(facts, state);
+  const cached = fileTypeIndexes.get(index);
+  if (cached !== undefined) return cached;
+  const bySimpleName = new Map<string, JavaOverloadTypeFact[]>();
+  for (const type of facts.types) {
+    const named = bySimpleName.get(type.simpleName);
+    if (named === undefined) bySimpleName.set(type.simpleName, [type]);
+    else named.push(type);
+  }
+  const types: FileTypeIndex = { bySimpleName, visible: new Map(), classDefinitions: new Map() };
+  fileTypeIndexes.set(index, types);
+  return types;
+}
+
+/** The type named `name` declared in this file that is visible at `at` from
+ * the nearest scope, as the innermost visible range enclosing it; among equal
+ * ranges the last in file order. */
+function nearestVisibleType(
+  name: string,
+  at: Range,
+  facts: JavaOverloadFileFacts,
+  state: State,
+): JavaOverloadTypeFact | undefined {
+  const index = fileTypeIndex(facts, state);
+  const types = index.bySimpleName.get(name);
+  if (types === undefined) return undefined;
+  let nesting = index.visible.get(name);
+  if (nesting === undefined) index.visible.set(name, (nesting = nestRanges(types, visibleRange)));
+  return enclosingRanges(nesting, visibleRange, at)[0];
+}
+
+/** A definition list keyed the way a type fact names its definitions: the
+ * node id after its last `:`, and the qualified name. */
+const definitionsByFactName = new WeakMap<
+  readonly SymbolDefinition[],
+  ReadonlyMap<string, readonly SymbolDefinition[]>
+>();
+
+function keyedByFactName(
+  definitions: readonly SymbolDefinition[],
+): ReadonlyMap<string, readonly SymbolDefinition[]> {
+  const cached = definitionsByFactName.get(definitions);
+  if (cached !== undefined) return cached;
+  const keyed = new Map<string, SymbolDefinition[]>();
+  const add = (key: string, definition: SymbolDefinition): void => {
+    const named = keyed.get(key);
+    if (named === undefined) keyed.set(key, [definition]);
+    else if (!named.includes(definition)) named.push(definition);
+  };
+  for (const definition of definitions) {
+    const colon = definition.nodeId.lastIndexOf(':');
+    if (colon >= 0) add(definition.nodeId.slice(colon + 1), definition);
+    if (definition.qualifiedName !== undefined) add(definition.qualifiedName, definition);
+  }
+  definitionsByFactName.set(definitions, keyed);
+  return keyed;
+}
+
+/** The definitions in this file a type fact names: those whose node id ends in
+ * `:` and its name, or whose qualified name is its name, first by its full
+ * name and then by its simple name, each once. */
+function definitionsOfType(
+  type: JavaOverloadTypeFact,
+  filePath: string,
+  state: State,
+): readonly SymbolDefinition[] {
+  const unique = new Map<string, SymbolDefinition>();
+  for (const name of [type.name, type.simpleName])
+    for (const definition of keyedByFactName(sourceDefinitionsInFile(name, filePath, state)).get(
+      type.name,
+    ) ?? [])
+      if (!unique.has(definition.nodeId)) unique.set(definition.nodeId, definition);
+  return [...unique.values()];
 }
 
 /** The classes enclosing `context`, innermost first, with their ranges; the
@@ -451,40 +567,19 @@ function enclosingClasses(
   facts: JavaOverloadFileFacts,
   state: State,
 ): { readonly id: string | undefined; readonly range: Range }[] {
-  const nesting = typeNesting(facts, state);
-  const at = context.at;
-  // The last declaration starting at or before `at`: declarations nest, so the
-  // innermost one enclosing `at` is it or one of the declarations around it.
-  let low = 0;
-  let high = nesting.byStart.length;
-  while (low < high) {
-    const middle = (low + high) >>> 1;
-    const start = nesting.byStart[middle]!.range;
-    if (
-      start.startLine < at.startLine ||
-      (start.startLine === at.startLine && start.startCol <= at.startCol)
-    )
-      low = middle + 1;
-    else high = middle;
-  }
-  const classes: { readonly id: string | undefined; readonly range: Range }[] = [];
-  for (let type = nesting.byStart[low - 1]; type !== undefined; type = nesting.parent.get(type)) {
-    if (!javaRangeContains(type.range, at)) continue;
-    if (!nesting.ids.has(type)) {
-      const ids = new Set(
-        [
-          ...sourceDefinitionsInFile(type.name, context.filePath, state),
-          ...sourceDefinitionsInFile(type.simpleName, context.filePath, state),
-        ]
-          .filter((definition) => typeFact(definition, state) === type)
-          .map((definition) => definition.nodeId),
+  const index = fileTypeIndex(facts, state);
+  index.declarations ??= nestRanges(facts.types, declarationRange);
+  return enclosingRanges(index.declarations, declarationRange, context.at).map((type) => {
+    let definitions = index.classDefinitions.get(type);
+    if (definitions === undefined)
+      index.classDefinitions.set(
+        type,
+        (definitions = definitionsOfType(type, context.filePath, state).filter(
+          (definition) => typeFact(definition, state) === type,
+        )),
       );
-      const [id] = ids;
-      nesting.ids.set(type, ids.size === 1 ? id : undefined);
-    }
-    classes.push({ id: nesting.ids.get(type), range: type.range });
-  }
-  return classes;
+    return { id: definitions.length === 1 ? definitions[0]!.nodeId : undefined, range: type.range };
+  });
 }
 
 /**
@@ -605,31 +700,17 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   const facts = getJavaOverloadFacts(context.filePath);
   if (facts === undefined)
     return name.includes('.') ? qualifiedReference(name, state) : UNKNOWN_JAVA_TYPE;
-  if (hasTypeParameter(fileFactIndex(facts, state), name, context.at)) return UNKNOWN_JAVA_TYPE;
+  const index = fileFactIndex(facts, state);
+  if (hasTypeParameter(index, name, context.at)) return UNKNOWN_JAVA_TYPE;
   const first = name.split('.')[0]!;
-  const lexical = facts.types.filter(
-    (type) => type.simpleName === first && javaRangeContains(type.visible, context.at),
-  );
-  let nearest: JavaOverloadTypeFact | undefined;
-  for (const type of lexical)
-    if (nearest === undefined || javaRangeContains(nearest.visible, type.visible)) nearest = type;
+  const nearest = nearestVisibleType(first, context.at, facts, state);
   if (!name.includes('.')) {
     const inherited = inheritedSimpleType(name, nearest, context, facts, state);
     if (inherited !== undefined) return inherited;
   }
   if (nearest !== undefined) {
     if (name.includes('.')) return UNKNOWN_JAVA_TYPE; // qualified nested lookup needs a proven identity
-    const matches = [
-      ...sourceDefinitionsInFile(nearest.name, context.filePath, state),
-      ...sourceDefinitionsInFile(nearest.simpleName, context.filePath, state),
-    ].filter(
-      (definition) =>
-        definition.nodeId.endsWith(`:${nearest!.name}`) ||
-        definition.qualifiedName === nearest!.name,
-    );
-    const unique = [
-      ...new Map(matches.map((definition) => [definition.nodeId, definition])).values(),
-    ];
+    const unique = definitionsOfType(nearest, context.filePath, state);
     return unique.length === 1 ? sourceReference(unique[0]!) : UNKNOWN_JAVA_TYPE;
   }
   if (name.includes('.')) {
@@ -651,14 +732,9 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   }
   // Static imports can name types, values or methods. Require a source type
   // identity before resolving one; an unproven import must not become a JDK type.
-  if (
-    facts.imports.some(
-      (item) => item.static && (item.wildcard || item.name.split('.').at(-1) === name),
-    )
-  ) {
-    const explicit = facts.imports.filter(
-      (item) => item.static && !item.wildcard && item.name.split('.').at(-1) === name,
-    );
+  const single = index.singleImports.get(name) ?? [];
+  if (index.staticOnDemand || single.some((item) => item.static)) {
+    const explicit = single.filter((item) => item.static);
     if (explicit.length === 1) {
       const imported = qualifiedReference(explicit[0]!.name, state);
       if (imported.kind === 'reference' && imported.sourceId !== undefined) return imported;
@@ -666,9 +742,7 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     return UNKNOWN_JAVA_TYPE;
   }
   // An inherited member type of this name was read above (`inheritedSimpleType`).
-  const explicit = facts.imports.filter(
-    (item) => !item.static && !item.wildcard && item.name.split('.').at(-1) === name,
-  );
+  const explicit = single.filter((item) => !item.static);
   if (explicit.length > 0)
     return explicit.length === 1 ? qualifiedReference(explicit[0]!.name, state) : UNKNOWN_JAVA_TYPE;
   const inPackage = facts.packageName === '' ? name : `${facts.packageName}.${name}`;
@@ -684,8 +758,8 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     ? [qualifiedReference(platform, state)]
     : [];
   let unknownWildcard = false;
-  for (const item of facts.imports) {
-    if (item.static || !item.wildcard) continue;
+  for (const item of index.onDemandImports) {
+    if (item.static) continue;
     const qualified = `${item.name}.${name}`;
     const candidates = sourceDefinitionsQualified(name, qualified, state);
     if (candidates.length > 0) imported.push(...candidates.map(sourceReference));
