@@ -21,7 +21,7 @@ import {
 } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { followChainPostFinalize } from '../../scope-resolution/passes/imported-return-types.js';
+import { createChainFollower } from '../../scope-resolution/passes/imported-return-types.js';
 import { javaProvider } from '../java.js';
 import {
   javaArityCompatibility,
@@ -284,6 +284,8 @@ function populateJavaCrossFileReturnTypes(
     }
   }
 
+  // Every sibling module holds the package's return facts: follow each once.
+  const follower = createChainFollower(indexes);
   for (const parsed of parsedFiles) {
     const importerModule = moduleScopeByFile.get(parsed.filePath);
     if (importerModule === undefined) continue;
@@ -332,13 +334,17 @@ function populateJavaCrossFileReturnTypes(
           for (const dependency of importedFamiliesByFile.get(file) ?? []) pending.push(dependency);
         }
       }
-      if (!ambiguous && candidate !== undefined) tb.set(name, candidate);
+      if (!ambiguous && candidate !== undefined) {
+        tb.set(name, candidate);
+        follower.clear();
+      }
     }
 
     for (const [name, ref] of importerModule.typeBindings) {
-      const resolved = followChainPostFinalize(ref, importerModule.id, indexes);
+      const resolved = follower.follow(ref, importerModule.id);
       if (resolved !== ref) {
         (importerModule.typeBindings as Map<string, TypeRef>).set(name, resolved);
+        follower.clear();
       }
     }
   }
@@ -348,9 +354,10 @@ function populateJavaCrossFileReturnTypes(
     for (const scope of parsed.scopes) {
       if (scope.id === moduleScopeId) continue;
       for (const [name, ref] of scope.typeBindings) {
-        const resolved = followChainPostFinalize(ref, scope.id, indexes);
+        const resolved = follower.follow(ref, scope.id);
         if (resolved !== ref) {
           (scope.typeBindings as Map<string, TypeRef>).set(name, resolved);
+          follower.clear();
         }
       }
     }

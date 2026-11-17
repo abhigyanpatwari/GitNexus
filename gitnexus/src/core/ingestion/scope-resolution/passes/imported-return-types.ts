@@ -490,6 +490,49 @@ export function followChainPostFinalize(
   return current;
 }
 
+/** `followChainPostFinalize` for one pass, bound to its hooks. */
+export interface ChainFollower {
+  follow(start: TypeRef, fromScopeId: ScopeId): TypeRef;
+  /** Forget what was learned: the pass calls it after every type-binding write. */
+  clear(): void;
+}
+
+/**
+ * A pass can follow one `TypeRef` object many times: a provider that copies a
+ * module's type facts into every sibling module shares the objects, and each
+ * copy is followed again. This remembers the heads whose first step stopped,
+ * by the scope that step read. That step reads only the head, that scope, the
+ * pass's callee hook and the indexes, so it stops again until a write changes
+ * the indexes. A head that came back unchanged stopped at its first step: a
+ * later step returns a new object, unless the head is awaited
+ * (`followedStep` may return it), so an awaited head is never remembered.
+ */
+export function createChainFollower(
+  scopes: ScopeResolutionIndexes,
+  resolveCallee?: QualifiedCalleeResolver,
+  awaited?: AwaitedFollow,
+): ChainFollower {
+  let stopped = new Map<TypeRef, Set<ScopeId>>();
+  return {
+    follow(start, fromScopeId) {
+      if (start.awaited === true)
+        return followChainPostFinalize(start, fromScopeId, scopes, resolveCallee, awaited);
+      const firstScope = start.declaredAtScope ?? fromScopeId;
+      const known = stopped.get(start);
+      if (known?.has(firstScope) === true) return start;
+      const followed = followChainPostFinalize(start, fromScopeId, scopes, resolveCallee, awaited);
+      if (followed === start) {
+        if (known === undefined) stopped.set(start, new Set([firstScope]));
+        else known.add(firstScope);
+      }
+      return followed;
+    },
+    clear() {
+      if (stopped.size > 0) stopped = new Map();
+    },
+  };
+}
+
 /**
  * Copy return-type typeBindings across module boundaries via import
  * bindings. For each module-scope import like `from x import f`, look
@@ -565,6 +608,7 @@ export function propagateImportedReturnTypes(
           return undefined;
         };
   const scopesByFile = new Map(parsedFiles.map((file) => [file.filePath, file.scopes]));
+  const follower = createChainFollower(indexes, resolveCallee, awaited);
 
   // Walk SCCs in reverse-topological order (`indexes.sccs` is leaves-
   // first per `tarjanSccs`). For each file we mirror import bindings
@@ -617,17 +661,12 @@ export function propagateImportedReturnTypes(
 
             // Chain-follow inside the source module so we mirror the
             // terminal type, not an intermediate intra-source reference.
-            const terminal = followChainPostFinalize(
-              sourceTypeRef,
-              sourceModule.id,
-              indexes,
-              resolveCallee,
-              awaited,
-            );
+            const terminal = follower.follow(sourceTypeRef, sourceModule.id);
 
             // Mutating typeBindings is safe because draftToScope
             // produced a non-frozen Map (Contract Invariant I3/I8).
             (importerScope.typeBindings as Map<string, TypeRef>).set(localName, terminal);
+            follower.clear();
             // First-write-wins for the local alias: if the same
             // `localName` was registered multiple times via
             // `mergeBindings` (rare; happens with conflicting
@@ -645,15 +684,10 @@ export function propagateImportedReturnTypes(
       // later (closer-to-root) SCC will see x's terminal type rather
       // than an intra-module call ref.
       for (const [name, ref] of importerModule.typeBindings) {
-        const resolved = followChainPostFinalize(
-          ref,
-          importerModule.id,
-          indexes,
-          resolveCallee,
-          awaited,
-        );
+        const resolved = follower.follow(ref, importerModule.id);
         if (resolved !== ref) {
           (importerModule.typeBindings as Map<string, TypeRef>).set(name, resolved);
+          follower.clear();
         }
       }
     }
@@ -667,9 +701,10 @@ export function propagateImportedReturnTypes(
     for (const scope of parsed.scopes) {
       if (scope.id === moduleScopeId) continue;
       for (const [name, ref] of scope.typeBindings) {
-        const resolved = followChainPostFinalize(ref, scope.id, indexes, resolveCallee, awaited);
+        const resolved = follower.follow(ref, scope.id);
         if (resolved !== ref) {
           (scope.typeBindings as Map<string, TypeRef>).set(name, resolved);
+          follower.clear();
         }
       }
     }

@@ -884,6 +884,10 @@ export function populateJavaQualifiedTypeBindings(
   namedTypesByFqnByIndexes.set(indexes, namedTypesByFqn);
   importedSpellingsByIndexes.set(indexes, importedSpellings);
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
+  // Package siblings share one another's module type facts, the same TypeRef
+  // objects. A simple spelling's key reads no module scope, the only place
+  // this loop writes, so each object is read once (`null`: no key).
+  const simpleKeys = new Map<TypeRef, string | null>();
   for (const parsed of parsedFiles) {
     const module = parsed.scopes.find((scope) => scope.kind === 'Module');
     const pkg = getJavaPackageFact(parsed.filePath);
@@ -891,13 +895,22 @@ export function populateJavaQualifiedTypeBindings(
     const needed = new Set<string>();
     const need = (ref: TypeRef): void => {
       if (ref.source === 'assignment-inferred' && ref.declaredSpelling === undefined) return;
+      const known = simpleKeys.get(ref);
+      if (known !== undefined) {
+        if (known !== null) needed.add(known);
+        return;
+      }
       const spelling = eraseJavaTypeArguments(ref.declaredSpelling ?? ref.rawName).replace(
         /(?:\[\])+$/,
         '',
       );
-      const key = spelling.includes('.')
-        ? qualifiedTypeKey(ref, spelling, indexes)
-        : inheritedSimpleTypeKey(ref, spelling.replaceAll(/\s+/g, ''), indexes);
+      if (spelling.includes('.')) {
+        const key = qualifiedTypeKey(ref, spelling, indexes);
+        if (typeof key === 'string') needed.add(key);
+        return;
+      }
+      const key = inheritedSimpleTypeKey(ref, spelling.replaceAll(/\s+/g, ''), indexes);
+      simpleKeys.set(ref, typeof key === 'string' ? key : null);
       if (typeof key === 'string') needed.add(key);
     };
     for (const scope of parsed.scopes) {
