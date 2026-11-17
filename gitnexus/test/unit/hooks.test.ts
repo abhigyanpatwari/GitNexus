@@ -64,6 +64,14 @@ const PLUGIN_HOOK = path.resolve(
   'gitnexus-hook.js',
 );
 const CJS_RUNTIME = path.join(path.dirname(CJS_HOOK), 'claude-hook-runtime.cjs');
+const ANTIGRAVITY_HOOK = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'hooks',
+  'antigravity',
+  'gitnexus-antigravity-hook.cjs',
+);
 const CJS_HOOK_DB_PROBE = path.resolve(
   __dirname,
   '..',
@@ -625,36 +633,20 @@ describe('extractPattern coverage', () => {
   }
 });
 
-// ─── PostToolUse: git mutation regex coverage ───────────────────────
+// ─── PostToolUse: git mutation detection ────────────────────────────
 
-describe('Git mutation regex', () => {
-  const GIT_REGEX = /\\bgit\\s\+\(commit\|merge\|rebase\|cherry-pick\|pull\)/;
-
-  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
-    it(`${label} hook detects git commit`, () => {
+describe('Git mutation detection', () => {
+  // Both adapters ask the shared helper, so they recognize the same commands.
+  // The commands themselves are covered in git-mutation-command.test.ts.
+  for (const [label, hookPath] of [
+    ['CJS', CJS_RUNTIME],
+    ['Antigravity', ANTIGRAVITY_HOOK],
+  ] as const) {
+    it(`${label} hook detects git mutations through the shared helper`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('commit');
-    });
-
-    it(`${label} hook detects git merge`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('merge');
-    });
-
-    it(`${label} hook detects git rebase`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('rebase');
-    });
-
-    it(`${label} hook detects git cherry-pick`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('cherry-pick');
-    });
-
-    it(`${label} hook detects git pull`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      // 'pull' in the regex alternation
-      expect(source).toMatch(/commit\|merge\|rebase\|cherry-pick\|pull/);
+      expect(source).toContain("require('./git-mutation-command.cjs')");
+      expect(source).toContain('isGitMutationCommand(command)');
+      expect(source).not.toMatch(/commit\|merge\|rebase\|cherry-pick\|pull/);
     });
   }
 });
@@ -1582,6 +1574,7 @@ describe.skipIf(process.platform === 'win32')(
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
+        'git-mutation-command.cjs',
         'win-rm-list-json.ps1',
       ]) {
         fs.copyFileSync(path.join(claudeHooksDir, helper), path.join(stageDir, helper));
@@ -1908,6 +1901,7 @@ describe.skipIf(process.platform !== 'linux')(
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
+        'git-mutation-command.cjs',
       ]) {
         fs.copyFileSync(path.join(hookSrcDir, f), path.join(stagedDir, f));
       }

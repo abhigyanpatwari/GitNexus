@@ -488,6 +488,7 @@ const HOOK_HELPERS = [
   'win-rm-list-json.ps1',
   'resolve-analyze-cmd.cjs',
   'registry-query.cjs',
+  'git-mutation-command.cjs',
 ] as const;
 
 // Only names copied by the former Claude/Codex installer belong to this

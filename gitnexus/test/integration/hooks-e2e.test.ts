@@ -348,6 +348,46 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
         expect(output!.additionalContext).toContain('stale');
       }
     });
+
+    // #3897: global options sit between `git` and the subcommand.
+    it.each([
+      'git -c user.name=x commit -m msg',
+      'git -C ../other commit -am msg',
+      'git --no-pager pull',
+    ])('detects %s', (command) => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', stats: {} }),
+      );
+
+      const result = runHook(hookPath, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command },
+        tool_output: { exit_code: 0 },
+        cwd: tmpDir,
+      });
+      const output = parseHookOutput(result.stdout);
+      expect(output).not.toBeNull();
+      expect(output!.additionalContext).toContain('stale');
+    });
+
+    it('stays silent when the word after -C is the path, not the subcommand', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', stats: {} }),
+      );
+
+      const result = runHook(hookPath, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'git -C commit status' },
+        tool_output: { exit_code: 0 },
+        cwd: tmpDir,
+      });
+      expect(result.status).toBe(0);
+      expect(parseHookOutput(result.stdout)).toBeNull();
+    });
   });
 
   describe('PreToolUse — silent without gitnexus CLI', () => {

@@ -29,6 +29,7 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
+const { isGitMutationCommand } = require('./git-mutation-command.cjs');
 const { resolveHookRepo } = (() => {
   // Installed copies get helpers next to this adapter. The in-tree source
   // tree only ships the adapter, so fall back to the Claude helper copies.
@@ -295,8 +296,7 @@ function buildAfterToolContext(input) {
   const succeeded = toolSucceeded(toolResponse);
   const pattern = succeeded ? extractPattern(toolName, toolInput) : null;
   const command = toolName === 'run_shell_command' ? toolInput.command || '' : '';
-  const gitMutation =
-    succeeded && /\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command);
+  const gitMutation = succeeded && isGitMutationCommand(command);
   // Cheap tool-result guards first. Registry I/O is only for search augment
   // or a git mutation that might need a stale-index hint.
   if (!pattern && !gitMutation) return null;

@@ -255,6 +255,9 @@ describe('setupAntigravity', () => {
     // co-locate it next to the adapter (symmetric with the Claude install).
     await expect(fs.access(path.join(destDir, 'resolve-analyze-cmd.cjs'))).resolves.toBeUndefined();
     await expect(fs.access(path.join(destDir, 'registry-query.cjs'))).resolves.toBeUndefined();
+    await expect(
+      fs.access(path.join(destDir, 'git-mutation-command.cjs')),
+    ).resolves.toBeUndefined();
   });
 
   it('installs skills under ~/.gemini/antigravity/skills/<name>/SKILL.md', async () => {
@@ -416,6 +419,7 @@ const PROBE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'hook-db-lock-probe
 const WIN_RM_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'win-rm-list-json.ps1');
 const RESOLVE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'resolve-analyze-cmd.cjs');
 const REGISTRY_QUERY_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'registry-query.cjs');
+const GIT_MUTATION_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'git-mutation-command.cjs');
 
 async function stageAdapter(): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-adapter-'));
@@ -430,6 +434,7 @@ async function stageAdapter(): Promise<string> {
   // without staging it the spawned adapter crashes with MODULE_NOT_FOUND.
   await fs.copyFile(RESOLVE_SRC, path.join(tmp, 'resolve-analyze-cmd.cjs'));
   await fs.copyFile(REGISTRY_QUERY_SRC, path.join(tmp, 'registry-query.cjs'));
+  await fs.copyFile(GIT_MUTATION_SRC, path.join(tmp, 'git-mutation-command.cjs'));
   return path.join(tmp, 'gitnexus-antigravity-hook.cjs');
 }
 
@@ -589,6 +594,42 @@ describe('gitnexus-antigravity-hook adapter', () => {
     });
     expect(debug.stderr).toMatch(/\[GitNexus\] index is stale/);
     expect(debug.stderr).toMatch(/gitnexus analyze/);
+  });
+
+  // #3897: global options sit between `git` and the subcommand.
+  it.each([
+    'git -c user.name=x commit -m msg',
+    'git -C ../other commit -am msg',
+    'git --no-pager pull',
+  ])('AfterTool emits stale-index hint after %s', async (command) => {
+    initGitRepo(workdir);
+    await fs.writeFile(path.join(workdir, 'a.txt'), 'hello', 'utf-8');
+    commitAll(workdir, 'init');
+
+    const gnDir = path.join(workdir, '.gitnexus');
+    await fs.mkdir(gnDir, { recursive: true });
+    await fs.writeFile(
+      path.join(gnDir, 'meta.json'),
+      JSON.stringify({ lastCommit: '0000000000000000000000000000000000000000', stats: {} }),
+      'utf-8',
+    );
+    await registerWorkdir(gnDir);
+
+    const { stdout, stderr, status } = runAdapter(
+      adapter,
+      {
+        hook_event_name: 'AfterTool',
+        tool_name: 'run_shell_command',
+        tool_input: { command },
+        tool_response: { llmContent: '[done]' },
+        cwd: workdir,
+      },
+      workdir,
+      { GITNEXUS_INVOCATION: 'gitnexus', GITNEXUS_DEBUG: '', GITNEXUS_HOME: registryHome },
+    );
+
+    expectAdapterLoaded(stderr, status);
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toMatch(/index is stale/);
   });
 
   it('AfterTool skips augment when the tool failed', async () => {

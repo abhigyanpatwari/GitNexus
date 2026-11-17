@@ -13,6 +13,7 @@ const {
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { resolveHookRepo } = require('./registry-query.cjs');
+const { isGitMutationCommand } = require('./git-mutation-command.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -553,7 +554,7 @@ function handlePostToolUse(input) {
   if (toolName !== 'Bash') return;
 
   const command = (input.tool_input || {}).command || '';
-  if (!/\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command)) return;
+  if (!isGitMutationCommand(command)) return;
 
   // Only proceed if the command succeeded
   const toolOutput = input.tool_output || {};
