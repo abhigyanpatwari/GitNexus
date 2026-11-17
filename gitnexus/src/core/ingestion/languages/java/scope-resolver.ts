@@ -49,6 +49,7 @@ import {
   emitJavaLombokWorkspaceCorrections,
 } from './lombok-workspace-proof.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
+import { populateJavaInheritedFieldTypes } from './inherited-field-types.js';
 import {
   indexJavaSamLambdaTargets,
   javaCallResultAssignmentApplies,
@@ -169,6 +170,7 @@ const javaScopeResolver: ScopeResolver = {
 
   populateNamespaceSiblings: (parsedFiles, indexes, ctx) => {
     populateJavaPackageSiblings(parsedFiles, indexes, ctx);
+    populateJavaInheritedFieldTypes(parsedFiles, indexes);
     populateJavaQualifiedTypeBindings(parsedFiles, indexes);
     validateJavaQualifiedContextualBindings(parsedFiles, indexes);
     indexJavaSamLambdaTargets(parsedFiles, indexes);

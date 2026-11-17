@@ -32,6 +32,14 @@ function getMaxInjectedSiblings(): number {
 export interface JvmPackageSiblingOptions {
   readonly languageLabel: string;
   readonly getPackageFact: (filePath: string) => JvmPackageFact | undefined;
+  /**
+   * Copy every sibling's module and non-self class type bindings into each
+   * file's module scope (default `true`). That copy costs files x siblings x
+   * bindings per package. A language that types inherited members through the
+   * superclass chain instead sets `false`; sibling class bindings are injected
+   * either way.
+   */
+  readonly mergeSiblingTypeBindings?: boolean;
 }
 
 export interface JvmPackageSiblingVisibility {
@@ -172,6 +180,7 @@ export function createJvmPackageSiblingVisibility(
 
     const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
     const maxInjectedSiblings = getMaxInjectedSiblings();
+    const mergeTypeBindings = options.mergeSiblingTypeBindings !== false;
     let truncatedFiles = 0;
 
     for (const bucket of buckets.values()) {
@@ -213,6 +222,7 @@ export function createJvmPackageSiblingVisibility(
       // The index addresses siblings by path and records appends per module
       // map, so it needs one file per path and one map per module scope.
       const bindingIndex =
+        mergeTypeBindings &&
         allSiblingPaths.length === bucket.parsed.length &&
         new Set(bucket.moduleScopes.map((sibling) => sibling.scope.typeBindings)).size ===
           bucket.moduleScopes.length
@@ -287,6 +297,7 @@ export function createJvmPackageSiblingVisibility(
         // bounds the merge work too instead of just filtering a full scan. An
         // untruncated scope merges every sibling as before, including ones that
         // contribute no class-like def.
+        if (!mergeTypeBindings) continue;
         const typeBindings = scope.typeBindings as Map<string, TypeRef>;
         if (!truncated && bindingIndex !== undefined) {
           bindingIndex.mergeAll(filePath, typeBindings);
