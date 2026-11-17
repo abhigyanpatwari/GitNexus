@@ -174,7 +174,7 @@ function endsAtOrAfter(range: Range, at: Range): boolean {
   return range.endLine > at.endLine || (range.endLine === at.endLine && range.endCol >= at.endCol);
 }
 
-function firstContainingSearch<T>(
+export function firstContainingSearch<T>(
   items: readonly T[],
   rangeOf: (item: T) => Range,
 ): FirstContainingSearch<T> {
@@ -194,7 +194,7 @@ function firstContainingSearch<T>(
  * at or before `at` are a prefix, and the first item ending at or after it is
  * where the running greatest end first reaches it; it contains `at` when that
  * index lies in the prefix, and no earlier item does. */
-function firstContaining<T>(search: FirstContainingSearch<T>, at: Range): T | undefined {
+export function firstContaining<T>(search: FirstContainingSearch<T>, at: Range): T | undefined {
   const { items, rangeOf, widest } = search;
   if (widest === undefined) return items.find((item) => javaRangeContains(rangeOf(item), at));
   let low = 0;
@@ -386,7 +386,10 @@ function methodSearch(
 ): FirstContainingSearch<JavaOverloadMethodFact> {
   let search = methodSearches.get(methods);
   if (search === undefined)
-    methodSearches.set(methods, (search = firstContainingSearch(methods, (method) => method.range)));
+    methodSearches.set(
+      methods,
+      (search = firstContainingSearch(methods, (method) => method.range)),
+    );
   return search;
 }
 
