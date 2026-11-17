@@ -651,7 +651,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   ...(Zig ? { [SupportedLanguages.Zig]: Zig } : {}),
 };
 
-// R is an npm dependency, not a vendored grammar, but its native binding can fail to load in the
+// A lazily loaded grammar is an npm dependency, not a vendored one, but its native binding can fail to load in the
 // same ways (no prebuild for the platform, a corrupt or ABI-mismatched install). A static import
 // would take the whole worker down at module load and with it the parse of every language, and an
 // eager load would cost every worker (and log a missing binding in each) even when the run has no
@@ -752,7 +752,7 @@ function findEnclosingClassNode(node: SyntaxNode): SyntaxNode | null {
  * root, same name as `findEnclosingClassInfo`'s root branch, so member ids and
  * owner ids agree. Failing both, the provider's `resolveMemberOwnerNode` gets
  * the last word (languages whose members belong to a call/assignment rather
- * than an enclosing container node, e.g. R's `R6Class(...)`).
+ * than an enclosing container node, e.g. a class built by a constructor call).
  */
 function findEnclosingClassNodeOrFileOwner(
   node: SyntaxNode,

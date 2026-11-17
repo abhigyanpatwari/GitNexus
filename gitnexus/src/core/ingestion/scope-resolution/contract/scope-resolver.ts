@@ -1565,7 +1565,7 @@ export interface ScopeResolver {
 
   /**
    * Opt-in for providers whose `resolveQualifiedFreeCall` reads a path that
-   * cannot be a local binding (an R `pkg::fn`, `pkg:::fn`). When `true`,
+   * cannot be a local binding (a module-qualified path such as `pkg::fn`). When `true`,
    * `emitFreeCallFallback` runs the hook BEFORE the lexical name-claim block,
    * and a defined result for a site with `rawQualifiedName` bypasses that
    * block: the written path names the module, so a local binding of the bare

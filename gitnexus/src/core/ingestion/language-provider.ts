@@ -473,11 +473,11 @@ interface LanguageProviderConfig {
 
   /**
    * For languages whose member owner is not a syntactic ancestor container
-   * (R: `R6Class(...)` / `setRefClass(...)` calls): return the node the
+   * (members declared by a call or assignment expression): return the node the
    * method/field extractors read members from, or `null`.
    *
    * Consulted by the enclosing-owner slot after the container walk and
-   * `resolveFileTypeOwner` (same slot as the Zig file-owner).
+   * `resolveFileTypeOwner` (the same slot as the file-owner hook).
    * Default: undefined. */
   readonly resolveMemberOwnerNode?: (definitionNode: SyntaxNode) => SyntaxNode | null;
 
