@@ -541,10 +541,13 @@ export function javaSamLambdaParameterType(
   ];
   const fact = fixedParameters(callee);
   if (fact === undefined || fact.parameterTypes.length !== argumentCount) return undefined;
-  const callScope = returned.declaredAtScope;
+  // `returned` is the selected callee's own declared return type, so its scope
+  // is where the callee's parameter types (and their type arguments) were
+  // written, never the scope of the call.
+  const calleeScope = returned.declaredAtScope;
   const target = functionalTarget(
     fact.parameterTypes[argument] ?? '',
-    callScope,
+    calleeScope,
     callee.filePath,
     fact.range,
     scopes,
@@ -600,10 +603,10 @@ export function javaSamLambdaParameterType(
     !SIMPLE_NAME.test(chosen) ||
     PRIMITIVES.has(chosen) ||
     isTypeParameterAt(callee.filePath, chosen, fact.range, index) ||
-    bindsTypeParameter(callScope, chosen, scopes)
+    bindsTypeParameter(calleeScope, chosen, scopes)
   )
     return undefined;
-  return { rawName: chosen, declaredAtScope: callScope, source: 'assignment-inferred' };
+  return { rawName: chosen, declaredAtScope: calleeScope, source: 'assignment-inferred' };
 }
 
 /** Whether `definition` is potentially applicable (JLS 15.12.2.1) to a call
