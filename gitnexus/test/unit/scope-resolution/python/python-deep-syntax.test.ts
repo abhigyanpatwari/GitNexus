@@ -11,6 +11,15 @@ const bareReads = (source: string): string[] =>
     .filter((match) => match['@reference.read.identifier'])
     .map((match) => match['@reference.read.identifier']!.text);
 
+// `@scope.name-claims` is a synthetic capture: its text is JSON.stringify(env.claims).
+const moduleClaimNames = (source: string): string[] => {
+  const moduleMatch = emitPythonScopeCaptures(source, 'deep.py').find(
+    (match) => match['@scope.module'],
+  )!;
+  const claims = JSON.parse(moduleMatch['@scope.name-claims']!.text) as { name: string }[];
+  return claims.map((claim) => claim.name);
+};
+
 // Syntax depth is input-controlled: generated code can chain thousands of
 // operators. A recursive lexical walk overflowed V8's stack near depth 2,000,
 // and the per-read ancestor climb for annotations cost O(depth^2) per read.
@@ -23,7 +32,23 @@ describe('Python captures on deep syntax', () => {
 
   it('walks deeply nested literals', () => {
     const source = `x = ${'['.repeat(depth)}a${']'.repeat(depth)}\n`;
-    expect(() => emitPythonScopeCaptures(source, 'deep.py')).not.toThrow();
+    expect(moduleClaimNames(source)).toContain('x');
+  });
+
+  const nestedTuple = `${'('.repeat(2000)}a,${'),'.repeat(1999)})`;
+  it.each([
+    {
+      name: 'a 2,000-deep class pattern',
+      source: `match v:\n    case ${'P(k='.repeat(2000)}q${')'.repeat(2000)}:\n        pass\n`,
+      claim: 'q',
+    },
+    {
+      name: 'a 2,000-deep nested tuple target',
+      source: `${nestedTuple} = v\n`,
+      claim: 'a',
+    },
+  ])('claims the binding of $name', ({ source, claim }) => {
+    expect(moduleClaimNames(source)).toContain(claim);
   });
 
   // tree-sitter keeps no parent pointers: each `.parent` re-walks from the
