@@ -75,6 +75,11 @@ describe('Python captures on deep syntax', () => {
       source: `${nestedTuple} = v\n`,
       claim: 'a',
     },
+    {
+      name: 'a 16,000-deep nested tuple target',
+      source: `${'('.repeat(16000)}a,${'),'.repeat(15999)}) = v\n`,
+      claim: 'a',
+    },
   ])('claims the binding of $name', ({ source, claim }) => {
     expect(moduleClaimNames(source)).toContain(claim);
   });

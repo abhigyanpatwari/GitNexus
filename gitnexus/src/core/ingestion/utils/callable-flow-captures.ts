@@ -1461,23 +1461,39 @@ export function subscriptBase(node: SyntaxNode): SyntaxNode | null {
   );
 }
 
+const BINDING_FIELDS = ['name', 'declarator', 'pattern', 'left'] as const;
+/** Step of a stack entry that searches the node itself. */
+const SEARCH = -1;
+
 function bindingIdentifier(
-  node: SyntaxNode,
+  root: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): SyntaxNode | undefined {
-  if (options.identifierNodeTypes.has(node.type)) return node;
-  const base = subscriptBase(node);
-  if (base !== null) return bindingIdentifier(base, options);
-  for (const fieldName of ['name', 'declarator', 'pattern', 'left']) {
-    const field = node.childForFieldName(fieldName);
-    if (field === null || field.id === node.id) continue;
-    const found = bindingIdentifier(field, options);
-    if (found !== undefined) return found;
-  }
-  for (const child of node.namedChildren) {
-    if (child === null) continue;
-    const found = bindingIdentifier(child, options);
-    if (found !== undefined) return found;
+  // Explicit stack: syntax depth is input-controlled. An entry searches a node
+  // (step SEARCH), tries its binding field `step`, or, past the fields, expands
+  // its named children. Each is read only after the previous one failed, in the
+  // order of the recursive search. A field child is usually also a named child; `seen`
+  // skips a subtree that already failed instead of searching it twice.
+  const stack: { node: SyntaxNode; step: number }[] = [{ node: root, step: SEARCH }];
+  const seen = new Set<number>();
+  for (let entry = stack.pop(); entry !== undefined; entry = stack.pop()) {
+    const { node, step } = entry;
+    if (step === SEARCH) {
+      if (options.identifierNodeTypes.has(node.type)) return node;
+      const id = node.id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const base = subscriptBase(node);
+      stack.push(base === null ? { node, step: 0 } : { node: base, step: SEARCH });
+    } else if (step < BINDING_FIELDS.length) {
+      stack.push({ node, step: step + 1 });
+      const field = node.childForFieldName(BINDING_FIELDS[step]);
+      if (field !== null && field.id !== node.id) stack.push({ node: field, step: SEARCH });
+    } else {
+      const children = node.namedChildren;
+      for (let i = children.length - 1; i >= 0; i--)
+        stack.push({ node: children[i], step: SEARCH });
+    }
   }
   return undefined;
 }
