@@ -103,6 +103,12 @@ const javaScopeResolver: ScopeResolver = {
   },
 
   mergeBindings: (existing, incoming) => [...javaMergeBindings([...existing, ...incoming])],
+  // One merge of the whole ordered bucket equals folding it group by group:
+  // a folded prefix keeps only its best tier, which the next merge would keep
+  // or drop the same way, and de-dup keeps first position with last value.
+  // Without it, every same-name append re-merges the growing prefix (N² for N
+  // same-named member types, methods or fields bound at module scope).
+  mergeBindingsAreAssociative: true,
 
   arityCompatibility: (callsite, def) => javaArityCompatibility(def, callsite),
 
