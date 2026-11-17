@@ -209,20 +209,41 @@ function innermost<T extends { readonly range: Range }>(
   return found;
 }
 
+/** Each file's method facts by name, in file order, built once per facts
+ * array so a lookup scans only the same-named methods. */
+const methodsByName = new WeakMap<
+  readonly JavaOverloadMethodFact[],
+  ReadonlyMap<string, readonly JavaOverloadMethodFact[]>
+>();
+
+function methodsNamed(
+  methods: readonly JavaOverloadMethodFact[],
+  name: string,
+): readonly JavaOverloadMethodFact[] {
+  let byName = methodsByName.get(methods);
+  if (byName === undefined) {
+    const grouped = new Map<string, JavaOverloadMethodFact[]>();
+    for (const method of methods) {
+      const named = grouped.get(method.name);
+      if (named === undefined) grouped.set(method.name, [method]);
+      else named.push(method);
+    }
+    methodsByName.set(methods, (byName = grouped));
+  }
+  return byName.get(name) ?? [];
+}
+
 function methodFact(definition: SymbolDefinition): JavaOverloadMethodFact | undefined {
   const at = definition.declarationRange;
   if (at === undefined) return undefined;
+  const methods = getJavaOverloadFacts(definition.filePath)?.methods;
+  if (methods === undefined) return undefined;
   const name = definition.nodeId
     .slice(definition.nodeId.lastIndexOf(':') + 1)
     .split('#')[0]!
     .split('.')
     .at(-1)!;
-  return innermost(
-    (getJavaOverloadFacts(definition.filePath)?.methods ?? []).filter(
-      (method) => method.name === name,
-    ),
-    at,
-  );
+  return innermost(methodsNamed(methods, name), at);
 }
 
 function interfaceFact(definition: SymbolDefinition): JavaOverloadTypeFact | undefined {
