@@ -150,7 +150,7 @@ export interface JavaReturnElementFact {
   /** The method's `declarationRange` start (1-based line). */
   readonly methodLine: number;
   readonly methodCol: number;
-  /** The return type as written, matched against `SymbolDefinition.returnType`. */
+  /** The return type's spelling (`javaTypeText`), matched against `SymbolDefinition.returnType`. */
   readonly written: string;
   /** Start of the written return type (1-based line). */
   readonly line: number;
@@ -1014,7 +1014,9 @@ export function synthesizeJavaDeclaredTypeCaptures(
       returns.push({
         methodLine: node.startPosition.row + 1,
         methodCol: node.startPosition.column,
-        written: type.text,
+        // Spelled as the method's `@declaration.return-type` capture spells it
+        // (no trailing dimensions here, by the guard above).
+        written: javaTypeText(type),
         line,
         col,
         proofs: [own],

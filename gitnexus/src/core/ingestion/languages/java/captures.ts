@@ -385,10 +385,14 @@ export function emitJavaScopeCaptures(
       if (fnNode !== null) {
         const returnType = fnNode.childForFieldName('type');
         if (returnType !== null && fnNode.type === 'method_declaration') {
+          // Spelled as the `@type-binding.return` capture spells it: type
+          // annotations and comments are not part of the type (`User @Mark []`
+          // is `User[]`), and trailing dimensions after the parameter list
+          // (`User users() @Mark []`) count only their brackets.
           grouped['@declaration.return-type'] = syntheticCapture(
             '@declaration.return-type',
             fnNode,
-            returnType.text + (fnNode.childForFieldName('dimensions')?.text ?? ''),
+            javaTypeText(returnType) + javaTrailingDimensions(fnNode),
           );
         }
         const arity = computeJavaArityMetadata(fnNode);

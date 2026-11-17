@@ -156,7 +156,7 @@ function inheritedFieldResolver(
 
 /** Element bindings of a proven JDK container return type, by route. */
 interface ProvenReturnElements {
-  /** The return type as written, to match `SymbolDefinition.returnType`. */
+  /** The return type's spelling, to match `SymbolDefinition.returnType`. */
   readonly written: string;
   readonly routes: ReadonlyMap<string, TypeRef>;
 }
