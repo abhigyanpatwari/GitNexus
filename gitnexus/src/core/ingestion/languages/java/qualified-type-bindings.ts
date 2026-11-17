@@ -604,7 +604,17 @@ export function populateJavaQualifiedTypeBindings(
       const key = qualifiedTypeKey(ref, spelling, indexes);
       if (key !== null) needed.add(key);
     };
-    for (const scope of parsed.scopes) for (const ref of scope.typeBindings.values()) need(ref);
+    for (const scope of parsed.scopes) {
+      for (const ref of scope.typeBindings.values()) need(ref);
+      // An index step on a selected producer's result (`make()[0]`) looks the
+      // array element up where the return type was written: the method's own
+      // scope, as the workspace index records it. That reading can differ from
+      // the hoisted module-level return binding's (an inherited member type).
+      if (scope.kind !== 'Function' || scope.parent === null) continue;
+      for (const def of scope.ownedDefs)
+        if (def.returnType?.endsWith(']') === true)
+          need({ rawName: def.returnType, declaredAtScope: scope.id, source: 'return-annotation' });
+    }
     // A caller's loop variable may later take a declared return type's element,
     // which is looked up here, where that return type was written.
     for (const fact of javaReturnElementFacts(parsed))
