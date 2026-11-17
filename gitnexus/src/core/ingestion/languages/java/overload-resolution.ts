@@ -152,24 +152,113 @@ function typeFactIndices(
   return byName;
 }
 
+/** A list of ranged items, searchable for the first one, in list order, whose
+ * range contains a given range, so many same-named declarations cost a binary
+ * search per lookup instead of a scan. */
+interface FirstContainingSearch<T> {
+  readonly items: readonly T[];
+  readonly rangeOf: (item: T) => Range;
+  /** Per index, the range with the greatest end up to it; `undefined` when
+   * the starts ever decrease in list order, and the lookup scans instead. */
+  readonly widest: readonly Range[] | undefined;
+}
+
+function startsAtOrBefore(range: Range, at: Range): boolean {
+  return (
+    range.startLine < at.startLine ||
+    (range.startLine === at.startLine && range.startCol <= at.startCol)
+  );
+}
+
+function endsAtOrAfter(range: Range, at: Range): boolean {
+  return range.endLine > at.endLine || (range.endLine === at.endLine && range.endCol >= at.endCol);
+}
+
+function firstContainingSearch<T>(
+  items: readonly T[],
+  rangeOf: (item: T) => Range,
+): FirstContainingSearch<T> {
+  const widest: Range[] = [];
+  for (let i = 0; i < items.length; i++) {
+    const range = rangeOf(items[i]!);
+    if (i > 0 && !startsAtOrBefore(rangeOf(items[i - 1]!), range))
+      return { items, rangeOf, widest: undefined };
+    const before = widest[i - 1];
+    widest.push(before !== undefined && endsAtOrAfter(before, range) ? before : range);
+  }
+  return { items, rangeOf, widest };
+}
+
+/** The first item in list order whose range contains `at`, exactly as a scan
+ * with `javaRangeContains` finds it. With starts in order, the items starting
+ * at or before `at` are a prefix, and the first item ending at or after it is
+ * where the running greatest end first reaches it; it contains `at` when that
+ * index lies in the prefix, and no earlier item does. */
+function firstContaining<T>(search: FirstContainingSearch<T>, at: Range): T | undefined {
+  const { items, rangeOf, widest } = search;
+  if (widest === undefined) return items.find((item) => javaRangeContains(rangeOf(item), at));
+  let low = 0;
+  let high = items.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (startsAtOrBefore(rangeOf(items[middle]!), at)) low = middle + 1;
+    else high = middle;
+  }
+  const prefix = low;
+  low = 0;
+  high = prefix;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (endsAtOrAfter(widest[middle]!, at)) high = middle;
+    else low = middle + 1;
+  }
+  return low < prefix ? items[low] : undefined;
+}
+
+/** Each same-name type fact index list, searchable by position. A list
+ * belongs to one facts array, the one `typeFactIndices` built it from. */
+const typeIndexSearches = new WeakMap<readonly number[], FirstContainingSearch<number>>();
+
+function typeIndexSearch(
+  facts: readonly JavaOverloadTypeFact[],
+  indices: readonly number[],
+): FirstContainingSearch<number> {
+  let search = typeIndexSearches.get(indices);
+  if (search === undefined)
+    typeIndexSearches.set(
+      indices,
+      (search = firstContainingSearch(indices, (index) => facts[index]!.range)),
+    );
+  return search;
+}
+
 function typeFact(definition: SymbolDefinition, state: State): JavaOverloadTypeFact | undefined {
   if (state.typeFacts.has(definition.nodeId)) return state.typeFacts.get(definition.nodeId);
   const facts = getJavaOverloadFacts(definition.filePath)?.types ?? [];
   // The facts whose name ends the node id after a `:` (a Java name has none)
-  // or equals the qualified name, in file order.
+  // or equals the qualified name, in file order. Each list is in file order,
+  // so the first of their union containing the declaration is the earlier of
+  // each list's first, and the union is one fact when every list is that one.
   const byName = typeFactIndices(facts);
   const colon = definition.nodeId.lastIndexOf(':');
   const suffix = colon < 0 ? undefined : byName.get(definition.nodeId.slice(colon + 1));
   const qualified =
     definition.qualifiedName === undefined ? undefined : byName.get(definition.qualifiedName);
-  const candidates = [...new Set([...(suffix ?? []), ...(qualified ?? [])])]
-    .sort((a, b) => a - b)
-    .map((index) => facts[index]!);
-  const byPosition =
-    definition.declarationRange === undefined
-      ? undefined
-      : candidates.find((type) => javaRangeContains(type.range, definition.declarationRange!));
-  const fact = byPosition ?? (candidates.length === 1 ? candidates[0] : undefined);
+  const lists = [suffix, qualified].filter((indices) => indices !== undefined);
+  let byPosition: number | undefined;
+  if (definition.declarationRange !== undefined)
+    for (const indices of lists) {
+      const found = firstContaining(typeIndexSearch(facts, indices), definition.declarationRange);
+      if (found !== undefined && (byPosition === undefined || found < byPosition))
+        byPosition = found;
+    }
+  const single =
+    lists.length > 0 &&
+    lists.every((indices) => indices.length === 1 && indices[0] === lists[0]![0])
+      ? lists[0]![0]
+      : undefined;
+  const index = byPosition ?? single;
+  const fact = index === undefined ? undefined : facts[index];
   state.typeFacts.set(definition.nodeId, fact);
   return fact;
 }
@@ -271,18 +360,34 @@ function methodFact(
     (ownerFact === undefined
       ? index?.methods.get(methodName(definition))
       : index?.ownedMethods.get(ownerFact.name)?.get(methodName(definition))) ?? [];
-  const byPosition =
-    definition.declarationRange === undefined
+  let fact =
+    definition.declarationRange === undefined || candidates.length === 0
       ? undefined
-      : candidates.find((method) => javaRangeContains(method.range, definition.declarationRange!));
-  const exact = candidates.filter(
-    (method) => method.parameterTypes.join('\0') === (definition.parameterTypes ?? []).join('\0'),
-  );
-  const fact =
-    byPosition ??
-    (exact.length === 1 ? exact[0] : candidates.length === 1 ? candidates[0] : undefined);
+      : firstContaining(methodSearch(candidates), definition.declarationRange);
+  if (fact === undefined) {
+    const exact = candidates.filter(
+      (method) => method.parameterTypes.join('\0') === (definition.parameterTypes ?? []).join('\0'),
+    );
+    fact = exact.length === 1 ? exact[0] : candidates.length === 1 ? candidates[0] : undefined;
+  }
   state.methodFacts.set(definition.nodeId, fact);
   return fact;
+}
+
+/** Each same-owner, same-name method list of a file's fact index, searchable
+ * by position. */
+const methodSearches = new WeakMap<
+  readonly JavaOverloadMethodFact[],
+  FirstContainingSearch<JavaOverloadMethodFact>
+>();
+
+function methodSearch(
+  methods: readonly JavaOverloadMethodFact[],
+): FirstContainingSearch<JavaOverloadMethodFact> {
+  let search = methodSearches.get(methods);
+  if (search === undefined)
+    methodSearches.set(methods, (search = firstContainingSearch(methods, (method) => method.range)));
+  return search;
 }
 
 function sourceQualifiedName(definition: SymbolDefinition): string | undefined {
