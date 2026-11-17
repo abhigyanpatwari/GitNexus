@@ -10,8 +10,9 @@ const callTargets = (result: PipelineResult, caller: string, name: string): stri
 
 // JLS 6.6.2 / 8.5: a protected member type is accessible in, and so inherited
 // by, the body of a subclass in another package. `Box.Item` there is the
-// member path of the supertype's `Box`; a package-private `Box` is not
-// inherited, and code outside a subclass cannot reach a protected `Box`.
+// member path of the supertype's `Box`. A package-private `Box` of another
+// package is not inherited at all, so the root reads as it would without it;
+// code outside a subclass cannot reach a protected `Box`.
 describe('Java protected member types inherited across packages', () => {
   const result = useFixture('java-r6-protected-member-root', {
     'a/Base2.java': `package a;
@@ -29,6 +30,8 @@ class Child2 extends a.Base2 {
 class Stranger { void run(a.Base2.Box.Item i) { i.save(); } }`,
     'pp/PkgBase.java': `package pp;
 public class PkgBase { static class Box { public static class Item { public void save() {} } } }`,
+    'pq/Box.java': `package pq;
+public class Box { public static class Item { public void save() {} } }`,
     'pq/PkgChild.java': `package pq;
 class PkgChild extends pp.PkgBase { void run(Box.Item i) { i.save(); } }`,
   });
@@ -47,22 +50,26 @@ class PkgChild extends pp.PkgBase { void run(Box.Item i) { i.save(); } }`,
     ]);
   });
 
-  // `Stranger` is not a subclass of `Base2`, and `PkgBase.Box` is
-  // package-private in another package: neither reaches the member type.
-  it.each([['Method:b/Stranger.java:Stranger.run#1'], ['Method:pq/PkgChild.java:PkgChild.run#1']])(
-    'leaves %s unresolved',
-    (caller) => {
-      expect(result().graph.getNode(caller)).toBeDefined();
-      expect(callTargets(result(), caller, 'save')).toEqual([]);
-    },
-  );
+  it('reads a root whose package-private member type is not inherited as the same-package type', () => {
+    expect(callTargets(result(), 'Method:pq/PkgChild.java:PkgChild.run#1', 'save')).toEqual([
+      'Method:pq/Box.java:Item.save#0',
+    ]);
+  });
+
+  // `Stranger` is not a subclass of `Base2`, so it cannot reach `Base2.Box`.
+  it('leaves a protected member type unresolved outside a subclass body', () => {
+    expect(result().graph.getNode('Method:b/Stranger.java:Stranger.run#1')).toBeDefined();
+    expect(callTargets(result(), 'Method:b/Stranger.java:Stranger.run#1', 'save')).toEqual([]);
+  });
 });
 
 // JLS 6.4.1 / 8.5: a member type a class inherits is in scope in the whole
 // class body and shadows every same-package, same-file and single-type-imported
 // type of that name there. A declaration nearer the use site (a member of the
-// inheriting class itself, a local class) still wins; an ambiguous or
-// inaccessible inherited reading refuses rather than falling back.
+// inheriting class itself, a local class) still wins; an ambiguous inherited
+// reading refuses. A private member type, or a package-private one of another
+// package, is not inherited at all, so the name reads as it would without it.
+// An interface's member types are implicitly public (JLS 9.5).
 describe('Java simple type names that an enclosing class inherits as a member type', () => {
   const result = useFixture('java-r6-inherited-simple-name', {
     'g/Base.java': `package g;
@@ -118,7 +125,25 @@ class PChild extends pa.PBase { void plain(Nested n) { n.save(); } }`,
 public class PkgBase { static class Nested { public void save() {} } }`,
     'pq/Nested.java': 'package pq; public class Nested { public void save() {} }',
     'pq/PkgChild.java': `package pq;
-class PkgChild extends pp.PkgBase { void plain(Nested n) { n.save(); } }`,
+class PkgChild extends pp.PkgBase {
+  void plain(Nested n) { n.save(); }
+  void take(Nested n) {}
+  void take(String s) {}
+  void pass(Nested n) { take(n); }
+}`,
+    'r/PrivBase.java': `package r;
+public class PrivBase { private static class Nested { void save() {} } }`,
+    'r/Nested.java': 'package r; public class Nested { public void save() {} }',
+    'r/PrivChild.java': `package r;
+class PrivChild extends PrivBase { void plain(Nested n) { n.save(); } }`,
+    'ia/I.java': `package ia;
+public interface I { class Inner { public void save() {} } }`,
+    'ib/Inner.java': 'package ib; public class Inner { public void save() {} }',
+    'ib/Impl.java': `package ib;
+class Impl implements ia.I {
+  void plain(Inner i) { i.save(); }
+  void qualified(ia.I.Inner i) { i.save(); }
+}`,
   });
 
   it.each([
@@ -130,6 +155,10 @@ class PkgChild extends pp.PkgBase { void plain(Nested n) { n.save(); } }`,
     ['Method:h/Imported.java:Imported.viaImport#1', 'Method:g/Base.java:Nested.save#0'],
     ['Method:k/SameFile.java:SameFile.plain#1', 'Method:g/Base.java:Nested.save#0'],
     ['Method:pb/PChild.java:PChild.plain#1', 'Method:pa/PBase.java:Nested.save#0'],
+    ['Method:pq/PkgChild.java:PkgChild.plain#1', 'Method:pq/Nested.java:Nested.save#0'],
+    ['Method:r/PrivChild.java:PrivChild.plain#1', 'Method:r/Nested.java:Nested.save#0'],
+    ['Method:ib/Impl.java:Impl.plain#1', 'Method:ia/I.java:Inner.save#0'],
+    ['Method:ib/Impl.java:Impl.qualified#1', 'Method:ia/I.java:Inner.save#0'],
     ['Method:h/Own.java:Own.own#1', 'Method:h/Own.java:Nested.save#0'],
     [
       'Method:h/LocalClass.java:LocalClass.run#0',
@@ -145,6 +174,7 @@ class PkgChild extends pp.PkgBase { void plain(Nested n) { n.save(); } }`,
       'Method:k/SameFile.java:SameFile.pass#1',
       'Method:k/SameFile.java:SameFile.take#1~g.Base.Nested',
     ],
+    ['Method:pq/PkgChild.java:PkgChild.pass#1', 'Method:pq/PkgChild.java:PkgChild.take#1~Nested'],
   ])('selects the overload in %s by the inherited member type: %s', (caller, target) => {
     expect(callTargets(result(), caller, 'take')).toEqual([target]);
   });
@@ -153,13 +183,6 @@ class PkgChild extends pp.PkgBase { void plain(Nested n) { n.save(); } }`,
   it('leaves an ambiguous inherited simple name unresolved', () => {
     expect(result().graph.getNode('Method:h/Twice.java:Twice.plain#1')).toBeDefined();
     expect(callTargets(result(), 'Method:h/Twice.java:Twice.plain#1', 'save')).toEqual([]);
-  });
-
-  it('never reads a package-private member type of another package as inherited', () => {
-    expect(result().graph.getNode('Method:pq/PkgChild.java:PkgChild.plain#1')).toBeDefined();
-    expect(callTargets(result(), 'Method:pq/PkgChild.java:PkgChild.plain#1', 'save')).not.toContain(
-      'Method:pp/PkgBase.java:Nested.save#0',
-    );
   });
 });
 
@@ -233,4 +256,71 @@ class TwoUse { void run(Inner.Nested n) { n.save(); } }`,
     expect(result().graph.getNode(caller)).toBeDefined();
     expect(callTargets(result(), caller, 'save')).toEqual([]);
   });
+});
+
+// JLS 8.5: a member type a class declares hides every inherited member type of
+// that name, so a class inherits from each direct supertype only the member
+// types visible there. `Builder` in `C extends B` is `B.Builder`, never the
+// `A.Builder` that `B.Builder` hides; in `D extends A` it is `A.Builder`. Two
+// distinct declarations from different direct supertypes are ambiguous; one
+// declaration reached through two interfaces is not.
+describe('Java inherited member types hidden by a nearer supertype', () => {
+  const members = '{ public void go() {} public static class Part { public void go() {} } }';
+  const classBuilder = `public static class Builder ${members}`;
+  // An interface's member types are implicitly public and static (JLS 9.5).
+  const interfaceBuilder = `class Builder ${members}`;
+  const result = useFixture('java-r6-hidden-member-types', {
+    'hd/A.java': `package hd;\npublic class A { ${classBuilder} }`,
+    'hd/B.java': `package hd;\npublic class B extends A { ${classBuilder} }`,
+    'hd/C.java': `package hd;
+class C extends B {
+  void simple(Builder b) { b.go(); }
+  void qualified(Builder.Part p) { p.go(); }
+}`,
+    'hd/D.java': `package hd;
+class D extends A {
+  void simple(Builder b) { b.go(); }
+  void qualified(Builder.Part p) { p.go(); }
+}`,
+    'hd/E.java': `package hd;
+class E extends C {
+  void simple(Builder b) { b.go(); }
+  void qualified(Builder.Part p) { p.go(); }
+}`,
+    'hd/J.java': `package hd;\npublic interface J { ${interfaceBuilder} }`,
+    'hd/F.java': `package hd;
+class F extends A implements J {
+  void simple(Builder b) { b.go(); }
+  void qualified(Builder.Part p) { p.go(); }
+}`,
+    'hd/K.java': `package hd;\npublic interface K { ${interfaceBuilder} }`,
+    'hd/K1.java': 'package hd; public interface K1 extends K {}',
+    'hd/K2.java': 'package hd; public interface K2 extends K {}',
+    'hd/G.java': `package hd;
+class G implements K1, K2 {
+  void simple(Builder b) { b.go(); }
+  void qualified(Builder.Part p) { p.go(); }
+}`,
+  });
+
+  it.each([
+    ['Method:hd/C.java:C.simple#1', 'Method:hd/B.java:Builder.go#0'],
+    ['Method:hd/C.java:C.qualified#1', 'Method:hd/B.java:Part.go#0'],
+    ['Method:hd/D.java:D.simple#1', 'Method:hd/A.java:Builder.go#0'],
+    ['Method:hd/D.java:D.qualified#1', 'Method:hd/A.java:Part.go#0'],
+    ['Method:hd/E.java:E.simple#1', 'Method:hd/B.java:Builder.go#0'],
+    ['Method:hd/E.java:E.qualified#1', 'Method:hd/B.java:Part.go#0'],
+    ['Method:hd/G.java:G.simple#1', 'Method:hd/K.java:Builder.go#0'],
+    ['Method:hd/G.java:G.qualified#1', 'Method:hd/K.java:Part.go#0'],
+  ])('types the receiver in %s as %s', (caller, target) => {
+    expect(callTargets(result(), caller, 'go')).toEqual([target]);
+  });
+
+  it.each([['Method:hd/F.java:F.simple#1'], ['Method:hd/F.java:F.qualified#1']])(
+    'leaves %s unresolved: Builder is inherited from two direct supertypes',
+    (caller) => {
+      expect(result().graph.getNode(caller)).toBeDefined();
+      expect(callTargets(result(), caller, 'go')).toEqual([]);
+    },
+  );
 });

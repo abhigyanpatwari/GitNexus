@@ -37,13 +37,16 @@ interface NamedType {
   readonly enclosingScope: ScopeId;
   /** The enclosing type's def; absent for a top-level type. */
   readonly ownerId?: string;
+  /** Its own access: the modifier written, or the `public` an interface or
+   * annotation member implies (the type facts add it, JLS 9.5), or package
+   * access when none applies. */
+  readonly access: 'public' | 'protected' | 'package' | 'private';
   /** Every type on the path from the package is `public`. */
   readonly public: boolean;
   /** Some type on the path from the package is `private`. */
   readonly private: boolean;
-  /** Some type on the path from the package writes no access modifier, so
-   * only its own package reaches it. Like `public`, this does not read the
-   * `public` an interface member implies, which only refuses more. */
+  /** Some type on the path from the package has package access, so only its
+   * own package reaches it. */
   readonly packageAccess: boolean;
   /** The enclosing type of each `protected` type on the path. From another
    * package such a type is accessible only in the body of a subclass of that
@@ -93,22 +96,24 @@ function collectNamedTypes(
     const modifiers = fact.modifiers ?? [];
     const prefix = owner?.fqn ?? packageName;
     const ownerKind = owner === undefined ? undefined : kinds.get(scope.parent);
-    const access = ['public', 'protected', 'private'].some((modifier) =>
-      modifiers.includes(modifier),
-    );
+    const access: NamedType['access'] =
+      (['public', 'protected', 'private'] as const).find((modifier) =>
+        modifiers.includes(modifier),
+      ) ?? 'package';
     kinds.set(scope.id, fact.kind);
-    const named = {
+    const named: NamedType & { readonly def: SymbolDefinition } = {
       def,
       fqn: prefix === '' ? fact.simpleName : `${prefix}.${fact.simpleName}`,
       packageName,
       bases: fact.bases.map((base) => eraseJavaTypeArguments(base).replaceAll(/\s+/g, '')),
       enclosingScope: scope.parent,
       ...(owner === undefined ? {} : { ownerId: owner.def.nodeId }),
-      public: (owner?.public ?? true) && modifiers.includes('public'),
-      private: (owner?.private ?? false) || modifiers.includes('private'),
-      packageAccess: (owner?.packageAccess ?? false) || !access,
+      access,
+      public: (owner?.public ?? true) && access === 'public',
+      private: (owner?.private ?? false) || access === 'private',
+      packageAccess: (owner?.packageAccess ?? false) || access === 'package',
       protectedOwners:
-        owner !== undefined && modifiers.includes('protected')
+        owner !== undefined && access === 'protected'
           ? [...owner.protectedOwners, owner.def.nodeId]
           : (owner?.protectedOwners ?? []),
       static:
@@ -158,9 +163,10 @@ function memberTypeNamesByOwner(indexes: ScopeResolutionIndexes): MemberTypeName
   return names;
 }
 
-/** Whether a class enclosing `scopeId` inherits a member type named `name`,
- * which shadows every file- and package-level type of that name. A base
- * outside the workspace has no inventory, so it contributes none. */
+/** Whether a class enclosing `scopeId` inherits a member type named `name`
+ * (JLS 8.5), which shadows every file- and package-level type of that name, or
+ * may: `inheritedMemberTypes` could not decide. A base outside the workspace
+ * has no inventory, so it contributes none. */
 export function inheritsJavaMemberTypeNamed(
   scopeId: ScopeId,
   name: string,
@@ -178,10 +184,96 @@ export function inheritsJavaMemberTypeNamed(
     if (scope.kind !== 'Class') continue;
     const owner = scope.ownedDefs.find((def) => isClassLike(def.type));
     if (owner === undefined) continue;
-    for (const ancestor of indexes.methodDispatch.mroFor(owner.nodeId))
-      if (memberTypes.byOwner.get(ancestor)?.has(name) === true) return true;
+    const inherited = inheritedMemberTypes(owner.nodeId, name, indexes);
+    if (inherited === null || inherited.size > 0) return true;
   }
   return false;
+}
+
+const directSupertypesByIndexes = new WeakMap<
+  ScopeResolutionIndexes,
+  Map<string, readonly string[]>
+>();
+
+/** A class's direct supertypes in the workspace: the entries of its MRO that
+ * no other entry has as an ancestor. Memoized per class. */
+function directSupertypes(classId: string, indexes: ScopeResolutionIndexes): readonly string[] {
+  let cache = directSupertypesByIndexes.get(indexes);
+  if (cache === undefined) directSupertypesByIndexes.set(indexes, (cache = new Map()));
+  const cached = cache.get(classId);
+  if (cached !== undefined) return cached;
+  const mro = indexes.methodDispatch.mroFor(classId);
+  const above = new Set<string>();
+  for (const ancestor of mro)
+    for (const higher of indexes.methodDispatch.mroFor(ancestor)) above.add(higher);
+  const direct = mro.filter((ancestor) => ancestor !== classId && !above.has(ancestor));
+  cache.set(classId, direct);
+  return direct;
+}
+
+/** Whether member type `id` passes from a supertype into class `classId`: it
+ * is not private and code in `classId` can access it (JLS 8.5, 6.6). A
+ * protected one always can, being reached by inheritance. A class-like
+ * definition without a named-type entry in a file of known package is a local
+ * or anonymous class, never a member. `undefined` when it cannot be told. */
+function inheritedInto(
+  id: string,
+  classId: string,
+  indexes: ScopeResolutionIndexes,
+): boolean | undefined {
+  const named = namedTypesByIndexes.get(indexes)?.get(id);
+  if (named === undefined) {
+    const file = indexes.defs.get(id)?.filePath;
+    return file !== undefined && getJavaPackageFact(file)?.status === 'known' ? false : undefined;
+  }
+  if (named.access === 'public' || named.access === 'protected') return true;
+  if (named.access === 'private') return false;
+  const file = indexes.defs.get(classId)?.filePath;
+  const pkg = file === undefined ? undefined : getJavaPackageFact(file);
+  return pkg?.status === 'known' ? pkg.packageName === named.packageName : undefined;
+}
+
+const inheritedMemberTypesByIndexes = new WeakMap<
+  ScopeResolutionIndexes,
+  Map<string, ReadonlySet<string> | null>
+>();
+
+/**
+ * The member types named `name` that class `classId` inherits (JLS 8.5): from
+ * each direct supertype, the member types of that name visible there (its own
+ * declaration, which hides every inherited one, or else what it inherits in
+ * turn), less those that do not pass into `classId` (`inheritedInto`). A
+ * private member type, or a package-access one of another package, is not
+ * inherited at all, so it drops out instead of refusing. One declaration
+ * reached through two supertypes counts once. `null` when this cannot be
+ * decided. Memoized per class and name, so each pair reads its direct
+ * supertypes once.
+ */
+function inheritedMemberTypes(
+  classId: string,
+  name: string,
+  indexes: ScopeResolutionIndexes,
+): ReadonlySet<string> | null {
+  let cache = inheritedMemberTypesByIndexes.get(indexes);
+  if (cache === undefined) inheritedMemberTypesByIndexes.set(indexes, (cache = new Map()));
+  const key = `${classId}\u0000${name}`;
+  if (cache.has(key)) return cache.get(key) ?? null;
+  // A cycle reads as undecidable.
+  cache.set(key, null);
+  const memberTypes = memberTypeNamesByOwner(indexes);
+  const inherited = new Set<string>();
+  for (const parent of directSupertypes(classId, indexes)) {
+    const visible =
+      memberTypes.byOwner.get(parent)?.get(name) ?? inheritedMemberTypes(parent, name, indexes);
+    if (visible === null) return null;
+    for (const id of visible) {
+      const passes = inheritedInto(id, classId, indexes);
+      if (passes === undefined) return null;
+      if (passes) inherited.add(id);
+    }
+  }
+  cache.set(key, inherited);
+  return inherited;
 }
 
 /** A member type that an enclosing class inherits under a qualifier root. */
@@ -197,27 +289,25 @@ export interface JavaInheritedMemberType {
  * (JLS 8.5), which shadows every file- and package-level type and every
  * package of that name in that class's body (JLS 6.4.1). `classes` lists the
  * class def ids enclosing the use site, innermost first; `undefined` marks a
- * class this index has no definition for.
+ * class this index has no definition for. What a class inherits is read per
+ * direct supertype (`inheritedMemberTypes`): `Builder` in `C extends B` is
+ * `B.Builder` when `B` declares one hiding `A.Builder`, a protected member
+ * type is inherited by a subclass in any package, and a private or
+ * other-package package-access one is not inherited at all.
  *
  * Returns `undefined` when no enclosing class inherits a workspace member type
  * of that name, or when a nearer class declares one itself (lexical lookup
- * answers that). Returns `null` when the reading is not provable: two
- * declarations are inherited, the member type is not accessible from the use
- * site (private; package access from another package; or, from another
- * package, a protected type on its path whose enclosing type no class here
- * extends, JLS 6.6.2.1), the supertype that declares it is not reached
- * through the supertypes the classes on the way actually name (an `extends
- * lib.Base` outside the workspace is not `app.Base`), or a nearer class may
- * inherit an unseen type of that name (a class without a definition, or one
- * that names a supertype yet inherits no workspace member type of that name).
- * A protected member type is inherited by a subclass in any package (JLS 8.5),
- * so `Box.Item` in `class Child extends a.Base` names `a.Base.Box.Item` even
- * when `Box` is `protected`.
+ * answers that). Returns `null` when the reading is not provable: two distinct
+ * declarations are inherited, what a class inherits cannot be decided, the
+ * supertype that declares it is not reached through the supertypes the classes
+ * on the way actually name (an `extends lib.Base` outside the workspace is not
+ * `app.Base`), or a nearer class may inherit an unseen type of that name (a
+ * class without a definition, or one that names a supertype yet inherits no
+ * workspace member type of that name).
  */
 export function javaInheritedMemberType(
   classes: readonly (string | undefined)[],
   name: string,
-  filePath: string,
   indexes: ScopeResolutionIndexes,
 ): JavaInheritedMemberType | null | undefined {
   const memberTypes = memberTypeNamesByOwner(indexes);
@@ -230,35 +320,17 @@ export function javaInheritedMemberType(
       continue;
     }
     if (memberTypes.byOwner.get(classId)?.has(name) === true) return undefined;
-    // Member type def id -> the supertype that declares it.
-    const inherited = new Map<string, string>();
-    for (const ancestor of indexes.methodDispatch.mroFor(classId))
-      for (const id of memberTypes.byOwner.get(ancestor)?.get(name) ?? [])
-        inherited.set(id, ancestor);
+    const inherited = inheritedMemberTypes(classId, name, indexes);
+    if (inherited === null) return null;
     if (inherited.size === 0) {
       if (namedTypes?.get(classId)?.bases.length !== 0) nearerUnknown = true;
       continue;
     }
     if (nearerUnknown || inherited.size !== 1 || namedTypes === undefined) return null;
-    const [[id, declaringOwner]] = inherited;
-    const named = namedTypes.get(id);
-    if (named === undefined || named.private) return null;
-    if (!named.public) {
-      const pkg = getJavaPackageFact(filePath);
-      const samePackage = pkg?.status === 'known' && pkg.packageName === named.packageName;
-      if (
-        !samePackage &&
-        (named.packageAccess ||
-          !named.protectedOwners.every((owner) =>
-            classes.some(
-              (enclosing) =>
-                enclosing !== undefined && indexes.methodDispatch.mroFor(enclosing).includes(owner),
-            ),
-          ))
-      )
-        return null;
-    }
-    if (!reachesThroughWrittenBases(classId, declaringOwner, namedTypes, indexes)) return null;
+    const [id] = inherited;
+    const named = id === undefined ? undefined : namedTypes.get(id);
+    if (id === undefined || named?.ownerId === undefined) return null;
+    if (!reachesThroughWrittenBases(classId, named.ownerId, namedTypes, indexes)) return null;
     return { id, fqn: named.fqn, depth };
   }
   return undefined;
@@ -299,7 +371,6 @@ function reachesThroughWrittenBases(
 function inheritedMemberTypeAt(
   scopeId: ScopeId,
   name: string,
-  filePath: string,
   indexes: ScopeResolutionIndexes,
 ): (JavaInheritedMemberType & { readonly scope: ScopeId }) | null | undefined {
   if (!memberTypeNamesByOwner(indexes).all.has(name)) return undefined;
@@ -316,7 +387,7 @@ function inheritedMemberTypeAt(
     classes.push(scope.ownedDefs.find((def) => isClassLike(def.type))?.nodeId);
     classScopes.push(scope.id);
   }
-  const found = javaInheritedMemberType(classes, name, filePath, indexes);
+  const found = javaInheritedMemberType(classes, name, indexes);
   if (found === null) return null;
   if (found === undefined) return undefined;
   return { ...found, scope: classScopes[found.depth]! };
@@ -399,11 +470,10 @@ export function javaStaticSingleImportType(
 function inheritedTypeReading(
   ref: TypeRef,
   name: string,
-  file: string,
   indexes: ScopeResolutionIndexes,
   claim?: NameClaimResult,
 ): string | null | undefined {
-  const inherited = inheritedMemberTypeAt(ref.declaredAtScope, name, file, indexes);
+  const inherited = inheritedMemberTypeAt(ref.declaredAtScope, name, indexes);
   if (inherited === null) return null;
   if (inherited === undefined) return undefined;
   if (claim === undefined)
@@ -476,9 +546,7 @@ function inheritedSimpleTypeKey(
   indexes: ScopeResolutionIndexes,
 ): string | null | undefined {
   if (!WRITTEN_TYPE_SOURCES.has(ref.source) || !SIMPLE_TYPE_NAME.test(name)) return undefined;
-  const file = indexes.scopeTree.getScope(ref.declaredAtScope)?.filePath;
-  if (file === undefined) return undefined;
-  const key = inheritedTypeReading(ref, name, file, indexes);
+  const key = inheritedTypeReading(ref, name, indexes);
   return key === undefined || bindsTypeParameter(ref.declaredAtScope, name, indexes)
     ? undefined
     : key;
@@ -717,7 +785,7 @@ function qualifiedTypeKey(
   // member path of the supertype that declares it. A claim at or inside the
   // inheriting class is nearer and keeps its reading below. Mirrors
   // `qualifierRoot` in overload-resolution.ts.
-  const inherited = inheritedTypeReading(ref, root, file, indexes, claim);
+  const inherited = inheritedTypeReading(ref, root, indexes, claim);
   if (inherited === null) return null;
   if (inherited !== undefined) return `${inherited}${spelling.slice(root.length)}`;
   // A single static import of the root is file-level, like the imports and

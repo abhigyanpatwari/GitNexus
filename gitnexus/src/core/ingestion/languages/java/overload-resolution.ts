@@ -407,36 +407,6 @@ function memberTypeNames(state: State): ReadonlySet<string> {
   return names;
 }
 
-/** Whether a class enclosing `context` inherits a member type named `name`,
- * which shadows every file- and package-level type of that name (JLS 6.4.1). */
-function inheritsMemberTypeNamed(
-  name: string,
-  context: TypeContext,
-  facts: JavaOverloadFileFacts,
-  state: State,
-): boolean {
-  for (const enclosing of facts.types.filter((type) => javaRangeContains(type.range, context.at))) {
-    for (const owner of sourceDefinitionsInFile(enclosing.name, context.filePath, state)) {
-      for (const ancestorId of state.scopes.methodDispatch.mroFor(owner.nodeId)) {
-        const ancestor = state.scopes.defs.get(ancestorId);
-        const ancestorFact = ancestor === undefined ? undefined : typeFact(ancestor, state);
-        if (
-          ancestor !== undefined &&
-          ancestorFact !== undefined &&
-          getJavaOverloadFacts(ancestor.filePath)?.types.some(
-            (type) =>
-              type.simpleName === name &&
-              type.name !== ancestorFact.name &&
-              javaRangeContains(ancestorFact.range, type.range),
-          )
-        )
-          return true;
-      }
-    }
-  }
-  return false;
-}
-
 /** A file's type declarations as nested in the source, so the classes
  * enclosing a position take one binary search and a walk outward instead of a
  * scan of every declaration in the file. */
@@ -523,8 +493,9 @@ function enclosingClasses(
  * and same-package type of that name in that class body (JLS 6.4.1). A type
  * `nearest` declares (lexically visible here) is nearer when it is declared in
  * or inside the inheriting class, a local class for one. Returns `undefined`
- * when no inherited reading applies, and the unknown type when it is
- * ambiguous, inaccessible or unprovable. Mirrors `inheritedSimpleTypeKey` in
+ * when no inherited reading applies (a private or other-package
+ * package-access member type is not inherited), and the unknown type when it
+ * is ambiguous or unprovable. Mirrors `inheritedSimpleTypeKey` in
  * qualified-type-bindings.ts.
  */
 function inheritedSimpleType(
@@ -539,7 +510,6 @@ function inheritedSimpleType(
   const inherited = javaInheritedMemberType(
     classes.map((type) => type.id),
     name,
-    context.filePath,
     state.scopes,
   );
   if (inherited === null) return UNKNOWN_JAVA_TYPE;
@@ -583,7 +553,6 @@ function qualifierRoot(
     const inherited = javaInheritedMemberType(
       enclosingClasses(context, facts, state).map((type) => type.id),
       root,
-      context.filePath,
       state.scopes,
     );
     if (inherited === null) return 'unknown';
@@ -696,7 +665,7 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     }
     return UNKNOWN_JAVA_TYPE;
   }
-  if (inheritsMemberTypeNamed(name, context, facts, state)) return UNKNOWN_JAVA_TYPE;
+  // An inherited member type of this name was read above (`inheritedSimpleType`).
   const explicit = facts.imports.filter(
     (item) => !item.static && !item.wildcard && item.name.split('.').at(-1) === name,
   );
