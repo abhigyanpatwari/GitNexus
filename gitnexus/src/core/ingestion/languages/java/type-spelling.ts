@@ -6,8 +6,10 @@ import type { ElementAccessRoute } from '../../scope-resolution/contract/scope-r
  * for `u`-flag patterns, so callers can add their own separators. */
 export const JAVA_IDENTIFIER_START_CHARS = String.raw`\p{L}\p{Nl}\p{Sc}\p{Pc}`;
 /** JLS 3.8 Java letters or digits (`Character.isJavaIdentifierPart`): adds
- * digits, combining marks and format characters. */
-export const JAVA_IDENTIFIER_PART_CHARS = String.raw`${JAVA_IDENTIFIER_START_CHARS}\p{Nd}\p{Mn}\p{Mc}\p{Cf}`;
+ * digits, combining marks and the identifier-ignorable characters
+ * (`Character.isIdentifierIgnorable`): format characters and the ISO control
+ * characters that are not whitespace. */
+export const JAVA_IDENTIFIER_PART_CHARS = String.raw`${JAVA_IDENTIFIER_START_CHARS}\p{Nd}\p{Mn}\p{Mc}\p{Cf}\u0000-\u0008\u000E-\u001B\u007F-\u009F`;
 /** One Java identifier. `.`, whitespace and brackets are outside both classes,
  * so anchored patterns built from it match in linear time. */
 export const JAVA_IDENTIFIER = `[${JAVA_IDENTIFIER_START_CHARS}][${JAVA_IDENTIFIER_PART_CHARS}]*`;

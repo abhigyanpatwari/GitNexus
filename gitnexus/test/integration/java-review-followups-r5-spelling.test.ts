@@ -109,14 +109,16 @@ class Elements {
   void asciiEachLambda(List<Outer.Inner> values) { values.forEach(v -> v.save()); }
 }`,
     'straße/Ünïcödé.java': 'package straße; public class Ünïcödé { public void save() {} }',
-    'strasse/Inner.java': 'package strasse; public class Inner { public void save() {} }',
+    // The ASCII twin's package is not `strasse`: a case-insensitive APFS
+    // volume folds `straße` and `strasse` to one directory.
+    'ascii/Inner.java': 'package ascii; public class Inner { public void save() {} }',
     'p/Imported.java': `package p;
 import java.util.List;
 import straße.Ünïcödé;
 class Imported { void element(List<Ünïcödé> values) { for (var v : values) v.save(); } }`,
     'p/ImportedAscii.java': `package p;
 import java.util.List;
-import strasse.Inner;
+import ascii.Inner;
 class ImportedAscii { void element(List<Inner> values) { for (var v : values) v.save(); } }`,
     'p/Overloads.java': `package p;
 class Target {
@@ -205,7 +207,7 @@ class Callers {
     ['Method:p/Imported.java:Imported.element#1', 'Method:straße/Ünïcödé.java:Ünïcödé.save#0'],
     [
       'Method:p/ImportedAscii.java:ImportedAscii.element#1',
-      'Method:strasse/Inner.java:Inner.save#0',
+      'Method:ascii/Inner.java:Inner.save#0',
     ],
   ])('types the element of %s through its single-type import: %s', (caller, target) => {
     expect(saveTargets(result(), caller)).toEqual([target]);

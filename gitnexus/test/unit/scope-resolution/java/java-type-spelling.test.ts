@@ -117,6 +117,9 @@ describe('Java identifier patterns', () => {
     { name: 'connector punctuation', text: 'a\u203Fb' },
     { name: 'a non-ASCII digit', text: 'x\u0661' },
     { name: 'a format character', text: 'a\u200Db' },
+    { name: 'an identifier-ignorable control character', text: 'a\u0001b' },
+    { name: 'the delete character', text: 'a\u007Fb' },
+    { name: 'a C1 control character', text: 'a\u009Fb' },
   ])('accepts $name', ({ text }) => {
     expect(identifier.test(text)).toBe(true);
     expect(qualified.test(`p.${text}.Inner`)).toBe(true);
@@ -128,6 +131,9 @@ describe('Java identifier patterns', () => {
     { name: 'a leading combining mark', text: '\u0301e' },
     { name: 'a superscript digit', text: 'x²' },
     { name: 'a space', text: 'a b' },
+    { name: 'a tab', text: 'a\tb' },
+    { name: 'a whitespace control character', text: 'a\u001Cb' },
+    { name: 'a leading control character', text: '\u0001a' },
     { name: 'a hyphen', text: 'a-b' },
     { name: 'an empty name', text: '' },
   ])('rejects $name', ({ text }) => {
