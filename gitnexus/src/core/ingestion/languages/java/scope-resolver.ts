@@ -51,6 +51,7 @@ import {
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
 import {
   indexJavaSamLambdaTargets,
+  javaCallResultAssignmentApplies,
   javaSamLambdaParameterType,
   selectJavaLambdaOverload,
 } from './sam-lambda-types.js';
@@ -140,6 +141,9 @@ const javaScopeResolver: ScopeResolver = {
       : route.startsWith(JAVA_ENCLOSING_LOCAL_ROUTE)
         ? javaEnclosingLocalAliasType(returned, route, scopes)
         : javaCallResultElementType(callee, returned, route, scopes),
+  // A lambda that capture typed through a JDK container reading of its
+  // receiver falls back to that route only where the reading was refuted.
+  callResultAssignmentApplies: javaCallResultAssignmentApplies,
   qualifiedTypeLookupSpelling: javaQualifiedTypeLookupSpelling,
   hoistedTypeBindingsRequireOwner: true,
 

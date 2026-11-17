@@ -24,11 +24,16 @@ export function createJavaIngestionCorpus({ shape = 'small', units } = {}) {
     'other/Entity.java': 'package other; public class Entity { public void save() {} }',
     'shadow/ShadowItem.java': 'package shadow; public class ShadowItem { public void save() {} }',
     'shadow/ShadowOther.java': 'package shadow; public class ShadowOther { public void save() {} }',
-    'shadow/java.java': `package shadow; import java.util.function.Consumer;
+    'shadow/ShadowCallback.java':
+      'package shadow; public interface ShadowCallback<T> { void accept(T value); }',
+    // A type obscures a package (JLS 6.4.2): in package `shadow`, the root of
+    // `java.util.List` is the class `shadow.java`, so the lambda below takes
+    // this `forEach`'s workspace functional interface, never a JDK element.
+    'shadow/java.java': `package shadow;
 public class java {
   public static class util {
     public static class List<T> {
-      public void forEach(Consumer<ShadowOther> callback) {}
+      public void forEach(ShadowCallback<ShadowOther> callback) {}
     }
   }
 }`,
@@ -45,7 +50,7 @@ class ShadowProbe {
       sourceId: method('shadow/ShadowProbe.java', 'ShadowProbe', 'raw', 1),
       relation: 'CALLS',
       members: ['save'],
-      targetIds: [],
+      targetIds: [method('shadow/ShadowOther.java', 'ShadowOther', 'save')],
       forbiddenTargetIds: [method('shadow/ShadowItem.java', 'ShadowItem', 'save')],
     },
   ];

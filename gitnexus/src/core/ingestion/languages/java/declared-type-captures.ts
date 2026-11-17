@@ -969,6 +969,11 @@ export function synthesizeJavaDeclaredTypeCaptures(
         );
         emit(name, inferred, dependsOn);
       }
+      // Every binding above depends on a proof resolution may refute: a
+      // workspace type named like the JDK container, or a supertype field. A
+      // refuted parameter then takes the selected method's functional
+      // interface parameter type instead, as any other lambda argument does.
+      out.push(...synthesizeJavaSamLambdaCaptures(node, true));
     } else if (node.type === 'method_declaration') {
       const type = node.childForFieldName('type');
       // Only a generic return type can name a JDK container's element.

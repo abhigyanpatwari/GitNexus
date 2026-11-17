@@ -2,8 +2,11 @@ import type { CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
 /** `lambda:<argument>:<argument count>:<parameter>:<lambda arity>`, answered by
- * `javaSamLambdaParameterType` in `sam-lambda-types.ts`. */
-export const JAVA_SAM_LAMBDA_ROUTE = /^lambda:(\d+):(\d+):(\d+):(\d+)$/;
+ * `javaSamLambdaParameterType` in `sam-lambda-types.ts`. A route ending in
+ * `JAVA_SAM_LAMBDA_FALLBACK` stands only where resolution refuted the binding
+ * capture also gave that parameter (see `javaCallResultAssignmentApplies`). */
+export const JAVA_SAM_LAMBDA_ROUTE = /^lambda:(\d+):(\d+):(\d+):(\d+)(?::fallback)?$/;
+export const JAVA_SAM_LAMBDA_FALLBACK = ':fallback';
 const COMMENTS = new Set(['line_comment', 'block_comment']);
 
 /** The names an implicitly typed lambda declares (`x`, `(x, y)`, `(var x)`);
@@ -40,8 +43,13 @@ function implicitParameterNames(lambda: SyntaxNode): SyntaxNode[] | undefined {
  * is a direct argument of a method invocation. The route records the
  * argument's position, the call's argument count and the lambda's arity; the
  * binding is anchored at the parameter, inside the lambda's own scope.
+ * `fallback` marks a lambda whose parameters capture already typed from a JDK
+ * container reading that resolution may refute.
  */
-export function synthesizeJavaSamLambdaCaptures(lambda: SyntaxNode): CaptureMatch[] {
+export function synthesizeJavaSamLambdaCaptures(
+  lambda: SyntaxNode,
+  fallback = false,
+): CaptureMatch[] {
   const argumentList = lambda.parent;
   const call = argumentList?.parent;
   if (
@@ -60,7 +68,9 @@ export function synthesizeJavaSamLambdaCaptures(lambda: SyntaxNode): CaptureMatc
     '@call-result-assignment.scope': nodeToCapture('@call-result-assignment.scope', name),
     '@call-result-assignment.element': {
       ...nodeToCapture('@call-result-assignment.element', lambda),
-      text: `lambda:${position}:${args.length}:${index}:${names.length}`,
+      text: `lambda:${position}:${args.length}:${index}:${names.length}${
+        fallback ? JAVA_SAM_LAMBDA_FALLBACK : ''
+      }`,
     },
   }));
 }

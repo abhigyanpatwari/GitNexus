@@ -287,6 +287,7 @@ import type { SourceBindingRecorder } from '../source-binding-resolution.js';
 import type {
   NameLookupOptions,
   BindingRef,
+  CallResultAssignmentSite,
   Callsite,
   ConstraintContext,
   ParsedFile,
@@ -986,6 +987,20 @@ export interface ScopeResolver {
     route: string,
     scopes: ScopeResolutionIndexes,
   ) => TypeRef | undefined;
+
+  /**
+   * Whether an extracted call-result assignment takes part in this run. A
+   * provider may extract a site that stands only where its own validation
+   * (`populateNamespaceSiblings`, `populateRangeBindings`) removed another
+   * binding it extracted for the same name. Consulted once per site after
+   * those hooks and before any call-result binding is cleared or applied; a
+   * site it refuses neither clears that binding nor holds back a receiver
+   * read through it. No hook: every site takes part.
+   */
+  readonly callResultAssignmentApplies?: (
+    assignment: CallResultAssignmentSite,
+    scopes: ScopeResolutionIndexes,
+  ) => boolean;
 
   /**
    * Collapse member-call CALLS edges by `(caller, target)` rather

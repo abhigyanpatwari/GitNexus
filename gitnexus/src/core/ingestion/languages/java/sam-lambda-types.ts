@@ -1,4 +1,5 @@
 import type {
+  CallResultAssignmentSite,
   ParsedFile,
   Range,
   ReferenceSite,
@@ -25,7 +26,10 @@ import {
   inheritsJavaMemberTypeNamed,
   javaQualifiedTypeLookupSpelling,
 } from './qualified-type-bindings.js';
-import { JAVA_SAM_LAMBDA_ROUTE as LAMBDA_ROUTE } from './sam-lambda-captures.js';
+import {
+  JAVA_SAM_LAMBDA_FALLBACK,
+  JAVA_SAM_LAMBDA_ROUTE as LAMBDA_ROUTE,
+} from './sam-lambda-captures.js';
 import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
@@ -607,6 +611,25 @@ export function javaSamLambdaParameterType(
   )
     return undefined;
   return { rawName: chosen, declaredAtScope: calleeScope, source: 'assignment-inferred' };
+}
+
+/**
+ * Whether a lambda parameter's call-result site takes part in resolution. A
+ * fallback route belongs to a lambda that capture also typed through a JDK
+ * container reading (or a supertype field) of the call's receiver. It stands
+ * only where `validateJavaQualifiedContextualBindings` removed that binding:
+ * the receiver is then a workspace type whose selected method declares the
+ * lambda's target type. A binding that survived keeps the parameter, and the
+ * call's method is not a workspace declaration that could answer instead.
+ */
+export function javaCallResultAssignmentApplies(
+  site: CallResultAssignmentSite,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  return (
+    site.element?.endsWith(JAVA_SAM_LAMBDA_FALLBACK) !== true ||
+    scopes.scopeTree.getScope(site.inScope)?.typeBindings.has(site.lhs) !== true
+  );
 }
 
 /** Whether `definition` is potentially applicable (JLS 15.12.2.1) to a call
