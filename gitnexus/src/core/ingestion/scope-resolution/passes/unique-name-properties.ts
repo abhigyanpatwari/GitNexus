@@ -201,6 +201,8 @@ export type PropertyNameIndex = ReadonlyMap<string, readonly PropertyCandidate[]
 
 export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex {
   const byName = new Map<string, PropertyCandidate[]>();
+  // A node's id fixes its name, so one id set stands in for a per-name scan.
+  const indexed = new Set<string>();
   for (const node of graph.iterNodes()) {
     if (node.label !== 'Property') continue;
     const name = node.properties.name;
@@ -212,13 +214,11 @@ export function buildPropertyNameIndex(graph: KnowledgeGraph): PropertyNameIndex
       filePath,
       fromReturnShape: node.properties.fromReturnShape === true,
     };
+    if (indexed.has(node.id)) continue;
+    indexed.add(node.id);
     const existing = byName.get(name);
-    if (existing === undefined) {
-      byName.set(name, [candidate]);
-      continue;
-    }
-    if (existing.some((c) => c.id === node.id)) continue;
-    existing.push(candidate);
+    if (existing === undefined) byName.set(name, [candidate]);
+    else existing.push(candidate);
   }
   return byName;
 }
