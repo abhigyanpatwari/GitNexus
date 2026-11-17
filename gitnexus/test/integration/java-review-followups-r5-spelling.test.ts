@@ -205,10 +205,7 @@ class Callers {
   // The single-type import shadows the same-package decoy (JLS 6.4.1).
   it.each([
     ['Method:p/Imported.java:Imported.element#1', 'Method:straße/Ünïcödé.java:Ünïcödé.save#0'],
-    [
-      'Method:p/ImportedAscii.java:ImportedAscii.element#1',
-      'Method:ascii/Inner.java:Inner.save#0',
-    ],
+    ['Method:p/ImportedAscii.java:ImportedAscii.element#1', 'Method:ascii/Inner.java:Inner.save#0'],
   ])('types the element of %s through its single-type import: %s', (caller, target) => {
     expect(saveTargets(result(), caller)).toEqual([target]);
   });
