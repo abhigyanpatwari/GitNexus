@@ -181,6 +181,7 @@ describe('mergeResult', () => {
       namePrefix: 'api',
       lineNumber: 1,
       once: false,
+      appliesContext: true,
     };
     const second = {
       filePath: 'bootstrap/app.php',
@@ -191,6 +192,7 @@ describe('mergeResult', () => {
       namePrefix: 'orders',
       lineNumber: 2,
       once: false,
+      appliesContext: true,
     };
     mergeResult(target, { ...emptyResult(), phpRouterRequireBindings: [first] });
     mergeResult(target, emptyResult());

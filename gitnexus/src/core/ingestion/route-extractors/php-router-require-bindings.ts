@@ -22,6 +22,8 @@ export interface ExtractedPhpRouteRequireBinding {
   lineNumber: number;
   /** `require_once` / `include_once`: PHP skips the file if it already ran. */
   once: boolean;
+  /** False for a top-level include: it marks the file as already run without adding a group. */
+  appliesContext: boolean;
 }
 
 export function shouldExtractPhpRouterRequireBindings(content: string): boolean {
@@ -38,7 +40,7 @@ function resolveRequirePath(bootstrapRelPath: string, expr: SyntaxNode | null): 
       return readPhpString(node);
     }
     if (node.type === 'parenthesized_expression') {
-      return literalFromNode(node.children?.[0] ?? node);
+      return literalFromNode(node.namedChildren?.[0] ?? node);
     }
     if (node.type === 'binary_expression') {
       const op = node.children?.find((c: SyntaxNode) => c.type === '.');
@@ -132,6 +134,18 @@ function isOnceRequire(node: SyntaxNode): boolean {
   return false;
 }
 
+/** Statements whose body runs only conditionally, so a require inside them may not have run. */
+const CONDITIONAL_NODE_TYPES = new Set([
+  'if_statement',
+  'foreach_statement',
+  'for_statement',
+  'while_statement',
+  'do_statement',
+  'switch_statement',
+  'try_statement',
+  'conditional_expression',
+]);
+
 /** Bodies that do not run when the enclosing group closure runs. */
 const DEFERRED_SCOPE_TYPES = new Set([
   'anonymous_function',
@@ -179,6 +193,7 @@ function visitGroupBody(
         namePrefix: merged.namePrefix,
         lineNumber: node.startPosition.row,
         once: isOnceRequire(node),
+        appliesContext: true,
       });
       continue;
     }
@@ -200,11 +215,16 @@ export function extractPhpRouterRequireBindings(
 ): ExtractedPhpRouteRequireBinding[] {
   const bindings: ExtractedPhpRouteRequireBinding[] = [];
   const relHost = hostFilePath.replace(/\\/g, '/');
-  const walkStack: SyntaxNode[] = [tree.rootNode];
+  // `unguarded` is false under if/loop/try: a require there may not have run,
+  // so it must not suppress a later require_once.
+  const walkStack: { node: SyntaxNode; unguarded: boolean }[] = [
+    { node: tree.rootNode, unguarded: true },
+  ];
 
   while (walkStack.length > 0) {
-    const node = walkStack.pop();
-    if (!node) continue;
+    const frame = walkStack.pop();
+    if (!frame) continue;
+    const { node, unguarded } = frame;
     if (isPhpRouterGroupCall(node)) {
       const argsNode = getRouterCallArguments(node);
       const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
@@ -212,8 +232,37 @@ export function extractPhpRouterRequireBindings(
       if (body) visitGroupBody(body, relHost, [groupCtx], bindings);
       continue;
     }
+    if (DEFERRED_SCOPE_TYPES.has(node.type)) {
+      // A group inside a method still counts, but a require there has not run
+      // at file-include time, so it cannot satisfy a later require_once.
+      const children = node.children ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        walkStack.push({ node: children[i], unguarded: false });
+      }
+      continue;
+    }
+    if (unguarded && isRequireCall(node)) {
+      const requiredPath = resolveRequirePath(relHost, requireArgument(node));
+      if (requiredPath?.endsWith('.php')) {
+        bindings.push({
+          filePath: relHost,
+          requiredPath,
+          prefix: null,
+          namespace: null,
+          middleware: [],
+          namePrefix: null,
+          lineNumber: node.startPosition.row,
+          once: isOnceRequire(node),
+          appliesContext: false,
+        });
+      }
+      continue;
+    }
+    const childUnguarded = unguarded && !CONDITIONAL_NODE_TYPES.has(node.type);
     const children = node.children ?? [];
-    for (let i = children.length - 1; i >= 0; i--) walkStack.push(children[i]);
+    for (let i = children.length - 1; i >= 0; i--) {
+      walkStack.push({ node: children[i], unguarded: childUnguarded });
+    }
   }
 
   return bindings;

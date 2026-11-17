@@ -169,7 +169,8 @@ function foldPhpStringLiteral(node: SyntaxNode | null | undefined): string | nul
     if (!post) {
       stack.push({ node: current, post: true });
       if (current.type === 'parenthesized_expression') {
-        const inner = current.children?.[0];
+        // children[0] is the opening '('; the enclosed expression is the named child.
+        const inner = current.namedChildren?.[0];
         if (inner) stack.push({ node: inner, post: false });
         continue;
       }
@@ -187,7 +188,7 @@ function foldPhpStringLiteral(node: SyntaxNode | null | undefined): string | nul
     if (current.type === 'string' || current.type === 'encapsed_string') {
       results.set(current, readPhpString(current));
     } else if (current.type === 'parenthesized_expression') {
-      const inner = current.children?.[0];
+      const inner = current.namedChildren?.[0];
       results.set(current, inner ? (results.get(inner) ?? null) : null);
     } else if (current.type === 'binary_expression') {
       const right = current.children[2] ?? current.children[current.children.length - 1];
@@ -764,6 +765,9 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
       const routeNameBase =
         routeName ?? joinRouteName(effective.namePrefix, routeNameBaseFromPath(routePath));
       for (const action of actions) {
+        // A bare action inherits the group controller, which is a class
+        // reference, so the route namespace must not prefix it.
+        const stringAction = target.stringAction && target.controller != null;
         routes.push({
           filePath,
           httpMethod,
@@ -775,16 +779,16 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
             target.controller ?? effective.controller,
             useAliasMap,
             effective.namespace,
-            target.stringAction,
+            stringAction,
             target.controllerAbsolute,
           ),
           methodName: action,
           middleware: [...effective.middleware],
           prefix: effective.prefix,
           lineNumber,
-          stringAction: target.stringAction,
-          stringActionGroupNamespace: target.stringAction ? effective.namespace : null,
-          stringActionGroupNamespaceResets: target.stringAction ? effective.namespaceResets : false,
+          stringAction,
+          stringActionGroupNamespace: stringAction ? effective.namespace : null,
+          stringActionGroupNamespaceResets: stringAction ? effective.namespaceResets : false,
           stringActionAbsoluteController: target.controllerAbsolute,
         });
       }
@@ -800,6 +804,9 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         routeName = joinRouteName(effective.namePrefix, target.actionRouteName);
       }
       const controllerName = target.controller ?? effective.controller;
+      // A bare action inherits the group controller, which is a class
+      // reference, so the route namespace must not prefix it.
+      const stringAction = target.stringAction && target.controller != null;
       routes.push({
         filePath,
         httpMethod,
@@ -811,16 +818,16 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           controllerName,
           useAliasMap,
           effective.namespace,
-          target.stringAction,
+          stringAction,
           target.controllerAbsolute,
         ),
         methodName: target.method ?? (effective.controller ? target.bareMethod : null),
         middleware: [...effective.middleware],
         prefix: effective.prefix,
         lineNumber,
-        stringAction: target.stringAction,
-        stringActionGroupNamespace: target.stringAction ? effective.namespace : null,
-        stringActionGroupNamespaceResets: target.stringAction ? effective.namespaceResets : false,
+        stringAction,
+        stringActionGroupNamespace: stringAction ? effective.namespace : null,
+        stringActionGroupNamespaceResets: stringAction ? effective.namespaceResets : false,
         stringActionAbsoluteController: target.controllerAbsolute,
       });
     }

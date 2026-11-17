@@ -406,6 +406,38 @@ Route::get('/abs', '\\\\Vendor\\\\Abs\\\\Ctrl@m');
     );
   });
 
+  it('folds a parenthesized literal URI', () => {
+    const routes = extract(`<?php
+$router->get(('/users'), 'UserController@show');
+Route::get(('/users/' . 'x'), 'UserController@list');
+`);
+    expect(routes).toContainEqual(
+      expect.objectContaining({ routePath: '/users', methodName: 'show' }),
+    );
+    expect(routes).toContainEqual(
+      expect.objectContaining({ routePath: '/users/x', methodName: 'list' }),
+    );
+  });
+
+  it('a controller() group class reference is not prefixed by the route namespace', () => {
+    const routes = extract(`<?php
+use App\\Controllers\\OrderController as Orders;
+Route::group(['namespace' => 'Legacy'], function () {
+  Route::controller(Orders::class)->group(function () {
+    Route::get('/x', 'index');
+  });
+});
+`);
+    expect(routes).toContainEqual(
+      expect.objectContaining({
+        routePath: '/x',
+        controllerName: 'Orders',
+        controllerQualifiedName: 'App.Controllers.OrderController',
+        methodName: 'index',
+      }),
+    );
+  });
+
   it('emits closure routes without controller', () => {
     const routes = extract(`<?php
 $router->get('/', function () {

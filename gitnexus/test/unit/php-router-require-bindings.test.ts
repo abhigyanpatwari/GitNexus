@@ -115,6 +115,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         namePrefix: 'orders',
         lineNumber: 1,
         once: false,
+        appliesContext: true,
       },
       {
         filePath: 'bootstrap/app.php',
@@ -125,6 +126,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         namePrefix: null,
         lineNumber: 2,
         once: false,
+        appliesContext: true,
       },
     ];
     const map = resolvePhpRouterRequireBindings(files, bindings);
@@ -159,6 +161,7 @@ describe('applyPhpRouterRequireContexts', () => {
         namePrefix: 'order',
         lineNumber: 1,
         once: false,
+        appliesContext: true,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -214,6 +217,7 @@ describe('applyPhpRouterRequireContexts', () => {
         namePrefix: null,
         lineNumber: 1,
         once: false,
+        appliesContext: true,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -252,6 +256,7 @@ describe('applyPhpRouterRequireContexts', () => {
         namePrefix: null,
         lineNumber: 1,
         once: false,
+        appliesContext: true,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -350,6 +355,69 @@ $app->router->group(['prefix' => 'third'], function ($router) {
       bindings,
     );
     expect(map.get('routes/order.php')?.map((ctx) => ctx.prefix)).toEqual(['first', 'third']);
+  });
+
+  it('a top-level require counts as already run for a later require_once', () => {
+    const bindings = extractBindings(
+      `<?php
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.has('routes/web.php')).toBe(false);
+  });
+
+  it('a require nested in a condition does not count as already run', () => {
+    const bindings = extractBindings(
+      `<?php
+if (env('X')) { require __DIR__ . '/../routes/web.php'; }
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
+  it('a require inside a function does not count as already run', () => {
+    const bindings = extractBindings(
+      `<?php
+function boot() { require __DIR__ . '/../routes/web.php'; }
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
+  it('folds a parenthesized require path', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require (__DIR__ . '/../routes/web.php');
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings.map((b) => b.requiredPath)).toEqual(['routes/web.php']);
   });
 });
 
