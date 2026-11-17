@@ -29,7 +29,7 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
-const { isGitMutationCommand } = require('./git-mutation-command.cjs');
+const { gitMutationDirectory, isOutside } = require('./git-mutation-command.cjs');
 const { resolveHookRepo } = (() => {
   // Installed copies get helpers next to this adapter. The in-tree source
   // tree only ships the adapter, so fall back to the Claude helper copies.
@@ -296,23 +296,24 @@ function buildAfterToolContext(input) {
   const succeeded = toolSucceeded(toolResponse);
   const pattern = succeeded ? extractPattern(toolName, toolInput) : null;
   const command = toolName === 'run_shell_command' ? toolInput.command || '' : '';
-  const gitMutation = succeeded && isGitMutationCommand(command);
+  // Where the git mutation ran: cwd, or the directory `git -C` names.
+  const gitCwd = succeeded ? gitMutationDirectory(command, cwd) : null;
   // Cheap tool-result guards first. Registry I/O is only for search augment
   // or a git mutation that might need a stale-index hint.
-  if (!pattern && !gitMutation) return null;
+  if (!pattern && !gitCwd) return null;
 
-  const repo = resolveHookRepo(cwd);
-  if (!repo) return null;
-  const storagePath = repo.storagePath;
+  const repo = pattern || gitCwd === cwd ? resolveHookRepo(cwd) : null;
   const parts = [];
 
-  if (pattern) {
-    const augmentText = runAugment(storagePath, repo.lbugPath, cwd, pattern);
+  if (pattern && repo) {
+    const augmentText = runAugment(repo.storagePath, repo.lbugPath, cwd, pattern);
     if (augmentText) parts.push(augmentText);
   }
 
-  if (gitMutation) {
-    const hint = buildStaleIndexHint(repo.metadata, cwd);
+  if (gitCwd) {
+    // The index to check belongs to the repository git ran in.
+    const gitRepo = gitCwd === cwd ? repo : resolveHookRepo(gitCwd);
+    const hint = gitRepo ? buildStaleIndexHint(gitRepo, gitCwd, cwd) : '';
     if (hint) {
       // The hint always reaches the agent via additionalContext (parts). Mirror
       // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
@@ -414,13 +415,14 @@ function runAugment(storagePath, lbugPath, cwd, pattern) {
   return '';
 }
 
-function buildStaleIndexHint(meta, cwd) {
+function buildStaleIndexHint(repo, gitCwd, cwd) {
+  const meta = repo.metadata;
   let currentHead = '';
   try {
     const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
       encoding: 'utf-8',
       timeout: 3000,
-      cwd,
+      cwd: gitCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -440,9 +442,11 @@ function buildStaleIndexHint(meta, cwd) {
   if (currentHead === lastCommit) return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
+  // Name the repository when the agent is not working in it.
+  const where = isOutside(cwd, repo.path) ? ` in ${repo.path}` : '';
   return (
     `[GitNexus] index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-    `Run \`${analyzeCmd}\` to refresh the knowledge graph.`
+    `Run \`${analyzeCmd}\`${where} to refresh the knowledge graph.`
   );
 }
 

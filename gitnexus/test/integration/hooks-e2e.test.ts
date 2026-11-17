@@ -350,27 +350,26 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
     });
 
     // #3897: global options sit between `git` and the subcommand.
-    it.each([
-      'git -c user.name=x commit -m msg',
-      'git -C ../other commit -am msg',
-      'git --no-pager pull',
-    ])('detects %s', (command) => {
-      fs.writeFileSync(
-        path.join(gitNexusDir, 'meta.json'),
-        JSON.stringify({ lastCommit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', stats: {} }),
-      );
+    it.each(['git -c user.name=x commit -m msg', 'git -C . commit -am msg', 'git --no-pager pull'])(
+      'detects %s',
+      (command) => {
+        fs.writeFileSync(
+          path.join(gitNexusDir, 'meta.json'),
+          JSON.stringify({ lastCommit: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', stats: {} }),
+        );
 
-      const result = runHook(hookPath, {
-        hook_event_name: 'PostToolUse',
-        tool_name: 'Bash',
-        tool_input: { command },
-        tool_output: { exit_code: 0 },
-        cwd: tmpDir,
-      });
-      const output = parseHookOutput(result.stdout);
-      expect(output).not.toBeNull();
-      expect(output!.additionalContext).toContain('stale');
-    });
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        });
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('stale');
+      },
+    );
 
     it('stays silent when the word after -C is the path, not the subcommand', () => {
       fs.writeFileSync(
@@ -387,6 +386,96 @@ describe.each(HOOKS)('hooks e2e ($name)', ({ name, path: hookPath }) => {
       });
       expect(result.status).toBe(0);
       expect(parseHookOutput(result.stdout)).toBeNull();
+    });
+
+    describe('git -C <dir>', () => {
+      // `git -C` commits in another directory: the index that can have gone
+      // stale is the one of the repository there, not the one the hook runs in.
+      let otherDir: string;
+      const registry = () => path.join(hookHome, 'registry.json');
+      let savedRegistry: string;
+
+      const headOf = (dir: string) =>
+        spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf-8' }).stdout.trim();
+
+      const afterCommitIn = (target: string) =>
+        runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: `git -C "${target}" commit -am msg` },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        });
+
+      beforeAll(() => {
+        otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hooks-e2e-other-'));
+        initGitRepo(otherDir, { name: 'Test', email: 'test@test.com' });
+        fs.writeFileSync(path.join(otherDir, 'hello.txt'), 'hello');
+        commitAll(otherDir, 'init');
+        fs.mkdirSync(path.join(otherDir, '.gitnexus'), { recursive: true });
+
+        savedRegistry = fs.readFileSync(registry(), 'utf-8');
+        fs.writeFileSync(
+          registry(),
+          JSON.stringify([
+            ...JSON.parse(savedRegistry),
+            {
+              name: 'hooks-e2e-other',
+              path: otherDir,
+              storagePath: path.join(otherDir, '.gitnexus'),
+            },
+          ]),
+        );
+      });
+
+      afterAll(() => {
+        fs.writeFileSync(registry(), savedRegistry);
+        fs.rmSync(otherDir, { recursive: true, force: true });
+      });
+
+      const writeMeta = (dir: string, lastCommit: string) =>
+        fs.writeFileSync(
+          path.join(dir, '.gitnexus', 'meta.json'),
+          JSON.stringify({ lastCommit, stats: {} }),
+        );
+
+      it('reports the stale index of the repository the command ran in, and names it', () => {
+        writeMeta(tmpDir, headOf(tmpDir));
+        writeMeta(otherDir, 'e'.repeat(40));
+
+        for (const target of [otherDir, path.relative(tmpDir, otherDir)]) {
+          const output = parseHookOutput(afterCommitIn(target).stdout);
+          expect(output).not.toBeNull();
+          expect(output!.additionalContext).toContain('stale');
+          expect(output!.additionalContext).toContain(` in ${otherDir} `);
+        }
+      });
+
+      it('stays silent when that repository is up to date, even if this one is stale', () => {
+        writeMeta(tmpDir, 'e'.repeat(40));
+        writeMeta(otherDir, headOf(otherDir));
+
+        const result = afterCommitIn(otherDir);
+        expect(result.status).toBe(0);
+        expect(parseHookOutput(result.stdout)).toBeNull();
+      });
+
+      it('stays silent when the directory has no index', () => {
+        writeMeta(tmpDir, 'e'.repeat(40));
+
+        const result = afterCommitIn(path.join(os.tmpdir(), 'hooks-e2e-not-indexed'));
+        expect(result.status).toBe(0);
+        expect(parseHookOutput(result.stdout)).toBeNull();
+      });
+
+      it('does not name the repository the agent already works in', () => {
+        writeMeta(tmpDir, 'e'.repeat(40));
+
+        const output = parseHookOutput(afterCommitIn('.').stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('stale');
+        expect(output!.additionalContext).not.toContain(` in ${tmpDir}`);
+      });
     });
   });
 

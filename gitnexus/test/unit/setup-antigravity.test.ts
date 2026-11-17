@@ -597,39 +597,87 @@ describe('gitnexus-antigravity-hook adapter', () => {
   });
 
   // #3897: global options sit between `git` and the subcommand.
-  it.each([
-    'git -c user.name=x commit -m msg',
-    'git -C ../other commit -am msg',
-    'git --no-pager pull',
-  ])('AfterTool emits stale-index hint after %s', async (command) => {
-    initGitRepo(workdir);
-    await fs.writeFile(path.join(workdir, 'a.txt'), 'hello', 'utf-8');
-    commitAll(workdir, 'init');
+  it.each(['git -c user.name=x commit -m msg', 'git -C . commit -am msg', 'git --no-pager pull'])(
+    'AfterTool emits stale-index hint after %s',
+    async (command) => {
+      initGitRepo(workdir);
+      await fs.writeFile(path.join(workdir, 'a.txt'), 'hello', 'utf-8');
+      commitAll(workdir, 'init');
 
-    const gnDir = path.join(workdir, '.gitnexus');
-    await fs.mkdir(gnDir, { recursive: true });
-    await fs.writeFile(
-      path.join(gnDir, 'meta.json'),
-      JSON.stringify({ lastCommit: '0000000000000000000000000000000000000000', stats: {} }),
-      'utf-8',
-    );
-    await registerWorkdir(gnDir);
+      const gnDir = path.join(workdir, '.gitnexus');
+      await fs.mkdir(gnDir, { recursive: true });
+      await fs.writeFile(
+        path.join(gnDir, 'meta.json'),
+        JSON.stringify({ lastCommit: '0000000000000000000000000000000000000000', stats: {} }),
+        'utf-8',
+      );
+      await registerWorkdir(gnDir);
 
-    const { stdout, stderr, status } = runAdapter(
-      adapter,
-      {
-        hook_event_name: 'AfterTool',
-        tool_name: 'run_shell_command',
-        tool_input: { command },
-        tool_response: { llmContent: '[done]' },
-        cwd: workdir,
-      },
-      workdir,
-      { GITNEXUS_INVOCATION: 'gitnexus', GITNEXUS_DEBUG: '', GITNEXUS_HOME: registryHome },
-    );
+      const { stdout, stderr, status } = runAdapter(
+        adapter,
+        {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command },
+          tool_response: { llmContent: '[done]' },
+          cwd: workdir,
+        },
+        workdir,
+        { GITNEXUS_INVOCATION: 'gitnexus', GITNEXUS_DEBUG: '', GITNEXUS_HOME: registryHome },
+      );
 
-    expectAdapterLoaded(stderr, status);
-    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toMatch(/index is stale/);
+      expectAdapterLoaded(stderr, status);
+      expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toMatch(/index is stale/);
+    },
+  );
+
+  it('AfterTool checks the index of the repository `git -C` names', async () => {
+    // The agent works in `workdir`, which has no index, and commits in `other`.
+    const other = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-other-'));
+    try {
+      initGitRepo(other);
+      await fs.writeFile(path.join(other, 'a.txt'), 'hello', 'utf-8');
+      commitAll(other, 'init');
+      const gnDir = path.join(other, '.gitnexus');
+      await fs.mkdir(gnDir, { recursive: true });
+      await fs.writeFile(
+        path.join(gnDir, 'meta.json'),
+        JSON.stringify({ lastCommit: '0000000000000000000000000000000000000000', stats: {} }),
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(registryHome, 'registry.json'),
+        JSON.stringify([{ name: 'other', path: other, storagePath: gnDir }]),
+        'utf-8',
+      );
+
+      const run = (command: string) =>
+        runAdapter(
+          adapter,
+          {
+            hook_event_name: 'AfterTool',
+            tool_name: 'run_shell_command',
+            tool_input: { command },
+            tool_response: { llmContent: '[done]' },
+            cwd: workdir,
+          },
+          workdir,
+          { GITNEXUS_INVOCATION: 'gitnexus', GITNEXUS_DEBUG: '', GITNEXUS_HOME: registryHome },
+        );
+
+      const elsewhere = run(`git -C "${other}" commit -am msg`);
+      expectAdapterLoaded(elsewhere.stderr, elsewhere.status);
+      const hint = JSON.parse(elsewhere.stdout).hookSpecificOutput.additionalContext;
+      expect(hint).toMatch(/index is stale/);
+      expect(hint).toContain(` in ${other} `);
+
+      // A plain commit concerns `workdir`, which is not indexed.
+      const here = run('git commit -am msg');
+      expectAdapterLoaded(here.stderr, here.status);
+      expect(here.stdout.trim()).toBe('');
+    } finally {
+      await fs.rm(other, { recursive: true, force: true });
+    }
   });
 
   it('AfterTool skips augment when the tool failed', async () => {

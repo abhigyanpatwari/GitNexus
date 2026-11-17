@@ -645,7 +645,7 @@ describe('Git mutation detection', () => {
     it(`${label} hook detects git mutations through the shared helper`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain("require('./git-mutation-command.cjs')");
-      expect(source).toContain('isGitMutationCommand(command)');
+      expect(source).toContain('gitMutationDirectory(command, cwd)');
       expect(source).not.toMatch(/commit\|merge\|rebase\|cherry-pick\|pull/);
     });
   }

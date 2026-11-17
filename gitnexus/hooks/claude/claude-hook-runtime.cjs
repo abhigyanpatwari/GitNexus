@@ -13,7 +13,7 @@ const {
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { resolveHookRepo } = require('./registry-query.cjs');
-const { isGitMutationCommand } = require('./git-mutation-command.cjs');
+const { gitMutationDirectory, isOutside } = require('./git-mutation-command.cjs');
 
 /**
  * Read JSON input from stdin synchronously.
@@ -553,16 +553,19 @@ function handlePostToolUse(input) {
   const toolName = input.tool_name || '';
   if (toolName !== 'Bash') return;
 
+  const cwd = input.cwd || process.cwd();
+  if (!path.isAbsolute(cwd)) return;
+
+  // `git -C <dir>` runs elsewhere: the index to check is that directory's.
   const command = (input.tool_input || {}).command || '';
-  if (!isGitMutationCommand(command)) return;
+  const gitCwd = gitMutationDirectory(command, cwd);
+  if (!gitCwd) return;
 
   // Only proceed if the command succeeded
   const toolOutput = input.tool_output || {};
   if (toolOutput.exit_code !== undefined && toolOutput.exit_code !== 0) return;
 
-  const cwd = input.cwd || process.cwd();
-  if (!path.isAbsolute(cwd)) return;
-  const repo = resolveHookRepo(cwd);
+  const repo = resolveHookRepo(gitCwd);
   if (!repo) return;
 
   // Compare HEAD against last indexed commit — skip if unchanged
@@ -571,7 +574,7 @@ function handlePostToolUse(input) {
     const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
       encoding: 'utf-8',
       timeout: 3000,
-      cwd,
+      cwd: gitCwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
@@ -594,10 +597,12 @@ function handlePostToolUse(input) {
   if (currentHead === lastCommit) return;
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
+  // Name the repository when the agent is not working in it.
+  const where = isOutside(cwd, repo.path) ? ` in ${repo.path}` : '';
   sendHookResponse(
     'PostToolUse',
     `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-      `Run \`${analyzeCmd}\` to update the knowledge graph.`,
+      `Run \`${analyzeCmd}\`${where} to update the knowledge graph.`,
   );
 }
 
