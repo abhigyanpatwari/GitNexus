@@ -234,7 +234,11 @@ function populateJavaCrossFileReturnTypes(
     const ambiguousMirrors = new Set<string>();
     ambiguousByFile.set(parsed.filePath, ambiguousMirrors);
     const importedFamilies: string[][] = [];
-    importedFamiliesByFile.set(parsed.filePath, importedFamilies);
+    // Mirroring a family or a file's class scopes a second time changes
+    // nothing (a name is only set when absent, and ambiguity is permanent), so
+    // N imports of one file mirror it once instead of N times.
+    const mirroredFamilies = new Set<string>();
+    const mirroredClassFiles = new Set<string>();
     for (const name of namesAtScope(importerModule.id, indexes)) {
       const refs = lookupBindingsAt(importerModule.id, name, indexes);
       for (const ref of refs) {
@@ -250,9 +254,13 @@ function populateJavaCrossFileReturnTypes(
           const ancestor = indexes.defs.get(ancestorId);
           if (ancestor !== undefined) sourceFiles.add(ancestor.filePath);
         }
-        importedFamilies.push([...sourceFiles]);
+        const family = [...sourceFiles];
+        importedFamilies.push(family);
+        const familyKey = family.join('\0');
+        const mirrorFamily = !mirroredFamilies.has(familyKey);
+        mirroredFamilies.add(familyKey);
         const familyNames = new Set<string>();
-        for (const sourceFile of sourceFiles) {
+        for (const sourceFile of mirrorFamily ? sourceFiles : []) {
           for (const [srcName, srcRef] of moduleReturnTypesByFile.get(sourceFile) ?? []) {
             if (familyNames.has(srcName)) continue;
             familyNames.add(srcName);
@@ -267,7 +275,11 @@ function populateJavaCrossFileReturnTypes(
           }
         }
 
-        for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
+        const mirrorClasses = !mirroredClassFiles.has(ref.def.filePath);
+        mirroredClassFiles.add(ref.def.filePath);
+        for (const classScope of mirrorClasses
+          ? (classScopesByFile.get(ref.def.filePath) ?? [])
+          : []) {
           for (const [srcName, srcRef] of classScope.typeBindings) {
             if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
             if (ambiguousMirrors.has(srcName)) continue;
@@ -282,6 +294,17 @@ function populateJavaCrossFileReturnTypes(
         }
       }
     }
+    // The walk below pops from the end, so keeping each family's LAST copy
+    // keeps its visiting order; a repeated family is a no-op when popped again.
+    const seenFamilies = new Set<string>();
+    const distinctFamilies: string[][] = [];
+    for (let i = importedFamilies.length - 1; i >= 0; i--) {
+      const key = importedFamilies[i]!.join('\0');
+      if (seenFamilies.has(key)) continue;
+      seenFamilies.add(key);
+      distinctFamilies.push(importedFamilies[i]!);
+    }
+    importedFamiliesByFile.set(parsed.filePath, distinctFamilies.reverse());
   }
 
   // Every sibling module holds the package's return facts: follow each once.
