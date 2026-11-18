@@ -458,6 +458,7 @@ function parseAssociativeRouteAction(
 function extractControllerTarget(
   argsNode: SyntaxNode | null,
   kind: PhpRouteReceiverKind = 'laravel',
+  httpMethod?: string,
 ): {
   controller: string | null;
   controllerQualified: string | null;
@@ -484,8 +485,8 @@ function extractControllerTarget(
     else if (child.type !== '(' && child.type !== ')' && child.type !== ',') args.push(child);
   }
 
-  // Second arg is the handler
-  const handlerNode = args[1];
+  const handlerIndex = httpMethod === 'match' ? 2 : 1;
+  const handlerNode = args[handlerIndex];
   if (!handlerNode) return none;
 
   if (handlerNode.type === 'anonymous_function' || handlerNode.type === 'arrow_function') {
@@ -769,7 +770,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
     }
 
     if (ROUTE_RESOURCE_METHODS.has(httpMethod) && receiverKind === 'laravel') {
-      const target = extractControllerTarget(argsNode, receiverKind);
+      const target = extractControllerTarget(argsNode, receiverKind, httpMethod);
       const actions = httpMethod === 'apiResource' ? API_RESOURCE_ACTIONS : RESOURCE_ACTIONS;
       const routeNameBase =
         routeName ?? joinRouteName(effective.namePrefix, routeNameBaseFromPath(routePath));
@@ -802,7 +803,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         });
       }
     } else {
-      const target = extractControllerTarget(argsNode, receiverKind);
+      const target = extractControllerTarget(argsNode, receiverKind, httpMethod);
       if (target.actionRouteName) routeName = target.actionRouteName;
       if (target.actionMiddleware?.length) {
         effective.middleware.push(...target.actionMiddleware);

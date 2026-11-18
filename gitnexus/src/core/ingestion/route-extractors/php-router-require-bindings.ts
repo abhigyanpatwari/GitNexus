@@ -29,7 +29,7 @@ export interface ExtractedPhpRouteRequireBinding {
 }
 
 export function shouldExtractPhpRouterRequireBindings(content: string): boolean {
-  if (!/->\s*group\s*\(/.test(content)) return false;
+  if (!/->\s*group\s*\(/i.test(content)) return false;
   return /\b(require|require_once|include|include_once)\b/.test(content);
 }
 
@@ -144,9 +144,96 @@ const CONDITIONAL_NODE_TYPES = new Set([
   'while_statement',
   'do_statement',
   'switch_statement',
-  'try_statement',
   'conditional_expression',
 ]);
+
+function nextChildUnguarded(node: SyntaxNode, parentUnguarded: boolean): boolean {
+  if (!parentUnguarded) return false;
+  return !CONDITIONAL_NODE_TYPES.has(node.type);
+}
+
+function enqueueStatementChildren(
+  node: SyntaxNode,
+  stack: RouteGroupContext[],
+  unguarded: boolean,
+  pending: { node: SyntaxNode; stack: RouteGroupContext[]; unguarded: boolean }[],
+): void {
+  if (node.type === 'try_statement') {
+    const tryBody = node.childForFieldName('body');
+    if (tryBody) {
+      const children = tryBody.children ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        pending.push({ node: children[i], stack, unguarded: false });
+      }
+    }
+    for (const child of node.children ?? []) {
+      if (child.type === 'catch_clause') {
+        const catchBody = child.childForFieldName('body');
+        if (catchBody) {
+          const children = catchBody.children ?? [];
+          for (let i = children.length - 1; i >= 0; i--) {
+            pending.push({ node: children[i], stack, unguarded: false });
+          }
+        }
+      } else if (child.type === 'finally_clause') {
+        const finallyBody = child.childForFieldName('body');
+        if (finallyBody) {
+          const children = finallyBody.children ?? [];
+          for (let i = children.length - 1; i >= 0; i--) {
+            pending.push({ node: children[i], stack, unguarded });
+          }
+        }
+      }
+    }
+    return;
+  }
+  const childUnguarded = nextChildUnguarded(node, unguarded);
+  const children = node.children ?? [];
+  for (let i = children.length - 1; i >= 0; i--) {
+    pending.push({ node: children[i], stack, unguarded: childUnguarded });
+  }
+}
+
+function enqueueWalkChildren(
+  node: SyntaxNode,
+  unguarded: boolean,
+  walkStack: { node: SyntaxNode; unguarded: boolean }[],
+): void {
+  if (node.type === 'try_statement') {
+    const tryBody = node.childForFieldName('body');
+    if (tryBody) {
+      const children = tryBody.children ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        walkStack.push({ node: children[i], unguarded: false });
+      }
+    }
+    for (const child of node.children ?? []) {
+      if (child.type === 'catch_clause') {
+        const catchBody = child.childForFieldName('body');
+        if (catchBody) {
+          const children = catchBody.children ?? [];
+          for (let i = children.length - 1; i >= 0; i--) {
+            walkStack.push({ node: children[i], unguarded: false });
+          }
+        }
+      } else if (child.type === 'finally_clause') {
+        const finallyBody = child.childForFieldName('body');
+        if (finallyBody) {
+          const children = finallyBody.children ?? [];
+          for (let i = children.length - 1; i >= 0; i--) {
+            walkStack.push({ node: children[i], unguarded });
+          }
+        }
+      }
+    }
+    return;
+  }
+  const childUnguarded = nextChildUnguarded(node, unguarded);
+  const children = node.children ?? [];
+  for (let i = children.length - 1; i >= 0; i--) {
+    walkStack.push({ node: children[i], unguarded: childUnguarded });
+  }
+}
 
 /** Bodies that do not run when the enclosing group closure runs. */
 const DEFERRED_SCOPE_TYPES = new Set([
@@ -168,15 +255,13 @@ function visitGroupBody(
   hostFilePath: string,
   stack: RouteGroupContext[],
   bindings: ExtractedPhpRouteRequireBinding[],
+  parentUnguarded: boolean,
 ): void {
   const pending: { node: SyntaxNode; stack: RouteGroupContext[]; unguarded: boolean }[] = [];
   const pushChildren = (node: SyntaxNode, frameStack: RouteGroupContext[], unguarded: boolean) => {
-    const children = node.children ?? [];
-    for (let i = children.length - 1; i >= 0; i--) {
-      pending.push({ node: children[i], stack: frameStack, unguarded });
-    }
+    enqueueStatementChildren(node, frameStack, unguarded, pending);
   };
-  pushChildren(body, stack, true);
+  pushChildren(body, stack, parentUnguarded);
 
   while (pending.length > 0) {
     const frame = pending.pop();
@@ -208,7 +293,7 @@ function visitGroupBody(
       continue;
     }
     if (DEFERRED_SCOPE_TYPES.has(node.type)) continue;
-    pushChildren(node, frameStack, unguarded && !CONDITIONAL_NODE_TYPES.has(node.type));
+    pushChildren(node, frameStack, nextChildUnguarded(node, unguarded));
   }
 }
 
@@ -232,7 +317,7 @@ export function extractPhpRouterRequireBindings(
       const argsNode = getRouterCallArguments(node);
       const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
       const body = findRouteGroupClosureBody(argsNode);
-      if (body) visitGroupBody(body, relHost, [groupCtx], bindings);
+      if (body) visitGroupBody(body, relHost, [groupCtx], bindings, unguarded);
       continue;
     }
     if (DEFERRED_SCOPE_TYPES.has(node.type)) {
@@ -262,11 +347,7 @@ export function extractPhpRouterRequireBindings(
       }
       continue;
     }
-    const childUnguarded = unguarded && !CONDITIONAL_NODE_TYPES.has(node.type);
-    const children = node.children ?? [];
-    for (let i = children.length - 1; i >= 0; i--) {
-      walkStack.push({ node: children[i], unguarded: childUnguarded });
-    }
+    enqueueWalkChildren(node, unguarded, walkStack);
   }
 
   return bindings;

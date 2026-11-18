@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import PHP from 'tree-sitter-php';
-import { extractPhpRouterRequireBindings } from '../../src/core/ingestion/route-extractors/php-router-require-bindings.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
+import { mergeChunkResults } from '../../src/core/ingestion/parsing-processor.js';
+import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+import {
+  extractPhpRouterRequireBindings,
+  shouldExtractPhpRouterRequireBindings,
+} from '../../src/core/ingestion/route-extractors/php-router-require-bindings.js';
 import {
   applyPhpRouterRequireContexts,
   resolvePhpRouterRequireBindings,
@@ -395,7 +402,56 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       new Set(['bootstrap/app.php', 'routes/web.php']),
       bindings,
     );
-    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['maybe', 'api']);
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
+  it('require_once inside a method group does not suppress a later top-level require_once', () => {
+    const bindings = extractBindings(
+      `<?php
+class Routes {
+  public function map($app) {
+    $app->router->group(['prefix' => 'inner'], function ($router) {
+      require_once __DIR__ . '/../routes/web.php';
+    });
+  }
+}
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
+  it('treats require in finally as unguarded', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  try {
+    // no require
+  } finally {
+    require_once __DIR__ . '/../routes/web.php';
+  }
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings).toEqual([
+      expect.objectContaining({ prefix: 'api', unguarded: true, once: true }),
+    ]);
+  });
+
+  it('matches uppercase router GROUP for extraction gate', () => {
+    expect(
+      shouldExtractPhpRouterRequireBindings(`<?php
+$app->router->GROUP([], function () { require __DIR__ . '/routes/web.php'; });
+`),
+    ).toBe(true);
   });
 
   it('a require nested in a condition does not count as already run', () => {
@@ -442,6 +498,51 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       'bootstrap/app.php',
     );
     expect(bindings.map((b) => b.requiredPath)).toEqual(['routes/web.php']);
+  });
+});
+
+describe('mergeChunkResults php router require binding order', () => {
+  const binding = (lineNumber: number): ParseWorkerResult['phpRouterRequireBindings'][number] => ({
+    filePath: 'bootstrap/app.php',
+    requiredPath: 'routes/web.php',
+    prefix: 'api',
+    namespace: null,
+    middleware: [],
+    namePrefix: null,
+    lineNumber,
+    once: true,
+    appliesContext: true,
+    unguarded: true,
+  });
+
+  const emptyWorker = (): ParseWorkerResult => ({
+    nodes: [],
+    relationships: [],
+    symbols: [],
+    calls: [],
+    assignments: [],
+    routes: [],
+    fetchCalls: [],
+    fetchWrapperDefs: [],
+    decoratorRoutes: [],
+    routerIncludes: [],
+    routerImports: [],
+    toolDefs: [],
+    ormQueries: [],
+    constructorBindings: [],
+    fileScopeBindings: [],
+    parsedFiles: [],
+    skippedLanguages: {},
+    fileCount: 0,
+  });
+
+  it('sorts bindings in host file source order across chunks', () => {
+    const graph = createKnowledgeGraph();
+    const data = mergeChunkResults(graph, createSemanticModel().symbols, [
+      { ...emptyWorker(), phpRouterRequireBindings: [binding(20)] },
+      { ...emptyWorker(), phpRouterRequireBindings: [binding(5)] },
+    ]);
+    expect(data.phpRouterRequireBindings?.map((b) => b.lineNumber)).toEqual([5, 20]);
   });
 });
 

@@ -75,7 +75,11 @@ Route::match(['get', 'post'], '/orders/search', [OrderController::class, 'search
           routePath: '/orders/any',
           methodName: 'any',
         }),
-        expect.objectContaining({ httpMethod: 'match', routePath: '/orders/search' }),
+        expect.objectContaining({
+          httpMethod: 'match',
+          routePath: '/orders/search',
+          methodName: 'search',
+        }),
       ]),
     );
   });
