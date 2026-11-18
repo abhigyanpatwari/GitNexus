@@ -202,8 +202,8 @@ function foldPhpStringLiteral(node: SyntaxNode | null | undefined): string | nul
     } else if (current.type === 'binary_expression') {
       const right = current.children[2] ?? current.children[current.children.length - 1];
       const left = current.children[0];
-      const l = left ? results.get(left) : null;
-      const r = right ? results.get(right) : null;
+      const l = left ? (results.get(left) ?? null) : null;
+      const r = right ? (results.get(right) ?? null) : null;
       results.set(current, l !== null && r !== null ? l + r : null);
     } else {
       results.set(current, null);

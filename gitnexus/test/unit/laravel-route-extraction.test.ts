@@ -133,6 +133,13 @@ Route::apiResource('/api/photos', ApiPhotoController::class);
     ]);
   });
 
+  it('does not fold a non-concatenation binary URI into a path', () => {
+    const routes = extract(`<?php
+Route::get($base ?? '/fallback', [OrderController::class, 'index']);
+`);
+    expect(routes.map((route) => route.routePath)).not.toContain('undefinedundefined');
+  });
+
   it('threads fluent namespace into grouped string-action routes', () => {
     const routes = extract(`<?php
 Route::namespace('Admin\\\\Http\\\\Controllers')

@@ -156,13 +156,17 @@ export function buildExportedTypeMapFromGraph(
  */
 const ROUTE_EDGE_CONFIDENCE = 0.5;
 
-/** Zero exact match: unique case-insensitive Method in the controller file (PHP route branches only). */
+/** Zero exact match: unique case-insensitive Method of the controller class (PHP route branches only). */
 function routeHandlerMethodCaseInsensitiveFallback(
   symbols: SymbolTableReader,
-  controllerFilePath: string,
+  controllerDef: SymbolDefinition,
   methodName: string,
 ): string | undefined {
-  return symbols.lookupExactUniqueCaseInsensitive(controllerFilePath, methodName)?.nodeId;
+  return symbols.lookupExactUniqueCaseInsensitive(
+    controllerDef.filePath,
+    methodName,
+    controllerDef.nodeId,
+  )?.nodeId;
 }
 
 /**
@@ -328,7 +332,7 @@ export const processRoutesFromExtracted = async (
     if (!methodId) {
       methodId = routeHandlerMethodCaseInsensitiveFallback(
         model.symbols,
-        controllerDef.filePath,
+        controllerDef,
         route.methodName,
       );
     }
@@ -537,7 +541,7 @@ export function resolveRouteHandlerSymbols(
           if (exact.length === 0) {
             methodId = routeHandlerMethodCaseInsensitiveFallback(
               model.symbols,
-              controllerDef.filePath,
+              controllerDef,
               route.methodName,
             );
           }

@@ -298,11 +298,6 @@ export const mergeChunkResults = (
     }
   }
 
-  allPhpRouterRequireBindings.sort((a, b) => {
-    const byPath = compareText(a.filePath, b.filePath);
-    return byPath !== 0 ? byPath : a.lineNumber - b.lineNumber;
-  });
-
   // A file's route facts resolve into routes inserted at `routePosition`, the
   // index in this chunk's decorator routes where that file's own decorator
   // routes begin (the worker records it before extracting them). Reordering the

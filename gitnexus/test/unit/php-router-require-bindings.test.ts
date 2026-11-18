@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import PHP from 'tree-sitter-php';
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
-import { mergeChunkResults } from '../../src/core/ingestion/parsing-processor.js';
-import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
 import {
   extractPhpRouterRequireBindings,
   shouldExtractPhpRouterRequireBindings,
@@ -405,6 +401,67 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['maybe', 'api']);
   });
 
+  it('a group under a condition still applies its context', () => {
+    const bindings = extractBindings(
+      `<?php
+if (env('X')) {
+  $app->router->group(['prefix' => 'api'], function ($router) {
+    require __DIR__ . '/../routes/web.php';
+  });
+}
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
+  it('require_once in different host files never suppress each other', () => {
+    const hostA = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'a'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/a.php',
+    );
+    const hostB = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'b'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/b.php',
+    );
+    const files = new Set(['bootstrap/a.php', 'bootstrap/b.php', 'routes/web.php']);
+    const forward = resolvePhpRouterRequireBindings(files, [...hostA, ...hostB]);
+    const reversed = resolvePhpRouterRequireBindings(files, [...hostB, ...hostA]);
+    expect(forward.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['a', 'b']);
+    expect(reversed).toEqual(forward);
+  });
+
+  it('resolves the same contexts whatever order bindings arrive in', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'first'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+$app->router->group(['prefix' => 'second'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const files = new Set(['bootstrap/app.php', 'routes/web.php']);
+    const forward = resolvePhpRouterRequireBindings(files, bindings);
+    const reversed = resolvePhpRouterRequireBindings(files, [...bindings].reverse());
+    expect(forward.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['first']);
+    expect(reversed).toEqual(forward);
+  });
+
   it('require_once inside a method group does not suppress a later top-level require_once', () => {
     const bindings = extractBindings(
       `<?php
@@ -425,7 +482,7 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       new Set(['bootstrap/app.php', 'routes/web.php']),
       bindings,
     );
-    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['inner', 'api']);
   });
 
   it('treats require in finally as unguarded', () => {
@@ -527,51 +584,6 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       'bootstrap/app.php',
     );
     expect(bindings.map((b) => b.requiredPath)).toEqual(['routes/web.php']);
-  });
-});
-
-describe('mergeChunkResults php router require binding order', () => {
-  const binding = (lineNumber: number): ParseWorkerResult['phpRouterRequireBindings'][number] => ({
-    filePath: 'bootstrap/app.php',
-    requiredPath: 'routes/web.php',
-    prefix: 'api',
-    namespace: null,
-    middleware: [],
-    namePrefix: null,
-    lineNumber,
-    once: true,
-    appliesContext: true,
-    unguarded: true,
-  });
-
-  const emptyWorker = (): ParseWorkerResult => ({
-    nodes: [],
-    relationships: [],
-    symbols: [],
-    calls: [],
-    assignments: [],
-    routes: [],
-    fetchCalls: [],
-    fetchWrapperDefs: [],
-    decoratorRoutes: [],
-    routerIncludes: [],
-    routerImports: [],
-    toolDefs: [],
-    ormQueries: [],
-    constructorBindings: [],
-    fileScopeBindings: [],
-    parsedFiles: [],
-    skippedLanguages: {},
-    fileCount: 0,
-  });
-
-  it('sorts bindings in host file source order across chunks', () => {
-    const graph = createKnowledgeGraph();
-    const data = mergeChunkResults(graph, createSemanticModel().symbols, [
-      { ...emptyWorker(), phpRouterRequireBindings: [binding(20)] },
-      { ...emptyWorker(), phpRouterRequireBindings: [binding(5)] },
-    ]);
-    expect(data.phpRouterRequireBindings?.map((b) => b.lineNumber)).toEqual([5, 20]);
   });
 });
 

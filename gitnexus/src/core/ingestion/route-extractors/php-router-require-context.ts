@@ -16,12 +16,13 @@ export interface PhpRouteRequireContext {
 }
 
 /**
- * Map repo-relative route file paths to bootstrap group contexts. Bindings apply
- * only when the required path resolves to an indexed routes/*.php file. Bindings
- * arrive in host-file then source order; a `require_once` of a file an earlier
- * unguarded binding already included — grouped or a top-level include — does
- * not run again, so it adds no context. A require under a condition may not
- * have run, so it does not count.
+ * Map repo-relative route file paths to every bootstrap group context under
+ * which they may load. Bindings apply only when the required path resolves to
+ * an indexed routes/*.php file. The only context dropped is one PHP provably
+ * skips: a `require_once` in the same host file after an earlier unguarded
+ * require of the same target. Which host runs first is unknown statically, so
+ * hosts never suppress each other, and the result does not depend on the
+ * order bindings arrive in.
  */
 export function resolvePhpRouterRequireBindings(
   files: Iterable<string>,
@@ -29,23 +30,35 @@ export function resolvePhpRouterRequireBindings(
 ): Map<string, PhpRouteRequireContext[]> {
   const fileSet = new Set([...files].map((f) => f.replace(/\\/g, '/')));
   const contextsByFile = new Map<string, PhpRouteRequireContext[]>();
-  const included = new Set<string>();
 
+  const byHost = new Map<string, ExtractedPhpRouteRequireBinding[]>();
   for (const binding of bindings) {
-    const target = binding.requiredPath.replace(/\\/g, '/');
-    if (!fileSet.has(target) || !isPhpRouteFile(target)) continue;
-    if (binding.once && included.has(target)) continue;
-    if (binding.unguarded) included.add(target);
-    if (!binding.appliesContext) continue;
-    const ctx: PhpRouteRequireContext = {
-      prefix: binding.prefix,
-      namespace: binding.namespace,
-      middleware: [...binding.middleware],
-      namePrefix: binding.namePrefix,
-    };
-    const existing = contextsByFile.get(target) ?? [];
-    existing.push(ctx);
-    contextsByFile.set(target, existing);
+    const host = binding.filePath.replace(/\\/g, '/');
+    const list = byHost.get(host);
+    if (list) list.push(binding);
+    else byHost.set(host, [binding]);
+  }
+  const hosts = [...byHost.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+
+  for (const host of hosts) {
+    const hostBindings = [...byHost.get(host)!].sort((a, b) => a.lineNumber - b.lineNumber);
+    const included = new Set<string>();
+    for (const binding of hostBindings) {
+      const target = binding.requiredPath.replace(/\\/g, '/');
+      if (!fileSet.has(target) || !isPhpRouteFile(target)) continue;
+      if (binding.once && included.has(target)) continue;
+      if (binding.unguarded) included.add(target);
+      if (!binding.appliesContext) continue;
+      const ctx: PhpRouteRequireContext = {
+        prefix: binding.prefix,
+        namespace: binding.namespace,
+        middleware: [...binding.middleware],
+        namePrefix: binding.namePrefix,
+      };
+      const existing = contextsByFile.get(target) ?? [];
+      existing.push(ctx);
+      contextsByFile.set(target, existing);
+    }
   }
 
   return contextsByFile;

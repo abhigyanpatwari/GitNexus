@@ -39,7 +39,14 @@ describe('Lumen route pipeline', () => {
   const handlesRoute = () => getRelationships(result, 'HANDLES_ROUTE');
 
   it('emits exact Route URLs for bound and unbound route files', () => {
-    expect(routeUrls()).toEqual(['/admin/dash', '/home', '/orders/v1/list', '/solo', '/users']);
+    expect(routeUrls()).toEqual([
+      '/admin/dash',
+      '/home',
+      '/orders/v1/list',
+      '/solo',
+      '/solo-case',
+      '/users',
+    ]);
   });
 
   it('binds a conditional require whose path is built by string concatenation', () => {
@@ -75,6 +82,18 @@ describe('Lumen route pipeline', () => {
         .map((e) => e.rel.sourceId);
     expect(handlerIdsFor(homeRoute?.id)).toEqual([homeCall?.rel.targetId]);
     expect(handlerIdsFor(orderRoute?.id)).toEqual([orderCall?.rel.targetId]);
+  });
+
+  it('a handler spelled in another case resolves to the controller method', () => {
+    const solo = routeByUrl('/solo');
+    const soloCase = routeByUrl('/solo-case');
+    const handlerIdsFor = (routeId: string | undefined) =>
+      handlesRoute()
+        .filter((e) => e.rel.targetId === routeId && e.sourceLabel === 'Method')
+        .map((e) => e.rel.sourceId);
+    const showIds = handlerIdsFor(solo?.id);
+    expect(showIds).toHaveLength(1);
+    expect(handlerIdsFor(soloCase?.id)).toEqual(showIds);
   });
 
   it('unbound standalone route keeps in-file path without bootstrap prefix', () => {

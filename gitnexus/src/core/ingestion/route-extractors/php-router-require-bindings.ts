@@ -310,7 +310,7 @@ function visitGroupBody(
         namePrefix: merged.namePrefix,
         lineNumber: node.startPosition.row,
         once: isOnceRequire(node),
-        appliesContext: parentUnguarded,
+        appliesContext: true,
         unguarded,
       });
       continue;
