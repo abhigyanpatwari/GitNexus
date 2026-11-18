@@ -77,6 +77,26 @@ describe('SymbolTable', () => {
       ).toBeUndefined();
     });
 
+    it('folds ASCII letters only, like PHP', () => {
+      table.add('app/Ctrl.php', 'État', 'method:ctrl.Etat', 'Method', owner);
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'état', 'class:Ctrl'),
+      ).toBeUndefined();
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'ÉTAT', 'class:Ctrl')?.nodeId,
+      ).toBe('method:ctrl.Etat');
+    });
+
+    it('sees a method added after an earlier lookup of the same file', () => {
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'show', 'class:Ctrl'),
+      ).toBeUndefined();
+      table.add('app/Ctrl.php', 'Show', 'method:ctrl.Show', 'Method', owner);
+      expect(
+        table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'show', 'class:Ctrl')?.nodeId,
+      ).toBe('method:ctrl.Show');
+    });
+
     it('ignores a method of another class in the same file', () => {
       table.add('app/Ctrl.php', 'Show', 'method:helper.Show', 'Method', {
         ownerId: 'class:Helper',

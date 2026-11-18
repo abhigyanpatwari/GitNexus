@@ -256,6 +256,10 @@ interface InternalSymbolTable extends SymbolTableWriter {
   clear: () => void;
 }
 
+/** PHP folds identifiers by ASCII only: `État` and `état` stay distinct. */
+const foldAsciiCase = (name: string): string =>
+  name.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+
 export const createSymbolTable = (): InternalSymbolTable => {
   // 1. File-Specific Index — stores full SymbolDefinition(s) for O(1) lookup.
   // Structure: FilePath -> (SymbolName -> SymbolDefinition[])
@@ -266,6 +270,11 @@ export const createSymbolTable = (): InternalSymbolTable => {
   // Structure: SymbolName -> [Callable Definitions]
   // Only Function, Method, Constructor, Macro, Delegate symbols are indexed.
   const callableByName = new Map<string, SymbolDefinition[]>();
+
+  // 3. Lazily-built per-file index of Methods by ASCII-folded name, for the
+  // case-insensitive lookup. Built on first lookup for a file and dropped when
+  // that file gains a symbol, so each lookup is O(candidates), not O(file).
+  const foldedMethodsByFile = new Map<string, Map<string, SymbolDefinition[]>>();
 
   const add = (
     filePath: string,
@@ -302,6 +311,8 @@ export const createSymbolTable = (): InternalSymbolTable => {
       ...(metadata?.ownerId !== undefined ? { ownerId: metadata.ownerId } : {}),
       ...(metadata?.isDeleted === true ? { isDeleted: true } : {}),
     };
+
+    foldedMethodsByFile.delete(filePath);
 
     // A. File Index — unconditional.
     if (!fileIndex.has(filePath)) {
@@ -354,26 +365,39 @@ export const createSymbolTable = (): InternalSymbolTable => {
     return fileIndex.get(filePath)?.get(name) ?? [];
   };
 
+  const foldedMethodIndex = (filePath: string): Map<string, SymbolDefinition[]> | undefined => {
+    const cached = foldedMethodsByFile.get(filePath);
+    if (cached) return cached;
+    const fileMap = fileIndex.get(filePath);
+    if (!fileMap) return undefined;
+    const index = new Map<string, SymbolDefinition[]>();
+    for (const [symbolName, defs] of fileMap) {
+      for (const def of defs) {
+        if (def.type !== 'Method') continue;
+        const key = foldAsciiCase(symbolName);
+        const bucket = index.get(key);
+        if (bucket) bucket.push(def);
+        else index.set(key, [def]);
+      }
+    }
+    foldedMethodsByFile.set(filePath, index);
+    return index;
+  };
+
   const lookupExactUniqueCaseInsensitive = (
     filePath: string,
     name: string,
     ownerId: string,
   ): SymbolDefinition | undefined => {
-    const fileMap = fileIndex.get(filePath);
-    if (!fileMap) return undefined;
-    const needle = name.toLowerCase();
+    const candidates = foldedMethodIndex(filePath)?.get(foldAsciiCase(name));
+    if (!candidates) return undefined;
     let found: SymbolDefinition | undefined;
-    let count = 0;
-    for (const [symbolName, defs] of fileMap) {
-      if (symbolName.toLowerCase() !== needle) continue;
-      for (const def of defs) {
-        if (def.type !== 'Method' || def.ownerId !== ownerId) continue;
-        count += 1;
-        found = def;
-        if (count > 1) return undefined;
-      }
+    for (const def of candidates) {
+      if (def.ownerId !== ownerId) continue;
+      if (found) return undefined;
+      found = def;
     }
-    return count === 1 ? found : undefined;
+    return found;
   };
 
   const lookupCallableByName = (name: string): SymbolDefinition[] => {
@@ -393,6 +417,7 @@ export const createSymbolTable = (): InternalSymbolTable => {
   const clear = () => {
     fileIndex.clear();
     callableByName.clear();
+    foldedMethodsByFile.clear();
   };
 
   return {

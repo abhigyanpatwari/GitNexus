@@ -3240,9 +3240,8 @@ const processFileGroupFiles = (
       language === SupportedLanguages.PHP &&
       shouldExtractPhpRouterRequireBindings(file.content)
     ) {
-      const bindings = extractPhpRouterRequireBindings(tree, file.path);
-      if (bindings.length > 0) {
-        (result.phpRouterRequireBindings ??= []).push(...bindings);
+      for (const binding of extractPhpRouterRequireBindings(tree, file.path)) {
+        (result.phpRouterRequireBindings ??= []).push(binding);
       }
     }
 

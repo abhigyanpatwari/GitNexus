@@ -67,41 +67,71 @@ export function mergeLaravelRouteName(
   return namePrefix ? `${namePrefix}${routeName}` : routeName;
 }
 
+/** Effective context of a group stack. Treat as immutable: frames share it. */
+export interface ComposedRouteGroupContext {
+  readonly middleware: readonly string[];
+  readonly prefix: string | null;
+  readonly namePrefix: string | null;
+  readonly controller: string | null;
+  readonly namespace: string | null;
+  readonly namespaceResets: boolean;
+}
+
+export const EMPTY_ROUTE_GROUP_CONTEXT: ComposedRouteGroupContext = Object.freeze({
+  middleware: Object.freeze([]) as readonly string[],
+  prefix: null,
+  namePrefix: null,
+  controller: null,
+  namespace: null,
+  namespaceResets: false,
+});
+
+/**
+ * One group level on top of an already-composed parent, so each level is
+ * joined once rather than the whole stack being recomposed per route.
+ */
+export function extendRouteGroupContext(
+  parent: ComposedRouteGroupContext,
+  ctx: RouteGroupContext,
+  kind: PhpRouteReceiverKind,
+): ComposedRouteGroupContext {
+  let namespace = parent.namespace;
+  let namespaceResets = parent.namespaceResets;
+  if (ctx.namespaceResets) {
+    namespaceResets = true;
+    namespace = ctx.namespace?.replace(/^\\+|\\+$/g, '') || null;
+  } else if (ctx.namespace) {
+    namespace = joinPhpRouteGroupNamespaces(namespace, ctx.namespace, kind, false);
+  }
+  let namePrefix = parent.namePrefix;
+  if (ctx.namePrefix) {
+    namePrefix =
+      kind === 'lumen'
+        ? mergeLumenGroupAs(namePrefix, ctx.namePrefix)
+        : mergeLaravelGroupNamePrefix(namePrefix, ctx.namePrefix);
+  }
+  return {
+    middleware:
+      ctx.middleware.length > 0 ? parent.middleware.concat(ctx.middleware) : parent.middleware,
+    prefix: ctx.prefix
+      ? parent.prefix
+        ? `${parent.prefix}/${ctx.prefix}`.replace(/\/+/g, '/')
+        : ctx.prefix
+      : parent.prefix,
+    namePrefix,
+    controller: ctx.controller ?? parent.controller,
+    namespace,
+    namespaceResets,
+  };
+}
+
 export function composeRouteGroupStack(
   stack: readonly RouteGroupContext[],
   kind: PhpRouteReceiverKind = 'laravel',
-): {
-  middleware: string[];
-  prefix: string | null;
-  namePrefix: string | null;
-  controller: string | null;
-  namespace: string | null;
-  namespaceResets: boolean;
-} {
-  const middleware: string[] = [];
-  let prefix: string | null = null;
-  let namePrefix: string | null = null;
-  let controller: string | null = null;
-  let namespace: string | null = null;
-  let namespaceResets = false;
-  for (const ctx of stack) {
-    middleware.push(...ctx.middleware);
-    if (ctx.prefix) prefix = prefix ? `${prefix}/${ctx.prefix}`.replace(/\/+/g, '/') : ctx.prefix;
-    if (ctx.namePrefix) {
-      namePrefix =
-        kind === 'lumen'
-          ? mergeLumenGroupAs(namePrefix, ctx.namePrefix)
-          : mergeLaravelGroupNamePrefix(namePrefix, ctx.namePrefix);
-    }
-    if (ctx.controller) controller = ctx.controller;
-    if (ctx.namespaceResets) {
-      namespaceResets = true;
-      namespace = ctx.namespace?.replace(/^\\+|\\+$/g, '') || null;
-    } else if (ctx.namespace) {
-      namespace = joinPhpRouteGroupNamespaces(namespace, ctx.namespace, kind, false);
-    }
-  }
-  return { middleware, prefix, namePrefix, controller, namespace, namespaceResets };
+): ComposedRouteGroupContext {
+  let composed = EMPTY_ROUTE_GROUP_CONTEXT;
+  for (const ctx of stack) composed = extendRouteGroupContext(composed, ctx, kind);
+  return composed;
 }
 
 /** Cross-file bootstrap (outer) then in-file (inner) URL prefix. */
@@ -109,11 +139,6 @@ export function mergeRoutePrefixes(outer: string | null, inner: string | null): 
   if (!outer) return inner;
   if (!inner) return outer;
   return `${outer}/${inner}`.replace(/\/+/g, '/');
-}
-
-/** Cross-file Lumen-style group `as` stacking. */
-export function mergeCrossFileGroupAs(outer: string | null, inner: string | null): string | null {
-  return mergeLumenGroupAs(outer, inner);
 }
 
 export function qualifyStringActionController(

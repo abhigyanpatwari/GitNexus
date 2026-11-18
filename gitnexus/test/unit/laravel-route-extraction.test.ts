@@ -137,7 +137,89 @@ Route::apiResource('/api/photos', ApiPhotoController::class);
     const routes = extract(`<?php
 Route::get($base ?? '/fallback', [OrderController::class, 'index']);
 `);
-    expect(routes.map((route) => route.routePath)).not.toContain('undefinedundefined');
+    expect(routes).toHaveLength(1);
+    expect(routes[0]).toMatchObject({
+      routePath: null,
+      controllerName: 'OrderController',
+      methodName: 'index',
+    });
+  });
+
+  it('folds a concatenated URI when tree-sitter hands out fresh node wrappers', () => {
+    const tree = parser.parse(`<?php
+Route::get('/a' . ('/b' . '/c'), [OrderController::class, 'index']);
+`);
+    // Every read returns a new wrapper, as node-tree-sitter does after a GC.
+    const fresh = (node: Parser.SyntaxNode): Parser.SyntaxNode =>
+      new Proxy(node, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop, target);
+          if (prop === 'children' || prop === 'namedChildren') {
+            return (value as Parser.SyntaxNode[]).map(fresh);
+          }
+          if (prop === 'childForFieldName') {
+            return (field: string) => {
+              const child = target.childForFieldName(field);
+              return child ? fresh(child) : null;
+            };
+          }
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    const routes = extractLaravelRoutes(
+      { rootNode: fresh(tree.rootNode) } as Parser.Tree,
+      'routes/web.php',
+    );
+    expect(routes.map((route) => route.routePath)).toEqual(['/a/b/c']);
+  });
+
+  it('drops empty middleware strings', () => {
+    const routes = extract(`<?php
+Route::middleware('')->get('/a', [OrderController::class, 'index']);
+Route::middleware(['', 'auth'])->get('/b', [OrderController::class, 'index']);
+`);
+    expect(routes.map((route) => route.middleware)).toEqual([[], ['auth']]);
+  });
+
+  it('ignores comments between call arguments', () => {
+    const routes = extract(`<?php
+Route::get(/* uri */ '/orders', /* action */ [OrderController::class, 'index']);
+Route::match(['get', 'post'], /* uri */ '/search', 'SearchController@search');
+`);
+    expect(routes).toEqual([
+      expect.objectContaining({
+        routePath: '/orders',
+        controllerName: 'OrderController',
+        methodName: 'index',
+      }),
+      expect.objectContaining({
+        routePath: '/search',
+        controllerName: 'SearchController',
+        methodName: 'search',
+      }),
+    ]);
+  });
+
+  it('does not read a keyed action array as a positional controller pair', () => {
+    const routes = extract(`<?php
+Route::get('/orders', ['middleware' => 'auth', 'as' => 'orders', function () {}]);
+Route::get('/report', ['middleware' => 'auth', 'uses' => $handler]);
+`);
+    expect(routes).toEqual([
+      expect.objectContaining({
+        routePath: '/orders',
+        routeName: 'orders',
+        controllerName: null,
+        methodName: null,
+        middleware: ['auth'],
+      }),
+      expect.objectContaining({
+        routePath: '/report',
+        controllerName: null,
+        methodName: null,
+        middleware: ['auth'],
+      }),
+    ]);
   });
 
   it('threads fluent namespace into grouped string-action routes', () => {

@@ -9,7 +9,10 @@ import {
   applyPhpRouterRequireContexts,
   resolvePhpRouterRequireBindings,
 } from '../../src/core/ingestion/route-extractors/php-router-require-context.js';
-import type { ExtractedRoute } from '../../src/core/ingestion/route-extractors/laravel.js';
+import {
+  extractLaravelRoutes,
+  type ExtractedRoute,
+} from '../../src/core/ingestion/route-extractors/laravel.js';
 
 const parser = new Parser();
 parser.setLanguage(PHP.php_only);
@@ -117,6 +120,8 @@ describe('resolvePhpRouterRequireBindings', () => {
         middleware: ['auth'],
         namePrefix: 'orders',
         lineNumber: 1,
+        column: 0,
+        namespaceResets: false,
         once: false,
         appliesContext: true,
         unguarded: true,
@@ -129,6 +134,8 @@ describe('resolvePhpRouterRequireBindings', () => {
         middleware: [],
         namePrefix: null,
         lineNumber: 2,
+        column: 0,
+        namespaceResets: false,
         once: false,
         appliesContext: true,
         unguarded: true,
@@ -165,6 +172,8 @@ describe('applyPhpRouterRequireContexts', () => {
         middleware: ['auth'],
         namePrefix: 'order',
         lineNumber: 1,
+        column: 0,
+        namespaceResets: false,
         once: false,
         appliesContext: true,
         unguarded: true,
@@ -222,6 +231,8 @@ describe('applyPhpRouterRequireContexts', () => {
         middleware: [],
         namePrefix: null,
         lineNumber: 1,
+        column: 0,
+        namespaceResets: false,
         once: false,
         appliesContext: true,
         unguarded: true,
@@ -262,6 +273,8 @@ describe('applyPhpRouterRequireContexts', () => {
         middleware: [],
         namePrefix: null,
         lineNumber: 1,
+        column: 0,
+        namespaceResets: false,
         once: false,
         appliesContext: true,
         unguarded: true,
@@ -312,7 +325,7 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     ]);
   });
 
-  it('does not bind requires inside functions or closures that the group does not run', () => {
+  it('does not give the group context to requires in functions or closures it does not run', () => {
     const bindings = extractBindings(
       `<?php
 $app->router->group(['prefix' => 'api'], function ($router) {
@@ -322,7 +335,10 @@ $app->router->group(['prefix' => 'api'], function ($router) {
 `,
       'bootstrap/app.php',
     );
-    expect(bindings).toEqual([]);
+    expect(bindings.map((b) => [b.requiredPath, b.appliesContext, b.unguarded])).toEqual([
+      ['routes/a.php', false, false],
+      ['routes/b.php', false, false],
+    ]);
   });
 
   it('marks require_once and include_once bindings', () => {
@@ -554,7 +570,7 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       new Set(['bootstrap/app.php', 'routes/web.php']),
       bindings,
     );
-    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual([null, 'api']);
   });
 
   it('a require inside a function does not count as already run', () => {
@@ -571,7 +587,114 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       new Set(['bootstrap/app.php', 'routes/web.php']),
       bindings,
     );
-    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual([null, 'api']);
+  });
+
+  const webContexts = (source: string): (string | null)[] | undefined =>
+    resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      extractBindings(source, 'bootstrap/app.php'),
+    )
+      .get('routes/web.php')
+      ?.map((ctx) => ctx.prefix);
+
+  it('a require on the right of && does not count as already run', () => {
+    expect(
+      webContexts(`<?php
+$on && require_once __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`),
+    ).toEqual([null, 'api']);
+  });
+
+  it('a require after a possible early return does not count as already run', () => {
+    expect(
+      webContexts(`<?php
+if (!$on) { return; }
+require __DIR__ . '/../routes/web.php';
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`),
+    ).toEqual([null, 'api']);
+  });
+
+  it('a return inside a group closure only guards the rest of that closure', () => {
+    expect(
+      webContexts(`<?php
+$app->router->group(['prefix' => 'first'], function ($router) {
+  require __DIR__ . '/../routes/web.php';
+  return;
+});
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`),
+    ).toEqual(['first']);
+  });
+
+  it('an unbraced conditional do-body does not count as already run', () => {
+    expect(
+      webContexts(`<?php
+$app->router->group(['prefix' => 'first'], function ($router) {
+  do if ($on) require_once __DIR__ . '/../routes/web.php'; while (0);
+});
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`),
+    ).toEqual(['first', 'api']);
+  });
+
+  it('a file required both bare and inside a group keeps both contexts', () => {
+    expect(
+      webContexts(`<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/../routes/web.php';
+});
+require __DIR__ . '/../routes/web.php';
+`),
+    ).toEqual(['api', null]);
+  });
+
+  it('orders same-line requires by column whatever order bindings arrive in', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) { require_once __DIR__ . '/../routes/web.php'; }); require_once __DIR__ . '/../routes/web.php';
+`,
+      'bootstrap/app.php',
+    );
+    const files = new Set(['bootstrap/app.php', 'routes/web.php']);
+    const forward = resolvePhpRouterRequireBindings(files, bindings);
+    const reversed = resolvePhpRouterRequireBindings(files, [...bindings].reverse());
+    expect(forward.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+    expect(reversed).toEqual(forward);
+  });
+
+  it('deduplicates identical contexts', () => {
+    expect(
+      webContexts(`<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require __DIR__ . '/../routes/web.php';
+  require __DIR__ . '/../routes/web.php';
+});
+`),
+    ).toEqual(['api']);
+  });
+
+  it('accepts (__DIR__) and lowercase __dir__ in a require path', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group([], function ($router) {
+  require (__DIR__) . '/../routes/a.php';
+  require __dir__ . '/../routes/b.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings.map((b) => b.requiredPath)).toEqual(['routes/a.php', 'routes/b.php']);
   });
 
   it('folds a parenthesized require path', () => {
@@ -584,6 +707,104 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       'bootstrap/app.php',
     );
     expect(bindings.map((b) => b.requiredPath)).toEqual(['routes/web.php']);
+  });
+});
+
+describe('route files required by other route files', () => {
+  const bootstrap = extractBindings(
+    `<?php
+$app->router->group([
+  'prefix' => 'api',
+  'namespace' => 'App\\\\Http\\\\Controllers',
+  'middleware' => 'jwt',
+  'as' => 'api',
+], function ($router) {
+  require __DIR__ . '/../routes/web.php';
+});
+`,
+    'bootstrap/app.php',
+  );
+  const web = extractBindings(
+    `<?php
+$router->group(['prefix' => 'v1', 'namespace' => 'Admin', 'middleware' => 'admin', 'as' => 'v1'], function ($router) {
+  require __DIR__ . '/admin.php';
+});
+`,
+    'routes/web.php',
+  );
+  const files = ['bootstrap/app.php', 'routes/web.php', 'routes/admin.php'];
+
+  it('composes the host route file contexts with the inner group', () => {
+    const map = resolvePhpRouterRequireBindings(files, [...web, ...bootstrap]);
+    expect(map.get('routes/admin.php')).toEqual([
+      {
+        prefix: 'api/v1',
+        namespace: 'App\\Http\\Controllers\\Admin',
+        middleware: ['jwt', 'admin'],
+        namePrefix: 'api.v1',
+      },
+    ]);
+  });
+
+  it.each(['require_once', 'require'])(
+    'a %s back into a file that is already running adds no context',
+    (keyword) => {
+      const admin = extractBindings(
+        `<?php
+${keyword} __DIR__ . '/web.php';
+`,
+        'routes/admin.php',
+      );
+      const map = resolvePhpRouterRequireBindings(files, [...bootstrap, ...web, ...admin]);
+      expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+      expect(map.get('routes/admin.php')?.map((ctx) => ctx.prefix)).toEqual(['api/v1']);
+    },
+  );
+
+  it('bounds the contexts a chain of multiplying route files can produce', () => {
+    const chain: string[] = ['bootstrap/app.php'];
+    const bindings = [];
+    for (let i = 0; i < 12; i++) {
+      const host = i === 0 ? 'bootstrap/app.php' : `routes/r${i - 1}.php`;
+      const target = `routes/r${i}.php`;
+      chain.push(target);
+      bindings.push(
+        ...extractBindings(
+          `<?php
+$router->group(['prefix' => 'a'], function ($router) { require '${target}'; });
+$router->group(['prefix' => 'b'], function ($router) { require '${target}'; });
+`,
+          host,
+        ),
+      );
+    }
+    const map = resolvePhpRouterRequireBindings(chain, bindings);
+    expect(map.get('routes/r11.php')).toHaveLength(256);
+  });
+
+  it('applies bare and grouped contexts to extracted routes', () => {
+    const routesSource = `<?php
+$router->get('/orders', ['as' => 'orders', 'uses' => 'OrderController@index']);
+`;
+    const routes = extractLaravelRoutes(parser.parse(routesSource), 'routes/orders.php');
+    const host = extractBindings(
+      `<?php
+require __DIR__ . '/../routes/orders.php';
+$app->router->group(['prefix' => 'api', 'middleware' => 'jwt', 'as' => 'api'], function ($router) {
+  require __DIR__ . '/../routes/orders.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const merged = applyPhpRouterRequireContexts(
+      routes,
+      ['bootstrap/app.php', 'routes/orders.php'],
+      host,
+    );
+    expect(merged.map((r) => [r.prefix, r.middleware, r.routeName])).toEqual([
+      [null, [], 'orders'],
+      ['api', ['jwt'], 'api.orders'],
+    ]);
   });
 });
 

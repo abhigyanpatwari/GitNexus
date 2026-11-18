@@ -370,6 +370,16 @@ $app->router->get('/ping', 'PingController@ping');
     );
   });
 
+  it('accepts $this->router and rejects ->router on other objects', () => {
+    const routes = extract(`<?php
+$this->router->get('/self', 'SelfController@show');
+$client->router->get('/client', 'X@y');
+$this->http->router->get('/nested', 'X@y');
+$client->router->group([], function () {});
+`);
+    expect(routes.map((route) => route.routePath)).toEqual(['/self']);
+  });
+
   it('F3: use import + class array in namespace group keeps imported FQCN', () => {
     const routes = extract(`<?php
 use App\\Admin\\UserController;

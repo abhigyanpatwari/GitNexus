@@ -1,6 +1,7 @@
 import { isPhpRouteFile } from '../languages/php.js';
 import type { ExtractedRoute } from './laravel.js';
 import {
+  extendRouteGroupContext,
   joinPhpRouteGroupNamespaces,
   mergeLumenRouteName,
   mergeRoutePrefixes,
@@ -15,21 +16,69 @@ export interface PhpRouteRequireContext {
   namePrefix: string | null;
 }
 
+const IDENTITY_CONTEXT: PhpRouteRequireContext = Object.freeze({
+  prefix: null,
+  namespace: null,
+  middleware: Object.freeze([]) as unknown as string[],
+  namePrefix: null,
+});
+
 /**
- * Map repo-relative route file paths to every bootstrap group context under
- * which they may load. Bindings apply only when the required path resolves to
- * an indexed routes/*.php file. The only context dropped is one PHP provably
- * skips: a `require_once` in the same host file after an earlier unguarded
- * require of the same target. Which host runs first is unknown statically, so
- * hosts never suppress each other, and the result does not depend on the
- * order bindings arrive in.
+ * Distinct contexts kept per route file. Chains of route files that each
+ * require the next under several groups multiply contexts; past this bound
+ * further contexts are dropped rather than growing output exponentially.
+ */
+const MAX_CONTEXTS_PER_FILE = 256;
+
+const contextKey = (ctx: PhpRouteRequireContext): string =>
+  JSON.stringify([ctx.prefix, ctx.namespace, ctx.namePrefix, ctx.middleware]);
+
+function composeContext(
+  outer: PhpRouteRequireContext,
+  binding: ExtractedPhpRouteRequireBinding,
+): PhpRouteRequireContext {
+  if (!binding.appliesContext) return outer;
+  const composed = extendRouteGroupContext(
+    { ...outer, controller: null, namespaceResets: false },
+    {
+      prefix: binding.prefix,
+      namespace: binding.namespace,
+      namespaceResets: binding.namespaceResets,
+      middleware: binding.middleware,
+      namePrefix: binding.namePrefix,
+      controller: null,
+    },
+    'lumen',
+  );
+  return {
+    prefix: composed.prefix,
+    namespace: composed.namespace,
+    middleware: [...composed.middleware],
+    namePrefix: composed.namePrefix,
+  };
+}
+
+const compareBindingPosition = (
+  a: ExtractedPhpRouteRequireBinding,
+  b: ExtractedPhpRouteRequireBinding,
+): number => a.lineNumber - b.lineNumber || a.column - b.column;
+
+/**
+ * Map repo-relative route file paths to every group context under which they
+ * may load. A bare require contributes the empty context, so a file loaded
+ * both bare and inside a group keeps both. When the host is itself a route
+ * file that is required somewhere, each of its contexts wraps the binding's
+ * own (transitive requires). The only edge dropped is one PHP provably skips:
+ * a `require_once` in the same host after an earlier unguarded require of the
+ * same target. Hosts never suppress each other, and the result does not
+ * depend on the order bindings arrive in. Files whose only context is the
+ * empty one are omitted: their routes are unchanged.
  */
 export function resolvePhpRouterRequireBindings(
   files: Iterable<string>,
   bindings: readonly ExtractedPhpRouteRequireBinding[],
 ): Map<string, PhpRouteRequireContext[]> {
   const fileSet = new Set([...files].map((f) => f.replace(/\\/g, '/')));
-  const contextsByFile = new Map<string, PhpRouteRequireContext[]>();
 
   const byHost = new Map<string, ExtractedPhpRouteRequireBinding[]>();
   for (const binding of bindings) {
@@ -38,33 +87,79 @@ export function resolvePhpRouterRequireBindings(
     if (list) list.push(binding);
     else byHost.set(host, [binding]);
   }
-  const hosts = [...byHost.keys()].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 
-  for (const host of hosts) {
-    const hostBindings = [...byHost.get(host)!].sort((a, b) => a.lineNumber - b.lineNumber);
+  type Edge = { host: string; target: string; binding: ExtractedPhpRouteRequireBinding };
+  const edges: Edge[] = [];
+  const required = new Set<string>();
+  for (const host of [...byHost.keys()].sort()) {
     const included = new Set<string>();
-    for (const binding of hostBindings) {
+    for (const binding of byHost.get(host)!.sort(compareBindingPosition)) {
       const target = binding.requiredPath.replace(/\\/g, '/');
       if (!fileSet.has(target) || !isPhpRouteFile(target)) continue;
       if (binding.once && included.has(target)) continue;
       if (binding.unguarded) included.add(target);
-      if (!binding.appliesContext) continue;
-      const ctx: PhpRouteRequireContext = {
-        prefix: binding.prefix,
-        namespace: binding.namespace,
-        middleware: [...binding.middleware],
-        namePrefix: binding.namePrefix,
-      };
-      const existing = contextsByFile.get(target) ?? [];
-      existing.push(ctx);
-      contextsByFile.set(target, existing);
+      edges.push({ host, target, binding });
+      required.add(target);
     }
   }
 
-  return contextsByFile;
+  const outgoing = new Map<string, Edge[]>();
+  for (const edge of edges) {
+    const list = outgoing.get(edge.host);
+    if (list) list.push(edge);
+    else outgoing.set(edge.host, [edge]);
+  }
+
+  // A host nobody requires loads as-is; a required route file loads under
+  // each of its own contexts. Each distinct context reaches a file once and
+  // is pushed along that file's edges once, so the work is proportional to
+  // the output. A context remembers the files already running above it: a
+  // `require_once` back into one of them is skipped by PHP, and a plain
+  // require back into one only terminates behind a runtime guard, so neither
+  // adds a context.
+  type Chain = { file: string; parent: Chain | null };
+  const onChain = (chain: Chain | null, file: string): boolean => {
+    for (let c = chain; c; c = c.parent) if (c.file === file) return true;
+    return false;
+  };
+  const resolved = new Map<string, PhpRouteRequireContext[]>();
+  const seen = new Map<string, Set<string>>();
+  const queue: { ctx: PhpRouteRequireContext; chain: Chain }[] = [];
+  const add = (edge: Edge, ctx: PhpRouteRequireContext, parent: Chain) => {
+    if (onChain(parent, edge.target)) return;
+    let keys = seen.get(edge.target);
+    if (!keys) {
+      keys = new Set();
+      seen.set(edge.target, keys);
+      resolved.set(edge.target, []);
+    }
+    if (keys.size >= MAX_CONTEXTS_PER_FILE) return;
+    const key = contextKey(ctx);
+    if (keys.has(key)) return;
+    keys.add(key);
+    resolved.get(edge.target)!.push(ctx);
+    queue.push({ ctx, chain: { file: edge.target, parent } });
+  };
+  for (const edge of edges) {
+    if (required.has(edge.host)) continue;
+    add(edge, composeContext(IDENTITY_CONTEXT, edge.binding), { file: edge.host, parent: null });
+  }
+  for (let i = 0; i < queue.length; i++) {
+    const { ctx, chain } = queue[i];
+    for (const edge of outgoing.get(chain.file) ?? []) {
+      add(edge, composeContext(ctx, edge.binding), chain);
+    }
+  }
+
+  const identityKey = contextKey(IDENTITY_CONTEXT);
+  for (const [file, contexts] of resolved) {
+    if (contexts.length === 1 && contextKey(contexts[0]) === identityKey) resolved.delete(file);
+  }
+  return resolved;
 }
 
 function applyContext(route: ExtractedRoute, ctx: PhpRouteRequireContext): ExtractedRoute {
+  if (ctx === IDENTITY_CONTEXT) return route;
   const prefix = mergeRoutePrefixes(ctx.prefix, route.prefix);
   const middleware = [...ctx.middleware, ...route.middleware];
   const mergedName = route.routeName

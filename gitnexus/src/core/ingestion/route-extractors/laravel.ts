@@ -3,16 +3,33 @@ import { extractStringContent, findDescendant, type SyntaxNode } from '../utils/
 import { splitNamespaceUseDeclaration } from '../languages/php/import-decomposer.js';
 import { normalizeQualifiedName } from '../utils/qualified-name.js';
 import {
-  composeRouteGroupStack,
+  EMPTY_ROUTE_GROUP_CONTEXT,
   expandMiddlewareTokens,
+  extendRouteGroupContext,
   mergeLaravelRouteName,
   mergeLumenRouteName,
   qualifyStringActionController,
+  type ComposedRouteGroupContext,
   type PhpRouteReceiverKind,
   type RouteGroupContext,
 } from './php-route-group.js';
 
 export type { RouteGroupContext, PhpRouteReceiverKind } from './php-route-group.js';
+
+/** Group stack composed per receiver kind: Laravel and Lumen merge `as`/namespace differently. */
+type ComposedGroups = Readonly<Record<PhpRouteReceiverKind, ComposedRouteGroupContext>>;
+
+const NO_GROUPS: ComposedGroups = {
+  laravel: EMPTY_ROUTE_GROUP_CONTEXT,
+  lumen: EMPTY_ROUTE_GROUP_CONTEXT,
+};
+
+function extendComposedGroups(parent: ComposedGroups, ctx: RouteGroupContext): ComposedGroups {
+  return {
+    laravel: extendRouteGroupContext(parent.laravel, ctx, 'laravel'),
+    lumen: extendRouteGroupContext(parent.lumen, ctx, 'lumen'),
+  };
+}
 
 export interface ExtractedRoute {
   filePath: string;
@@ -64,18 +81,21 @@ function getMemberObject(node: SyntaxNode): SyntaxNode | null {
   return node.childForFieldName?.('object') ?? node.children?.[0] ?? null;
 }
 
-function isRouterVariable(node: SyntaxNode): boolean {
-  if (node.type !== 'variable_name') return false;
-  const name = node.children?.find((c: SyntaxNode) => c.type === 'name')?.text;
-  return name === 'router';
+function phpVariableName(node: SyntaxNode | null | undefined): string | null {
+  if (node?.type !== 'variable_name') return null;
+  return node.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
 }
 
-/** `$router` or `$app->router` / `$this->router` (member access only — no call chains). */
+/** Variables that hold the Lumen application in bootstrap and route files. */
+const LUMEN_APP_VARIABLES = new Set(['app', 'this']);
+
+/** `$router`, `$app->router` or `$this->router` — the Lumen router, not any `->router` property. */
 function isRouterReceiver(node: SyntaxNode | null | undefined): boolean {
   if (!node) return false;
-  if (isRouterVariable(node)) return true;
-  if (node.type === 'member_access_expression') {
-    return getRouterCallMethodName(node) === 'router';
+  if (phpVariableName(node) === 'router') return true;
+  if (node.type === 'member_access_expression' && getRouterCallMethodName(node) === 'router') {
+    const owner = phpVariableName(getMemberObject(node));
+    return owner !== null && LUMEN_APP_VARIABLES.has(owner);
   }
   return false;
 }
@@ -154,7 +174,7 @@ function callArguments(argsNode: SyntaxNode | null): SyntaxNode[] {
     if (child.type === 'argument') {
       const inner = child.children?.[0];
       if (inner) out.push(inner);
-    } else if (child.type !== '(' && child.type !== ')' && child.type !== ',') {
+    } else if (child.isNamed && child.type !== 'comment') {
       out.push(child);
     }
   }
@@ -165,52 +185,58 @@ function firstCallArgument(argsNode: SyntaxNode | null): SyntaxNode | null {
   return callArguments(argsNode)[0] ?? null;
 }
 
-function foldPhpStringLiteral(node: SyntaxNode | null | undefined): string | null {
-  if (!node) return null;
-  type Frame = { node: SyntaxNode; post: boolean };
-  const stack: Frame[] = [{ node, post: false }];
-  const results = new Map<SyntaxNode, string | null>();
+/**
+ * Value of a leaf the caller knows (e.g. `__DIR__`): a string, `null` for
+ * "not a literal", or `undefined` to let the fold handle the node.
+ */
+export type PhpLiteralLeaf = (node: SyntaxNode) => string | null | undefined;
 
-  while (stack.length > 0) {
-    const frame = stack.pop();
-    if (!frame) break;
-    const { node: current, post } = frame;
-    if (!post) {
-      stack.push({ node: current, post: true });
-      if (current.type === 'parenthesized_expression') {
-        // children[0] is the opening '('; the enclosed expression is the named child.
-        const inner = current.namedChildren?.[0];
-        if (inner) stack.push({ node: inner, post: false });
-        continue;
-      }
-      if (current.type === 'binary_expression') {
-        const op = current.children?.find((c: SyntaxNode) => c.type === '.');
-        if (!op) continue;
-        const right = current.children[2] ?? current.children[current.children.length - 1];
-        const left = current.children[0];
-        if (right) stack.push({ node: right, post: false });
-        if (left) stack.push({ node: left, post: false });
-      }
+const CONCAT = Symbol('concat');
+
+/**
+ * Fold a literal string or `.`-concatenation of literals; `null` otherwise.
+ * Iterative, and keyed by position rather than node identity: tree-sitter
+ * wrappers are not stable across reads, so identity-keyed state can miss.
+ */
+export function foldPhpStringLiteral(
+  node: SyntaxNode | null | undefined,
+  leaf?: PhpLiteralLeaf,
+): string | null {
+  if (!node) return null;
+  const work: (SyntaxNode | typeof CONCAT)[] = [node];
+  const values: (string | null)[] = [];
+  while (work.length > 0) {
+    const item = work.pop()!;
+    if (item === CONCAT) {
+      const right = values.pop() ?? null;
+      const left = values.pop() ?? null;
+      values.push(left !== null && right !== null ? left + right : null);
       continue;
     }
-
-    if (current.type === 'string' || current.type === 'encapsed_string') {
-      results.set(current, readPhpString(current));
-    } else if (current.type === 'parenthesized_expression') {
-      const inner = current.namedChildren?.[0];
-      results.set(current, inner ? (results.get(inner) ?? null) : null);
-    } else if (current.type === 'binary_expression') {
-      const right = current.children[2] ?? current.children[current.children.length - 1];
-      const left = current.children[0];
-      const l = left ? (results.get(left) ?? null) : null;
-      const r = right ? (results.get(right) ?? null) : null;
-      results.set(current, l !== null && r !== null ? l + r : null);
+    const known = leaf?.(item);
+    if (known !== undefined) {
+      values.push(known);
+      continue;
+    }
+    if (item.type === 'string' || item.type === 'encapsed_string') {
+      values.push(readPhpString(item));
+    } else if (item.type === 'parenthesized_expression') {
+      const inner = item.namedChildren?.find((c: SyntaxNode) => c.type !== 'comment');
+      if (inner) work.push(inner);
+      else values.push(null);
+    } else if (item.type === 'binary_expression') {
+      const left = item.childForFieldName?.('left');
+      const right = item.childForFieldName?.('right');
+      if (item.childForFieldName?.('operator')?.type !== '.' || !left || !right) {
+        values.push(null);
+      } else {
+        work.push(CONCAT, right, left);
+      }
     } else {
-      results.set(current, null);
+      values.push(null);
     }
   }
-
-  return results.get(node) ?? null;
+  return values.pop() ?? null;
 }
 
 /** First route URI argument: literal string or pure literal concatenation, else null. */
@@ -235,7 +261,7 @@ function readMiddlewareTokensFromValue(
   if (!val) return [];
   if (val.type === 'string' || val.type === 'encapsed_string') {
     const raw = readPhpString(val);
-    if (raw === null) return [];
+    if (!raw) return [];
     return kind === 'lumen' ? expandMiddlewareTokens(raw) : [raw];
   }
   if (val.type === 'array_creation_expression') {
@@ -246,7 +272,7 @@ function readMiddlewareTokensFromValue(
         (c: SyntaxNode) => c.type === 'string' || c.type === 'encapsed_string',
       );
       const raw = str ? readPhpString(str) : null;
-      if (raw === null) continue;
+      if (!raw) continue;
       items.push(raw);
     }
     return items;
@@ -391,19 +417,17 @@ function parseAssociativeRouteAction(
   let uses: string | null = null;
   let actionRouteName: string | null = null;
   const actionMiddleware: string[] = [];
-  let sawUses = false;
+  let keyed = false;
   for (const el of handlerNode.children ?? []) {
     if (el.type !== 'array_element_initializer') continue;
     const children = el.children ?? [];
     const arrowIdx = children.findIndex((c: SyntaxNode) => c.type === '=>');
     if (arrowIdx === -1) continue;
+    keyed = true;
     const key = readPhpString(children[arrowIdx - 1]);
     const val = children[arrowIdx + 1];
     if (key === 'uses') {
-      sawUses = true;
-      const text =
-        val?.type === 'string' || val?.type === 'encapsed_string' ? readPhpString(val) : null;
-      uses = text;
+      uses = val?.type === 'string' || val?.type === 'encapsed_string' ? readPhpString(val) : null;
     } else if (key === 'as') {
       actionRouteName =
         val?.type === 'string' || val?.type === 'encapsed_string' ? readPhpString(val) : null;
@@ -411,20 +435,20 @@ function parseAssociativeRouteAction(
       actionMiddleware.push(...readMiddlewareTokensFromValue(val, kind));
     }
   }
-  if (!sawUses || !uses) {
-    if (actionRouteName) {
-      return {
-        controller: null,
-        controllerQualified: null,
-        method: null,
-        bareMethod: null,
-        actionRouteName,
-        actionMiddleware,
-        stringAction: false,
-        controllerAbsolute: false,
-      };
-    }
-    return null;
+  // Positional `[Ctrl::class, 'm']` has no keys. A keyed action without a
+  // string `uses` (closure, dynamic value) has no resolvable handler.
+  if (!keyed) return null;
+  if (!uses) {
+    return {
+      controller: null,
+      controllerQualified: null,
+      method: null,
+      bareMethod: null,
+      actionRouteName,
+      actionMiddleware,
+      stringAction: false,
+      controllerAbsolute: false,
+    };
   }
   if (uses.includes('@')) {
     const at = uses.indexOf('@');
@@ -479,12 +503,7 @@ function extractControllerTarget(
   };
   if (!argsNode) return none;
 
-  const args: (SyntaxNode | undefined)[] = [];
-  for (const child of argsNode.children ?? []) {
-    if (child.type === 'argument') args.push(child.children?.[0]);
-    else if (child.type !== '(' && child.type !== ')' && child.type !== ',') args.push(child);
-  }
-
+  const args = callArguments(argsNode);
   const handlerIndex = httpMethod === 'match' ? 2 : 1;
   const handlerNode = args[handlerIndex];
   if (!handlerNode) return none;
@@ -737,11 +756,12 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
     httpMethod: string,
     argsNode: SyntaxNode | null,
     lineNumber: number,
-    groupStack: RouteGroupContext[],
+    groups: ComposedGroups,
     chainAttrs: { method: string; argsNode: SyntaxNode | null }[],
     receiverKind: PhpRouteReceiverKind,
   ) {
-    const effective = composeRouteGroupStack(groupStack, receiverKind);
+    const composed = groups[receiverKind];
+    const effective = { ...composed, middleware: [...composed.middleware] };
     let routeName: string | null = null;
 
     for (const attr of chainAttrs) {
@@ -845,13 +865,14 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
 
   // Iterative traversal using an explicit stack to avoid V8 call stack overflow
   // on deeply nested ASTs (e.g. Go stdlib, large Grafana components).
-  // Each frame tracks the node and a snapshot of the group stack at that depth.
+  // Each frame tracks the node and the group stack at that depth, already
+  // composed, so a group level is joined once instead of once per route.
   interface WalkFrame {
     node: SyntaxNode;
-    groupSnapshot: RouteGroupContext[];
+    groupSnapshot: ComposedGroups;
   }
 
-  const walkStack: WalkFrame[] = [{ node: tree.rootNode, groupSnapshot: [] }];
+  const walkStack: WalkFrame[] = [{ node: tree.rootNode, groupSnapshot: NO_GROUPS }];
 
   while (walkStack.length > 0) {
     const { node, groupSnapshot } = walkStack.pop()!;
@@ -875,7 +896,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         const groupCtx = parseRouteGroupArrayArgs(argsNode, 'laravel');
         const body = findRouteGroupClosureBody(argsNode);
         if (body) {
-          const childSnapshot = [...groupSnapshot, groupCtx];
+          const childSnapshot = extendComposedGroups(groupSnapshot, groupCtx);
           const children = body.children ?? [];
           for (let i = children.length - 1; i >= 0; i--) {
             walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
@@ -912,7 +933,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
         }
         const body = findRouteGroupClosureBody(chain.terminalArgs);
         if (body) {
-          const childSnapshot = [...groupSnapshot, groupCtx];
+          const childSnapshot = extendComposedGroups(groupSnapshot, groupCtx);
           const children = body.children ?? [];
           for (let i = children.length - 1; i >= 0; i--) {
             walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
@@ -975,7 +996,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
       const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
       const body = findRouteGroupClosureBody(argsNode);
       if (body) {
-        const childSnapshot = [...groupSnapshot, groupCtx];
+        const childSnapshot = extendComposedGroups(groupSnapshot, groupCtx);
         const children = body.children ?? [];
         for (let i = children.length - 1; i >= 0; i--) {
           walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
