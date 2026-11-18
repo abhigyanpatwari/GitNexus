@@ -279,13 +279,28 @@ class Sub extends Base {
 describe('Java declared types: which inherited field shadows an enclosing one', () => {
   const result = useFixture('java-inherited-field-shadow', {
     ...OWNERS,
+    'outside/Root.java': 'package outside; public class Root {}',
+    'outside/Marker.java': 'package outside; public interface Marker {}',
+    'app/PackageBase.java': `package app;
+public class PackageBase extends outside.Root { java.util.List<Other> items; }`,
+    'outside/Bridge.java': 'package outside; public class Bridge extends app.PackageBase {}',
     'app/Outer.java': `package app;
 import java.util.List;
 class Generic<T> { List<T> items; }
 class Hidden { private List<Other> items; }
 interface Consts { List<Other> items = null; }
+class LocalBridge extends PackageBase {}
 class Outer {
   List<User> items;
+  class Direct extends PackageBase {
+    void run() { items.forEach(v -> v.save()); }
+  }
+  class SamePackage extends LocalBridge implements outside.Marker {
+    void run() { items.forEach(v -> v.save()); }
+  }
+  class AcrossPackages extends outside.Bridge {
+    void run() { items.forEach(v -> v.save()); }
+  }
   class External extends java.util.ArrayList<String> {
     void run() { items.forEach(v -> v.save()); }
   }
@@ -308,6 +323,9 @@ class Outer {
   it.each<[string, string, string[]]>([
     // A supertype outside the workspace may declare any field.
     ['External.run', 'Method:app/Outer.java:External.run#0', []],
+    ['Direct.run', 'Method:app/Outer.java:Direct.run#0', [OTHER]],
+    ['SamePackage.run', 'Method:app/Outer.java:SamePackage.run#0', [OTHER]],
+    ['AcrossPackages.run', 'Method:app/Outer.java:AcrossPackages.run#0', [USER]],
     // Generic declares the field, but its element is a type parameter.
     ['Untyped.run', 'Method:app/Outer.java:Untyped.run#0', []],
     // A private field is not inherited (JLS 8.3): Outer.items applies.

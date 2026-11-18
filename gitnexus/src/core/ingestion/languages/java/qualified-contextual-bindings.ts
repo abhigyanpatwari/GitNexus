@@ -111,27 +111,22 @@ export function inheritedFieldResolver(
       const type = inventory.get(id)!;
       for (const field of type.fact.fields) {
         if (field.name !== proof.name) continue;
-        if (field.access === 'private') {
-          hidden = true;
-          continue;
-        }
+        let visible = field.access !== 'private';
         if (field.access === 'package') {
           const own = packageOf(type.filePath);
           if (own === undefined || heirPackage === undefined) return 'unknown';
-          if (own !== heirPackage) {
-            hidden = true;
-            continue;
+          visible = own === heirPackage;
+          // A package-private field travels through the superclass chain from its declaration.
+          for (const ancestorId of ancestors) {
+            if (!visible || ancestorId === id) break;
+            const pkg = packageOf(inventory.get(ancestorId)!.filePath);
+            if (pkg === own || !indexes.methodDispatch.mroFor(ancestorId).includes(id)) continue;
+            if (pkg === undefined) return 'unknown';
+            visible = false;
           }
-          // Inherited only if no supertype between is in another package.
-          if (
-            ancestors.some((ancestorId) => {
-              const ancestor = inventory.get(ancestorId);
-              return ancestor === undefined || packageOf(ancestor.filePath) !== own;
-            })
-          )
-            return 'unknown';
         }
-        inherited.push({ field, filePath: type.filePath, scope: type.scope });
+        if (visible) inherited.push({ field, filePath: type.filePath, scope: type.scope });
+        else hidden = true;
       }
     }
     // Only inaccessible declarations: the name means what encloses the class.

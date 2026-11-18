@@ -129,9 +129,8 @@ export function lookupNameClaim(
         const total =
           local.length + indexed.length + augmented.length + namespace.length + workspace.length;
         if (total === 0) return EMPTY_BINDINGS;
-        // The finalized bucket alone is returned by reference, as
-        // `lookupBindingsAt` does: the shared lookup only reads it, and keeps
-        // its identity so per-array facts are computed once (finalize freezes it).
+        // Reuse the sole indexed array. Without a class filter this preserves
+        // the frozen bucket's identity for the shared lookup cache.
         if (indexed.length === total) return indexed;
         return [...local, ...indexed, ...augmented, ...namespace, ...workspace];
       },

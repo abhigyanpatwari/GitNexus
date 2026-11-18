@@ -14,8 +14,9 @@ export interface CallResultAssignmentSite {
   /**
    * Present when `lhs` holds an element reached from the call's result (for
    * example an iteration variable) instead of the result itself. The value is
-   * a provider-defined route that only `ScopeResolver.callResultElementType`
-   * interprets; without an answer from it the name stays unbound.
+   * a provider-defined route. `callResultAssignmentApplies` may consult it
+   * when validating the assignment. `callResultElementType` supplies the
+   * element type for an applicable assignment. An unknown type leaves `lhs` unbound.
    */
   readonly element?: string;
 }

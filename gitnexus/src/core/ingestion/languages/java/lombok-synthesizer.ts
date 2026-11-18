@@ -84,7 +84,7 @@ interface LombokField {
   accessors: AccessorsOptions;
   accessorsPresent: boolean;
   nonFinal: boolean;
-  /** An unprovable field annotation might suppress accessors: emit none. */
+  /** An unresolved field annotation may affect both accessors. */
   uncertain: boolean;
 }
 
@@ -534,7 +534,7 @@ interface ParsedAnnotations {
   nonFinal: boolean;
   /** `@FieldDefaults` makes fields final: true when proven or unreadable. */
   makeFinal: boolean;
-  /** Some Lombok-named annotation here could not be proven or refused. */
+  /** An unresolved annotation can affect more than one accessor. */
   uncertain: boolean;
 }
 
@@ -555,14 +555,21 @@ function parseModifierAnnotations(
   };
   if (!modifiersNode) return result;
 
+  let uncertainGetter = false;
+  let uncertainSetter = false;
   for (const child of modifiersNode.children) {
     if (child.type !== 'marker_annotation' && child.type !== 'annotation') continue;
     const nameNode = child.childForFieldName('name');
     const nameText = nameNode?.text ?? '';
     const proof = lombokAnnotationProof(nameText, imports, modifiersNode);
-    if (proof === 'uncertain') result.uncertain = true;
-    if (proof !== true) continue;
+    if (proof === false) continue;
     const simple = annotationSimpleName(nameText);
+    if (proof === 'uncertain') {
+      if (simple === 'Getter') uncertainGetter = true;
+      else if (simple === 'Setter') uncertainSetter = true;
+      else result.uncertain = true;
+      continue;
+    }
 
     if (simple === 'Tolerate') {
       result.tolerate = true;
@@ -602,6 +609,9 @@ function parseModifierAnnotations(
       else result.setter = cfg;
     }
   }
+  // Each override can suppress its own accessor, regardless of annotation order.
+  if (uncertainGetter) result.getter = { enabled: false, visibility: 'public' };
+  if (uncertainSetter) result.setter = { enabled: false, visibility: 'public' };
   return result;
 }
 

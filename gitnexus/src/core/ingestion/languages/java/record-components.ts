@@ -126,7 +126,7 @@ function implicitAccessorInfo(
   return {
     name,
     receiverType: null,
-    returnType: recordComponentReturnType(component),
+    returnType: recordComponentReturnType(component, javaTypeText),
     parameters: [],
     visibility: 'public',
     isStatic: false,

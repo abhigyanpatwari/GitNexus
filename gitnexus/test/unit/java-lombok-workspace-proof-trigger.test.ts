@@ -147,16 +147,21 @@ describe('Java Lombok workspace proof inherited member types', () => {
     ]);
   });
 
-  it('suppresses a field whose AccessLevel.NONE cannot be decided instead of falling back to Data', () => {
+  it.each([
+    ['Setter', 'getId'],
+    ['Getter', 'setId'],
+  ])('keeps the independent Data accessor when @%s(NONE) is uncertain', (annotation, accessor) => {
     const result = reconcile({
       'Dto.java': `package p; import lombok.*;
 @Data class Dto extends Holder.Inner {
-  @Setter(AccessLevel.NONE) private String id;
+  @${annotation}(AccessLevel.NONE) private String id;
   private String name;
 }`,
       'Holder.java': 'package p; public class Holder { public static class Inner {} }',
     });
-    expect(getters(result.after.get('Dto.java')).sort()).toEqual(['Dto.getName', 'Dto.setName']);
+    expect(getters(result.after.get('Dto.java')).sort()).toEqual(
+      [`Dto.${accessor}`, 'Dto.getName', 'Dto.setName'].sort(),
+    );
   });
 
   it('still vetoes a definite inherited workspace member type', () => {
