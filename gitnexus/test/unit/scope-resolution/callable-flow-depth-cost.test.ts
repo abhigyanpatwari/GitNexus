@@ -25,6 +25,8 @@ import { emitDartScopeCaptures } from '../../../src/core/ingestion/languages/dar
 import { emitKotlinScopeCaptures } from '../../../src/core/ingestion/languages/kotlin/index.js';
 import { emitCsharpScopeCaptures } from '../../../src/core/ingestion/languages/csharp/index.js';
 import { emitPhpScopeCaptures } from '../../../src/core/ingestion/languages/php/index.js';
+import { emitPythonScopeCaptures } from '../../../src/core/ingestion/languages/python/index.js';
+import { emitJsScopeCaptures } from '../../../src/core/ingestion/languages/javascript/index.js';
 import {
   isLanguageAvailable,
   loadLanguage,
@@ -119,4 +121,104 @@ describe('a call argument wrapping a function literal is not searched again per 
   it.skipIf(!kotlinAvailable)('Kotlin', () => expectLinear(NESTS.kotlin, 12, 0));
   it('C#', () => expectLinear(NESTS.csharp, 12, 1));
   it('PHP', () => expectLinear(NESTS.php, 14, 1));
+});
+
+function pythonOperandNodeVisits(source: string): number {
+  resetCallableFlowCaptureStats(true);
+  try {
+    emitPythonScopeCaptures(source, 'nest.py');
+    return getCallableFlowCaptureStats().operandNodeVisits;
+  } finally {
+    resetCallableFlowCaptureStats();
+  }
+}
+
+// A call whose callee is a call, and an assignment whose value is an
+// assignment, hold the whole nest below them. The callee and the assigned
+// value were searched without the per-file memo, and the second-leaf search
+// had none, so level k paid for the k levels under it: 2 * depth^2 - 1 visits
+// for `a()()...()` (32,767 at depth 128, now 510).
+describe('a nest of calls or assignments is not searched again per level', () => {
+  const depths = [8, 16, 64];
+
+  it.each([
+    {
+      nest: 'a call of a call',
+      source: (depth: number) => `a${'()'.repeat(depth)}\n`,
+      perLevel: 4,
+      fixed: -2,
+    },
+    {
+      nest: 'an assignment chain',
+      source: (depth: number) => `${'a = '.repeat(depth)}b\n`,
+      perLevel: 3,
+      fixed: 1,
+    },
+    {
+      nest: 'nested named expressions',
+      source: (depth: number) => `${'(a := '.repeat(depth)}f()${')'.repeat(depth)}\n`,
+      perLevel: 4,
+      fixed: 3,
+    },
+  ])('Python: $nest', ({ source, perLevel, fixed }) => {
+    expect(depths.map((depth) => pythonOperandNodeVisits(source(depth)))).toEqual(
+      depths.map((depth) => perLevel * depth + fixed),
+    );
+  });
+});
+
+function emittedOperandNodeVisits(emit: Emit, file: string, source: string): number {
+  resetCallableFlowCaptureStats(true);
+  try {
+    emit(source, file);
+    return getCallableFlowCaptureStats().operandNodeVisits;
+  } finally {
+    resetCallableFlowCaptureStats();
+  }
+}
+
+/** `o[(o[(o[0] = 1).k] = 1).k] = 1`: each destination holds the next assignment. */
+function nestedSubscriptDestination(depth: number): string {
+  let target = 'o[0]';
+  for (let level = 0; level < depth; level++) target = `o[(${target} = 1).k]`;
+  return `${target} = 1;\n`;
+}
+
+// The second-leaf search answers "more than one identifier leaf?" and must stop
+// at the second leaf it reaches. Finishing the subtree around that leaf first
+// walked the whole receiver of `a.f.f…` and the whole nest under a destination
+// that holds the next assignment: O(depth) per operand, O(depth^2) per nest.
+describe('the second-leaf search stops at the second leaf', () => {
+  const depths = [8, 16, 64];
+
+  it.each([
+    {
+      shape: 'Python: a member-chain argument',
+      emit: emitPythonScopeCaptures,
+      file: 'chain.py',
+      source: (depth: number) => `f(a${'.f'.repeat(depth)})\n`,
+      perLevel: 0,
+      fixed: 7,
+    },
+    {
+      shape: 'Python: a member-chain callee',
+      emit: emitPythonScopeCaptures,
+      file: 'chain.py',
+      source: (depth: number) => `a${'.f'.repeat(depth)}()\n`,
+      perLevel: 0,
+      fixed: 6,
+    },
+    {
+      shape: 'JavaScript: a destination that holds the next assignment',
+      emit: emitJsScopeCaptures,
+      file: 'nest.js',
+      source: nestedSubscriptDestination,
+      perLevel: 14,
+      fixed: 8,
+    },
+  ])('$shape', ({ emit, file, source, perLevel, fixed }) => {
+    expect(depths.map((depth) => emittedOperandNodeVisits(emit, file, source(depth)))).toEqual(
+      depths.map((depth) => perLevel * depth + fixed),
+    );
+  });
 });
