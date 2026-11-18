@@ -949,12 +949,12 @@ describe('Cursor hook guard timeout resolution', () => {
     'only ever adopts a guard that runs the command AND propagates its exit status',
     () => {
       // Independent re-derivation of the contract: whatever the resolver
-      // returns must be a real coreutils timeout/gtimeout AND must actually
+      // returns must be a known timeout executable AND must actually
       // propagate a non-zero exit. null is also a valid answer (no wrapper
       // installed here), but never a silently-dead substitute.
       const resolved = withTimeoutPath(undefined, () => freshHook().resolveUnixGuardTimeout());
       if (resolved === null) return; // nothing installed to validate
-      expect(path.basename(resolved)).toMatch(/^g?timeout$/);
+      expect(['timeout', 'gtimeout', 'gnutimeout']).toContain(path.basename(resolved));
       const probe = spawnSync(resolved, ['-k', '1', '1', '/bin/sh', '-c', 'exit 42'], {
         encoding: 'utf-8',
         timeout: 5000,
