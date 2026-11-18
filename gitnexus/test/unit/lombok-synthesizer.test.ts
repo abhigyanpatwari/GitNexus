@@ -280,6 +280,8 @@ class Order {
         ).symbols,
       ).toHaveLength(0);
 
+      // A single-static-import may name a member type, which shadows every
+      // type-import-on-demand (JLS 6.4.1); without resolution it is refused.
       const staticImport = parse(`
 import static com.acme.Constants.Data;
 import lombok.*;
@@ -293,6 +295,22 @@ class Order {
           staticImport,
           FILE_PATH,
           ownerMapBySimpleName(staticImport, FILE_PATH),
+        ).symbols,
+      ).toHaveLength(0);
+
+      const staticWildcard = parse(`
+import static com.acme.Constants.*;
+import lombok.*;
+@Data
+class Order {
+    private String orderId;
+}
+`);
+      expect(
+        synthesizeLombokAccessors(
+          staticWildcard,
+          FILE_PATH,
+          ownerMapBySimpleName(staticWildcard, FILE_PATH),
         ).symbols.map((symbol) => symbol.name),
       ).toEqual(['getOrderId', 'setOrderId']);
     });

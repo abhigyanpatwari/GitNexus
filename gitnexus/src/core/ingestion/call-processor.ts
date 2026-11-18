@@ -106,6 +106,28 @@ function pickSameFileHandler(
   return undefined;
 }
 
+/** Per same-file, same-name definition list (append-only in the symbol table),
+ * the first definition of each node id, extended as the list grows, so N
+ * same-named exports of one file cost one pass instead of N. */
+const firstDefById = new WeakMap<
+  readonly SymbolDefinition[],
+  { indexed: number; readonly byId: Map<string, SymbolDefinition> }
+>();
+
+function definitionWithId(
+  defs: readonly SymbolDefinition[],
+  nodeId: string,
+): SymbolDefinition | undefined {
+  if (defs.length === 0) return undefined;
+  let index = firstDefById.get(defs);
+  if (index === undefined) firstDefById.set(defs, (index = { indexed: 0, byId: new Map() }));
+  for (; index.indexed < defs.length; index.indexed++) {
+    const def = defs[index.indexed]!;
+    if (!index.byId.has(def.nodeId)) index.byId.set(def.nodeId, def);
+  }
+  return index.byId.get(nodeId);
+}
+
 /** Record one exported graph node into the incremental ExportedTypeMap. */
 export const accumulateExportedTypesFromParsedNode = (
   result: ExportedTypeMap,
@@ -118,7 +140,7 @@ export const accumulateExportedTypesFromParsedNode = (
   const name = node.properties.name as string;
   if (!name || name.length > MAX_TYPE_NAME_LENGTH) return;
   const defs = symbolTable.lookupExactAll(filePath, name);
-  const def = defs.find((d) => d.nodeId === node.id) ?? defs[0];
+  const def = definitionWithId(defs, node.id) ?? defs[0];
   if (!def) return;
   const typeName = def.returnType ?? def.declaredType;
   if (!typeName || typeName.length > MAX_TYPE_NAME_LENGTH) return;

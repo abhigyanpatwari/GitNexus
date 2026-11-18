@@ -63,6 +63,7 @@
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
+    "bench:java-ingestion": "node bench/java-ingestion/measure.mjs --check",
     "test:dupes": "node --import tsx tools/test-dupes/test-dupes.ts",
     "test:mutation:prepare": "node --import tsx tools/mutation/prepare/prepare.ts",
     "test:mutation:run": "node --import tsx tools/mutation/driver/run-scope.ts",

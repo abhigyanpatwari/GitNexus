@@ -27,7 +27,7 @@ def test_candidate_build_refuses_unavailable_containment_before_npm(monkeypatch,
     monkeypatch.setattr(release_build, "run_checked", lambda *a, **k: calls.append(a))
     write_lockfiles(tmp_path)
     with pytest.raises(SandboxError, match="no containment"):
-        release_build.build_candidate(tmp_path)
+        release_build.build_candidate(tmp_path, backend="bwrap")
     assert calls == []
 
 
@@ -166,3 +166,26 @@ def test_registry_and_in_checkout_workspace_links_are_allowed(monkeypatch, tmp_p
 
 def test_shipped_lockfiles_satisfy_the_registry_policy():
     release_build.require_registry_only_install(Path(__file__).resolve().parents[2])
+
+
+def test_unavailable_bubblewrap_builds_in_two_isolated_oci_phases(monkeypatch, tmp_path):
+    write_lockfiles(tmp_path)
+    (tmp_path / ".git").write_text("gitdir: private host path")
+    phases = []
+
+    def unavailable():
+        raise SandboxError("user namespace unavailable")
+
+    def worker(command, *, checkout, readonly, mounts, timeout, environment, registry_download):
+        assert checkout == tmp_path and not readonly and timeout > 0
+        assert environment == {"ONNXRUNTIME_NODE_INSTALL": "skip"}
+        mask, = mounts
+        assert mask.target == "/workspace/.git" and mask.source.read_bytes() == b""
+        phases.append((registry_download, command[-1]))
+
+    monkeypatch.setattr(release_build, "preflight_bubblewrap", unavailable)
+    monkeypatch.setattr(release_build, "run_worker", worker)
+    release_build.build_candidate(tmp_path)
+    assert [network for network, _ in phases] == [True, False]
+    assert all("--ignore-scripts" in line for line in phases[0][1].splitlines()[1:])
+    assert "npm run build" in phases[1][1]

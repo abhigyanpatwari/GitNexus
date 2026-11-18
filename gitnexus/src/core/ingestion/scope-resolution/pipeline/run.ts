@@ -162,6 +162,7 @@ function applySelectedCallResultBinding(
   indexes: ScopeResolutionIndexes,
   workspaceIndex: ReturnType<typeof buildWorkspaceResolutionIndex>,
   selected: SymbolDefinition | null | undefined,
+  elementType?: ScopeResolver['callResultElementType'],
 ): boolean {
   const scope = indexes.scopeTree.getScope(assignment.inScope);
   if (scope === undefined) return false;
@@ -169,7 +170,12 @@ function applySelectedCallResultBinding(
     selected == null
       ? undefined
       : workspaceIndex.declaredReturnTypeByCallableId.get(selected.nodeId);
-  return setCallResultBinding(scope, assignment.lhs, returned);
+  // An element of the result is typed only by the provider's route answer.
+  const bound =
+    selected == null || returned === undefined || assignment.element === undefined
+      ? returned
+      : elementType?.(selected, returned, assignment.element, indexes);
+  return setCallResultBinding(scope, assignment.lhs, bound);
 }
 
 /**
@@ -177,7 +183,8 @@ function applySelectedCallResultBinding(
  * Ambiguous dispatch and missing return annotations deliberately produce no
  * binding. Extraction emits these facts only for untyped declarations, so an
  * existing entry here is necessarily inference/mirroring and may be corrected;
- * explicit annotations never enter this join.
+ * explicit annotations never enter this join. A site in `refused` (see
+ * `ScopeResolver.callResultAssignmentApplies`) is left out entirely.
  */
 export function applyPreciseCallResultBindings(
   parsedFiles: readonly ParsedFile[],
@@ -188,11 +195,13 @@ export function applyPreciseCallResultBindings(
   model: SemanticModel,
   requireOwnedHoistedReturn = false,
   selectedCalls?: ReadonlyMap<string, SymbolDefinition | null>,
+  refused?: ReadonlySet<CallResultAssignmentSite>,
 ): number {
   let updated = 0;
   if (selectedCalls !== undefined) {
     for (const parsed of parsedFiles) {
       for (const assignment of parsed.callResultAssignmentSites ?? []) {
+        if (refused?.has(assignment) === true) continue;
         if (
           applySelectedCallResultBinding(
             assignment,
@@ -228,6 +237,8 @@ export function applyPreciseCallResultBindings(
       }
     }
     for (const assignment of parsed.callResultAssignmentSites ?? []) {
+      // An element route needs the exact selected callee; see above.
+      if (assignment.element !== undefined || refused?.has(assignment) === true) continue;
       const scope = indexes.scopeTree.getScope(assignment.inScope);
       if (scope === undefined) continue;
       const targets = resolvedByPosition.get(
@@ -1286,6 +1297,18 @@ export function runScopeResolution(
   // VALIDATE_SEMANTIC_MODEL=1.
   validateBindingsImmutability(indexes, onWarn);
 
+  // Decided once, before any call-result binding is cleared or applied.
+  const refusedCallResultSites = new Set<CallResultAssignmentSite>();
+  const callResultAssignmentApplies = provider.callResultAssignmentApplies;
+  if (callResultAssignmentApplies !== undefined) {
+    for (const parsed of parsedFiles) {
+      for (const assignment of parsed.callResultAssignmentSites ?? []) {
+        if (!callResultAssignmentApplies(assignment, indexes))
+          refusedCallResultSites.add(assignment);
+      }
+    }
+  }
+
   const selectedCalls =
     provider.receiverCallSite === undefined
       ? undefined
@@ -1297,6 +1320,7 @@ export function runScopeResolution(
   if (callResultProducers !== undefined) {
     for (const parsed of parsedFiles) {
       for (const assignment of parsed.callResultAssignmentSites ?? []) {
+        if (refusedCallResultSites.has(assignment)) continue;
         callResultProducers.set(
           callResultBindingKey(assignment.inScope, assignment.lhs),
           assignment,
@@ -1313,7 +1337,13 @@ export function runScopeResolution(
       ? undefined
       : (key: string, definition: SymbolDefinition | null): void => {
           for (const assignment of assignmentsByProducer.get(key) ?? []) {
-            applySelectedCallResultBinding(assignment, indexes, workspaceIndex, definition);
+            applySelectedCallResultBinding(
+              assignment,
+              indexes,
+              workspaceIndex,
+              definition,
+              provider.callResultElementType,
+            );
           }
         };
   if (!callableFlowOnly && selectedCalls !== undefined) {
@@ -1328,6 +1358,7 @@ export function runScopeResolution(
       readonlyModel,
       provider.hoistedTypeBindingsRequireOwner === true,
       selectedCalls,
+      refusedCallResultSites,
     );
   }
 
@@ -1637,6 +1668,7 @@ export function runScopeResolution(
           readonlyModel,
           provider.hoistedTypeBindingsRequireOwner === true,
           selectedCalls,
+          refusedCallResultSites,
         );
   if (replayedCallResultBindings > 0 || selectedCalls !== undefined) {
     const handledBeforeReplay = new Set(handledSites);

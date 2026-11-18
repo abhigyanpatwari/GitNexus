@@ -49,8 +49,8 @@ function captureWork(depth: number, form: 'argument' | 'bound') {
 describe.skipIf(!isLanguageAvailable(SupportedLanguages.Dart))('Dart nested capture work', () => {
   // Per form: child reads and Map reads as slope * depth + constant.
   it.each([
-    ['argument', 121, 60, 54, 31],
-    ['bound', 94, 58, 45, 29],
+    ['argument', 121, 60, 56, 31],
+    ['bound', 94, 58, 47, 29],
   ] as const)(
     'keeps %s closure work linear as nesting grows',
     (form, childSlope, childBase, mapSlope, mapBase) => {

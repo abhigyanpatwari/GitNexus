@@ -177,6 +177,17 @@ export function getParseDiagnostics(tree: Parser.Tree): {
   return { hasError: root.hasError, isMissing: root.isMissing };
 }
 
+interface TreeTextSource {
+  input: unknown;
+  getText: (node: { readonly startIndex: number; readonly endIndex: number }) => string;
+}
+
+function useSourceText(tree: Parser.Tree, source: string): void {
+  const textSource = tree as unknown as TreeTextSource;
+  textSource.input = source;
+  textSource.getText = (node) => source.substring(node.startIndex, node.endIndex);
+}
+
 /**
  * Parse `sourceText` safely on every platform.
  *
@@ -241,6 +252,11 @@ export function parseSourceSafe(
         return parserInput.slice(index, index + SAFE_PARSE_CHUNK_CHARS);
       };
       tree = parser.parse(input, oldTree, options);
+      // node-tree-sitter reads `node.text` of a callback-parsed tree by calling
+      // the callback again and concatenating chunks: a fresh copy of the
+      // node's source on every read. Read it from the string instead, as it
+      // already does for a string-parsed tree: an O(1) substring.
+      if (tree !== null) useSourceText(tree, parserInput);
     }
   } finally {
     // Always clear the budget — otherwise it leaks onto the next parse on a

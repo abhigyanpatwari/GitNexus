@@ -456,11 +456,14 @@ def test_graph_enabled_cell_retains_its_graph_registry_and_runtime(monkeypatch, 
     ctx, clone, dependencies, runtime, registry, graph_calls, registry_calls, sandbox_calls = _probe_cell_provisioning(
         monkeypatch, tmp_path
     )
+    endpoint = runner.ReadOnlyMount(tmp_path / "mcp.sock", "/run/gitnexus-mcp.sock")
+    monkeypatch.setattr(runner, "isolated_mcp", lambda **kwargs: nullcontext(endpoint))
     runner.run_cell(ctx, 0, "workflow_direct")
 
     assert graph_calls == [clone]
     assert registry_calls == [clone]
-    assert sandbox_calls[0]["read_only_mounts"] == [dependencies, runtime, registry]
+    assert sandbox_calls[0]["read_only_mounts"] == [dependencies, runtime, registry, endpoint]
+    assert sandbox_calls[0]["gitnexus_cli_available"] is True
 
 
 def test_baseline_cell_mounts_only_the_endpoint_and_dependencies(monkeypatch, tmp_path):

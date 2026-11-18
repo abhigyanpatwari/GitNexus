@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 
 import pytest
 
-from check_test_execution import reconcile
+from check_test_execution import LINUX, PROPOSAL_CASES, reconcile
 
 
 def receipt(tmp_path: Path, filename: str, cases: list[tuple[str, str]], module="tests.test_native") -> Path:
@@ -106,7 +106,10 @@ def test_missing_report_list_is_rejected():
         reconcile([], [])
 
 
-@pytest.mark.parametrize("scenario", ["passed", "pending", "failed", "missing-receipt", "missing-file"])
+@pytest.mark.parametrize("scenario", [
+    "passed", "pending", "failed", "missing-file",
+    "missing-ubuntu-22.04", "missing-ubuntu-24.04", "missing-ubuntu-26.04", "missing-windows", "skipped-native",
+])
 def test_cli_requires_complete_execution_evidence(tmp_path, scenario):
     script = tmp_path / "check_test_execution.py"
     shutil.copyfile(Path(__file__).parents[1] / script.name, script)
@@ -116,9 +119,17 @@ def test_cli_requires_complete_execution_evidence(tmp_path, scenario):
     reports = tmp_path / "reports"
     reports.mkdir()
     receipt(reports, "pytest-locked.xml", [("test_native", "skipped" if scenario == "pending" else "passed")])
-    receipt(reports, "pytest-ubuntu.xml", [("test_native", "error" if scenario == "failed" else "skipped")])
-    if scenario != "missing-receipt":
-        receipt(reports, "pytest-windows.xml", [("test_native", "skipped")])
+    for platform in (*LINUX, "windows"):
+        if scenario != f"missing-{platform}":
+            status = "error" if scenario == "failed" and platform == "ubuntu-26.04" else "skipped"
+            path = receipt(reports, f"pytest-{platform}.xml", [("test_native", status)])
+            if platform in LINUX:
+                cases = [(case, "skipped" if scenario == "skipped-native" and platform == "ubuntu-24.04" else "passed")
+                         for case in sorted(PROPOSAL_CASES)]
+                native = receipt(tmp_path, "native.xml", cases, module="tests.test_proposal_evaluation")
+                suites = ET.Element("testsuites")
+                suites.extend((ET.parse(path).getroot(), ET.parse(native).getroot()))
+                ET.ElementTree(suites).write(path)
     if scenario == "missing-file":
         (tests / "test_missing.py").write_text("# must be collected\n")
     output = tmp_path / "pytest-results.json"
@@ -129,14 +140,18 @@ def test_cli_requires_complete_execution_evidence(tmp_path, scenario):
         timeout=10,
     )
     assert result.returncode == (0 if scenario == "passed" else 1)
-    if scenario.startswith("missing-"):
+    if scenario == "skipped-native":
         assert not output.exists()
-        assert ("pytest-windows.xml" if scenario == "missing-receipt" else "never collected") in result.stderr
+        assert "pytest-ubuntu-24.04.xml needs a passing native execution" in result.stderr
+    elif scenario.startswith("missing-"):
+        assert not output.exists()
+        expected = "never collected" if scenario == "missing-file" else f"pytest-{scenario.removeprefix('missing-')}.xml"
+        assert expected in result.stderr
     else:
         report = json.loads(output.read_text())
         assert report["success"] is (scenario == "passed")
-        assert report["numTotalTests"] == 1
-        assert report["numPassedTests"] == (scenario == "passed")
+        assert report["numTotalTests"] == 1 + len(PROPOSAL_CASES)
+        assert report["numPassedTests"] == len(PROPOSAL_CASES) + (scenario == "passed")
         assert report["numPendingTests"] == (scenario == "pending")
         assert report["numFailedTests"] == (scenario == "failed")
         assert "Eval execution:" in result.stdout

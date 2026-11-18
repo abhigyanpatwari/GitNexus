@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { createMethodExtractor } from '../../src/core/ingestion/method-extractors/generic.js';
-import { javaRecordMethodExtractor } from '../../src/core/ingestion/languages/java/record-components.js';
+import {
+  javaRecordMethodExtractor,
+  synthesizeJavaRecordComponentAccessorCaptures,
+} from '../../src/core/ingestion/languages/java/record-components.js';
 import {
   javaMethodConfig,
   kotlinMethodConfig,
@@ -442,6 +445,20 @@ describe('Java MethodExtractor', () => {
           returnType: 'String[]',
           parameters: [],
         }),
+      );
+    });
+
+    it('uses the same annotated array and varargs return types in methods and scope declarations', () => {
+      const tree = parseJava(
+        'record Group(java.util.List<@A User> @D [] users, User @D []... rows) {}',
+      );
+      const record = tree.rootNode.namedChild(0)!;
+      const expected = ['java.util.List<User>[]', 'User[][]'];
+      const methods = extractor.extract(record, javaCtx)!.methods;
+      expect(methods.map((method) => method.returnType)).toEqual(expected);
+      const captures = synthesizeJavaRecordComponentAccessorCaptures(tree.rootNode);
+      expect(captures.flatMap((match) => match['@declaration.return-type']?.text ?? [])).toEqual(
+        expected,
       );
     });
 
