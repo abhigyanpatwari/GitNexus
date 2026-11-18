@@ -1,0 +1,25 @@
+.github/workflows/ci-tests.yml
+  s_676b35bc218cc9::t_76e09fa623e82d 1926
+gitnexus-cursor-integration/hooks/gitnexus-hook.cjs
+  s_676b35bc218cc9::t_79d4b603085119 540-542
+gitnexus-factory-plugin/hooks/hook-db-lock-probe.cjs
+  s_676b35bc218cc9::t_4d57c086f46ea5 190-192
+gitnexus/hooks/claude/hook-db-lock-probe.cjs
+  s_676b35bc218cc9::t_b1139d55851fa9 190-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "52755fd7a0e89999a90286142369056f88e695e2",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
