@@ -67,7 +67,9 @@ Mixed import/value rebinding and conflicting import identities conservatively
 abstain throughout the environment, including simple sequential rebinding; this
 is not a control-flow evaluator. A definite `def`/`class` declaration can still
 supply its own target after activation. The
-[provider policy](../../gitnexus/src/core/ingestion/languages/python/lexical-bindings.ts)
+[provider policy](../../gitnexus/src/core/ingestion/languages/python/import-claims.ts)
+(`reconcilePythonImportClaims`, applied by
+[lexical-bindings.ts](../../gitnexus/src/core/ingestion/languages/python/lexical-bindings.ts))
 and [rebinding regressions](../../gitnexus/test/integration/resolvers/python-namespace-semantics.test.ts)
 define this boundary. There is no full annotation evaluator, `exec` evaluation,
 or general closure scheduling model. A deferred `global`/`nonlocal` installer is

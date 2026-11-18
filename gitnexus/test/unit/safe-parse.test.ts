@@ -101,6 +101,27 @@ describe('parseSourceSafe', () => {
     expect(tree.rootNode.endIndex).toBe(src.length);
   });
 
+  // node-tree-sitter reads `node.text` of a callback-parsed tree by calling the
+  // callback again and joining chunks: a fresh copy of the node's source on
+  // every read. One capture per argument of a 40,000-argument call held 40,000
+  // copies of the call and exhausted a 4 GB heap.
+  it('reads node text of a callback-parsed tree from the source string', () => {
+    const source = `x = f(${'a, '.repeat(20_000)}a)\n`;
+    const call = parseSourceSafe(makeParser(), source).rootNode.descendantsOfType('call')[0]!;
+    const expected = source.substring(call.startIndex, call.endIndex);
+    const slice = vi.spyOn(String.prototype, 'slice');
+    let text = '';
+    let sliceCalls = -1;
+    try {
+      text = call.text;
+      sliceCalls = slice.mock.calls.length;
+    } finally {
+      slice.mockRestore();
+    }
+    expect(text).toBe(expected);
+    expect(sliceCalls).toBe(0);
+  });
+
   it('parses a large all-non-ASCII source identically to the direct path', () => {
     const small = '# ' + '漢'.repeat(50) + '\n';
     const direct = makeParser().parse(small);
