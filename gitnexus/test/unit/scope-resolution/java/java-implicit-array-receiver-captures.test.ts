@@ -68,6 +68,18 @@ describe('Java implicit instance array receivers', () => {
     ]);
   });
 
+  it('captures an implicit array receiver in an anonymous instance method', () => {
+    const source =
+      'class App { Object task = new Object() { void run() { getUsers()[0].save(); } }; }';
+    expect(chains(source)).toEqual([
+      {
+        baseReceiverName: 'this',
+        steps: [{ kind: 'call', name: 'getUsers' }, { kind: 'index' }],
+        truncated: false,
+      },
+    ]);
+  });
+
   it.each([
     'class App { static Object first = getUsers()[0].save(); }',
     'class App { static { getUsers()[0].save(); } }',
@@ -76,7 +88,6 @@ describe('Java implicit instance array receivers', () => {
     'class App { static void run() { getUsers()[0].save(); } }',
     'class App { void run() { service.getUsers()[0].save(); } }',
     'class App { void run() { getUsers(1)[0].save(); } }',
-    'class App { void run() { Object value = new Object() { void nested() { getUsers()[0].save(); } }; } }',
   ])('refuses an unsupported or differently owned receiver: %s', (source) => {
     expect(chains(source)).toEqual([undefined]);
   });
