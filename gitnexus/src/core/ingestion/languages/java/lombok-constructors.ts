@@ -10,6 +10,7 @@ import {
   isProvenJavaAnnotation,
   javaMemberTypeDeclarations,
   lombokAnnotationProof,
+  mayBeLombokBuilderDefault,
   readLombokFieldDefaultsMakeFinal,
   type LombokImportIndex,
 } from './lombok-synthesizer.js';
@@ -271,7 +272,7 @@ export function collectJavaLombokConstructors(
     // constructor then takes that field even when it is final.
     if (
       builderGenerates &&
-      annotations.some((annotation) => simpleAnnotationName(annotation) === 'Default')
+      annotations.some((annotation) => mayBeLombokBuilderDefault(annotation, imports))
     )
       complete = false;
     const nonFinal = fieldLombok.some(

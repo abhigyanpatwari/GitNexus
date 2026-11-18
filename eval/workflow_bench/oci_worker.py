@@ -36,21 +36,19 @@ def _bind(source: Path, target: str, *, readonly: bool) -> str:
 
 
 def _hold_workers(listener: socket.socket, stop: threading.Event) -> None:
-    with selectors.DefaultSelector() as clients:
-        clients.register(listener, selectors.EVENT_READ)
+    # A command prefix starts one worker at a time. PID 1 opens the lease
+    # before starting its workload. Only accept the next worker after it exits.
+    listener.settimeout(0.1)
+    while not stop.is_set():
         try:
+            connection, _ = listener.accept()
+        except TimeoutError:
+            continue
+        with connection, selectors.DefaultSelector() as completed:
+            completed.register(connection, selectors.EVENT_READ)
             while not stop.is_set():
-                for key, _ in clients.select(0.1):
-                    if key.fileobj is listener:
-                        connection, _ = listener.accept()
-                        clients.register(connection, selectors.EVENT_READ)
-                    else:
-                        clients.unregister(key.fileobj)
-                        key.fileobj.close()
-        finally:
-            for key in list(clients.get_map().values()):
-                if key.fileobj is not listener:
-                    key.fileobj.close()
+                if completed.select(0.1):
+                    break
 
 
 @contextmanager
@@ -73,7 +71,7 @@ def worker_command(
         owner = Path(private) / "owner"
         lease.bind(str(owner))
         owner.chmod(0o600)
-        lease.listen(16)
+        lease.listen(1)
         argv = [
             docker,
             "--host",

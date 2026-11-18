@@ -306,6 +306,30 @@ import org.springframework.stereotype.Service;
   });
 
   it.each([
+    ['@other.Default', '', '', true],
+    ['@Default', 'import other.Default;', '', true],
+    ['@Default', '', '@interface Default {}', true],
+    ['@Builder.Default', 'import other.Builder;', '', true],
+    ['@Builder.Default', 'import lombok.Builder;', 'class Builder { @interface Default {} }', true],
+    ['@Builder /* owner */ . Default', 'import lombok.Builder;', '', false],
+    ['@Default', 'import lombok.Builder.Default;', '', false],
+    ['@Default', 'import lombok.Builder.*;', '', false],
+    ['@Default', 'import static lombok.Builder.Default;', '', false],
+    ['@Default', 'import static lombok.Builder.*;', '', false],
+  ])('resolves %s from %s with member %s', (annotation, imports, member, ordinaryField) => {
+    const sites = constructorSites(`${imports}
+import org.springframework.stereotype.Service;
+@Service @lombok.Builder class Consumer {
+  ${member}
+  ${annotation} final Other fixed = null;
+  Repo repo;
+}`);
+    expect(sites.map((site) => site.dependencies.map((dependency) => dependency.name))).toEqual(
+      ordinaryField ? [['repo']] : [],
+    );
+  });
+
+  it.each([
     [
       'XArgs constructors beside Builder',
       '@lombok.Builder @lombok.NoArgsConstructor @lombok.AllArgsConstructor',

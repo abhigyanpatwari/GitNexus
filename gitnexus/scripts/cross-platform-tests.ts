@@ -434,8 +434,7 @@ const FILESYSTEM = [
   'test/unit/dart-package-imports.test.ts',
   // Verify the same capture is reused by native parsing and scope resolution.
   'test/integration/resolvers/dart.test.ts',
-  // Non-ASCII Java package directories and file names: case- and
-  // normalization-insensitive file systems must keep each package apart.
+  // Exercise non-ASCII Java package paths and file names on each platform.
   'test/integration/java-non-ascii-names.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).

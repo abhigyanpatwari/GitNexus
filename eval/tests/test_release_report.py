@@ -141,6 +141,9 @@ def test_proposal_reports_bind_usage_source_toolset_image_and_token_counts():
     for changed in ({"usage_source": "anthropic"}, {"executor": None}, {"worker_image": "node:latest"},
                     {"claude_version": "different"}, {"input_tokens": None}):
         assert not build_report([{**measured[0], **changed}, *measured[1:]], meta, now=NOW)["complete"]
+    invalid = build_report([{**measured[0], "worker_image": [float("nan")]}, *measured[1:]], meta, now=NOW)
+    assert not invalid["complete"]
+    assert json.loads(json.dumps(invalid, allow_nan=False))["per_run"][0]["worker_image"] == [None]
 
 
 @pytest.mark.parametrize("exposure", [None, "readable", "none"])

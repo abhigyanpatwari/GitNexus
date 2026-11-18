@@ -132,7 +132,8 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
         # Invalid rows still need a public, JSON-serializable failure receipt.
         safe_row = {key: _json_safe(row[key]) for key in ROW_FIELDS if key in row}
         if proposal:
-            safe_row.update({key: row.get(key) for key in ("executor", "worker_image", "claude_version", "proposal_applied", "usage_source")})
+            for field in ("executor", "worker_image", "claude_version", "proposal_applied", "usage_source"):
+                safe_row[field] = _json_safe(row.get(field))
         safe_row.update(public_cell_diagnostics(row))
         safe_rows.append(safe_row)
         task, run, arm = row.get("task"), row.get("run"), row.get("arm")

@@ -288,7 +288,9 @@ export function collectLombokImports(root: Parser.SyntaxNode): LombokImportIndex
       // field or method, which does not. A static wildcard is itself
       // on-demand and cannot shadow `lombok.*`.
       if (!wildcard) staticImportedSimpleNames.add(annotationSimpleName(text));
-      continue;
+      // Builder.Default is a known member type. A static import can bring it
+      // into scope through either the member name or Builder's wildcard.
+      if (wildcard ? text !== 'lombok.Builder' : text !== 'lombok.Builder.Default') continue;
     }
     if (wildcard) {
       starPackages.add(text);
@@ -318,6 +320,26 @@ export function lombokAnnotationProof(
   const packageName = LOMBOK_ANNOTATION_PACKAGE.get(simple);
   if (packageName === undefined) return false;
   return javaAnnotationProof(nameText, `${packageName}.${simple}`, imports, context);
+}
+
+/** A possible Builder.Default affects the generated constructor's parameter list. */
+export function mayBeLombokBuilderDefault(
+  annotation: Parser.SyntaxNode,
+  imports: LombokImportIndex,
+): boolean {
+  const name = annotation.childForFieldName('name');
+  if (name === null) return false;
+  const written =
+    name.type === 'identifier'
+      ? name.text
+      : name
+          .descendantsOfType('identifier')
+          .map((part) => part.text)
+          .join('.');
+  if (written === 'Builder.Default')
+    return lombokAnnotationProof('Builder', imports, annotation) !== false;
+  if (written !== 'Default' && written !== 'lombok.Builder.Default') return false;
+  return javaAnnotationProof(written, 'lombok.Builder.Default', imports, annotation) !== false;
 }
 
 /** Shared Java-local annotation proof for accessors and generated constructors. */
