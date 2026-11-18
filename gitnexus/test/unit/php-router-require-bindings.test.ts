@@ -402,7 +402,7 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       new Set(['bootstrap/app.php', 'routes/web.php']),
       bindings,
     );
-    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['maybe', 'api']);
   });
 
   it('require_once inside a method group does not suppress a later top-level require_once', () => {
@@ -452,6 +452,35 @@ $app->router->group(['prefix' => 'api'], function ($router) {
 $app->router->GROUP([], function () { require __DIR__ . '/routes/web.php'; });
 `),
     ).toBe(true);
+  });
+
+  it('matches uppercase REQUIRE inside a group for extraction gate', () => {
+    expect(
+      shouldExtractPhpRouterRequireBindings(`<?php
+$app->router->group([], function () { REQUIRE __DIR__ . '/routes/web.php'; });
+`),
+    ).toBe(true);
+  });
+
+  it('treats require inside do-while body as unguarded', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'first'], function ($router) {
+  do {
+    require_once __DIR__ . '/../routes/web.php';
+  } while (false);
+});
+$app->router->group(['prefix' => 'second'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['first']);
   });
 
   it('a require nested in a condition does not count as already run', () => {

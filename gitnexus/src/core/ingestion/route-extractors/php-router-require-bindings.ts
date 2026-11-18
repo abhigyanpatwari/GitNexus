@@ -30,7 +30,20 @@ export interface ExtractedPhpRouteRequireBinding {
 
 export function shouldExtractPhpRouterRequireBindings(content: string): boolean {
   if (!/->\s*group\s*\(/i.test(content)) return false;
-  return /\b(require|require_once|include|include_once)\b/.test(content);
+  return /\b(require|require_once|include|include_once)\b/i.test(content);
+}
+
+function isPhpIncludeKeyword(name: string | undefined): boolean {
+  if (!name) return false;
+  switch (name.toLowerCase()) {
+    case 'require':
+    case 'require_once':
+    case 'include':
+    case 'include_once':
+      return true;
+    default:
+      return false;
+  }
 }
 
 function resolveRequirePath(bootstrapRelPath: string, expr: SyntaxNode | null): string | null {
@@ -83,9 +96,7 @@ function isRequireCall(node: SyntaxNode): boolean {
   if (node.type === 'function_call_expression') {
     const name =
       getRouterCallMethodName(node) ?? node.children?.find((c) => c.type === 'name')?.text;
-    return (
-      name === 'require' || name === 'require_once' || name === 'include' || name === 'include_once'
-    );
+    return isPhpIncludeKeyword(name);
   }
   return false;
 }
@@ -131,7 +142,7 @@ function isOnceRequire(node: SyntaxNode): boolean {
   if (node.type === 'function_call_expression') {
     const name =
       getRouterCallMethodName(node) ?? node.children?.find((c) => c.type === 'name')?.text;
-    return name === 'require_once' || name === 'include_once';
+    return name?.toLowerCase() === 'require_once' || name?.toLowerCase() === 'include_once';
   }
   return false;
 }
@@ -142,7 +153,6 @@ const CONDITIONAL_NODE_TYPES = new Set([
   'foreach_statement',
   'for_statement',
   'while_statement',
-  'do_statement',
   'switch_statement',
   'conditional_expression',
 ]);
@@ -158,6 +168,16 @@ function enqueueStatementChildren(
   unguarded: boolean,
   pending: { node: SyntaxNode; stack: RouteGroupContext[]; unguarded: boolean }[],
 ): void {
+  if (node.type === 'do_statement') {
+    const body = node.childForFieldName('body');
+    if (body) {
+      const children = body.children ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        pending.push({ node: children[i], stack, unguarded });
+      }
+    }
+    return;
+  }
   if (node.type === 'try_statement') {
     const tryBody = node.childForFieldName('body');
     if (tryBody) {
@@ -199,6 +219,16 @@ function enqueueWalkChildren(
   unguarded: boolean,
   walkStack: { node: SyntaxNode; unguarded: boolean }[],
 ): void {
+  if (node.type === 'do_statement') {
+    const body = node.childForFieldName('body');
+    if (body) {
+      const children = body.children ?? [];
+      for (let i = children.length - 1; i >= 0; i--) {
+        walkStack.push({ node: children[i], unguarded });
+      }
+    }
+    return;
+  }
   if (node.type === 'try_statement') {
     const tryBody = node.childForFieldName('body');
     if (tryBody) {
@@ -280,7 +310,7 @@ function visitGroupBody(
         namePrefix: merged.namePrefix,
         lineNumber: node.startPosition.row,
         once: isOnceRequire(node),
-        appliesContext: true,
+        appliesContext: parentUnguarded,
         unguarded,
       });
       continue;

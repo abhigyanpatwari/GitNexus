@@ -30,14 +30,6 @@ export function resolvePhpRouterRequireBindings(
   const fileSet = new Set([...files].map((f) => f.replace(/\\/g, '/')));
   const contextsByFile = new Map<string, PhpRouteRequireContext[]>();
   const included = new Set<string>();
-  const targetsWithUnguardedOnce = new Set<string>();
-  for (const binding of bindings) {
-    const target = binding.requiredPath.replace(/\\/g, '/');
-    if (!fileSet.has(target) || !isPhpRouteFile(target)) continue;
-    if (binding.once && binding.unguarded && binding.appliesContext) {
-      targetsWithUnguardedOnce.add(target);
-    }
-  }
 
   for (const binding of bindings) {
     const target = binding.requiredPath.replace(/\\/g, '/');
@@ -45,9 +37,6 @@ export function resolvePhpRouterRequireBindings(
     if (binding.once && included.has(target)) continue;
     if (binding.unguarded) included.add(target);
     if (!binding.appliesContext) continue;
-    if (binding.once && !binding.unguarded && targetsWithUnguardedOnce.has(target)) {
-      continue;
-    }
     const ctx: PhpRouteRequireContext = {
       prefix: binding.prefix,
       namespace: binding.namespace,

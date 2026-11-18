@@ -133,6 +133,27 @@ Route::apiResource('/api/photos', ApiPhotoController::class);
     ]);
   });
 
+  it('threads fluent namespace into grouped string-action routes', () => {
+    const routes = extract(`<?php
+Route::namespace('Admin\\\\Http\\\\Controllers')
+    ->prefix('admin')
+    ->group(function () {
+        Route::get('/users', 'UserController@index');
+    });
+`);
+
+    expect(routes).toContainEqual(
+      expect.objectContaining({
+        httpMethod: 'get',
+        routePath: '/users',
+        methodName: 'index',
+        controllerName: 'UserController',
+        controllerQualifiedName: 'Admin.Http.Controllers.UserController',
+        prefix: 'admin',
+      }),
+    );
+  });
+
   it('threads middleware, prefix, and controller chains into grouped routes', () => {
     const routes = extract(`<?php
 Route::get('/loose', 'index');

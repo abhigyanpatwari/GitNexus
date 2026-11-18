@@ -902,6 +902,13 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
           if (attr.method === 'prefix') groupCtx.prefix = extractFirstStringArg(attr.argsNode);
           if (attr.method === 'name') groupCtx.namePrefix = extractFirstStringArg(attr.argsNode);
           if (attr.method === 'controller') groupCtx.controller = extractClassArg(attr.argsNode);
+          if (attr.method === 'namespace') {
+            const ns = extractFirstStringArg(attr.argsNode);
+            if (ns !== null) {
+              groupCtx.namespaceResets = ns.startsWith('\\');
+              groupCtx.namespace = ns.replace(/^\\+|\\+$/g, '');
+            }
+          }
         }
         const body = findRouteGroupClosureBody(chain.terminalArgs);
         if (body) {
