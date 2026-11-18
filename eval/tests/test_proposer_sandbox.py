@@ -108,9 +108,13 @@ def test_mcp_cleanup_preserves_the_original_session_interrupt(monkeypatch, tmp_p
 
     monkeypatch.setattr(mcp_transport, "server_command", lambda **_: [])
     monkeypatch.setattr(mcp_transport, "serve_stdio", failing_shutdown)
-    with pytest.raises(KeyboardInterrupt, match="session interrupted") as original:
+
+    def interrupt_session():
         with mcp_transport.isolated_mcp(clone=tmp_path, mounts=[], bwrap_bin=Path("bwrap")):
             raise KeyboardInterrupt("session interrupted")
+
+    original = pytest.raises(KeyboardInterrupt, interrupt_session)
+    original.match("session interrupted")
     assert any("worker shutdown failed" in note for note in original.value.__notes__)
 
 

@@ -128,6 +128,7 @@ def worker_command(
                     connection.settimeout(0.5)
                     completed.extend(connection.recv(2))
             except (TimeoutError, ConnectionResetError):
+                # run_worker rejects the result when the worker has not confirmed its exit.
                 pass
             return
         stop = threading.Event()

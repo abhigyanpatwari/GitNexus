@@ -541,10 +541,11 @@ def main() -> None:
     try:
         with cancellation_scope(handle_signals=True):
             report = evaluate(tasks, metadata, runtime_root=args.runtime, client=client, out=args.out)
+            if report["complete"]:
+                return
     except (SandboxError, ManagedProcessError, ValueError, OSError) as exc:
         parser.error(str(exc))
-    if not report["complete"]:
-        raise SystemExit(1)
+    raise SystemExit(1)
 
 
 if __name__ == "__main__":
