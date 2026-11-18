@@ -1,0 +1,14 @@
+file.txt
+  h_3ff50faccb956b 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "30b53d92775d9c92e5a93550b8c194c099d32a0d",
+  "prompts": {},
+  "humans": {
+    "h_3ff50faccb956b": {
+      "author": "Test <test@test.com>"
+    }
+  }
+}
