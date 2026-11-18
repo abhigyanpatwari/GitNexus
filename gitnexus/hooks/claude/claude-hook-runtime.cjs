@@ -13,7 +13,15 @@ const {
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { resolveHookRepo } = require('./registry-query.cjs');
-const { gitMutationDirectory, isOutside } = require('./git-mutation-command.cjs');
+const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
+
+// Claude Code runs the Bash tool in bash on every platform, Git Bash included.
+// Codex reports its shell tool as `Bash` too and runs PowerShell on Windows, so
+// there the input does not say which of the two read the command.
+const BASH_TOOL_SHELL = process.platform === 'win32' ? 'either' : 'bash';
+
+// Index metadata is a file in the repository: only a commit id is echoed.
+const COMMIT_ID = /^[0-9a-f]{4,64}$/i;
 
 /**
  * Read JSON input from stdin synchronously.
@@ -556,53 +564,54 @@ function handlePostToolUse(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return;
 
-  // `git -C <dir>` runs elsewhere: the index to check is that directory's.
-  const command = (input.tool_input || {}).command || '';
-  const gitCwd = gitMutationDirectory(command, cwd);
-  if (!gitCwd) return;
-
   // Only proceed if the command succeeded
   const toolOutput = input.tool_output || {};
   if (toolOutput.exit_code !== undefined && toolOutput.exit_code !== 0) return;
 
-  const repo = resolveHookRepo(gitCwd);
-  if (!repo) return;
+  // `git -C <dir>` runs elsewhere: the index to check is that directory's.
+  const command = (input.tool_input || {}).command || '';
+  const hints = [];
+  for (const gitCwd of gitMutationDirectories(command, cwd, BASH_TOOL_SHELL)) {
+    const hint = staleIndexHint(gitCwd, cwd);
+    if (hint && !hints.includes(hint)) hints.push(hint);
+  }
+  if (hints.length > 0) sendHookResponse('PostToolUse', hints.join('\n'));
+}
+
+/**
+ * The hint for the repository a git mutation ran in, from `gitCwd`. Empty when
+ * that repository has no index or its index is at HEAD.
+ */
+function staleIndexHint(gitCwd, cwd) {
+  const repo = resolveHookRepo(gitCwd, cwd);
+  if (!repo) return '';
 
   // Compare HEAD against last indexed commit — skip if unchanged
-  let currentHead = '';
-  try {
-    const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
-      encoding: 'utf-8',
-      timeout: 3000,
-      cwd: gitCwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    currentHead = (headResult.stdout || '').trim();
-  } catch {
-    return;
-  }
-
-  if (!currentHead) return;
+  const { head: currentHead, checkout } = readHead(gitCwd, cwd);
+  if (!currentHead) return '';
 
   let lastCommit = '';
   let hadEmbeddings = false;
   const meta = repo.metadata;
   if (meta) {
-    lastCommit = meta.lastCommit || '';
+    lastCommit = typeof meta.lastCommit === 'string' ? meta.lastCommit : '';
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;
   }
 
   // If HEAD matches last indexed commit, no reindex needed
-  if (currentHead === lastCommit) return;
+  if (currentHead === lastCommit) return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
-  // Name the repository when the agent is not working in it.
-  const where = isOutside(cwd, repo.path) ? ` in ${repo.path}` : '';
-  sendHookResponse(
-    'PostToolUse',
-    `GitNexus index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-      `Run \`${analyzeCmd}\`${where} to update the knowledge graph.`,
+  const indexed = !lastCommit
+    ? 'never'
+    : COMMIT_ID.test(lastCommit)
+      ? lastCommit.slice(0, 7)
+      : 'unknown';
+  // Name the checkout git ran in when the agent works in another one.
+  const where = checkout ? ` in ${checkout}` : '';
+  return (
+    `GitNexus index is stale (last indexed: ${indexed}). ` +
+    `Run \`${analyzeCmd}\`${where} to update the knowledge graph.`
   );
 }
 

@@ -1,7 +1,7 @@
 /**
- * Find the directory in which a shell command runs a git subcommand that moves
- * HEAD (commit, merge, rebase, cherry-pick, pull). The Claude-schema and
- * Antigravity adapters check the index of that directory's repository for
+ * Find the directories in which a shell command runs a git subcommand that
+ * moves HEAD (commit, merge, rebase, cherry-pick, pull). The Claude-schema and
+ * Antigravity adapters check the index of each directory's repository for
  * staleness after such a command.
  *
  * Git accepts global options between `git` and the subcommand:
@@ -10,12 +10,16 @@
  * `-c` is never read as the subcommand: `git -C commit status` runs `status`.
  *
  * `-C <path>` moves the git call, so the directory returned is that path,
- * resolved against the caller's cwd. No directory is returned when the path is
- * computed by the shell (`-C "$DIR"`), or when `--git-dir` / `--work-tree`
- * point git at a repository that cannot be told from the directory: a hint
- * would then describe a repository the command did not touch.
+ * resolved against the caller's cwd. A call is left out when its repository
+ * cannot be read from the command: a hint would then describe a repository
+ * the command did not touch. That is the case when
+ *   - the shell computes the path (`-C "$DIR"`, `-C ~/x`),
+ *   - `--git-dir` or `--work-tree` point git at another repository,
+ *   - the path is relative and a `cd` earlier in the command moved the shell,
+ *   - the caller cannot tell how its shell reads a backslash in the path.
+ * The other git calls of the command are still read.
  *
- * Everything around the git call is left alone on purpose. An environment
+ * Everything around a git call is left alone on purpose. An environment
  * prefix, a wrapper such as `timeout 60`, a subshell or a heredoc all still
  * match, and so does `git commit` inside quoted text. A false positive costs
  * the caller one `git rev-parse HEAD`: the hint is shown only when HEAD differs
@@ -27,9 +31,13 @@
 
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
-// One shell word: bare characters, backslash escapes, and quoted runs.
-const WORD = String.raw`(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+`;
+// One shell word: bare characters and quoted runs. In bash a backslash escapes
+// the next character, inside double quotes too.
+const BASH_WORD = String.raw`(?:[^\s"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')+`;
+// In PowerShell a backslash is an ordinary character.
+const POWERSHELL_WORD = String.raw`(?:[^\s"']|"[^"]*"|'[^']*')+`;
 
 const SWITCHES = [
   'paginate',
@@ -40,68 +48,108 @@ const SWITCHES = [
   'no-advice',
   'bare',
   'literal-pathspecs',
+  'no-literal-pathspecs',
   'glob-pathspecs',
   'noglob-pathspecs',
   'icase-pathspecs',
 ];
 
-// One global option. `changeDir` matches the path given to -C and `otherRepo`
-// the name of an option that points git at another repository; the caller
-// decides whether they capture.
-const globalOption = (changeDir, otherRepo) =>
-  [
-    // The value of -C and -c may be attached to the option or follow it.
-    String.raw`-C\s*${changeDir}`,
-    String.raw`-c\s*${WORD}`,
-    String.raw`${otherRepo}(?:=|\s+)${WORD}`,
-    String.raw`--(?:namespace|super-prefix|config-env|attr-source)(?:=|\s+)${WORD}`,
-    String.raw`--exec-path=${WORD}`,
-    String.raw`-[pP]`,
-    String.raw`--(?:${SWITCHES.join('|')})`,
-  ].join('|');
-
 const OTHER_REPO = String.raw`--(?:git-dir|work-tree)`;
 
-// The option run is bounded so that a long command stays linear to scan: each
-// `git` word reads at most this many options before giving up.
+// Each `git` word reads at most this many options before giving up.
 const MAX_GLOBAL_OPTIONS = 32;
 
-// Group 1 is the run of global options.
-const GIT_MUTATION = new RegExp(
-  String.raw`\bgit((?:\s+(?:${globalOption(WORD, OTHER_REPO)})){0,${MAX_GLOBAL_OPTIONS}})\s+(?:commit|merge|rebase|cherry-pick|pull)(?:\s|$)`,
-);
+// The subcommand ends at a space or at the shell operator that follows it.
+const SUBCOMMAND = String.raw`\s+(?:commit|merge|rebase|cherry-pick|pull)(?=[\s;&|)]|$)`;
 
-const NEXT_OPTION = new RegExp(
-  String.raw`\s+(?:${globalOption(`(?<changeDir>${WORD})`, `(?<otherRepo>${OTHER_REPO})`)})`,
-  'y',
-);
+function grammar(word) {
+  // One global option. `changeDir` matches the path given to -C and `otherRepo`
+  // the name of an option that points git at another repository; the caller
+  // decides whether they capture. Git wants a space after -C and -c.
+  const option = (changeDir, otherRepo) =>
+    [
+      String.raw`-C\s+${changeDir}`,
+      String.raw`-c\s+${word}`,
+      String.raw`${otherRepo}(?:=|\s+)${word}`,
+      String.raw`--(?:namespace|config-env|attr-source)(?:=|\s+)${word}`,
+      String.raw`--exec-path=${word}`,
+      String.raw`-[pP]`,
+      String.raw`--(?:${SWITCHES.join('|')})`,
+    ].join('|');
 
-// cmd and PowerShell do not escape with a backslash: on Windows a bare one is
-// a path separator.
-const BACKSLASH_ESCAPES = process.platform !== 'win32';
+  return {
+    // Group 1 is the run of global options.
+    mutation: new RegExp(
+      String.raw`\bgit((?:\s+(?:${option(word, OTHER_REPO)})){0,${MAX_GLOBAL_OPTIONS}})${SUBCOMMAND}`,
+      'g',
+    ),
+    nextOption: new RegExp(
+      String.raw`\s+(?:${option(`(?<changeDir>${word})`, `(?<otherRepo>${OTHER_REPO})`)})`,
+      'y',
+    ),
+  };
+}
 
-/** The value the shell passes for `word`, or null when it would expand it first. */
-function literalWord(word) {
+const BASH = grammar(BASH_WORD);
+
+// The shell that ran the command. `either` is for a caller that knows it is
+// bash or PowerShell but not which: the command is read as bash, and a path is
+// placed only when PowerShell would read it the same way.
+const GRAMMARS = { bash: BASH, powershell: grammar(POWERSHELL_WORD), either: BASH };
+
+// A value is one long word in some inputs, and every `git` word then reads to
+// the end of the command before it fails. A longer command is only matched
+// against the expression without options, which reads it once.
+const MAX_COMMAND_LENGTH = 16 * 1024;
+const PLAIN_MUTATION = new RegExp(String.raw`\bgit${SUBCOMMAND}`);
+
+// Each directory costs the caller a few git calls.
+const MAX_DIRECTORIES = 4;
+
+const CHANGES_DIRECTORY = /\b(?:cd|pushd|popd)\b/;
+
+// `\\server\share`, `\\?\C:\` and `//server/share`: resolving one of these on
+// Windows opens a connection to a host that was only named in a command.
+const NETWORK_PATH = /^[\\/]{2}/;
+
+// A quote that closes a string and is followed by the same quote. PowerShell
+// reads the pair as one quote character inside the string, bash as two strings
+// side by side.
+function doubledQuote(word, closing, shell) {
+  return shell !== 'bash' && word[closing + 1] === word[closing];
+}
+
+/** The value `shell` passes for `word`, or null when it cannot be read from the text. */
+function literalWord(word, shell) {
   if (word.startsWith('~')) return null;
+  const escapes = shell !== 'powershell';
   let value = '';
   for (let i = 0; i < word.length; i++) {
     const ch = word[i];
     if (ch === "'") {
       const end = word.indexOf("'", i + 1);
+      if (end === -1 || doubledQuote(word, end, shell)) return null;
       value += word.slice(i + 1, end);
       i = end;
     } else if (ch === '"') {
-      for (i++; word[i] !== '"'; i++) {
+      for (i++; i < word.length && word[i] !== '"'; i++) {
         if (word[i] === '$' || word[i] === '`') return null;
-        // Inside double quotes a backslash only escapes these four characters.
-        if (word[i] === '\\' && '"\\$`'.includes(word[i + 1])) i++;
+        // Inside double quotes bash only escapes these four characters.
+        if (escapes && word[i] === '\\' && '"\\$`'.includes(word[i + 1])) {
+          if (shell === 'either') return null;
+          i++;
+        }
         value += word[i];
       }
+      if (i >= word.length || doubledQuote(word, i, shell)) return null;
     } else if (ch === '$' || ch === '`') {
       return null;
+    } else if (escapes && ch === '\\') {
+      // bash drops the backslash and keeps the character after it.
+      if (shell === 'either' || i + 1 >= word.length) return null;
+      value += word[++i];
     } else {
-      if (ch === '\\' && BACKSLASH_ESCAPES) i++;
-      value += word[i];
+      value += ch;
     }
   }
   return value;
@@ -121,40 +169,94 @@ function changeDirectory(from, target) {
 }
 
 /**
- * The directory in which the first git mutation of `command` runs: `cwd`,
- * moved by any `-C` option. Null when the command has no git mutation, or when
- * the repository it changes cannot be read from the command.
+ * Where one git call runs: `cwd`, moved by each `-C` of `options`. Null when
+ * that cannot be read from the command.
  */
-function gitMutationDirectory(command, cwd) {
-  if (typeof command !== 'string') return null;
-  const mutation = GIT_MUTATION.exec(command);
-  if (!mutation) return null;
-
+function placeMutation(options, cwd, shell, shellMoved) {
+  const { nextOption } = GRAMMARS[shell];
   let directory = cwd;
-  NEXT_OPTION.lastIndex = 0;
-  for (let option; (option = NEXT_OPTION.exec(mutation[1])); ) {
+  // Whether `directory` still depends on where the shell is.
+  let relative = true;
+  nextOption.lastIndex = 0;
+  for (let option; (option = nextOption.exec(options)); ) {
     if (option.groups.otherRepo) return null;
     if (option.groups.changeDir === undefined) continue;
-    const target = literalWord(option.groups.changeDir);
+    const target = literalWord(option.groups.changeDir, shell);
     if (target === null) return null;
+    if (process.platform === 'win32' && NETWORK_PATH.test(target)) return null;
+    if (path.isAbsolute(target)) relative = false;
+    else if (relative && shellMoved()) return null;
     // Like git, read each -C relative to the one before it.
     directory = changeDirectory(directory, target);
   }
   return directory;
 }
 
-function realPath(target) {
+/**
+ * The directories in which the git mutations of `command` run, in the order of
+ * the command and without repeats: `cwd`, or the directory `-C` names. Empty
+ * when the command has no git mutation that can be placed.
+ *
+ * `shell` is `bash`, `powershell`, or `either` when the caller cannot tell.
+ */
+function gitMutationDirectories(command, cwd, shell) {
+  if (typeof command !== 'string') return [];
+  if (command.length > MAX_COMMAND_LENGTH) return PLAIN_MUTATION.test(command) ? [cwd] : [];
+
+  const { mutation } = GRAMMARS[shell];
+  const directories = [];
+  let firstMove;
+  mutation.lastIndex = 0;
+  for (let match; (match = mutation.exec(command)); ) {
+    const { index } = match;
+    const shellMoved = () => {
+      firstMove ??= command.search(CHANGES_DIRECTORY);
+      return firstMove !== -1 && firstMove < index;
+    };
+    const directory = placeMutation(match[1], cwd, shell, shellMoved);
+    if (directory === null || directories.includes(directory)) continue;
+    // `cwd` always has a place: a plain `git commit` is never crowded out.
+    if (directory === cwd || directories.length < MAX_DIRECTORIES) directories.push(directory);
+  }
+  return directories;
+}
+
+function gitLines(args, cwd) {
   try {
-    return fs.realpathSync.native(target);
+    const result = spawnSync('git', args, {
+      encoding: 'utf-8',
+      timeout: 3000,
+      cwd,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    return String(result.stdout || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
   } catch {
-    return path.resolve(target);
+    return [];
   }
 }
 
-/** Whether `directory` lies outside `root`, whichever way each one is spelled. */
-function isOutside(directory, root) {
-  const relative = path.relative(realPath(root), realPath(directory));
-  return relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+/**
+ * HEAD of the checkout git reaches from `directory`, and the root of that
+ * checkout when `cwd` is in another one (null otherwise). The root comes from
+ * git: a linked worktree or a nested clone is its own checkout, whatever
+ * folder it sits in.
+ *
+ * Git always starts in `cwd` and reads `directory` through -C. Windows looks
+ * for `git.exe` in the working directory of the child before PATH, and
+ * `directory` may only have been named in a command.
+ */
+function readHead(directory, cwd) {
+  if (directory === cwd) {
+    return { head: gitLines(['rev-parse', 'HEAD'], cwd)[0] || '', checkout: null };
+  }
+  const [root, head] = gitLines(['-C', directory, 'rev-parse', '--show-toplevel', 'HEAD'], cwd);
+  if (!head) return { head: '', checkout: null };
+  const [here] = gitLines(['rev-parse', '--show-toplevel'], cwd);
+  return { head, checkout: root === here ? null : path.resolve(root) };
 }
 
-module.exports = { gitMutationDirectory, isOutside };
+module.exports = { gitMutationDirectories, readHead };

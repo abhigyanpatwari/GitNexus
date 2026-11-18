@@ -798,6 +798,28 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
   try {
     await fs.mkdir(destHooksDir, { recursive: true });
 
+    // Shared helpers (copied from hooks/claude/). win-rm-list-json.ps1 is
+    // required by hook-db-lock-probe.cjs on Windows — without it, the MCP
+    // server ownership probe silently fails open and the hook may contend
+    // with the MCP server on the LadybugDB.
+    //
+    // They go in before the adapter. The adapter requires them when it loads,
+    // and on an upgrade the hook entry of the previous setup already runs
+    // whatever adapter is on disk: a new adapter next to an old set of helpers
+    // would fail on every tool call.
+    const failedRequired = await copyHookHelpers(
+      pluginClaudeDir,
+      destHooksDir,
+      'Antigravity hooks',
+      result,
+    );
+    if (failedRequired.length > 0) {
+      result.errors.push(
+        `Antigravity hooks: required helper(s) ${failedRequired.join(', ')} failed to copy — skipping hook registration`,
+      );
+      return;
+    }
+
     // Adapter script: rewrite the dist path baked into the file so it resolves
     // to the installed gitnexus CLI rather than the cwd-relative dev path.
     const adapterSrc = path.join(pluginAntigravityDir, 'gitnexus-antigravity-hook.cjs');
@@ -826,23 +848,6 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
     } catch {
       result.errors.push(
         'Antigravity hooks: adapter script was not installed — skipping hook registration',
-      );
-      return;
-    }
-
-    // Shared helpers (copied from hooks/claude/). win-rm-list-json.ps1 is
-    // required by hook-db-lock-probe.cjs on Windows — without it, the MCP
-    // server ownership probe silently fails open and the hook may contend
-    // with the MCP server on the LadybugDB.
-    const failedRequired = await copyHookHelpers(
-      pluginClaudeDir,
-      destHooksDir,
-      'Antigravity hooks',
-      result,
-    );
-    if (failedRequired.length > 0) {
-      result.errors.push(
-        `Antigravity hooks: required helper(s) ${failedRequired.join(', ')} failed to copy — skipping hook registration`,
       );
       return;
     }

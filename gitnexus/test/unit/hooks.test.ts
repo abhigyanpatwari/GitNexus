@@ -271,7 +271,10 @@ function loadRegistryQuery() {
       lbugPath: string;
       metadata: { lastCommit?: string } | null;
     } | null;
-    resolveHookRepo: (cwd: string) => {
+    resolveHookRepo: (
+      cwd: string,
+      spawnCwd?: string,
+    ) => {
       path: string;
       storagePath: string;
       lbugPath: string;
@@ -645,10 +648,20 @@ describe('Git mutation detection', () => {
     it(`${label} hook detects git mutations through the shared helper`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain("require('./git-mutation-command.cjs')");
-      expect(source).toContain('gitMutationDirectory(command, cwd)');
+      expect(source).toContain('gitMutationDirectories(command, ');
       expect(source).not.toMatch(/commit\|merge\|rebase\|cherry-pick\|pull/);
     });
   }
+
+  // Reading the command resolves each `-C` path on disk, which a failed
+  // command must not cause.
+  it('CJS hook checks the exit code before it reads the command', () => {
+    const source = fs.readFileSync(CJS_RUNTIME, 'utf-8');
+    const handler = source.slice(source.indexOf('function handlePostToolUse'));
+    const exitCodeCheck = handler.indexOf('toolOutput.exit_code !== 0');
+    expect(exitCodeCheck).toBeGreaterThan(-1);
+    expect(exitCodeCheck).toBeLessThan(handler.indexOf('gitMutationDirectories(command, '));
+  });
 });
 
 // ─── Source code regression: PreToolUse concurrency guard (#1486) ──
@@ -3817,8 +3830,9 @@ describe('PostToolUse staleness detection with gitnexus.json (integration)', () 
     it(`${label}: prefers gitnexus.json over meta.json when both are present (dual-write steady state)`, () => {
       const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
       const metaJsonPath = path.join(gitNexusDir, 'meta.json');
-      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'freshcommit', stats: {} }));
-      fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'stalecommit', stats: {} }));
+      // Only a commit id is echoed in the hint, so the two are spelled as ids.
+      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'f'.repeat(40), stats: {} }));
+      fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: '5'.repeat(40), stats: {} }));
 
       try {
         const result = runHook(hookPath, {
@@ -3833,7 +3847,7 @@ describe('PostToolUse staleness detection with gitnexus.json (integration)', () 
         expect(output).not.toBeNull();
         // Reports staleness against gitnexus.json's commit, not meta.json's —
         // proves gitnexus.json is consulted first.
-        expect(output!.additionalContext).toContain('freshco');
+        expect(output!.additionalContext).toContain('last indexed: fffffff)');
       } finally {
         fs.rmSync(gitnexusJsonPath, { force: true });
         fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
@@ -4772,6 +4786,9 @@ describe('Linked git worktree resolution', () => {
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
         expect(output!.additionalContext).toContain('stale');
+        // `analyze` clears the hint when it runs in the worktree, so the hint
+        // must not send the agent to the canonical repo.
+        expect(output!.additionalContext).not.toContain(mainRepo);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
@@ -5086,6 +5103,62 @@ describe('Hook metadata-filename drift guard', () => {
       expect(source).toContain('gitnexus.json');
     });
   }
+});
+
+// Windows looks for `git.exe` in the working directory of a child before PATH.
+// A hook that read a directory in a command has git started somewhere else and
+// passes the directory with -C. The stand-in is a shell script, hence not on
+// Windows.
+describe.skipIf(process.platform === 'win32')('Hook registry resolver spawn directory', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resolver-spawn-'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('starts git in the directory the caller names and finds the same repository', () => {
+    const repoDir = path.join(root, 'repo');
+    const sessionDir = path.join(root, 'session');
+    const storagePath = path.join(repoDir, '.gitnexus');
+    const bin = path.join(root, 'bin');
+    const log = path.join(root, 'started-in.log');
+    for (const dir of [repoDir, sessionDir, storagePath, bin]) fs.mkdirSync(dir);
+    initRepoWithCommit(repoDir);
+    fs.writeFileSync(path.join(storagePath, 'gitnexus.json'), JSON.stringify({ lastCommit: 'a' }));
+    writeHookRegistry(path.join(root, 'home'), [{ name: 'repo', path: repoDir, storagePath }]);
+
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).stdout;
+    fs.writeFileSync(
+      path.join(bin, 'git'),
+      `#!/bin/sh\npwd -P >> "${log}"\nexec "${realGit.trim()}" "$@"\n`,
+      { mode: 0o755 },
+    );
+    vi.stubEnv('GITNEXUS_HOME', path.join(root, 'home'));
+    vi.stubEnv('GITNEXUS_STORAGE_PATH', undefined);
+    vi.stubEnv('GITNEXUS_STORAGE_ROOT', undefined);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`);
+    const startedIn = () => {
+      const lines = fs.readFileSync(log, 'utf-8').trim().split('\n');
+      fs.rmSync(log);
+      return [...new Set(lines)];
+    };
+
+    const resolver = loadRegistryQuery();
+    const nested = path.join(repoDir, 'src');
+    fs.mkdirSync(nested);
+
+    const direct = resolver.resolveHookRepo(nested);
+    expect(direct).toMatchObject({ path: repoDir, storagePath });
+    expect(startedIn()).toEqual([fs.realpathSync(nested)]);
+
+    expect(resolver.resolveHookRepo(nested, sessionDir)).toEqual(direct);
+    expect(startedIn()).toEqual([fs.realpathSync(sessionDir)]);
+  });
 });
 
 describe('Hook registry resolver drift guard', () => {

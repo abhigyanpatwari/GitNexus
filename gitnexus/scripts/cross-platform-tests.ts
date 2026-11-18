@@ -126,8 +126,8 @@ const PLATFORM_LOGIC = [
   'test/unit/repo-manager-finalize-invariant.test.ts',
   'test/unit/git-utils.test.ts',
   'test/unit/hooks.test.ts',
-  // A bare backslash in a `git -C` path is a separator on Windows and an
-  // escape elsewhere; Ubuntu alone would never read the Windows half.
+  // A `git -C` path is resolved with the platform's path rules, and a network
+  // path is refused on Windows only; Ubuntu alone would never read that half.
   'test/unit/git-mutation-command.test.ts',
   'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',
