@@ -83,8 +83,6 @@ interface SamIndex {
   /** Per call with implicitly typed lambda arguments: each argument's lambda
    * arity, `undefined` for any other argument. */
   readonly lambdaCalls: ReadonlyMap<string, readonly (number | undefined)[]>;
-  /** Packages that declare at least one workspace file. */
-  readonly packages: ReadonlySet<string>;
   /** A simple type name a file's on-demand imports supply, per file and name. */
   readonly onDemand: Map<string, SymbolDefinition | null>;
   /** A type body's method scopes, by the method declaration's start. */
@@ -122,10 +120,7 @@ export function indexJavaSamLambdaTargets(
 ): void {
   const classScopes = new Map<string, ScopeId>();
   const lambdaCalls = new Map<string, (number | undefined)[]>();
-  const packages = new Set<string>();
   for (const parsed of parsedFiles) {
-    const packageName = packageOf(parsed.filePath);
-    if (packageName !== undefined) packages.add(packageName);
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Class') continue;
       const owner = scope.ownedDefs.find((definition) => isClassLike(definition.type));
@@ -150,7 +145,6 @@ export function indexJavaSamLambdaTargets(
   samIndexes.set(indexes, {
     classScopes,
     lambdaCalls,
-    packages,
     onDemand: new Map(),
     methodScopes: new Map(),
     abstractMethods: new Map(),
@@ -262,9 +256,9 @@ function packageOf(filePath: string): string | undefined {
  * The workspace top-level type a file's type-import-on-demand declarations
  * supply for `name` (JLS 7.5.2), reached only when no declaration, single-type
  * import or same-package type claims it (JLS 6.4.1). Two candidates are
- * ambiguous. A static import that may name a member type, a `java.lang` type
- * of that name, or an on-demand package with no workspace file (whose types
- * cannot be listed) answers nothing.
+ * ambiguous. A dependency can also contribute types to an imported package
+ * that contains workspace files. Every competing wildcard must be accounted
+ * for, including when no workspace type matches its package.
  */
 function onDemandType(
   name: string,
@@ -299,13 +293,8 @@ function onDemandType(
           supplied = true;
         }
       }
-      if (
-        !supplied &&
-        (KNOWN_JAVA_PLATFORM_TYPES.has(`${item.name}.${name}`) ||
-          (!index.packages.has(item.name) &&
-            !['java.lang', 'java.util', 'java.io'].includes(item.name)))
-      )
-        decidable = false;
+      // java.lang is already imported implicitly and checked above.
+      if (!supplied && item.name !== 'java.lang') decidable = false;
     }
     const [only] = candidates.values();
     if (decidable && candidates.size === 1 && only !== undefined) found = only;
@@ -695,29 +684,24 @@ function provesJdkType(
   if (names.staticOnDemand || names.staticNames.has(name)) return false;
   const pkg = canonical.slice(0, canonical.lastIndexOf('.'));
   if (pkg !== 'java.lang' && !names.onDemand.has(pkg)) return false;
-  // java.lang is imported on demand. A second wildcard can supply another
-  // Object, even when the ordinary scope walk has no resolved import for it.
-  if (pkg === 'java.lang') {
-    for (const imported of names.onDemand) {
-      if (imported === pkg) continue;
-      if (
-        !index.packages.has(imported) &&
-        !['java.util', 'java.io', JDK_FUNCTION_PACKAGE].includes(imported)
-      )
-        return false;
-      if (
-        scopes.qualifiedNames.get(name).some((id) => {
-          const def = scopes.defs.get(id);
-          return (
-            def !== undefined &&
-            def.ownerId === undefined &&
-            isClassLike(def.type) &&
-            packageOf(def.filePath) === imported
-          );
-        })
-      )
-        return false;
-    }
+  for (const imported of names.onDemand) {
+    if (imported === pkg) continue;
+    // The supported JDK callback names and Object are distinct across these
+    // platform packages. Any other wildcard can supply a classpath namesake.
+    if (!['java.lang', 'java.util', 'java.io', JDK_FUNCTION_PACKAGE].includes(imported))
+      return false;
+    if (
+      scopes.qualifiedNames.get(name).some((id) => {
+        const def = scopes.defs.get(id);
+        return (
+          def !== undefined &&
+          def.ownerId === undefined &&
+          isClassLike(def.type) &&
+          packageOf(def.filePath) === imported
+        );
+      })
+    )
+      return false;
   }
   return javaContainerProofHolds({ kind: 'on-demand', name, scope }, filePath, position, scopes);
 }

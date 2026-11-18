@@ -332,6 +332,40 @@ public class Caller {
   });
 });
 
+describe('Java callback types with competing on-demand imports', () => {
+  const result = useFixture('java-sam-split-package', {
+    'model/User.java': 'package model; public class User { public void save() {} }',
+    'own/Sink.java': 'package own; public interface Sink { void run(model.User value); }',
+    // Dependencies can add Sink, Consumer or Object to this same package.
+    'partial/Marker.java': 'package partial; public class Marker {}',
+    'app/Workspace.java': `package app; import own.*; import partial.*;
+class Workspace { void run(Sink cb) {} void call() { run(x -> x.save()); } }`,
+    'app/Jdk.java': `package app; import java.util.function.*; import partial.*;
+class Jdk { void run(Consumer<model.User> cb) {} void call() { run(x -> x.save()); } }`,
+    'cb/Scoped.java': `package cb; import partial.*;
+public interface Scoped { boolean equals(Object x); void run(model.User value); }`,
+    'app/ObjectCase.java': `package app;
+class ObjectCase { void run(cb.Scoped cb) {} void call() { run(x -> x.save()); } }`,
+    'app/Explicit.java': `package app; import own.Sink; import partial.*;
+class Explicit { void run(Sink cb) {} void call() { run(x -> x.save()); } }`,
+  });
+
+  it.each(['Workspace', 'Jdk', 'ObjectCase'])(
+    'leaves the callback unresolved when %s depends on the contents of a split package',
+    (owner) => {
+      const caller = `Method:app/${owner}.java:${owner}.call#0`;
+      expect(targets(getRelationships(result(), 'CALLS'), caller, 'save')).toEqual([]);
+    },
+  );
+
+  it('keeps the explicitly imported callback when another package is imported on demand', () => {
+    const caller = 'Method:app/Explicit.java:Explicit.call#0';
+    expect(targets(getRelationships(result(), 'CALLS'), caller, 'save')).toEqual([
+      'Method:model/User.java:User.save#0',
+    ]);
+  });
+});
+
 /**
  * `Api.run(user -> user.save())` where the selected workspace method declares
  * its parameter as a JDK `java.util.function` interface. The lambda parameter
