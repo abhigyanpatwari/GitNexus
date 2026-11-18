@@ -1,0 +1,19 @@
+gitnexus/test/unit/cursor-hook.test.ts
+  s_178fe5f2bc5b0d::t_93b87abb133343 952,957
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2705b70a52f08fb21e8a8e6b3ccaa3f39b84f08e",
+  "prompts": {},
+  "sessions": {
+    "s_178fe5f2bc5b0d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15bafdb9-7c6c-4d9c-8e9f-53fbc01c0876",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
