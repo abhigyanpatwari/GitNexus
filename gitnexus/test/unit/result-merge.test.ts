@@ -182,6 +182,7 @@ describe('mergeResult', () => {
       lineNumber: 1,
       once: false,
       appliesContext: true,
+      unguarded: true,
     };
     const second = {
       filePath: 'bootstrap/app.php',
@@ -193,6 +194,7 @@ describe('mergeResult', () => {
       lineNumber: 2,
       once: false,
       appliesContext: true,
+      unguarded: true,
     };
     mergeResult(target, { ...emptyResult(), phpRouterRequireBindings: [first] });
     mergeResult(target, emptyResult());

@@ -80,16 +80,25 @@ function isRouterReceiver(node: SyntaxNode | null | undefined): boolean {
   return false;
 }
 
+/** PHP method names are case-insensitive. Property names are not, so `$app->router` stays exact. */
+function phpMethodName(node: SyntaxNode): string | null {
+  const name = getRouterCallMethodName(node);
+  if (name === null) return null;
+  const lower = name.toLowerCase();
+  // The resource set and action split keep this spelling.
+  return lower === 'apiresource' ? 'apiResource' : lower;
+}
+
 export function isPhpRouterGroupCall(node: SyntaxNode): boolean {
   if (node.type !== 'member_call_expression') return false;
-  if (getRouterCallMethodName(node) !== 'group') return false;
+  if (phpMethodName(node) !== 'group') return false;
   return isRouterReceiver(getMemberObject(node));
 }
 
 function isPhpRouterHttpCall(node: SyntaxNode): boolean {
   if (node.type !== 'member_call_expression') return false;
   if (!isRouterReceiver(getMemberObject(node))) return false;
-  const method = getRouterCallMethodName(node);
+  const method = phpMethodName(node);
   return method !== null && LUMEN_HTTP_METHODS.has(method);
 }
 
@@ -577,7 +586,7 @@ interface ChainedRouteCall {
 function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
   if (node.type !== 'member_call_expression') return null;
 
-  const terminalMethod = getRouterCallMethodName(node);
+  const terminalMethod = phpMethodName(node);
   if (!terminalMethod) return null;
 
   const terminalArgs = getRouterCallArguments(node);
@@ -587,7 +596,7 @@ function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
 
   while (current) {
     if (current.type === 'member_call_expression') {
-      const method = getRouterCallMethodName(current);
+      const method = phpMethodName(current);
       const args = getRouterCallArguments(current);
       if (method) attributes.unshift({ method, argsNode: args });
       current = current.children?.[0];
@@ -595,7 +604,7 @@ function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
       const obj = current.childForFieldName?.('object') ?? current.children?.[0];
       if (obj?.text !== 'Route') return null;
 
-      const method = getRouterCallMethodName(current);
+      const method = phpMethodName(current);
       const args = getRouterCallArguments(current);
       if (method) attributes.unshift({ method, argsNode: args });
 
@@ -848,7 +857,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
 
     // Case 1: Simple Route::get(...), Route::post(...), etc.
     if (isRouteStaticCall(node)) {
-      const method = getRouterCallMethodName(node);
+      const method = phpMethodName(node);
       if (method && (ROUTE_HTTP_METHODS.has(method) || ROUTE_RESOURCE_METHODS.has(method))) {
         emitRoute(
           method,
@@ -940,7 +949,7 @@ export function extractLaravelRoutes(tree: Parser.Tree, filePath: string): Extra
     }
 
     if (isPhpRouterHttpCall(node)) {
-      const method = getRouterCallMethodName(node);
+      const method = phpMethodName(node);
       if (method) {
         emitRoute(
           method,

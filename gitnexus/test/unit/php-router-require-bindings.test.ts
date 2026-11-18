@@ -116,6 +116,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         lineNumber: 1,
         once: false,
         appliesContext: true,
+        unguarded: true,
       },
       {
         filePath: 'bootstrap/app.php',
@@ -127,6 +128,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         lineNumber: 2,
         once: false,
         appliesContext: true,
+        unguarded: true,
       },
     ];
     const map = resolvePhpRouterRequireBindings(files, bindings);
@@ -162,6 +164,7 @@ describe('applyPhpRouterRequireContexts', () => {
         lineNumber: 1,
         once: false,
         appliesContext: true,
+        unguarded: true,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -218,6 +221,7 @@ describe('applyPhpRouterRequireContexts', () => {
         lineNumber: 1,
         once: false,
         appliesContext: true,
+        unguarded: true,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -257,6 +261,7 @@ describe('applyPhpRouterRequireContexts', () => {
         lineNumber: 1,
         once: false,
         appliesContext: true,
+        unguarded: true,
       },
     ];
     const merged = applyPhpRouterRequireContexts(
@@ -372,6 +377,25 @@ $app->router->group(['prefix' => 'api'], function ($router) {
       bindings,
     );
     expect(map.has('routes/web.php')).toBe(false);
+  });
+
+  it('a conditional grouped require_once does not suppress a later require_once', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'maybe'], function ($router) {
+  if (env('X')) { require_once __DIR__ . '/../routes/web.php'; }
+});
+$app->router->group(['prefix' => 'api'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['maybe', 'api']);
   });
 
   it('a require nested in a condition does not count as already run', () => {

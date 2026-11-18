@@ -24,6 +24,8 @@ export interface ExtractedPhpRouteRequireBinding {
   once: boolean;
   /** False for a top-level include: it marks the file as already run without adding a group. */
   appliesContext: boolean;
+  /** False when the require sits under if/loop/try, so it may not have run. */
+  unguarded: boolean;
 }
 
 export function shouldExtractPhpRouterRequireBindings(content: string): boolean {
@@ -167,19 +169,19 @@ function visitGroupBody(
   stack: RouteGroupContext[],
   bindings: ExtractedPhpRouteRequireBinding[],
 ): void {
-  const pending: { node: SyntaxNode; stack: RouteGroupContext[] }[] = [];
-  const pushChildren = (node: SyntaxNode, frameStack: RouteGroupContext[]) => {
+  const pending: { node: SyntaxNode; stack: RouteGroupContext[]; unguarded: boolean }[] = [];
+  const pushChildren = (node: SyntaxNode, frameStack: RouteGroupContext[], unguarded: boolean) => {
     const children = node.children ?? [];
     for (let i = children.length - 1; i >= 0; i--) {
-      pending.push({ node: children[i], stack: frameStack });
+      pending.push({ node: children[i], stack: frameStack, unguarded });
     }
   };
-  pushChildren(body, stack);
+  pushChildren(body, stack, true);
 
   while (pending.length > 0) {
     const frame = pending.pop();
     if (!frame) continue;
-    const { node, stack: frameStack } = frame;
+    const { node, stack: frameStack, unguarded } = frame;
     if (isRequireCall(node)) {
       const requiredPath = resolveRequirePath(hostFilePath, requireArgument(node));
       if (!requiredPath?.endsWith('.php')) continue;
@@ -194,6 +196,7 @@ function visitGroupBody(
         lineNumber: node.startPosition.row,
         once: isOnceRequire(node),
         appliesContext: true,
+        unguarded,
       });
       continue;
     }
@@ -201,11 +204,11 @@ function visitGroupBody(
       const argsNode = getRouterCallArguments(node);
       const groupCtx = parseRouteGroupArrayArgs(argsNode, 'lumen');
       const innerBody = findRouteGroupClosureBody(argsNode);
-      if (innerBody) pushChildren(innerBody, [...frameStack, groupCtx]);
+      if (innerBody) pushChildren(innerBody, [...frameStack, groupCtx], unguarded);
       continue;
     }
     if (DEFERRED_SCOPE_TYPES.has(node.type)) continue;
-    pushChildren(node, frameStack);
+    pushChildren(node, frameStack, unguarded && !CONDITIONAL_NODE_TYPES.has(node.type));
   }
 }
 
@@ -254,6 +257,7 @@ export function extractPhpRouterRequireBindings(
           lineNumber: node.startPosition.row,
           once: isOnceRequire(node),
           appliesContext: false,
+          unguarded: true,
         });
       }
       continue;

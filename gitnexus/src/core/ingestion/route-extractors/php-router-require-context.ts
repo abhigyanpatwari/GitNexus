@@ -19,8 +19,9 @@ export interface PhpRouteRequireContext {
  * Map repo-relative route file paths to bootstrap group contexts. Bindings apply
  * only when the required path resolves to an indexed routes/*.php file. Bindings
  * arrive in host-file then source order; a `require_once` of a file an earlier
- * binding already included — grouped or a top-level include — does not run
- * again, so it adds no context.
+ * unguarded binding already included — grouped or a top-level include — does
+ * not run again, so it adds no context. A require under a condition may not
+ * have run, so it does not count.
  */
 export function resolvePhpRouterRequireBindings(
   files: Iterable<string>,
@@ -34,7 +35,7 @@ export function resolvePhpRouterRequireBindings(
     const target = binding.requiredPath.replace(/\\/g, '/');
     if (!fileSet.has(target) || !isPhpRouteFile(target)) continue;
     if (binding.once && included.has(target)) continue;
-    included.add(target);
+    if (binding.unguarded) included.add(target);
     if (!binding.appliesContext) continue;
     const ctx: PhpRouteRequireContext = {
       prefix: binding.prefix,

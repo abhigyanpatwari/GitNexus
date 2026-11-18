@@ -406,6 +406,30 @@ Route::get('/abs', '\\\\Vendor\\\\Abs\\\\Ctrl@m');
     );
   });
 
+  it('recognizes uppercase Lumen and Route method names', () => {
+    const routes = extract(`<?php
+$router->GROUP(['prefix' => 'api'], function () use ($router) {
+  $router->GET('/x', 'UserController@show');
+});
+Route::GET('/y', 'UserController@list');
+Route::ApiResource('/photos', 'PhotoController');
+`);
+    expect(routes).toContainEqual(
+      expect.objectContaining({
+        httpMethod: 'get',
+        routePath: '/x',
+        prefix: 'api',
+        methodName: 'show',
+      }),
+    );
+    expect(routes).toContainEqual(
+      expect.objectContaining({ httpMethod: 'get', routePath: '/y', methodName: 'list' }),
+    );
+    expect(
+      routes.filter((route) => route.routePath === '/photos').map((route) => route.methodName),
+    ).toEqual(['index', 'store', 'show', 'update', 'destroy']);
+  });
+
   it('folds a parenthesized literal URI', () => {
     const routes = extract(`<?php
 $router->get(('/users'), 'UserController@show');
