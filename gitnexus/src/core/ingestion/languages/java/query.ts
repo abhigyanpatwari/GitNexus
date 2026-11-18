@@ -210,6 +210,13 @@ const JAVA_SCOPE_QUERY = `
   declarator: (variable_declarator
     name: (identifier) @type-binding.name)) @type-binding.annotation
 
+;; Interface fields are constant_declaration nodes, including implicit
+;; public static final fields. Keep the binding in the declaring interface.
+(constant_declaration
+  type: [(type_identifier) (generic_type) (array_type) (scoped_type_identifier) (annotated_type)] @type-binding.type
+  declarator: (variable_declarator
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
 ;; Type bindings — method return type: public User getUser() { }
 (method_declaration
   type: (type_identifier) @type-binding.type

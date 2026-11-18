@@ -51,6 +51,9 @@ GRAPH_QUERY_TIMEOUT_SECONDS = 300
 # further. Integration tests already stub 60s; graph prep uses 120s so a
 # replacement worker is not classified as deterministic-startup (#2649).
 GRAPH_WORKER_READY_TIMEOUT_MS = 120_000
+# A single parser worker can also spend over 30s in one sub-batch on a
+# CPU-constrained host. The graph build has its own one-hour deadline.
+GRAPH_WORKER_SUB_BATCH_TIMEOUT_MS = 120_000
 MAX_GRAPH_SCRUB_ENTRIES = 250_000
 MAX_GRAPH_SCRUB_FILE_BYTES = 512 * 1024
 MAX_GRAPH_SCRUB_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
@@ -252,6 +255,7 @@ def _graph_environment() -> dict[str, str]:
             "GITNEXUS_WORKER_POOL_SIZE": "1",
             "GITNEXUS_PARSE_CHUNK_CONCURRENCY": "1",
             "GITNEXUS_WORKER_READY_TIMEOUT_MS": str(GRAPH_WORKER_READY_TIMEOUT_MS),
+            "GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS": str(GRAPH_WORKER_SUB_BATCH_TIMEOUT_MS),
         }
     )
     return env

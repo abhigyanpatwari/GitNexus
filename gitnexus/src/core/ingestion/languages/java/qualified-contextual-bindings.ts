@@ -1,146 +1,24 @@
-import {
-  makeScopeId,
-  type ParsedFile,
-  type Scope,
-  type SymbolDefinition,
-  type TypeRef,
-} from 'gitnexus-shared';
+import type { ParsedFile, SymbolDefinition, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { bindsTypeParameter, isClassLike } from '../../scope-resolution/scope/walkers.js';
-import {
-  javaReturnElementFacts,
-  javaTypeFieldFacts,
-  type JavaCaptureSideChannel,
-} from './capture-side-channel.js';
+import { bindsTypeParameter } from '../../scope-resolution/scope/walkers.js';
+import { javaReturnElementFacts, type JavaCaptureSideChannel } from './capture-side-channel.js';
 import {
   JAVA_INHERITED_FIELD_ELEMENT,
   javaReturnElementRef,
   type ContainerProof,
-  type InheritedFieldProof,
   type JavaContainerProofFact,
   type JavaFieldElementRoute,
   type JavaFieldFact,
-  type JavaTypeFieldsFact,
 } from './declared-type-captures.js';
-import { getJavaPackageFact } from './package-facts.js';
+import { inheritedFieldResolver } from './inherited-field-types.js';
 import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
 } from './package-siblings.js';
-import {
-  hasUnindexedBase,
-  inheritsJavaMemberTypeNamed,
-  lookupJavaTypeNameClaim,
-} from './qualified-type-bindings.js';
+import { inheritsJavaMemberTypeNamed, lookupJavaTypeNameClaim } from './qualified-type-bindings.js';
 import { eraseJavaTypeArguments } from './type-spelling.js';
 
 type Position = TypeRef['lookupPosition'];
-
-/** The field a subclass inherits under a name, or why there is none to use. */
-type InheritedField =
-  | 'absent'
-  | 'hidden'
-  | 'unknown'
-  | { readonly field: JavaFieldFact; readonly filePath: string; readonly scope: Scope };
-
-const NO_FIELDS: JavaTypeFieldsFact = Object.freeze({
-  range: { startLine: 0, startCol: 0, endLine: 0, endCol: 0 },
-  bases: [],
-  fields: [],
-});
-
-/**
- * Which field a class inherits under `name` (JLS 8.3), from the workspace
- * inventory: the class's MRO and each supertype's own field declarations.
- * `unknown` when a written supertype anywhere on the chain is not a workspace
- * type (its members are not inventoried), when a type's fields were not
- * captured, or when the answer depends on hiding order or package chains.
- */
-export function inheritedFieldResolver(
-  parsedFiles: readonly ParsedFile[],
-  indexes: ScopeResolutionIndexes,
-): (proof: InheritedFieldProof) => InheritedField {
-  let types:
-    | Map<
-        string,
-        { readonly filePath: string; readonly fact: JavaTypeFieldsFact; readonly scope: Scope }
-      >
-    | undefined;
-  const memo = new Map<string, InheritedField>();
-  const packageOf = (filePath: string): string | undefined => {
-    const fact = getJavaPackageFact(filePath);
-    return fact?.status === 'known' ? fact.packageName : undefined;
-  };
-  const index = () => {
-    types = new Map();
-    for (const parsed of parsedFiles) {
-      const facts = javaTypeFieldFacts(parsed);
-      // A file without captured facts leaves its types out: they stay unknown.
-      if (facts === undefined) continue;
-      const byScope = new Map(
-        facts.map((fact) => [
-          makeScopeId({ filePath: parsed.filePath, range: fact.range, kind: 'Class' }),
-          fact,
-        ]),
-      );
-      for (const scope of parsed.scopes) {
-        if (scope.kind !== 'Class') continue;
-        const def = scope.ownedDefs.find((owned) => isClassLike(owned.type));
-        if (def !== undefined)
-          types.set(def.nodeId, {
-            filePath: parsed.filePath,
-            fact: byScope.get(scope.id) ?? NO_FIELDS,
-            scope,
-          });
-      }
-    }
-    return types;
-  };
-  const resolve = (proof: InheritedFieldProof): InheritedField => {
-    const scope = indexes.scopeTree.getScope(proof.scope);
-    const heir =
-      scope?.kind === 'Class' ? scope.ownedDefs.find((def) => isClassLike(def.type)) : undefined;
-    if (heir === undefined || hasUnindexedBase(heir.nodeId, indexes)) return 'unknown';
-    const inventory = types ?? index();
-    const ancestors = indexes.methodDispatch.mroFor(heir.nodeId);
-    if (!inventory.has(heir.nodeId) || ancestors.some((id) => !inventory.has(id))) return 'unknown';
-    const heirPackage = packageOf(heir.filePath);
-    const inherited: Extract<InheritedField, { field: JavaFieldFact }>[] = [];
-    let hidden = false;
-    for (const id of ancestors) {
-      const type = inventory.get(id)!;
-      for (const field of type.fact.fields) {
-        if (field.name !== proof.name) continue;
-        let visible = field.access !== 'private';
-        if (field.access === 'package') {
-          const own = packageOf(type.filePath);
-          if (own === undefined || heirPackage === undefined) return 'unknown';
-          visible = own === heirPackage;
-          // A package-private field travels through the superclass chain from its declaration.
-          for (const ancestorId of ancestors) {
-            if (!visible || ancestorId === id) break;
-            const pkg = packageOf(inventory.get(ancestorId)!.filePath);
-            if (pkg === own || !indexes.methodDispatch.mroFor(ancestorId).includes(id)) continue;
-            if (pkg === undefined) return 'unknown';
-            visible = false;
-          }
-        }
-        if (visible) inherited.push({ field, filePath: type.filePath, scope: type.scope });
-        else hidden = true;
-      }
-    }
-    // Only inaccessible declarations: the name means what encloses the class.
-    if (inherited.length === 0) return hidden ? 'hidden' : 'absent';
-    // Hiding order decides between several; the MRO does not record it.
-    return inherited.length === 1 && !hidden ? inherited[0]! : 'unknown';
-  };
-  return (proof) => {
-    const key = `${proof.scope}\0${proof.name}`;
-    let result = memo.get(key);
-    if (result === undefined) memo.set(key, (result = resolve(proof)));
-    return result;
-  };
-}
 
 /** Element bindings of a proven JDK container return type, by route. */
 interface ProvenReturnElements {
@@ -231,7 +109,7 @@ export function validateJavaQualifiedContextualBindings(
 ): void {
   const settled = new Map<TypeRef, TypeRef | null>();
   const returns = new Map<string, ProvenReturnElements>();
-  const inheritedField = inheritedFieldResolver(parsedFiles, indexes);
+  const inheritedField = inheritedFieldResolver(indexes);
   const holds = (proof: ContainerProof, file: string, position: Position): boolean =>
     javaContainerProofHolds(proof, file, position, indexes);
   /** The binding a supertype's field gives in place of `ref`, by `route`. */

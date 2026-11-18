@@ -367,14 +367,19 @@ function resolveType(
 }
 
 /** Object's public methods do not count toward a functional interface (JLS 9.8). */
-function isObjectMethod(method: JavaOverloadMethodFact): boolean {
-  const types = method.parameterTypes.map((type) => type.trim());
-  return (
-    ((method.name === 'hashCode' || method.name === 'toString') && types.length === 0) ||
-    (method.name === 'equals' &&
-      types.length === 1 &&
-      (types[0] === 'Object' || types[0] === 'java.lang.Object'))
-  );
+function isObjectMethod(
+  method: JavaOverloadMethodFact,
+  scope: ScopeId,
+  filePath: string,
+  scopes: ScopeResolutionIndexes,
+  index: SamIndex,
+): boolean {
+  if (method.name === 'hashCode' || method.name === 'toString')
+    return method.parameterTypes.length === 0;
+  if (method.name !== 'equals' || method.parameterTypes.length !== 1) return false;
+  const name = compact(method.parameterTypes[0]!);
+  if (name !== 'Object' && name !== 'java.lang.Object') return false;
+  return provesJdkType(name, 'java.lang.Object', scope, filePath, method.range, scopes, index);
 }
 
 /**
@@ -412,7 +417,7 @@ function collectAbstractMethods(
   const methods = new Map<string, AbstractMethod>();
   for (const method of declared) {
     if (
-      isObjectMethod(method) ||
+      isObjectMethod(method, scope, definition.filePath, scopes, index) ||
       method.modifiers.some((flag) => flag === 'default' || flag === 'static' || flag === 'private')
     )
       continue;
@@ -651,35 +656,70 @@ function jdkFunctionalInterface(
   scopes: ScopeResolutionIndexes,
   index: SamIndex,
 ): JdkFunctionalInterface | undefined {
-  const position = { startLine: at.startLine, startCol: at.startCol };
-  if (name.includes('.')) {
-    const qualified = JDK_FUNCTIONAL_INTERFACES.get(name);
-    return qualified !== undefined &&
-      javaContainerProofHolds({ kind: 'root', name: 'java', scope }, filePath, position, scopes)
-      ? qualified
-      : undefined;
-  }
-  const canonical = `${JDK_FUNCTION_PACKAGE}.${name}`;
+  const canonical = name.includes('.') ? name : `${JDK_FUNCTION_PACKAGE}.${name}`;
   const known = JDK_FUNCTIONAL_INTERFACES.get(canonical);
-  if (known === undefined || isTypeParameterAt(filePath, name, at, index)) return undefined;
-  const names = fileTypeNames(filePath, index);
-  if (names.declared.get(name)?.some((visible) => javaRangeContains(visible, at)) === true)
-    return undefined;
-  const single = names.single.get(name);
-  const kind =
-    single !== undefined
-      ? single.length === 1 && single[0] === canonical
-        ? 'single'
-        : undefined
-      : names.onDemand.has(JDK_FUNCTION_PACKAGE) &&
-          !names.staticOnDemand &&
-          !names.staticNames.has(name)
-        ? 'on-demand'
-        : undefined;
-  return kind !== undefined &&
-    javaContainerProofHolds({ kind, name, scope }, filePath, position, scopes)
+  return known !== undefined && provesJdkType(name, canonical, scope, filePath, at, scopes, index)
     ? known
     : undefined;
+}
+
+/** Prove the identity of a JDK type at the declaration that uses it. */
+function provesJdkType(
+  name: string,
+  canonical: string,
+  scope: ScopeId,
+  filePath: string,
+  at: Range,
+  scopes: ScopeResolutionIndexes,
+  index: SamIndex,
+): boolean {
+  const position = { startLine: at.startLine, startCol: at.startCol };
+  const root = name.includes('.') ? 'java' : name;
+  if (isTypeParameterAt(filePath, root, at, index)) return false;
+  const names = fileTypeNames(filePath, index);
+  if (names.declared.get(root)?.some((visible) => javaRangeContains(visible, at))) return false;
+  const single = names.single.get(root);
+  if (name.includes('.'))
+    return (
+      name === canonical &&
+      single === undefined &&
+      !names.staticNames.has(root) &&
+      javaContainerProofHolds({ kind: 'root', name: root, scope }, filePath, position, scopes)
+    );
+  if (single !== undefined)
+    return (
+      single.every((written) => written === canonical) &&
+      !names.staticNames.has(name) &&
+      javaContainerProofHolds({ kind: 'single', name, scope }, filePath, position, scopes)
+    );
+  if (names.staticOnDemand || names.staticNames.has(name)) return false;
+  const pkg = canonical.slice(0, canonical.lastIndexOf('.'));
+  if (pkg !== 'java.lang' && !names.onDemand.has(pkg)) return false;
+  // java.lang is imported on demand. A second wildcard can supply another
+  // Object, even when the ordinary scope walk has no resolved import for it.
+  if (pkg === 'java.lang') {
+    for (const imported of names.onDemand) {
+      if (imported === pkg) continue;
+      if (
+        !index.packages.has(imported) &&
+        !['java.util', 'java.io', JDK_FUNCTION_PACKAGE].includes(imported)
+      )
+        return false;
+      if (
+        scopes.qualifiedNames.get(name).some((id) => {
+          const def = scopes.defs.get(id);
+          return (
+            def !== undefined &&
+            def.ownerId === undefined &&
+            isClassLike(def.type) &&
+            packageOf(def.filePath) === imported
+          );
+        })
+      )
+        return false;
+    }
+  }
+  return javaContainerProofHolds({ kind: 'on-demand', name, scope }, filePath, position, scopes);
 }
 
 /** A non-generic, fixed-arity method's written parameter types. */

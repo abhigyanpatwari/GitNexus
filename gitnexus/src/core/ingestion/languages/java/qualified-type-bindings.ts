@@ -24,6 +24,7 @@ import {
 } from './package-siblings.js';
 import { javaImportedSpellingFacts, javaReturnElementFacts } from './capture-side-channel.js';
 import { javaReturnElementRef, type JavaImportedSpellingFact } from './declared-type-captures.js';
+import { populateJavaInheritedFieldTypes, type DirectParents } from './inherited-field-types.js';
 
 /** A top-level or member type, the only kinds a type spelling can name. */
 interface NamedType {
@@ -301,21 +302,24 @@ export interface JavaInheritedMemberType {
 
 const unindexedBases = new WeakMap<ScopeResolutionIndexes, Map<string, boolean>>();
 
-/** A dotted name may start with a member type of an unseen base. Check each
- * written supertype against the workspace hierarchy, once per class. */
-export function hasUnindexedBase(classId: string, indexes: ScopeResolutionIndexes): boolean {
-  let cache = unindexedBases.get(indexes);
-  if (cache === undefined) unindexedBases.set(indexes, (cache = new Map()));
-  const known = cache.get(classId);
-  if (known !== undefined) return known;
-  cache.set(classId, true); // Cycles cannot prove a complete hierarchy.
-  const types = namedTypesByIndexes.get(indexes);
+const writtenParentsByIndexes = new WeakMap<ScopeResolutionIndexes, Map<string, DirectParents>>();
+
+/** Match the direct bases written in the declaration to resolved ancestors.
+ * A redundant direct interface still supplies its own path (JLS 8.3). */
+function writtenJavaParents(classId: string, indexes: ScopeResolutionIndexes): DirectParents {
+  let cache = writtenParentsByIndexes.get(indexes);
+  if (cache === undefined) writtenParentsByIndexes.set(indexes, (cache = new Map()));
+  const cached = cache.get(classId);
+  if (cached !== undefined) return cached;
   const hierarchies = hierarchiesByIndexes.get(indexes);
   const type = hierarchies?.get(classId);
-  if (type === undefined) return true;
+  const file = indexes.defs.get(classId)?.filePath;
+  if (type === undefined || file === undefined)
+    return { ids: directSupertypes(classId, indexes), complete: false };
+  const ids: string[] = [];
+  let complete = true;
   if (type.bases.length > 0) {
-    const file = indexes.defs.get(classId)?.filePath;
-    if (file === undefined) return true;
+    const types = namedTypesByIndexes.get(indexes);
     const ancestors = new Map<string, string | null>();
     for (const id of indexes.methodDispatch.mroFor(classId)) {
       const fqn = types?.get(id)?.fqn ?? hierarchies?.get(id)?.name;
@@ -332,20 +336,35 @@ export function hasUnindexedBase(classId: string, indexes: ScopeResolutionIndexe
     for (const base of type.bases) {
       const root = base.split('.')[0]!;
       const imports = importIndex(file).single.get(root);
-      if (imports !== undefined && imports.length !== 1) return true;
+      if (imports !== undefined && imports.length !== 1) {
+        complete = false;
+        continue;
+      }
       const written = imports === undefined ? base : imports[0]!.name + base.slice(root.length);
       const ancestor = ancestors.get(written);
       if (ancestor === undefined && written === 'java.lang.Object') continue;
-      if (
-        ancestor == null ||
-        (imports !== undefined && types?.get(ancestor)?.fqn !== written) ||
-        hasUnindexedBase(ancestor, indexes)
-      )
-        return true;
+      if (ancestor == null || (imports !== undefined && types?.get(ancestor)?.fqn !== written))
+        complete = false;
+      else ids.push(ancestor);
     }
   }
-  cache.set(classId, false);
-  return false;
+  const result = { ids, complete };
+  cache.set(classId, result);
+  return result;
+}
+
+/** A dotted name may start with a member type of an unseen base. Check each
+ * written supertype against the workspace hierarchy, once per class. */
+export function hasUnindexedBase(classId: string, indexes: ScopeResolutionIndexes): boolean {
+  let cache = unindexedBases.get(indexes);
+  if (cache === undefined) unindexedBases.set(indexes, (cache = new Map()));
+  const known = cache.get(classId);
+  if (known !== undefined) return known;
+  cache.set(classId, true); // Cycles cannot prove a complete hierarchy.
+  const parents = writtenJavaParents(classId, indexes);
+  const missing = !parents.complete || parents.ids.some((id) => hasUnindexedBase(id, indexes));
+  cache.set(classId, missing);
+  return missing;
 }
 
 /**
@@ -977,6 +996,9 @@ export function populateJavaQualifiedTypeBindings(
   hierarchiesByIndexes.set(indexes, hierarchies);
   namedTypesByFqnByIndexes.set(indexes, namedTypesByFqn);
   importedSpellingsByIndexes.set(indexes, importedSpellings);
+  // Inherited fields need the written direct bases. Install their TypeRefs
+  // before collecting the qualified names needed by the class scopes below.
+  populateJavaInheritedFieldTypes(parsedFiles, indexes, (id) => writtenJavaParents(id, indexes));
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
   // Package siblings share one another's module type facts, the same TypeRef
   // objects. A simple spelling's key reads no module scope, the only place

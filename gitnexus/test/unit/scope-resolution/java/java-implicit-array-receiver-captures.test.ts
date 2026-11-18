@@ -88,6 +88,7 @@ describe('Java implicit instance array receivers', () => {
     'class App { static void run() { getUsers()[0].save(); } }',
     'class App { void run() { service.getUsers()[0].save(); } }',
     'class App { void run() { getUsers(1)[0].save(); } }',
+    'class App { void run() { getUsers()[0][1][2].save(); } }',
   ])('refuses an unsupported or differently owned receiver: %s', (source) => {
     expect(chains(source)).toEqual([undefined]);
   });

@@ -1,7 +1,7 @@
 import { type CaptureMatch, type ParsedFile, type ScopeId, type TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
-import { inheritedFieldResolver } from './qualified-contextual-bindings.js';
+import { inheritedFieldResolver } from './inherited-field-types.js';
 import { javaClassScopeOfBody, type JavaCallResultElementRoute } from './declared-type-captures.js';
 
 /** An outer declaration a copy read; any write to it refuses the copy. */
@@ -443,7 +443,7 @@ export function indexJavaEnclosingLocalAliases(
 ): void {
   const sources = new Map<string, AliasSource>();
   enclosingLocalSources.set(indexes, sources);
-  const inheritedField = inheritedFieldResolver(parsedFiles, indexes);
+  const inheritedField = inheritedFieldResolver(indexes);
   const sourceOf = (route: string): AliasSource => {
     const proofs = parseRoute(route);
     if (proofs === undefined) return 'unknown';

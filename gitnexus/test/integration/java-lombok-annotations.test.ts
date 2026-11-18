@@ -192,6 +192,7 @@ public enum E { ; @interface Value {} @Value static class C { String x; } }`,
       'Method:i2/Dto.java:Dto.setName#1',
     ]);
     expect(ids.filter((id) => id.startsWith('Method:i2/Unsure.java:')).sort()).toEqual([
+      'Method:i2/Unsure.java:Unsure.getId#0',
       'Method:i2/Unsure.java:Unsure.getName#0',
       'Method:i2/Unsure.java:Unsure.setName#1',
     ]);

@@ -8,6 +8,36 @@ const targets = (edges: readonly RelEdge[], caller: string, member: string): str
     .map((edge) => edge.rel.targetId)
     .sort();
 
+describe('Java functional interfaces and the identity of Object.equals', () => {
+  const result = useFixture('java-sam-object-identity', {
+    'p/Object.java': 'package p; public class Object {}',
+    'p/Item.java': 'package p; public class Item { public void save() {} }',
+    'other/Other.java': 'package other; public class Other { public void save() {} }',
+    'p/Imported.java': `package p;
+import java.lang.Object;
+interface Imported { boolean equals(Object x); void accept(Item it); }`,
+    'p/Main.java': `package p;
+interface Local { boolean equals(Object x); void accept(Item it); }
+interface Canonical { boolean equals(java.lang.Object x); void accept(Item it); }
+class Main {
+  void local(Local cb) {} void canonical(Canonical cb) {} void imported(Imported cb) {}
+  void rejected() { local(x -> x.save()); }
+  void accepted() { canonical(x -> x.save()); }
+  void explicitlyImported() { imported(x -> x.save()); }
+}`,
+  });
+
+  it.each([
+    ['rejected', []],
+    ['accepted', ['Method:p/Item.java:Item.save#0']],
+    ['explicitlyImported', ['Method:p/Item.java:Item.save#0']],
+  ] as const)('resolves the parameter where equals was declared in %s', (name, expected) => {
+    const caller = `Method:p/Main.java:Main.${name}#0`;
+    expect(result().graph.getNode(caller)).toBeDefined();
+    expect(targets(getRelationships(result(), 'CALLS'), caller, 'save')).toEqual(expected);
+  });
+});
+
 // JLS 15.27.3 / 9.9: an implicitly typed lambda parameter takes the type of the
 // matching parameter of its target's function type. The target is the
 // parameter type of the method javac selects for the enclosing call.

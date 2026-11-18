@@ -1,102 +1,170 @@
-import { makeScopeId, type ParsedFile, type Scope, type TypeRef } from 'gitnexus-shared';
+import {
+  makeScopeId,
+  type ParsedFile,
+  type Scope,
+  type ScopeId,
+  type TypeRef,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { javaTypeFieldFacts } from './capture-side-channel.js';
-import type { JavaFieldFact } from './declared-type-captures.js';
+import type { InheritedFieldProof, JavaFieldFact } from './declared-type-captures.js';
 import { getJavaPackageFact } from './package-facts.js';
 
 interface ClassFields {
   readonly scope: Scope;
-  readonly filePath: string;
   readonly packageName: string | undefined;
-  /** Every field the type declares, private ones included: a declaration
-   *  decides its name for the type and its subtypes even when it is not
-   *  inherited (JLS 8.3). */
-  readonly fields: readonly Pick<JavaFieldFact, 'name' | 'access'>[];
+  readonly fields: readonly JavaFieldFact[];
+  readonly captured: boolean;
 }
 
-/**
- * Bind, in a Java class's own scope, the declared types of the fields it
- * inherits from a supertype in another file of its own package, so a bare
- * field read in its body (`inner.save()`, an implicit `this.inner`) is typed
- * the way the class's own fields are.
- *
- * JLS 8.2/8.3: a class inherits the non-private fields of its superclass and
- * superinterfaces; a package-access field only while every class on the way
- * is in its package. A field the class declares hides every inherited one of
- * that name, and a nearer supertype's declaration hides a farther one. So the
- * walk goes nearest first through the class's MRO, and the first declaration
- * of a name decides it, whether or not that declaration is inherited.
- *
- * Only same-package supertypes in another file are bound here: a supertype in
- * another package reaches its subclasses through the import that names it, and
- * that existing route is left as it is. Bindings never replace a type the
- * class scope already holds, and they keep the supertype's own `TypeRef`, so
- * the field type is still resolved where the field was declared.
- *
- * Work is the sum over classes of their supertypes' fields: linear in the
- * workspace's inheritance, not in the size of any package.
- */
+interface FieldDeclaration {
+  readonly field: JavaFieldFact;
+  readonly scopeId: ScopeId;
+  readonly packageName: string | undefined;
+}
+
+interface Members {
+  readonly fields: ReadonlyMap<string, readonly FieldDeclaration[]>;
+  readonly complete: boolean;
+}
+
+export interface DirectParents {
+  readonly ids: readonly string[];
+  readonly complete: boolean;
+}
+
+const UNKNOWN_MEMBERS: Members = { fields: new Map(), complete: false };
+const membersByIndexes = new WeakMap<ScopeResolutionIndexes, ReadonlyMap<ScopeId, Members>>();
+
+type InheritedField =
+  | 'absent'
+  | 'hidden'
+  | 'unknown'
+  | { readonly field: JavaFieldFact; readonly filePath: string; readonly scope: Scope };
+
+/** Look up a captured field at the declaration that supplied its type. */
+export function inheritedFieldResolver(
+  indexes: ScopeResolutionIndexes,
+): (proof: InheritedFieldProof) => InheritedField {
+  const members = membersByIndexes.get(indexes);
+  return ({ scope, name }) => {
+    const owner = members?.get(scope);
+    if (!owner?.complete) return 'unknown';
+    const candidates = owner.fields.get(name);
+    if (candidates === undefined) return 'absent';
+    if (candidates.length === 0) return 'hidden';
+    if (candidates.length !== 1) return 'unknown';
+    const candidate = candidates[0]!;
+    const declared = indexes.scopeTree.getScope(candidate.scopeId);
+    return declared === undefined
+      ? 'unknown'
+      : { field: candidate.field, filePath: declared.filePath, scope: declared };
+  };
+}
+
+/** JLS 8.3: a declaration hides fields arriving on the same inheritance path.
+ * Each direct supertype independently contributes its accessible fields.
+ * One declaration reached twice through a diamond is still one field. */
 export function populateJavaInheritedFieldTypes(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
+  directParents: (id: string) => DirectParents,
 ): void {
   const classes = new Map<string, ClassFields>();
   for (const parsed of parsedFiles) {
-    const fact = getJavaPackageFact(parsed.filePath);
-    const packageName = fact?.status === 'known' ? fact.packageName : undefined;
+    const pkg = getJavaPackageFact(parsed.filePath);
+    const packageName = pkg?.status === 'known' ? pkg.packageName : undefined;
     const facts = javaTypeFieldFacts(parsed);
-    const factsByScope =
-      facts === undefined
-        ? undefined
-        : new Map(
-            facts.map((typeFact) => [
-              makeScopeId({ filePath: parsed.filePath, range: typeFact.range, kind: 'Class' }),
-              typeFact.fields,
-            ]),
-          );
+    const fieldsByScope = new Map(
+      facts?.map((fact) => [
+        makeScopeId({ filePath: parsed.filePath, range: fact.range, kind: 'Class' }),
+        fact.fields,
+      ]),
+    );
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Class') continue;
       const def = scope.ownedDefs.find((owned) => isClassLike(owned.type));
       if (def === undefined) continue;
-      // Without the field inventory, every typed field is taken as
-      // inheritable: the declarations are known, their modifiers are not.
+      // Older captures supply field types but no access or element facts.
       const fields =
-        factsByScope === undefined
+        facts === undefined
           ? [...scope.typeBindings]
               .filter(([, ref]) => ref.source !== 'self')
               .map(([name]) => ({ name, access: 'inherited' as const }))
-          : (factsByScope.get(scope.id) ?? []);
-      classes.set(def.nodeId, { scope, filePath: parsed.filePath, packageName, fields });
+          : (fieldsByScope.get(scope.id) ?? []);
+      classes.set(def.nodeId, { scope, packageName, fields, captured: facts !== undefined });
     }
   }
 
-  for (const [heirId, heir] of classes) {
-    if (heir.packageName === undefined) continue;
-    const ancestors = indexes.methodDispatch.mroFor(heirId);
-    if (ancestors.length === 0) continue;
-    const decided = new Set<string>(heir.fields.map((field) => field.name));
-    let samePackageChain = true;
-    let typeBindings: Map<string, TypeRef> | undefined;
-    for (const ancestorId of ancestors) {
-      const ancestor = classes.get(ancestorId);
-      if (ancestor === undefined) {
-        samePackageChain = false;
-        continue;
+  const members = new Map<ScopeId, Members>();
+  const collectMembers = (owner: ClassFields, parents: DirectParents): Members => {
+    let complete = owner.captured && owner.packageName !== undefined && parents.complete;
+    const fields = new Map<string, FieldDeclaration[]>();
+    for (const parentId of parents.ids) {
+      const parentScope = classes.get(parentId)?.scope.id;
+      const parent =
+        parentScope === undefined ? UNKNOWN_MEMBERS : (members.get(parentScope) ?? UNKNOWN_MEMBERS);
+      complete &&= parent.complete;
+      for (const [name, declarations] of parent.fields) {
+        let inherited = fields.get(name);
+        if (inherited === undefined) fields.set(name, (inherited = []));
+        for (const declaration of declarations) {
+          if (declaration.field.access === 'private') continue;
+          if (
+            declaration.field.access === 'package' &&
+            (owner.packageName === undefined || declaration.packageName !== owner.packageName)
+          )
+            continue;
+          if (!inherited.includes(declaration)) inherited.push(declaration);
+        }
       }
-      const supplies =
-        ancestor.packageName === heir.packageName && ancestor.filePath !== heir.filePath;
-      for (const field of ancestor.fields) {
-        if (decided.has(field.name)) continue;
-        decided.add(field.name);
-        if (!supplies || field.access === 'private') continue;
-        if (field.access === 'package' && !samePackageChain) continue;
-        const ref = ancestor.scope.typeBindings.get(field.name);
-        if (ref === undefined || ref.source === 'self') continue;
-        typeBindings ??= heir.scope.typeBindings as Map<string, TypeRef>;
-        if (!typeBindings.has(field.name)) typeBindings.set(field.name, ref);
+    }
+    for (const field of owner.fields)
+      fields.set(field.name, [{ field, scopeId: owner.scope.id, packageName: owner.packageName }]);
+    return { fields, complete };
+  };
+
+  // Visit parents first, including on classpaths deep enough to exhaust the
+  // JavaScript stack. A back edge reads the incomplete entry for its cycle.
+  for (const [id, owner] of classes) {
+    if (members.has(owner.scope.id)) continue;
+    const pending: { id: string; parents?: DirectParents }[] = [{ id }];
+    while (pending.length > 0) {
+      const visit = pending.pop()!;
+      const type = classes.get(visit.id);
+      if (type === undefined) continue;
+      if (visit.parents !== undefined) {
+        members.set(type.scope.id, collectMembers(type, visit.parents));
+      } else if (!members.has(type.scope.id)) {
+        members.set(type.scope.id, UNKNOWN_MEMBERS);
+        const parents = directParents(visit.id);
+        pending.push({ id: visit.id, parents });
+        for (const parent of parents.ids) pending.push({ id: parent });
       }
-      if (ancestor.packageName !== heir.packageName) samePackageChain = false;
     }
   }
+  for (const heir of classes.values()) {
+    const visible = members.get(heir.scope.id);
+    if (visible === undefined || heir.packageName === undefined) continue;
+    const bindings = heir.scope.typeBindings as Map<string, TypeRef>;
+    for (const [name, candidates] of visible.fields) {
+      if (bindings.has(name) || candidates.length === 0) continue;
+      if (candidates.length > 1) {
+        // An ambiguous field claims the name even in a nested class. Keep
+        // lookup from taking an unrelated enclosing field with that name.
+        bindings.set(name, {
+          rawName: '#ambiguous-java-field',
+          declaredAtScope: heir.scope.id,
+          source: 'annotation',
+        });
+        continue;
+      }
+      const declaration = candidates[0]!;
+      const scope = indexes.scopeTree.getScope(declaration.scopeId);
+      const ref = scope?.typeBindings.get(name);
+      if (ref !== undefined && ref.source !== 'self') bindings.set(name, ref);
+    }
+  }
+  membersByIndexes.set(indexes, members);
 }

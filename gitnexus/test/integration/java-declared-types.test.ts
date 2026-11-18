@@ -281,6 +281,14 @@ describe('Java declared types: which inherited field shadows an enclosing one', 
     ...OWNERS,
     'outside/Root.java': 'package outside; public class Root {}',
     'outside/Marker.java': 'package outside; public interface Marker {}',
+    'app/Contract.java': `package app;
+public interface Contract { Other item = null; java.util.List<Other> items = null; }`,
+    'app/HidingBase.java': `package app;
+public class HidingBase implements Contract { private User item; private java.util.List<User> items; }`,
+    'app/Alternative.java': `package app;
+public interface Alternative { User item = null; java.util.List<User> items = null; }`,
+    'outside/ForeignContract.java': `package outside;
+public interface ForeignContract { app.Other item = null; }`,
     'app/PackageBase.java': `package app;
 public class PackageBase extends outside.Root { java.util.List<Other> items; }`,
     'outside/Bridge.java': 'package outside; public class Bridge extends app.PackageBase {}',
@@ -289,9 +297,25 @@ import java.util.List;
 class Generic<T> { List<T> items; }
 class Hidden { private List<Other> items; }
 interface Consts { List<Other> items = null; }
+interface LocalContract { Other item = null; }
 class LocalBridge extends PackageBase {}
 class Outer {
+  User item;
   List<User> items;
+  class DirectContract extends HidingBase implements Contract {
+    void bare() { item.save(); }
+    void elements() { items.forEach(v -> v.save()); }
+  }
+  class ThroughHidingBase extends HidingBase {
+    void bare() { item.save(); }
+    void elements() { items.forEach(v -> v.save()); }
+  }
+  class LocalField implements LocalContract { void bare() { item.save(); } }
+  class ForeignField implements outside.ForeignContract { void bare() { item.save(); } }
+  class Ambiguous implements Alternative, Contract {
+    void bare() { item.save(); }
+    void elements() { items.forEach(v -> v.save()); }
+  }
   class Direct extends PackageBase {
     void run() { items.forEach(v -> v.save()); }
   }
@@ -332,9 +356,22 @@ class Outer {
     ['Private.run', 'Method:app/Outer.java:Private.run#0', [USER]],
     // An interface constant is inherited.
     ['Constant.run', 'Method:app/Outer.java:Constant.run#0', [OTHER]],
+    ['direct interface field', 'Method:app/Outer.java:DirectContract.bare#0', [OTHER]],
+    ['direct interface elements', 'Method:app/Outer.java:DirectContract.elements#0', [OTHER]],
+    ['private field hides its branch', 'Method:app/Outer.java:ThroughHidingBase.bare#0', [USER]],
+    [
+      'private element hides its branch',
+      'Method:app/Outer.java:ThroughHidingBase.elements#0',
+      [USER],
+    ],
+    ['ambiguous fields', 'Method:app/Outer.java:Ambiguous.bare#0', []],
+    ['ambiguous elements', 'Method:app/Outer.java:Ambiguous.elements#0', []],
+    ['same-file constant', 'Method:app/Outer.java:LocalField.bare#0', [OTHER]],
+    ['accessible foreign constant', 'Method:app/Outer.java:ForeignField.bare#0', [OTHER]],
     // A type's own constant hides the enclosing field.
     ['Own.run', 'Method:app/Outer.java:Own.run#0', [OTHER]],
   ])('%s resolves the field Java member lookup selects', (_label, caller, expected) => {
+    expect(result().graph.getNode(caller)).toBeDefined();
     expect(saveTargets(result(), caller)).toEqual(expected);
   });
 });
