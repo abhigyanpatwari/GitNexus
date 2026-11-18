@@ -1168,10 +1168,22 @@ const throwIfBufferPoolExhausted = (error: unknown, context?: string): void => {
   if (remedy) throw new Error(`${context ?? message} ${remedy}`, { cause: error });
 };
 
+const FTS_INCONSISTENCY_SIGNATURE = /^Runtime exception: FTS index '[^']+' is inconsistent:/;
+
+const throwIfFtsIndexInconsistent = (error: unknown, context?: string): void => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!FTS_INCONSISTENCY_SIGNATURE.test(message)) return;
+  throw new Error(
+    `${context ?? message} Run \`gitnexus analyze --force\` to rebuild the graph and FTS indexes. ` +
+      'FTS-only repair cannot restore rows from an interrupted graph write.',
+    { cause: error },
+  );
+};
+
 /**
  * Run a COPY, retrying once with IGNORE_ERRORS=true (which skips row-level
- * errors) on a non-resource first failure. Buffer exhaustion is fatal, including
- * retained retry warnings, and bypasses the recoverable-error callback. Log the
+ * errors) on a recoverable first failure. Buffer exhaustion and FTS inconsistency
+ * are fatal, including retained retry warnings, and bypass the row-error callback. Log the
  * original failure and native COPY/warning receipts even when the retry succeeds.
  * Node COPY requires every row; a skipped-node receipt is a failure. Call sites
  * retain their own message limits and relationship fallback policy.
@@ -1186,6 +1198,9 @@ const copyCsvWithRetry = async (
     await queryAndDrain(targetConn, copyQuery);
   } catch (firstError) {
     throwIfBufferPoolExhausted(firstError);
+    // FTS consistency failures describe the index, not a malformed CSV row.
+    // Skipping rows cannot repair it and can mask the native cause (#3958).
+    throwIfFtsIndexInconsistent(firstError);
     logger.warn(
       { err: firstError, copyQuery },
       'First COPY failure; retrying with IGNORE_ERRORS=true',
@@ -1235,6 +1250,10 @@ const copyCsvWithRetry = async (
           bufferPoolExhaustionRemedy(String(warning.message ?? '')),
         );
         if (resourceWarning) throw new Error(String(resourceWarning.message));
+        const ftsWarning = warnings.find((warning) =>
+          FTS_INCONSISTENCY_SIGNATURE.test(String(warning.message)),
+        );
+        if (ftsWarning) throw new Error(String(ftsWarning.message));
         if (expectedRows !== undefined && (copiedRows !== expectedRows || warnings.length > 0)) {
           throw new Error(
             `COPY retry skipped rows or could not verify a complete node load ` +
@@ -1248,6 +1267,7 @@ const copyCsvWithRetry = async (
       const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
       const message = `COPY retry failed: ${retryMessage}; first failure: ${firstMessage}`;
       throwIfBufferPoolExhausted(retryErr, message);
+      throwIfFtsIndexInconsistent(retryErr, message);
       onError(
         new Error(message, {
           cause: retryErr,

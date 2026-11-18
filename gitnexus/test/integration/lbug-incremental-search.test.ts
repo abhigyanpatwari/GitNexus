@@ -35,6 +35,27 @@ const retainedChecks: Record<(typeof scenarios)[number], Record<string, Partial<
 };
 
 describe('native incremental search (#3421, #3423, #3564, #3569, #3474)', () => {
+  it('keeps FTS documents consistent when COPY rejects a duplicate File row (#3958)', () => {
+    const probe = fileURLToPath(
+      new URL('../../bench/incremental-write-integrity/reproduce-fts-copy.cjs', import.meta.url),
+    );
+    const result = spawnSync(process.execPath, [probe], {
+      encoding: 'utf8',
+      timeout: 120_000,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.signal, result.stderr).toBeNull();
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const report = JSON.parse(result.stdout.trim()) as { checks: Check[] };
+    expect(report.checks).toEqual(
+      ['duplicate-rejected', 'copy-with-fts', 'delete-and-reopen', 'repair'].map((name) => ({
+        name,
+        ok: true,
+      })),
+    );
+  }, 150_000);
+
   for (const scenario of scenarios) {
     it(`preserves retained ${scenario} strings and search through COPY, checkpoint and reopen`, () => {
       // Own process: isolate native lifetimes and allow old-engine diagnostic runs.
