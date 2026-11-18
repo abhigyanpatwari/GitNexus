@@ -412,6 +412,111 @@ REAL_GIT_FIXTURES('evidence provenance v2 helper', () => {
     }
   });
 
+  // Git accepts far more than letters, digits and `._/-` in a branch name.
+  it.each(['feature/c++', 'fix/@scope', 'user/a,b=c#1', 'café'])(
+    'snapshots evidence on the branch %s',
+    async (branch) => {
+      const repo = createBaseRepo();
+      try {
+        git(repo, ['switch', '--quiet', '-c', branch]);
+        for (const helperPath of [PLAN_HELPER, WORK_HELPER]) {
+          const helper = await importHelper(helperPath);
+          const receipt = helper.snapshotEvidence({
+            repo,
+            generatedPlanPath: GENERATED_PLAN_PATH,
+            citedPaths: ['base.txt'],
+          });
+          expect(receipt.cited_path_manifest.map((entry) => entry.path)).toEqual(['base.txt']);
+        }
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('guards the ref file of a branch named feature/c++', async () => {
+    const repo = createBaseRepo();
+    try {
+      git(repo, ['switch', '--quiet', '-c', 'feature/c++']);
+      const commitA = git(repo, ['rev-parse', 'HEAD']);
+      write(repo, 'second.txt', 'second\n');
+      git(repo, ['add', 'second.txt']);
+      git(repo, ['commit', '--quiet', '-m', 'second']);
+      const commitB = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, ['reset', '--hard', '--quiet', commitA]);
+      // Without reflogs, the branch's own ref file is the only control file
+      // that an update of the branch touches.
+      git(repo, ['config', 'core.logAllRefUpdates', 'false']);
+      fs.rmSync(path.join(repo, '.git', 'logs'), { recursive: true, force: true });
+
+      const planner = await importHelper(PLAN_HELPER);
+      expect(() =>
+        planner.snapshotEvidence({
+          repo,
+          generatedPlanPath: GENERATED_PLAN_PATH,
+          citedPaths: ['base.txt'],
+          testHooks: {
+            afterAnchorCapture() {
+              git(repo, ['update-ref', 'refs/heads/feature/c++', commitB]);
+            },
+            afterGitLayerLoad() {
+              git(repo, ['update-ref', 'refs/heads/feature/c++', commitA]);
+            },
+          },
+        }),
+      ).toThrow('Git refs/heads/feature/c++ changed while evidence was materialized');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // Git never reports such a name for HEAD, so a stand-in answers
+  // `symbolic-ref` and passes every other command to the real git.
+  it.each([
+    'refs/heads/../../config',
+    'refs/heads/a\\b',
+    'refs/heads/.hidden',
+    'refs/heads/a b',
+    'refs/heads/a:b',
+    'refs/heads/a.lock',
+    'heads/main',
+  ])('refuses the symbolic HEAD ref %s', async (ref) => {
+    const repo = createBaseRepo();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-evidence-git-'));
+    try {
+      const realGit = (process.env.PATH ?? '')
+        .split(path.delimiter)
+        .map((directory) => path.join(directory, 'git'))
+        .find((candidate) => fs.existsSync(candidate));
+      expect(realGit).toBeDefined();
+      fs.writeFileSync(
+        path.join(bin, 'git'),
+        [
+          '#!/bin/sh',
+          'if [ "$3" = symbolic-ref ]; then printf \'%s\\n\' "$FAKE_SYMBOLIC_REF"; exit 0; fi',
+          `exec "${realGit}" "$@"`,
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`);
+      vi.stubEnv('FAKE_SYMBOLIC_REF', ref);
+
+      const planner = await importHelper(PLAN_HELPER);
+      expect(() =>
+        planner.snapshotEvidence({
+          repo,
+          generatedPlanPath: GENERATED_PLAN_PATH,
+          citedPaths: ['base.txt'],
+        }),
+      ).toThrow(`Invalid symbolic HEAD ref: ${ref}`);
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(bin, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('materializes one captured index listing and detects an index ABA', async () => {
     const repo = createBaseRepo();
     try {

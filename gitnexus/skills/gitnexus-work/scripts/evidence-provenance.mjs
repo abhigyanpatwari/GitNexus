@@ -950,12 +950,24 @@ function verifyControlFile(guard) {
   }
 }
 
+// The ref is read as a path under the Git directory, and Git's own naming rules
+// are what keep that path inside it: no `..`, no backslash, no control
+// character, no component that starts with a dot. A list of allowed characters
+// would also refuse branches Git accepts, such as `feature/c++`.
+function isRefName(repo, ref) {
+  return (
+    ref.startsWith('refs/') &&
+    !ref.includes('..') &&
+    git(repo, ['check-ref-format', ref], { allowFailure: true }).status === 0
+  );
+}
+
 function captureHeadGuards(repo) {
   const symbolic = git(repo, ['symbolic-ref', '-q', 'HEAD'], { allowFailure: true });
   const paths = new Set(['HEAD', 'logs/HEAD', 'packed-refs']);
   if (symbolic.status === 0) {
     const ref = decodeUtf8(symbolic.stdout, 'symbolic HEAD ref').trim();
-    if (!/^refs\/[A-Za-z0-9._\/-]+$/.test(ref) || ref.includes('..')) {
+    if (!isRefName(repo, ref)) {
       throw new Error(`Invalid symbolic HEAD ref: ${ref}`);
     }
     paths.add(ref);
