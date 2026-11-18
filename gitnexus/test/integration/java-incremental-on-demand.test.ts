@@ -156,3 +156,74 @@ it('keeps incremental Java imports and chained calls equal to a full rebuild', a
     await temp.cleanup();
   }
 }, 300_000);
+
+it('persists added and removed package annotation shadows without editing the Lombok model', async () => {
+  const temp = await createTempDir();
+  try {
+    const root = await fs.realpath(temp.dbPath);
+    const repo = path.join(root, 'repo');
+    vi.stubEnv('GITNEXUS_HOME', path.join(root, 'home'));
+    vi.stubEnv('GITNEXUS_STORAGE_PATH', undefined);
+    vi.stubEnv('GITNEXUS_STORAGE_ROOT', undefined);
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+    await fs.mkdir(path.join(repo, 'p'), { recursive: true });
+    await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
+    await fs.writeFile(
+      path.join(repo, 'p/Repo.java'),
+      `package p;
+@org.springframework.stereotype.Repository public class Repo {}
+`,
+    );
+    const model = `package p;
+import lombok.*;
+@org.springframework.stereotype.Service @Value public class Model { Repo repo; }
+`;
+    await fs.writeFile(path.join(repo, 'p/Model.java'), model);
+    initGitRepo(repo);
+    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo });
+    commitAll(repo, 'baseline Lombok model');
+    const options = { skipAgentsMd: true, skipSkills: true, skipFts: true };
+    const read = async () => {
+      await initLbug(getStoragePaths(repo).lbugPath, { skipFts: true });
+      try {
+        return {
+          getters: await executeQuery(
+            "MATCH (m:Method) WHERE m.filePath = 'p/Model.java' " +
+              "AND m.name = 'getRepo' RETURN m.id AS id",
+          ),
+          injections: await executeQuery(
+            'MATCH (s:Class)-[r:CodeRelation]->(t:Class) ' +
+              "WHERE r.type = 'INJECTS' AND s.filePath = 'p/Model.java' " +
+              'RETURN s.id AS source, t.id AS target ORDER BY source, target',
+          ),
+        };
+      } finally {
+        await closeLbug();
+      }
+    };
+    const expected = {
+      getters: [{ id: 'Method:p/Model.java:Model.getRepo#0' }],
+      injections: [{ source: 'Class:p/Model.java:Model', target: 'Class:p/Repo.java:Repo' }],
+    };
+    await runFullAnalysis(repo, options, { onProgress: () => {} });
+    expect(await read()).toEqual(expected);
+
+    await fs.writeFile(path.join(repo, 'p/Value.java'), 'package p; public @interface Value {}\n');
+    commitAll(repo, 'add package annotation shadow');
+    const added = await runFullAnalysis(repo, options, { onProgress: () => {} });
+    expect(added.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'incremental' });
+    expect(await read()).toEqual({ getters: [], injections: [] });
+    expect(await fs.readFile(path.join(repo, 'p/Model.java'), 'utf8')).toBe(model);
+
+    await fs.unlink(path.join(repo, 'p/Value.java'));
+    commitAll(repo, 'remove package annotation shadow');
+    const removed = await runFullAnalysis(repo, options, { onProgress: () => {} });
+    expect(removed.incrementalStats).toMatchObject({ changedFiles: 1, writeMode: 'incremental' });
+    expect(await read()).toEqual(expected);
+  } finally {
+    await closeLbug();
+    vi.unstubAllEnvs();
+    await temp.cleanup();
+  }
+}, 180_000);

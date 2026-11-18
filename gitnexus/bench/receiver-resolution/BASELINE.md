@@ -13,6 +13,29 @@ entries. The count arm remains 138 call drops and 168 total drops.
 Earlier entries below retain their original measurement contracts and source pins;
 member-name-only RESOLVES claims in those entries are historical.
 
+## Java receiver and generated dependency ownership (#3955)
+
+Java `indexElement` (`repos[0].save()` with a `User[] repos` parameter) moves
+VISIBLE-GAP -> RESOLVES with the exact `User.save` target, because the Java
+provider now implements `elementTypeOf` for arrays. Every other shape state is
+unchanged.
+
+The count arm moves from 140 to 153 call drops (`.java` 50 -> 63) and from 174
+to 187 drops of all kinds; reads stay at 34 and writes at zero. All 13 new
+drops are Java call sites that `receiver-bound-calls` records without a
+receiver shape or origin, so `<<unclassified>>` moves 13 -> 26 by shape and
+2 -> 15 by origin.
+
+- Nine are calls on JDK receivers that had no edge before either:
+  `data.values()`, `opt.get()`, `out.put(...)` and six `inputs.stream()` calls
+  in `java-method-reference`. They now leave a drop record instead of nothing.
+- Four are for-each `save` calls in `java-foreach` and `java-foreach-call-expr`.
+  The count arm runs every fixture as one repository, where `models.User` is
+  declared in 20 fixture directories and `models.Repo` in 10, so the element
+  owner is not unique and the call is refused. Run alone, each fixture keeps
+  both edges; these four drops come from the duplicate declarations in the
+  merged corpus.
+
 ## api_impact indirect-consumers fixture (#3644)
 
 The new `api-impact-indirect-consumers` fixture adds three `receiver-unresolved`

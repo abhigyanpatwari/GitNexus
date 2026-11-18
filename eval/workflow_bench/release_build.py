@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tempfile
 from pathlib import Path, PurePosixPath
 
+from .oci_worker import run_worker
 from .process_control import run_checked
-from .proposer_sandbox import SANDBOX_PATH, bwrap_base_args, preflight_bubblewrap, real_directory
+from .proposer_sandbox import SANDBOX_PATH, ReadOnlyMount, SandboxError, bwrap_base_args, preflight_bubblewrap, real_directory
 
 
 REGISTRY = "https://registry.npmjs.org/"
@@ -50,7 +52,7 @@ def require_registry_only_install(repo: Path) -> None:
             raise ValueError(f"release candidate lockfile {lockfile} resolves {name!r} outside {REGISTRY}")
 
 
-def build_candidate(repo: Path) -> None:
+def build_candidate(repo: Path, *, backend: str = "auto") -> None:
     """Install dependencies with network, then run lifecycle scripts without it.
 
     Only the checkout, minus git metadata, is writable in either phase.
@@ -61,10 +63,34 @@ def build_candidate(repo: Path) -> None:
     git_dir = repo / ".git"
     git_mask = ["--ro-bind", str(git_dir), "/workspace/.git"] if os.path.lexists(git_dir) else []
     require_registry_only_install(repo)
-    bwrap = preflight_bubblewrap()
+    if backend not in {"auto", "bwrap", "docker"}:
+        raise ValueError(f"unknown release build backend: {backend}")
+    bwrap = None
+    if backend != "docker":
+        try:
+            bwrap = preflight_bubblewrap()
+        except SandboxError:
+            if backend == "bwrap":
+                raise
 
-    def sandboxed(script: list[str], *, offline: bool) -> list[str]:
-        return [
+    def build_phase(script: list[str], *, offline: bool) -> None:
+        command = ["/bin/bash", "--noprofile", "--norc", "-c", "\n".join(["set -euo pipefail", *script])]
+        if bwrap is None:
+            with tempfile.TemporaryDirectory(prefix="gnx-build-git-") as private:
+                masks = []
+                if os.path.lexists(git_dir):
+                    mask = Path(private) / "metadata"
+                    if git_dir.is_symlink():
+                        raise SandboxError("release candidate git metadata must not be a symlink")
+                    if git_dir.is_dir():
+                        mask.mkdir()
+                    else:
+                        mask.touch()
+                    masks.append(ReadOnlyMount(mask, "/workspace/.git"))
+                run_worker(command, checkout=repo, readonly=False, mounts=masks, timeout=1200,
+                           environment={"ONNXRUNTIME_NODE_INSTALL": "skip"}, registry_download=not offline)
+            return
+        argv = [
             str(bwrap),
             *bwrap_base_args(unshare_network=offline, cap_drop_all=True),
             "--tmpfs",
@@ -90,47 +116,38 @@ def build_candidate(repo: Path) -> None:
             "--chdir",
             "/workspace",
             "--",
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            "\n".join(["set -euo pipefail", *script]),
+            *command,
         ]
+        run_checked(argv, timeout=1200, env={})
 
     # Locked downloads need the network but run no package code. Every
     # lifecycle script (dependency installs, prepare, build) then runs with no
     # network, so candidate-controlled code cannot reach host-local services.
     # No host home, evaluator checkout, GitHub command files or tokens are mounted.
-    run_checked(
-        sandboxed(
-            [
-                "npm ci --ignore-scripts --audit=false --fund=false",
-                "npm ci --prefix gitnexus --ignore-scripts --audit=false --fund=false",
-            ],
-            offline=False,
-        ),
-        timeout=1200,
-        env={},
+    build_phase(
+        [
+            "npm ci --ignore-scripts --audit=false --fund=false",
+            "npm ci --prefix gitnexus --ignore-scripts --audit=false --fund=false",
+        ],
+        offline=False,
     )
-    run_checked(
-        sandboxed(
-            [
-                "npm rebuild --foreground-scripts",
-                "npm rebuild --prefix gitnexus --foreground-scripts",
-                "npm run build --prefix gitnexus",
-                "mkdir -p gitnexus-shared/node_modules",
-            ],
-            offline=True,
-        ),
-        timeout=1200,
-        env={},
+    build_phase(
+        [
+            "npm rebuild --foreground-scripts",
+            "npm rebuild --prefix gitnexus --foreground-scripts",
+            "npm run build --prefix gitnexus",
+            "mkdir -p gitnexus-shared/node_modules",
+        ],
+        offline=True,
     )
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", required=True, type=Path)
-    build_candidate(parser.parse_args().repo)
+    parser.add_argument("--backend", choices=("auto", "bwrap", "docker"), default="auto")
+    args = parser.parse_args()
+    build_candidate(args.repo, backend=args.backend)
 
 
 if __name__ == "__main__":

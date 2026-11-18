@@ -20,6 +20,8 @@ import { parseSpringInjectionType } from '../../di-extractors/spring.js';
 import { hasRecoveredSyntax, nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { isJavaPackageSiblingVisibilityIncomplete } from './package-siblings.js';
 import { getJavaSpringDiFacts } from './capture-side-channel.js';
+import { collectJavaLombokConstructors } from './lombok-constructors.js';
+import type { LombokImportIndex } from './lombok-synthesizer.js';
 
 export interface JavaAnnotationSyntaxFact extends SpringDiAnnotationFact {
   readonly line: number;
@@ -146,6 +148,7 @@ function dependenciesOf(callable: SyntaxNode): JavaSpringDependencyFact[] {
 export function captureJavaSpringDiClassFact(
   classNode: SyntaxNode,
   filePath: string,
+  compilationUnitImports?: LombokImportIndex,
 ): JavaSpringDiClassFact | null {
   const body = classNode.childForFieldName('body');
   if (body === null) return null;
@@ -156,10 +159,20 @@ export function captureJavaSpringDiClassFact(
   const constructors = body.namedChildren.filter(
     (child) => child.type === 'constructor_declaration',
   );
+  const lombok = collectJavaLombokConstructors(classNode, compilationUnitImports);
+  // A Lombok constructor whose signature matches a written one is a compile
+  // error: Lombok still generates it and never removes the written one. So
+  // which constructors exist is unknown, and the sole-constructor deduction
+  // and the generated facts are refused below. A written constructor that is
+  // explicitly marked for injection is still in the source; keep it.
+  const soleConstructor =
+    lombok.complete &&
+    !lombok.hasSignatureConflict &&
+    constructors.length + lombok.generated.length === 1;
   for (const constructor of constructors) {
     const annotations = javaSpringAnnotationFacts(constructor);
     const implicitConstructor =
-      constructors.length === 1 &&
+      soleConstructor &&
       hasSpringStereotypeSyntax(classAnnotations) &&
       !hasSpringDiRelevantAnnotation(annotations);
     if (!implicitConstructor && !hasSpringDiRelevantAnnotation(annotations)) continue;
@@ -169,6 +182,19 @@ export function captureJavaSpringDiClassFact(
       implicitConstructor,
       annotations,
       dependencies: dependenciesOf(constructor),
+    });
+  }
+  if (
+    soleConstructor &&
+    lombok.generated.length === 1 &&
+    hasSpringStereotypeSyntax(classAnnotations)
+  ) {
+    injectionSites.push({
+      kind: 'constructor',
+      memberName: classNode.childForFieldName('name')?.text.trim() ?? '<constructor>',
+      implicitConstructor: true,
+      annotations: [],
+      dependencies: lombok.generated[0].dependencies,
     });
   }
 

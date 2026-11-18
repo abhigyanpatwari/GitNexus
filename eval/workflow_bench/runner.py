@@ -1257,8 +1257,9 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
     cleanup_error: OSError | None = None
     execution_arm = CANDIDATE_ARMS.get(arm, arm)
     gitnexus_available = execution_arm != "baseline_nomcp"
+    use_mcp_endpoint = gitnexus_available and ctx.sandbox_backend == "bwrap"
     # baseline_cli reaches the same isolated endpoint through its shim.
-    isolated_baseline = execution_arm in ("baseline", "baseline_cli") and ctx.sandbox_backend == "bwrap"
+    isolated_baseline = use_mcp_endpoint and execution_arm in ("baseline", "baseline_cli")
     runtime_exposure = "none" if not gitnexus_available else "readable"
     resources = ExitStack()
     try:
@@ -1300,12 +1301,15 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
         )
         ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ctx.ce_plugin_snapshot)
         enter_phase("mcp_startup")
-        if isolated_baseline:
+        if use_mcp_endpoint:
             endpoint = resources.enter_context(isolated_mcp(
                 clone=worktree, mounts=[*dependency_mounts, *gitnexus_mounts], bwrap_bin=ctx.bwrap_bin,
             ))
-            gitnexus_mounts = [endpoint]
-            runtime_exposure = "stdio-only"
+            if isolated_baseline:
+                gitnexus_mounts = [endpoint]
+                runtime_exposure = "stdio-only"
+            else:
+                gitnexus_mounts.append(endpoint)
         enter_phase("sandbox_setup")
         with prepare_sandbox(
             clone=worktree,
@@ -1402,7 +1406,7 @@ def run_cell(ctx: TaskCellContext, run_idx: int, arm: str) -> dict[str, Any]:
                 enforce_phase_boundary=True,
                 ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ctx.ce_plugin_snapshot),
                 oracle_snapshot=ctx.oracle_snapshot,
-                mcp_config_json=connector_config() if isolated_baseline else None,
+                mcp_config_json=connector_config() if use_mcp_endpoint else None,
             )
             enter_phase("artifacts")
             if execution_arm in ("review", "ce_review"):

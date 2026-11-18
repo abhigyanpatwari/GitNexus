@@ -205,6 +205,10 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     workflow = (repo_root / ".github" / "workflows" / "ci-tests.yml").read_text()
     workflow_document = yaml.safe_load(workflow)
     containment = workflow_document["jobs"]["eval-containment-linux"]
+    assert containment["strategy"] == {
+        "fail-fast": False, "matrix": {"os": ["ubuntu-22.04", "ubuntu-24.04", "ubuntu-26.04"]},
+    }
+    assert containment["runs-on"] == "${{ matrix.os }}"
     containment_steps = {step.get("name"): step for step in containment["steps"] if "name" in step}
     containment_node_setup = next(
         step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
@@ -215,18 +219,14 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     assert workflow.count("version: '0.11.23'") >= 3
     assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
     assert "eval-containment-linux:" in workflow
-    assert "GITNEXUS_REQUIRE_BWRAP_CANARY: '1'" in workflow
-    assert "GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'" in workflow
-    assert containment["env"] == {
-        "GITNEXUS_REQUIRE_BWRAP_CANARY": "1",
-        "GITNEXUS_REQUIRE_CLAUDE_CANARY": "1",
-        # This job is the only place with bubblewrap, the pinned runtime and a
-        # built GitNexus together, so it is where the offline sweep runs with
-        # nothing provisioning-stubbed. Pinned here so the gate cannot be
-        # dropped and leave the sweep silently running the stubbed path.
-        "GITNEXUS_REQUIRE_FULL_SWEEP": "1",
-    }
-    assert containment["timeout-minutes"] == 20
+    assert containment["env"]["GITNEXUS_REQUIRE_PROPOSAL_CANARY"] == "1"
+    probe = containment_steps["Probe the host's native sandbox capabilities"]["run"]
+    assert 'if image == "ubuntu-22.04" and not bash:' in probe
+    assert 'if image == "ubuntu-26.04" and not outer:' in probe
+    assert "GITNEXUS_REQUIRE_CLAUDE_CANARY={int(bash)}" in probe
+    assert "GITNEXUS_REQUIRE_BWRAP_CANARY={int(outer)}" in probe
+    assert "GITNEXUS_REQUIRE_FULL_SWEEP={int(outer)}" in probe
+    assert containment["timeout-minutes"] == 40
     assert containment_node_setup["with"] == {
         "node-version": "22.18.0",
         "cache": "npm",
@@ -258,7 +258,9 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     task_build = containment_steps["Build the pinned task toolchain that grades release evaluation"]["run"]
     assert "python -m workflow_bench.release_build" in task_build
     assert '--repo "${RUNNER_TEMP}/tasks-base"' in task_build
-    selected_containment_tests = containment_steps["Prove process-tree and sandbox containment"]["run"].split()
+    prove_containment = containment_steps["Prove process-tree and sandbox containment"]
+    assert prove_containment["env"]["JUNIT_REPORT"] == "pytest-${{ matrix.os }}.xml"
+    selected_containment_tests = prove_containment["run"].split()
     assert selected_containment_tests == [
         "uv",
         "run",
@@ -284,6 +286,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         # Paired prepare/session/oracle/report composition uses that same native
         # CLI and containment; it must execute here rather than skip everywhere.
         "tests/test_release_evaluation_smoke.py",
+        "tests/test_proposal_evaluation.py",
         "tests/test_release_controls.py",
         # These also need runtime dependencies absent from the locked pytest job.
         "tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant",
@@ -291,7 +294,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
         "tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes",
         "tests/test_oracle_assets.py::test_in_flight_retry_oracle_rejects_startup_only_repairs",
         "-q",
-        "--junitxml=pytest-ubuntu.xml",
+        '--junitxml="$JUNIT_REPORT"',
     ]
     bwrap_canary_marker = re.compile(
         r'@pytest\.mark\.skipif\(\s*os\.environ\.get\("GITNEXUS_REQUIRE_BWRAP_CANARY"\)',

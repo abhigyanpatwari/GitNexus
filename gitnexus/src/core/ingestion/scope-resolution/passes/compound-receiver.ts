@@ -1060,17 +1060,46 @@ function foldReceiverChainState(
         declared === undefined ? undefined : options.elementTypeOf?.(declared, { kind: 'index' });
       if (element === undefined) return undefined;
       const scopeForLookup = current.declaredAtScope ?? inScope;
-      const elementClass = findClassBindingInScope(
-        scopeForLookup,
-        element,
-        scopes,
-        options.stripTypePreservingDecoration,
-        {
-          onNameFallback: options.onNameFallback,
-          position: current.lookupPosition,
-          purpose: 'type',
-        },
-      );
+      // A dotted element (`Outer.Inner[]` → `Outer.Inner`) is a qualified
+      // spelling written where the container was declared, so it takes the
+      // provider's qualified route exactly as a declared type of that spelling
+      // would, and that route's refusal (`null`) is final. Without the hook, or
+      // when it supplies no qualified spelling, the lookup is unchanged.
+      const qualifiedElement = element.includes('.')
+        ? classOfQualifiedTypeSpelling(
+            {
+              rawName: element,
+              declaredSpelling: element,
+              declaredAtScope: scopeForLookup,
+              lookupPosition: current.lookupPosition,
+              lookupPurpose: 'type',
+              source: 'annotation',
+            },
+            scopes,
+            options.qualifiedTypeLookupSpelling,
+            {
+              position: current.lookupPosition,
+              purpose: 'type',
+              onNameFallback: options.onNameFallback,
+              qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+            },
+            options.namespaceMemberVisible,
+          )
+        : undefined;
+      const elementClass =
+        qualifiedElement === undefined
+          ? findClassBindingInScope(
+              scopeForLookup,
+              element,
+              scopes,
+              options.stripTypePreservingDecoration,
+              {
+                onNameFallback: options.onNameFallback,
+                position: current.lookupPosition,
+                purpose: 'type',
+              },
+            )
+          : (qualifiedElement ?? undefined);
       if (elementClass === undefined) return undefined;
       current = {
         def: elementClass,
