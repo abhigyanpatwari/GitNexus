@@ -1,0 +1,19 @@
+gitnexus/test/unit/scope-resolution/java/java-implicit-array-receiver-captures.test.ts
+  s_676b35bc218cc9::t_814c4d518f57a9 71-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b8e9906e4792051f9617493bbe59abc6441f7c67",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
