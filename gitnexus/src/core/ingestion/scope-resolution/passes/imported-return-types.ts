@@ -515,7 +515,9 @@ export function createChainFollower(
   let stopped = new Map<TypeRef, Set<ScopeId>>();
   return {
     follow(start, fromScopeId) {
-      if (start.awaited === true)
+      // A read in the declaration's own scope is common for parameters and
+      // locals. Start tracking the head when another scope actually shares it.
+      if (start.awaited === true || start.declaredAtScope === fromScopeId)
         return followChainPostFinalize(start, fromScopeId, scopes, resolveCallee, awaited);
       const firstScope = start.declaredAtScope ?? fromScopeId;
       const known = stopped.get(start);
