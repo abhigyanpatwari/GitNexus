@@ -1,5 +1,7 @@
-# Custom self-hosted runner labels actionlint can't discover on its own.
+# Runner labels missing from actionlint's built-in list.
 # gitnexus-evolution: the skill-evolution EC2 runner (infra/gitnexus-evolution/).
+# GitHub hosts ubuntu-26.04. Actionlint 1.7.12 predates that label.
 self-hosted-runner:
   labels:
     - gitnexus-evolution
+    - ubuntu-26.04
