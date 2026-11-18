@@ -888,11 +888,19 @@ function assertRepository(repoInput) {
   return repo;
 }
 
+// Git ends its answer with one newline. Any whitespace before it belongs to the
+// name: a ref may end with a no-break space.
+function withoutLineEnd(output) {
+  return output.replace(/\n$/, '');
+}
+
 function resolveAdministrativePath(repo, gitPath) {
-  const raw = decodeUtf8(
-    git(repo, ['rev-parse', '--git-path', gitPath]).stdout,
-    `Git administrative path ${gitPath}`,
-  ).trim();
+  const raw = withoutLineEnd(
+    decodeUtf8(
+      git(repo, ['rev-parse', '--git-path', gitPath]).stdout,
+      `Git administrative path ${gitPath}`,
+    ),
+  );
   return path.resolve(repo, raw);
 }
 
@@ -951,9 +959,12 @@ function verifyControlFile(guard) {
 }
 
 // The ref is read as a path under the Git directory, and Git's own naming rules
-// are what keep that path inside it: no `..`, no backslash, no control
-// character, no component that starts with a dot. A list of allowed characters
-// would also refuse branches Git accepts, such as `feature/c++`.
+// are what keep the text of that path inside it: no `..`, no backslash, no
+// control character, no component that starts with a dot. They cannot see a
+// symlinked directory under `refs/`, which the read still follows. `refs/` is
+// checked apart because `check-ref-format heads/main` succeeds. A list of
+// allowed characters would also refuse branches Git accepts, such as
+// `feature/c++`.
 function isRefName(repo, ref) {
   return (
     ref.startsWith('refs/') &&
@@ -966,7 +977,7 @@ function captureHeadGuards(repo) {
   const symbolic = git(repo, ['symbolic-ref', '-q', 'HEAD'], { allowFailure: true });
   const paths = new Set(['HEAD', 'logs/HEAD', 'packed-refs']);
   if (symbolic.status === 0) {
-    const ref = decodeUtf8(symbolic.stdout, 'symbolic HEAD ref').trim();
+    const ref = withoutLineEnd(decodeUtf8(symbolic.stdout, 'symbolic HEAD ref'));
     if (!isRefName(repo, ref)) {
       throw new Error(`Invalid symbolic HEAD ref: ${ref}`);
     }
