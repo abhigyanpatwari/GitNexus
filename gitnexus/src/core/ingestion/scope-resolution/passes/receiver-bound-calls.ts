@@ -197,6 +197,23 @@ function lastTopLevelDot(text: string): number {
   return last;
 }
 
+/** The type a selected producer's result has after the receiver chain's
+ *  trailing index steps (`make()[0][1]`): one `elementTypeOf` peel per step.
+ *  Undefined when a step has no element route. A chain without trailing index
+ *  steps returns `returned` unchanged. */
+function elementAfterTrailingIndexSteps(
+  returned: string,
+  receiverChain: ReferenceSite['receiverChain'],
+  elementTypeOf: ScopeResolver['elementTypeOf'],
+): string | undefined {
+  const steps = decodeReceiverChain(receiverChain)?.steps ?? [];
+  let type: string | undefined = returned;
+  for (let i = steps.length - 1; i >= 0 && steps[i]!.kind === 'index'; i--) {
+    type = type === undefined ? undefined : elementTypeOf?.(type, { kind: 'index' });
+  }
+  return type;
+}
+
 type ReceiverBoundProviderSubset = Pick<
   ScopeResolver,
   | 'isSuperReceiver'
@@ -2011,20 +2028,66 @@ function emitReceiverBoundCallsInPass(
             : options.selectedCalls?.get(selectedCallKey(parsed.filePath, producer.range));
         const returned =
           selected == null ? undefined : index.declaredReturnTypeByCallableId.get(selected.nodeId);
-        const returnedClass =
-          returned === undefined
+        // Index steps after the producer (`make()[0].m()`) read an element of
+        // its result: one `elementTypeOf` peel per step, or no type at all.
+        const declaredReturn =
+          returned === undefined ? undefined : (returned.declaredSpelling ?? returned.rawName);
+        const producedSpelling =
+          declaredReturn === undefined
             ? undefined
-            : resolveClassBindingForName(
-                returned.declaredAtScope,
-                returned.declaredSpelling ?? returned.rawName,
-                scopes,
-                provider.stripTypePreservingDecoration,
+            : elementAfterTrailingIndexSteps(
+                declaredReturn,
+                site.receiverChain,
+                provider.elementTypeOf,
+              );
+        // A peeled dotted element (`Outer.Inner[]` → `Outer.Inner`) is a
+        // qualified spelling written where the return type was declared, so it
+        // takes the provider's qualified route from that declaration, exactly as
+        // an indexed parameter, local or field of that spelling does; the
+        // route's refusal (`null`) is final, with no simple-name retry. Without
+        // the hook, or when it supplies no qualified spelling, the lookup is
+        // unchanged.
+        const qualifiedElement =
+          returned === undefined ||
+          producedSpelling === undefined ||
+          producedSpelling === declaredReturn ||
+          !producedSpelling.includes('.')
+            ? undefined
+            : classOfQualifiedTypeSpelling(
                 {
-                  purpose: 'type',
+                  rawName: producedSpelling,
+                  declaredSpelling: producedSpelling,
+                  declaredAtScope: returned.declaredAtScope,
+                  lookupPosition: returned.lookupPosition,
+                  lookupPurpose: 'type',
+                  source: 'annotation',
+                },
+                scopes,
+                provider.qualifiedTypeLookupSpelling,
+                {
                   position: returned.lookupPosition,
+                  purpose: 'type',
+                  onNameFallback,
                   qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
                 },
+                namespaceMemberVisible,
               );
+        const returnedClass =
+          returned === undefined || producedSpelling === undefined
+            ? undefined
+            : qualifiedElement === undefined
+              ? resolveClassBindingForName(
+                  returned.declaredAtScope,
+                  producedSpelling,
+                  scopes,
+                  provider.stripTypePreservingDecoration,
+                  {
+                    purpose: 'type',
+                    position: returned.lookupPosition,
+                    qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                  },
+                )
+              : (qualifiedElement ?? undefined);
         const resolved =
           producer === undefined
             ? resolveCompoundReceiverTyped(receiverName, site.inScope, scopes, index, {
@@ -2033,10 +2096,7 @@ function emitReceiverBoundCallsInPass(
               })
             : returnedClass === undefined
               ? undefined
-              : {
-                  def: returnedClass,
-                  declaredSpelling: returned?.declaredSpelling ?? returned?.rawName,
-                };
+              : { def: returnedClass, declaredSpelling: producedSpelling };
         if (producer !== undefined && resolved === undefined) {
           // Defer without claiming the shared start-position key: the inner
           // free call may still need that key during this pass. Finalization
