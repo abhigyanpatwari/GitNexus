@@ -66,16 +66,14 @@ describe('gitMutationDirectory', () => {
     expect(gitMutationDirectory(command, CWD)).toBe(directory);
   });
 
-  it.runIf(process.platform !== 'win32')('reads a bare backslash as an escape', () => {
-    expect(gitMutationDirectory('git -C dir\\ with\\ space merge main', CWD)).toBe(
-      under('dir with space'),
-    );
-  });
-
-  it.runIf(process.platform === 'win32')('keeps a bare backslash as a separator', () => {
-    expect(gitMutationDirectory('git -C packages\\web merge main', CWD)).toBe(
-      under('packages', 'web'),
-    );
+  // One test on every platform, so each run records a pass: a bare backslash
+  // is a path separator for cmd and PowerShell, and an escape everywhere else.
+  it('reads a bare backslash the way the platform shell does', () => {
+    const [command, directory] =
+      process.platform === 'win32'
+        ? ['git -C packages\\web merge main', under('packages', 'web')]
+        : ['git -C dir\\ with\\ space merge main', under('dir with space')];
+    expect(gitMutationDirectory(command, CWD)).toBe(directory);
   });
 
   // Git changes directory through the filesystem: `link/..` is the parent of
