@@ -174,6 +174,28 @@ describe('Java Lombok workspace proof inherited member types', () => {
     expect(getters(result.after.get('GModel.java'))).toEqual([]);
   });
 
+  it('proves inherited annotation names separately for each anonymous class during recapture', () => {
+    const result = reconcile({
+      'p/Plain.java': 'package p; class Plain {}',
+      'p/Hidden.java': 'package p; class Hidden { public @interface Getter {} }',
+      'p/Value.java': 'package p; public @interface Value {}',
+      'p/Host.java': `package p; import lombok.*;
+class Host {
+  void run() {
+    new Plain() { void run() { @Getter class Cell { String text; } } };
+    new Hidden() { void run() { @Getter class ShadowCell { String text; } } };
+  }
+  @Value class Trigger { String mark; }
+}`,
+    });
+    expect(getters(result.before.get('p/Host.java')).sort()).toEqual([
+      'Cell.getText',
+      'ShadowCell.getText',
+      'Trigger.getMark',
+    ]);
+    expect(getters(result.after.get('p/Host.java'))).toEqual(['Cell.getText']);
+  });
+
   it('does not inherit a private member type', () => {
     const result = reconcile({
       'Model.java':

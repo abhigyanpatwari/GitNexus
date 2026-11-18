@@ -60,14 +60,12 @@ export function applyJavaLocalNameClaims(
   );
 
   const claims = new Map<number, NameClaim[]>();
+  const boundaryDeclarations = new Set<string>();
   const stack: ScopeCapture[] = [];
   let nextScope = 0;
   for (const declaration of root.descendantsOfType('local_variable_declaration')) {
-    const position = {
-      startLine: declaration.startPosition.row + 1,
-      startCol: declaration.startPosition.column,
-    };
-    while (nextScope < scopes.length && compare(scopes[nextScope]!.anchor.range, position) <= 0) {
+    const range = nodeToCapture('@declaration.variable', declaration).range;
+    while (nextScope < scopes.length && compare(scopes[nextScope]!.anchor.range, range) <= 0) {
       const candidate = scopes[nextScope++]!;
       while (
         stack.length > 0 &&
@@ -76,8 +74,12 @@ export function applyJavaLocalNameClaims(
         stack.pop();
       stack.push(candidate);
     }
-    while (stack.length > 0 && compare(end(stack[stack.length - 1]!.anchor.range), position) < 0)
+    while (stack.length > 0) {
+      const remaining = compare(end(stack[stack.length - 1]!.anchor.range), range);
+      if (remaining > 0) break;
+      if (remaining === 0) boundaryDeclarations.add(key('local', range));
       stack.pop();
+    }
     const owner = stack[stack.length - 1];
     if (owner === undefined) continue;
     const owned = claims.get(owner.index) ?? [];
@@ -95,7 +97,7 @@ export function applyJavaLocalNameClaims(
           startLine: name.startPosition.row + 1,
           startCol: name.startPosition.column,
         },
-        range: nodeToCapture('@declaration.variable', declaration).range,
+        range,
       });
     }
     claims.set(owner.index, owned);
@@ -130,8 +132,17 @@ export function applyJavaLocalNameClaims(
     const match = out[i]!;
     const alias = match['@type-binding.alias'];
     const type = match['@type-binding.type'];
-    if (alias !== undefined && type !== undefined)
+    if (alias !== undefined && type !== undefined) {
       out[i] = { ...match, '@type-binding.alias': { ...type, name: '@type-binding.alias' } };
+      continue;
+    }
+    if (boundaryDeclarations.size === 0) continue;
+    // The shared position index includes scope endpoints. At an adjacent
+    // declaration, its name places the type binding inside the owning block.
+    const declaration = match['@type-binding.annotation'] ?? match['@type-binding.constructor'];
+    const name = match['@type-binding.name'];
+    if (declaration && name && boundaryDeclarations.has(key('local', declaration.range)))
+      out[i] = { ...match, [declaration.name]: { ...name, name: declaration.name } };
   }
   return out;
 }

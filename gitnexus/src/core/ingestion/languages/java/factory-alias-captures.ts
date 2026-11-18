@@ -55,7 +55,13 @@ type Visit =
 const TYPE_BODIES = new Set(['class_body', 'interface_body', 'enum_body', 'annotation_type_body']);
 // A switch block is one lexical block for all its statement groups (JLS 6.3),
 // and a lambda's parameters hide every outer local of the same name.
-const FRAMES = new Set(['block', 'constructor_body', 'switch_block', 'lambda_expression']);
+const FRAMES = new Set([
+  'block',
+  'constructor_body',
+  'switch_block',
+  'lambda_expression',
+  'for_statement',
+]);
 // Nodes that declare a variable under their `name` field.
 const NAMED_DECLARATIONS = new Set([
   'variable_declarator',
@@ -435,7 +441,8 @@ function parseRoute(route: string): readonly (readonly [string, string])[] | und
  * Settle every enclosing-local route once per resolution pass, after the MRO
  * is known. An inherited field shadows the enclosing local even when its
  * factory call has no known return type. Keep the field's declaration scope
- * on the copy. An incomplete hierarchy or a hidden field refuses the copy.
+ * on the copy. Inaccessible fields leave the enclosing local visible. An
+ * incomplete hierarchy or ambiguous field leaves the source undecided.
  */
 export function indexJavaEnclosingLocalAliases(
   parsedFiles: readonly ParsedFile[],
@@ -449,7 +456,7 @@ export function indexJavaEnclosingLocalAliases(
     if (proofs === undefined) return 'unknown';
     for (const [scope, name] of proofs) {
       const field = inheritedField({ kind: 'unshadowed-field', scope, name });
-      if (field === 'absent') continue;
+      if (field === 'absent' || field === 'hidden') continue;
       // A route through several copies can change which variable it reads at
       // each crossing. Only a single crossing identifies this field directly.
       if (typeof field !== 'object' || proofs.length !== 1) return 'unknown';

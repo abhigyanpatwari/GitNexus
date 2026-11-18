@@ -66,7 +66,22 @@ class App {
     if (ready) {}User x = source;
     x.save();
   }
+  void adjacentConstructor(boolean ready) {
+    if (ready) {}var x = new User();
+    x.save();
+  }
+  void adjacentAnonymous(boolean ready) {
+    if (ready) {}var x = new User() { @Override void save() {} };
+    x.save();
+  }
   void factoryAlias(Factory factory) { var value = factory.make(); var copy = value; copy.save(); }
+  void loopFactoryAlias(Factory factory) {
+    for (var value = factory.make(); value != null;) { var copy = value; copy.save(); break; }
+  }
+  void afterLoopFactoryAlias(Factory factory, User valueAfter) {
+    for (var value = factory.make(); value != null;) { break; }
+    var value = valueAfter; var copy = value; copy.save();
+  }
   void competingFactoryAlias(OtherFactory factory) { var value = factory.make(); var copy = value; copy.save(); }
   void unknownLocalAlias() { Unknown x = new Unknown(); var copy = x; copy.save(); }
   void declaredTypeAfterAssignment(Factory factory) {
@@ -89,7 +104,11 @@ class App {
     ['afterLocalDeclaration', 'User', 0],
     ['adjacentAlias', 'User', 2],
     ['adjacentTyped', 'User', 2],
+    ['adjacentConstructor', 'User', 1],
+    ['adjacentAnonymous', 'App$1', 1],
     ['factoryAlias', 'Repo', 1],
+    ['loopFactoryAlias', 'Repo', 1],
+    ['afterLoopFactoryAlias', 'User', 2],
     ['competingFactoryAlias', 'User', 1],
   ])('resolves %s to the exact %s owner', (caller, owner, arity) => {
     const targets = getRelationships(result(), 'CALLS')
@@ -403,6 +422,24 @@ describe('Java local name claims merge with existing scope claims', () => {
     }[];
     expect(merged.map((claim) => claim.name)).toEqual(['prior', 'copy']);
   });
+
+  it('assigns a declaration starting at a closing block boundary to the enclosing block', () => {
+    const inner = '{ int inner = 0;}';
+    const outer = `{ if (ready) ${inner}User same = input; }`;
+    const tree = getJavaParser().parse(
+      `class App { void run(boolean ready, User input) ${outer} }`,
+    );
+    const claims = new Map(
+      applyJavaLocalNameClaims(tree.rootNode, []).map((match) => [
+        match['@scope.block']?.text,
+        (JSON.parse(match['@scope.name-claims']?.text ?? '[]') as { name: string }[]).map(
+          (claim) => claim.name,
+        ),
+      ]),
+    );
+    expect(claims.get(inner)).toEqual(['inner']);
+    expect(claims.get(outer)).toEqual(['same']);
+  });
 });
 
 describe('Java switch groups, shadowed writes, initializer receivers and pattern types', () => {
@@ -591,6 +628,7 @@ class Sub {
 
 describe('Java copy of an enclosing local inside an anonymous class method', () => {
   const result = useFixture('java-review-followups-r5-anonymous-alias', {
+    'lib/PackageTask.java': 'package lib; public abstract class PackageTask { Object value; }',
     'Main.java': `
 import lib.LibraryTask;
 class User { void save() {} }
@@ -600,6 +638,7 @@ abstract class Task { abstract void m(); }
 abstract class Sink { abstract void m(Other value); }
 abstract class FieldTask { Other value; abstract void m(); }
 abstract class DeepTask extends FieldTask {}
+abstract class PrivateTask { private Other value; }
 class App {
   Factory factory;
   void captured() {
@@ -643,6 +682,14 @@ class App {
     var value = factory.make();
     new lib.FieldTask() { public void m() { var copy = value; copy.save(); } };
   }
+  void packageField() {
+    var value = factory.make();
+    class PackageLocal extends lib.PackageTask { void m() { var copy = value; copy.save(); } }
+  }
+  void privateField() {
+    var value = factory.make();
+    new PrivateTask() { void m() { var copy = value; copy.save(); } };
+  }
 }
 `,
   });
@@ -655,7 +702,7 @@ class App {
       .map((edge) => edge.rel.targetId)
       .sort();
 
-  it.each([['App$1.m#0'], ['App$1Local.m#0']])(
+  it.each([['App$1.m#0'], ['App$1Local.m#0'], ['App$1PackageLocal.m#0'], ['App$10.m#0']])(
     'types the copy in %s from the enclosing local producer',
     (caller) => {
       expect(saveTargets(caller)).toEqual(['Method:Main.java:User.save#0']);

@@ -141,18 +141,27 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   /** Top-level types by package, then simple name: one index per reconcile. */
   const packageTypes = new Map<string, Map<string, TypeEntry[]>>();
   const simpleNames = new Set<string>();
-  /** Simple names of type facts without an equal-range Class scope, by file. */
+  /** Simple names of type facts without a matching Class scope, by file. */
   const unmappedNames = new Map<string, Set<string>>();
   for (const parsed of parsedFiles) {
     const pkg = getJavaPackageFact(parsed.filePath);
     const facts = getJavaOverloadFacts(parsed.filePath);
     if (pkg?.status !== 'known' || facts === undefined) continue;
-    const scopes = new Map(parsed.scopes.map((scope) => [rangeKey(scope.range), scope]));
+    const classes = parsed.scopes.filter((scope) => scope.kind === 'Class');
+    const scopes = new Map(classes.map((scope) => [rangeKey(scope.range), scope]));
+    // Anonymous facts start at the creation expression or enum constant. Their
+    // Class scopes start at the body, and both end at the same closing brace.
+    const scopesByEnd = new Map(
+      classes.map((scope) => [`${scope.range.endLine}:${scope.range.endCol}`, scope]),
+    );
     const byScope = new Map<string, TypeEntry>();
     const entries = new Map<string, TypeEntry>();
     for (const fact of facts.types) {
-      const scope = scopes.get(rangeKey(fact.range));
-      if (scope?.kind !== 'Class') {
+      const named = TYPE_NODES.has(fact.kind);
+      const scope = named
+        ? scopes.get(rangeKey(fact.range))
+        : scopesByEnd.get(`${fact.range.endLine}:${fact.range.endCol}`);
+      if (scope === undefined) {
         const unmapped = unmappedNames.get(parsed.filePath) ?? new Set<string>();
         unmapped.add(fact.simpleName);
         unmappedNames.set(parsed.filePath, unmapped);
@@ -166,8 +175,9 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
         memberNames: new Set(),
         members: [],
       };
-      entries.set(rangeKey(fact.range), entry);
+      entries.set(rangeKey(scope.range), entry);
       byScope.set(scope.id, entry);
+      if (!named) continue;
       simpleNames.add(fact.simpleName);
       const fqn = pkg.packageName === '' ? fact.name : `${pkg.packageName}.${fact.name}`;
       const candidates = byFqn.get(fqn) ?? [];
@@ -186,6 +196,7 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       const parent = parentId == null ? undefined : byScope.get(parentId);
       if (parent !== undefined) {
         entry.parent = parent;
+        if (!TYPE_NODES.has(entry.fact.kind)) continue;
         parent.memberNames.add(entry.fact.simpleName);
         parent.members.push(entry);
       }
@@ -490,9 +501,9 @@ export function reconcileJavaLombokWorkspaceProof(
     const staticCanDecide = annotations.some(
       (name) => staticNames.has(name) && staticImportsType(name) !== 'uncertain',
     );
-    // Anonymous/local type facts can lack an equal-range extracted scope.
-    // Keep the prior trigger in that case; narrower coverage is not proof.
-    const completeTypeCoverage = facts.types.length === entries.size;
+    // Only use positional filtering when every type has an equal-range scope.
+    // Anonymous facts include their base and arguments outside the owning body.
+    const completeTypeCoverage = facts.types.every((fact) => entries.has(rangeKey(fact.range)));
     const inheritedCanShadow = [...entries.values()].some((entry) => {
       const inherited = inventory.namesOf(entry);
       if (!completeTypeCoverage)
