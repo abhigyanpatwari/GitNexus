@@ -58,6 +58,14 @@ class App {
     var copy = x;
     copy.save();
   }
+  void adjacentAlias(boolean ready, User source) {
+    if (ready) {}var x = source;
+    x.save();
+  }
+  void adjacentTyped(boolean ready, User source) {
+    if (ready) {}User x = source;
+    x.save();
+  }
   void factoryAlias(Factory factory) { var value = factory.make(); var copy = value; copy.save(); }
   void competingFactoryAlias(OtherFactory factory) { var value = factory.make(); var copy = value; copy.save(); }
   void unknownLocalAlias() { Unknown x = new Unknown(); var copy = x; copy.save(); }
@@ -79,6 +87,8 @@ class App {
     ['nestedFieldAlias', 'User', 1],
     ['beforeLocalDeclaration', 'Repo', 0],
     ['afterLocalDeclaration', 'User', 0],
+    ['adjacentAlias', 'User', 2],
+    ['adjacentTyped', 'User', 2],
     ['factoryAlias', 'Repo', 1],
     ['competingFactoryAlias', 'User', 1],
   ])('resolves %s to the exact %s owner', (caller, owner, arity) => {
@@ -456,9 +466,9 @@ class FieldInit { int first = items()[0].id(); User[] items() { return null; } }
 class BlockInit { { items()[0].save(); } User[] items() { return null; } }
 class LambdaFieldInit { Runnable action = () -> items()[0].save(); User[] items() { return null; } }
 enum EnumInit { A; int first = items()[0].id(); { items()[0].save(); } User[] items() { return null; } }
-class StaticFieldInit { static int first = items()[0].id(); static User[] items() { return null; } }
-class StaticBlockInit { static { items()[0].save(); } static User[] items() { return null; } }
-interface ConstantInit { int FIRST = items()[0].id(); static User[] items() { return null; } }`,
+class StaticFieldInit { static int first = items()[0].id(); User[] items() { return null; } }
+class StaticBlockInit { static { items()[0].save(); } User[] items() { return null; } }
+interface ConstantInit { int FIRST = items()[0].id(); default User[] items() { return null; } }`,
     'Patterns.java': `package p;
 class Patterns {
   void annotated(Object o) { if (o instanceof @Ann User u) { u.save(); } }
@@ -625,6 +635,14 @@ class App {
     new Task() { void m() { var copy = value; copy.save(); } };
     value = null;
   }
+  void unknownFactory(lib.LibraryFactory external) {
+    var value = external.make();
+    new FieldTask() { void m() { var copy = value; copy.save(); } };
+  }
+  void externalFieldTask() {
+    var value = factory.make();
+    new lib.FieldTask() { public void m() { var copy = value; copy.save(); } };
+  }
 }
 `,
   });
@@ -654,16 +672,15 @@ class App {
   it.each([
     ['App$2.m#0', 'a workspace supertype declares a field of that name'],
     ['App$3.m#0', 'an indirect workspace supertype declares a field of that name'],
-  ])('never types the copy in %s from the enclosing local when %s', (caller) => {
-    expect(result().graph.getNode(`Method:Main.java:${caller}`)).toBeDefined();
-    expect(
-      saveTargets(caller).filter((target) => target !== 'Method:Main.java:Other.save#0'),
-    ).toEqual([]);
+    ['App$8.m#0', 'the enclosing factory is external and the supertype declares the field'],
+  ])('types the copy in %s from the inherited field when %s', (caller) => {
+    expect(saveTargets(caller)).toEqual(['Method:Main.java:Other.save#0']);
   });
 
   it.each([
     ['App$4.run#0', 'the supertype is outside the workspace and may declare that field'],
     ['App$7.m#0', 'the local is written after its declaration'],
+    ['App$9.m#0', 'an external supertype has the same simple name as a workspace class'],
   ])('leaves the copy in %s unresolved when %s', (caller) => {
     expect(result().graph.getNode(`Method:Main.java:${caller}`)).toBeDefined();
     expect(saveTargets(caller)).toEqual([]);

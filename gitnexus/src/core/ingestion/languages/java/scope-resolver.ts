@@ -33,6 +33,7 @@ import { javaOnDemandImportTargets } from './on-demand-imports.js';
 import {
   indexJavaEnclosingLocalAliases,
   JAVA_ENCLOSING_LOCAL_ROUTE,
+  javaAliasReadsInheritedField,
   javaEnclosingLocalAliasType,
 } from './factory-alias-captures.js';
 import { javaArrayElementType } from './type-spelling.js';
@@ -150,7 +151,9 @@ const javaScopeResolver: ScopeResolver = {
         : javaCallResultElementType(callee, returned, route, scopes),
   // A lambda that capture typed through a JDK container reading of its
   // receiver falls back to that route only where the reading was refuted.
-  callResultAssignmentApplies: javaCallResultAssignmentApplies,
+  callResultAssignmentApplies: (site, scopes) =>
+    !javaAliasReadsInheritedField(site.element, scopes) &&
+    javaCallResultAssignmentApplies(site, scopes),
   qualifiedTypeLookupSpelling: javaQualifiedTypeLookupSpelling,
   hoistedTypeBindingsRequireOwner: true,
 

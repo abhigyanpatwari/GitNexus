@@ -1,20 +1,8 @@
-import {
-  makeScopeId,
-  type CaptureMatch,
-  type ParsedFile,
-  type ScopeId,
-  type SymbolDefinition,
-  type TypeRef,
-} from 'gitnexus-shared';
+import { type CaptureMatch, type ParsedFile, type ScopeId, type TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
-import { javaTypeFieldFacts } from './capture-side-channel.js';
-import {
-  javaClassScopeOfBody,
-  type JavaCallResultElementRoute,
-  type JavaTypeFieldsFact,
-} from './declared-type-captures.js';
+import { inheritedFieldResolver } from './qualified-contextual-bindings.js';
+import { javaClassScopeOfBody, type JavaCallResultElementRoute } from './declared-type-captures.js';
 
 /** An outer declaration a copy read; any write to it refuses the copy. */
 interface Guard {
@@ -418,18 +406,11 @@ export function synthesizeJavaFactoryAliasCaptures(
   return out;
 }
 
-const acceptedEnclosingLocalRoutes = new WeakMap<ScopeResolutionIndexes, ReadonlySet<string>>();
-
-const NO_FIELDS: JavaTypeFieldsFact = Object.freeze({
-  range: { startLine: 0, startCol: 0, endLine: 0, endCol: 0 },
-  bases: [],
-  fields: [],
-});
-
-const simpleNameOf = (def: SymbolDefinition): string => {
-  const spelling = def.qualifiedName ?? def.nodeId;
-  return spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1);
-};
+type AliasSource = 'local' | 'unknown' | TypeRef;
+const enclosingLocalSources = new WeakMap<
+  ScopeResolutionIndexes,
+  ReadonlyMap<string, AliasSource>
+>();
 
 function parseRoute(route: string): readonly (readonly [string, string])[] | undefined {
   try {
@@ -452,79 +433,54 @@ function parseRoute(route: string): readonly (readonly [string, string])[] | und
 
 /**
  * Settle every enclosing-local route once per resolution pass, after the MRO
- * is known. A route stands only when, for each class it names, the class and
- * every supertype are workspace types whose fields were captured, every
- * written supertype is in the class's MRO (one outside the workspace may
- * declare any field), and none of them declares a field of that name. This is
- * the `absent` verdict of the inherited-field check for contextual bindings,
- * made stricter: a private or package-hidden field of that name also refuses.
+ * is known. An inherited field shadows the enclosing local even when its
+ * factory call has no known return type. Keep the field's declaration scope
+ * on the copy. An incomplete hierarchy or a hidden field refuses the copy.
  */
 export function indexJavaEnclosingLocalAliases(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
 ): void {
-  const routes = new Set<string>();
-  for (const parsed of parsedFiles)
-    for (const site of parsed.callResultAssignmentSites ?? [])
-      if (site.element?.startsWith(JAVA_ENCLOSING_LOCAL_ROUTE) === true) routes.add(site.element);
-  const accepted = new Set<string>();
-  acceptedEnclosingLocalRoutes.set(indexes, accepted);
-  if (routes.size === 0) return;
-
-  const types = new Map<string, JavaTypeFieldsFact>();
-  for (const parsed of parsedFiles) {
-    const facts = javaTypeFieldFacts(parsed);
-    // A file without captured facts leaves its types out: they stay unknown.
-    if (facts === undefined) continue;
-    const byScope = new Map(
-      facts.map((fact) => [
-        makeScopeId({ filePath: parsed.filePath, range: fact.range, kind: 'Class' }),
-        fact,
-      ]),
-    );
-    for (const scope of parsed.scopes) {
-      if (scope.kind !== 'Class') continue;
-      const def = scope.ownedDefs.find((owned) => isClassLike(owned.type));
-      if (def !== undefined) types.set(def.nodeId, byScope.get(scope.id) ?? NO_FIELDS);
-    }
-  }
-  const mroNames = new Map<string, ReadonlySet<string>>();
-  const verdicts = new Map<string, boolean>();
-  const unshadowed = (scopeId: string, name: string): boolean => {
-    const scope = indexes.scopeTree.getScope(scopeId);
-    const heir =
-      scope?.kind === 'Class' ? scope.ownedDefs.find((def) => isClassLike(def.type)) : undefined;
-    if (heir === undefined) return false;
-    for (const id of [heir.nodeId, ...indexes.methodDispatch.mroFor(heir.nodeId)]) {
-      const type = types.get(id);
-      if (type === undefined || type.fields.some((field) => field.name === name)) return false;
-      if (type.bases.length === 0) continue;
-      let names = mroNames.get(id);
-      if (names === undefined) {
-        names = new Set(
-          indexes.methodDispatch.mroFor(id).flatMap((ancestor) => {
-            const def = indexes.defs.get(ancestor);
-            return def === undefined ? [] : [simpleNameOf(def)];
-          }),
-        );
-        mroNames.set(id, names);
-      }
-      if (!type.bases.every((base) => names.has(base))) return false;
-    }
-    return true;
-  };
-  for (const route of routes) {
+  const sources = new Map<string, AliasSource>();
+  enclosingLocalSources.set(indexes, sources);
+  const inheritedField = inheritedFieldResolver(parsedFiles, indexes);
+  const sourceOf = (route: string): AliasSource => {
     const proofs = parseRoute(route);
-    if (
-      proofs?.every(([scopeId, name]) => {
-        const key = `${scopeId}\0${name}`;
-        let verdict = verdicts.get(key);
-        if (verdict === undefined) verdicts.set(key, (verdict = unshadowed(scopeId, name)));
-        return verdict;
-      }) === true
-    )
-      accepted.add(route);
+    if (proofs === undefined) return 'unknown';
+    for (const [scope, name] of proofs) {
+      const field = inheritedField({ kind: 'unshadowed-field', scope, name });
+      if (field === 'absent') continue;
+      // A route through several copies can change which variable it reads at
+      // each crossing. Only a single crossing identifies this field directly.
+      if (typeof field !== 'object' || proofs.length !== 1) return 'unknown';
+      return field.scope.typeBindings.get(name) ?? 'unknown';
+    }
+    return 'local';
+  };
+  for (const parsed of parsedFiles) {
+    for (const site of parsed.callResultAssignmentSites ?? []) {
+      const route = site.element;
+      if (!route?.startsWith(JAVA_ENCLOSING_LOCAL_ROUTE)) continue;
+      let source = sources.get(route);
+      if (source === undefined) sources.set(route, (source = sourceOf(route)));
+      if (typeof source !== 'object') continue;
+      const bindings = indexes.scopeTree.getScope(site.inScope)?.typeBindings as
+        | Map<string, TypeRef>
+        | undefined;
+      if (bindings === undefined) continue;
+      // The type is read at the field, but the local claim owns the copy's range.
+      const bindingRange = bindings.get(site.lhs)?.bindingRange;
+      bindings.set(site.lhs, { ...source, bindingRange });
+    }
   }
+}
+
+/** A copy supplied by an inherited field is independent of the outer call. */
+export function javaAliasReadsInheritedField(
+  route: string | undefined,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  return route !== undefined && typeof enclosingLocalSources.get(scopes)?.get(route) === 'object';
 }
 
 /** The selected producer's own return type for a copy whose route stands. */
@@ -533,5 +489,5 @@ export function javaEnclosingLocalAliasType(
   route: string,
   scopes: ScopeResolutionIndexes,
 ): TypeRef | undefined {
-  return acceptedEnclosingLocalRoutes.get(scopes)?.has(route) === true ? returned : undefined;
+  return enclosingLocalSources.get(scopes)?.get(route) === 'local' ? returned : undefined;
 }

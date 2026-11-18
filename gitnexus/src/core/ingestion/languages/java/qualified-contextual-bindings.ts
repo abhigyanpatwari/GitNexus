@@ -1,4 +1,10 @@
-import { makeScopeId, type ParsedFile, type SymbolDefinition, type TypeRef } from 'gitnexus-shared';
+import {
+  makeScopeId,
+  type ParsedFile,
+  type Scope,
+  type SymbolDefinition,
+  type TypeRef,
+} from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { bindsTypeParameter, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import {
@@ -21,7 +27,11 @@ import {
   hasJavaSamePackageType,
   isJavaPackageSiblingVisibilityIncomplete,
 } from './package-siblings.js';
-import { inheritsJavaMemberTypeNamed, lookupJavaTypeNameClaim } from './qualified-type-bindings.js';
+import {
+  hasUnindexedBase,
+  inheritsJavaMemberTypeNamed,
+  lookupJavaTypeNameClaim,
+} from './qualified-type-bindings.js';
 import { eraseJavaTypeArguments } from './type-spelling.js';
 
 type Position = TypeRef['lookupPosition'];
@@ -29,19 +39,15 @@ type Position = TypeRef['lookupPosition'];
 /** The field a subclass inherits under a name, or why there is none to use. */
 type InheritedField =
   | 'absent'
+  | 'hidden'
   | 'unknown'
-  | { readonly field: JavaFieldFact; readonly filePath: string };
+  | { readonly field: JavaFieldFact; readonly filePath: string; readonly scope: Scope };
 
 const NO_FIELDS: JavaTypeFieldsFact = Object.freeze({
   range: { startLine: 0, startCol: 0, endLine: 0, endCol: 0 },
   bases: [],
   fields: [],
 });
-
-const simpleNameOf = (def: SymbolDefinition): string => {
-  const spelling = def.qualifiedName ?? def.nodeId;
-  return spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1);
-};
 
 /**
  * Which field a class inherits under `name` (JLS 8.3), from the workspace
@@ -50,15 +56,17 @@ const simpleNameOf = (def: SymbolDefinition): string => {
  * type (its members are not inventoried), when a type's fields were not
  * captured, or when the answer depends on hiding order or package chains.
  */
-function inheritedFieldResolver(
+export function inheritedFieldResolver(
   parsedFiles: readonly ParsedFile[],
   indexes: ScopeResolutionIndexes,
 ): (proof: InheritedFieldProof) => InheritedField {
   let types:
-    | Map<string, { readonly filePath: string; readonly fact: JavaTypeFieldsFact }>
+    | Map<
+        string,
+        { readonly filePath: string; readonly fact: JavaTypeFieldsFact; readonly scope: Scope }
+      >
     | undefined;
   const memo = new Map<string, InheritedField>();
-  const mroNames = new Map<string, ReadonlySet<string>>();
   const packageOf = (filePath: string): string | undefined => {
     const fact = getJavaPackageFact(filePath);
     return fact?.status === 'known' ? fact.packageName : undefined;
@@ -82,6 +90,7 @@ function inheritedFieldResolver(
           types.set(def.nodeId, {
             filePath: parsed.filePath,
             fact: byScope.get(scope.id) ?? NO_FIELDS,
+            scope,
           });
       }
     }
@@ -91,28 +100,12 @@ function inheritedFieldResolver(
     const scope = indexes.scopeTree.getScope(proof.scope);
     const heir =
       scope?.kind === 'Class' ? scope.ownedDefs.find((def) => isClassLike(def.type)) : undefined;
-    if (heir === undefined) return 'unknown';
+    if (heir === undefined || hasUnindexedBase(heir.nodeId, indexes)) return 'unknown';
     const inventory = types ?? index();
     const ancestors = indexes.methodDispatch.mroFor(heir.nodeId);
-    for (const id of [heir.nodeId, ...ancestors]) {
-      const type = inventory.get(id);
-      if (type === undefined) return 'unknown';
-      if (type.fact.bases.length === 0) continue;
-      let names = mroNames.get(id);
-      if (names === undefined) {
-        names = new Set(
-          indexes.methodDispatch.mroFor(id).flatMap((ancestor) => {
-            const def = indexes.defs.get(ancestor);
-            return def === undefined ? [] : [simpleNameOf(def)];
-          }),
-        );
-        mroNames.set(id, names);
-      }
-      // A supertype outside the workspace may declare any field.
-      if (!type.fact.bases.every((base) => names.has(base))) return 'unknown';
-    }
+    if (!inventory.has(heir.nodeId) || ancestors.some((id) => !inventory.has(id))) return 'unknown';
     const heirPackage = packageOf(heir.filePath);
-    const inherited: { readonly field: JavaFieldFact; readonly filePath: string }[] = [];
+    const inherited: Extract<InheritedField, { field: JavaFieldFact }>[] = [];
     let hidden = false;
     for (const id of ancestors) {
       const type = inventory.get(id)!;
@@ -138,11 +131,11 @@ function inheritedFieldResolver(
           )
             return 'unknown';
         }
-        inherited.push({ field, filePath: type.filePath });
+        inherited.push({ field, filePath: type.filePath, scope: type.scope });
       }
     }
     // Only inaccessible declarations: the name means what encloses the class.
-    if (inherited.length === 0) return 'absent';
+    if (inherited.length === 0) return hidden ? 'hidden' : 'absent';
     // Hiding order decides between several; the MRO does not record it.
     return inherited.length === 1 && !hidden ? inherited[0]! : 'unknown';
   };
@@ -281,7 +274,7 @@ export function validateJavaQualifiedContextualBindings(
     for (const proof of dependsOn) {
       if (proof.kind !== 'unshadowed-field') continue;
       const inherited = inheritedField(proof);
-      if (inherited === 'absent') continue;
+      if (inherited === 'absent' || inherited === 'hidden') continue;
       // The candidate came from further out; a field that depends on the
       // inherited one only transitively has no element of its own to take.
       if (inherited === 'unknown' || proof.route === undefined) return null;

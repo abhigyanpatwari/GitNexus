@@ -189,8 +189,10 @@ class Svc {
     ['Svc.shadowed', 'Method:app/Svc.java:Svc.shadowed#1'],
     ['Svc.shadowedLambda', 'Method:app/Svc.java:Svc.shadowedLambda#1'],
   ])('%s never infers java.util.List for the package List', (_label, caller) => {
-    expect(saveTargets(result(), caller)).not.toContain(USER);
-    expect(saveTargets(result(), caller)).toEqual([]);
+    expect(result().graph.getNode(caller)).toBeDefined();
+    // The custom List implements Iterable<Other>. Only Other.save is a valid
+    // target if the resolver can follow that superinterface.
+    expect(saveTargets(result(), caller).filter((target) => target !== OTHER)).toEqual([]);
   });
 
   it('still proves an unshadowed on-demand name in the same file', () => {

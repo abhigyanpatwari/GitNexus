@@ -654,13 +654,13 @@ function definitionsOfType(
   return [...unique.values()];
 }
 
-/** The classes enclosing `context`, innermost first, with their ranges; the
+/** The classes enclosing `context`, innermost first, with their declarations; the
  * id is `undefined` for a class body without exactly one indexed definition. */
 function enclosingClasses(
   context: TypeContext,
   facts: JavaOverloadFileFacts,
   state: State,
-): { readonly id: string | undefined; readonly range: Range }[] {
+): { readonly id: string | undefined; readonly fact: JavaOverloadTypeFact }[] {
   const index = fileTypeIndex(facts, state);
   index.declarations ??= nestRanges(facts.types, declarationRange);
   return enclosingRanges(index.declarations, declarationRange, context.at).map((type) => {
@@ -672,7 +672,7 @@ function enclosingClasses(
           (definition) => typeFact(definition, state) === type,
         )),
       );
-    return { id: definitions.length === 1 ? definitions[0]!.nodeId : undefined, range: type.range };
+    return { id: definitions.length === 1 ? definitions[0]!.nodeId : undefined, fact: type };
   });
 }
 
@@ -704,7 +704,8 @@ function inheritedSimpleType(
   if (inherited === null) return UNKNOWN_JAVA_TYPE;
   if (
     inherited === undefined ||
-    (nearest !== undefined && javaRangeContains(classes[inherited.depth]!.range, nearest.visible))
+    (nearest !== undefined &&
+      javaRangeContains(classes[inherited.depth]!.fact.range, nearest.visible))
   )
     return undefined;
   const definition = state.scopes.defs.get(inherited.id);
@@ -738,17 +739,21 @@ function qualifierRoot(
 ): JavaReferenceType | 'package' | 'unknown' {
   const index = fileFactIndex(facts, state);
   if (hasTypeParameter(index, root, context.at)) return 'unknown';
-  if (memberTypeNames(state).has(root)) {
-    const inherited = javaInheritedMemberType(
-      enclosingClasses(context, facts, state).map((type) => type.id),
-      root,
-      state.scopes,
-    );
-    if (inherited === null) return 'unknown';
-    if (inherited !== undefined) {
-      const definition = state.scopes.defs.get(inherited.id);
-      return definition === undefined ? 'unknown' : sourceReference(definition);
-    }
+  // A supertype spelling is anchored at its class declaration. Only enclosing
+  // classes can supply inherited names while that class's header is being read.
+  const classes = enclosingClasses(context, facts, state).filter(
+    (owner) => !javaRangeContains(context.at, owner.fact.range),
+  );
+  const inherited = javaInheritedMemberType(
+    classes.map((type) => type.id),
+    root,
+    state.scopes,
+    classes.some((type) => type.fact.bases.length > 0),
+  );
+  if (inherited === null) return 'unknown';
+  if (inherited !== undefined) {
+    const definition = state.scopes.defs.get(inherited.id);
+    return definition === undefined ? 'unknown' : sourceReference(definition);
   }
   const single = index.singleImports.get(root) ?? [];
   if (single.length > 1) return 'unknown';

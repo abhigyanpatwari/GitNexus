@@ -369,8 +369,16 @@ const every = (count: number, shape: number, targets: MemberTargets): MemberTarg
 
 const RESOLVED: MemberTargets = { lambda: [USER_SAVE], loop: [USER_SAVE], field: [USER_SAVE] };
 const FIELD_ONLY: MemberTargets = { lambda: [], loop: [], field: [USER_SAVE] };
-const NONE: MemberTargets = { lambda: [], loop: [], field: [] };
-const ELEMENTS_ONLY: MemberTargets = { lambda: [USER_SAVE], loop: [USER_SAVE], field: [] };
+const MEMBER_TARGETS: MemberTargets = {
+  lambda: [MEMBER_SAVE],
+  loop: [MEMBER_SAVE],
+  field: [MEMBER_SAVE],
+};
+const IMPORTED_WITH_MEMBER_FIELD: MemberTargets = {
+  lambda: [USER_SAVE],
+  loop: [USER_SAVE],
+  field: [MEMBER_SAVE],
+};
 
 // 205 members pass the 200-sibling injection cap; 505 pass the 500-file limit
 // past which a package gets no sibling injection at all. Either way every
@@ -390,8 +398,7 @@ describe.each([205, 505])('Java JDK container elements in a package of %i member
   );
   // JLS 7.5.1, 6.3: `import models.User` names the `models` package's type; a
   // same-package type is not in scope in an import. Only the written
-  // `models.User` field may mean the class `models`, and visibility of that
-  // class is incomplete here, so it stays unresolved.
+  // `models.User` field names the member of the same-package class.
   const importShadowed = useFixture(
     `java-large-${count}-import-shadow`,
     largePackage(count, 'User', { 'app/models.java': MODELS_CLASS }),
@@ -419,16 +426,18 @@ describe.each([205, 505])('Java JDK container elements in a package of %i member
   );
 
   it.each(SHAPES.map((shape, index) => [shape.name, index] as const))(
-    'never reads a written models.User as the package type in every %s member when a same-package type is named models',
+    'binds the written models.User to the same-package member type for every %s member',
     (_name, shape) => {
-      expect(targetsOf(rootShadowed(), count, shape)).toEqual(every(count, shape, NONE));
+      expect(targetsOf(rootShadowed(), count, shape)).toEqual(every(count, shape, MEMBER_TARGETS));
     },
   );
 
   it.each(SHAPES.map((shape, index) => [shape.name, index] as const))(
     'binds every %s element through its import beside a same-package class named models',
     (_name, shape) => {
-      expect(targetsOf(importShadowed(), count, shape)).toEqual(every(count, shape, ELEMENTS_ONLY));
+      expect(targetsOf(importShadowed(), count, shape)).toEqual(
+        every(count, shape, IMPORTED_WITH_MEMBER_FIELD),
+      );
     },
   );
 });

@@ -65,22 +65,33 @@ interface NamedType {
 
 const namedTypesByIndexes = new WeakMap<ScopeResolutionIndexes, ReadonlyMap<string, NamedType>>();
 
+interface ClassHierarchy {
+  readonly name: string;
+  readonly bases: readonly string[];
+}
+const hierarchiesByIndexes = new WeakMap<
+  ScopeResolutionIndexes,
+  ReadonlyMap<string, ClassHierarchy>
+>();
+
 /** Top-level and member types of one file, keyed by scope. Local, anonymous
  * and enum-constant classes have no FQN, so they are left out. */
 function collectNamedTypes(
   parsed: ParsedFile,
   packageName: string,
+  hierarchies: Map<string, ClassHierarchy>,
 ): Map<ScopeId, NamedType & { readonly def: SymbolDefinition }> {
   const result = new Map<ScopeId, NamedType & { readonly def: SymbolDefinition }>();
   const facts = getJavaOverloadFacts(parsed.filePath)?.types;
   const module = parsed.scopes.find((scope) => scope.kind === 'Module');
   if (facts === undefined || module === undefined) return result;
   const byId = new Map<ScopeId, Scope>(parsed.scopes.map((scope) => [scope.id, scope]));
-  // One pass over the facts; the first declaration at a start position wins.
+  // Anonymous class scopes start at the body instead of the creation
+  // expression. Both the scope and the type fact end at the closing brace.
   const declarations = new Map<string, (typeof facts)[number]>();
   for (const type of facts) {
-    const key = `${type.range.startLine}:${type.range.startCol}`;
-    if (type.kind.endsWith('_declaration') && !declarations.has(key)) declarations.set(key, type);
+    const key = `${type.range.endLine}:${type.range.endCol}`;
+    if (!declarations.has(key)) declarations.set(key, type);
   }
   // Declaration kind per resolved scope, so a member type sees its owner's.
   const kinds = new Map<ScopeId, string>();
@@ -88,8 +99,11 @@ function collectNamedTypes(
     const known = result.get(scope.id);
     if (known !== undefined || scope.kind !== 'Class' || scope.parent === null) return known;
     const def = scope.ownedDefs.find((item) => isClassLike(item.type));
-    const fact = declarations.get(`${scope.range.startLine}:${scope.range.startCol}`);
-    if (def?.qualifiedName === undefined || fact === undefined) return undefined;
+    const fact = declarations.get(`${scope.range.endLine}:${scope.range.endCol}`);
+    if (def === undefined || fact === undefined) return undefined;
+    const bases = fact.bases.map((base) => eraseJavaTypeArguments(base).replaceAll(/\s+/g, ''));
+    hierarchies.set(def.nodeId, { name: fact.simpleName, bases });
+    if (def.qualifiedName === undefined || !fact.kind.endsWith('_declaration')) return undefined;
     const parent = byId.get(scope.parent);
     const owner =
       scope.parent === module.id ? undefined : parent === undefined ? undefined : resolve(parent);
@@ -106,7 +120,7 @@ function collectNamedTypes(
       def,
       fqn: prefix === '' ? fact.simpleName : `${prefix}.${fact.simpleName}`,
       packageName,
-      bases: fact.bases.map((base) => eraseJavaTypeArguments(base).replaceAll(/\s+/g, '')),
+      bases,
       enclosingScope: scope.parent,
       ...(owner === undefined ? {} : { ownerId: owner.def.nodeId }),
       access,
@@ -285,6 +299,55 @@ export interface JavaInheritedMemberType {
   readonly depth: number;
 }
 
+const unindexedBases = new WeakMap<ScopeResolutionIndexes, Map<string, boolean>>();
+
+/** A dotted name may start with a member type of an unseen base. Check each
+ * written supertype against the workspace hierarchy, once per class. */
+export function hasUnindexedBase(classId: string, indexes: ScopeResolutionIndexes): boolean {
+  let cache = unindexedBases.get(indexes);
+  if (cache === undefined) unindexedBases.set(indexes, (cache = new Map()));
+  const known = cache.get(classId);
+  if (known !== undefined) return known;
+  cache.set(classId, true); // Cycles cannot prove a complete hierarchy.
+  const types = namedTypesByIndexes.get(indexes);
+  const hierarchies = hierarchiesByIndexes.get(indexes);
+  const type = hierarchies?.get(classId);
+  if (type === undefined) return true;
+  if (type.bases.length > 0) {
+    const file = indexes.defs.get(classId)?.filePath;
+    if (file === undefined) return true;
+    const ancestors = new Map<string, string | null>();
+    for (const id of indexes.methodDispatch.mroFor(classId)) {
+      const fqn = types?.get(id)?.fqn ?? hierarchies?.get(id)?.name;
+      if (fqn === undefined || id === classId) continue;
+      for (let start = 0; start < fqn.length; ) {
+        const spelling = fqn.slice(start);
+        const previous = ancestors.get(spelling);
+        ancestors.set(spelling, previous === undefined || previous === id ? id : null);
+        const dot = fqn.indexOf('.', start);
+        if (dot === -1) break;
+        start = dot + 1;
+      }
+    }
+    for (const base of type.bases) {
+      const root = base.split('.')[0]!;
+      const imports = importIndex(file).single.get(root);
+      if (imports !== undefined && imports.length !== 1) return true;
+      const written = imports === undefined ? base : imports[0]!.name + base.slice(root.length);
+      const ancestor = ancestors.get(written);
+      if (ancestor === undefined && written === 'java.lang.Object') continue;
+      if (
+        ancestor == null ||
+        (imports !== undefined && types?.get(ancestor)?.fqn !== written) ||
+        hasUnindexedBase(ancestor, indexes)
+      )
+        return true;
+    }
+  }
+  cache.set(classId, false);
+  return false;
+}
+
 /**
  * The member type named `name` that the nearest enclosing class inherits
  * (JLS 8.5), which shadows every file- and package-level type and every
@@ -310,17 +373,22 @@ export function javaInheritedMemberType(
   classes: readonly (string | undefined)[],
   name: string,
   indexes: ScopeResolutionIndexes,
+  checkUnindexedBases = false,
 ): JavaInheritedMemberType | null | undefined {
   const memberTypes = memberTypeNamesByOwner(indexes);
-  if (!memberTypes.all.has(name)) return undefined;
+  const hasMember = memberTypes.all.has(name);
+  if (!hasMember && !checkUnindexedBases) return undefined;
   const namedTypes = namedTypesByIndexes.get(indexes);
   let nearerUnknown = false;
   for (const [depth, classId] of classes.entries()) {
     if (classId === undefined) {
+      if (checkUnindexedBases) return null;
       nearerUnknown = true;
       continue;
     }
     if (memberTypes.byOwner.get(classId)?.has(name) === true) return undefined;
+    if (checkUnindexedBases && hasUnindexedBase(classId, indexes)) return null;
+    if (!hasMember) continue;
     const inherited = inheritedMemberTypes(classId, name, indexes);
     if (inherited === null) return null;
     if (inherited.size === 0) {
@@ -373,8 +441,9 @@ function inheritedMemberTypeAt(
   scopeId: ScopeId,
   name: string,
   indexes: ScopeResolutionIndexes,
+  checkUnindexedBases: boolean,
 ): (JavaInheritedMemberType & { readonly scope: ScopeId }) | null | undefined {
-  if (!memberTypeNamesByOwner(indexes).all.has(name)) return undefined;
+  if (!checkUnindexedBases && !memberTypeNamesByOwner(indexes).all.has(name)) return undefined;
   const classes: (string | undefined)[] = [];
   const classScopes: ScopeId[] = [];
   const seen = new Set<ScopeId>();
@@ -388,7 +457,7 @@ function inheritedMemberTypeAt(
     classes.push(scope.ownedDefs.find((def) => isClassLike(def.type))?.nodeId);
     classScopes.push(scope.id);
   }
-  const found = javaInheritedMemberType(classes, name, indexes);
+  const found = javaInheritedMemberType(classes, name, indexes, checkUnindexedBases);
   if (found === null) return null;
   if (found === undefined) return undefined;
   return { ...found, scope: classScopes[found.depth]! };
@@ -397,8 +466,8 @@ function inheritedMemberTypeAt(
 /**
  * Whether a static on-demand import of `owner` (JLS 7.5.4) is known to bring
  * in no type named `name`. It imports every accessible static member type of
- * that owner, inherited ones included, so only a single workspace owner that
- * names no supertype and declares no member type of that name is known.
+ * that owner, inherited ones included. A workspace owner supplies its own
+ * inventory. The platform Math class extends Object and exports no member types.
  */
 export function javaStaticOnDemandImportBringsNoType(
   owner: string,
@@ -407,6 +476,7 @@ export function javaStaticOnDemandImportBringsNoType(
 ): boolean {
   const byFqn = namedTypesByFqnByIndexes.get(indexes);
   const owners = byFqn?.get(owner) ?? [];
+  if (byFqn !== undefined && owners.length === 0 && owner === 'java.lang.Math') return true;
   return (
     owners.length === 1 &&
     owners[0]!.bases.length === 0 &&
@@ -474,7 +544,12 @@ function inheritedTypeReading(
   indexes: ScopeResolutionIndexes,
   claim?: NameClaimResult,
 ): string | null | undefined {
-  const inherited = inheritedMemberTypeAt(ref.declaredAtScope, name, indexes);
+  const inherited = inheritedMemberTypeAt(
+    ref.declaredAtScope,
+    name,
+    indexes,
+    claim?.status === 'absent' || claim?.scope?.kind === 'Module',
+  );
   if (inherited === null) return null;
   if (inherited === undefined) return undefined;
   if (claim === undefined)
@@ -769,16 +844,7 @@ function qualifiedTypeKey(
     )
       ? null
       : spelling;
-  if (
-    file === undefined ||
-    bindsTypeParameter(ref.declaredAtScope, root, indexes) ||
-    // Sibling injection is capped for cost and skips very large packages, so
-    // the lookup below may miss a same-package type named `root`. Sibling
-    // injection binds nothing else, so the lookup is exact for a name the
-    // uncapped package index does not hold.
-    (isJavaPackageSiblingVisibilityIncomplete(file) && hasJavaSamePackageType(file, root) !== false)
-  )
-    return null;
+  if (file === undefined || bindsTypeParameter(ref.declaredAtScope, root, indexes)) return null;
   let claim = lookupJavaTypeNameClaim(ref.declaredAtScope, root, indexes, ref.lookupPosition);
   const scope = ref.declaredAtScope;
   // Name lookup binds no inherited member type, yet one shadows every type
@@ -809,6 +875,27 @@ function qualifiedTypeKey(
     } else if (statically !== undefined) return `${statically.fqn}${spelling.slice(root.length)}`;
   }
   if (claim.status === 'absent') {
+    // The sibling cap can omit a top-level type from module bindings. Use
+    // the uncapped package inventory before considering on-demand imports.
+    if (isJavaPackageSiblingVisibilityIncomplete(file)) {
+      const sibling = hasJavaSamePackageType(file, root);
+      if (sibling === undefined) return null;
+      if (sibling) {
+        const pkg = getJavaPackageFact(file);
+        if (
+          pkg?.status !== 'known' ||
+          importIndex(file)
+            .single.get(root)
+            ?.some((item) => !item.static)
+        )
+          return null;
+        const owner = pkg.packageName === '' ? root : `${pkg.packageName}.${root}`;
+        const candidates = namedTypesByFqnByIndexes.get(indexes)?.get(owner);
+        return candidates?.length === 1 && candidates[0]!.ownerId === undefined
+          ? owner + spelling.slice(root.length)
+          : null;
+      }
+    }
     const imported = onDemandQualifier(file, root, indexes);
     return imported === 'package'
       ? spelling
@@ -854,6 +941,7 @@ export function populateJavaQualifiedTypeBindings(
   indexes: ScopeResolutionIndexes,
 ): void {
   const candidates = new Map<string, { binding: BindingRef; named: NamedType }[]>();
+  const hierarchies = new Map<string, ClassHierarchy>();
   const namedTypes = new Map<string, NamedType>();
   const namedTypesByFqn = new Map<string, NamedType[]>();
   const importedSpellings = new Map<string, Map<string, JavaImportedSpellingFact['status']>>();
@@ -871,7 +959,11 @@ export function populateJavaQualifiedTypeBindings(
       );
     const pkg = getJavaPackageFact(parsed.filePath);
     if (pkg?.status !== 'known') continue;
-    for (const { def, ...named } of collectNamedTypes(parsed, pkg.packageName).values()) {
+    for (const { def, ...named } of collectNamedTypes(
+      parsed,
+      pkg.packageName,
+      hierarchies,
+    ).values()) {
       namedTypes.set(def.nodeId, named);
       const sameName = namedTypesByFqn.get(named.fqn) ?? [];
       sameName.push(named);
@@ -882,6 +974,7 @@ export function populateJavaQualifiedTypeBindings(
     }
   }
   namedTypesByIndexes.set(indexes, namedTypes);
+  hierarchiesByIndexes.set(indexes, hierarchies);
   namedTypesByFqnByIndexes.set(indexes, namedTypesByFqn);
   importedSpellingsByIndexes.set(indexes, importedSpellings);
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;

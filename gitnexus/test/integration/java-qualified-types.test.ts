@@ -458,6 +458,14 @@ import static lib.Outer.*;
 class Static { void pass(Sink s, Inner.User x) { s.take(x); } }`,
     'side/Control.java': `package side;
 class Control { void pass(Sink s, Inner.User x) { s.take(x); } }`,
+    'side/WithMath.java': `package side;
+import static java.lang.Math.*;
+class WithMath {
+  void take(java.lang.String value) {}
+  void take(java.lang.Integer value) {}
+  void pass(java.lang.String value) { take(value); }
+  void param(Inner.User u) { u.save(); }
+}`,
   });
 
   it.each([
@@ -487,6 +495,15 @@ class Control { void pass(Sink s, Inner.User x) { s.take(x); } }`,
       'Method:side/Sink.java:Sink.take#1~Inner.User',
     ]);
   });
+
+  it('keeps qualified workspace and JDK types beside the Math static import', () => {
+    expect(callTargets(result(), 'Method:side/WithMath.java:WithMath.param#1', 'save')).toEqual([
+      'Method:Inner/User.java:User.save#0',
+    ]);
+    expect(callTargets(result(), 'Method:side/WithMath.java:WithMath.pass#1', 'take')).toEqual([
+      'Method:side/WithMath.java:WithMath.take#1~java.lang.String',
+    ]);
+  });
 });
 
 // JLS 6.4.1 / 8.5: a member type an enclosing class inherits shadows the
@@ -506,6 +523,28 @@ class Outer extends Base {
 }`,
     'app/ExtSub.java': `package app;
 class ExtSub extends lib.Base { void viaExt(models.User u) { u.save(); } }`,
+    'app/Root.java': `package app;
+public class Root { public static class Item { public void save() {} } }`,
+    'lib/Imported.java': `package lib;
+public class Imported { public static class Item { public void save() {} } }`,
+    'app/Unknown.java': `package app;
+import lib.Imported;
+class Unknown extends missing.Parent {
+  void samePackage(Root.Item x) { x.save(); }
+  void imported(Imported.Item x) { x.save(); }
+  void pick(Root.Item x) {}
+  void pick(Imported.Item x) {}
+  void pass(Root.Item x) { pick(x); }
+}
+class ThroughUnknown extends Unknown { void indirect(Root.Item x) { x.save(); } }
+class Complete {
+  void imported(Imported.Item x) { x.save(); }
+  void nested() {
+    class Local { void local(Imported.Item x) { x.save(); } }
+    new Root() { void anonymous(Imported.Item x) { x.save(); } };
+    class Unseen extends missing.Parent { void unknown(Imported.Item x) { x.save(); } }
+  }
+}`,
     'app/I1.java': `package app;
 public interface I1 { class models { public static class User { public void save() {} } } }`,
     'app/Iface.java': `package app;
@@ -549,9 +588,22 @@ class Plain { void pass(Sink s, models.User u) { s.take(u); } }`,
     ['Method:app/Outer.java:Inner.nearExt#1'],
     ['Method:app/ExtSub.java:ExtSub.viaExt#1'],
     ['Method:app/Two.java:Two.two#1'],
+    ['Method:app/Unknown.java:Unknown.samePackage#1'],
+    ['Method:app/Unknown.java:Unknown.imported#1'],
+    ['Method:app/Unknown.java:ThroughUnknown.indirect#1'],
+    ['Method:app/Unknown.java:Complete$1Unseen.unknown#1'],
   ])('leaves %s unresolved', (caller) => {
     expect(result().graph.getNode(caller)).toBeDefined();
     expect(callTargets(result(), caller, 'save')).toEqual([]);
+  });
+
+  it('uses the imported root with a complete hierarchy and refuses an overload behind an unseen base', () => {
+    for (const caller of ['Complete.imported', 'Complete$1Local.local', 'Complete$1.anonymous'])
+      expect(callTargets(result(), `Method:app/Unknown.java:${caller}#1`, 'save')).toEqual([
+        'Method:lib/Imported.java:Item.save#0',
+      ]);
+    expect(result().graph.getNode('Method:app/Unknown.java:Unknown.pass#1')).toBeDefined();
+    expect(callTargets(result(), 'Method:app/Unknown.java:Unknown.pass#1', 'pick')).toEqual([]);
   });
 
   // `Mid.models` hides `Base.models`; private and other-package
