@@ -15,7 +15,7 @@ import {
   javaTrailingDimensions,
   javaTypeText,
 } from './type-spelling.js';
-import { synthesizeJavaSamLambdaCaptures } from './sam-lambda-captures.js';
+import { javaLambdaArgument, synthesizeJavaSamLambdaCaptures } from './sam-lambda-captures.js';
 import {
   getJavaOverloadFacts,
   javaRangeContains,
@@ -900,7 +900,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     } else if (node.type === 'lambda_expression') {
       // A lambda this JDK callback route does not type may still take its
       // parameter types from the selected method's functional interface.
-      const argumentsNode = node.parent;
+      const argumentsNode = javaLambdaArgument(node).parent;
       const call = argumentsNode?.parent;
       const receiver = call?.childForFieldName('object');
       const member = call?.childForFieldName('name')?.text;

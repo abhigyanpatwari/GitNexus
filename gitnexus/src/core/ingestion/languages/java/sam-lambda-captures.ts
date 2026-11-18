@@ -9,6 +9,13 @@ export const JAVA_SAM_LAMBDA_ROUTE = /^lambda:(\d+):(\d+):(\d+):(\d+)(?::fallbac
 export const JAVA_SAM_LAMBDA_FALLBACK = ':fallback';
 const COMMENTS = new Set(['line_comment', 'block_comment']);
 
+/** The argument-list child keeps any parentheses around the lambda expression. */
+export function javaLambdaArgument(lambda: SyntaxNode): SyntaxNode {
+  let argument = lambda;
+  while (argument.parent?.type === 'parenthesized_expression') argument = argument.parent;
+  return argument;
+}
+
 /** The names an implicitly typed lambda declares (`x`, `(x, y)`, `(var x)`);
  * `undefined` for an explicitly typed or empty parameter list. */
 function implicitParameterNames(lambda: SyntaxNode): SyntaxNode[] | undefined {
@@ -50,7 +57,8 @@ export function synthesizeJavaSamLambdaCaptures(
   lambda: SyntaxNode,
   fallback = false,
 ): CaptureMatch[] {
-  const argumentList = lambda.parent;
+  const argument = javaLambdaArgument(lambda);
+  const argumentList = argument.parent;
   const call = argumentList?.parent;
   if (
     argumentList?.type !== 'argument_list' ||
@@ -59,7 +67,7 @@ export function synthesizeJavaSamLambdaCaptures(
   )
     return [];
   const args = argumentList.namedChildren.filter((child) => !COMMENTS.has(child.type));
-  const position = args.findIndex((child) => child.id === lambda.id);
+  const position = args.findIndex((child) => child.id === argument.id);
   const names = implicitParameterNames(lambda);
   if (position < 0 || names === undefined) return [];
   return names.map((name, index) => ({

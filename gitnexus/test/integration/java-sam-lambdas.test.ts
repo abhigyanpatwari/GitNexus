@@ -78,6 +78,7 @@ class Typed {
   void derived(Derived callback) {}
   void generic(Generic<Item> callback) {}
   void bench() { accept(x -> x.audit()); }
+  void groupedList(java.util.List<Item> values) { values.forEach(( /* item */ (x -> x.audit()))); }
   void pairs() { pair((x, second) -> { x.audit(); second.save(); }); }
   void localVar() { accept((var x) -> x.audit()); }
   void withMembers() { members(x -> x.audit()); }
@@ -110,7 +111,9 @@ class Overloads {
   void accept(PairCallback callback) {}
   void accept(OtherCallback first, OtherCallback second) {}
   void bySamArity() { accept(x -> x.audit()); }
+  void byGroupedSamArity() { accept(( /* callback */ (x -> x.audit()))); }
   void byCallArity() { accept(x -> x.audit(), y -> y.save()); }
+  void groupedSecond() { accept(x -> x.audit(), /* second */ ((y -> y.save()))); }
 }
 class Receivers {
   void call(Overloads overloads) { overloads.accept(x -> x.audit()); }
@@ -120,6 +123,7 @@ class Ambiguous {
   void run(ItemCallback callback) {}
   void run(OtherCallback callback) {}
   void call() { run(x -> x.audit()); }
+  void grouped() { run(((x -> x.audit()))); }
 }
 class StaticContext {
   Item x;
@@ -145,6 +149,7 @@ class StaticContext {
     ['Method:app/Main.java:Typed.localVar#0'],
     ['Method:app/Main.java:Typed.nested#0'],
     ['Method:app/Main.java:Overloads.bySamArity#0'],
+    ['Method:app/Main.java:Overloads.byGroupedSamArity#0'],
     ['Method:app/Main.java:Receivers.call#1'],
   ])('binds the single abstract method parameter in %s', (caller) => {
     expect(targets(getRelationships(result(), 'CALLS'), caller, 'audit')).toEqual([
@@ -189,6 +194,16 @@ class StaticContext {
     ]);
   });
 
+  it('tracks a grouped lambda in its argument slot and on a JDK collection receiver', () => {
+    const edges = getRelationships(result(), 'CALLS');
+    expect(targets(edges, 'Method:app/Main.java:Overloads.groupedSecond#0', 'save')).toEqual([
+      'Method:app/Main.java:Other.save#0',
+    ]);
+    expect(targets(edges, 'Method:app/Main.java:Typed.groupedList#1', 'audit')).toEqual([
+      localItemAudit,
+    ]);
+  });
+
   it.each([
     ['Method:app/Main.java:Refused.nonFunctional#0'],
     ['Method:app/Main.java:Refused.externalInterface#0'],
@@ -198,6 +213,7 @@ class StaticContext {
     ['Method:app/Main.java:Refused.rawTarget#0'],
     ['Method:app/Main.java:Refused.wildcardTarget#0'],
     ['Method:app/Main.java:Ambiguous.call#0'],
+    ['Method:app/Main.java:Ambiguous.grouped#0'],
     ['Method:app/Main.java:StaticContext.call#0'],
   ])('leaves the parameter unbound, never the outer field, in %s', (caller) => {
     expect(result().graph.getNode(caller)).toBeDefined();
