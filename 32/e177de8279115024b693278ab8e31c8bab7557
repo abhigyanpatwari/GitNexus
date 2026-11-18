@@ -1,0 +1,23 @@
+eval/tests/test_proposer_sandbox.py
+  s_676b35bc218cc9::t_f16f36a83a0e58 111-112,115-117
+eval/workflow_bench/oci_worker.py
+  s_676b35bc218cc9::t_6b96e8cf62cbce 131
+eval/workflow_bench/proposal_evaluation.py
+  s_676b35bc218cc9::t_e84a265437f123 544-545,548
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "32e177de8279115024b693278ab8e31c8bab7557",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
