@@ -8,7 +8,12 @@ import sys
 import xml.etree.ElementTree as ET
 
 
-RECEIPTS = ("pytest-locked.xml", "pytest-ubuntu.xml", "pytest-windows.xml")
+RECEIPTS = (
+    "pytest-locked.xml",
+    "pytest-ubuntu-24.04.xml",
+    "pytest-ubuntu-26.04.xml",
+    "pytest-windows.xml",
+)
 
 
 def reconcile(reports: list[Path], expected_files: list[str]) -> dict:

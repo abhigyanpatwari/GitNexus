@@ -106,7 +106,10 @@ def test_missing_report_list_is_rejected():
         reconcile([], [])
 
 
-@pytest.mark.parametrize("scenario", ["passed", "pending", "failed", "missing-receipt", "missing-file"])
+@pytest.mark.parametrize("scenario", [
+    "passed", "pending", "failed", "missing-file",
+    "missing-ubuntu-24.04", "missing-ubuntu-26.04", "missing-windows",
+])
 def test_cli_requires_complete_execution_evidence(tmp_path, scenario):
     script = tmp_path / "check_test_execution.py"
     shutil.copyfile(Path(__file__).parents[1] / script.name, script)
@@ -116,9 +119,10 @@ def test_cli_requires_complete_execution_evidence(tmp_path, scenario):
     reports = tmp_path / "reports"
     reports.mkdir()
     receipt(reports, "pytest-locked.xml", [("test_native", "skipped" if scenario == "pending" else "passed")])
-    receipt(reports, "pytest-ubuntu.xml", [("test_native", "error" if scenario == "failed" else "skipped")])
-    if scenario != "missing-receipt":
-        receipt(reports, "pytest-windows.xml", [("test_native", "skipped")])
+    for platform in ("ubuntu-24.04", "ubuntu-26.04", "windows"):
+        if scenario != f"missing-{platform}":
+            status = "error" if scenario == "failed" and platform == "ubuntu-26.04" else "skipped"
+            receipt(reports, f"pytest-{platform}.xml", [("test_native", status)])
     if scenario == "missing-file":
         (tests / "test_missing.py").write_text("# must be collected\n")
     output = tmp_path / "pytest-results.json"
@@ -131,7 +135,8 @@ def test_cli_requires_complete_execution_evidence(tmp_path, scenario):
     assert result.returncode == (0 if scenario == "passed" else 1)
     if scenario.startswith("missing-"):
         assert not output.exists()
-        assert ("pytest-windows.xml" if scenario == "missing-receipt" else "never collected") in result.stderr
+        expected = "never collected" if scenario == "missing-file" else f"pytest-{scenario.removeprefix('missing-')}.xml"
+        assert expected in result.stderr
     else:
         report = json.loads(output.read_text())
         assert report["success"] is (scenario == "passed")

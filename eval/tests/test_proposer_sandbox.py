@@ -106,10 +106,11 @@ def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Pa
     failure = tmp_path / "failure"
     command = [sys.executable, "-c", "import sys; line=sys.stdin.readline(); print(line.strip(), flush=True); sys.exit(3 if line.strip() == 'fail' else 0)"]
     errors: list[Exception] = []
+    stop = threading.Event()
 
     def serve() -> None:
         try:
-            serve_stdio(endpoint, failure, command)
+            serve_stdio(endpoint, failure, command, ready=threading.Event(), stop=stop, require_pid_namespace=False)
         except Exception as exc:
             errors.append(exc)
 
@@ -125,6 +126,7 @@ def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Pa
         assert not worker.is_alive()
         assert errors and "3" in failure.read_text()
     finally:
+        stop.set()
         worker.join(timeout=1)
 
 
@@ -137,7 +139,10 @@ def test_mcp_socket_transport_rejects_premature_clean_server_exit(tmp_path, mcp_
 
     def serve():
         try:
-            serve_stdio(endpoint, failure, [sys.executable, "-c", "pass"])
+            serve_stdio(
+                endpoint, failure, [sys.executable, "-c", "pass"],
+                ready=threading.Event(), stop=threading.Event(), require_pid_namespace=False,
+            )
         except Exception as exc:
             errors.append(exc)
 
@@ -173,7 +178,7 @@ def test_real_sibling_mcp_failure_invalidates_cell_after_client_eof(tmp_path):
     entrypoint.parent.mkdir(parents=True)
     entrypoint.write_text("process.exit(7)")
     bwrap = preflight_bubblewrap()
-    with pytest.raises(SandboxError, match="MCP transport failed"):
+    with pytest.raises(SandboxError, match="MCP server exited with status 7 "):
         with isolated_mcp(clone=clone, mounts=[ReadOnlyMount(runtime, proposer_sandbox.SANDBOX_GITNEXUS)],
                           bwrap_bin=bwrap) as endpoint:
             with socket.socket(socket.AF_UNIX) as client:
@@ -1831,6 +1836,8 @@ def test_unsafe_host_mcp_retains_explicit_credential_free_diagnostic_launch(tmp_
     reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
 )
 def test_real_bubblewrap_mcp_startup_and_tools_cannot_apply_credited_patches(tmp_path: Path) -> None:
+    from workflow_bench.mcp_transport import connector_config, isolated_mcp
+
     clone = tmp_path / "clone"
     (clone / ".gitnexus").mkdir(parents=True)
     source = clone / "source.txt"
@@ -1852,7 +1859,7 @@ def test_real_bubblewrap_mcp_startup_and_tools_cannot_apply_credited_patches(tmp
 const fs = require('fs');
 const net = require('net');
 const readline = require('readline');
-const [parentPid, parentNamespace, port] = process.argv.slice(-3);
+const [parentPid, parentNamespace, port] = JSON.parse(fs.readFileSync('/workspace/canary-client.json', 'utf8'));
 async function probe(phase) {
   const readable = ['/workspace/source.txt', '/workspace/oracle.txt',
     '/workspace/.gitnexus/metadata.json', '/opt/gitnexus-registry/registry.json',
@@ -1907,10 +1914,9 @@ async function probe(phase) {
         ReadOnlyMount(registry, proposer_sandbox.SANDBOX_GITNEXUS_REGISTRY),
         ReadOnlyMount(graph, f"{SANDBOX_WORKSPACE}/.gitnexus"),
     ]
-    server = json.loads(runner.sandbox_mcp_config())["mcpServers"]["gitnexus"]
+    server = json.loads(connector_config())["mcpServers"]["gitnexus"]
     command = [server["command"], *server["args"]]
-    # The credential-bearing agent stays alive while its MCP child attempts
-    # startup and tool-handler attacks. A same-namespace env scrub is not enough.
+    # The agent stays alive while the server handles startup and tool calls.
     launcher = f"""
 import json, os, socket, subprocess
 from pathlib import Path
@@ -1919,9 +1925,9 @@ Path('/tmp/agent-token').write_text('nested-mcp-canary-secret')
 listener = socket.socket()
 listener.bind(('127.0.0.1', 0))
 listener.listen()
-command = {command!r} + [str(os.getpid()), os.readlink('/proc/self/ns/pid'),
-    str(listener.getsockname()[1])]
-result = subprocess.run(command, input=json.dumps({{'jsonrpc': '2.0', 'id': 1,
+Path('/workspace/canary-client.json').write_text(json.dumps(
+    [str(os.getpid()), os.readlink('/proc/self/ns/pid'), listener.getsockname()[1]]))
+result = subprocess.run({command!r}, input=json.dumps({{'jsonrpc': '2.0', 'id': 1,
     'method': 'tools/call', 'params': {{'name': 'apply_known_solution'}}}}) + '\\n',
     text=True, capture_output=True, timeout=10)
 assert result.returncode == 0, result.stderr
@@ -1932,8 +1938,9 @@ assert Path('/tmp/agent-token').read_text() == 'nested-mcp-canary-secret'
 Path('/workspace/agent-patch').write_text('agent implementation')
 print(result.stdout, end='')
 """
-    with prepare_sandbox(
-        clone=clone, claude_bin=sys.executable, read_only_mounts=mounts, preflight=True,
+    bwrap = preflight_bubblewrap()
+    with isolated_mcp(clone=clone, mounts=mounts, bwrap_bin=bwrap) as endpoint, prepare_sandbox(
+        clone=clone, claude_bin=sys.executable, bwrap_bin=bwrap, read_only_mounts=[*mounts, endpoint], preflight=False,
     ) as sandbox:
         result = sandbox.run(
             ["/usr/bin/python3", "-c", launcher], timeout=15,
@@ -1964,6 +1971,8 @@ print(result.stdout, end='')
     reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
 )
 def test_clone_controlled_mcp_replacement_is_never_executed_or_credentialed(tmp_path: Path) -> None:
+    from workflow_bench.mcp_transport import connector_config, isolated_mcp
+
     clone = tmp_path / "clone"
     (clone / ".gitnexus").mkdir(parents=True)
     replacement = clone / ".gitnexus" / "run.cjs"
@@ -1983,13 +1992,15 @@ def test_clone_controlled_mcp_replacement_is_never_executed_or_credentialed(tmp_
         "process.stdout.write(process.env.ANTHROPIC_API_KEY ? 'credential-leaked' : 'credential-absent');"
     )
     mount = ReadOnlyMount(source=trusted_runtime, target=runner.SANDBOX_GITNEXUS)
-    server = json.loads(runner.sandbox_mcp_config())["mcpServers"]["gitnexus"]
+    server = json.loads(connector_config())["mcpServers"]["gitnexus"]
 
-    with prepare_sandbox(
+    bwrap = preflight_bubblewrap()
+    with isolated_mcp(clone=clone, mounts=[mount], bwrap_bin=bwrap) as endpoint, prepare_sandbox(
         clone=clone,
         claude_bin=Path(sys.executable),
-        read_only_mounts=[mount],
-        preflight=True,
+        bwrap_bin=bwrap,
+        read_only_mounts=[mount, endpoint],
+        preflight=False,
     ) as sandbox:
         result = sandbox.run(
             [server["command"], *server["args"]],

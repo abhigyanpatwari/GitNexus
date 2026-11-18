@@ -315,9 +315,8 @@ MCP configuration. Bash children do
 not inherit the model credential and their network sandbox denies all
 domains.
 
-The release baseline's candidate MCP server runs in a sibling Bubblewrap
-boundary, reached by a stdio socket connector. Workflow/CLI arms retain a nested
-server boundary. In both cases its
+Each GitNexus-enabled cell runs its MCP server in a sibling Bubblewrap
+boundary, reached by a stdio socket connector. The server's
 workspace (including the graph), registry, compiled runtime and shared package
 mounts are read-only. Its home and temporary directories are private tmpfs,
 and it has a fresh PID namespace and `/proc`, no network or capabilities, and
@@ -326,9 +325,9 @@ cannot write patches that would be credited to the agent; the agent retains
 its writable workspace for implementation tasks. Mutating MCP tools are not
 granted in any phase.
 
-The cell owns the socket listener and its servers through the existing managed
-process supervisor and an outer PID namespace. Each connection starts one
-server; reconnects are sequential. Server failures invalidate the cell, and
+The evaluator owns the cell's socket listener. For each connection its process
+supervisor launches a server directly in a fresh Bubblewrap PID namespace.
+Reconnects are sequential. Server failures invalidate the cell, and
 teardown reaps detached descendants before removing the socket. Native canaries
 in `test_proposer_sandbox.py` run in the required Linux containment job; a local
 namespace skip does not prove isolation.

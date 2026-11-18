@@ -1922,8 +1922,12 @@ jobs:
   # Native Linux ownership and Bubblewrap boundary. The environment flag makes
   # the real namespace test mandatory; a missing/blocked bwrap is a failure.
   eval-containment-linux:
-    name: eval / containment (ubuntu)
-    runs-on: ubuntu-24.04
+    name: eval / containment (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-26.04]
     timeout-minutes: 20
     env:
       GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
@@ -1957,10 +1961,6 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends bubblewrap ripgrep socat
-          apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
           canary_runtime="${RUNNER_TEMP}/claude-canary"
           install -d -m 0700 "${canary_runtime}"
           install -m 0600 \
@@ -1984,6 +1984,11 @@ jobs:
           npm ci
           npm run build
         working-directory: gitnexus
+      - name: Verify hook subprocess cleanup
+        working-directory: gitnexus
+        run: >-
+          npm test -- test/unit/hooks.test.ts test/unit/factory-plugin.test.ts
+          -t 'SIGKILLed hook leaves no .*grandchild'
       # Release evaluation grades tasks with dependencies built at the pinned
       # task commit; prove the hidden oracles against that same toolchain.
       - name: Build the pinned task toolchain that grades release evaluation
@@ -1997,6 +2002,7 @@ jobs:
             --repo "${RUNNER_TEMP}/tasks-base"
       - name: Prove process-tree and sandbox containment
         env:
+          JUNIT_REPORT: pytest-${{ matrix.os }}.xml
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
           GITNEXUS_ORACLE_TASK_DEPENDENCIES: ${{ runner.temp }}/tasks-base
         run: >-
@@ -2015,14 +2021,14 @@ jobs:
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
           tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes
           tests/test_oracle_assets.py::test_in_flight_retry_oracle_rejects_startup_only_repairs
-          -q --junitxml=pytest-ubuntu.xml
+          -q --junitxml="$JUNIT_REPORT"
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: execution-pytest-ubuntu
-          path: eval/pytest-ubuntu.xml
+          name: execution-pytest-${{ matrix.os }}
+          path: eval/pytest-${{ matrix.os }}.xml
           retention-days: 5
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while
