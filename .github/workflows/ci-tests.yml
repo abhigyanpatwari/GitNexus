@@ -1979,6 +1979,16 @@ jobs:
             "${canary_runtime}/node_modules/@anthropic-ai/claude-code/package.json"
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
+      - name: Load Ubuntu 24.04's packaged Bubblewrap AppArmor profile
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          set -euo pipefail
+          cd "$(mktemp -d)"
+          apt-get download apparmor-profiles
+          dpkg-deb --extract ./apparmor-profiles_*.deb package
+          profile=bwrap-userns-restrict
+          sudo install -m 0644 "package/usr/share/apparmor/extra-profiles/$profile" "/etc/apparmor.d/$profile"
+          sudo apparmor_parser --replace "/etc/apparmor.d/$profile"
       - name: Install and build pinned GitNexus runtime
         run: |
           npm ci
