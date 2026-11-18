@@ -1919,24 +1919,18 @@ jobs:
             eval/pytest-results.json
           retention-days: 5
 
-  # Native Linux ownership and Bubblewrap boundary. The environment flag makes
-  # the real namespace test mandatory; a missing/blocked bwrap is a failure.
+  # All three native hosts run the paired proposal evaluator. Jammy also
+  # exercises the historical nested Bash method on a compatible stock kernel.
   eval-containment-linux:
     name: eval / containment (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, ubuntu-26.04]
-    timeout-minutes: 20
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
+    timeout-minutes: 40
     env:
-      GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
-      # This job installs bubblewrap, the pinned runtime and a built GitNexus,
-      # so the offline sweep runs here with nothing provisioning-stubbed: real
-      # containment, real mounts, real graph. A missing piece fails the job
-      # rather than silently falling back to the stubbed path.
-      GITNEXUS_REQUIRE_FULL_SWEEP: '1'
-      GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
+      GITNEXUS_REQUIRE_PROPOSAL_CANARY: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1979,16 +1973,29 @@ jobs:
             "${canary_runtime}/node_modules/@anthropic-ai/claude-code/package.json"
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
-      - name: Load Ubuntu 24.04's packaged Bubblewrap AppArmor profile
-        if: matrix.os == 'ubuntu-24.04'
+      - name: Probe the host's native sandbox capabilities
+        working-directory: eval
+        env:
+          IMAGE: ${{ matrix.os }}
+          CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
         run: |
-          set -euo pipefail
-          cd "$(mktemp -d)"
-          apt-get download apparmor-profiles
-          dpkg-deb --extract ./apparmor-profiles_*.deb package
-          profile=bwrap-userns-restrict
-          sudo install -m 0644 "package/usr/share/apparmor/extra-profiles/$profile" "/etc/apparmor.d/$profile"
-          sudo apparmor_parser --replace "/etc/apparmor.d/$profile"
+          uv run --locked --extra dev python - <<'PY'
+          import os
+          from pathlib import Path
+          from workflow_bench.release_preflight import legacy_sandbox_support
+
+          outer, bash = legacy_sandbox_support(Path(os.environ["CLAUDE_CANARY_BIN"]))
+          image = os.environ["IMAGE"]
+          print(f"{image}: Bubblewrap={outer}, nested Claude Bash={bash}", flush=True)
+          if image == "ubuntu-22.04" and not bash:
+              raise SystemExit("the legacy Bash compatibility run is mandatory on Jammy")
+          if image == "ubuntu-26.04" and not outer:
+              raise SystemExit("the native Bubblewrap run is mandatory on Resolute")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              print(f"GITNEXUS_REQUIRE_BWRAP_CANARY={int(outer)}", file=env)
+              print(f"GITNEXUS_REQUIRE_FULL_SWEEP={int(outer)}", file=env)
+              print(f"GITNEXUS_REQUIRE_CLAUDE_CANARY={int(bash)}", file=env)
+          PY
       - name: Install and build pinned GitNexus runtime
         run: |
           npm ci
@@ -2026,6 +2033,7 @@ jobs:
           tests/test_mock_provider.py
           tests/test_mcp_tool_loading.py
           tests/test_release_evaluation_smoke.py
+          tests/test_proposal_evaluation.py
           tests/test_release_controls.py
           tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout

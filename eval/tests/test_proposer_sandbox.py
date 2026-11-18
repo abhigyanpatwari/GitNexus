@@ -98,6 +98,22 @@ def mcp_socket_client(monkeypatch):
     return connect
 
 
+def test_mcp_cleanup_preserves_the_original_session_interrupt(monkeypatch, tmp_path):
+    from workflow_bench import mcp_transport
+
+    def failing_shutdown(*_args, ready, stop):
+        ready.set()
+        assert stop.wait(5)
+        raise RuntimeError("worker shutdown failed")
+
+    monkeypatch.setattr(mcp_transport, "server_command", lambda **_: [])
+    monkeypatch.setattr(mcp_transport, "serve_stdio", failing_shutdown)
+    with pytest.raises(KeyboardInterrupt, match="session interrupted") as original:
+        with mcp_transport.isolated_mcp(clone=tmp_path, mounts=[], bwrap_bin=Path("bwrap")):
+            raise KeyboardInterrupt("session interrupted")
+    assert any("worker shutdown failed" in note for note in original.value.__notes__)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="Unix socket transport requires POSIX socket flags")
 def test_mcp_socket_transport_reconnects_and_reports_server_failure(tmp_path: Path, mcp_socket_client) -> None:
     from workflow_bench.mcp_transport import serve_stdio

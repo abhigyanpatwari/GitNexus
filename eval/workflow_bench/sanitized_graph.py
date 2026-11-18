@@ -6,12 +6,15 @@ import json
 import os
 import shutil
 import stat
+import tempfile
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .oracle_assets import HIDDEN_HARNESS_PATH, sanitize_clone_for_hidden_oracles
+from .oci_worker import worker_command
 from .process_control import ManagedProcessError, run_managed
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
@@ -259,6 +262,7 @@ def _run_graph_cli(
     arguments: Sequence[str],
     *,
     sandbox: SandboxSession | None = None,
+    oci: bool = False,
     timeout: int,
     capture_stdout: bool = False,
 ) -> bytes | None:
@@ -266,15 +270,15 @@ def _run_graph_cli(
     host_text = sandbox.host_text if sandbox is not None else str
     command = [
         *prefix,
-        host_path(SANDBOX_NODE),
+        "/usr/local/bin/node" if oci else host_path(SANDBOX_NODE),
         host_path(SANDBOX_GITNEXUS_ENTRYPOINT),
         *(host_text(argument) for argument in arguments),
     ]
     result = run_managed(
         command,
         timeout=timeout,
-        env={key: host_text(value) for key, value in _graph_environment().items()},
-        require_pid_namespace=(sandbox.require_pid_namespace if sandbox is not None else True),
+        env={} if oci else {key: host_text(value) for key, value in _graph_environment().items()},
+        require_pid_namespace=not oci and (sandbox.require_pid_namespace if sandbox is not None else True),
         capture_stdout_bytes=(2 * 1024 * 1024 if capture_stdout else None),
     )
     if not result.ok:
@@ -303,10 +307,12 @@ def _parse_empty_query(raw: bytes, *, label: str) -> None:
     raise SandboxError(f"{label} found recoverable benchmark harness references")
 
 
-def _scrub_and_verify_graph(prefix: Sequence[str], sandbox: SandboxSession | None = None) -> None:
+def _scrub_and_verify_graph(prefix: Sequence[str], sandbox: SandboxSession | None = None, *, oci: bool = False) -> None:
     node_predicate = _marker_predicate("n")
     relation_predicate = _marker_predicate("r")
     sandbox_kwargs = {"sandbox": sandbox} if sandbox is not None else {}
+    if oci:
+        sandbox_kwargs["oci"] = True
     node_result = _run_graph_cli(
         prefix,
         ("cypher", f"MATCH (n) WHERE {node_predicate} RETURN n LIMIT 1", "-r", "benchmark-target", "--limit", "1"),
@@ -357,7 +363,7 @@ def prepare_sanitized_graph(
     parent: Path,
     cache: TaskAssetCache,
     claude_bin: Path | str,
-    bwrap_bin: Path | str,
+    bwrap_bin: Path | str | None,
     runtime_mounts: Sequence[ReadOnlyMount],
     sandbox_backend: str = "bwrap",
     clone_template: Path | None = None,
@@ -385,16 +391,25 @@ def prepare_sanitized_graph(
             sanitized_head = sanitize_clone_for_hidden_oracles(seed)
         _scrub_source_references(seed)
         _neutralize_target_index_inputs(seed)
-        with prepare_sandbox(
-            clone=seed,
-            claude_bin=claude_bin,
-            bwrap_bin=bwrap_bin,
-            read_only_mounts=runtime_mounts,
-            preflight=False,
-            backend=sandbox_backend,
-        ) as sandbox:
-            prefix = sandbox.command_prefix_for(unshare_network=True)
-            unsafe_sandbox = sandbox if getattr(sandbox, "backend", "bwrap") == "host-unsafe" else None
+        with ExitStack() as resources:
+            unsafe_sandbox = None
+            options = {}
+            if sandbox_backend == "docker":
+                registry = Path(resources.enter_context(tempfile.TemporaryDirectory(dir=parent)))
+                prefix = resources.enter_context(worker_command(
+                    checkout=seed, readonly=False, mounts=runtime_mounts, environment=_graph_environment(),
+                    writable_mounts=[ReadOnlyMount(registry, SANDBOX_INDEX_REGISTRY)],
+                ))
+                options["oci"] = True
+            else:
+                sandbox = resources.enter_context(prepare_sandbox(
+                    clone=seed, claude_bin=claude_bin, bwrap_bin=bwrap_bin, read_only_mounts=runtime_mounts,
+                    preflight=False, backend=sandbox_backend,
+                ))
+                prefix = sandbox.command_prefix_for(unshare_network=True)
+                if getattr(sandbox, "backend", "bwrap") == "host-unsafe":
+                    unsafe_sandbox = sandbox
+                    options["sandbox"] = sandbox
             _run_graph_cli(
                 prefix,
                 (
@@ -413,10 +428,13 @@ def prepare_sanitized_graph(
                     "--workers",
                     "1",
                 ),
-                **({"sandbox": unsafe_sandbox} if unsafe_sandbox is not None else {}),
+                **options,
                 timeout=GRAPH_BUILD_TIMEOUT_SECONDS,
             )
-            _scrub_and_verify_graph(prefix, unsafe_sandbox)
+            if sandbox_backend == "docker":
+                _scrub_and_verify_graph(prefix, oci=True)
+            else:
+                _scrub_and_verify_graph(prefix, unsafe_sandbox)
         _validate_graph_metadata(seed, sanitized_head)
         assets = cache.prepare(
             {"sandbox_copy": list(GRAPH_ASSET_PATHS)},

@@ -113,28 +113,21 @@ def isolated_mcp(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: Pat
         root = Path(tempfile.mkdtemp(prefix="wf-mcp-"))
         endpoint, failure = root / "mcp.sock", root / "failure"
         ready, stop = threading.Event(), threading.Event()
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
 
         def run() -> None:
             try:
                 serve_stdio(endpoint, failure, command, ready=ready, stop=stop)
-            except BaseException as exc:
+            except Exception as exc:
                 errors.append(exc)
             finally:
                 ready.set()
 
         worker = threading.Thread(target=run, name="mcp-transport", daemon=True)
         cleanup.callback(lambda: shutil.rmtree(root) if not worker.is_alive() else None)
-        worker.start()
-        primary: BaseException | None = None
-        try:
-            if not ready.wait(10) or not worker.is_alive() or errors:
-                raise SandboxError(f"MCP transport failed to start: {errors!r}")
-            yield ReadOnlyMount(endpoint, SANDBOX_MCP_SOCKET)
-        except BaseException as exc:
-            primary = exc
-            raise
-        finally:
+
+        def stop_server(_type, primary, _trace) -> None:
+            stopped_early = not worker.is_alive()
             stop.set()
             worker.join(timeout=15)
             error = None
@@ -144,7 +137,15 @@ def isolated_mcp(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: Pat
                 error = f"MCP transport failed: {failure.read_text()}"
             elif errors:
                 error = f"MCP transport supervision failed: {errors!r}"
+            elif stopped_early:
+                error = "MCP transport stopped before its model session finished"
             if error:
                 if primary is None:
                     raise SandboxError(error)
                 primary.add_note(error)
+
+        worker.start()
+        cleanup.push(stop_server)
+        if not ready.wait(10) or not worker.is_alive() or errors:
+            raise SandboxError(f"MCP transport failed to start: {errors!r}")
+        yield ReadOnlyMount(endpoint, SANDBOX_MCP_SOCKET)
