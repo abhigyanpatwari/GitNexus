@@ -1,0 +1,21 @@
+gitnexus/src/core/ingestion/scope-resolution/passes/imported-return-types.ts
+  s_178fe5f2bc5b0d::t_18cf75ceeec700 518-520
+gitnexus/test/unit/scope-resolution/imported-return-types.test.ts
+  s_178fe5f2bc5b0d::t_d9870643fb0a27 27,33-36,155-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7868a839a396c8267e08b21285ab0c1ce8753d14",
+  "prompts": {},
+  "sessions": {
+    "s_178fe5f2bc5b0d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15bafdb9-7c6c-4d9c-8e9f-53fbc01c0876",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
