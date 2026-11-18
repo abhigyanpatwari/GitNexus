@@ -70,7 +70,43 @@ describe('capture traversal work', () => {
       // The write target `c.total` is not a read; every `Label.F<i>` is.
       expect(captures.filter((match) => match['@reference.read.member']).length).toBe(operands);
       expect(captures.filter((match) => match['@reference.write.member']).length).toBe(1);
-      expect(parent.mock.calls.length).toBe(32);
+      // Declaration/type-identity and inherited-field bookkeeping add eight
+      // fixed reads. Neither operand count may introduce a native parent read
+      // per member access.
+      expect(parent.mock.calls.length).toBe(40);
+    } finally {
+      parent.mockRestore();
+    }
+  });
+
+  // `this` in an anonymous class method and a copy of an enclosing local read
+  // through that class reuse the class's one identity walk and the body owner
+  // seen on the way down. Every anonymous class costs the same fixed reads
+  // (its existing identity synthesis included), however many the file has.
+  it.each([4, 16])('reads a fixed number of native parents per anonymous class (%i)', (classes) => {
+    const bodies = Array.from(
+      { length: classes },
+      () =>
+        'new Task() { Other[] own() { return null; } void m() { var copy = value; copy.save(); this.own()[0].save(); } };',
+    ).join('\n');
+    const source = `class App { Other[] own() { return null; } void run(Factory factory) { var value = factory.make();\n${bodies} } }`;
+    const tree = getJavaParser().parse(source);
+    expect(tree.rootNode.hasError).toBe(false);
+    const parent = vi.spyOn(nodePrototype(tree.rootNode), 'parent', 'get');
+    try {
+      const captures = emitJavaScopeCaptures(source, 'App.java', tree);
+      const anonymousThis = captures.filter(
+        (match) =>
+          match['@type-binding.name']?.text === 'this' &&
+          match['@type-binding.type']?.text.startsWith('App$') === true,
+      );
+      const enclosingCopies = captures.filter(
+        (match) =>
+          match['@call-result-assignment.element']?.text.startsWith('enclosing-local:') === true,
+      );
+      expect(anonymousThis.length).toBe(2 * classes);
+      expect(enclosingCopies.length).toBe(classes);
+      expect(parent.mock.calls.length).toBe(90 + 115 * classes);
     } finally {
       parent.mockRestore();
     }

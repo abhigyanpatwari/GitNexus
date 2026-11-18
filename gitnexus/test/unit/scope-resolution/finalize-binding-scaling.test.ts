@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { finalize, type BindingRef, type FinalizeFile, type ScopeId } from 'gitnexus-shared';
 import { dartScopeResolver } from '../../../src/core/ingestion/languages/dart/scope-resolver.js';
+import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
 import { rubyScopeResolver } from '../../../src/core/ingestion/languages/ruby/scope-resolver.js';
 
 describe('crowded-class binding materialization', () => {
@@ -8,6 +9,7 @@ describe('crowded-class binding materialization', () => {
   // pipeline runs, so a provider that stops opting in fails the count below.
   it.each([
     { language: 'dart', resolver: dartScopeResolver },
+    { language: 'java', resolver: javaScopeResolver },
     { language: 'ruby', resolver: rubyScopeResolver },
   ])('merges each $language name once per scope', ({ resolver }) => {
     for (const count of [16, 64, 256, 1024]) {

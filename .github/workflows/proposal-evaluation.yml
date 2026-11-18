@@ -1,0 +1,79 @@
+name: Paired patch-proposal costs
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu:
+        description: Stock host for the 24 measured sessions
+        type: choice
+        options: [ubuntu-24.04, ubuntu-26.04]
+        default: ubuntu-24.04
+      session_budget:
+        description: Claude CLI budget per session in USD
+        type: choice
+        options: ['0.50', '1.00', '2.00']
+        default: '1.00'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    if: github.repository == 'abhigyanpatwari/GitNexus' && github.ref == 'refs/heads/main'
+    runs-on: ${{ inputs.ubuntu == 'ubuntu-26.04' && 'ubuntu-26.04' || 'ubuntu-24.04' }}
+    environment: gitnexus-evolution
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22.18.0'
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.11.23'
+          python-version: '3.13'
+      - name: Prepare pinned client, runtime and historical task dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/claude-canary"
+          cp .github/claude-canary-runtime/package{,-lock}.json "$RUNNER_TEMP/claude-canary/"
+          npm ci --prefix "$RUNNER_TEMP/claude-canary" --audit=false --fund=false
+          sha=$(uv run --locked --extra dev --directory eval python -m workflow_bench.release_report task-sha)
+          git worktree add --detach "$RUNNER_TEMP/candidate" "$GITHUB_SHA"
+          git worktree add --detach "$RUNNER_TEMP/tasks" "$sha"
+          for tree in candidate tasks; do
+            uv run --locked --extra dev --directory eval python -m workflow_bench.release_build \
+              --backend docker --repo "$RUNNER_TEMP/$tree"
+          done
+      - name: Measure the paired Claude sessions
+        env:
+          GITNEXUS_BENCH_ANTHROPIC_API_KEY: ${{ secrets.GITNEXUS_BENCH_ANTHROPIC_API_KEY }}
+          SESSION_BUDGET: ${{ inputs.session_budget }}
+        run: |
+          case "$SESSION_BUDGET" in
+            0.50|1.00|2.00) ;;
+            *) exit 1 ;;
+          esac
+          uv run --locked --extra dev --directory eval python -m workflow_bench.proposal_evaluation \
+            --runtime "$RUNNER_TEMP/candidate" --task-repo "$RUNNER_TEMP/tasks" \
+            --claude-bin "$RUNNER_TEMP/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+            --model claude-sonnet-4-6 --effort high --runs 3 --max-budget-usd "$SESSION_BUDGET" \
+            --out "$RUNNER_TEMP/proposal-report"
+      - name: Upload the measured report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: proposal-evaluation-${{ inputs.ubuntu }}
+          path: |
+            ${{ runner.temp }}/proposal-report/proposal-evaluation.json
+            ${{ runner.temp }}/proposal-report/proposal-evaluation.md
+          if-no-files-found: error
+          retention-days: 30

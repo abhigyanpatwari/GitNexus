@@ -10,6 +10,7 @@ import type {
   MethodInfo,
 } from '../../method-types.js';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { javaTypeText } from './type-spelling.js';
 
 const javaExplicitMethodExtractor = createMethodExtractor(javaMethodConfig);
 
@@ -98,7 +99,11 @@ function computeExplicitZeroArgAccessorNames(recordNode: SyntaxNode): Set<string
   return names;
 }
 
-function recordComponentReturnType(component: SyntaxNode): string | null {
+/** `spell` reads the component's type node; the default keeps it as written. */
+function recordComponentReturnType(
+  component: SyntaxNode,
+  spell: (type: SyntaxNode) => string = (type) => type.text,
+): string | null {
   const typeNode =
     component.childForFieldName('type') ??
     (component.type === 'spread_parameter'
@@ -106,7 +111,7 @@ function recordComponentReturnType(component: SyntaxNode): string | null {
           (node) => node?.type !== 'modifiers' && node?.type !== 'variable_declarator',
         )
       : undefined);
-  const type = typeNode?.text;
+  const type = typeNode == null ? undefined : spell(typeNode);
   if (type === undefined) return null;
   return component.type === 'spread_parameter' ? `${type}[]` : type;
 }
@@ -121,7 +126,7 @@ function implicitAccessorInfo(
   return {
     name,
     receiverType: null,
-    returnType: recordComponentReturnType(component),
+    returnType: recordComponentReturnType(component, javaTypeText),
     parameters: [],
     visibility: 'public',
     isStatic: false,
@@ -174,7 +179,9 @@ export function synthesizeJavaRecordComponentAccessorCaptures(
     const explicitAccessors = explicitZeroArgAccessorNames(recordNode);
     for (const component of recordComponents(recordNode)) {
       const nameNode = recordComponentNameNode(component);
-      const returnType = recordComponentReturnType(component);
+      // Spelled as a declared method's return type is: type annotations and
+      // comments are not part of the type (`User @Mark []` is `User[]`).
+      const returnType = recordComponentReturnType(component, javaTypeText);
       if (nameNode === null || returnType === null || explicitAccessors.has(nameNode.text))
         continue;
 

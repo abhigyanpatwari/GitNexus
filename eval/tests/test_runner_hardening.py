@@ -483,6 +483,8 @@ def _stub_cell_dependencies(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "sanitize_clone_for_hidden_oracles", lambda *_a, **_k: "b" * 40)
     monkeypatch.setattr(runner, "stage_task_assets", lambda *_a, **_k: [])
     monkeypatch.setattr(runner, "isolated_gitnexus_registry_mount", lambda *_a, **_k: None)
+    endpoint = proposer_sandbox.ReadOnlyMount(tmp_path / "mcp.sock", proposer_sandbox.SANDBOX_MCP_SOCKET)
+    monkeypatch.setattr(runner, "isolated_mcp", lambda **_k: nullcontext(endpoint))
     monkeypatch.setattr(runner, "ce_plugin_mounts_for_arm", lambda *_a, **_k: [])
     monkeypatch.setattr(runner, "ce_plugin_dir_for_arm", lambda *_a, **_k: None)
     monkeypatch.setattr(runner, "prepare_sandbox", lambda **_k: nullcontext(SimpleNamespace(run=None)))

@@ -313,15 +313,14 @@ interface LanguageProviderConfig {
    *
    *   - tree-sitter's reported `startPosition.row`/`startPosition.column`
    *     match the original file exactly (line/column come from newline counts)
-   *   - `startIndex`/`endIndex` byte offsets match the original file exactly
-   *     **when the elided range is pure ASCII** (UTF-16 `.length` equals UTF-8
-   *     byte length only for ASCII).
+   *   - `startIndex`/`endIndex` match the original file exactly, whatever the
+   *     elided text contains. The Node binding parses a JavaScript string as
+   *     UTF-16 (`TSInputEncodingUTF16LE`) and reports indices and columns in
+   *     UTF-16 code units (the native byte offset divided by 2), so they are
+   *     JavaScript string offsets and an equal `.length` keeps them aligned.
    *
-   * Implementations targeting languages where elided ranges may contain
-   * non-ASCII content must therefore preserve byte length, not just `.length`,
-   * if downstream code uses `startIndex` to slice the original UTF-8 bytes.
-   * The current C++ UE-macro preprocessor relies on the practical fact that
-   * UE reflection macros and module-export tokens are ASCII-only.
+   * Code that slices source with these indices must therefore slice the
+   * JavaScript string, never its UTF-8 bytes.
    *
    * Must be a pure function — same input always yields the same output, and
    * re-applying it to its own output changes nothing.

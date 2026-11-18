@@ -82,6 +82,62 @@ function importsFor(imports: readonly ImportEdge[], name: string): readonly Impo
 }
 const compare = (a: SourcePosition, b: SourcePosition): number =>
   a.startLine - b.startLine || a.startCol - b.startCol;
+
+/** What a frozen binding array holds, scanned once: a frozen array never changes. */
+interface FrozenBindingFacts {
+  readonly anyAvailableFrom: boolean;
+  readonly anyTypeOnly: boolean;
+}
+const frozenBindingFacts = new WeakMap<readonly BindingRef[], FrozenBindingFacts>();
+
+/**
+ * Facts for a frozen binding array (finalized buckets are frozen), else
+ * `undefined`. Only a frozen array is returned in place of a filter that would
+ * keep every element: nothing can grow it under a result that aliases it.
+ */
+function frozenFacts(bindings: readonly BindingRef[]): FrozenBindingFacts | undefined {
+  if (!Object.isFrozen(bindings)) return undefined;
+  let facts = frozenBindingFacts.get(bindings);
+  if (facts === undefined) {
+    let anyAvailableFrom = false;
+    let anyTypeOnly = false;
+    for (const binding of bindings) {
+      if (binding.availableFrom !== undefined) anyAvailableFrom = true;
+      if (binding.via?.typeOnly === true) anyTypeOnly = true;
+    }
+    facts = { anyAvailableFrom, anyTypeOnly };
+    frozenBindingFacts.set(bindings, facts);
+  }
+  return facts;
+}
+
+/** The bindings already available at `position`. */
+function availableBindings(
+  all: readonly BindingRef[],
+  position: SourcePosition | undefined,
+): readonly BindingRef[] {
+  if (all.length === 0) return NO_BINDINGS;
+  const facts = frozenFacts(all);
+  if (facts !== undefined && (position === undefined || !facts.anyAvailableFrom)) return all;
+  return all.filter(
+    (b) =>
+      b.availableFrom === undefined ||
+      position === undefined ||
+      compare(b.availableFrom, position) <= 0,
+  );
+}
+
+/** A value lookup cannot use a type-only import. `bindings` is frozen or a private copy. */
+function usableBindings(
+  bindings: readonly BindingRef[],
+  purpose: NameLookupOptions['purpose'],
+): readonly BindingRef[] {
+  if (bindings.length === 0) return NO_BINDINGS;
+  if ((purpose ?? 'value') !== 'value' || frozenFacts(bindings)?.anyTypeOnly === false)
+    return bindings;
+  return bindings.filter((b) => b.via?.typeOnly !== true);
+}
+
 export function rangesOverlap(a: Range, b: Range): boolean {
   return (
     compare(a, { startLine: b.endLine, startCol: b.endCol }) < 0 &&
@@ -280,15 +336,7 @@ export function lookupLexicalName(
     const allBindings =
       sources.bindingsAt?.(scope, name) ?? scope.bindings.get(name) ?? NO_BINDINGS;
     const allImports = importsFor(sources.importsAt?.(scope) ?? scope.imports ?? NO_IMPORTS, name);
-    let bindings =
-      allBindings.length === 0
-        ? NO_BINDINGS
-        : allBindings.filter(
-            (b) =>
-              b.availableFrom === undefined ||
-              position === undefined ||
-              compare(b.availableFrom, position) <= 0,
-          );
+    let bindings = availableBindings(allBindings, position);
     let imports = allImports;
     if (selected.status === 'selected') {
       if (bindings.length > 0)
@@ -369,12 +417,7 @@ export function lookupLexicalName(
         (typeBinding === undefined || isInferredFact(typeBinding.source))
       )
         typeBinding = carriedConstructor;
-      const usable =
-        bindings.length === 0
-          ? NO_BINDINGS
-          : bindings.filter(
-              (b) => (options.purpose ?? 'value') !== 'value' || b.via?.typeOnly !== true,
-            );
+      const usable = usableBindings(bindings, options.purpose);
       return {
         status:
           usable.length > 0 ||
