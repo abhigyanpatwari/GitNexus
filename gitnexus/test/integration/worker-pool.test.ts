@@ -1313,8 +1313,9 @@ describe('worker pool integration', () => {
     `,
     );
 
+    // Let the test deadline bound crash recovery so a slow runner can deliver
+    // the exit notification before the pool takes the idle-timeout retry path.
     pool = createWorkerPool(pathToFileURL(workerPath) as URL, 1, {
-      subBatchIdleTimeoutMs: 2000,
       consecutiveFailureThreshold: 5,
       maxRespawnsPerSlot: 3,
     });
