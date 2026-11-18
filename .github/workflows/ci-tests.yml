@@ -1923,7 +1923,7 @@ jobs:
   # the real namespace test mandatory; a missing/blocked bwrap is a failure.
   eval-containment-linux:
     name: eval / containment (ubuntu)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
