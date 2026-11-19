@@ -15,7 +15,7 @@
  * the command did not touch. That is the case when
  *   - the shell computes the path (`-C "$DIR"`, `-C ~/x`),
  *   - `--git-dir` or `--work-tree` point git at another repository,
- *   - the path is relative and a `cd` earlier in the command moved the shell,
+ *   - a call with options depends on the shell directory after a `cd`,
  *   - the caller cannot tell how its shell reads a backslash in the path.
  * The other git calls of the command are still read.
  *
@@ -189,6 +189,9 @@ function placeMutation(options, cwd, shell, shellMoved) {
     // Like git, read each -C relative to the one before it.
     directory = changeDirectory(directory, target);
   }
+  // Preserve the historical cwd hint for plain mutations. An option-bearing
+  // call can use cwd only while the shell is still there.
+  if (options && relative && shellMoved()) return null;
   return directory;
 }
 

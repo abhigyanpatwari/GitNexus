@@ -165,6 +165,8 @@ describe('gitMutationDirectories', () => {
     'git --git-dir=/other/.git commit -m x',
     'git --work-tree /other pull',
     // The shell is no longer in cwd when git reads the relative path.
+    'cd ../other && git --no-pager pull',
+    'pushd ../other && git -c user.name=x commit -m x',
     'cd ../../y/a && git -C ../b commit -am m',
     '(cd projects && git -C app commit -m x)',
     'pushd ../y && git -C b pull',
