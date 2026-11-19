@@ -11,7 +11,7 @@
  * ParsedFiles come from the real R extractor; package configs are built by hand
  * (`RPackageConfig` has no other constructor than `loadRPackageConfig`).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fastestWithin, timeWork } from '../../../helpers/timing-attempts.js';
 import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
 import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
@@ -24,7 +24,9 @@ import type {
 import {
   isRGlobalNameFallbackPlausible,
   populateRNamespaceImports,
+  rEnclosingPackageDir,
   rFileBelongsToDiscoveredPackage,
+  rOwningPackageDir,
   rFileTopLevel,
   rPackageDirForFile,
   rRecordedPackageTopLevelNames,
@@ -125,6 +127,47 @@ describe('rPackageDirForFile', () => {
     const nested = config({ outer: 'outer', inner: 'outer/inner' });
     expect(rPackageDirForFile('outer/inner/R/x.R', nested)?.name).toBe('inner');
     expect(rPackageDirForFile('outer/R/x.R', nested)?.name).toBe('outer');
+  });
+
+  it('reads the package registry once across sources, scripts and unknown directories', () => {
+    const packages = new Map(Array.from({ length: 48 }, (_, i) => [`name${i}`, `pkg${i}`]));
+    const packageDirs = new CountingSet(['unregistered']);
+    const cfg: RPackageConfig = { packages, packageDirs, namespaceInfoByPackageDir: new Map() };
+    const entries = vi.spyOn(packages, Symbol.iterator);
+    const values = vi.spyOn(packages, 'values');
+    const namespaceDirs = vi.spyOn(cfg.namespaceInfoByPackageDir, 'keys');
+    for (let i = 0; i < packages.size; i++) {
+      const dir = `pkg${i}`;
+      const source = `${dir}/R/sub/a.R`;
+      expect(rPackageDirForFile(source, cfg)).toEqual({ name: `name${i}`, dir });
+      expect(rOwningPackageDir(source, cfg)).toBe(dir);
+      expect(rEnclosingPackageDir(`${dir}/tests/a.R`, cfg)).toBe(dir);
+      expect(rFileBelongsToDiscoveredPackage(`outside${i}/R/a.R`, cfg)).toBe(false);
+    }
+    expect(rFileBelongsToDiscoveredPackage('unregistered/R/a.R', cfg)).toBe(true);
+    expect(packageDirs.scans).toBe(0);
+    expect(
+      entries.mock.calls.length + values.mock.calls.length + namespaceDirs.mock.calls.length,
+    ).toBeLessThanOrEqual(1);
+  });
+
+  it('uses the package names from each discovery pass when a directory changes owners', () => {
+    const before = config({ first: 'pkg' });
+    const after = config({ second: 'pkg' });
+    expect(rPackageDirForFile('pkg/R/a.R', before)?.name).toBe('first');
+    expect(rPackageDirForFile('pkg/R/a.R', after)?.name).toBe('second');
+    expect(rPackageDirForFile('pkg/R/a.R', before)?.name).toBe('first');
+  });
+
+  it('keeps nested namespace-only owners distinct from registered names and same-name copies', () => {
+    const cfg = config({ outer: '', first: 'R', alias: 'R' }, { outer: {} });
+    cfg.namespaceInfoByPackageDir.set('R/R', cfg.namespaceInfoByPackageDir.get('')!);
+    cfg.packageDirs = new Set(['R/R/duplicate']);
+    const source = 'R\\R\\R\\f.R';
+    expect(rPackageDirForFile(source, cfg)).toEqual({ name: 'first', dir: 'R' });
+    expect(rOwningPackageDir(source, cfg)).toBe('R/R');
+    expect(rEnclosingPackageDir('R/R/tests/test.R', cfg)).toBe('R/R');
+    expect(rFileBelongsToDiscoveredPackage('R/R/duplicate/R/x.R', cfg)).toBe(true);
   });
 
   it('returns nothing without a config', () => {

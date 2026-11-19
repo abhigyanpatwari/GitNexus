@@ -644,6 +644,40 @@ export function rRDirPrefix(pkgDir: string): string {
   return pkgDir === '' ? 'R/' : `${pkgDir}/R/`;
 }
 
+// Discovery publishes a new name-to-directory map for each resolution pass. Invert it
+// once so an ownership query visits only ancestors of the path being resolved.
+const namesByPackageDirectory = new WeakMap<
+  ReadonlyMap<string, string>,
+  ReadonlyMap<string, string>
+>();
+
+function registeredPackageNames(
+  packages: ReadonlyMap<string, string>,
+): ReadonlyMap<string, string> {
+  const cached = namesByPackageDirectory.get(packages);
+  if (cached !== undefined) return cached;
+  const names = new Map<string, string>();
+  for (const [name, dir] of packages) {
+    if (!names.has(dir)) names.set(dir, name);
+  }
+  namesByPackageDirectory.set(packages, names);
+  return names;
+}
+
+/** Nearest candidate first. Only literal R/ components put sources in a package namespace. */
+function* packageAncestors(filePath: string, sourcesOnly: boolean): Generator<string> {
+  const normalized = filePath.replace(/\\/g, '/');
+  const separator = sourcesOnly ? '/R/' : '/';
+  for (
+    let at = normalized.lastIndexOf(separator);
+    at > 0;
+    at = normalized.lastIndexOf(separator, at - 1)
+  ) {
+    yield normalized.slice(0, at);
+  }
+  if (!sourcesOnly || normalized.startsWith('R/')) yield '';
+}
+
 /**
  * The local package whose `<pkgDir>/R/**` contains `filePath`, or `undefined`.
  *
@@ -657,14 +691,25 @@ export function rPackageDirForFile(
   filePath: string,
   cfg: RPackageConfig | null | undefined,
 ): RPackageLocation | undefined {
-  if (cfg === null || cfg === undefined) return undefined;
-  const normalized = filePath.replace(/\\/g, '/');
-  let best: RPackageLocation | undefined;
-  for (const [name, dir] of cfg.packages) {
-    if (!normalized.startsWith(rRDirPrefix(dir))) continue;
-    if (best === undefined || dir.length > best.dir.length) best = { name, dir };
+  if (cfg == null) return undefined;
+  const names = registeredPackageNames(cfg.packages);
+  for (const dir of packageAncestors(filePath, true)) {
+    const name = names.get(dir);
+    if (name !== undefined) return { name, dir };
   }
-  return best;
+  return undefined;
+}
+
+function nearestPackageDir(
+  filePath: string,
+  cfg: RPackageConfig,
+  sourcesOnly: boolean,
+): string | undefined {
+  const names = registeredPackageNames(cfg.packages);
+  for (const dir of packageAncestors(filePath, sourcesOnly)) {
+    if (cfg.namespaceInfoByPackageDir.has(dir) || names.has(dir)) return dir;
+  }
+  return undefined;
 }
 
 /**
@@ -679,16 +724,7 @@ export function rOwningPackageDir(
   filePath: string,
   cfg: RPackageConfig | null | undefined,
 ): string | undefined {
-  if (cfg === null || cfg === undefined) return undefined;
-  const normalized = filePath.replace(/\\/g, '/');
-  let best: string | undefined;
-  const consider = (dir: string): void => {
-    if (!normalized.startsWith(rRDirPrefix(dir))) return;
-    if (best === undefined || dir.length > best.length) best = dir;
-  };
-  for (const dir of cfg.packages.values()) consider(dir);
-  for (const dir of cfg.namespaceInfoByPackageDir.keys()) consider(dir);
-  return best;
+  return cfg == null ? undefined : nearestPackageDir(filePath, cfg, true);
 }
 
 /**
@@ -707,16 +743,7 @@ export function rEnclosingPackageDir(
   filePath: string,
   cfg: RPackageConfig | null | undefined,
 ): string | undefined {
-  if (cfg === null || cfg === undefined) return undefined;
-  const normalized = filePath.replace(/\\/g, '/');
-  let best: string | undefined;
-  const consider = (dir: string): void => {
-    if (dir !== '' && !normalized.startsWith(`${dir}/`)) return;
-    if (best === undefined || dir.length > best.length) best = dir;
-  };
-  for (const dir of cfg.packages.values()) consider(dir);
-  for (const dir of cfg.namespaceInfoByPackageDir.keys()) consider(dir);
-  return best;
+  return cfg == null ? undefined : nearestPackageDir(filePath, cfg, false);
 }
 
 /**
@@ -729,11 +756,12 @@ export function rFileBelongsToDiscoveredPackage(
   filePath: string,
   cfg: RPackageConfig | null | undefined,
 ): boolean {
-  if (cfg === null || cfg === undefined) return false;
-  if (rOwningPackageDir(filePath, cfg) !== undefined) return true;
-  if (cfg.packageDirs === undefined) return false;
-  const normalized = filePath.replace(/\\/g, '/');
-  for (const dir of cfg.packageDirs) if (normalized.startsWith(rRDirPrefix(dir))) return true;
+  if (cfg == null) return false;
+  const names = registeredPackageNames(cfg.packages);
+  for (const dir of packageAncestors(filePath, true)) {
+    if (cfg.packageDirs?.has(dir) || cfg.namespaceInfoByPackageDir.has(dir) || names.has(dir))
+      return true;
+  }
   return false;
 }
 

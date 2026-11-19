@@ -130,38 +130,28 @@ function packageDefIndex(
   if (byConfig === undefined) packageDefIndexes.set(parsedFiles, (byConfig = new WeakMap()));
   let byPackage = byConfig.get(rConfig);
   if (byPackage === undefined) {
-    const files = new Map<string, Map<string, RFileTopLevel>>();
-    const defining = new Map<string, Map<string, string[]>>();
-    // Invert DESCRIPTION names once for this snapshot. The nearest matching R/ prefix wins,
-    // with the first name retaining an equal directory as in rPackageDirForFile.
-    const namesByPrefix = new Map<string, string>();
-    for (const [name, dir] of rConfig.packages) {
-      const prefix = rRDirPrefix(dir);
-      if (!namesByPrefix.has(prefix)) namesByPrefix.set(prefix, name);
-    }
-    for (const parsed of parsedFiles) {
-      let owner: string | undefined;
-      for (const prefix of rSourceDirectoryPrefixes(parsed.filePath)) {
-        owner = namesByPrefix.get(prefix) ?? owner;
+    const built = new Map<
+      string,
+      {
+        files: Map<string, RFileTopLevel>;
+        definingFiles: Map<string, string[]>;
       }
+    >();
+    for (const parsed of parsedFiles) {
+      const owner = rPackageDirForFile(parsed.filePath, rConfig)?.name;
       if (owner === undefined) continue;
       const topLevel = rFileTopLevel(parsed);
-      let pkgFiles = files.get(owner);
-      let pkgDefining = defining.get(owner);
-      if (pkgFiles === undefined || pkgDefining === undefined) {
-        files.set(owner, (pkgFiles = new Map()));
-        defining.set(owner, (pkgDefining = new Map()));
+      let index = built.get(owner);
+      if (index === undefined) {
+        index = { files: new Map(), definingFiles: new Map() };
+        built.set(owner, index);
       }
-      pkgFiles.set(parsed.filePath, topLevel);
+      index.files.set(parsed.filePath, topLevel);
       for (const name of topLevel.names) {
-        const list = pkgDefining.get(name);
-        if (list === undefined) pkgDefining.set(name, [parsed.filePath]);
+        const list = index.definingFiles.get(name);
+        if (list === undefined) index.definingFiles.set(name, [parsed.filePath]);
         else list.push(parsed.filePath);
       }
-    }
-    const built = new Map<string, RPackageDefIndex>();
-    for (const [name, pkgFiles] of files) {
-      built.set(name, { files: pkgFiles, definingFiles: defining.get(name) ?? new Map() });
     }
     byConfig.set(rConfig, (byPackage = built));
   }

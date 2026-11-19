@@ -133,13 +133,10 @@
  *     answered by the suffix index after an exact-join miss) and a NAMESPACE
  *     `importFrom(pkg, name)` (a named import that reads the parsed workspace,
  *     spelled `pkg::name` in the corpus). It passes the package map a
- *     `DESCRIPTION` scan yields and is a `CONTEXT_LANGS` member. One of its
- *     legs is O(files) per import rather than keyed: a local `library()` scans
- *     the file list for the `R/` prefix. `source()` is keyed (the exact join
- *     reads `normToRaw`, built once per pass, and a miss goes to the suffix
- *     index), so it is not a scan. That one scan is why R reads the highest
- *     scaling of the linear-budget languages; `_r_arm` in baselines.json has
- *     the per-leg numbers.
+ *     `DESCRIPTION` scan yields and is a `CONTEXT_LANGS` member. Wildcard
+ *     imports share a per-workspace index of raw paths beneath each R/
+ *     directory. `source()` uses the exact-path and suffix indexes. Named
+ *     imports share an index of package owners and top-level definitions.
  *
  * Two properties of the corpus are load-bearing and must not be "simplified":
  *
@@ -1323,11 +1320,8 @@ function buildParsedFiles(lang, files) {
       continue;
     }
     if (lang === 'r') {
-      // One top-level function named for the file, plus an S3 method on it
-      // (`file7.print`), which is a dotted top-level name: the resolver's
-      // `dottedTails` guard reads it, and its tail (`print`) never equals a
-      // name an import asks for, so the guard runs on every lookup and refuses
-      // none.
+      // Index an ordinary top-level name and a dotted name in each file.
+      // Named imports in this corpus request the ordinary name.
       const slash = filePath.lastIndexOf('/');
       const stem = filePath.slice(slash + 1, filePath.lastIndexOf('.'));
       parsedFiles.push(rProbeFile(filePath, [stem, `${stem}.print`]));
