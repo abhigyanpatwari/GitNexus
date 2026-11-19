@@ -2153,7 +2153,7 @@ function resolveOne(lang, from, target, pass) {
             targetRaw: target.slice(0, sep),
           }
         : target.endsWith('.R')
-          ? { kind: 'side-effect', targetRaw: target }
+          ? { kind: 'side-effect', targetRaw: JSON.stringify(target) }
           : { kind: 'wildcard', targetRaw: target };
     return rScopeResolver.resolveImportTarget(
       parsedImport.targetRaw,

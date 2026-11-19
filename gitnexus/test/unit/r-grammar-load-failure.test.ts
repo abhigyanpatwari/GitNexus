@@ -68,6 +68,6 @@ describe('R grammar load failure', () => {
       'utf8',
     );
     expect(source).not.toMatch(/from\s+['"]@eagleoutice\/tree-sitter-r['"]/);
-    expect(source).toMatch(/getLanguageGrammar\(SupportedLanguages\.R\)/);
+    expect(source).toMatch(/getLanguageGrammar\(language, filePath\)/);
   });
 });

@@ -11,17 +11,7 @@ import {
   positionQualifiedCallableName,
 } from './callable-id.js';
 import Parser from 'tree-sitter';
-import JavaScript from 'tree-sitter-javascript';
-import TypeScript from 'tree-sitter-typescript';
-import Python from 'tree-sitter-python';
-import Java from 'tree-sitter-java';
-import CPP from 'tree-sitter-cpp';
-import { getLanguageGrammar } from '../../tree-sitter/parser-loader.js';
-import Go from 'tree-sitter-go';
-import Rust from 'tree-sitter-rust';
-import PHP from 'tree-sitter-php';
-import Ruby from 'tree-sitter-ruby';
-import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
+import { getLanguageGrammar, isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
 import { buildPositionIndex, SupportedLanguages, type PositionIndex } from 'gitnexus-shared';
 import { getLanguageForFileContent, getProvider } from '../languages/index.js';
 import {
@@ -51,61 +41,6 @@ import type {
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
 
-/** Language grammar type accepted by Parser.setLanguage(). */
-type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
-
-// Avoid the upstream C# wrapper's top-level await: terminating a ready worker
-// can race V8's async module completion and abort the process. Reuse the
-// synchronous native loader and node-type metadata used by the main thread.
-const CSharp = getLanguageGrammar(SupportedLanguages.CSharp);
-
-// ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
-// The worker maintains its own grammar table (the guarded vendored-grammar
-// loads below + `languageMap`) and intentionally does NOT consult the runtime
-// `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out. It does not need to: the MAIN
-// THREAD's `parseableScanned` filter (pipeline-phases/parse-impl.ts, gated on
-// `parser-loader.isLanguageAvailable`, which honors the runtime opt-out and a
-// genuinely-absent binding alike) excludes files of an unavailable/opted-out
-// language BEFORE any chunk is dispatched, so the worker never receives them.
-// That main-thread filter is the single enforcement point. Any future change
-// that dispatches files to the worker WITHOUT first passing them through
-// `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
-// — routing this table through `parser-loader.getLanguageGrammar` so there is
-// one loader — is the deferred Tier-1 consolidation.)
-// Swift/Dart/Kotlin/C/Zig/ObjC are vendored grammars loaded from `vendor/` by absolute
-// path (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Each
-// may be absent on a platform without a prebuild or a toolchain-less /
-// `--ignore-scripts` install, so every load is guarded so a missing binding
-// cannot crash the worker at module-load (#2091/#2093, #2116).
-let Swift: TreeSitterLanguage | null = null;
-try {
-  Swift = requireVendoredGrammar('tree-sitter-swift') as TreeSitterLanguage;
-} catch {}
-
-let Dart: TreeSitterLanguage | null = null;
-try {
-  Dart = requireVendoredGrammar('tree-sitter-dart') as TreeSitterLanguage;
-} catch {}
-
-let Kotlin: TreeSitterLanguage | null = null;
-try {
-  Kotlin = requireVendoredGrammar('tree-sitter-kotlin') as TreeSitterLanguage;
-} catch {}
-
-let C: TreeSitterLanguage | null = null;
-try {
-  C = requireVendoredGrammar('tree-sitter-c') as TreeSitterLanguage;
-} catch {}
-
-let Zig: TreeSitterLanguage | null = null;
-try {
-  Zig = requireVendoredGrammar('tree-sitter-zig') as TreeSitterLanguage;
-} catch {}
-
-let ObjectiveC: TreeSitterLanguage | null = null;
-try {
-  ObjectiveC = requireVendoredGrammar('tree-sitter-objc') as TreeSitterLanguage;
-} catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   buildDefinitionPreScan,
@@ -625,81 +560,14 @@ type WorkerIncomingMessage =
   | { type: 'flush'; chunkHash?: string };
 
 // ============================================================================
-// Worker-local parser + language map
+// Worker-local parser
 // ============================================================================
 
 const parser = new Parser();
 
-const languageMap: Record<string, TreeSitterLanguage> = {
-  [SupportedLanguages.JavaScript]: JavaScript,
-  [SupportedLanguages.TypeScript]: TypeScript.typescript,
-  [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
-  [SupportedLanguages.Python]: Python,
-  [SupportedLanguages.Java]: Java,
-  ...(C ? { [SupportedLanguages.C]: C } : {}),
-  [SupportedLanguages.CPlusPlus]: CPP,
-  ...(ObjectiveC ? { [SupportedLanguages.ObjectiveC]: ObjectiveC } : {}),
-  [SupportedLanguages.CSharp]: CSharp,
-  [SupportedLanguages.Go]: Go,
-  [SupportedLanguages.Rust]: Rust,
-  ...(Kotlin ? { [SupportedLanguages.Kotlin]: Kotlin } : {}),
-  [SupportedLanguages.PHP]: PHP.php_only,
-  [SupportedLanguages.Ruby]: Ruby,
-  [SupportedLanguages.Vue]: TypeScript.typescript,
-  ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
-  ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
-  ...(Zig ? { [SupportedLanguages.Zig]: Zig } : {}),
-};
-
-// A lazily loaded grammar is an npm dependency, not a vendored one, but its native binding can fail to load in the
-// same ways (no prebuild for the platform, a corrupt or ABI-mismatched install). A static import
-// would take the whole worker down at module load and with it the parse of every language, and an
-// eager load would cost every worker (and log a missing binding in each) even when the run has no
-// such file. So these grammars load through the shared loader on the first file that needs them,
-// behind the same guard: a failure is cached as "absent" and the main thread's
-// `isLanguageAvailable` filter skips those files.
-const lazyLanguageLoaders: Record<string, () => TreeSitterLanguage> = {
-  [SupportedLanguages.R]: () => getLanguageGrammar(SupportedLanguages.R) as TreeSitterLanguage,
-};
-const lazyLanguageCache = new Map<string, TreeSitterLanguage | null>();
-
-const resolveLanguage = (key: string): TreeSitterLanguage | undefined => {
-  const eager = languageMap[key];
-  if (eager) return eager;
-  const load = lazyLanguageLoaders[key];
-  if (!load) return undefined;
-  if (!lazyLanguageCache.has(key)) {
-    try {
-      lazyLanguageCache.set(key, load());
-    } catch {
-      lazyLanguageCache.set(key, null);
-    }
-  }
-  return lazyLanguageCache.get(key) ?? undefined;
-};
-
-/**
- * Check if a language grammar is available in this worker.
- * Duplicated from parser-loader.ts because workers can't import from the main thread.
- * Extra filePath parameter needed to distinguish .tsx from .ts (different grammars
- * under the same SupportedLanguages.TypeScript key).
- */
-const isLanguageAvailable = (language: SupportedLanguages, filePath: string): boolean => {
-  const key =
-    language === SupportedLanguages.TypeScript && filePath.endsWith('.tsx')
-      ? `${language}:tsx`
-      : language;
-  return resolveLanguage(key) != null;
-};
-
+// The shared loader caches each grammar in this worker and selects TSX by file path.
 const setLanguage = (language: SupportedLanguages, filePath: string): void => {
-  const key =
-    language === SupportedLanguages.TypeScript && filePath.endsWith('.tsx')
-      ? `${language}:tsx`
-      : language;
-  const lang = resolveLanguage(key);
-  if (!lang) throw new Error(`Unsupported language: ${language}`);
-  parser.setLanguage(lang);
+  parser.setLanguage(getLanguageGrammar(language, filePath));
 };
 
 // ============================================================================

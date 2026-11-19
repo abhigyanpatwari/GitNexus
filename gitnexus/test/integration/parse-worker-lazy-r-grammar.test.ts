@@ -38,6 +38,9 @@ Module._load = function (request, ...rest) {
     parentPort.postMessage({ type: 'probe-r-load' });
     if (workerData && workerData.failR) throw new Error('simulated missing R binding');
   }
+  if (request.includes('tree-sitter-c-sharp') && request.endsWith('node-types.json')) {
+    parentPort.postMessage({ type: 'probe-csharp-metadata' });
+  }
   return load.call(this, request, ...rest);
 };
 for (const name of ['write', 'writeSync']) {
@@ -106,6 +109,15 @@ describe.skipIf(!distPresent)('parse-worker lazy R grammar', () => {
     ]);
     expect(seen).toContain('result');
     expect(seen).not.toContain('probe-r-load');
+  });
+
+  it('defers the C# binding until a C# file is dispatched', async () => {
+    const python = [{ path: 'a.py', content: 'def f(): pass' }];
+    const csharp = [{ path: 'C.cs', content: 'class C { void M() {} }' }];
+    const { seen } = await parseInFreshWorker([python, csharp]);
+    expect(seen).toContain('result');
+    expect(seen).toContain('sub-batch-done');
+    expect(seen.indexOf('probe-csharp-metadata')).toBeGreaterThan(seen.indexOf('sub-batch-done'));
   });
 
   it('loads the R grammar on the first R file', async () => {
