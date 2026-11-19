@@ -139,6 +139,9 @@ export const zhCN = {
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',
   'tool.detectChanges.unknownRisk': '未知',
+  'tool.detectChanges.docSections': '更改的文档章节：{{count}}',
+  'tool.detectChanges.incompatibleCalls': '不兼容的调用：',
+  'tool.detectChanges.removedKeyword': '  {{file}}:{{line}} — {{name}} 不再接受关键字 {{keyword}}',
   'tool.detectChanges.changedSymbols': '已变更符号：',
   'tool.detectChanges.overflowMore': '... 以及另外 {{count}} 个',
   'tool.detectChanges.affectedExecutionFlows': '受影响执行流程：',
@@ -259,6 +262,7 @@ export const zhCN = {
     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
   'help.option.analyze.skills':
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
+  'help.option.analyze.instructionFile': '仅更新指定的说明文件（AGENTS.md 或 CLAUDE.md）',
   'help.option.analyze.skipAgentsMd':
     '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
   'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',

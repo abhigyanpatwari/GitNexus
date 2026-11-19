@@ -13,7 +13,11 @@ const {
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { resolveHookRepo } = require('./registry-query.cjs');
-const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
+const {
+  gitMutationDirectories,
+  readHead,
+  onlyMarkdownChanged,
+} = require('./git-mutation-command.cjs');
 
 // Claude Code runs the Bash tool in bash on every platform, Git Bash included.
 // Codex reports its shell tool as `Bash` too and runs PowerShell on Windows, so
@@ -599,7 +603,8 @@ function staleIndexHint(gitCwd, cwd) {
   }
 
   // If HEAD matches last indexed commit, no reindex needed
-  if (currentHead === lastCommit) return '';
+  if (currentHead === lastCommit || onlyMarkdownChanged(gitCwd, cwd, lastCommit, currentHead))
+    return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
   const indexed = !lastCommit

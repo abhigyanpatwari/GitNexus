@@ -31,6 +31,9 @@ interface RepoStats {
 
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
+  instructionFile?: 'AGENTS.md' | 'CLAUDE.md';
+  /** Explicit analysis refreshes displayed counts. Background updates avoid count-only writes. */
+  refreshCounts?: boolean;
   noStats?: boolean;
   skipSkills?: boolean;
   /**
@@ -418,13 +421,8 @@ function stripVolatileCounts(section: string): string {
  * Create or update GitNexus section in a file
  * - If file doesn't exist: create with GitNexus content
  * - If file exists without GitNexus section: append
- * - If file exists with GitNexus section: replace that section, UNLESS the only
- *   delta is the volatile counts (#2907). AGENTS.md and CLAUDE.md are the agent
- *   guides teams commit, and the counts move with any code change, so a
- *   count-only rewrite dirties a tracked file on every reindex for no reader
- *   benefit. Live counts stay available from `gitnexus status` and
- *   `gitnexus://repo/{name}/context`; the committed block keeps whichever
- *   numbers it was last materially updated with.
+ * - Replace an existing section on material changes. Explicit analysis also
+ *   refreshes displayed counts. Background updates skip count-only writes (#2907).
  */
 async function upsertGitNexusSection(
   filePath: string,
@@ -432,7 +430,9 @@ async function upsertGitNexusSection(
   projectName: string,
   stats: RepoStats,
   noStats?: boolean,
+  refreshCounts = false,
 ): Promise<'created' | 'updated' | 'appended' | 'preserved'> {
+  const comparable = refreshCounts ? (section: string) => section : stripVolatileCounts;
   const exists = await fileExists(filePath);
 
   if (!exists) {
@@ -519,9 +519,8 @@ async function upsertGitNexusSection(
           ? `${statsPrefix} **${projectName}**`
           : `${statsPrefix} **${projectName}** (${newStatsInner})`;
         const updatedSection = existingSection.replace(statsPattern, () => statsLine);
-        // Count-only delta — leave the committed lean block alone (#2907). A
-        // project rename, or --no-stats dropping the parenthetical, still writes.
-        if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {
+        // Background refreshes preserve count-only changes in lean blocks (#2907).
+        if (comparable(updatedSection) === comparable(existingSection)) {
           return repairLineEndings();
         }
         const before = existingContent.substring(0, startIdx);
@@ -543,7 +542,7 @@ async function upsertGitNexusSection(
     // are (a blank line before front matter, an indented first line), so the
     // title is looked for in the text as it will be written.
     const placed = nestUnderExistingTitle(content, before.trimStart() + after);
-    if (stripVolatileCounts(existingSection) === stripVolatileCounts(placed)) {
+    if (comparable(existingSection) === comparable(placed)) {
       return repairLineEndings();
     }
     const newContent = before + placed + after;
@@ -804,7 +803,7 @@ export async function generateAIContextFiles(
   });
   const createdFiles: string[] = [];
 
-  if (!options?.skipAgentsMd) {
+  if (!options?.skipAgentsMd && options?.instructionFile !== 'CLAUDE.md') {
     // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
     const agentsPath = path.join(repoPath, 'AGENTS.md');
     const agentsResult = await upsertGitNexusSection(
@@ -813,9 +812,11 @@ export async function generateAIContextFiles(
       projectName,
       stats,
       options?.noStats,
+      options?.refreshCounts,
     );
     createdFiles.push(`AGENTS.md (${agentsResult})`);
-
+  }
+  if (!options?.skipAgentsMd && options?.instructionFile !== 'AGENTS.md') {
     // Create CLAUDE.md (for Claude Code)
     const claudePath = path.join(repoPath, 'CLAUDE.md');
     const claudeResult = await upsertGitNexusSection(
@@ -824,9 +825,11 @@ export async function generateAIContextFiles(
       projectName,
       stats,
       options?.noStats,
+      options?.refreshCounts,
     );
     createdFiles.push(`CLAUDE.md (${claudeResult})`);
-  } else {
+  }
+  if (options?.skipAgentsMd) {
     createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
@@ -894,11 +897,13 @@ export async function generateAIContextFiles(
 export async function refreshBaseRefLine(
   repoPath: string,
   defaultBranch: string,
-  options?: { skipAgentsMd?: boolean },
+  options?: Pick<AIContextOptions, 'skipAgentsMd' | 'instructionFile'>,
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
   const updated: string[] = [];
-  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+  for (const name of options?.instructionFile
+    ? [options.instructionFile]
+    : ['AGENTS.md', 'CLAUDE.md']) {
     const filePath = path.join(repoPath, name);
     if (!(await fileExists(filePath))) continue;
     let content: string;
@@ -966,10 +971,8 @@ export async function refreshBaseRefLine(
  * {@link refreshBaseRefLine} this is a surgical edit, not a regeneration, so
  * community-skill rows written by a prior `--skills` run survive.
  *
- * Only the PRESENCE of the parenthetical is decided here. A block that already
- * carries counts keeps the numbers it has (even stale ones) so an up-to-date
- * run never rewrites committed figures for no reader benefit (#2907); the
- * missing ones are restored from `stats` when `--no-stats` is dropped (#1706).
+ * Restore missing counts from `stats` when `--no-stats` is dropped (#1706).
+ * An explicit analyze also updates existing figures, preserving custom spacing.
  * Best-effort: a missing file, missing/blank block or unmatched header line is
  * silently skipped, and nothing is written unless the line actually changes.
  *
@@ -980,7 +983,10 @@ export async function refreshBaseRefLine(
 export async function refreshStatsLine(
   repoPath: string,
   stats: RepoStats,
-  options?: { noStats?: boolean; skipAgentsMd?: boolean },
+  options?: Pick<
+    AIContextOptions,
+    'noStats' | 'skipAgentsMd' | 'instructionFile' | 'refreshCounts'
+  >,
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
   const noStats = options?.noStats === true;
@@ -998,7 +1004,9 @@ export async function refreshStatsLine(
     /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)(\s+\(\d+\s+symbols,\s+\d+\s+relationships,\s+\d+\s+execution\s+flows\))?/m;
   const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?=[ \t]*\|)/gm;
   const updated: string[] = [];
-  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+  for (const name of options?.instructionFile
+    ? [options.instructionFile]
+    : ['AGENTS.md', 'CLAUDE.md']) {
     const filePath = path.join(repoPath, name);
     if (!(await fileExists(filePath))) continue;
     let content: string;
@@ -1028,7 +1036,11 @@ export async function refreshStatsLine(
           return match;
         }
         if (noStats) return `${prefix} ${project}`;
-        return existingCounts === undefined ? `${prefix} ${project} (${counts})` : match;
+        if (existingCounts === undefined) return `${prefix} ${project} (${counts})`;
+        if (!options?.refreshCounts) return match;
+        const values = [stats.nodes, stats.edges ?? 0, stats.processes ?? 0];
+        let i = 0;
+        return `${prefix} ${project}${existingCounts.replace(/\d+/g, () => String(values[i++]))}`;
       },
     );
     if (noStats) newBlock = newBlock.replace(skillCountPattern, '$1');

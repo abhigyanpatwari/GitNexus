@@ -1762,6 +1762,8 @@ const analyzeCommandImpl = async (
       verbose: options.verbose,
       skipGit: options.skipGit,
       skipAgentsMd,
+      instructionFile: options.instructionFile,
+      refreshCounts: true,
       skipSkills,
       // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
       pdg: options.pdg === true,
@@ -1829,13 +1831,16 @@ const analyzeCommandImpl = async (
     // further down) writes to them, so selfCommitContextFiles can tell a
     // pre-existing unstaged user edit apart from this run's stats refresh
     // and refuse to sweep the former into the latter's commit.
+    const contextFiles = options.instructionFile
+      ? [options.instructionFile]
+      : ['AGENTS.md', 'CLAUDE.md'];
     const selfCommitSafety = continuation?.prepared.selfCommitSafety
       ? new Map([
           ['AGENTS.md', continuation.prepared.selfCommitSafety.agentsMd],
           ['CLAUDE.md', continuation.prepared.selfCommitSafety.claudeMd],
         ])
       : options.selfCommit === true
-        ? snapshotSelfCommitSafety(repoPath, ['AGENTS.md', 'CLAUDE.md'])
+        ? snapshotSelfCommitSafety(repoPath, contextFiles)
         : undefined;
     const result = continuation
       ? {
@@ -1892,12 +1897,17 @@ const analyzeCommandImpl = async (
         try {
           const { refreshBaseRefLine, refreshStatsLine } = await import('./ai-context.js');
           baseRefRefreshed = (
-            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, {
+              skipAgentsMd,
+              instructionFile: options.instructionFile,
+            })
           ).files;
           statsRefreshed = (
             await refreshStatsLine(repoPath, result.stats, {
               noStats: options.stats === false,
               skipAgentsMd,
+              instructionFile: options.instructionFile,
+              refreshCounts: true,
             })
           ).files;
         } catch {
@@ -1926,13 +1936,13 @@ const analyzeCommandImpl = async (
       }
       if (statsRefreshed.length > 0) {
         console.log(
-          `  ${options.stats === false ? 'Omitted' : 'Restored'} volatile counts in ${statsRefreshed.join(', ')}\n`,
+          `  ${options.stats === false ? 'Omitted' : 'Updated'} volatile counts in ${statsRefreshed.join(', ')}\n`,
         );
       }
       // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
       // fast path (e.g. a base_ref refresh above). Best-effort — never throws.
       if (options.selfCommit === true && selfCommitSafety) {
-        selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+        selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
       }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
@@ -2005,6 +2015,8 @@ const analyzeCommandImpl = async (
             skillResult.skills,
             {
               skipAgentsMd,
+              instructionFile: options.instructionFile,
+              refreshCounts: true,
               skipSkills,
               // Same resolved branch as the main run (#243) so the --skills
               // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
@@ -2046,7 +2058,7 @@ const analyzeCommandImpl = async (
     // runFullAnalysis, and/or the --skills regeneration above). Best-effort
     // — never throws, so a missing git identity etc. can't fail `analyze`.
     if (options.selfCommit === true && selfCommitSafety) {
-      selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+      selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
     }
 
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);

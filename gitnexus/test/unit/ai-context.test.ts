@@ -2077,6 +2077,38 @@ describe('refreshStatsLine takes --no-stats on an up-to-date index (#3618)', () 
     return fs.readFile(path.join(dir, name), 'utf-8');
   }
 
+  it.each(['AGENTS.md', 'CLAUDE.md'] as const)(
+    'refreshes only the selected %s on explicit analyze',
+    async (instructionFile) => {
+      const original =
+        '# Custom\r\n<!-- gitnexus:start -->\r\nIndexed as **my-repo** (1 symbols, 2 relationships, 3 execution flows).\r\n<!-- gitnexus:end -->\r\n';
+      const dir = await seed(['AGENTS.md', 'CLAUDE.md'], original);
+      try {
+        const options = { instructionFile, refreshCounts: true };
+        expect((await refreshStatsLine(dir, STATS, options)).files).toEqual([instructionFile]);
+        expect(await read(dir, instructionFile)).toBe(
+          original.replace(
+            '1 symbols, 2 relationships, 3 execution flows',
+            '493905 symbols, 698316 relationships, 300 execution flows',
+          ),
+        );
+        const other = instructionFile === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
+        await generateAIContextFiles(
+          dir,
+          path.join(dir, '.gitnexus'),
+          'my-repo',
+          { ...STATS, nodes: 42 },
+          undefined,
+          options,
+        );
+        expect(await read(dir, instructionFile)).toContain('42 symbols');
+        expect(await read(dir, other)).toBe(original);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('drops the counts and per-skill counts, preserving the rest of the block', async () => {
     const dir = await seed(
       ['AGENTS.md', 'CLAUDE.md'],

@@ -454,7 +454,7 @@ AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ 
 
 GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
 
-Returns: changed symbols, affected processes, and a risk summary.
+Returns: changed symbols, affected processes, and a risk summary. Mixed code and Markdown changes count documentation sections separately. incompatible_calls locates Python callers that still pass an explicitly removed keyword to a function or constructor. summary.incompatible_call_count includes findings beyond the 1000-row payload limit.
 - partial: true — mapping is incomplete, so risk_level is "unknown" instead of a ranked level. A failed symbol query (or an unparseable diff) degrades changed_symbols, both counts, and derived processes; a failed process lookup degrades only affected_processes and risk, leaving changed-symbol counts sound. unmapped_files lists changed supported source files with no mapped symbols, including source renames without hunks: their symbols may be missing, unindexed, or outside indexed ranges even when every query succeeded. Rebuild the index and inspect those diffs; retry alone may not resolve this state. changed_count:0 with partial:true is NOT a clean pre-commit check.
 - truncated: true — the changed_symbols LISTING was capped for this response. summary.changed_count counts every symbol the run observed: the true total normally, a LOWER BOUND when partial:true. Compare it with the array length rather than trusting the array.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -557,9 +557,9 @@ For a hub, start with summaryOnly:true, then fetch needed callers with limit/off
 
 CALLGRAPH MODE (default): CALLS/IMPORTS/EXTENDS/IMPLEMENTS. Add HAS_METHOD/HAS_PROPERTY for members or ACCESSES for field usage. Confidence 1.0 is certain; <0.8 is fuzzy. d=1 callers/importers WILL BREAK, d=2 are LIKELY AFFECTED, d=3 MAY NEED TESTING.
 
-RISK: risk is the HIGH/CRITICAL edit-gate field: LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN. Upstream zero callers is UNKNOWN with riskNote, never proof of safety; corroborate by text search. Downstream empty results describe callees, not safety.
-- riskSharedAxes compares direct/total axes; group mode adds the cross-repo crossing overlay. Never substitute it for \`risk\` when deciding whether to warn.
-- File targets lack process/community axes; their risk is not directly comparable with symbols. Web Graph-RAG expands Files to symbols.
+RISK: risk is the HIGH/CRITICAL edit-gate field: LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN. Upstream zero callers is UNKNOWN with riskNote, never proof of safety; corroborate by text search. Upstream direct dependants set the ranked thresholds: 5 for MEDIUM, 15 for HIGH, 200 for CRITICAL. Transitive processes and modules remain visible in the summary. Downstream empty results describe callees, not safety.
+- riskSharedAxes compares the shared reach counts (direct upstream, direct and total downstream); group mode adds the cross-repo crossing overlay. Never substitute it for \`risk\` when deciding whether to warn.
+- File targets lack process/community axes. This limits downstream risk comparisons with symbols. Web Graph-RAG expands Files to symbols.
 - riskScale.{comparableAcrossKinds,unusedAxes} identifies unavailable/skipped/failed axes, including IMPACT_MAX_CHUNKS=0 and enrichment that sampled a subset of impacted symbols. Failed/truncated counts are floors: known HIGH/CRITICAL warnings survive; otherwise risk is UNKNOWN.
 
 RESULTS: target, impactedCount, summary, affected_processes, affected_modules, byDepthCounts, and byDepth. summaryOnly omits byDepth. limit/offset apply PER DEPTH; maxDepth alone cannot bound wide hubs. Read pagination/truncated flags and totals before treating a page as complete. Ambiguous targets return ranked candidates, totalCandidates, and candidatesTruncated.

@@ -7057,6 +7057,7 @@ export class LocalBackend {
     if (!diffArgs) return { error: 'base_ref is required for "compare" scope' };
 
     let diffOutput: string;
+    let diffCwd: string;
     try {
       // Resolve the cwd for git diff.
       //
@@ -7075,7 +7076,7 @@ export class LocalBackend {
       //
       // Start with the auto-detected value; override with the validated
       // explicit param when provided. This avoids a dead initial assignment.
-      let diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
+      diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
       if (params.worktree) {
         if (!path.isAbsolute(params.worktree)) {
           return {
@@ -7347,6 +7348,19 @@ export class LocalBackend {
     ];
     if (unmappedFiles.length > 0) queryDegraded = true;
 
+    // Keep docs-only reviews useful. In mixed diffs report their volume once;
+    // section headings should not displace changed code or inflate its count.
+    let documentationSections = 0;
+    const markdown = /\.(?:md|markdown)$/i;
+    if (Array.from(changedSymbols.values()).some((s) => !markdown.test(s.filePath))) {
+      for (const [id, symbol] of changedSymbols) {
+        if (symbol.type === 'Section' && markdown.test(symbol.filePath)) {
+          changedSymbols.delete(id);
+          documentationSections++;
+        }
+      }
+    }
+
     // Find affected processes -- batched queries instead of N+1
     const affectedProcesses = new Map<string, any>();
     if (changedSymbols.size > 0) {
@@ -7401,21 +7415,50 @@ export class LocalBackend {
     }
 
     const processCount = affectedProcesses.size;
-    // A degraded run cannot rank risk. The ladder below reads `processCount` and
-    // nothing else, and a swallowed failure leaves that count short — usually
+    const pythonTargets = Array.from(changedSymbols.values()).filter(
+      (s) => s.filePath.endsWith('.py') && (s.type === 'Class' || s.type === 'Function'),
+    );
+    let brokenCalls: import('./python-signature-changes.js').BrokenKeywordCall[] = [];
+    if (pythonTargets.length && /^-(?!-- )/m.test(diffOutput)) {
+      try {
+        if (!(await this.fullSourceUnavailable(repo))) {
+          const { findBrokenKeywordCalls } = await import('./python-signature-changes.js');
+          brokenCalls = await findBrokenKeywordCalls(
+            diffCwd,
+            scope,
+            params.base_ref,
+            pythonTargets,
+            async (ids) =>
+              executeParameterized(
+                repo.lbugPath,
+                `
+              MATCH (caller)-[r:CodeRelation]->(target)
+              WHERE target.id IN $ids AND r.type = 'CALLS'
+              RETURN DISTINCT target.id AS target, caller.filePath AS filePath
+            `,
+                { ids },
+              ),
+          );
+        }
+      } catch (error) {
+        logQueryError('detect-changes:python-signatures', error);
+        queryDegraded = true;
+      }
+    }
+    // A degraded run cannot rank risk. A swallowed failure leaves processCount short — usually
     // zero — so a broken run scored `low` next to its own `partial:true`: a
     // false all-clear from a pre-commit gate. `unknown` is what the CLI
     // formatter already prints when a run has no risk level at all
     // (`tool.detectChanges.unknownRisk`), so no consumer needs a new value.
     const risk = queryDegraded
       ? 'unknown'
-      : processCount === 0
-        ? 'low'
-        : processCount <= 5
-          ? 'medium'
-          : processCount <= 15
-            ? 'high'
-            : 'critical';
+      : processCount > 15
+        ? 'critical'
+        : brokenCalls.length > 0 || processCount > 5
+          ? 'high'
+          : processCount > 0
+            ? 'medium'
+            : 'low';
 
     // A repo-wide diff can touch thousands of symbols, and the whole array goes
     // into one MCP payload (the CLI slices with --limit; an MCP client has no
@@ -7444,8 +7487,13 @@ export class LocalBackend {
         // path. A repo that tracks `.patch` fixtures hits this.
         changed_files: new Set(fileDiffs.map((fileDiff) => fileDiff.filePath)).size,
         risk_level: risk,
+        ...(documentationSections > 0 && { documentation_sections: documentationSections }),
+        ...(brokenCalls.length > 0 && { incompatible_call_count: brokenCalls.length }),
       },
       changed_symbols: listedSymbols,
+      ...(brokenCalls.length > 0 && {
+        incompatible_calls: brokenCalls.slice(0, DETECT_CHANGES_MAX_LISTED_SYMBOLS),
+      }),
       affected_processes: Array.from(affectedProcesses.values()),
       ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
       // Failed queries or unmapped source files leave counts/risk incomplete;
@@ -8989,6 +9037,9 @@ export class LocalBackend {
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
           const exported = r.isExported ?? r[4];
+          // Python has direct constructor CALLS edges to the class. An import
+          // of its module can refer exclusively to a different declaration.
+          if (direction === 'upstream' && /\.pyi?$/i.test(String(r.filePath ?? r[3]))) continue;
           if (direction === 'upstream' && exported === false) {
             // Lazy like the other provider lookups on this backend: the
             // registry pulls every language module, and this branch is the

@@ -57,22 +57,20 @@ describe('Graph-RAG impact risk contract', () => {
     expect(output).toContain('- Processes affected: unavailable');
   });
 
-  it('preserves proved CRITICAL risk when the cluster query fails', async () => {
+  it('preserves proved CRITICAL risk from direct callers when the cluster query fails', async () => {
     const executeQuery = vi.fn(async (query: string) => {
       if (query.includes("WHERE n.name = 'target'")) {
         return [{ id: 'target-id', nodeType: 'Function', filePath: 'src/target.ts' }];
       }
       if (query.includes('MATCH (affected)-[r:CodeRelation]->(target)')) {
-        return [
-          {
-            id: 'caller-id',
-            name: 'caller',
-            nodeType: 'Function',
-            filePath: 'src/caller.ts',
-            edgeType: 'CALLS',
-            confidence: 1,
-          },
-        ];
+        return Array.from({ length: 200 }, (_, i) => ({
+          id: 'caller-' + i,
+          name: 'caller' + i,
+          nodeType: 'Function',
+          filePath: 'src/caller.ts',
+          edgeType: 'CALLS',
+          confidence: 1,
+        }));
       }
       if (query.includes('STEP_IN_PROCESS')) {
         return Array.from({ length: 5 }, (_, index) => ({

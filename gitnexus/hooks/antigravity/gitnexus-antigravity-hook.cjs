@@ -29,7 +29,11 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
-const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
+const {
+  gitMutationDirectories,
+  readHead,
+  onlyMarkdownChanged,
+} = require('./git-mutation-command.cjs');
 const { resolveHookRepo } = (() => {
   // Installed copies get helpers next to this adapter. The in-tree source
   // tree only ships the adapter, so fall back to the Claude helper copies.
@@ -437,7 +441,8 @@ function buildStaleIndexHint(repo, gitCwd, cwd) {
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;
   }
 
-  if (currentHead === lastCommit) return '';
+  if (currentHead === lastCommit || onlyMarkdownChanged(gitCwd, cwd, lastCommit, currentHead))
+    return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
   const indexed = !lastCommit

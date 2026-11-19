@@ -59,7 +59,7 @@ describe('detect_changes worktree support — structural', () => {
     // returns repo.repoPath when no linked worktree is detected. The old
     // dead `let diffCwd = repo.repoPath` was removed to fix CodeQL
     // "useless assignment to local variable".
-    expect(backendSrc).toMatch(/let diffCwd\s*=\s*resolveWorktreeCwd\(/);
+    expect(backendSrc).toMatch(/\bdiffCwd\s*=\s*resolveWorktreeCwd\(/);
   });
 
   it('rejects relative paths with an absolute-path error', () => {

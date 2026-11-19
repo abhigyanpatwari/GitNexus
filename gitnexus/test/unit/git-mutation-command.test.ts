@@ -14,7 +14,10 @@ const HELPER = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'git-mutat
 
 type Shell = 'bash' | 'powershell' | 'either';
 
-const { gitMutationDirectories, readHead } = createRequire(import.meta.url)(HELPER) as {
+const { gitMutationDirectories, readHead, onlyMarkdownChanged } = createRequire(import.meta.url)(
+  HELPER,
+) as {
+  onlyMarkdownChanged: (directory: string, cwd: string, base: string, head: string) => boolean;
   gitMutationDirectories: (command: unknown, cwd: string, shell: Shell) => string[];
   readHead: (directory: string, cwd: string) => { head: string; checkout: string | null };
 };
@@ -23,6 +26,26 @@ const { gitMutationDirectories, readHead } = createRequire(import.meta.url)(HELP
 const CWD = path.join(os.tmpdir(), 'gn-mutation', 'repo');
 const under = (...segments: string[]) => path.resolve(CWD, ...segments);
 const inBash = (command: unknown) => gitMutationDirectories(command, CWD, 'bash');
+
+it('suppresses a docs-only gap but still warns for an earlier unindexed code change', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hook-gap-'));
+  try {
+    initGitRepo(repo);
+    fs.writeFileSync(path.join(repo, 'app.py'), 'v = 1\n');
+    commitAll(repo, 'indexed base');
+    const base = readHead(repo, repo).head;
+    fs.writeFileSync(path.join(repo, 'README.md'), 'notes\n');
+    commitAll(repo, 'docs');
+    expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(true);
+    fs.writeFileSync(path.join(repo, 'app.py'), 'v = 2\n');
+    commitAll(repo, 'change code');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'more notes\n');
+    commitAll(repo, 'more docs');
+    expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(false);
+  } finally {
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
 
 describe('gitMutationDirectories', () => {
   it.each([

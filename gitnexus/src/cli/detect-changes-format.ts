@@ -5,6 +5,8 @@ import { formatPathForTerminal } from './format-path.js';
 type DetectChangesSummary = {
   changed_files?: number;
   changed_count?: number;
+  documentation_sections?: number;
+  incompatible_call_count?: number;
   affected_count?: number;
   risk_level?: string;
   message?: string;
@@ -34,6 +36,7 @@ type DetectChangesResult = {
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
   unmapped_files?: string[];
+  incompatible_calls?: import('../mcp/local/python-signature-changes.js').BrokenKeywordCall[];
 };
 
 export function formatDetectChangesResult(result: unknown): string {
@@ -99,6 +102,8 @@ export function formatDetectChangesResult(result: unknown): string {
       symbols: summary.changed_count ?? 0,
     }),
   );
+  if (summary.documentation_sections)
+    lines.push(t('tool.detectChanges.docSections', { count: summary.documentation_sections }));
   lines.push(t('tool.detectChanges.affectedProcesses', { count: summary.affected_count ?? 0 }));
   lines.push(
     t('tool.detectChanges.riskLevel', {
@@ -106,6 +111,25 @@ export function formatDetectChangesResult(result: unknown): string {
     }),
   );
   lines.push('');
+
+  if (payload.incompatible_calls?.length) {
+    lines.push(t('tool.detectChanges.incompatibleCalls'));
+    const shown = payload.incompatible_calls.slice(0, 15);
+    for (const call of shown) {
+      lines.push(
+        t('tool.detectChanges.removedKeyword', {
+          file: formatPathForTerminal(call.filePath),
+          line: call.line,
+          keyword: call.keyword,
+          name: call.name,
+        }),
+      );
+    }
+    const total = summary.incompatible_call_count ?? payload.incompatible_calls.length;
+    if (total > shown.length)
+      lines.push(t('tool.detectChanges.overflowMore', { count: total - shown.length }));
+    lines.push('');
+  }
 
   const changed = Array.isArray(payload.changed_symbols) ? payload.changed_symbols : [];
   if (changed.length > 0) {

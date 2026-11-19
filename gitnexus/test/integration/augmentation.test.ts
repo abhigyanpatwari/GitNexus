@@ -345,6 +345,10 @@ withTestLbugDB(
         expect(result).toBe('');
       });
 
+      it('does not suggest a symbol matching only the first word in a phrase', async () => {
+        expect(await augmentNoFts('login attempt failed', handle.dbPath)).toBe('');
+      });
+
       it('returns empty string when no nodes match the CONTAINS query', async () => {
         const result = await augmentNoFts('nxyz_notfound', handle.dbPath);
         expect(result).toBe('');

@@ -67,7 +67,8 @@ type ValueKind =
   | 'embeddings'
   | 'branch'
   | 'path'
-  | 'router-aliases';
+  | 'router-aliases'
+  | 'instruction-file';
 
 interface KeySpec {
   /** The `AnalyzeOptions` field this config key normalizes into. */
@@ -92,6 +93,7 @@ const KEY_SPECS: Record<string, KeySpec> = {
   skipAgentsMd: { target: 'skipAgentsMd', kind: 'boolean' },
   skipContextFiles: { target: 'skipAgentsMd', kind: 'boolean' },
   skipAiContext: { target: 'skipAgentsMd', kind: 'boolean' },
+  instructionFile: { target: 'instructionFile', kind: 'instruction-file' },
   skipSkills: { target: 'skipSkills', kind: 'boolean' },
   pdg: { target: 'pdg', kind: 'boolean' },
   indexOnly: { target: 'indexOnly', kind: 'boolean' },
@@ -196,6 +198,9 @@ const normalizeValue = (
 ): unknown => {
   const source = `${configSource} "${key}"`;
   switch (kind) {
+    case 'instruction-file':
+      if (value === 'AGENTS.md' || value === 'CLAUDE.md') return value;
+      throw new GitNexusRcError(`${source} must be AGENTS.md or CLAUDE.md.`);
     case 'boolean':
       if (typeof value !== 'boolean') {
         throw new GitNexusRcError(`${source} must be a boolean (true/false).`);

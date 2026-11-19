@@ -251,6 +251,34 @@ describe('#2915 detect_changes hunk scaling', () => {
     expect(result).toHaveProperty('unmapped_files', ['code.py']);
   });
 
+  it('keeps Markdown sections in docs-only reviews and counts them separately beside code', async () => {
+    const dir = makeRepo(['README.md', 'code.ts'], 1);
+    registerRepo(dir);
+    lbugMocks.executeParameterized.mockImplementation(async (_db, query, { bounds }) =>
+      String(query).includes('diffPath')
+        ? bounds.map((bound: QueryBound) => ({
+            diffPath: bound.path,
+            filePath: bound.path,
+            startLine: 0,
+            endLine: 0,
+            id: bound.path,
+            name: bound.path,
+            type: bound.path === 'README.md' ? 'Section' : 'Function',
+          }))
+        : [],
+    );
+    writeFileSync(path.join(dir, 'README.md'), '# Edited section\n');
+    expect((await runDetectChanges()).changed_symbols).toMatchObject([{ type: 'Section' }]);
+    writeFileSync(path.join(dir, 'code.ts'), 'function run() {}\n');
+    const mixed = await runDetectChanges();
+    expect(mixed.summary).toMatchObject({
+      documentation_sections: 1,
+      changed_count: 1,
+      changed_files: 2,
+    });
+    expect(mixed.changed_symbols).toMatchObject([{ type: 'Function' }]);
+  });
+
   it.each(['notes.txt', 'README.md', 'config.json', 'config.yaml'])(
     'keeps ordinary non-source changes in %s measurable with zero symbols',
     async (filePath) => {

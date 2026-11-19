@@ -262,4 +262,29 @@ function readHead(directory, cwd) {
   return { head, checkout: root === here ? null : path.resolve(root) };
 }
 
-module.exports = { gitMutationDirectories, readHead };
+// Compare the entire gap, including both paths of a rename. Unknown bases and
+// failed comparisons must leave the stale hint enabled.
+function onlyMarkdownChanged(directory, cwd, base, head) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(base)) return false;
+  const result = spawnSync(
+    'git',
+    [
+      '-C',
+      directory,
+      'diff',
+      '--quiet',
+      '--no-ext-diff',
+      '--no-renames',
+      base,
+      head,
+      '--',
+      ':(top,glob)**',
+      ':(top,exclude,icase,glob)**/*.md',
+      ':(top,exclude,icase,glob)**/*.markdown',
+    ],
+    { cwd, timeout: 3000, windowsHide: true, stdio: 'ignore' },
+  );
+  return result.status === 0;
+}
+
+module.exports = { gitMutationDirectories, readHead, onlyMarkdownChanged };

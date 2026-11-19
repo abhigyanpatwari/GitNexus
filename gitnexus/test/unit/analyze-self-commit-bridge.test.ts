@@ -134,6 +134,16 @@ describe('analyzeCommand --self-commit bridge (#2639)', () => {
     );
   });
 
+  it('limits a self-commit to the selected instruction file', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { selfCommit: true, instructionFile: 'CLAUDE.md' });
+    expect(selfCommitContextFilesMock).toHaveBeenCalledWith(
+      '/repo',
+      ['CLAUDE.md'],
+      expect.any(Map),
+    );
+  });
+
   it('calls selfCommitContextFiles on the primary (non-fast-path) analyze run', async () => {
     runFullAnalysisMock.mockResolvedValueOnce({
       repoName: 'repo',

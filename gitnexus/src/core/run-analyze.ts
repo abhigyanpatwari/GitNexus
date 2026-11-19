@@ -543,6 +543,8 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  instructionFile?: 'AGENTS.md' | 'CLAUDE.md';
+  refreshCounts?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
   /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
@@ -3273,6 +3275,8 @@ async function runFullAnalysisInner(
                 undefined,
                 {
                   skipAgentsMd: options.skipAgentsMd,
+                  instructionFile: options.instructionFile,
+                  refreshCounts: options.refreshCounts,
                   skipSkills: options.skipSkills,
                   noStats: options.noStats,
                   defaultBranch: options.defaultBranch,
@@ -6529,6 +6533,8 @@ async function runFullAnalysisInner(
           undefined,
           {
             skipAgentsMd: options.skipAgentsMd,
+            instructionFile: options.instructionFile,
+            refreshCounts: options.refreshCounts,
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,

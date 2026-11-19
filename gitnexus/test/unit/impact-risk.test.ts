@@ -50,13 +50,22 @@ describe('scoreImpactRisk', () => {
       },
     });
     expect(fn).toEqual({
-      risk: 'HIGH',
+      risk: 'LOW',
       riskSharedAxes: 'LOW',
       riskScale: {
         comparableAcrossKinds: true,
         unusedAxes: [],
       },
     });
+  });
+
+  it('keeps indirect reach separate from direct risk', () => {
+    expect(
+      scoreImpactRisk({ ...base, directCount: 1, impactedCount: 201, processCount: 20 }).risk,
+    ).toBe('LOW');
+    expect(scoreImpactRisk({ ...base, directCount: 200, impactedCount: 200 }).risk).toBe(
+      'CRITICAL',
+    );
   });
 
   it('preserves UNKNOWN only for an empty upstream walk', () => {
@@ -78,7 +87,7 @@ describe('scoreImpactRisk', () => {
     });
   });
 
-  it('preserves direct and total thresholds when enrichment axes are unused', () => {
+  it('rates upstream by direct fan-out independently of enrichment', () => {
     expect(
       scoreImpactRisk({
         ...base,
@@ -86,7 +95,7 @@ describe('scoreImpactRisk', () => {
         impactedCount: 30,
         unusedAxes: fileUnusedAxes,
       }).risk,
-    ).toBe('CRITICAL');
+    ).toBe('HIGH');
     expect(
       scoreImpactRisk({
         ...base,
@@ -123,7 +132,7 @@ describe('scoreImpactRisk', () => {
     expect(scored.riskSharedAxes).toBe('LOW');
   });
 
-  it('preserves a warning already proved before a later enrichment failure', () => {
+  it('withholds a low verdict when enrichment fails', () => {
     const scored = scoreImpactRisk({
       ...base,
       directCount: 2,
@@ -132,7 +141,7 @@ describe('scoreImpactRisk', () => {
       unusedAxes: [{ axis: 'processes', reason: 'enrichment-query-failed' }],
     });
 
-    expect(scored.risk).toBe('CRITICAL');
+    expect(scored.risk).toBe('UNKNOWN');
     expect(scored.riskSharedAxes).toBe('LOW');
     expect(scored.riskScale.comparableAcrossKinds).toBe(false);
   });

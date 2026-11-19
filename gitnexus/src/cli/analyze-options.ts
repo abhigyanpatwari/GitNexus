@@ -44,6 +44,7 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  instructionFile?: 'AGENTS.md' | 'CLAUDE.md';
   /**
    * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
    * default. Threaded to both the worker (CFG build) and scope-resolution

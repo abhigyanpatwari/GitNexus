@@ -104,8 +104,10 @@ async function findRepoForCwd(cwd: string): Promise<{
 export async function augment(pattern: string, cwd?: string): Promise<string> {
   if (!pattern || pattern.length < 3) return '';
 
-  const patternFirstWord = escapeCypherString(pattern.trim()).split(/\s+/)[0];
-  if (!patternFirstWord || patternFirstWord.length < 2) return '';
+  const term = pattern.trim();
+  if (term.length < 3) return '';
+  // File text can match individual words. Anchor related symbols to the whole search.
+  const escapedName = escapeCypherString(term);
 
   const workDir = cwd || process.cwd();
 
@@ -143,7 +145,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
           repoId,
           `
           MATCH (n) WHERE n.filePath = '${escaped}'
-          AND n.name CONTAINS '${patternFirstWord}'
+          AND n.name CONTAINS '${escapedName}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           ORDER BY id
           LIMIT 3
@@ -171,9 +173,9 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
         repoId,
         `
         MATCH (n)
-        WHERE n.name CONTAINS '${patternFirstWord}'
+        WHERE n.name CONTAINS '${escapedName}'
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
-          CASE WHEN n.name = '${patternFirstWord}' THEN 0 ELSE 1 END AS exactRank
+          CASE WHEN n.name = '${escapedName}' THEN 0 ELSE 1 END AS exactRank
         ORDER BY exactRank, id
         LIMIT 5
       `,

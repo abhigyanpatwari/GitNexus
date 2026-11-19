@@ -288,6 +288,7 @@ gitnexus analyze --no-parse-cache # Re-parse every source file, then rebuild gra
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
+gitnexus analyze --instruction-file CLAUDE.md  # Refresh only CLAUDE.md (or choose AGENTS.md)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits (does not skip standard skills; use --skip-skills; community --skills files are unaffected)
 gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
@@ -353,7 +354,7 @@ Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
 `--max-file-size`, `--max-processes`, `--max-process-branching`,
 `--max-process-trace-depth`, `--max-entry-point-candidates`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
-embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`,
+embedding flags, `--skills`, `--default-branch`, `--instruction-file`, `--skip-agents-md`,
 `--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`
 are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a warning.
 

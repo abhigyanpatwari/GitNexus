@@ -240,6 +240,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
       expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
       const aiCtxOpts = generateAIContextFilesMock.mock.calls[0]![5];
       expect(aiCtxOpts).toEqual({
+        refreshCounts: true,
         skipAgentsMd: undefined,
         skipSkills: undefined,
         // #243: resolved default branch threaded into the --skills regen path.
@@ -271,6 +272,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
 
     expect(refreshStatsLineMock).toHaveBeenCalledTimes(1);
     expect(refreshStatsLineMock).toHaveBeenCalledWith('/repo', stats, {
+      refreshCounts: true,
       noStats: true,
       skipAgentsMd: undefined,
     });
@@ -285,6 +287,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
       '/repo',
       {},
       {
+        refreshCounts: true,
         noStats: false,
         skipAgentsMd: undefined,
       },
@@ -302,6 +305,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
         '/repo',
         {},
         {
+          refreshCounts: true,
           noStats: true,
           skipAgentsMd: true,
         },

@@ -150,6 +150,10 @@ export const en = {
   'tool.detectChanges.affectedProcesses': 'Affected processes: {{count}}',
   'tool.detectChanges.riskLevel': 'Risk level: {{risk}}',
   'tool.detectChanges.unknownRisk': 'unknown',
+  'tool.detectChanges.docSections': 'Documentation sections changed: {{count}}',
+  'tool.detectChanges.incompatibleCalls': 'Incompatible calls:',
+  'tool.detectChanges.removedKeyword':
+    '  {{file}}:{{line}} — {{name}} no longer accepts keyword {{keyword}}',
   'tool.detectChanges.changedSymbols': 'Changed symbols:',
   'tool.detectChanges.overflowMore': '... and {{count}} more',
   'tool.detectChanges.affectedExecutionFlows': 'Affected execution flows:',
@@ -283,6 +287,8 @@ export const en = {
     'Drop existing embeddings on rebuild. By default, an `analyze` without `--embeddings` preserves any embeddings already present in the index.',
   'help.option.analyze.skills':
     'Generate repo-specific skill files from detected communities (no-op when --index-only is also set).',
+  'help.option.analyze.instructionFile':
+    'Update only the selected instruction file (AGENTS.md or CLAUDE.md)',
   'help.option.analyze.skipAgentsMd':
     'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
   'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',

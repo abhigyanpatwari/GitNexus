@@ -40,7 +40,15 @@ function score(
 ): ImpactRisk {
   const { direction, directCount, processCount, moduleCount, impactedCount } = input;
 
-  if (direction === 'upstream' && impactedCount === 0) return 'UNKNOWN';
+  // Upstream measures the immediate edit boundary. Flow membership and
+  // transitive reach remain available in the impact summary at every depth.
+  if (direction === 'upstream') {
+    if (impactedCount === 0) return 'UNKNOWN';
+    if (directCount >= 200) return 'CRITICAL';
+    if (directCount >= 15) return 'HIGH';
+    if (directCount >= 5) return 'MEDIUM';
+    return 'LOW';
+  }
   if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impactedCount >= 200) {
     return 'CRITICAL';
   }
