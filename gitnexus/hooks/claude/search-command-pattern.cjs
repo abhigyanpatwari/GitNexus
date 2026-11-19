@@ -85,7 +85,7 @@ function tokenizeShellCommand(command, shell, expanded) {
         expands = true;
       }
       if (ch === '{') brace = 1;
-      else if (brace && (ch === ',' || (ch === '.' && command[i + 1] === '.'))) brace = 2;
+      else if (brace && (ch === ',' || (ch === '.' && next === '.'))) brace = 2;
       else if (brace === 2 && ch === '}') expands = true;
       word += ch;
       started = true;
@@ -210,9 +210,10 @@ const MAX_PATTERNS = 3;
 
 /**
  * The queries of one tokenized `rg` / `grep` command line (every `-e` pattern,
- * else the first positional one), or none when they cannot be read reliably. A token is never taken as the query while an
- * earlier option may still claim it as its value: an option this tool does not
- * have, written without an attached `=value`, declines the whole command.
+ * else the first positional one), or none when they cannot be read reliably.
+ * A token is never taken as the query while an earlier option may still claim
+ * it as its value: an option this tool does not have, written without an
+ * attached `=value`, declines the whole command.
  */
 function extractSearchCommandPatterns(tokens, expanded = new Set()) {
   const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[0] || '');
@@ -282,12 +283,8 @@ function extractSearchCommandPatterns(tokens, expanded = new Set()) {
       break;
     }
   }
-  const found =
-    explicitPatterns.length > 0
-      ? explicitPatterns
-      : pattern === null
-        ? []
-        : [{ value: pattern, at: patternAt }];
+  const positional = pattern === null ? [] : [{ value: pattern, at: patternAt }];
+  const found = explicitPatterns.length > 0 ? explicitPatterns : positional;
   // The shell rewrites an expanded word, so rg or grep does not receive the
   // query as written.
   if (pending || found.some(({ at }) => expanded.has(at))) return [];

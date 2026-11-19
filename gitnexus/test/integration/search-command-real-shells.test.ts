@@ -183,8 +183,9 @@ function installFakeTools(bin: string): void {
 }
 
 function runInShell(shell: Shell, command: string, index: number, bin: string, work: string) {
-  const script = path.join(tmp, `case-${shell.mode}-${shell.name.length}-${index}${shell.ext}`);
-  const dump = path.join(tmp, `argv-${shell.mode}-${shell.name.length}-${index}`);
+  const shellIndex = SHELLS.indexOf(shell);
+  const script = path.join(tmp, `case-${shellIndex}-${index}${shell.ext}`);
+  const dump = path.join(tmp, `argv-${shellIndex}-${index}`);
   // Git's bin/bash.exe puts its own /usr/bin (with a real grep) first on PATH,
   // so a bash script puts the fake tools back in front before the command.
   const posixBin = WINDOWS ? `/${bin[0].toLowerCase()}${bin.slice(2).replaceAll('\\', '/')}` : bin;

@@ -146,9 +146,12 @@ export async function augment(patterns: string | readonly string[], cwd?: string
       score: number;
     };
 
+    // The first `limit` symbols of one pattern, in BM25 file order. The file
+    // loop stops once it has them, since later files only add symbols past it.
     const findSymbols = async (
       pattern: string,
       patternFirstWord: string,
+      limit: number,
     ): Promise<SymbolMatch[]> => {
       // Step 1: BM25 search (fast, no embeddings)
       const { results: bm25Results } = await searchFTSFromLbug(pattern, 10, repoId);
@@ -157,6 +160,7 @@ export async function augment(patterns: string | readonly string[], cwd?: string
       const symbolMatches: SymbolMatch[] = [];
 
       for (const result of bm25Results.slice(0, 5)) {
+        if (symbolMatches.length >= limit) break;
         const escaped = escapeCypherString(result.filePath);
         try {
           const symbols = await executeQuery(
@@ -209,14 +213,14 @@ export async function augment(patterns: string | readonly string[], cwd?: string
         }
       }
 
-      return symbolMatches;
+      return symbolMatches.slice(0, limit);
     };
 
     // One pattern keeps its top 5 symbols; several share MAX_AUGMENT_SYMBOLS.
     const perPattern = lookups.length === 1 ? 5 : Math.floor(MAX_AUGMENT_SYMBOLS / lookups.length);
     const symbolMatches: SymbolMatch[] = [];
     for (const { pattern, firstWord } of lookups) {
-      symbolMatches.push(...(await findSymbols(pattern, firstWord)).slice(0, perPattern));
+      symbolMatches.push(...(await findSymbols(pattern, firstWord, perPattern)));
     }
 
     if (symbolMatches.length === 0) return '';

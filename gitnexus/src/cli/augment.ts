@@ -14,16 +14,13 @@
 
 import { augment } from '../core/augmentation/engine.js';
 
-export async function augmentCommand(patterns: string | readonly string[]): Promise<void> {
-  const usable = (typeof patterns === 'string' ? [patterns] : patterns).filter(
-    (pattern) => pattern.length >= 3,
-  );
-  if (usable.length === 0) {
+export async function augmentCommand(patterns: readonly string[]): Promise<void> {
+  if (patterns.every((pattern) => pattern.length < 3)) {
     process.exit(0);
   }
 
   try {
-    const result = await augment(usable, process.cwd());
+    const result = await augment(patterns, process.cwd());
 
     if (result) {
       // IMPORTANT: Write to stderr, NOT stdout.
