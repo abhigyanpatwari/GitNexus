@@ -1124,6 +1124,28 @@ describe('Cursor hook concurrency guard (integration)', () => {
 
 // ─── Shell pattern parsing ──────────────────────────────────────────
 
+// A POSIX shell runs `NAME=value rg x` as `rg x`. On Windows the shell may be
+// PowerShell, which runs `NAME=value` itself, so the line runs no search there.
+describe.each([
+  ['linux', 'UserService'],
+  ['win32', null],
+] as const)('Shell pattern parser with a leading assignment on %s', (platform, expected) => {
+  const original = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: platform });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: original });
+  });
+
+  it.each(['NO_COLOR=1 rg UserService src/', 'NO_COLOR=1 npx rg UserService src/'])(
+    'reads %j',
+    (command) => {
+      expect(parseRgGrepPattern(command)).toBe(expected);
+    },
+  );
+});
+
 describe('Shell quoted-pattern parser', () => {
   it.each([
     ['rg "User Service" src/', 'User Service'],
@@ -1146,9 +1168,7 @@ describe('Shell quoted-pattern parser', () => {
     ['npx --package rg grep LongPattern src/', 'LongPattern'],
     ['rg UserService; echo done', 'UserService'],
     ['rg UserService&& echo done', 'UserService'],
-    // Assignments before the command belong to it, with or without a wrapper.
-    ['NO_COLOR=1 rg UserService src/', 'UserService'],
-    ['NO_COLOR=1 npx rg UserService src/', 'UserService'],
+    // After a wrapper such as `env`, NAME=value is an assignment it reads.
     ["env 'A=1' rg UserService src/", 'UserService'],
     ['rg --max-count 100 UserService src/', 'UserService'],
     ['grep -r UserService src/', 'UserService'],
