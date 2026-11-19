@@ -110,7 +110,14 @@ function tokenizeShellWords(command) {
 }
 
 function parseRgGrepPattern(cmd) {
-  const tokens = tokenizeShellWords(cmd);
+  // Assignments before the command (`NO_COLOR=1 rg x`) belong to it. Read them
+  // on the raw line, where a quoted `'A=1'` (a command name) keeps its quotes;
+  // a substituted or array value is left in place and ends the read.
+  const leadingAssignments =
+    /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+/;
+  const tokens = tokenizeShellWords(
+    typeof cmd === 'string' ? cmd.replace(leadingAssignments, '') : '',
+  );
   let foundCmd = false;
   let skipNext = false;
   let skipNextAsPattern = false;
@@ -188,10 +195,10 @@ function parseRgGrepPattern(cmd) {
       continue;
     }
     if (!foundCmd) {
-      // Assignments before the command (`NO_COLOR=1 rg x`, `env A=1 rg x`)
-      // belong to it. A value with a substitution or an array is computed by
-      // the shell, so the line has no reliable query.
-      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+      // After a wrapper such as `env` or `sudo`, `NAME=value` is an assignment
+      // that wrapper reads, quoted or not. A substituted or array value is
+      // computed by the shell, so the line has no reliable query.
+      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
         if (/\$(?![A-Za-z_])|[`()]/.test(token)) return null;
         continue;
       }

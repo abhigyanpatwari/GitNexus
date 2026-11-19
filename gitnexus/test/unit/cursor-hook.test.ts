@@ -1149,6 +1149,7 @@ describe('Shell quoted-pattern parser', () => {
     // Assignments before the command belong to it, with or without a wrapper.
     ['NO_COLOR=1 rg UserService src/', 'UserService'],
     ['NO_COLOR=1 npx rg UserService src/', 'UserService'],
+    ["env 'A=1' rg UserService src/", 'UserService'],
     ['rg --max-count 100 UserService src/', 'UserService'],
     ['grep -r UserService src/', 'UserService'],
     ['rg --replace x UserService src/', 'UserService'],
@@ -1182,6 +1183,8 @@ describe('Shell quoted-pattern parser', () => {
     ['A=$(true rg UserService src)'],
     ['env A=$(true rg UserService src)'],
     ['ARGS=( rg UserService src )'],
+    // A quoted `'A=foo'` is a command name, not an assignment.
+    ["'A=foo' rg UserService src"],
   ])('extracts no pattern from %j', (command) => {
     expect(parseRgGrepPattern(command)).toBeNull();
   });

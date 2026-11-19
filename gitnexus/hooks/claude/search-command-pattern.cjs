@@ -24,13 +24,21 @@
 // In bash a backslash escapes the next character outside single quotes. In
 // PowerShell it is an ordinary character, a doubled quote inside quotes is one
 // literal quote, and a bare comma, parenthesis, brace or leading `@` builds a
-// value the shell computes, so the command has no reliable query.
-function tokenizeShellCommand(command, shell) {
+// value the shell computes, so the command has no reliable query. bash expands
+// an unquoted `{a,b}` or `{1..3}` into several words; the index of each such
+// word is added to `braced` when the caller passes a Set.
+function tokenizeShellCommand(command, shell, braced) {
   const powershell = shell === 'powershell';
   const tokens = [];
   let word = '';
   let quote = null;
   let started = false;
+  let brace = 0; // 1: inside an unquoted `{`, 2: and it holds `,` or `..`
+  let expands = false;
+  const push = () => {
+    if (expands && braced) braced.add(tokens.length);
+    tokens.push(word);
+  };
   for (let i = 0; i < command.length; i++) {
     const ch = command[i];
     if (ch === '\\' && quote !== "'" && !powershell) {
@@ -60,16 +68,21 @@ function tokenizeShellCommand(command, shell) {
     } else if (/[;&|<>\n\r]/.test(ch) || (ch === '#' && !started)) {
       break;
     } else if (/\s/.test(ch)) {
-      if (started) tokens.push(word);
+      if (started) push();
       word = '';
       started = false;
+      brace = 0;
+      expands = false;
     } else {
+      if (ch === '{') brace = 1;
+      else if (brace && (ch === ',' || (ch === '.' && command[i + 1] === '.'))) brace = 2;
+      else if (brace === 2 && ch === '}') expands = true;
       word += ch;
       started = true;
     }
   }
   if (quote) return [];
-  if (started) tokens.push(word);
+  if (started) push();
   return tokens;
 }
 
@@ -187,18 +200,26 @@ function longSearchOptionKind(options, name) {
  * earlier option may still claim it as its value: an option this tool does not
  * have, written without an attached `=value`, declines the whole command.
  */
-function extractSearchCommandPattern(tokens) {
+function extractSearchCommandPattern(tokens, braced = new Set()) {
   const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[0] || '');
   if (!tool) return null;
   const options = SEARCH_TOOL_OPTIONS[tool[1]];
   let pending = null;
   let endOptions = false;
   let pattern = null;
+  let patternAt = -1;
   let explicitPattern = null;
+  let explicitAt = -1;
+  const explicit = (value, at) => {
+    if (explicitPattern !== null) return;
+    explicitPattern = value;
+    explicitAt = at;
+  };
 
-  for (const token of tokens.slice(1)) {
+  for (let at = 1; at < tokens.length; at++) {
+    const token = tokens[at];
     if (pending) {
-      if (pending === 'pattern') explicitPattern ??= token;
+      if (pending === 'pattern') explicit(token, at);
       pending = null;
       continue;
     }
@@ -208,7 +229,10 @@ function extractSearchCommandPattern(tokens) {
     }
     // A lone `-` is the standard-input operand, not an option.
     if (endOptions || !token.startsWith('-') || token === '-') {
-      pattern ??= token;
+      if (pattern === null) {
+        pattern = token;
+        patternAt = at;
+      }
       continue;
     }
     if (token.startsWith('--')) {
@@ -216,7 +240,7 @@ function extractSearchCommandPattern(tokens) {
       const attached = separator !== -1;
       const kind = longSearchOptionKind(options, token.slice(2, attached ? separator : undefined));
       if (kind === 'pattern') {
-        if (attached) explicitPattern ??= token.slice(separator + 1);
+        if (attached) explicit(token.slice(separator + 1), at);
         else pending = 'pattern';
       } else if (kind === 'file' || kind === 'exit') {
         // File-backed queries are unavailable without reading user files, and
@@ -241,10 +265,13 @@ function extractSearchCommandPattern(tokens) {
       const rest = token.slice(i + 1);
       if (rest === '') pending = kind === 'pattern' ? 'pattern' : 'skip';
       else if (kind === 'pattern')
-        explicitPattern ??= options.shortEquals && rest.startsWith('=') ? rest.slice(1) : rest;
+        explicit(options.shortEquals && rest.startsWith('=') ? rest.slice(1) : rest, at);
       break;
     }
   }
+  // A word bash brace-expands becomes several words, so rg or grep does not
+  // receive the query as written.
+  if (braced.has(explicitPattern === null ? patternAt : explicitAt)) return null;
   const result = explicitPattern ?? pattern;
   return !pending && result?.length >= 3 ? result : null;
 }
@@ -266,10 +293,11 @@ const BASH_ASSIGNMENTS =
  */
 function searchCommandPattern(command, shell = 'bash') {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
-  const inBash = () =>
-    extractSearchCommandPattern(
-      tokenizeShellCommand(command.replace(BASH_ASSIGNMENTS, ''), 'bash'),
-    );
+  const inBash = () => {
+    const braced = new Set();
+    const tokens = tokenizeShellCommand(command.replace(BASH_ASSIGNMENTS, ''), 'bash', braced);
+    return extractSearchCommandPattern(tokens, braced);
+  };
   const inPowerShell = () =>
     extractSearchCommandPattern(tokenizeShellCommand(command, 'powershell'));
   if (shell === 'powershell') return inPowerShell();

@@ -302,6 +302,7 @@ describe('Factory Execute pattern parser', () => {
     // the value.
     ['NO_COLOR=1 npx rg UserService src', 'UserService'],
     ['A=$(true rg UserService src)', null],
+    ["'A=foo' rg UserService src", null],
     // -f reads patterns from a file; later positionals are paths.
     ['rg -f patterns.txt src/', null],
     ['grep --file=patterns.txt src/', null],

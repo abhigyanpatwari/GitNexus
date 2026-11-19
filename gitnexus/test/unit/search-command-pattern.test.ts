@@ -70,6 +70,24 @@ describe('searchCommandPattern', () => {
     expect(searchCommandPattern(command)).toBeNull();
   });
 
+  // bash expands an unquoted `{a,b}` or `{1..3}` into several words, so a query
+  // written that way is not the one rg or grep receives.
+  it.each(['rg {foo,bar} src', 'rg foo{1..3} src', 'rg -e {a,b} src'])(
+    'reads no query from the brace expansion in %j',
+    (command) => {
+      expect(searchCommandPattern(command)).toBeNull();
+    },
+  );
+
+  it('reads a query when the brace expansion is elsewhere or quoted', () => {
+    expect(searchCommandPattern('grep -rn UserService --include=*.{ts,tsx} src')).toBe(
+      'UserService',
+    );
+    expect(searchCommandPattern('rg UserService src/{a,b}')).toBe('UserService');
+    expect(searchCommandPattern("rg '{foo,bar}' src")).toBe('{foo,bar}');
+    expect(searchCommandPattern('rg foo{2} src')).toBe('foo{2}');
+  });
+
   // PowerShell has no assignment prefix: it would run `NO_COLOR=1` itself.
   it.each(['powershell', 'either'] as const)('reads no assignment prefix in %s', (shell) => {
     expect(searchCommandPattern('NO_COLOR=1 rg UserService src', shell)).toBeNull();
