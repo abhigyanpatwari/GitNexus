@@ -29,12 +29,20 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
+const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
 const { resolveHookRepo } = (() => {
   // Installed copies get helpers next to this adapter. The in-tree source
   // tree only ships the adapter, so fall back to the Claude helper copies.
   const local = path.join(__dirname, 'registry-query.cjs');
   return fs.existsSync(local) ? require(local) : require('../claude/registry-query.cjs');
 })();
+
+// run_shell_command goes through `powershell.exe -NoProfile -Command` on
+// Windows and `bash -c` everywhere else.
+const SHELL = process.platform === 'win32' ? 'powershell' : 'bash';
+
+// Index metadata is a file in the repository: only a commit id is echoed.
+const COMMIT_ID = /^[0-9a-f]{4,64}$/i;
 
 function readInput() {
   try {
@@ -295,25 +303,28 @@ function buildAfterToolContext(input) {
   const succeeded = toolSucceeded(toolResponse);
   const pattern = succeeded ? extractPattern(toolName, toolInput) : null;
   const command = toolName === 'run_shell_command' ? toolInput.command || '' : '';
-  const gitMutation =
-    succeeded && /\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command);
+  // Where each git mutation ran: the directory of the command, or the one
+  // `git -C` names. `dir_path` is relative to the workspace root.
+  const shellCwd =
+    typeof toolInput.dir_path === 'string' ? path.resolve(cwd, toolInput.dir_path) : cwd;
+  const gitCwds = succeeded ? gitMutationDirectories(command, shellCwd, SHELL) : [];
   // Cheap tool-result guards first. Registry I/O is only for search augment
   // or a git mutation that might need a stale-index hint.
-  if (!pattern && !gitMutation) return null;
+  if (!pattern && gitCwds.length === 0) return null;
 
-  const repo = resolveHookRepo(cwd);
-  if (!repo) return null;
-  const storagePath = repo.storagePath;
+  const repo = pattern || gitCwds.includes(cwd) ? resolveHookRepo(cwd) : null;
   const parts = [];
 
-  if (pattern) {
-    const augmentText = runAugment(storagePath, repo.lbugPath, cwd, pattern);
+  if (pattern && repo) {
+    const augmentText = runAugment(repo.storagePath, repo.lbugPath, cwd, pattern);
     if (augmentText) parts.push(augmentText);
   }
 
-  if (gitMutation) {
-    const hint = buildStaleIndexHint(repo.metadata, cwd);
-    if (hint) {
+  for (const gitCwd of gitCwds) {
+    // The index to check belongs to the repository git ran in.
+    const gitRepo = gitCwd === cwd ? repo : resolveHookRepo(gitCwd, cwd);
+    const hint = gitRepo ? buildStaleIndexHint(gitRepo, gitCwd, cwd) : '';
+    if (hint && !parts.includes(hint)) {
       // The hint always reaches the agent via additionalContext (parts). Mirror
       // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
       // hook runners see no unexpected output on this normal path (#1913). The
@@ -414,35 +425,31 @@ function runAugment(storagePath, lbugPath, cwd, pattern) {
   return '';
 }
 
-function buildStaleIndexHint(meta, cwd) {
-  let currentHead = '';
-  try {
-    const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
-      encoding: 'utf-8',
-      timeout: 3000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    currentHead = (headResult.stdout || '').trim();
-  } catch {
-    return '';
-  }
+function buildStaleIndexHint(repo, gitCwd, cwd) {
+  const meta = repo.metadata;
+  const { head: currentHead, checkout } = readHead(gitCwd, cwd);
   if (!currentHead) return '';
 
   let lastCommit = '';
   let hadEmbeddings = false;
   if (meta) {
-    lastCommit = meta.lastCommit || '';
+    lastCommit = typeof meta.lastCommit === 'string' ? meta.lastCommit : '';
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;
   }
 
   if (currentHead === lastCommit) return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
+  const indexed = !lastCommit
+    ? 'never'
+    : COMMIT_ID.test(lastCommit)
+      ? lastCommit.slice(0, 7)
+      : 'unknown';
+  // Name the checkout git ran in when the agent works in another one.
+  const where = checkout ? ` in ${checkout}` : '';
   return (
-    `[GitNexus] index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-    `Run \`${analyzeCmd}\` to refresh the knowledge graph.`
+    `[GitNexus] index is stale (last indexed: ${indexed}). ` +
+    `Run \`${analyzeCmd}\`${where} to refresh the knowledge graph.`
   );
 }
 

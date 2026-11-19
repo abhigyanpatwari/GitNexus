@@ -78,6 +78,7 @@ beforeAll(async () => {
     'win-rm-list-json.ps1',
     'resolve-analyze-cmd.cjs',
     'registry-query.cjs',
+    'git-mutation-command.cjs',
   ]) {
     const helperPath = path.join(path.dirname(installedHook), helper);
     if (!fs.existsSync(helperPath)) {
