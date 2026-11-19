@@ -2,13 +2,18 @@
  * LLM Provider Types
  *
  * Type definitions for multi-provider LLM support.
- * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, GLM, and DeepSeek.
+ * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, GLM, DeepSeek, and OrcaRouter.
  */
 
 /**
  * Supported LLM providers
  */
-import { DEFAULT_OLLAMA_BASE_URL, DEFAULT_OPENROUTER_BASE_URL } from '../../config/ui-constants';
+import {
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_OPENROUTER_BASE_URL,
+  DEFAULT_ORCAROUTER_BASE_URL,
+  DEFAULT_ORCAROUTER_MODEL,
+} from '../../config/ui-constants';
 export type LLMProvider =
   | 'openai'
   | 'azure-openai'
@@ -18,7 +23,8 @@ export type LLMProvider =
   | 'openrouter'
   | 'minimax'
   | 'glm'
-  | 'deepseek';
+  | 'deepseek'
+  | 'orcarouter';
 
 export const MINIMAX_ANTHROPIC_BASE_URLS = {
   global_en: 'https://api.minimax.io/anthropic',
@@ -184,6 +190,16 @@ export interface DeepSeekConfig extends BaseProviderConfig {
 }
 
 /**
+ * OrcaRouter configuration — OpenAI-compatible gateway
+ */
+export interface OrcaRouterConfig extends BaseProviderConfig {
+  provider: 'orcarouter';
+  apiKey: string;
+  model: string; // e.g., 'orcarouter/auto'
+  baseUrl?: string; // defaults to https://api.orcarouter.ai/v1
+}
+
+/**
  * Union type for all provider configurations
  */
 export type ProviderConfig =
@@ -195,7 +211,8 @@ export type ProviderConfig =
   | OpenRouterConfig
   | MiniMaxConfig
   | GLMConfig
-  | DeepSeekConfig;
+  | DeepSeekConfig
+  | OrcaRouterConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -215,6 +232,7 @@ export interface LLMSettings {
   minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
   glm?: Partial<Omit<GLMConfig, 'provider'>>;
   deepseek?: Partial<Omit<DeepSeekConfig, 'provider'>>;
+  orcarouter?: Partial<Omit<OrcaRouterConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -281,6 +299,12 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
   deepseek: {
     apiKey: '',
     model: 'deepseek-v4-flash',
+    temperature: 0.1,
+  },
+  orcarouter: {
+    apiKey: '',
+    model: DEFAULT_ORCAROUTER_MODEL,
+    baseUrl: DEFAULT_ORCAROUTER_BASE_URL,
     temperature: 0.1,
   },
 };

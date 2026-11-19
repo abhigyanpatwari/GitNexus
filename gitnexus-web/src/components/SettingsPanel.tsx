@@ -371,6 +371,7 @@ export const SettingsPanel = ({
     'minimax',
     'glm',
     'deepseek',
+    'orcarouter',
   ];
 
   return (
@@ -484,7 +485,9 @@ export const SettingsPanel = ({
                                   ? '🔮'
                                   : provider === 'deepseek'
                                     ? '🐋'
-                                    : '☁️'}
+                                    : provider === 'orcarouter'
+                                      ? '🐳'
+                                      : '☁️'}
                   </div>
                   <span className="font-medium">{getProviderDisplayName(provider)}</span>
                 </button>
@@ -1003,6 +1006,50 @@ export const SettingsPanel = ({
               <p className="text-xs text-text-muted">
                 Compatible via OpenAI API format. The deepseek-reasoner model uses thinking mode and
                 requires round-tripping reasoning content.
+              </p>
+            </ProviderConfigCard>
+          )}
+
+          {/* OrcaRouter Settings */}
+          {settings.activeProvider === 'orcarouter' && (
+            <ProviderConfigCard
+              title="OrcaRouter"
+              apiKey={{
+                value: settings.orcarouter?.apiKey ?? '',
+                placeholder: t('settings:providers.orcarouter.apiKeyPlaceholder'),
+                helperText: t('settings:providers.openrouter.helperText'),
+                helperLink: 'https://www.orcarouter.ai',
+                helperLinkLabel: t('settings:providers.orcarouter.helperLinkLabel'),
+                isVisible: !!showApiKey['orcarouter'],
+                onChange: (value) =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    orcarouter: { ...prev.orcarouter!, apiKey: value },
+                  })),
+                onToggleVisibility: () => toggleApiKeyVisibility('orcarouter'),
+              }}
+              model={{
+                value: settings.orcarouter?.model ?? 'orcarouter/auto',
+                placeholder: t('settings:providers.orcarouter.modelPlaceholder'),
+                onChange: (value) =>
+                  setSettings((prev) => ({
+                    ...prev,
+                    orcarouter: { ...prev.orcarouter!, model: value },
+                  })),
+                helperText: 'orcarouter/auto (default) — or any model id exposed by the gateway',
+              }}
+            >
+              <p className="text-xs text-text-muted">
+                OpenAI-compatible gateway. Get your API key from{' '}
+                <a
+                  href="https://www.orcarouter.ai"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  orcarouter.ai
+                </a>
+                .
               </p>
             </ProviderConfigCard>
           )}
