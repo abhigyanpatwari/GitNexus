@@ -36,7 +36,8 @@ import { objectiveCScopeResolver } from '../../src/core/ingestion/languages/obje
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SMALL_CLASSES = 40;
 const LARGE_CLASSES = 160;
-const REPS = 7;
+const WARMUP_PAIRS = 10;
+const MEASURED_PAIRS = 31;
 
 const graphNodeId = (label, qualifiedName) => `${label}:${qualifiedName}`;
 
@@ -277,45 +278,61 @@ function protocolCorpus(classCount) {
   return { factsList, parsedFiles };
 }
 
-function run(shape, classCount) {
-  const corpus = shape === 'spread' ? spreadCorpus(classCount) : protocolCorpus(classCount);
+function run(corpus) {
   const graph = createKnowledgeGraph();
   seedGraph(graph, corpus.factsList);
+  const start = performance.now();
   objectiveCScopeResolver.emitPostResolutionEdges(graph, corpus.parsedFiles);
-  return summarize(graph);
+  const ms = performance.now() - start;
+  return { ms, counts: summarize(graph) };
 }
 
-function measure(shape, classCount) {
-  run(shape, classCount);
-  let bestMs = Infinity;
-  let counts = { calls: 0, extends: 0, implements: 0, protocol_candidate_uses: 0 };
-  for (let i = 0; i < REPS; i++) {
-    const start = performance.now();
-    counts = run(shape, classCount);
-    bestMs = Math.min(bestMs, performance.now() - start);
+function measure(buildCorpus) {
+  const scales = [SMALL_CLASSES, LARGE_CLASSES].map((classes) => ({
+    classes,
+    corpus: buildCorpus(classes),
+    samples: [],
+  }));
+  const reversed = scales.toReversed();
+  // Warm up both sizes together, then keep each small/large pair close in time.
+  for (let pair = 0; pair < WARMUP_PAIRS + MEASURED_PAIRS; pair++) {
+    for (const scale of pair % 2 === 0 ? scales : reversed) {
+      const { ms, counts } = run(scale.corpus);
+      if (pair >= WARMUP_PAIRS) {
+        scale.samples.push(ms);
+        scale.counts = counts;
+      }
+    }
   }
-  return {
-    classes: classCount,
-    ...counts,
-    min_ms: Number(bestMs.toFixed(2)),
-  };
+  return scalingReport(scales[0], scales[1]);
+}
+
+function median(samples) {
+  return samples.toSorted((a, b) => a - b)[Math.floor(samples.length / 2)];
 }
 
 function scalingReport(small, large) {
   const workloadRatio = large.classes / small.classes;
-  const scalingRatio = Number((large.min_ms / Math.max(small.min_ms, 0.01)).toFixed(3));
+  // Independent minima can compare different JIT tiers or runner load.
+  const scalingRatio = median(large.samples.map((ms, i) => ms / small.samples[i]));
+  const summarizeScale = ({ classes, counts, samples }) => ({
+    classes,
+    ...counts,
+    min_ms: Number(Math.min(...samples).toFixed(3)),
+    median_ms: Number(median(samples).toFixed(3)),
+  });
   return {
-    small,
-    large,
+    small: summarizeScale(small),
+    large: summarizeScale(large),
     workload_ratio: workloadRatio,
-    scaling_ratio: scalingRatio,
+    scaling_ratio: Number(scalingRatio.toFixed(3)),
     linear_factor: Number((scalingRatio / workloadRatio).toFixed(3)),
   };
 }
 
 const report = {
-  spread: scalingReport(measure('spread', SMALL_CLASSES), measure('spread', LARGE_CLASSES)),
-  protocol: scalingReport(measure('protocol', SMALL_CLASSES), measure('protocol', LARGE_CLASSES)),
+  spread: measure(spreadCorpus),
+  protocol: measure(protocolCorpus),
 };
 
 if (!process.argv.includes('--check')) {
