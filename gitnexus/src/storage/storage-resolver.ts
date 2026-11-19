@@ -446,21 +446,33 @@ const readOwnershipMetadata = async (
     if (!discovery)
       return parseOwnershipMetadata(await fsp.readFile(metadataPath, 'utf-8'), filename);
     // Ownership metadata historically follows symlinks, while graph routing never
-    // trusts a pointer from one. Preserve that distinction even on a cache hit.
-    const link = await fsp.lstat(metadataPath);
-    const linked = link.isSymbolicLink();
+    // trusts a pointer from one. Make the open itself select the safe path.
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
     const noFollow = fs.constants.O_NOFOLLOW ?? 0;
-    const file = await fsp.open(
-      metadataPath,
-      fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0) | (linked ? 0 : noFollow),
-    );
+    let linked = false;
+    let file: FileHandle;
+    try {
+      file = await fsp.open(metadataPath, flags | noFollow);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!noFollow || (code !== 'ELOOP' && code !== 'EMLINK' && code !== 'EFTYPE')) throw error;
+      linked = true;
+      file = await fsp.open(metadataPath, flags);
+    }
     try {
       const stat = await file.stat({ bigint: true });
       if (!stat.isFile())
         return { state: 'invalid', reason: `${filename} must be a regular file.` };
-      if (!linked && !noFollow) {
-        const current = await fsp.lstat(metadataPath, { bigint: true });
-        if (!current.isFile() || current.ino !== stat.ino || current.dev !== stat.dev) {
+      if (!noFollow) {
+        const entry = await fsp.lstat(metadataPath, { bigint: true });
+        linked = entry.isSymbolicLink();
+        const current = linked ? await fsp.stat(metadataPath, { bigint: true }) : entry;
+        if (
+          !current.isFile() ||
+          stat.ino === 0n ||
+          current.ino !== stat.ino ||
+          current.dev !== stat.dev
+        ) {
           return { state: 'invalid', reason: `EAGAIN: ${filename} changed during open.` };
         }
       }

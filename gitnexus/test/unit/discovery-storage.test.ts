@@ -1,3 +1,4 @@
+import { constants } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +32,24 @@ afterEach(async () => {
 const inspect = () => inspectStoragePath(slot, repo, cache);
 const writeMetadata = (file: string, fields: Record<string, unknown> = {}) =>
   fs.writeFile(file, JSON.stringify({ repoPath: repo, storagePath: slot, ...fields }));
+
+it('opens metadata before classifying the path and verifies its directory entry when no-follow is unavailable', async () => {
+  await writeMetadata(primary);
+  const calls: string[] = [];
+  const open = fs.open.bind(fs);
+  vi.spyOn(fs, 'open').mockImplementation((target, flags, mode) => {
+    if (target === primary)
+      calls.push(Number(flags) & constants.O_NOFOLLOW ? 'open-nofollow' : 'open');
+    return open(target, flags, mode);
+  });
+  const lstat = fs.lstat.bind(fs);
+  vi.spyOn(fs, 'lstat').mockImplementation((target, ...args) => {
+    if (target === primary) calls.push('lstat');
+    return lstat(target, ...args);
+  });
+  await expect(inspect()).resolves.toMatchObject({ state: 'owned' });
+  expect(calls).toEqual(constants.O_NOFOLLOW ? ['open-nofollow'] : ['open', 'lstat']);
+});
 
 it('shares one descriptor-bound parse, then revalidates the current graph on warm reads', async () => {
   await writeMetadata(primary, { graphPath: generation, contentRetention: 'symbol' });
@@ -175,6 +194,12 @@ it.skipIf(process.platform === 'win32')(
     await fs.writeFile(path.join(slot, generation), '');
     await expect(inspect()).resolves.toMatchObject({
       discovery: { graphPath: path.join(slot, 'lbug'), contentRetention: 'symbol' },
+    });
+    await writeMetadata(legacy, { graphPath: generation });
+    await fs.unlink(target);
+    // A missing target keeps the existing legacy fallback. Its pointer is ignored.
+    await expect(inspect()).resolves.toMatchObject({
+      discovery: { graphPath: path.join(slot, 'lbug'), contentRetention: 'full' },
     });
   },
 );
