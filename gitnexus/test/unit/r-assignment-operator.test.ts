@@ -51,6 +51,19 @@ const FN_SOURCE = (op: string) => `x ${op} function() 1`;
 const NEW_SOURCE = (op: string) => `x ${op} Foo$new()`;
 
 describe('R queries: only an assignment declares a definition', () => {
+  it('recognizes the R6 namespace and rejects an unrelated function of the same name', () => {
+    for (const query of [definitionQuery, scopeQuery]) {
+      const definitions = (pkg: string) =>
+        captured(query, R6_SOURCE('<-').replace('R6Class', pkg + '::R6Class'));
+      expect(definitions('R6').some((c) => /(?:definition|declaration)\.class:/.test(c))).toBe(
+        true,
+      );
+      expect(
+        definitions('unrelated').some((c) => /(?:definition|declaration)\.class:/.test(c)),
+      ).toBe(false);
+    }
+  });
+
   it.each(['<-', '=', '<<-'])('R6Class with %s defines class, method, field and scope', (op) => {
     const defs = captured(definitionQuery, R6_SOURCE(op));
     expect(defs.some((c) => c.startsWith('definition.class:'))).toBe(true);

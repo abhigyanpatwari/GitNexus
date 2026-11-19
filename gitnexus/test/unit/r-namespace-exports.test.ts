@@ -218,11 +218,12 @@ describe('loadRPackageConfig -> RNamespaceInfo exports', () => {
       expect(patterns.map((p) => p.source)).toEqual(['^(a|b)#']);
     });
 
-    it('drops an empty or non-string pattern argument without throwing', async () => {
+    it('keeps an empty match-all pattern and drops a non-string argument', async () => {
       const { patterns } = await load(
         'exportPattern("")\nexportPattern(bare)\nexportPattern("^ok")\n',
       );
-      expect(patterns.map((p) => p.source)).toEqual(['^ok']);
+      expect(patterns.map((p) => p.source)).toEqual(['', '^ok']);
+      expect(patterns[0].test('anotherName')).toBe(true);
     });
   });
 

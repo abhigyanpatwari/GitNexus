@@ -63,9 +63,7 @@ import { parseJavaConstOperands } from './java-const-resolver.js';
  * class. Without them the prefix was invisible and the method route was emitted
  * unprefixed, i.e. at a path the application does not serve.
  */
-const ROUTE_ANNOTATION_QUERY = new Parser.Query(
-  Java,
-  `
+const ROUTE_ANNOTATION_QUERY = `
   [
     (class_declaration
       (modifiers
@@ -136,8 +134,11 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
                       (field_access) @value_expr
                       (binary_expression) @value_expr]))))) @node
   ]
-`,
-);
+`;
+
+// The provider registry imports this module in every parser worker, including
+// workers that only see other languages. Compile on the first Java extraction.
+let routeAnnotationQuery: Parser.Query | undefined;
 
 /**
  * Extract Spring route annotations from a parsed Java file.
@@ -156,7 +157,8 @@ export function extractSpringRoutes(
   filePath: string,
   lineOffset = 0,
 ): ExtractedDecoratorRoute[] {
-  const matches = ROUTE_ANNOTATION_QUERY.matches(tree.rootNode);
+  routeAnnotationQuery ??= new Parser.Query(Java, ROUTE_ANNOTATION_QUERY);
+  const matches = routeAnnotationQuery.matches(tree.rootNode);
 
   // Phase 1: collect class-level @RequestMapping prefixes keyed by node id.
   // A scalar prefix (`@RequestMapping("/base")`) is stored in prefixByClassId.
@@ -173,7 +175,7 @@ export function extractSpringRoutes(
   // publish them at a WRONG (unprefixed) path rather than not at all.
   const classesWithUnfoldablePrefix = new Set<number>();
   const classHttpMethodsById = new Map<number, readonly string[]>();
-  for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
+  for (const match of getTypeDeclarationQuery().matches(tree.rootNode)) {
     const typeNode = match.captures.find((capture) => capture.name === 'type')?.node;
     if (typeNode?.type === 'class_declaration') {
       classHttpMethodsById.set(typeNode.id, typeRequestMethods(typeNode));
@@ -325,7 +327,7 @@ export function extractSpringRoutes(
   }
 
   // Mapping annotations without a path bind to the enclosing class prefix.
-  for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
+  for (const match of getTypeDeclarationQuery().matches(tree.rootNode)) {
     const typeNode = match.captures.find((capture) => capture.name === 'type')?.node;
     if (typeNode?.type !== 'class_declaration') continue;
     // A no-argument `@GetMapping` IS the class prefix, so a class prefix that
@@ -369,10 +371,12 @@ export function extractSpringRoutes(
  * used by `extractSpringTypes` to build the project-wide `SharedSpringType`
  * view the cross-file interface-inheritance pass consumes (#2288).
  */
-const TYPE_DECLARATION_QUERY = new Parser.Query(
-  Java,
-  `[(class_declaration) @type (interface_declaration) @type]`,
-);
+const TYPE_DECLARATION_QUERY = `[(class_declaration) @type (interface_declaration) @type]`;
+let typeDeclarationQuery: Parser.Query | undefined;
+
+function getTypeDeclarationQuery(): Parser.Query {
+  return (typeDeclarationQuery ??= new Parser.Query(Java, TYPE_DECLARATION_QUERY));
+}
 
 /** Direct annotations on a type/method declaration (reads its `modifiers` child). */
 function declarationAnnotations(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
@@ -519,7 +523,7 @@ function directMethods(typeNode: Parser.SyntaxNode): Parser.SyntaxNode[] {
  */
 export function extractSpringTypes(tree: Parser.Tree, filePath: string): SharedSpringType[] {
   const out: SharedSpringType[] = [];
-  for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
+  for (const match of getTypeDeclarationQuery().matches(tree.rootNode)) {
     const typeNode = match.captures.find((c) => c.name === 'type')?.node;
     if (!typeNode) continue;
     const name = typeNode.childForFieldName('name')?.text;

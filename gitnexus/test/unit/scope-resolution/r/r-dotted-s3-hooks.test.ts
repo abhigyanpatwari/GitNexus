@@ -75,15 +75,15 @@ describe('expandRWildcardNames', () => {
     return expandRWildcardNames(parsed.moduleScope, [parsed]);
   };
 
-  it('drops a bare name whose file defines a dotted def with that tail (S3 method first)', () => {
+  it('includes a bare name defined after its S3 method', () => {
     expect(names('print.foo <- function(x) x\nfoo <- function(v) v\nqux <- function(v) v')).toEqual(
-      ['qux'],
+      ['foo', 'qux'],
     );
   });
 
-  it('drops it in the mirror layout too (order-blind)', () => {
+  it('includes a bare name defined before its S3 method', () => {
     expect(names('bar <- function(v) v\nprint.bar <- function(x) x\nqux <- function(v) v')).toEqual(
-      ['qux'],
+      ['bar', 'qux'],
     );
   });
 

@@ -6,12 +6,13 @@ import type {
   RenameSemanticContext,
   RenameSource,
 } from '../../rename-provider.js';
-import { unescapeRString } from './export-pattern.js';
+import { rStringValue } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
 import { assignmentTarget, isCallee, rBoundName, rLexicalAssignedNames } from './assignment.js';
 import { rOwningPackageDir, rRDirPrefix } from './namespace-imports.js';
 import {
   rExportPatternsIncomplete,
+  rExportLocaleUnknown,
   rNamespaceExports,
   recordedRPackageConfig,
   type RNamespaceInfo,
@@ -36,23 +37,6 @@ const RESERVED = new Set(
     ' ',
   ),
 );
-
-/** `r"(...)"`, `R'[...]'`, `r"---{...}---"`: no escapes; the body is taken as written. */
-const RAW_STRING = /^[rR](["'])(-*)(?:\(([\s\S]*)\)|\[([\s\S]*)\]|\{([\s\S]*)\})\2\1$/;
-
-/**
- * The value R holds for a string literal's source text, or null when it is not a
- * recognisable literal. Escapes are decoded (`"f\u006fo"` is `foo`), raw strings are
- * taken verbatim, so the guard compares what the string means, not how it is spelled.
- */
-function rStringValue(text: string): string | null {
-  const raw = RAW_STRING.exec(text);
-  if (raw) return raw[3] ?? raw[4] ?? raw[5] ?? '';
-  const quote = text[0];
-  if ((quote !== '"' && quote !== "'") || text.length < 2 || text[text.length - 1] !== quote)
-    return null;
-  return unescapeRString(text.slice(1, -1));
-}
 
 /**
  * Generics of base R and its default packages that an S3 method name `generic.class` can register
@@ -234,6 +218,11 @@ const escapeRegExp = (name: string): string => name.replace(/[.*+?^${}()|[\]\\]/
 
 /** Characters that continue an R identifier, so a match next to one is part of a longer name. */
 const NAME_CHAR = 'A-Za-z0-9._';
+
+function stringCallPattern(name: string): RegExp {
+  const literal = escapeRegExp(name);
+  return new RegExp('(?:`' + literal + '`|(?<![' + NAME_CHAR + '])' + literal + ')\\s*\\(');
+}
 
 /** The source text of a rename source (hand-built test sources may carry only the tree). */
 const sourceText = (source: RenameSource): string =>
@@ -638,7 +627,10 @@ function inDuplicatePackage(file: string, config: RPackageConfig | undefined): b
       (owner === undefined || dir.length > owner.length)
     )
       owner = dir;
-  return owner !== undefined && config.duplicatePackageDirs.has(owner);
+  return (
+    owner !== undefined &&
+    (config.packageUniquenessUnknown || config.duplicatePackageDirs.has(owner))
+  );
 }
 
 const collision = (message: string): RenameIssue => ({ code: 'name_collision', message });
@@ -836,7 +828,9 @@ export const rRenameProvider: RenameProvider = {
     // rewrite or strand them.
     if (inDuplicatePackage(target.filePath, recorded))
       return ambiguous(
-        "More than one directory declares this package's Package: name; which copy a `pkg::` call reaches is not decided, so a rename could rewrite or strand calls.",
+        recorded?.packageUniquenessUnknown
+          ? 'Package discovery could not establish a unique directory for this package name. A rename could change calls belonging to another copy.'
+          : "More than one directory declares this package's Package: name. A rename could change calls belonging to another copy.",
       );
     const loadUnit = rOwningPackageDir(target.filePath, recorded);
     for (const [path, source] of files) {
@@ -846,8 +840,8 @@ export const rRenameProvider: RenameProvider = {
           'This name is defined in more than one file; load order decides which definition callers reach.',
         );
     }
-    const callInString = new RegExp(`(?<![${NAME_CHAR}])${escapeRegExp(name)}\\s*\\(`);
-    const newCallInString = new RegExp(`(?<![${NAME_CHAR}])${escapeRegExp(newName)}\\s*\\(`);
+    const callInString = stringCallPattern(name);
+    const newCallInString = stringCallPattern(newName);
     for (const source of files.values()) {
       if (!source.tree) continue;
       for (const node of walkNamedNodes(source.tree.rootNode)) {
@@ -1106,10 +1100,18 @@ function currentNamespaceIssue(
       'The package NAMESPACE now exports this function (export(), exportPattern() or S3method()); that entry would not be renamed. Re-run analyze to refresh the index.',
     );
   // A private function renamed into an exported name changes the package API.
+  if (info.s3Registered?.has(newName))
+    return unsupported('The new name is registered as an S3 method in NAMESPACE.');
   if (rNamespaceExports(info, newName))
     return unsupported(
       'The new name would be exported by NAMESPACE (export()/exportPattern()), changing the package API.',
     );
+  if (rExportLocaleUnknown(info, name) || rExportLocaleUnknown(info, newName))
+    return {
+      code: 'incomplete_semantics',
+      status: 'unsupported',
+      message: 'Package exports for this name depend on the R locale.',
+    };
   if (rExportPatternsIncomplete(info))
     return {
       code: 'incomplete_semantics',

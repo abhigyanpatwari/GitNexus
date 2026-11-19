@@ -49,6 +49,7 @@ describe('R scope query: imports name only their first argument', () => {
   it('imports the argument named by package = / file =', () => {
     expect(importSources('library(package = pkg)')).toEqual(['pkg']);
     expect(importSources('source(file = "a.R")')).toEqual(['"a.R"']);
+    expect(importSources('source(file = path)')).toEqual([]);
     expect(importSources('library(package = pkg, "other")')).toEqual(['pkg']);
   });
 
@@ -75,7 +76,8 @@ describe('R scope query: library() arguments that change what is attached', () =
 
   it('still imports with other arguments, and never changes source()', () => {
     expect(importSources('library(pkg, quietly = TRUE)')).toEqual(['pkg']);
-    expect(importSources('library(pkg, character.only = FALSE)')).toEqual([]);
+    expect(importSources('library(pkg, character.only = FALSE)')).toEqual(['pkg']);
+    expect(importSources('library(pkg, character.only = flag)')).toEqual([]);
     expect(importSources('source("a.R", exclude = f)')).toEqual(['"a.R"']);
   });
 });

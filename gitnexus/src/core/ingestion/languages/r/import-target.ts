@@ -10,6 +10,7 @@ import { EXTENSIONS } from '../import-candidates.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import { rExportPatternMatches, type RPackageConfig } from './package-config.js';
 import { rBareName } from './bare-name.js';
+import { rStringValue } from './export-pattern.js';
 import { rFileTopLevel, rPackageDirForFile, type RFileTopLevel } from './namespace-imports.js';
 import type { ImportResolutionContext } from '../../scope-resolution/contract/scope-resolver.js';
 import { getWorkspaceFileIndex } from '../../utils/workspace-file-index.js';
@@ -51,7 +52,7 @@ export function resolveRImportInternal(
     if (direct !== undefined) return direct;
 
     const pathParts = cleaned.split('/').filter(Boolean);
-    return suffixResolve(pathParts, normalizedFileList, allFileList, EXTENSIONS, index);
+    return suffixResolve(pathParts, normalizedFileList, allFileList, [''], index);
   }
 
   // library("pkg") / require("pkg") — resolve to ALL files in the local package
@@ -207,21 +208,9 @@ function backtickedExports(exports: ReadonlySet<string>): ReadonlySet<string> {
 /**
  * Resolve a NAMESPACE `importFrom(pkg, importedName)` to the `R/` file(s) of the
  * local package `pkg` that define `importedName` at top level, or `null`.
- * `importedName` is the symbol (`%||%`) or a definition's own spelling (`` `%||%` ``): files
- * are found by the symbol, while the dotted-tail guard below compares the spelling, because
- * finalize indexes a definition by the text of its name as written.
- *
- * `null` (no binding, no IMPORTS edge) when: more than one file of `pkg` defines the name;
- * `pkg` is not a local package
- * (external packages never suffix-match anything); `importedName` is dotted
- * (finalize keys defs by the text after the last `.`, so it can never bind);
- * the provider has a NAMESPACE that does not export the name; no file defines
- * it at top level; or a defining file also holds a dotted top-level def whose
- * tail equals `importedName` (finalize would index `print.tidy` under `tidy`
- * and bind the WRONG def — the guard is order-blind, so it also refuses the
- * layout where the bare def comes first); or a defining file holds another undotted definition with that
- * name (a closure-local function, a second assignment), which finalize could bind instead. `null` degrades the call site to the
- * baseline `global-name-fallback` guess. Never builds a workspace file index.
+ * Look up the symbol without backticks. The module export map preserves its definition spelling.
+ * A named import requires one package, a proven export, and one unambiguous file binding.
+ * Dotted import names are outside the supported named-import rules.
  */
 export function resolveRNamedImport(
   rConfig: RPackageConfig | null,
@@ -231,7 +220,13 @@ export function resolveRNamedImport(
 ): readonly string[] | null {
   const pkg = targetRaw.replace(/^["']|["']$/g, '');
   const pkgDir = rConfig?.packages.get(pkg);
-  if (rConfig === null || pkgDir === undefined) return null;
+  if (
+    rConfig === null ||
+    pkgDir === undefined ||
+    rConfig.packageUniquenessUnknown ||
+    rConfig.duplicatePackageDirs?.has(pkgDir)
+  )
+    return null;
 
   if (importedName.includes('.')) return null;
 
@@ -252,9 +247,6 @@ export function resolveRNamedImport(
   // Two files of the package define the name: which one R uses depends on load order, so the
   // name binds to neither.
   if (definedAsFunctionInSeveralFiles(index, defining, symbol)) return null;
-  if (defining.some((file) => index.files.get(file)?.dottedTails.has(importedName) === true)) {
-    return null;
-  }
   // A defining file in which another definition (a closure-local function, a second assignment)
   // carries the same name: finalize would bind the first one it meets.
   if (defining.some((file) => index.files.get(file)?.repeated.has(symbol) === true)) return null;
@@ -295,7 +287,22 @@ export function resolveRImportTarget(
 
   if (context?.parsedImport?.kind === 'wildcard') {
     const cleaned = targetRaw.replace(/^["']|["']$/g, '');
-    if (rConfig === null || !rConfig.packages.has(cleaned)) return null;
+    const dir = rConfig?.packages.get(cleaned);
+    if (
+      dir === undefined ||
+      rConfig.packageUniquenessUnknown ||
+      rConfig.duplicatePackageDirs?.has(dir)
+    )
+      return null;
+  }
+
+  if (context?.parsedImport?.kind === 'side-effect') {
+    const source = rStringValue(targetRaw);
+    if (source === null || !/\.[Rr]$/.test(source) || /^(?:~|[a-z][a-z0-9+.-]*:\/\/)/i.test(source))
+      return null;
+    // Keep this path separate from package discovery and cross-language suffix guesses.
+    const { normalized, all, index, normToRaw } = getWorkspaceFileIndex(allFilePaths);
+    return resolveRImportInternal(fromFile, source, normalized, all, null, index, normToRaw);
   }
 
   if (context?.parsedImport?.kind === 'named') {

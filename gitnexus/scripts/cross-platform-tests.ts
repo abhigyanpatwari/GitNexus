@@ -126,6 +126,9 @@ const PLATFORM_LOGIC = [
   'test/unit/repo-manager-finalize-invariant.test.ts',
   'test/unit/git-utils.test.ts',
   'test/unit/hooks.test.ts',
+  // A `git -C` path is resolved with the platform's path rules, and a network
+  // path is refused on Windows only; Ubuntu alone would never read that half.
+  'test/unit/git-mutation-command.test.ts',
   'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',
   'test/unit/factory-plugin.test.ts',
@@ -411,6 +414,9 @@ const WORKER_THREADS = [
   'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
   'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
+  // Lombok accessor, constructor-DI and workspace-proof facts through a real
+  // parse worker (cold) and the warm cache replay.
+  'test/integration/java-lombok-worker-cache.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
@@ -436,6 +442,8 @@ const FILESYSTEM = [
   'test/unit/dart-package-imports.test.ts',
   // Verify the same capture is reused by native parsing and scope resolution.
   'test/integration/resolvers/dart.test.ts',
+  // Exercise non-ASCII Java package paths and file names on each platform.
+  'test/integration/java-non-ascii-names.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',

@@ -44,6 +44,18 @@ function callerFile(filePath: string): ParsedFile {
 }
 
 describe('populateRQualifiedCalls: <name>/R/ ownership', () => {
+  it('drops a qualified call when two directories declare the package', () => {
+    const cfg: RPackageConfig = {
+      packages: new Map([['foo', 'a']]),
+      packageDirs: new Set(['a', 'b']),
+      duplicatePackageDirs: new Set(['a', 'b']),
+      namespaceInfoByPackageDir: new Map(),
+    };
+    const files = [definingFile('a/R/helper.R'), callerFile('scripts/use.R')];
+    populateRQualifiedCalls(files, { resolutionConfig: cfg });
+    expect(files[1].referenceSites).toEqual([]);
+  });
+
   it('binds `foo::helper` to the undiscovered foo/R/ package, not to a discovered package in a directory named foo', () => {
     // Discovery found `Package: bar` in pkgs/foo; x/foo/R/ has no DESCRIPTION, so `foo` is a
     // package only through its directory name.

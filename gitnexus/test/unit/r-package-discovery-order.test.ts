@@ -115,6 +115,16 @@ describe('R package discovery is independent of readdir order', () => {
     }
   });
 
+  it('records a second copy below the discovery depth even beside an unknown package', async () => {
+    const root = await newRepo();
+    await write(root, 'pkg/DESCRIPTION', desc('dup'));
+    await write(root, 'a/b/c/d/extra/DESCRIPTION', desc('other'));
+    await write(root, 'a/b/c/d/copy/DESCRIPTION', desc('dup'));
+    const cfg = await discover(root, 'asc');
+    expect(cfg.truncated).toBe(true);
+    expect(cfg.duplicatePackageDirs).toEqual(new Set(['pkg', 'a/b/c/d/copy']));
+  });
+
   it('same-depth duplicates compare as whole paths, not segment by segment', async () => {
     const root = await newRepo();
     // '-' (U+002D) sorts before '/' (U+002F), so as whole strings 'a-b/x' < 'a/x',

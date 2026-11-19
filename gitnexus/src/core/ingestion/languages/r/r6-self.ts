@@ -30,11 +30,15 @@ const argumentName = (argument: SyntaxNode): string | null => {
 };
 
 /** Whether `call` is `R6Class(...)` or `R6::R6Class(...)`. */
-const isR6ClassCall = (call: SyntaxNode): boolean => {
+export const isR6ClassCall = (call: SyntaxNode): boolean => {
   if (call.type !== 'call') return false;
   const fn = call.childForFieldName('function');
   if (fn?.type === 'identifier') return fn.text === 'R6Class';
-  return fn?.type === 'namespace_operator' && fn.childForFieldName('rhs')?.text === 'R6Class';
+  return (
+    fn?.type === 'namespace_operator' &&
+    fn.childForFieldName('lhs')?.text === 'R6' &&
+    fn.childForFieldName('rhs')?.text === 'R6Class'
+  );
 };
 
 /** The `call` an `arguments` node's `argument` belongs to, or null. */

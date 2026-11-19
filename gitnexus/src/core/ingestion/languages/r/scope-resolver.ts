@@ -188,14 +188,8 @@ const parsedFileByModuleScope = perFileSet(
  * The dropped name resolves through the lower tiers. So is a name that another file of the same
  * package defines at top level too (`docs/languages/r-provider.md`: such a name stays ambiguous).
  *
- * A bare name is dropped when the same file also defines a dotted top-level
- * name with that tail (`foo` next to `print.foo`). The shared finalize indexes
- * every def by the text after its last `.`, so `foo` would be bound to
- * whichever of the two comes first in the file, and `print.foo` (an S3 method,
- * never callable as `foo()`) can win. The dropped name resolves through the
- * free-call fallback instead, where {@link rIsCallableVisibleFromCaller}
- * removes the dotted def from the candidates. Order-blind, like the matching
- * guard in `languages/r/import-target.ts`.
+ * Finalization uses the module's exact names, so `foo` remains available even
+ * when the module also defines an S3 method such as `print.foo`.
  */
 export function expandRWildcardNames(
   targetModuleScope: ScopeId,
@@ -203,7 +197,7 @@ export function expandRWildcardNames(
 ): readonly string[] {
   const target = parsedFileByModuleScope(parsedFiles).get(targetModuleScope);
   if (target === undefined) return [];
-  const { names: topLevel, dottedTails, repeated } = rFileTopLevel(target);
+  const { names: topLevel, repeated } = rFileTopLevel(target);
   const cfg = recordedRPackageConfig(target);
   const seen = new Set<string>();
   const names: string[] = [];
@@ -224,7 +218,6 @@ export function expandRWildcardNames(
     ) {
       continue;
     }
-    if (dottedTails.has(qn)) continue; // shares its tail with an S3 method: see above (as written, as finalize keys it)
     if (cfg !== undefined && rSymbolVisibility(cfg, target.filePath, rBareName(qn)) !== 'public') {
       continue; // not an export of the package (or not provably one)
     }
@@ -274,6 +267,7 @@ export const rScopeResolver: ScopeResolver = {
   }),
 
   resolveImportTarget: resolveRImportTarget,
+  moduleExports: (parsed) => rFileTopLevel(parsed).moduleExports,
 
   expandsWildcardTo: (targetModuleScope, parsedFiles) =>
     expandRWildcardNames(targetModuleScope, parsedFiles),

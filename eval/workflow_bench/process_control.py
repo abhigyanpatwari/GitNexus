@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -384,6 +385,7 @@ def _spawn(
     env: Mapping[str, str] | None,
     shell: bool,
     pipe_stdin: bool,
+    stdio_socket: socket.socket | None,
     ownership_slot: list[tuple[subprocess.Popen[bytes], _WindowsJob | None, int | None]],
 ) -> tuple[subprocess.Popen[bytes], _WindowsJob | None, str]:
     flags = 0
@@ -395,6 +397,9 @@ def _spawn(
     else:
         kwargs["start_new_session"] = True
 
+    stdin: int | socket.socket = subprocess.PIPE if pipe_stdin else subprocess.DEVNULL
+    if stdio_socket is not None:
+        stdin = stdio_socket
     process = None
     try:
         process = subprocess.Popen(
@@ -402,8 +407,8 @@ def _spawn(
             cwd=cwd,
             env=dict(env) if env is not None else None,
             shell=shell,
-            stdin=subprocess.PIPE if pipe_stdin else subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
+            stdin=stdin,
+            stdout=stdio_socket if stdio_socket is not None else subprocess.PIPE,
             stderr=subprocess.PIPE,
             creationflags=flags,
             **kwargs,
@@ -478,6 +483,7 @@ def _run_managed_inner(
     tail_bytes: int = MAX_TAIL_BYTES,
     require_pid_namespace: bool = False,
     stdin_data: bytes | None = None,
+    stdio_socket: socket.socket | None = None,
     capture_stdout_bytes: int | None = None,
     echo_stdout: bool = False,
     stdout_observer: Callable[[bytes], None] | None = None,
@@ -494,6 +500,11 @@ def _run_managed_inner(
         raise ValueError("timeout and tail_bytes must be positive; terminate_grace must be non-negative")
     if capture_stdout_bytes is not None and capture_stdout_bytes <= 0:
         raise ValueError("capture_stdout_bytes must be positive when supplied")
+    if stdio_socket is not None and (
+        os.name == "nt" or stdin_data is not None or capture_stdout_bytes is not None
+        or echo_stdout or stdout_observer is not None
+    ):
+        raise ValueError("stdio_socket requires POSIX and exclusive use of stdin and stdout")
     if require_pid_namespace:
         if os.name == "nt":
             return _empty_result("ownership-failure", started, "PID-namespace execution is not supported on Windows")
@@ -511,6 +522,7 @@ def _run_managed_inner(
             env=env,
             shell=shell,
             pipe_stdin=stdin_data is not None,
+            stdio_socket=stdio_socket,
             ownership_slot=_ownership_slot,
         )
     except (KeyboardInterrupt, SystemExit):
@@ -527,19 +539,20 @@ def _run_managed_inner(
         _ownership_slot.append((process, job, owned_pgid))
     if require_pid_namespace:
         ownership = "bwrap-pid-namespace"
-    assert process.stdout is not None and process.stderr is not None
+    assert process.stderr is not None
     stdout = _TailBuffer(tail_bytes)
     stderr = _TailBuffer(tail_bytes)
     stdout_capture = _BoundedCapture(capture_stdout_bytes) if capture_stdout_bytes is not None else None
     echo = getattr(sys.stderr, "buffer", None) if echo_stdout else None
-    readers = [
-        threading.Thread(
-            target=_drain,
-            args=(process.stdout, stdout, stdout_capture, echo, stdout_observer),
-            daemon=True,
-        ),
-        threading.Thread(target=_drain, args=(process.stderr, stderr), daemon=True),
-    ]
+    readers = [threading.Thread(target=_drain, args=(process.stderr, stderr), daemon=True)]
+    if process.stdout is not None:
+        readers.append(
+            threading.Thread(
+                target=_drain,
+                args=(process.stdout, stdout, stdout_capture, echo, stdout_observer),
+                daemon=True,
+            )
+        )
     for reader in readers:
         reader.start()
     stdin_errors: list[str] = []
@@ -715,6 +728,8 @@ def _run_managed_inner(
         state = "reap-failure"
         detail = (detail + "; " if detail else "") + "output pipes remained open after tree termination"
         for pipe in (process.stdout, process.stderr):
+            if pipe is None:
+                continue
             try:
                 pipe.close()
             except OSError:
@@ -769,6 +784,7 @@ def run_managed(
     tail_bytes: int = MAX_TAIL_BYTES,
     require_pid_namespace: bool = False,
     stdin_data: bytes | None = None,
+    stdio_socket: socket.socket | None = None,
     capture_stdout_bytes: int | None = None,
     echo_stdout: bool = False,
     stdout_observer: Callable[[bytes], None] | None = None,
@@ -780,6 +796,9 @@ def run_managed(
     arrives, so a long child (the benchmark sweep) reports progress in the CI
     log instead of surfacing only its bounded tail after it finishes. Use it
     only for children whose stdout is log text.
+
+    `stdio_socket` connects the child's stdin and stdout to one caller-owned
+    POSIX socket. The supervisor still captures stderr and owns teardown.
 
     `stdout_observer` sees the same chunks without copying them anywhere, so a
     child whose stdout is *not* printable (a Claude session's evidence stream)
@@ -799,6 +818,7 @@ def run_managed(
             tail_bytes=tail_bytes,
             require_pid_namespace=require_pid_namespace,
             stdin_data=stdin_data,
+            stdio_socket=stdio_socket,
             capture_stdout_bytes=capture_stdout_bytes,
             echo_stdout=echo_stdout,
             stdout_observer=stdout_observer,

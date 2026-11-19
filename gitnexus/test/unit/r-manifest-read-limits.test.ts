@@ -52,7 +52,11 @@ describe('R manifest reads', () => {
     await fs.symlink(outside, path.join(repo, 'NAMESPACE'));
     const config = await loadRPackageConfig(repo);
     expect(config.packages.get('pk')).toBe('');
-    expect(config.namespaceInfoByPackageDir.has('')).toBe(false);
+    expect(config.namespaceInfoByPackageDir.get('')).toMatchObject({
+      exportsUnreadable: true,
+      importsUnreadable: true,
+      namedExports: new Set(),
+    });
   });
 
   it('does not read a NAMESPACE over the cap', async () => {
@@ -60,7 +64,10 @@ describe('R manifest reads', () => {
     await fs.writeFile(path.join(repo, 'NAMESPACE'), OVER_THE_CAP);
     const config = await loadRPackageConfig(repo);
     expect(config.packages.get('pk')).toBe('');
-    expect(config.namespaceInfoByPackageDir.has('')).toBe(false);
+    expect(config.namespaceInfoByPackageDir.get('')).toMatchObject({
+      exportsUnreadable: true,
+      importsUnreadable: true,
+    });
   });
 
   it('does not read a DESCRIPTION over the cap, and says discovery may be incomplete', async () => {

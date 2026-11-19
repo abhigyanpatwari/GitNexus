@@ -39,7 +39,7 @@
  * `qualified-call.ts`.
  */
 
-import type { ParsedFile, ParsedImport } from 'gitnexus-shared';
+import type { ParsedFile, ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import type { RNamespaceInfo, RPackageConfig } from './package-config.js';
 import { unescapeRString } from './export-pattern.js';
 import { rBareName } from './bare-name.js';
@@ -361,9 +361,15 @@ function skipConditionalBody(text: string, from: number, blocks: BraceBlocks): n
     const end = blocks.endOf(i);
     return end === -1 ? resyncAfterMalformed(text, i) : end; // -1: unterminated `{ … }`
   }
-  if (isIdentStart(text[i])) {
-    let j = i + 1;
-    while (j < text.length && isIdentPart(text[j])) j++;
+  if (isIdentStart(text[i]) || isQuote(text[i])) {
+    let j: number;
+    if (isQuote(text[i])) {
+      j = skipQuoted(text, i);
+      if (j === -1) return resyncAfterMalformed(text, i);
+    } else {
+      j = i + 1;
+      while (j < text.length && isIdentPart(text[j])) j++;
+    }
     const head = text.slice(i, j);
     if (CONDITIONAL_HEADS.has(head)) return j; // a bare `else` here has no body to skip
     while (j < text.length && /\s/.test(text[j])) j++;
@@ -404,7 +410,10 @@ function scanRNamespaceDirectives(
   // tests cost one pass in total.
   let hidesExport = false;
   const skipped = (from: number, to: number): void => {
-    if (!hidesExport && hiddenHead.test(text.slice(from, to))) hidesExport = true;
+    if (hidesExport) return;
+    const region = text.slice(from, to);
+    // A quoted callee can spell a directive through escapes.
+    hidesExport = hiddenHead.test(region) || /["'`]\s*\(/.test(region);
   };
   let i = 0;
   while (i < text.length) {
@@ -413,6 +422,8 @@ function scanRNamespaceDirectives(
       i = skipLineComment(text, i);
       continue;
     }
+    let j: number;
+    let head: string;
     if (isQuote(ch)) {
       const end = skipQuoted(text, i);
       if (end === -1) {
@@ -421,17 +432,16 @@ function scanRNamespaceDirectives(
         i = resume;
         continue;
       }
-      i = end;
-      continue;
-    }
-    if (!isIdentStart(ch)) {
+      j = end;
+      head = unescapeRString(text.slice(i + 1, j - 1));
+    } else if (isIdentStart(ch)) {
+      j = i + 1;
+      while (j < text.length && isIdentPart(text[j])) j++;
+      head = text.slice(i, j);
+    } else {
       i++;
       continue;
     }
-
-    let j = i + 1;
-    while (j < text.length && isIdentPart(text[j])) j++;
-    const head = text.slice(i, j);
     let k = j;
     while (k < text.length && /\s/.test(text[k])) k++;
 
@@ -554,15 +564,15 @@ export interface RNamespaceExports {
 }
 
 /**
- * The single-token string argument of `exportPattern()`, R-unescaped, or `''`
- * when the argument is empty, not a quoted string, or unterminated. Only `"`
+ * The single-token string argument of `exportPattern()`, R-unescaped, or null
+ * when the argument is missing, not a quoted string, or unterminated. Only `"`
  * and `'` quote a string in R (a backticked name is a symbol, not a pattern).
  */
-function exportPatternArg(raw: string): string {
+function exportPatternArg(raw: string): string | null {
   const trimmed = raw.trim();
   const quote = trimmed[0];
-  if (quote !== '"' && quote !== "'") return '';
-  if (skipQuoted(trimmed, 0) !== trimmed.length) return '';
+  if (quote !== '"' && quote !== "'") return null;
+  if (skipQuoted(trimmed, 0) !== trimmed.length) return null;
   return unescapeRString(trimmed.slice(1, -1));
 }
 
@@ -587,7 +597,7 @@ export function parseRNamespaceExports(text: string): RNamespaceExports {
     if (head === 'exportPattern') {
       for (const raw of args) {
         const pattern = exportPatternArg(raw);
-        if (pattern) exportPatterns.push(pattern);
+        if (pattern !== null) exportPatterns.push(pattern);
         else if (raw.trim()) unreadable = true;
       }
     } else if (head === 'S3method') {
@@ -739,11 +749,8 @@ export interface RFileTopLevel {
    * be written in (`` `%||%` `` is `%||%`), which is how NAMESPACE entries and `importFrom()` spell it.
    */
   readonly names: ReadonlySet<string>;
-  /**
-   * For each dotted definition, the text after the last `.` of its name as bound (backticks
-   * kept): the key the shared finalize pass indexes the definition under.
-   */
-  readonly dottedTails: ReadonlySet<string>;
+  /** Module bindings keyed by the full spelling used in an import. */
+  readonly moduleExports: ReadonlyMap<string, SymbolDefinition>;
   /** The symbols of {@link names} bound to a plain function (not only a class) in this file. */
   readonly functions: ReadonlySet<string>;
   /**
@@ -763,7 +770,7 @@ export interface RFileTopLevel {
 
 const EMPTY_TOP_LEVEL: RFileTopLevel = {
   names: new Set(),
-  dottedTails: new Set(),
+  moduleExports: new Map(),
   functions: new Set(),
   writtenAs: new Map(),
   repeated: new Set(),
@@ -781,8 +788,7 @@ function repeatedSimpleNames(parsed: ParsedFile): ReadonlySet<string> {
   const repeated = new Set<string>();
   for (const def of parsed.localDefs) {
     const qn = def.qualifiedName;
-    // A dotted name is a member (`Class.member`) or an S3-style name; the former is kept apart
-    // by `namedImportsBindTopLevelOnly`, the latter by the `dottedTails` guard.
+    // Module export keys keep dotted members and S3 methods distinct from bare names.
     if (qn === undefined || qn.length === 0 || qn.includes('.')) continue;
     const symbol = rBareName(qn);
     const first = firstType.get(symbol);
@@ -816,13 +822,15 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
   let result: RFileTopLevel = { ...EMPTY_TOP_LEVEL, repeated: repeatedSimpleNames(parsed) };
   if (moduleScope !== undefined) {
     const names = new Set<string>();
-    const dottedTails = new Set<string>();
+    const moduleExports = new Map<string, SymbolDefinition>();
     const functions = new Set<string>();
     const writtenAs = new Map<string, string[]>();
-    const bindsTopLevel = (refs: readonly { origin: string; def: { type: string } }[]): boolean =>
-      refs.some((r) => r.origin === 'local' && TOP_LEVEL_BINDABLE_TYPES.has(r.def.type));
     for (const [name, refs] of moduleScope.bindings) {
-      if (!bindsTopLevel(refs)) continue;
+      const binding = refs.find(
+        (r) => r.origin === 'local' && TOP_LEVEL_BINDABLE_TYPES.has(r.def.type),
+      );
+      if (!binding) continue;
+      moduleExports.set(name, binding.def);
       const symbol = rBareName(name);
       names.add(symbol);
       if (refs.some((r) => r.origin === 'local' && r.def.type === 'Function')) {
@@ -833,14 +841,11 @@ export function rFileTopLevel(parsed: ParsedFile): RFileTopLevel {
         if (spellings === undefined) writtenAs.set(symbol, [name]);
         else spellings.push(name);
       }
-      const dot = name.lastIndexOf('.');
-      if (dot >= 0) dottedTails.add(name.slice(dot + 1));
     }
     for (const [symbol, spellings] of writtenAs) {
-      const plain = moduleScope.bindings.get(symbol);
-      if (plain !== undefined && bindsTopLevel(plain)) spellings.unshift(symbol);
+      if (moduleExports.has(symbol)) spellings.unshift(symbol);
     }
-    result = { names, dottedTails, functions, writtenAs, repeated: result.repeated };
+    result = { names, moduleExports, functions, writtenAs, repeated: result.repeated };
   }
   topLevelCache.set(parsed, result);
   return result;

@@ -58,6 +58,8 @@ const EXPECTED: Readonly<Record<string, readonly string[]>> = {
   'Function:R/script.R:fw3': [USER_SAVE],
   'Function:R/script.R:rp1': [],
   'Function:R/script.R:as1': [OTHER],
+  'Function:R/script.R:escaped_assign': [OTHER],
+  'Function:R/script.R:escaped_remove': [],
   'Function:R/script.R:sa1': [],
   // modlevel.R: the module `u` is rebound by m6's `<<-`, so m2, m3 and m9 do not test the shadow
   // on their own; m10 in modlevel2.R does.

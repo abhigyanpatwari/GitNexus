@@ -13,6 +13,7 @@
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isRLeftAssignment } from '../languages/r/assignment.js';
+import { isR6ClassCall } from '../languages/r/r6-self.js';
 import { getRMatchedArgument, rArgumentName } from '../languages/r/naming-argument.js';
 import { getRClassNameArgument } from '../field-extractors/r.js';
 import type {
@@ -210,14 +211,7 @@ function extractRefClassMethods(
 function isR6Class(node: SyntaxNode): boolean {
   if (!isRLeftAssignment(node)) return false;
   const rhs = node.childForFieldName('rhs');
-  if (!rhs || rhs.type !== 'call') return false;
-  const fn = rhs.childForFieldName('function');
-  if (!fn) return false;
-  if (fn.type === 'identifier' && fn.text === 'R6Class') return true;
-  if (fn.type === 'namespace_operator') {
-    return fn.childForFieldName('rhs')?.text === 'R6Class';
-  }
-  return false;
+  return rhs !== null && isR6ClassCall(rhs);
 }
 
 function isRefClass(node: SyntaxNode): boolean {

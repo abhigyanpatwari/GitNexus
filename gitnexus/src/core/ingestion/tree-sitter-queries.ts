@@ -3111,6 +3111,8 @@ export const R_QUERIES = `
   operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
+      lhs: (identifier) @_r6pkg
+      (#eq? @_r6pkg "R6")
       rhs: (identifier) @_nsfn
       (#match? @_nsfn "^R6Class$")))) @definition.class
 
@@ -3128,6 +3130,8 @@ export const R_QUERIES = `
   operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
+      lhs: (identifier) @_r6pkg
+      (#eq? @_r6pkg "R6")
       rhs: (identifier) @_nsfn2
       (#match? @_nsfn2 "^R6Class$"))
     arguments: (arguments
@@ -3226,6 +3230,8 @@ export const R_QUERIES = `
   operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
+      lhs: (identifier) @_r6pkg
+      (#eq? @_r6pkg "R6")
       rhs: (identifier) @_nsfn
       (#match? @_nsfn "^R6Class$"))
     arguments: (arguments

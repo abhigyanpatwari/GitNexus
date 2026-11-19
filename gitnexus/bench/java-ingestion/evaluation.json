@@ -1,0 +1,2548 @@
+{
+  "schemaVersion": 1,
+  "measuredOn": "2026-11-16",
+  "cpu": "Apple M5 Pro",
+  "sourcePin": "26636d7a058d32c165999ab5f28a8a2540f50df5",
+  "note": "Synthetic nested workload shapes; summed cases are evaluations across shapes, not independent real-repository accuracy. Timings use same-host minimum estimators; budgets gate normalized growth only.",
+  "reports": {
+    "before": {
+      "complete": true,
+      "pass": false,
+      "profile": {
+        "captureSamples": 15,
+        "captureWarmup": 2,
+        "pipelineSamples": 3,
+        "pipelineWarmup": 1,
+        "statistic": "minimum",
+        "pipelineCache": "cold on every pass"
+      },
+      "runtime": {
+        "node": "v26.9.0",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "build": "sha256:d0b608b487d6ecf531130c3b5cbed15afdd0287a7b52fd811f45ce45fca30d61",
+        "dependencies": "sha256:df7154af36b664068afdfa33b883f07163813073683c3a58befb63f68533a2b6",
+        "head": "26636d7a058d32c165999ab5f28a8a2540f50df5"
+      },
+      "metrics": {
+        "breadthCapturePerUnitGrowth": 0.9646538983694837,
+        "breadthPipelinePerByteGrowth": 0.6461007251069212,
+        "densityCapturePerFieldGrowth": 0.5253506848368746,
+        "densityPipelinePerFieldGrowth": 0.5213309075639512
+      },
+      "peakProcessRssBytes": 624640000,
+      "shapes": {
+        "small": {
+          "workload": {
+            "shape": "small",
+            "units": 8,
+            "files": 30,
+            "sourceBytes": 56159,
+            "expectations": 405,
+            "positiveCases": 262,
+            "negativeCases": 143,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 64,
+            "declaredFields": 269,
+            "syntheticAccessorFields": 129,
+            "syntheticAccessorMethods": 129,
+            "provisionalSyntheticAccessorMethods": 131
+          },
+          "corpusFingerprint": "2ae541feda42bf1211c4a7fcb2fcfa20944006dc1336331fdee8a58c92518c13",
+          "capture": {
+            "matches": 4564,
+            "scopes": 842,
+            "typeBindings": 1334,
+            "nameClaims": 0,
+            "lexicalNames": 0,
+            "syntheticMethodCandidates": 8,
+            "fingerprint": "d4c14e41faa6105f4fa03e43ba0d3d7d97bb03651014d84e4c8a9f0773c6cb6a"
+          },
+          "quality": {
+            "cases": 405,
+            "passedCases": 205,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 0
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 4
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 0
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 0
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 1
+              },
+              "P1 array element identity": {
+                "cases": 64,
+                "passed": 0
+              },
+              "P1 array negative": {
+                "cases": 40,
+                "passed": 40
+              },
+              "P1 array Object members": {
+                "cases": 16,
+                "passed": 16
+              },
+              "P2 lexical aliases": {
+                "cases": 32,
+                "passed": 16
+              },
+              "P2 complete field receiver": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 producer identity": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 unknown alias barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 block ownership": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN collision": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN miss": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 resource lifetime": {
+                "cases": 8,
+                "passed": 0
+              },
+              "P4 typed lambda owner": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 8,
+                "passed": 0
+              },
+              "P4 sibling lambda owners": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 lexical this": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 nested lambda names": {
+                "cases": 8,
+                "passed": 0
+              },
+              "P4 contextual JDK elements": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 proven map parameters": {
+                "cases": 8,
+                "passed": 0
+              },
+              "P4 unproven generic elements": {
+                "cases": 24,
+                "passed": 0
+              },
+              "P4 Lombok Value getters": {
+                "cases": 8,
+                "passed": 0
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 generated constructor DI": {
+                "cases": 64,
+                "passed": 16
+              }
+            },
+            "nodes": 1162,
+            "edges": 1542,
+            "syntheticAccessorMethods": 8,
+            "semanticFingerprint": "4c783c4f692a113f60e5582d97c98144566ab62e876a84333507362c3d7cef46",
+            "graphFingerprint": "451c242fc1cd9e19f5adf9022ed7f489763ed9083ec81d9886b6234844d6745c"
+          },
+          "captureMs": 192.21033399999942,
+          "pipelineMs": 714.3403749999998,
+          "captureSamplesMs": [
+            195.28287499999897, 195.87504200000149, 194.47683400000096, 193.0901249999988,
+            193.20791699999972, 208.07554199999868, 204.81479200000103, 194.07395799999722,
+            193.14808300000004, 192.61212499999965, 192.21033399999942, 193.1047499999986,
+            193.15891700000066, 193.42883299999812, 194.96537499999977
+          ],
+          "pipelineSamplesMs": [714.3403749999998, 763.0292499999996, 745.7082910000026]
+        },
+        "large": {
+          "workload": {
+            "shape": "large",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 216575,
+            "expectations": 1581,
+            "positiveCases": 1030,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 256,
+            "declaredFields": 1061,
+            "syntheticAccessorFields": 513,
+            "syntheticAccessorMethods": 513,
+            "provisionalSyntheticAccessorMethods": 515
+          },
+          "corpusFingerprint": "acc9af6276392af85f3a8f22aa968bf586eedac0b4be59e2a04edb79d11d5684",
+          "capture": {
+            "matches": 17644,
+            "scopes": 3146,
+            "typeBindings": 5222,
+            "nameClaims": 0,
+            "lexicalNames": 0,
+            "syntheticMethodCandidates": 32,
+            "fingerprint": "db888ea8cba6c24f5e567d196f2d257694149710fabac6f41eb60774bbc82c33"
+          },
+          "quality": {
+            "cases": 1581,
+            "passedCases": 805,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 0
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 4
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 0
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 0
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 1
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 0
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 64
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 0
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 64
+              }
+            },
+            "nodes": 4378,
+            "edges": 5910,
+            "syntheticAccessorMethods": 32,
+            "semanticFingerprint": "c7fe4a1536d56cdb81cf4c71806f0362abca21145305e1da401083f1e1957eed",
+            "graphFingerprint": "584f7b633b60c1f4109d1eec01b7cc3198c4d8a12a2d2f00d4348423a24fcf66"
+          },
+          "captureMs": 741.6657919999998,
+          "pipelineMs": 1779.895000000004,
+          "captureSamplesMs": [
+            758.9813329999997, 756.6411250000001, 752.4110839999994, 745.765625, 748.3331669999989,
+            792.2544999999991, 761.6468749999985, 756.8671250000007, 747.067417000002,
+            743.9330000000009, 741.6657919999998, 752.1577500000021, 745.817667000003, 752.739791,
+            745.6152079999956
+          ],
+          "pipelineSamplesMs": [1779.895000000004, 1939.6340830000045, 1926.4549579999948]
+        },
+        "dense": {
+          "workload": {
+            "shape": "dense",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 327775,
+            "expectations": 2029,
+            "positiveCases": 1478,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 64,
+            "densityClassesPerUnit": 8,
+            "densityDeclarationCount": 2048,
+            "declaredFields": 2853,
+            "syntheticAccessorFields": 2305,
+            "syntheticAccessorMethods": 4097,
+            "provisionalSyntheticAccessorMethods": 4099
+          },
+          "corpusFingerprint": "e7b0d3ef7a54695f7fdeda2d01353877450e346a0ebebb1022c0f4a23164f147",
+          "capture": {
+            "matches": 26604,
+            "scopes": 3594,
+            "typeBindings": 7462,
+            "nameClaims": 0,
+            "lexicalNames": 0,
+            "syntheticMethodCandidates": 3616,
+            "fingerprint": "df2e260588e5c1add3b54db4d8bec124a8fd3c92d21310bea2b6fdd82b66729e"
+          },
+          "quality": {
+            "cases": 2029,
+            "passedCases": 1029,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 0
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 4
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 0
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 0
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 1
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 0
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 64
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 0
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 0
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 64
+              },
+              "P4 dense Lombok getters": {
+                "cases": 224,
+                "passed": 224
+              },
+              "P4 dense NonNull constructor DI": {
+                "cases": 224,
+                "passed": 0
+              }
+            },
+            "nodes": 10202,
+            "edges": 11958,
+            "syntheticAccessorMethods": 3616,
+            "semanticFingerprint": "ebfd4438bb786a04e4d07724b2a20e62426d66189815a312e02dfada0f644528",
+            "graphFingerprint": "23af13657e7da4b876d5c11bbff54383418481e0f2afe86f7d398425f93a88e9"
+          },
+          "captureMs": 1047.7168749999983,
+          "pipelineMs": 2495.1361249999973,
+          "captureSamplesMs": [
+            1057.9652920000008, 1064.0801250000004, 1056.1155419999996, 1048.2837909999998,
+            1064.575667000001, 1101.0817920000009, 1105.5922500000015, 1054.878125000003,
+            1050.2159170000014, 1052.9072909999995, 1047.7168749999983, 1048.6778750000012,
+            1047.9506660000043, 1051.064250000003, 1056.517832999998
+          ],
+          "pipelineSamplesMs": [2516.420334000002, 2495.1361249999973, 2530.1440829999992]
+        }
+      }
+    },
+    "beforeOptimization": {
+      "complete": true,
+      "pass": true,
+      "profile": {
+        "captureSamples": 15,
+        "captureWarmup": 2,
+        "pipelineSamples": 3,
+        "pipelineWarmup": 1,
+        "statistic": "minimum",
+        "pipelineCache": "cold on every pass"
+      },
+      "runtime": {
+        "node": "v26.9.0",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "build": "sha256:c2bc9eaba2c5339c53fa09aca9c7b347ab862516965b5a89a97be90c94afe4f5",
+        "dependencies": "sha256:d9b44ed1572a900882b78185b07a5290abad70a40b0e255f0a3efb986f6c5641",
+        "head": "26636d7a058d32c165999ab5f28a8a2540f50df5"
+      },
+      "metrics": {
+        "breadthCapturePerUnitGrowth": 0.9670923706665636,
+        "breadthPipelinePerByteGrowth": 0.7660507449622368,
+        "densityCapturePerFieldGrowth": 0.5472384475408992,
+        "densityPipelinePerFieldGrowth": 0.546040908409607
+      },
+      "peakProcessRssBytes": 671875072,
+      "shapes": {
+        "small": {
+          "workload": {
+            "shape": "small",
+            "units": 8,
+            "files": 30,
+            "sourceBytes": 56159,
+            "expectations": 405,
+            "positiveCases": 262,
+            "negativeCases": 143,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 64,
+            "declaredFields": 269,
+            "syntheticAccessorFields": 129,
+            "syntheticAccessorMethods": 129,
+            "provisionalSyntheticAccessorMethods": 131
+          },
+          "corpusFingerprint": "2ae541feda42bf1211c4a7fcb2fcfa20944006dc1336331fdee8a58c92518c13",
+          "capture": {
+            "matches": 5767,
+            "scopes": 1597,
+            "typeBindings": 1503,
+            "nameClaims": 139,
+            "lexicalNames": 150,
+            "syntheticMethodCandidates": 131,
+            "fingerprint": "60664d025c0d53e0aedd681f202d7c520c0994b33f92d02e1fa904e570ec4c83"
+          },
+          "quality": {
+            "cases": 405,
+            "passedCases": 405,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P1 array negative": {
+                "cases": 40,
+                "passed": 40
+              },
+              "P1 array Object members": {
+                "cases": 16,
+                "passed": 16
+              },
+              "P2 lexical aliases": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 complete field receiver": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 producer identity": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 unknown alias barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 block ownership": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN collision": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN miss": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 resource lifetime": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 typed lambda owner": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 sibling lambda owners": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 lexical this": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 nested lambda names": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 contextual JDK elements": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 proven map parameters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unproven generic elements": {
+                "cases": 24,
+                "passed": 24
+              },
+              "P4 Lombok Value getters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 generated constructor DI": {
+                "cases": 64,
+                "passed": 64
+              }
+            },
+            "nodes": 1283,
+            "edges": 1786,
+            "syntheticAccessorMethods": 129,
+            "semanticFingerprint": "d38999f2a4cad59f081efa70d22606d2c54272886cdc63ef8445970ed847f728",
+            "graphFingerprint": "bc5d6a53d02f29d88e51c041720688e4c143074fadb261a13ca06caf670a3ee9"
+          },
+          "captureMs": 263.1937919999982,
+          "pipelineMs": 1029.541292000009,
+          "captureSamplesMs": [
+            266.4079579999998, 267.3791249999995, 303.3804170000003, 264.00887499999953, 266.286333,
+            265.70545800000036, 264.83300000000236, 263.1937919999982, 282.5540420000034,
+            265.34141600000294, 264.7501669999983, 264.21791700000176, 263.35425000000396,
+            265.4309579999972, 266.26462499999616
+          ],
+          "pipelineSamplesMs": [1237.6469590000052, 1096.0877089999994, 1029.541292000009]
+        },
+        "large": {
+          "workload": {
+            "shape": "large",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 216575,
+            "expectations": 1581,
+            "positiveCases": 1030,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 256,
+            "declaredFields": 1061,
+            "syntheticAccessorFields": 513,
+            "syntheticAccessorMethods": 513,
+            "provisionalSyntheticAccessorMethods": 515
+          },
+          "corpusFingerprint": "acc9af6276392af85f3a8f22aa968bf586eedac0b4be59e2a04edb79d11d5684",
+          "capture": {
+            "matches": 22351,
+            "scopes": 6085,
+            "typeBindings": 5895,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 515,
+            "fingerprint": "42c8949eadf43315dbca76e6e3c35373aee78fb38800d1284c795725975a0d5f"
+          },
+          "quality": {
+            "cases": 1581,
+            "passedCases": 1581,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              }
+            },
+            "nodes": 4859,
+            "edges": 6874,
+            "syntheticAccessorMethods": 513,
+            "semanticFingerprint": "17c491c39a252f7a66a1cfd823b882904953d335a504afd0f4e727990905f834",
+            "graphFingerprint": "f8cfc6a89f96a7b184107e27673a4b231b070d26b51da9bc470e9fb3e1013aa9"
+          },
+          "captureMs": 1018.1308330000029,
+          "pipelineMs": 3041.5171249999985,
+          "captureSamplesMs": [
+            1033.0809170000011, 1036.3635000000013, 1028.0500840000004, 1038.3136670000022,
+            1022.4401249999974, 1030.172375000002, 1021.2775829999991, 1027.1857500000006,
+            1085.7676249999968, 1023.9676249999975, 1020.4483749999999, 1018.1308330000029,
+            1018.7695830000011, 1028.2302920000002, 1022.0459579999952
+          ],
+          "pipelineSamplesMs": [3170.0514580000017, 3052.455624999988, 3041.5171249999985]
+        },
+        "dense": {
+          "workload": {
+            "shape": "dense",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 327775,
+            "expectations": 2029,
+            "positiveCases": 1478,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 64,
+            "densityClassesPerUnit": 8,
+            "densityDeclarationCount": 2048,
+            "declaredFields": 2853,
+            "syntheticAccessorFields": 2305,
+            "syntheticAccessorMethods": 4097,
+            "provisionalSyntheticAccessorMethods": 4099
+          },
+          "corpusFingerprint": "e7b0d3ef7a54695f7fdeda2d01353877450e346a0ebebb1022c0f4a23164f147",
+          "capture": {
+            "matches": 31535,
+            "scopes": 6757,
+            "typeBindings": 8135,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 4099,
+            "fingerprint": "f88c1789315686c4fbbeb2a19913c0a324a6ffbeaa6e98cc8e427bb64daf7cb0"
+          },
+          "quality": {
+            "cases": 2029,
+            "passedCases": 2029,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P4 dense Lombok getters": {
+                "cases": 224,
+                "passed": 224
+              },
+              "P4 dense NonNull constructor DI": {
+                "cases": 224,
+                "passed": 224
+              }
+            },
+            "nodes": 10683,
+            "edges": 13146,
+            "syntheticAccessorMethods": 4097,
+            "semanticFingerprint": "871b51b6f1068ac355be8065a2b0f5345656b58bb81a7bd740f4af22ed2256f9",
+            "graphFingerprint": "28921d85ae8e8843d103ca991c307616fe3790f38a6d260eb9dd29da88fe2570"
+          },
+          "captureMs": 1498.1889159999992,
+          "pipelineMs": 4465.826375000004,
+          "captureSamplesMs": [
+            1537.5716249999987, 1516.7516660000001, 1527.2649169999986, 1506.5350839999992,
+            1498.1889159999992, 1510.838499999998, 1510.9389169999995, 1543.2207500000004,
+            1614.3015000000014, 1570.0476250000065, 1514.253708999997, 1503.5275000000038,
+            1511.864708000001, 1510.3824999999997, 1517.632749999997
+          ],
+          "pipelineSamplesMs": [4655.602666999992, 4569.879749999993, 4465.826375000004]
+        }
+      }
+    },
+    "after": {
+      "complete": true,
+      "pass": true,
+      "profile": {
+        "captureSamples": 15,
+        "captureWarmup": 2,
+        "pipelineSamples": 3,
+        "pipelineWarmup": 1,
+        "statistic": "minimum",
+        "pipelineCache": "cold on every pass"
+      },
+      "runtime": {
+        "node": "v26.9.0",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "build": "sha256:0b08b960803d53f378451f43454e67588cefbcdd31c6ca5ab0ae44a3b7c6d605",
+        "dependencies": "sha256:d9b44ed1572a900882b78185b07a5290abad70a40b0e255f0a3efb986f6c5641",
+        "head": "26636d7a058d32c165999ab5f28a8a2540f50df5"
+      },
+      "metrics": {
+        "breadthCapturePerUnitGrowth": 0.959497952103187,
+        "breadthPipelinePerByteGrowth": 0.7067357334578981,
+        "densityCapturePerFieldGrowth": 0.5510890856029944,
+        "densityPipelinePerFieldGrowth": 0.5337294697847562
+      },
+      "peakProcessRssBytes": 636436480,
+      "shapes": {
+        "small": {
+          "workload": {
+            "shape": "small",
+            "units": 8,
+            "files": 30,
+            "sourceBytes": 56159,
+            "expectations": 405,
+            "positiveCases": 262,
+            "negativeCases": 143,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 64,
+            "declaredFields": 269,
+            "syntheticAccessorFields": 129,
+            "syntheticAccessorMethods": 129,
+            "provisionalSyntheticAccessorMethods": 131
+          },
+          "corpusFingerprint": "2ae541feda42bf1211c4a7fcb2fcfa20944006dc1336331fdee8a58c92518c13",
+          "capture": {
+            "matches": 5767,
+            "scopes": 1597,
+            "typeBindings": 1503,
+            "nameClaims": 139,
+            "lexicalNames": 150,
+            "syntheticMethodCandidates": 131,
+            "fingerprint": "60664d025c0d53e0aedd681f202d7c520c0994b33f92d02e1fa904e570ec4c83"
+          },
+          "quality": {
+            "cases": 405,
+            "passedCases": 405,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P1 array negative": {
+                "cases": 40,
+                "passed": 40
+              },
+              "P1 array Object members": {
+                "cases": 16,
+                "passed": 16
+              },
+              "P2 lexical aliases": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 complete field receiver": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 producer identity": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 unknown alias barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 block ownership": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN collision": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN miss": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 resource lifetime": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 typed lambda owner": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 sibling lambda owners": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 lexical this": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 nested lambda names": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 contextual JDK elements": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 proven map parameters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unproven generic elements": {
+                "cases": 24,
+                "passed": 24
+              },
+              "P4 Lombok Value getters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 generated constructor DI": {
+                "cases": 64,
+                "passed": 64
+              }
+            },
+            "nodes": 1283,
+            "edges": 1786,
+            "syntheticAccessorMethods": 129,
+            "semanticFingerprint": "d38999f2a4cad59f081efa70d22606d2c54272886cdc63ef8445970ed847f728",
+            "graphFingerprint": "bc5d6a53d02f29d88e51c041720688e4c143074fadb261a13ca06caf670a3ee9"
+          },
+          "captureMs": 264.6139159999948,
+          "pipelineMs": 761.8988339999923,
+          "captureSamplesMs": [
+            269.8362500000003, 268.6208339999994, 282.7771249999969, 267.7463339999995,
+            272.43975000000137, 266.1283340000009, 265.2353750000002, 265.48787500000253,
+            276.7620840000018, 264.6139159999948, 265.14616699999897, 265.20141599999624,
+            265.325417, 265.86170899999706, 284.3162089999969
+          ],
+          "pipelineSamplesMs": [796.2835829999967, 761.8988339999923, 766.1329169999954]
+        },
+        "large": {
+          "workload": {
+            "shape": "large",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 216575,
+            "expectations": 1581,
+            "positiveCases": 1030,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 256,
+            "declaredFields": 1061,
+            "syntheticAccessorFields": 513,
+            "syntheticAccessorMethods": 513,
+            "provisionalSyntheticAccessorMethods": 515
+          },
+          "corpusFingerprint": "acc9af6276392af85f3a8f22aa968bf586eedac0b4be59e2a04edb79d11d5684",
+          "capture": {
+            "matches": 22351,
+            "scopes": 6085,
+            "typeBindings": 5895,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 515,
+            "fingerprint": "42c8949eadf43315dbca76e6e3c35373aee78fb38800d1284c795725975a0d5f"
+          },
+          "quality": {
+            "cases": 1581,
+            "passedCases": 1581,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              }
+            },
+            "nodes": 4859,
+            "edges": 6874,
+            "syntheticAccessorMethods": 513,
+            "semanticFingerprint": "17c491c39a252f7a66a1cfd823b882904953d335a504afd0f4e727990905f834",
+            "graphFingerprint": "f8cfc6a89f96a7b184107e27673a4b231b070d26b51da9bc470e9fb3e1013aa9"
+          },
+          "captureMs": 1015.586041999999,
+          "pipelineMs": 2076.554416999992,
+          "captureSamplesMs": [
+            1038.1975839999996, 1030.8488339999985, 1090.3625840000004, 1032.7676250000004,
+            1032.694625, 1035.9155830000018, 1017.8951249999991, 1015.586041999999,
+            1017.6221670000014, 1020.6487500000003, 1031.2644579999978, 1021.4360830000005,
+            1025.9771660000042, 1021.4176660000012, 1085.643041000003
+          ],
+          "pipelineSamplesMs": [2079.3327910000007, 2076.554416999992, 2093.4679170000018]
+        },
+        "dense": {
+          "workload": {
+            "shape": "dense",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 327775,
+            "expectations": 2029,
+            "positiveCases": 1478,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 64,
+            "densityClassesPerUnit": 8,
+            "densityDeclarationCount": 2048,
+            "declaredFields": 2853,
+            "syntheticAccessorFields": 2305,
+            "syntheticAccessorMethods": 4097,
+            "provisionalSyntheticAccessorMethods": 4099
+          },
+          "corpusFingerprint": "e7b0d3ef7a54695f7fdeda2d01353877450e346a0ebebb1022c0f4a23164f147",
+          "capture": {
+            "matches": 31535,
+            "scopes": 6757,
+            "typeBindings": 8135,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 4099,
+            "fingerprint": "f88c1789315686c4fbbeb2a19913c0a324a6ffbeaa6e98cc8e427bb64daf7cb0"
+          },
+          "quality": {
+            "cases": 2029,
+            "passedCases": 2029,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P4 dense Lombok getters": {
+                "cases": 224,
+                "passed": 224
+              },
+              "P4 dense NonNull constructor DI": {
+                "cases": 224,
+                "passed": 224
+              }
+            },
+            "nodes": 10683,
+            "edges": 13146,
+            "syntheticAccessorMethods": 4097,
+            "semanticFingerprint": "871b51b6f1068ac355be8065a2b0f5345656b58bb81a7bd740f4af22ed2256f9",
+            "graphFingerprint": "28921d85ae8e8843d103ca991c307616fe3790f38a6d260eb9dd29da88fe2570"
+          },
+          "captureMs": 1504.9598750000005,
+          "pipelineMs": 2980.237583000002,
+          "captureSamplesMs": [
+            1556.3096249999999, 1585.1573749999989, 1626.5799580000003, 1564.1874580000003,
+            1517.2927919999966, 1510.0544169999994, 1514.4908749999995, 1515.1838749999988,
+            1504.9598750000005, 1506.828999999998, 1508.5290830000013, 1519.8796250000014,
+            1530.87025, 1578.2956659999982, 1594.3079580000049
+          ],
+          "pipelineSamplesMs": [3034.7465420000008, 2980.237583000002, 2982.0016669999895]
+        }
+      }
+    },
+    "record": {
+      "complete": true,
+      "pass": true,
+      "profile": {
+        "captureSamples": 15,
+        "captureWarmup": 2,
+        "pipelineSamples": 3,
+        "pipelineWarmup": 1,
+        "statistic": "minimum",
+        "pipelineCache": "cold on every pass"
+      },
+      "runtime": {
+        "node": "v26.9.0",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "build": "sha256:0b08b960803d53f378451f43454e67588cefbcdd31c6ca5ab0ae44a3b7c6d605",
+        "dependencies": "sha256:d9b44ed1572a900882b78185b07a5290abad70a40b0e255f0a3efb986f6c5641",
+        "head": "26636d7a058d32c165999ab5f28a8a2540f50df5"
+      },
+      "metrics": {
+        "breadthCapturePerUnitGrowth": 0.9664954875689057,
+        "breadthPipelinePerByteGrowth": 0.7066437008333366,
+        "densityCapturePerFieldGrowth": 0.5450411847738973,
+        "densityPipelinePerFieldGrowth": 0.5276908031357682
+      },
+      "peakProcessRssBytes": 658653184,
+      "shapes": {
+        "small": {
+          "workload": {
+            "shape": "small",
+            "units": 8,
+            "files": 30,
+            "sourceBytes": 56159,
+            "expectations": 405,
+            "positiveCases": 262,
+            "negativeCases": 143,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 64,
+            "declaredFields": 269,
+            "syntheticAccessorFields": 129,
+            "syntheticAccessorMethods": 129,
+            "provisionalSyntheticAccessorMethods": 131
+          },
+          "corpusFingerprint": "2ae541feda42bf1211c4a7fcb2fcfa20944006dc1336331fdee8a58c92518c13",
+          "capture": {
+            "matches": 5767,
+            "scopes": 1597,
+            "typeBindings": 1503,
+            "nameClaims": 139,
+            "lexicalNames": 150,
+            "syntheticMethodCandidates": 131,
+            "fingerprint": "60664d025c0d53e0aedd681f202d7c520c0994b33f92d02e1fa904e570ec4c83"
+          },
+          "quality": {
+            "cases": 405,
+            "passedCases": 405,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P1 array negative": {
+                "cases": 40,
+                "passed": 40
+              },
+              "P1 array Object members": {
+                "cases": 16,
+                "passed": 16
+              },
+              "P2 lexical aliases": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 complete field receiver": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 producer identity": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 unknown alias barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 block ownership": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN collision": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN miss": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 resource lifetime": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 typed lambda owner": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 sibling lambda owners": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 lexical this": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 nested lambda names": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 contextual JDK elements": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 proven map parameters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unproven generic elements": {
+                "cases": 24,
+                "passed": 24
+              },
+              "P4 Lombok Value getters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 generated constructor DI": {
+                "cases": 64,
+                "passed": 64
+              }
+            },
+            "nodes": 1283,
+            "edges": 1786,
+            "syntheticAccessorMethods": 129,
+            "semanticFingerprint": "d38999f2a4cad59f081efa70d22606d2c54272886cdc63ef8445970ed847f728",
+            "graphFingerprint": "bc5d6a53d02f29d88e51c041720688e4c143074fadb261a13ca06caf670a3ee9"
+          },
+          "captureMs": 264.16591699999844,
+          "pipelineMs": 764.442750000002,
+          "captureSamplesMs": [
+            264.8926670000001, 269.799665999999, 266.79337499999747, 267.1576249999998,
+            266.30041699999856, 267.56958400000076, 275.9978749999973, 265.03320800000074,
+            280.3343339999992, 279.1524169999975, 281.83858399999735, 266.416790999996,
+            271.4950000000026, 265.5699590000004, 264.16591699999844
+          ],
+          "pipelineSamplesMs": [795.9852910000045, 764.442750000002, 832.4511250000069]
+        },
+        "large": {
+          "workload": {
+            "shape": "large",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 216575,
+            "expectations": 1581,
+            "positiveCases": 1030,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 256,
+            "declaredFields": 1061,
+            "syntheticAccessorFields": 513,
+            "syntheticAccessorMethods": 513,
+            "provisionalSyntheticAccessorMethods": 515
+          },
+          "corpusFingerprint": "acc9af6276392af85f3a8f22aa968bf586eedac0b4be59e2a04edb79d11d5684",
+          "capture": {
+            "matches": 22351,
+            "scopes": 6085,
+            "typeBindings": 5895,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 515,
+            "fingerprint": "42c8949eadf43315dbca76e6e3c35373aee78fb38800d1284c795725975a0d5f"
+          },
+          "quality": {
+            "cases": 1581,
+            "passedCases": 1581,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              }
+            },
+            "nodes": 4859,
+            "edges": 6874,
+            "syntheticAccessorMethods": 513,
+            "semanticFingerprint": "17c491c39a252f7a66a1cfd823b882904953d335a504afd0f4e727990905f834",
+            "graphFingerprint": "f8cfc6a89f96a7b184107e27673a4b231b070d26b51da9bc470e9fb3e1013aa9"
+          },
+          "captureMs": 1021.2606670000023,
+          "pipelineMs": 2083.2165410000016,
+          "captureSamplesMs": [
+            1022.7721249999995, 1028.9060420000005, 1023.1945839999989, 1027.1612499999974,
+            1064.375291999997, 1032.2907090000008, 1031.1853330000013, 1022.7099170000001,
+            1028.0034589999996, 1071.2753329999978, 1086.8246660000004, 1024.783749999995,
+            1024.3116660000014, 1021.2606670000023, 1021.4265000000014
+          ],
+          "pipelineSamplesMs": [2104.772125000003, 2083.2165410000016, 2237.6691250000003]
+        },
+        "dense": {
+          "workload": {
+            "shape": "dense",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 327775,
+            "expectations": 2029,
+            "positiveCases": 1478,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 64,
+            "densityClassesPerUnit": 8,
+            "densityDeclarationCount": 2048,
+            "declaredFields": 2853,
+            "syntheticAccessorFields": 2305,
+            "syntheticAccessorMethods": 4097,
+            "provisionalSyntheticAccessorMethods": 4099
+          },
+          "corpusFingerprint": "e7b0d3ef7a54695f7fdeda2d01353877450e346a0ebebb1022c0f4a23164f147",
+          "capture": {
+            "matches": 31535,
+            "scopes": 6757,
+            "typeBindings": 8135,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 4099,
+            "fingerprint": "f88c1789315686c4fbbeb2a19913c0a324a6ffbeaa6e98cc8e427bb64daf7cb0"
+          },
+          "quality": {
+            "cases": 2029,
+            "passedCases": 2029,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P4 dense Lombok getters": {
+                "cases": 224,
+                "passed": 224
+              },
+              "P4 dense NonNull constructor DI": {
+                "cases": 224,
+                "passed": 224
+              }
+            },
+            "nodes": 10683,
+            "edges": 13146,
+            "syntheticAccessorMethods": 4097,
+            "semanticFingerprint": "871b51b6f1068ac355be8065a2b0f5345656b58bb81a7bd740f4af22ed2256f9",
+            "graphFingerprint": "28921d85ae8e8843d103ca991c307616fe3790f38a6d260eb9dd29da88fe2570"
+          },
+          "captureMs": 1496.7605000000003,
+          "pipelineMs": 2955.9720830000006,
+          "captureSamplesMs": [
+            1496.7605000000003, 1516.7632919999996, 1523.4629590000004, 1515.4756669999988,
+            1510.8521250000013, 1515.989042000001, 1509.2691670000022, 1521.7208749999954,
+            1554.0139999999956, 1593.1789589999971, 1557.390207999997, 1516.0810409999976,
+            1502.081624999999, 1516.8729999999996, 1505.657124999998
+          ],
+          "pipelineSamplesMs": [3021.694000000003, 2955.9720830000006, 3181.2763749999867]
+        }
+      }
+    },
+    "check": {
+      "complete": true,
+      "pass": true,
+      "profile": {
+        "captureSamples": 15,
+        "captureWarmup": 2,
+        "pipelineSamples": 3,
+        "pipelineWarmup": 1,
+        "statistic": "minimum",
+        "pipelineCache": "cold on every pass"
+      },
+      "runtime": {
+        "node": "v26.9.0",
+        "platform": "darwin",
+        "architecture": "arm64",
+        "build": "sha256:0b08b960803d53f378451f43454e67588cefbcdd31c6ca5ab0ae44a3b7c6d605",
+        "dependencies": "sha256:d9b44ed1572a900882b78185b07a5290abad70a40b0e255f0a3efb986f6c5641",
+        "head": "26636d7a058d32c165999ab5f28a8a2540f50df5"
+      },
+      "metrics": {
+        "breadthCapturePerUnitGrowth": 0.9607043710156614,
+        "breadthPipelinePerByteGrowth": 0.6926746063085253,
+        "densityCapturePerFieldGrowth": 0.5501357735821828,
+        "densityPipelinePerFieldGrowth": 0.5429373630345302
+      },
+      "peakProcessRssBytes": 642891776,
+      "shapes": {
+        "small": {
+          "workload": {
+            "shape": "small",
+            "units": 8,
+            "files": 30,
+            "sourceBytes": 56159,
+            "expectations": 405,
+            "positiveCases": 262,
+            "negativeCases": 143,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 64,
+            "declaredFields": 269,
+            "syntheticAccessorFields": 129,
+            "syntheticAccessorMethods": 129,
+            "provisionalSyntheticAccessorMethods": 131
+          },
+          "corpusFingerprint": "2ae541feda42bf1211c4a7fcb2fcfa20944006dc1336331fdee8a58c92518c13",
+          "capture": {
+            "matches": 5767,
+            "scopes": 1597,
+            "typeBindings": 1503,
+            "nameClaims": 139,
+            "lexicalNames": 150,
+            "syntheticMethodCandidates": 131,
+            "fingerprint": "60664d025c0d53e0aedd681f202d7c520c0994b33f92d02e1fa904e570ec4c83"
+          },
+          "quality": {
+            "cases": 405,
+            "passedCases": 405,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P1 array negative": {
+                "cases": 40,
+                "passed": 40
+              },
+              "P1 array Object members": {
+                "cases": 16,
+                "passed": 16
+              },
+              "P2 lexical aliases": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 complete field receiver": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 producer identity": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 unknown alias barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P2 block ownership": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN collision": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 FQN miss": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P3 resource lifetime": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 typed lambda owner": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 sibling lambda owners": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 lexical this": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 nested lambda names": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 contextual JDK elements": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 proven map parameters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 unproven generic elements": {
+                "cases": 24,
+                "passed": 24
+              },
+              "P4 Lombok Value getters": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 8,
+                "passed": 8
+              },
+              "P4 generated constructor DI": {
+                "cases": 64,
+                "passed": 64
+              }
+            },
+            "nodes": 1283,
+            "edges": 1786,
+            "syntheticAccessorMethods": 129,
+            "semanticFingerprint": "d38999f2a4cad59f081efa70d22606d2c54272886cdc63ef8445970ed847f728",
+            "graphFingerprint": "bc5d6a53d02f29d88e51c041720688e4c143074fadb261a13ca06caf670a3ee9"
+          },
+          "captureMs": 263.00237500000003,
+          "pipelineMs": 769.9489590000012,
+          "captureSamplesMs": [
+            264.3048749999998, 266.3558750000011, 264.72983300000124, 263.00237500000003,
+            266.14066600000297, 267.19420900000114, 278.5779169999987, 280.83450000000084,
+            263.1998749999984, 266.8822080000027, 265.13658399999986, 263.32904199999757,
+            264.14766699999745, 267.6112920000014, 271.1224169999987
+          ],
+          "pipelineSamplesMs": [853.7829160000038, 843.9815419999941, 769.9489590000012]
+        },
+        "large": {
+          "workload": {
+            "shape": "large",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 216575,
+            "expectations": 1581,
+            "positiveCases": 1030,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 8,
+            "densityClassesPerUnit": 1,
+            "densityDeclarationCount": 256,
+            "declaredFields": 1061,
+            "syntheticAccessorFields": 513,
+            "syntheticAccessorMethods": 513,
+            "provisionalSyntheticAccessorMethods": 515
+          },
+          "corpusFingerprint": "acc9af6276392af85f3a8f22aa968bf586eedac0b4be59e2a04edb79d11d5684",
+          "capture": {
+            "matches": 22351,
+            "scopes": 6085,
+            "typeBindings": 5895,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 515,
+            "fingerprint": "42c8949eadf43315dbca76e6e3c35373aee78fb38800d1284c795725975a0d5f"
+          },
+          "quality": {
+            "cases": 1581,
+            "passedCases": 1581,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              }
+            },
+            "nodes": 4859,
+            "edges": 6874,
+            "syntheticAccessorMethods": 513,
+            "semanticFingerprint": "17c491c39a252f7a66a1cfd823b882904953d335a504afd0f4e727990905f834",
+            "graphFingerprint": "f8cfc6a89f96a7b184107e27673a4b231b070d26b51da9bc470e9fb3e1013aa9"
+          },
+          "captureMs": 1010.6701250000006,
+          "pipelineMs": 2056.743625000003,
+          "captureSamplesMs": [
+            1040.4458749999994, 1020.9376659999998, 1029.7106250000015, 1028.9880420000009,
+            1019.0350830000025, 1015.2053330000017, 1075.253084, 1083.6361249999973,
+            1010.6701250000006, 1027.4544999999998, 1019.0095000000001, 1015.6635830000014,
+            1014.7035410000026, 1023.1749169999966, 1012.6706669999985
+          ],
+          "pipelineSamplesMs": [2099.751458999999, 2069.532500000001, 2056.743625000003]
+        },
+        "dense": {
+          "workload": {
+            "shape": "dense",
+            "units": 32,
+            "files": 54,
+            "sourceBytes": 327775,
+            "expectations": 2029,
+            "positiveCases": 1478,
+            "negativeCases": 551,
+            "densityFieldsPerUnit": 64,
+            "densityClassesPerUnit": 8,
+            "densityDeclarationCount": 2048,
+            "declaredFields": 2853,
+            "syntheticAccessorFields": 2305,
+            "syntheticAccessorMethods": 4097,
+            "provisionalSyntheticAccessorMethods": 4099
+          },
+          "corpusFingerprint": "e7b0d3ef7a54695f7fdeda2d01353877450e346a0ebebb1022c0f4a23164f147",
+          "capture": {
+            "matches": 31535,
+            "scopes": 6757,
+            "typeBindings": 8135,
+            "nameClaims": 547,
+            "lexicalNames": 582,
+            "syntheticMethodCandidates": 4099,
+            "fingerprint": "f88c1789315686c4fbbeb2a19913c0a324a6ffbeaa6e98cc8e427bb64daf7cb0"
+          },
+          "quality": {
+            "cases": 2029,
+            "passedCases": 2029,
+            "features": {
+              "P3/P4 package-root identity": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 Lombok annotation identity": {
+                "cases": 6,
+                "passed": 6
+              },
+              "P3/P4 generic argument declaration context": {
+                "cases": 3,
+                "passed": 3
+              },
+              "P3 annotated qualified constructor": {
+                "cases": 1,
+                "passed": 1
+              },
+              "P4 local element proof refusal": {
+                "cases": 2,
+                "passed": 2
+              },
+              "P1 array element identity": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P1 array negative": {
+                "cases": 160,
+                "passed": 160
+              },
+              "P1 array Object members": {
+                "cases": 64,
+                "passed": 64
+              },
+              "P2 lexical aliases": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P2 complete field receiver": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 producer identity": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 unknown alias barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P2 block ownership": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN collision": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 FQN miss": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P3 resource lifetime": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 typed lambda owner": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unknown lambda shadow barrier": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 sibling lambda owners": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 lexical this": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 nested lambda names": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 contextual JDK elements": {
+                "cases": 128,
+                "passed": 128
+              },
+              "P4 proven map parameters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 unproven generic elements": {
+                "cases": 96,
+                "passed": 96
+              },
+              "P4 Lombok Value getters": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 Lombok suppressed accessors": {
+                "cases": 32,
+                "passed": 32
+              },
+              "P4 generated constructor DI": {
+                "cases": 256,
+                "passed": 256
+              },
+              "P4 dense Lombok getters": {
+                "cases": 224,
+                "passed": 224
+              },
+              "P4 dense NonNull constructor DI": {
+                "cases": 224,
+                "passed": 224
+              }
+            },
+            "nodes": 10683,
+            "edges": 13146,
+            "syntheticAccessorMethods": 4097,
+            "semanticFingerprint": "871b51b6f1068ac355be8065a2b0f5345656b58bb81a7bd740f4af22ed2256f9",
+            "graphFingerprint": "28921d85ae8e8843d103ca991c307616fe3790f38a6d260eb9dd29da88fe2570"
+          },
+          "captureMs": 1495.0843749999985,
+          "pipelineMs": 3002.7299579999963,
+          "captureSamplesMs": [
+            1514.6572090000009, 1508.1182919999992, 1503.7897080000002, 1511.304250000001,
+            1495.0843749999985, 1511.1448750000018, 1547.1766669999997, 1558.3919579999965,
+            1508.2760419999977, 1506.0829159999994, 1517.9953339999993, 1496.0873329999959,
+            1499.2540420000005, 1499.3216660000035, 1503.4860829999961
+          ],
+          "pipelineSamplesMs": [3154.3629169999986, 3147.1648329999953, 3002.7299579999963]
+        }
+      }
+    }
+  },
+  "recaptureWork": {
+    "before": {
+      "files": 30,
+      "replaced": 10,
+      "changed": 2,
+      "unchangedReplacements": 8
+    },
+    "after": {
+      "files": 30,
+      "replaced": 2,
+      "changed": 2,
+      "unchangedReplacements": 0
+    }
+  }
+}

@@ -126,9 +126,9 @@ const PATH_LANG: readonly [RegExp, SupportedLanguages][] = [
 ];
 
 const LANG_ARG =
-  /,\s*(Rust|Java|CSharp|Kotlin|Go|Python|TypeScript|JavaScript|PHP|Php|Ruby|Swift|Dart|CPlusPlus|Cpp|CPP|Zig)\s*[,)]/;
+  /,\s*(Rust|Java|CSharp|Kotlin|Go|Python|TypeScript|JavaScript|PHP|Php|Ruby|Swift|Dart|CPlusPlus|Cpp|CPP|Zig|R)\s*[,)]/;
 const LANG_FIRST_ARG =
-  /\(\s*(Rust|Java|CSharp|Kotlin|Go|Python|TypeScript|JavaScript|PHP|Ruby|Swift|Dart|CPlusPlus|Zig)\s*,/;
+  /\(\s*(Rust|Java|CSharp|Kotlin|Go|Python|TypeScript|JavaScript|PHP|Ruby|Swift|Dart|CPlusPlus|Zig|R)\s*,/;
 
 /**
  * The language a test feeds inline source in: named in its code (`text`), by a file-name literal,

@@ -238,6 +238,14 @@ interface ValueBindingIndex {
    */
   readonly terminalIdentifierById: Map<number, SyntaxNode | null>;
   /**
+   * Identifier leaves under every node the second-leaf search finished,
+   * capped at 2 ("more than one"), memoized for the whole file. A call whose
+   * callee is a call (`f()()()`) or an assignment whose value is an assignment
+   * (`a = b = c`) holds the whole nest below it, so without the memo each
+   * level counted the leaves of every level under it again.
+   */
+  readonly identifierLeavesById: Map<number, number>;
+  /**
    * Parent of every named node, recorded by the one DFS. tree-sitter's
    * `parent` is not a pointer read: it re-descends from the root, so it costs
    * the node's depth, and a leaf of a long chain is as deep as the chain.
@@ -402,6 +410,9 @@ function buildValueBindingIndex(
   const formalByOwner = new Map<number | undefined, Set<string>>();
   const formalNames = new Set<string>();
   const signatureByNameAndRegion = new Map<string, Map<number, CallableCaptureSignature>>();
+  const functionOwnerById = new Map<number, SyntaxNode | null>();
+  const lexicalRegionById = new Map<number, SyntaxNode>();
+  const terminalIdentifierById = new Map<number, SyntaxNode | null>();
   const add = (
     index: Map<number | undefined, Set<string>>,
     owner: number | undefined,
@@ -423,17 +434,22 @@ function buildValueBindingIndex(
     // name-cell — the seed fact is keyed on `run`, so the store must be
     // visible under that name too or the member-call invoke gate never sees
     // it (#2522 review, M3 ops-vtable pattern).
-    const terminal = terminalIdentifier(assignment.destination, options);
+    const terminal = terminalIdentifier(assignment.destination, options, terminalIdentifierById);
     if (terminal !== undefined) destinationNames.add(terminal.text);
     // A destination whose binding identifier and terminal identifier are two
     // different nodes spans a member path (`o->run`, `self.slot.f`); a bare
     // name or a declarator (`void (*fp)(int)`) resolves both to the same leaf.
     const memberStoreName =
       terminal !== undefined && terminal.id !== destination?.node.id ? terminal.text : undefined;
-    const region = nearestLexicalRegion(assignment.container, parentById, options);
+    const region = nearestLexicalRegion(
+      assignment.container,
+      parentById,
+      lexicalRegionById,
+      options,
+    );
     const functionOwner =
       options.functionScopedValueBindings === true
-        ? nearestFunctionOwner(assignment.container, options)
+        ? nearestFunctionOwner(assignment.container, parentById, functionOwnerById, options)
         : undefined;
     const record = (index: Map<string, Set<number>>, name: string): void => {
       let regionIds = index.get(name);
@@ -472,7 +488,7 @@ function buildValueBindingIndex(
     // bypassed the precise passes' two-phase/ambiguity suppression
     // (#2522 CI: eight cpp resolver tests gained a phantom edge).
     if (!bindingInterposesValueDeclarator(node, binding)) continue;
-    const region = nearestLexicalRegion(node, parentById, options);
+    const region = nearestLexicalRegion(node, parentById, lexicalRegionById, options);
     let byRegion = signatureByNameAndRegion.get(binding.text);
     if (byRegion === undefined) {
       byRegion = new Map();
@@ -480,7 +496,7 @@ function buildValueBindingIndex(
     }
     byRegion.set(region.id, signature);
     if (options.functionScopedValueBindings === true) {
-      const functionOwner = nearestFunctionOwner(node, options);
+      const functionOwner = nearestFunctionOwner(node, parentById, functionOwnerById, options);
       if (functionOwner !== undefined) byRegion.set(functionOwner.id, signature);
     }
   }
@@ -501,7 +517,8 @@ function buildValueBindingIndex(
     anchorIds,
     parentById,
     nearestAnchorById: new Map(),
-    terminalIdentifierById: new Map(),
+    terminalIdentifierById,
+    identifierLeavesById: new Map(),
   };
 }
 
@@ -549,37 +566,80 @@ function bindingInterposesValueDeclarator(declaration: SyntaxNode, binding: Synt
   return false;
 }
 
+/**
+ * The nearest function at-or-above `input`. `ownerById` memoizes the answer
+ * (null: none) for every node a walk passed, and the walk reads the DFS's
+ * parent links, so across one file each node is passed once. Nested
+ * assignments (`(a := (b := ...))`) otherwise walked the same spine once per
+ * level, and each native `parent` on it cost the node's depth again.
+ */
 function nearestFunctionOwner(
   input: SyntaxNode,
+  parentById: ReadonlyMap<number, SyntaxNode>,
+  ownerById: Map<number, SyntaxNode | null>,
   options: CallableFlowCaptureOptions,
 ): SyntaxNode | undefined {
   const providerOwner = options.lexicalFunctionOwner?.(input);
   if (providerOwner !== undefined) return providerOwner;
-  let node: SyntaxNode | null = input;
-  while (node !== null) {
-    if (options.functionNodeTypes.has(node.type)) return node;
-    node = node.parent;
+  const passed: number[] = [];
+  let found: SyntaxNode | null = null;
+  for (let node: SyntaxNode | null = input; node !== null; ) {
+    const known = ownerById.get(node.id);
+    if (known !== undefined) {
+      found = known;
+      break;
+    }
+    if (options.functionNodeTypes.has(node.type)) {
+      found = node;
+      break;
+    }
+    passed.push(node.id);
+    node = parentById.get(node.id) ?? node.parent;
   }
-  return undefined;
+  for (const id of passed) ownerById.set(id, found);
+  return found ?? undefined;
 }
 
+/**
+ * The nearest function or block strictly above `input`, else the outermost
+ * node. Without a provider owner the answer is the same for `input` and for
+ * every node the walk passes, so `regionById` memoizes it for all of them:
+ * nested assignments (`a = b = c`) otherwise each walked the levels above.
+ */
 function nearestLexicalRegion(
   input: SyntaxNode,
   parentById: ReadonlyMap<number, SyntaxNode>,
+  regionById: Map<number, SyntaxNode>,
   options: CallableFlowCaptureOptions,
 ): SyntaxNode {
   const providerOwner = options.lexicalFunctionOwner?.(input);
   // Native parent getters can traverse from the root, even for a one-hop
   // region lookup. Reuse the file walk's links as the visibility walk does.
-  let node: SyntaxNode | null = parentById.get(input.id) ?? input.parent;
-  let outermost = input;
-  while (node !== null) {
-    outermost = node;
-    if (providerOwner !== undefined && node.id === providerOwner.id) return node;
-    if (options.functionNodeTypes.has(node.type) || isLexicalRegionNode(node)) return node;
-    node = parentById.get(node.id) ?? node.parent;
+  if (providerOwner !== undefined) {
+    let node: SyntaxNode | null = parentById.get(input.id) ?? input.parent;
+    while (node !== null) {
+      if (node.id === providerOwner.id) return node;
+      if (options.functionNodeTypes.has(node.type) || isLexicalRegionNode(node)) return node;
+      node = parentById.get(node.id) ?? node.parent;
+    }
+    return providerOwner;
   }
-  return providerOwner ?? outermost;
+  const passed: number[] = [];
+  let below = input;
+  let region = regionById.get(below.id);
+  while (region === undefined) {
+    passed.push(below.id);
+    const parent: SyntaxNode | null = parentById.get(below.id) ?? below.parent;
+    if (parent === null) region = below;
+    else if (options.functionNodeTypes.has(parent.type) || isLexicalRegionNode(parent)) {
+      region = parent;
+    } else {
+      below = parent;
+      region = regionById.get(below.id);
+    }
+  }
+  for (const id of passed) regionById.set(id, region);
+  return region;
 }
 
 function isLexicalRegionNode(node: SyntaxNode): boolean {
@@ -844,7 +904,7 @@ function emitAssignmentFact(
     options,
     options.bindingNodeTypes.has(assignment.container.type),
   );
-  const source = operandSyntax(assignment.source, options);
+  const source = operandSyntax(assignment.source, options, false, undefined, valueBindings);
   if (destination === undefined || source === undefined) return;
 
   const signature =
@@ -1000,8 +1060,10 @@ function emitCallFacts(
 
   const callSite = options.callSiteNode?.(call) ?? call;
   const args = callArguments(call, options);
-  const member = directCallMemberParts(call, options) ?? memberParts(calleeNode, options);
-  const callee = operandSyntax(calleeNode, options);
+  const member =
+    directCallMemberParts(call, valueBindings, options) ??
+    memberParts(calleeNode, valueBindings, options);
+  const callee = operandSyntax(calleeNode, options, false, undefined, valueBindings);
   const calleeIsValueBinding =
     callee !== undefined && isVisibleValueBinding(call, callee.name, valueBindings, options);
   // A direct callee NAME exists only when the call spells its callee as a
@@ -1017,6 +1079,10 @@ function emitCallFacts(
     !calleeIsValueBinding
       ? callee.name
       : undefined;
+  // Read the call's text once, not once per argument: on a tree whose text is
+  // read back through the parse callback, each read is a fresh copy of the
+  // call, and 40,000 arguments held 40,000 copies.
+  let callSiteText: string | undefined;
   for (let index = 0; index < args.length; index++) {
     const rawSource = operandSyntax(args[index]!, options, false, valueBindings);
     if (rawSource === undefined) continue;
@@ -1061,7 +1127,11 @@ function emitCallFacts(
     }
     const source = sourceIsKnownCallable ? asCallableDesignator(rawSource) : rawSource;
     out.push({
-      '@callable-flow.argument': nodeToCapture('@callable-flow.argument', callSite),
+      '@callable-flow.argument': syntheticCapture(
+        '@callable-flow.argument',
+        callSite,
+        (callSiteText ??= callSite.text),
+      ),
       '@callable-flow.source': operandCapture('@callable-flow.source', source),
       ...operandMetadataCaptures('source', source),
       ...(source.indirection > 0
@@ -1223,6 +1293,7 @@ function callArguments(
 
 function directCallMemberParts(
   call: SyntaxNode,
+  bindings: ValueBindingIndex,
   options: CallableFlowCaptureOptions,
 ):
   | { readonly receiver: OperandSyntax; readonly member: OperandSyntax; readonly operator?: string }
@@ -1230,21 +1301,22 @@ function directCallMemberParts(
   const receiverNode = call.childForFieldName('object') ?? call.childForFieldName('receiver');
   const memberNode = call.childForFieldName('method') ?? call.childForFieldName('name');
   if (receiverNode === null || memberNode === null) return undefined;
-  const receiver = operandSyntax(receiverNode, options);
-  const member = operandSyntax(memberNode, options);
+  const receiver = operandSyntax(receiverNode, options, false, undefined, bindings);
+  const member = operandSyntax(memberNode, options, false, undefined, bindings);
   return receiver === undefined || member === undefined ? undefined : { receiver, member };
 }
 
 function memberParts(
   input: SyntaxNode,
+  bindings: ValueBindingIndex,
   options: CallableFlowCaptureOptions,
 ):
   | { readonly receiver: OperandSyntax; readonly member: OperandSyntax; readonly operator?: string }
   | undefined {
   const providerParts = options.memberPointerParts?.(input);
   if (providerParts !== undefined) {
-    const receiver = operandSyntax(providerParts.receiver, options);
-    const member = operandSyntax(providerParts.member, options);
+    const receiver = operandSyntax(providerParts.receiver, options, false, undefined, bindings);
+    const member = operandSyntax(providerParts.member, options, false, undefined, bindings);
     if (receiver !== undefined && member !== undefined) {
       return { receiver, member, operator: providerParts.operator };
     }
@@ -1268,8 +1340,8 @@ function memberParts(
   // every same-named callable.
   const memberNode = memberNameNode(node);
   if (receiverNode === null || memberNode === null) return undefined;
-  const receiver = operandSyntax(receiverNode, options);
-  const member = operandSyntax(memberNode, options);
+  const receiver = operandSyntax(receiverNode, options, false, undefined, bindings);
+  const member = operandSyntax(memberNode, options, false, undefined, bindings);
   if (receiver === undefined || member === undefined) return undefined;
   const operator = node.children.find(
     (child) =>
@@ -1301,6 +1373,7 @@ function operandSyntax(
   options: CallableFlowCaptureOptions,
   declarationBinding = false,
   argumentOf?: ValueBindingIndex,
+  bindings: ValueBindingIndex | undefined = argumentOf,
 ): OperandSyntax | undefined {
   if (declarationBinding) {
     const binding = bindingIdentifier(input, options);
@@ -1358,7 +1431,7 @@ function operandSyntax(
     node = wrapped;
   }
 
-  const id = terminalIdentifier(node, options, argumentOf?.terminalIdentifierById);
+  const id = terminalIdentifier(node, options, bindings?.terminalIdentifierById);
   if (id === undefined) return undefined;
   const singleNameText = node.text.trim().replace(/^[\$@]+/, '');
   // A dropped argument (no designator, no indirection, no address-of) needs
@@ -1376,7 +1449,8 @@ function operandSyntax(
   ) {
     return undefined;
   }
-  const isQualified = id.id !== node.id && hasMultipleIdentifierLeaves(node, options);
+  const isQualified =
+    id.id !== node.id && hasMultipleIdentifierLeaves(node, options, bindings?.identifierLeavesById);
   const valueProducingExpression = /call|invocation|creation|new_expression|composite_literal/.test(
     node.type,
   );
@@ -1461,23 +1535,39 @@ export function subscriptBase(node: SyntaxNode): SyntaxNode | null {
   );
 }
 
+const BINDING_FIELDS = ['name', 'declarator', 'pattern', 'left'] as const;
+/** Step of a stack entry that searches the node itself. */
+const SEARCH = -1;
+
 function bindingIdentifier(
-  node: SyntaxNode,
+  root: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): SyntaxNode | undefined {
-  if (options.identifierNodeTypes.has(node.type)) return node;
-  const base = subscriptBase(node);
-  if (base !== null) return bindingIdentifier(base, options);
-  for (const fieldName of ['name', 'declarator', 'pattern', 'left']) {
-    const field = node.childForFieldName(fieldName);
-    if (field === null || field.id === node.id) continue;
-    const found = bindingIdentifier(field, options);
-    if (found !== undefined) return found;
-  }
-  for (const child of node.namedChildren) {
-    if (child === null) continue;
-    const found = bindingIdentifier(child, options);
-    if (found !== undefined) return found;
+  // Explicit stack: syntax depth is input-controlled. An entry searches a node
+  // (step SEARCH), tries its binding field `step`, or, past the fields, expands
+  // its named children. Each is read only after the previous one failed, in the
+  // order of the recursive search. A field child is usually also a named child; `seen`
+  // skips a subtree that already failed instead of searching it twice.
+  const stack: { node: SyntaxNode; step: number }[] = [{ node: root, step: SEARCH }];
+  const seen = new Set<number>();
+  for (let entry = stack.pop(); entry !== undefined; entry = stack.pop()) {
+    const { node, step } = entry;
+    if (step === SEARCH) {
+      if (options.identifierNodeTypes.has(node.type)) return node;
+      const id = node.id;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const base = subscriptBase(node);
+      stack.push(base === null ? { node, step: 0 } : { node: base, step: SEARCH });
+    } else if (step < BINDING_FIELDS.length) {
+      stack.push({ node, step: step + 1 });
+      const field = node.childForFieldName(BINDING_FIELDS[step]);
+      if (field !== null && field.id !== node.id) stack.push({ node: field, step: SEARCH });
+    } else {
+      const children = node.namedChildren;
+      for (let i = children.length - 1; i >= 0; i--)
+        stack.push({ node: children[i], step: SEARCH });
+    }
   }
   return undefined;
 }
@@ -1552,22 +1642,54 @@ function* terminalIdentifierCandidates(node: SyntaxNode): Generator<SyntaxNode> 
   }
 }
 
+/**
+ * True when more than one identifier leaf sits under `node`. With `memo`
+ * (node id -> leaves, capped at 2) a subtree is counted once per file: the
+ * count depends on the subtree alone. Visits the last child first and stops
+ * at the second leaf, like the plain walk it replaces.
+ */
 function hasMultipleIdentifierLeaves(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
+  memo?: Map<number, number>,
 ): boolean {
-  let count = 0;
-  const stack: SyntaxNode[] = [node];
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    if (countOperandNodeVisits) operandNodeVisits++;
-    if (options.identifierNodeTypes.has(current.type)) {
-      if (++count > 1) return true;
+  const stack: Array<{ node: SyntaxNode; pending?: (SyntaxNode | null)[]; leaves: number }> = [
+    { node, leaves: 0 },
+  ];
+  let seen = 0;
+  for (;;) {
+    const frame = stack[stack.length - 1]!;
+    if (frame.pending === undefined) {
+      const known = memo?.get(frame.node.id);
+      if (known === undefined && countOperandNodeVisits) operandNodeVisits++;
+      if (known !== undefined) frame.leaves = known;
+      else if (options.identifierNodeTypes.has(frame.node.type)) frame.leaves = 1;
+      else frame.pending = [...frame.node.namedChildren];
+      seen += frame.leaves;
+      if (seen > 1) {
+        // Stop at the second leaf, as the plain walk did. A frame whose counted
+        // part (its finished children plus the open frames above it) already
+        // holds two leaves holds more than one; the others are unfinished.
+        let counted = 0;
+        for (let i = stack.length - 1; i >= 0; i--) {
+          counted += stack[i]!.leaves;
+          if (counted > 1) memo?.set(stack[i]!.node.id, 2);
+        }
+        return true;
+      }
+    }
+    const child = frame.pending?.pop();
+    if (child !== undefined) {
+      if (child !== null) stack.push({ node: child, leaves: 0 });
       continue;
     }
-    for (const child of current.namedChildren) if (child !== null) stack.push(child);
+    // This subtree is counted. Its leaves count for every node above it.
+    memo?.set(frame.node.id, Math.min(frame.leaves, 2));
+    stack.pop();
+    const parent = stack[stack.length - 1];
+    if (parent === undefined) return frame.leaves > 1;
+    parent.leaves += frame.leaves;
   }
-  return false;
 }
 
 function findFirstDescendantOfTypes(

@@ -123,6 +123,16 @@ as1 <- function() {
   assign("x", other())
   x$save()
 }
+escaped_assign <- function() {
+  x <- User$new()
+  assign("\u0078", other())
+  x$save()
+}
+escaped_remove <- function() {
+  x <- User$new()
+  rm(list = "\x78")
+  x$save()
+}
 # `<<-` does not bind in its own frame: x is free in sa1, so the call is not typed. No edge.
 sa1 <- function() {
   x <<- User$new()

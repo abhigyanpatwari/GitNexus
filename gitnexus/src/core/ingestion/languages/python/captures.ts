@@ -23,7 +23,7 @@ import {
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
-import { getPythonParser, getPythonScopeQuery } from './query.js';
+import { expandPythonScopeMatches, getPythonParser, pythonScopeQueryMatches } from './query.js';
 import {
   extractNotebookPython,
   isNotebookPath,
@@ -134,9 +134,9 @@ export function emitPythonScopeCaptures(
   }
   if (parseText.includes('__all__')) recordPythonLiteralAll(filePath, tree.rootNode);
 
-  let rawMatches: ReturnType<ReturnType<typeof getPythonScopeQuery>['matches']>;
+  let rawMatches: ReturnType<typeof pythonScopeQueryMatches>;
   try {
-    rawMatches = getPythonScopeQuery().matches(tree.rootNode);
+    rawMatches = pythonScopeQueryMatches(tree.rootNode);
   } catch (err) {
     throw scopeExtractionError('scope query', filePath, err);
   }
@@ -144,7 +144,7 @@ export function emitPythonScopeCaptures(
   const out: CaptureMatch[] = [];
   const dependsCalleeSites = new Set<string>();
 
-  for (const m of rawMatches) {
+  for (const captures of expandPythonScopeMatches(rawMatches)) {
     // Group captures by their tag name. Tree-sitter strips the leading
     // `@`; we put it back so the central extractor's prefix lookups
     // (`@scope.`, `@declaration.`, …) work.
@@ -156,7 +156,7 @@ export function emitPythonScopeCaptures(
     // children on every match -> O(matches x rootChildren). That was the #1848
     // hotpath in Go (fixed in eaf0a305); the same shape lived here in Python.
     const nodeMap: Record<string, SyntaxNode> = {};
-    for (const c of m.captures) {
+    for (const c of captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
       nodeMap[tag] = c.node;

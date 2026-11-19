@@ -7,6 +7,10 @@ import {
 } from '../../../tools/scenario-map/facet/source-shape.js';
 
 describe('source-shape language detection: R', () => {
+  it.each(['parse(R, src)', 'parse(src, R)'])('names the grammar in %s', (call) => {
+    expect(languageOf(call, 'test/unit/x.test.ts', [])).toBe(SupportedLanguages.R);
+  });
+
   it('names R from a SupportedLanguages reference', () => {
     expect(languageOf('run(SupportedLanguages.R, src)', 'test/unit/x.test.ts', [])).toBe(
       SupportedLanguages.R,

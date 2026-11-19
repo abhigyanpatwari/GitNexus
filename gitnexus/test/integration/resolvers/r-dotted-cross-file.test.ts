@@ -45,6 +45,12 @@ describe('R dotted function names called across files', () => {
   const DEFS = 'prov/R/defs.R';
   const QUALIFIED = 'scope-resolution: call:0.35';
 
+  it('does not pick a private dotted definition by path, and keeps lexical calls', () => {
+    expect(edges('ambiguous_check')).toEqual([]);
+    expect(edges('local_check')).toHaveLength(1);
+    expect(edges('local_check')[0]).toContain('.check:other/R/private.R:');
+  });
+
   it('binds a dotted call in the same package through the qualified-name pass', () => {
     expect(edges('same_pkg_helper')).toEqual([`helper.util:${DEFS}:${QUALIFIED}`]);
     expect(edges('same_pkg_print')).toEqual([`print.widget:${DEFS}:${QUALIFIED}`]);

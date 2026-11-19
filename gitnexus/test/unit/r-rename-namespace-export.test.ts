@@ -197,6 +197,27 @@ describe('R rename: the NAMESPACE on disk decides, not the persisted flag', () =
     expect(await stale('export(pub)\n')).toBe('ok');
   });
 
+  it('refuses a new name reserved for an S3 implementation', async () => {
+    expect(await stale('S3method(print, foo, hidden_x)\n')).toBe('unsupported_occurrence');
+  });
+
+  it.each(['`export`(hidden)', '"export"(hidden)', 'exportPattern("")'])(
+    'refuses a function newly exported through %s',
+    async (directive) => {
+      expect(await stale(directive)).toBe('unsupported_occurrence');
+    },
+  );
+
+  it('leaves a conditional quoted export uncertain', async () => {
+    expect(await stale('if (flag) `export`(hidden)')).toBe('incomplete_semantics');
+  });
+
+  it('refuses locale-dependent names and unsupported TRE escapes', async () => {
+    expect(await stale('exportPattern("^[[:alpha:]]+$")', 'café')).toBe('incomplete_semantics');
+    expect(await stale(String.raw`exportPattern("^\\v")`)).toBe('incomplete_semantics');
+    expect(await stale(String.raw`exportPattern("^\\cA")`)).toBe('incomplete_semantics');
+  });
+
   it('refuses a function that an export() added to NAMESPACE alone has exported', async () => {
     expect(await stale('export(pub)\nexport(hidden)\n')).toBe('unsupported_occurrence');
   });

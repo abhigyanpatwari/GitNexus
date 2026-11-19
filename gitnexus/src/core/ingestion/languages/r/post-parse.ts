@@ -27,6 +27,7 @@ import {
   loadRPackageConfig,
   reportRExportPatternProblems,
   rExportPatternsIncomplete,
+  rExportLocaleUnknown,
   rNamespaceExports,
   type RNamespaceInfo,
   type RPackageConfig,
@@ -231,7 +232,8 @@ export const refineRExportStatus = (
       notProvenPrivate = info.exportsUnreadable === true || rExportPatternsIncomplete(info);
       incompleteByInfo.set(info, notProvenPrivate);
     }
-    if (!notProvenPrivate) node.properties.isExported = false;
+    if (!notProvenPrivate && !rExportLocaleUnknown(info, String(node.properties.name)))
+      node.properties.isExported = false;
   }
 };
 

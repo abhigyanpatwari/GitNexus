@@ -14,6 +14,11 @@ import { constants as fsConstants, type Dirent } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import ignore, { type Ignore } from 'ignore';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { walkNamedNodes } from '../rename-tree-sitter.js';
+import { rBareName } from './bare-name.js';
+import { rStringValue } from './export-pattern.js';
+import { getRParser } from './query.js';
 
 export interface RUnindexedSource {
   /** POSIX path relative to the repository root. */
@@ -62,11 +67,33 @@ function isSkippedDirectory(relative: string): boolean {
 }
 
 /** Identifier tokens: plain names (`helper`, `.helper`, `to.json`) and backticked ones. */
-const TOKEN = /`([^`\n]+)`|[A-Za-z.][A-Za-z0-9._]*/g;
+const TOKEN = /`([^`\n]+)`|[\p{L}.][\p{L}\p{M}\p{N}._]*/gu;
 
 function tokens(text: string): string[] {
   const words = new Set<string>();
-  for (const match of text.matchAll(TOKEN)) words.add(match[1] ?? match[0]);
+  const collectWords = (value: string) => {
+    for (const match of value.matchAll(TOKEN)) words.add(match[1] ?? match[0]);
+  };
+  if (!/["'`#]/.test(text)) {
+    collectWords(text);
+  } else {
+    const root = parseSourceSafe(getRParser(), text).rootNode;
+    if (root.hasError) throw new Error('incomplete R syntax');
+    for (const node of walkNamedNodes(root)) {
+      if (node.type === 'identifier') {
+        words.add(rBareName(node.text));
+      } else if (node.type === 'string') {
+        const value = rStringValue(node.text);
+        if (value === null) throw new Error('unrecognized R string');
+        // A whole string can name a binding, including a backticked name with spaces.
+        words.add(value);
+        // Keep possible code strings. Plain words separated only by spaces are prose.
+        if (!/^[\p{L}\p{N}._]+(?:[ \t]+[\p{L}\p{N}._]+)+$/u.test(value)) collectWords(value);
+      } else if (node.type === 'comment' && /^#'\s*@/.test(node.text)) {
+        collectWords(node.text);
+      }
+    }
+  }
   return [...words].sort();
 }
 

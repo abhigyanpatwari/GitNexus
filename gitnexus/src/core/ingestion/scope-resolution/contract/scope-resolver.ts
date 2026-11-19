@@ -287,6 +287,7 @@ import type { SourceBindingRecorder } from '../source-binding-resolution.js';
 import type {
   NameLookupOptions,
   BindingRef,
+  CallResultAssignmentSite,
   Callsite,
   ConstraintContext,
   ParsedFile,
@@ -970,6 +971,36 @@ export interface ScopeResolver {
    * `stripTypePreservingDecoration`, so the pointer resolves.
    */
   readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
+
+  /**
+   * The type of an element reached from a call's result: a call-result
+   * assignment whose `element` names a route this provider emitted (an
+   * iteration variable over a returned container, say). Called only with the
+   * exactly selected callee and its declared return type, so the answer can
+   * depend on what that return type meant where it was written. `undefined`,
+   * or no hook, leaves the name unbound; such sites are skipped when no exact
+   * callee selection exists.
+   */
+  readonly callResultElementType?: (
+    callee: SymbolDefinition,
+    returned: TypeRef,
+    route: string,
+    scopes: ScopeResolutionIndexes,
+  ) => TypeRef | undefined;
+
+  /**
+   * Whether an extracted call-result assignment takes part in this run. A
+   * provider may extract a site that stands only where its own validation
+   * (`populateNamespaceSiblings`, `populateRangeBindings`) removed another
+   * binding it extracted for the same name. Consulted once per site after
+   * those hooks and before any call-result binding is cleared or applied; a
+   * site it refuses neither clears that binding nor holds back a receiver
+   * read through it. No hook: every site takes part.
+   */
+  readonly callResultAssignmentApplies?: (
+    assignment: CallResultAssignmentSite,
+    scopes: ScopeResolutionIndexes,
+  ) => boolean;
 
   /**
    * Collapse member-call CALLS edges by `(caller, target)` rather
@@ -1774,7 +1805,9 @@ export interface ScopeResolver {
   /** Source identity of a call whose result is this site's immediate receiver.
    * Captured from the AST, never inferred by comparing expression strings.
    * Enables typing from the selected compile-time declaration; an unresolved
-   * producer must not fall back to a name-based return-type guess. */
+   * producer must not fall back to a name-based return-type guess. A producer
+   * returned for a receiver chain that ends in index steps (`make()[0].m()`)
+   * is read through `elementTypeOf`, once per trailing index step. */
   readonly receiverCallSite?: (
     callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,

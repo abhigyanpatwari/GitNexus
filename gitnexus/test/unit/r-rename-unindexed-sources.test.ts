@@ -52,6 +52,23 @@ afterEach(async () => {
 });
 
 describe('collectRUnindexedSources', () => {
+  it('preserves complete Unicode names in unindexed R sources', async () => {
+    await write({ 'bin/run.R': 'λ_2(1)\ncafé(2)\n' });
+    const [source] = await collectRUnindexedSources(root, []);
+    expect(source.words).toEqual(['café', 'λ_2']);
+  });
+
+  it('skips prose and comments but retains decoded dynamic lookups and code strings', async () => {
+    await write({
+      'notes.R':
+        '# commentOnly\nx <- "some proseOnly words"\nget("h\\u0065lper")\nparse(text = "`callMe`()")',
+    });
+    const [source] = await collectRUnindexedSources(root, []);
+    expect(source.words).toEqual(expect.arrayContaining(['helper', 'callMe']));
+    expect(source.words).not.toContain('commentOnly');
+    expect(source.words).not.toContain('proseOnly');
+  });
+
   it('lists the R files the index omits, with their tokens, and none it indexes', async () => {
     await write({
       'a.R': 'helper <- function(x) x + 1\n',

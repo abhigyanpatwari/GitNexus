@@ -184,8 +184,9 @@ describe('rFileTopLevel', () => {
     expect([...top.names].filter((n) => ['inner', 'method_only', 'x'].includes(n))).toEqual([]);
   });
 
-  it('records the tail of every dotted name', () => {
-    expect([...top.dottedTails]).toEqual(['tidy']);
+  it('keeps the dotted and bare definitions under distinct export keys', () => {
+    expect(top.moduleExports.get('tidy')?.qualifiedName).toBe('tidy');
+    expect(top.moduleExports.get('print.tidy')?.qualifiedName).toBe('print.tidy');
   });
 });
 
@@ -440,9 +441,8 @@ describe('populateRNamespaceImports', () => {
       expect(wholePkg(['my.helper'], ['my.helper'], ['my.helper'])).toEqual([]);
     });
 
-    it('skips a name defined beside a dotted S3-style def of the same tail', () => {
-      // finalize would index `print.tidy` under `tidy` and bind the wrong def.
-      expect(wholePkg(['tidy'], ['tidy', 'print.tidy'], ['tidy'])).toEqual([]);
+    it('binds a bare name defined beside its S3 method', () => {
+      expect(wholePkg(['tidy'], ['tidy', 'print.tidy'], ['tidy'])).toEqual(['scorelib::tidy']);
     });
 
     it('skips only the unbindable entries and keeps the bindable ones', () => {
@@ -452,7 +452,7 @@ describe('populateRNamespaceImports', () => {
           ['tidy_scores', 'hidden_fn', 'my.helper', 'tidy', 'print.tidy'],
           ['tidy_scores', 'never_defined', 'my.helper', 'tidy'],
         ),
-      ).toEqual(['scorelib::tidy_scores']);
+      ).toEqual(['scorelib::tidy', 'scorelib::tidy_scores']);
     });
 
     it('is decided against the files supplied, so a missing provider file drops the import', () => {
@@ -599,20 +599,20 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
       expect(resolve(s, 'scorelib', 'normalise.scores')).toBeNull();
     });
 
-    it('refuses tidy when print.tidy is defined BEFORE it in the same file', () => {
+    it('resolves tidy when print.tidy is defined before it in the same file', () => {
       const s = setup(
         { [F]: 'print.tidy <- function(x) x\ntidy <- function(d) d' },
         { exports: ['tidy'] },
       );
-      expect(resolve(s, 'scorelib', 'tidy')).toBeNull();
+      expect(resolve(s, 'scorelib', 'tidy')).toEqual([F]);
     });
 
-    it('refuses tidy when print.tidy is defined AFTER it too (order-blind, conservative)', () => {
+    it('resolves tidy when print.tidy is defined after it', () => {
       const s = setup(
         { [F]: 'tidy <- function(d) d\nprint.tidy <- function(x) x' },
         { exports: ['tidy'] },
       );
-      expect(resolve(s, 'scorelib', 'tidy')).toBeNull();
+      expect(resolve(s, 'scorelib', 'tidy')).toEqual([F]);
     });
 
     it('does not fire for an underscore name in the same file as dotted defs', () => {

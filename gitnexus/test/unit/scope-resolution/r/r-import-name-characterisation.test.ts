@@ -5,8 +5,7 @@
  * veto, `expandRWildcardNames` and `populateRQualifiedCalls` all compare a NAMESPACE symbol or a
  * call site's name with a definition's binding key. Reading backtick-quoted names through them
  * (`rBareName`) must not change a single answer for the common case, so the whole observable
- * output over a set of unbackticked layouts is pinned here. The snapshot was recorded before the
- * backtick change and has not been edited since.
+ * output over a set of unbackticked layouts is pinned here. The snapshot covers the exact module export keys.
  */
 import { describe, expect, it } from 'vitest';
 import type { ParsedFile, ParsedImport, ReferenceSite } from 'gitnexus-shared';
@@ -103,14 +102,17 @@ function namedImports(parsed: ParsedFile): string[] {
 }
 
 describe('unbackticked R import and name lookups (characterisation)', () => {
-  it('answers exactly as before the backtick change', () => {
+  it('resolves unquoted names by their exact module bindings', () => {
     const cfg = config();
     const files = Object.entries(SOURCES).map(([path, src]) => parse(src, path));
 
     const topLevel = Object.fromEntries(
       files.map((f) => {
         const t = rFileTopLevel(f);
-        return [f.filePath, { names: sorted(t.names), dottedTails: sorted(t.dottedTails) }];
+        return [
+          f.filePath,
+          { names: sorted(t.names), moduleExports: sorted(t.moduleExports.keys()) },
+        ];
       }),
     );
 

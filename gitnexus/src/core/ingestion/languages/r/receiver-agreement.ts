@@ -36,6 +36,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { rBareName } from './bare-name.js';
+import { rStringValue } from './export-pattern.js';
 import { isRConstantValue } from './assignment.js';
 
 const OTHER = 'other';
@@ -101,10 +102,9 @@ function complexTargetBase(target: SyntaxNode): { base: SyntaxNode; viaCall: boo
   return null;
 }
 
-/** The name a string literal spells (its content as written), or null. */
+/** The runtime value of a literal variable name passed to assign or rm. */
 function stringName(node: SyntaxNode): string | null {
-  if (node.type !== 'string') return null;
-  return node.childForFieldName('content')?.text ?? null;
+  return node.type === 'string' ? rStringValue(node.text) : null;
 }
 
 /** The names `rm()`/`remove()` unbind, and the one `assign()`/`delayedAssign()` binds. */

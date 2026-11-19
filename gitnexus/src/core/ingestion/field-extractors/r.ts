@@ -15,6 +15,7 @@ import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { BaseFieldExtractor } from '../field-extractor.js';
 import { isRLeftAssignment } from '../languages/r/assignment.js';
+import { isR6ClassCall } from '../languages/r/r6-self.js';
 import { isRNamingArgument, rArgumentName } from '../languages/r/naming-argument.js';
 import type {
   FieldExtractorContext,
@@ -237,17 +238,7 @@ export function getRClassNameOfOwnerNode(ownerNode: SyntaxNode): string | null {
 function isR6Class(node: SyntaxNode): boolean {
   if (!isRLeftAssignment(node)) return false;
   const rhs = node.childForFieldName('rhs');
-  if (!rhs || rhs.type !== 'call') return false;
-  const fn = rhs.childForFieldName('function');
-  if (!fn) return false;
-  // R6Class(...)
-  if (fn.type === 'identifier' && fn.text === 'R6Class') return true;
-  // R6::R6Class(...)
-  if (fn.type === 'namespace_operator') {
-    const rhsFn = fn.childForFieldName('rhs');
-    return rhsFn?.text === 'R6Class';
-  }
-  return false;
+  return rhs !== null && isR6ClassCall(rhs);
 }
 
 /** Check if a call node is setClass() or setRefClass(). */

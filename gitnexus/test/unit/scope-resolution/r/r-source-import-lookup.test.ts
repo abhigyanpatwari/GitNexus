@@ -64,6 +64,25 @@ afterEach(() => {
 });
 
 describe('resolveRImportInternal: source() exact-path lookup', () => {
+  it('only resolves a literal local R source in the side-effect import path', () => {
+    const paths = new Set(['scripts/util.R', 'scripts/lib.ts', 'scripts/missing.R.ts']);
+    const resolve = (raw: string) =>
+      resolveRImportTarget(raw, 'scripts/use.R', paths, null, {
+        parsedImport: { kind: 'side-effect', targetRaw: raw },
+        parsedFiles: [],
+      });
+    expect(resolve('"util.R"')).toBe('scripts/util.R');
+    for (const raw of [
+      '"lib"',
+      '"missing.R"',
+      '"https://example.org/util.R"',
+      '"~/util.R"',
+      'util',
+    ]) {
+      expect(resolve(raw)).toBeNull();
+    }
+  });
+
   it.each(CASES)('$title: the index agrees with indexOf', (c) => {
     expect(run(c, true)).toEqual(run(c, false));
   });

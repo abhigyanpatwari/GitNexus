@@ -1,15 +1,17 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`unbackticked R import and name lookups (characterisation) > answers exactly as before the backtick change 1`] = `
+exports[`unbackticked R import and name lookups (characterisation) > resolves unquoted names by their exact module bindings 1`] = `
 {
   "imports": {
     "analytics/R/own.R": [
       "["helper","helper","decoy"]",
+      "["tidy","tidy","corelib"]",
       "["only_b","only_b","corelib"]",
       "["Stack","Stack","corelib"]",
     ],
     "analytics/R/use.R": [
       "["helper","helper","decoy"]",
+      "["tidy","tidy","corelib"]",
       "["only_b","only_b","corelib"]",
       "["Stack","Stack","corelib"]",
     ],
@@ -33,7 +35,9 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
     ],
     ""corelib"::print.tidy": null,
     ""corelib"::shared": null,
-    ""corelib"::tidy": null,
+    ""corelib"::tidy": [
+      "corelib/R/a.R",
+    ],
     "corelib::Stack": [
       "corelib/R/a.R",
     ],
@@ -49,7 +53,9 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
     ],
     "corelib::print.tidy": null,
     "corelib::shared": null,
-    "corelib::tidy": null,
+    "corelib::tidy": [
+      "corelib/R/a.R",
+    ],
     "decoy::Stack": null,
     "decoy::dup": null,
     "decoy::filter": null,
@@ -112,21 +118,33 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
   },
   "topLevel": {
     "analytics/R/own.R": {
-      "dottedTails": [],
+      "moduleExports": [
+        "filter",
+        "hidden",
+      ],
       "names": [
         "filter",
         "hidden",
       ],
     },
     "analytics/R/use.R": {
-      "dottedTails": [],
+      "moduleExports": [
+        "own_filter",
+        "run_all",
+      ],
       "names": [
         "own_filter",
         "run_all",
       ],
     },
     "corelib/R/a.R": {
-      "dottedTails": [
+      "moduleExports": [
+        "Stack",
+        "filter",
+        "helper",
+        "make",
+        "print.tidy",
+        "shared",
         "tidy",
       ],
       "names": [
@@ -140,14 +158,20 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
       ],
     },
     "corelib/R/b.R": {
-      "dottedTails": [],
+      "moduleExports": [
+        "only_b",
+        "shared",
+      ],
       "names": [
         "only_b",
         "shared",
       ],
     },
     "decoy/R/d.R": {
-      "dottedTails": [],
+      "moduleExports": [
+        "helper",
+        "shared",
+      ],
       "names": [
         "helper",
         "shared",
@@ -231,6 +255,7 @@ exports[`unbackticked R import and name lookups (characterisation) > answers exa
     "corelib/R/a.R": [
       "helper",
       "filter",
+      "tidy",
       "shared",
       "make",
       "Stack",

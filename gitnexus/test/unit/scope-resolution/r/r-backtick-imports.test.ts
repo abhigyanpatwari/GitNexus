@@ -117,15 +117,13 @@ describe('resolveRNamedImport with backtick-quoted definitions', () => {
     ).toEqual(['prov/R/ops.R']);
   });
 
-  it('keeps the S3 tail guard exactly where finalize would collide', () => {
-    // finalize keys `print.tidy` under "tidy" and a backticked `tidy` under "`tidy`", so only the
-    // request spelled like the dotted tail is refused.
+  it('resolves both spellings to the file defining the bare name beside its S3 method', () => {
     const dotted = [parse('`tidy` <- function(x) x\nprint.tidy <- function(x) x', 'prov/R/t.R')];
     const cfgT = config({ prov: { namedExports: new Set(['tidy']) } });
     expect([
       resolveRNamedImport(cfgT, 'prov', '`tidy`', dotted),
       resolveRNamedImport(cfgT, 'prov', 'tidy', dotted),
-    ]).toEqual([['prov/R/t.R'], null]);
+    ]).toEqual([['prov/R/t.R'], ['prov/R/t.R']]);
   });
 });
 

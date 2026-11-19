@@ -74,7 +74,7 @@ describe('R rename: a new name that already exists', () => {
     // `to_json = function(x) x` makes `to_json.foo` an S3 method of an indexed function.
     expect(
       rIssue({
-        files: { 'a.R': HELPER, 'b.R': 'to_json = function(x) x\n' },
+        files: { 'a.R': HELPER, 'b.R': '  to_json = function(x) x\n' },
         newName: 'to_json.foo',
       })?.code,
     ).toBe('unsupported_occurrence');

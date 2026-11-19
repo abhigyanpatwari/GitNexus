@@ -110,6 +110,8 @@ export const R_SCOPE_QUERY = `
   operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
+      lhs: (identifier) @_r6pkg
+      (#eq? @_r6pkg "R6")
       rhs: (identifier) @_r6ns_scope
       (#match? @_r6ns_scope "^R6Class$")))) @scope.class
 
@@ -178,6 +180,8 @@ export const R_SCOPE_QUERY = `
   operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
+      lhs: (identifier) @_r6pkg
+      (#eq? @_r6pkg "R6")
       rhs: (identifier) @_r6ns_decl
       (#match? @_r6ns_decl "^R6Class$")))) @declaration.class
 
@@ -204,6 +208,8 @@ export const R_SCOPE_QUERY = `
   operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
+      lhs: (identifier) @_r6pkg
+      (#eq? @_r6pkg "R6")
       rhs: (identifier) @_r6ns_m
       (#match? @_r6ns_m "^R6Class$"))
     arguments: (arguments
@@ -275,7 +281,7 @@ export const R_SCOPE_QUERY = `
   (#match? @_srcfn "^source$")
   arguments: (arguments
     (argument
-      value: [(identifier) (string)] @import.source))) @import.side-effect
+      value: (string) @import.source))) @import.side-effect
 
 ;; library("pkg") / require("pkg") — wildcard: the exported names of the
 ;; named local package become visible (rScopeResolver.expandsWildcardTo).
@@ -304,6 +310,8 @@ export const R_SCOPE_QUERY = `
   operator: ["<-" "<<-" "="]
   rhs: (call
     function: (namespace_operator
+      lhs: (identifier) @_r6pkg
+      (#eq? @_r6pkg "R6")
       rhs: (identifier) @_r6ns_h
       (#match? @_r6ns_h "^R6Class$"))
     arguments: (arguments

@@ -103,10 +103,7 @@ function firstAttached(bindings: readonly BindingRef[]): BindingRef[] {
   return kept.map(({ ref }) => ref);
 }
 
-/** R declarations carry no synthesized arity metadata (no `...`/default-arg
- *  capture exists yet), so the comparison is always 'unknown' — a real bounds
- *  check that turns on if arity captures are added later. Same rationale as
- *  Zig's `zigArityCompatibility`. */
+/** Compare known parameter bounds with the call arity when metadata is available. */
 export function rArityCompatibility(
   callsite: Callsite,
   def: SymbolDefinition,

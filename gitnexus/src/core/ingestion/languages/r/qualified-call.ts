@@ -68,6 +68,45 @@ import {
 
 export { parseRQualifier } from './namespace-imports.js';
 
+/** R dots belong to identifiers. A workspace-wide qualified-name tie cannot establish a binding. */
+function pruneAmbiguousDottedCalls(files: ParsedFile[]): void {
+  const first = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const file of files) {
+    for (const def of file.localDefs ?? []) {
+      const name = def.qualifiedName;
+      if (!name?.includes('.') || (def.type !== 'Function' && def.type !== 'Method')) continue;
+      const previous = first.get(name);
+      if (previous === undefined) first.set(name, def.nodeId);
+      else if (previous !== def.nodeId) ambiguous.add(name);
+    }
+  }
+  if (ambiguous.size === 0) return;
+  for (const [i, file] of files.entries()) {
+    const disputed = (site: ReferenceSite) =>
+      site.kind === 'call' &&
+      site.rawQualifiedName === undefined &&
+      site.explicitReceiver === undefined &&
+      ambiguous.has(site.name);
+    if (!file.referenceSites.some(disputed)) continue;
+    const scopes = new Map(file.scopes.map((scope) => [scope.id, scope]));
+    const kept = file.referenceSites.filter((site) => {
+      if (!disputed(site)) return true;
+      for (let scope = scopes.get(site.inScope); scope; scope = scopes.get(scope.parent!)) {
+        if (
+          scope.bindings
+            .get(site.name)
+            ?.some((ref) => ref.origin === 'local' && ref.def.type === 'Function')
+        )
+          return true;
+      }
+      return false;
+    });
+    if (kept.length !== file.referenceSites.length)
+      files[i] = Object.freeze({ ...file, referenceSites: Object.freeze(kept) });
+  }
+}
+
 /** Whether a qualifier's package is a package of the analysed repo. */
 export type RQualifierLocality = 'local' | 'external' | 'unknown';
 
@@ -139,7 +178,12 @@ export function rQualifierLocality(
   /** {@link rUnownedPackageDirNames} of `parsedFilePaths`, when the caller asks many times. */
   unownedPackageDirNames?: ReadonlySet<string>,
 ): RQualifierLocality {
-  if (cfg?.packages.has(pkg) === true) return 'local';
+  const packageDir = cfg?.packages.get(pkg);
+  if (packageDir !== undefined) {
+    return cfg.packageUniquenessUnknown || cfg.duplicatePackageDirs?.has(packageDir)
+      ? 'unknown'
+      : 'local';
+  }
   if (unownedPackageDirNames !== undefined) {
     if (unownedPackageDirNames.has(pkg)) return 'local';
   } else {
@@ -207,6 +251,7 @@ export function populateRQualifiedCalls(
   ctx: { readonly resolutionConfig?: unknown },
 ): void {
   preciseBySite = new Map();
+  pruneAmbiguousDottedCalls(parsedFiles);
   const cfg = (ctx.resolutionConfig as RPackageConfig | null | undefined) ?? null;
   if (cfg !== null) {
     rRecordQualifiedDefinitionCounts(cfg, new Map());

@@ -29,6 +29,12 @@ function verdict(source: string, newName = 'job', targetName = 'worker'): string
 }
 
 describe('R rename: the string-literal guard compares decoded string values', () => {
+  it('refuses backticked calls of either name inside code strings', () => {
+    expect(verdict('parse(text = "`worker`(1)")')).toBe('unsupported_occurrence');
+    expect(verdict('parse(text = "`job` (1)")')).toBe('unsupported_occurrence');
+    expect(verdict('parse(text = "`other worker`(1)")')).toBe('ok');
+  });
+
   it('positive controls: a plain literal refuses, an unrelated or longer one does not', () => {
     expect(verdict('do.call("worker", list())')).toBe('unsupported_occurrence');
     expect(verdict("do.call('worker', list())")).toBe('unsupported_occurrence');

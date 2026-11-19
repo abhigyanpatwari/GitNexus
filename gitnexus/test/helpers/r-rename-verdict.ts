@@ -9,6 +9,7 @@ import R from '@eagleoutice/tree-sitter-r';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { rRenameProvider } from '../../src/core/ingestion/languages/r/rename.js';
+import { isRLeftAssignment } from '../../src/core/ingestion/languages/r/assignment.js';
 
 const parser = new Parser();
 parser.setLanguage(R as Parameters<Parser['setLanguage']>[0]);
@@ -22,8 +23,6 @@ export interface RVerdictInput {
   readonly targetFile?: string;
 }
 
-const FUNCTION_DEF = /^(`[^`\n]+`|[A-Za-z.][A-Za-z0-9._]*)\s*(?:<-|<<-|=(?!=))\s*function/gm;
-
 /** The issue the provider reports (`code`, `message`), or null when it accepts the rename. */
 export function rIssue(input: RVerdictInput): { code: string; message: string } | null {
   const target = input.target ?? 'helper';
@@ -31,10 +30,17 @@ export function rIssue(input: RVerdictInput): { code: string; message: string } 
   const graph = createKnowledgeGraph();
   const files = new Map(
     Object.entries(input.files).map(([path, source]) => {
-      const localDefs = [...source.matchAll(FUNCTION_DEF)].map((match) => ({
-        qualifiedName: match[1],
-        type: 'Function',
-      }));
+      const tree = parser.parse(source);
+      const localDefs = tree.rootNode.namedChildren.flatMap((node) => {
+        const name = node.childForFieldName('lhs');
+        if (
+          !isRLeftAssignment(node) ||
+          name?.type !== 'identifier' ||
+          node.childForFieldName('rhs')?.type !== 'function_definition'
+        )
+          return [];
+        return [{ qualifiedName: name.text, type: 'Function' }];
+      });
       for (const def of localDefs) {
         graph.addNode({
           id: `Function:${path}:${def.qualifiedName}`,
@@ -47,7 +53,7 @@ export function rIssue(input: RVerdictInput): { code: string; message: string } 
           },
         });
       }
-      return [path, { tree: parser.parse(source), parsed: { localDefs } }] as const;
+      return [path, { tree, parsed: { localDefs } }] as const;
     }),
   );
   const issue = rRenameProvider.checkSafety?.({

@@ -59,6 +59,8 @@ export interface RPackageConfig {
    * configs read as "no duplicate".
    */
   duplicatePackageDirs?: ReadonlySet<string>;
+  /** An unreadable or unvisited directory may contain a second copy of a known package. */
+  packageUniquenessUnknown?: boolean;
   /**
    * True when discovery cannot rule out an undiscovered package: a directory
    * of the main walk could not be read, or a subtree the walk skipped (below
@@ -99,6 +101,8 @@ export interface RNamespaceInfo {
    *  linear-time matcher cannot handle, are dropped at this stage (they never match)
    *  and listed in {@link droppedExportPatterns}. */
   exportPatterns: RExportMatcher[];
+  /** POSIX character classes depend on the R locale for non-ASCII names. */
+  hasPosixClasses?: boolean;
   /**
    * Non-empty `exportPattern()` arguments that could not be compiled, with the reason.
    * A dropped pattern exports nothing, so every name the pattern was meant to cover
@@ -178,6 +182,13 @@ const MAX_REMEMBERED_MATCHES = 100_000;
 /** Names a pattern list matched while its budget lasted (only for lists that draw on a budget). */
 const matchedWhileBudgetLasted = new WeakMap<object, Set<string>>();
 
+export function rExportLocaleUnknown(
+  info: Pick<RNamespaceInfo, 'hasPosixClasses'>,
+  name: string,
+): boolean {
+  return info.hasPosixClasses === true && /\P{ASCII}/u.test(name);
+}
+
 /**
  * True when one of the package's `exportPattern()` matchers matches `name`. Once the
  * package's work budget (or the load's) is spent it stops asking the matchers, so the cost no
@@ -189,9 +200,10 @@ const matchedWhileBudgetLasted = new WeakMap<object, Set<string>>();
  * then reported by {@link reportRExportPatternProblems}.
  */
 export function rExportPatternMatches(
-  info: Pick<RNamespaceInfo, 'exportPatterns' | 'exportPatternBudget'>,
+  info: Pick<RNamespaceInfo, 'exportPatterns' | 'exportPatternBudget' | 'hasPosixClasses'>,
   name: string,
 ): boolean {
+  if (rExportLocaleUnknown(info, name)) return false;
   const budget = info.exportPatternBudget;
   let remembered = matchedWhileBudgetLasted.get(info.exportPatterns);
   for (const pattern of info.exportPatterns) {
@@ -309,7 +321,10 @@ export function rBuildSymbolVisibilityMemo(
   // Pass 2: completeness is read only now, after the whole batch has spent what it will spend.
   const memo = new Map<string, Map<string, RSymbolVisibility>>();
   for (const { info, dir, name, exported } of verdicts) {
-    const notProvenPrivate = info.exportsUnreadable === true || rExportPatternsIncomplete(info);
+    const notProvenPrivate =
+      info.exportsUnreadable === true ||
+      rExportPatternsIncomplete(info) ||
+      rExportLocaleUnknown(info, name);
     let byName = memo.get(dir);
     if (byName === undefined) memo.set(dir, (byName = new Map()));
     byName.set(name, exported ? 'public' : notProvenPrivate ? 'unknown' : 'private');
@@ -518,15 +533,31 @@ export async function hidesUndiscoveredPackage(
   knownPackageNames: ReadonlySet<string>,
   budget: number = HIDDEN_SCAN_BUDGET,
 ): Promise<boolean> {
+  const scan = await scanHiddenPackages(roots, knownPackageNames, budget);
+  return scan.unknownName || scan.incomplete;
+}
+
+async function scanHiddenPackages(
+  roots: readonly string[],
+  knownPackageNames: ReadonlySet<string>,
+  budget: number,
+) {
+  const copies = new Map<string, string>();
+  let unknownName = false;
+  let incomplete = false;
   const stack = [...roots];
   let remaining = budget;
   for (let dir = stack.pop(); dir !== undefined; dir = stack.pop()) {
-    if (--remaining < 0) return true;
+    if (--remaining < 0) {
+      incomplete = true;
+      break;
+    }
     let entries;
     try {
       entries = await readDirSorted(dir);
     } catch {
-      return true;
+      incomplete = true;
+      continue;
     }
     for (const entry of entries) {
       if (entry.isDirectory()) {
@@ -535,20 +566,16 @@ export async function hidesUndiscoveredPackage(
         try {
           const content = await readManifestFile(path.join(dir, entry.name));
           const pkgName = descriptionPackageName(content);
-          if (
-            pkgName !== undefined &&
-            !knownPackageNames.has(pkgName) &&
-            !isInstalledPackageDescription(content)
-          ) {
-            return true;
-          }
+          if (pkgName === undefined || isInstalledPackageDescription(content)) continue;
+          if (knownPackageNames.has(pkgName)) copies.set(dir, pkgName);
+          else unknownName = true;
         } catch {
-          return true;
+          incomplete = true;
         }
       }
     }
   }
-  return false;
+  return { copies, unknownName, incomplete };
 }
 
 /**
@@ -661,9 +688,9 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
               // The same test as DESCRIPTION: a regular file listed by the directory read, never
               // a symlink (which could point outside the repository).
               const nsEntry = entries.find((candidate) => candidate.name === 'NAMESPACE');
+              if (nsEntry === undefined) continue;
               try {
-                if (nsEntry === undefined || !nsEntry.isFile())
-                  throw new Error('no NAMESPACE file');
+                if (!nsEntry.isFile()) throw new Error('not a regular file');
                 const nsContent = await readManifestFile(path.join(dir, 'NAMESPACE'));
                 const parsedExports = parseRNamespaceExports(nsContent);
                 const namedExports = new Set<string>(parsedExports.namedExports);
@@ -693,6 +720,9 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                   hasNamespaceFile: true,
                   namedExports,
                   exportPatterns,
+                  hasPosixClasses: parsedExports.exportPatterns.some((pattern) =>
+                    pattern.includes('[:'),
+                  ),
                   droppedExportPatterns,
                   omittedDroppedExportPatterns: omittedDropped,
                   exportPatternBudget: packageBudget,
@@ -705,7 +735,18 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
                   importsUnreadable: imports.unreadable,
                 });
               } catch {
-                // No NAMESPACE file or can't read it
+                namespaceInfoByPackageDir.set(pkgDir, {
+                  hasNamespaceFile: true,
+                  namedExports: new Set(),
+                  exportPatterns: [],
+                  importFrom: [],
+                  depends: descriptionDepends(content),
+                  exportsUnreadable: true,
+                  importsUnreadable: true,
+                });
+                logger.warn(
+                  `R package ${pkgDir || '.'}: could not read NAMESPACE; exports and imports are unknown`,
+                );
               }
             }
           } catch {
@@ -722,15 +763,24 @@ export async function loadRPackageConfig(repoRoot: string): Promise<RPackageConf
 
   // Directories still queued when the cap stopped the walk were never visited either.
   for (const { dir } of scanQueue) unvisited.push(dir);
-  if (
-    !truncated &&
-    unvisited.length > 0 &&
-    (await hidesUndiscoveredPackage(unvisited, new Set(packages.keys())))
-  ) {
-    truncated = true;
-  }
+  const hidden = await scanHiddenPackages(unvisited, new Set(packages.keys()), HIDDEN_SCAN_BUDGET);
+  const packageUniquenessUnknown = truncated || hidden.incomplete;
+  truncated = packageUniquenessUnknown || hidden.unknownName;
   const duplicatePackageDirs = new Set<string>();
   for (const dirs of dirsByPackageName.values())
     if (dirs.length > 1) for (const dir of dirs) duplicatePackageDirs.add(dir);
-  return { packages, namespaceInfoByPackageDir, packageDirs, duplicatePackageDirs, truncated };
+  for (const [absolute, name] of hidden.copies) {
+    const dir = path.relative(repoRoot, absolute).replace(/\\/g, '/');
+    packageDirs.add(dir);
+    duplicatePackageDirs.add(dir);
+    duplicatePackageDirs.add(packages.get(name)!);
+  }
+  return {
+    packages,
+    namespaceInfoByPackageDir,
+    packageDirs,
+    duplicatePackageDirs,
+    packageUniquenessUnknown,
+    truncated,
+  };
 }

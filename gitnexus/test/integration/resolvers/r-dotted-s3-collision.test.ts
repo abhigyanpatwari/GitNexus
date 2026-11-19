@@ -43,24 +43,20 @@ describe('R dotted (S3) names vs same-tailed bare names', () => {
     it('binds foo to the bare def, never to print.foo declared before it', () => {
       const e = edges('use_foo', 'cons/R/cons.R');
       expect(e.filter((x) => x.startsWith('print.foo:'))).toEqual([]);
-      expect(e).toEqual([`foo:${PROV}:global-name-fallback:0.5`]);
+      expect(e).toEqual([`foo:${PROV}:import-resolved:0.85`]);
     });
 
     it('also keeps a script caller (no package NAMESPACE) off print.foo', () => {
-      expect(edges('script_foo', 'scripts/run.R')).toEqual([
-        `foo:${PROV}:global-name-fallback:0.5`,
-      ]);
+      expect(edges('script_foo', 'scripts/run.R')).toEqual([`foo:${PROV}:import-resolved:0.85`]);
     });
 
     it('reversed declaration order (bare bar before print.bar) resolves to the bare def', () => {
-      expect(edges('use_bar', 'cons/R/cons.R')).toEqual([`bar:${PROV}:global-name-fallback:0.5`]);
-      expect(edges('script_bar', 'scripts/run.R')).toEqual([
-        `bar:${PROV}:global-name-fallback:0.5`,
-      ]);
+      expect(edges('use_bar', 'cons/R/cons.R')).toEqual([`bar:${PROV}:import-resolved:0.85`]);
+      expect(edges('script_bar', 'scripts/run.R')).toEqual([`bar:${PROV}:import-resolved:0.85`]);
     });
 
     it('bare name with an S3 method declared after it (baz / summary.baz) resolves to the bare def', () => {
-      expect(edges('use_baz', 'cons/R/cons.R')).toEqual([`baz:${PROV}:global-name-fallback:0.5`]);
+      expect(edges('use_baz', 'cons/R/cons.R')).toEqual([`baz:${PROV}:import-resolved:0.85`]);
     });
 
     it('control: a name with no same-tailed S3 method is still import-resolved at 0.85', () => {

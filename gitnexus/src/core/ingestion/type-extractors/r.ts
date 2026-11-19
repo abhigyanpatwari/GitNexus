@@ -8,6 +8,7 @@ import type {
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { getRClassNameArgument } from '../field-extractors/r.js';
 import { isRLeftAssignment } from '../languages/r/assignment.js';
+import { isR6ClassCall } from '../languages/r/r6-self.js';
 import { rBareName } from '../languages/r/bare-name.js';
 
 /**
@@ -117,11 +118,7 @@ const declaredClassName = (node: SyntaxNode): string | undefined => {
     const lhs = node.childForFieldName('lhs');
     const rhs = node.childForFieldName('rhs');
     if (lhs?.type !== 'identifier' || rhs?.type !== 'call') return undefined;
-    const fn = rhs.childForFieldName('function');
-    const calleeName =
-      fn?.type === 'namespace_operator' ? fn.childForFieldName('rhs')?.text : fn?.text;
-    // A backticked name is the same class, as for a formal (see extractParameter).
-    return calleeName === 'R6Class' ? rBareName(lhs.text) : undefined;
+    return isR6ClassCall(rhs) ? rBareName(lhs.text) : undefined;
   }
   if (node.type !== 'call') return undefined;
   const fn = node.childForFieldName('function');

@@ -154,7 +154,11 @@ function spellsAttachChangingArgument(argumentList: SyntaxNode): boolean {
   for (const child of argumentList.namedChildren) {
     if (child.type !== 'argument') continue; // comment, comma
     const name = child.childForFieldName('name');
-    if (name !== null && ATTACH_CHANGING_ARGUMENTS.has(argumentNameText(name))) {
+    if (name === null) continue;
+    const argument = argumentNameText(name);
+    if (argument === 'character.only' && child.childForFieldName('value')?.type === 'false')
+      continue;
+    if (ATTACH_CHANGING_ARGUMENTS.has(argument)) {
       found = true;
       break;
     }

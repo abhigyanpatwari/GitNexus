@@ -177,6 +177,12 @@ export function compileRExportPatternDetailed(
   shared?: SharedWorkBudget,
 ): RExportPatternResult {
   try {
+    // TRE and JavaScript assign different meanings to these escapes.
+    for (let i = source.indexOf('\\'); i !== -1; i = source.indexOf('\\', i + 2)) {
+      if (source[i + 1] === 'v' || source[i + 1] === 'c') {
+        return { matcher: null, reason: 'unsupported TRE escape' };
+      }
+    }
     if (hasBackslashInBracket(source)) {
       return {
         matcher: null,
@@ -296,4 +302,21 @@ function readHexEscape(body: string, at: number): { text: string; end: number } 
   const code = parseInt(body.slice(start, i), 16);
   if (code > 0x10ffff) return null;
   return { text: String.fromCodePoint(code), end: braced ? i + 1 : i };
+}
+
+/** `r"(...)"`, `R'[...]'`, `r"---{...}---"`: no escapes; the body is taken as written. */
+const RAW_STRING = /^[rR](["'])(-*)(?:\(([\s\S]*)\)|\[([\s\S]*)\]|\{([\s\S]*)\})\2\1$/;
+
+/**
+ * The value R holds for a string literal's source text, or null when it is not a
+ * recognisable literal. Escapes are decoded (`"f\u006fo"` is `foo`), raw strings are
+ * taken verbatim, so the guard compares what the string means, not how it is spelled.
+ */
+export function rStringValue(text: string): string | null {
+  const raw = RAW_STRING.exec(text);
+  if (raw) return raw[3] ?? raw[4] ?? raw[5] ?? '';
+  const quote = text[0];
+  if ((quote !== '"' && quote !== "'") || text.length < 2 || text[text.length - 1] !== quote)
+    return null;
+  return unescapeRString(text.slice(1, -1));
 }
