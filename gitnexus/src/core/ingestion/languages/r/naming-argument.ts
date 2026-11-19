@@ -167,12 +167,12 @@ function spellsAttachChangingArgument(argumentList: SyntaxNode): boolean {
     const name = child.childForFieldName('name');
     if (name === null) continue;
     const argument = argumentNameText(name);
-    if (argument === 'character.only' && child.childForFieldName('value')?.type === 'false')
-      continue;
-    if (argument && ATTACH_CHANGING_ARGUMENTS.some((formal) => formal.startsWith(argument))) {
-      found = true;
-      break;
-    }
+    if (!argument) continue;
+    const formal = ATTACH_CHANGING_ARGUMENTS.find((candidate) => candidate.startsWith(argument));
+    if (formal === undefined) continue;
+    if (formal === 'character.only' && child.childForFieldName('value')?.type === 'false') continue;
+    found = true;
+    break;
   }
   perTree.set(argumentList.id, found);
   return found;
