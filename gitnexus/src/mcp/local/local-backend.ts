@@ -2953,6 +2953,8 @@ export class LocalBackend {
         const siblings = h.remoteUrl
           ? byRemote.get(h.remoteUrl)?.filter((s) => path.relative(s.repoPath, h.repoPath) !== '')
           : undefined;
+        const checkoutIsDir =
+          contentRetention === 'full' ? await checkoutIsDirectory(h.repoPath) : false;
         return {
           name: h.name,
           path: h.repoPath,
@@ -2974,10 +2976,7 @@ export class LocalBackend {
             : undefined,
           storagePath: h.storagePath,
           contentRetention,
-          sourceAvailable: isFullSourceAvailable(
-            contentRetention,
-            contentRetention === 'full' && (await checkoutIsDirectory(h.repoPath)),
-          ),
+          sourceAvailable: isFullSourceAvailable(contentRetention, checkoutIsDir),
         };
       },
       8,

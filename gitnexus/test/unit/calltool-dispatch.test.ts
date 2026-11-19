@@ -5390,11 +5390,14 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
   });
 
   it('sorts pages by name while the full listing and off-page siblings keep path order', async () => {
-    const entries = ['zeta', 'middle', 'alpha'].map((name, index) => ({
+    const entries = [
+      { name: 'middle', path: '/repos/1' },
+      { name: 'alpha', path: '/repos/2' },
+      { name: 'zeta', path: '/repos/0' },
+    ].map((repo) => ({
       ...MOCK_REPO_ENTRY,
-      name,
-      path: `/repos/${index}`,
-      storagePath: `/repos/${index}/.gitnexus`,
+      ...repo,
+      storagePath: `${repo.path}/.gitnexus`,
       remoteUrl: 'https://example.com/shared',
     }));
     vi.mocked(listRegisteredRepos).mockResolvedValue(entries);
