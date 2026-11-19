@@ -140,6 +140,8 @@ export const zhCN = {
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',
   'tool.detectChanges.unknownRisk': '未知',
   'tool.detectChanges.docSections': '更改的文档章节：{{count}}',
+  'tool.detectChanges.indexedHeadings':
+    '本次审查使用索引中的 Markdown 标题。如果在索引后添加或移动了标题，请运行 gitnexus analyze --index-only 后重新审查。',
   'tool.detectChanges.incompatibleCalls': '不兼容的调用：',
   'tool.detectChanges.removedKeyword': '  {{file}}:{{line}} — {{name}} 不再接受关键字 {{keyword}}',
   'tool.detectChanges.changedSymbols': '已变更符号：',

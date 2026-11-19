@@ -7351,7 +7351,8 @@ export class LocalBackend {
     // Keep docs-only reviews useful. In mixed diffs report their volume once;
     // section headings should not displace changed code or inflate its count.
     let documentationSections = 0;
-    const markdown = /\.(?:md|markdown)$/i;
+    const markdown = /\.(?:mdx?|markdown)$/i;
+    const docsOnly = fileDiffs.every((diff) => markdown.test(diff.filePath));
     if (Array.from(changedSymbols.values()).some((s) => !markdown.test(s.filePath))) {
       for (const [id, symbol] of changedSymbols) {
         if (symbol.type === 'Section' && markdown.test(symbol.filePath)) {
@@ -7487,6 +7488,7 @@ export class LocalBackend {
         // path. A repo that tracks `.patch` fixtures hits this.
         changed_files: new Set(fileDiffs.map((fileDiff) => fileDiff.filePath)).size,
         risk_level: risk,
+        ...(docsOnly && { documentation_basis: 'indexed_headings' }),
         ...(documentationSections > 0 && { documentation_sections: documentationSections }),
         ...(brokenCalls.length > 0 && { incompatible_call_count: brokenCalls.length }),
       },

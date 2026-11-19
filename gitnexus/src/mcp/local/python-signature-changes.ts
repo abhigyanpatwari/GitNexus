@@ -1,9 +1,19 @@
 import { execFile } from 'node:child_process';
-import path from 'node:path';
 import { promisify } from 'node:util';
 import type Parser from 'tree-sitter';
-import { nameClaimsFor, SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
+import {
+  nameClaimsFor,
+  selectClaimsAtScope,
+  SupportedLanguages,
+  type ParsedFile,
+  type ParsedImport,
+  type SourcePosition,
+} from 'gitnexus-shared';
 import { pythonProvider } from '../../core/ingestion/languages/python.js';
+import {
+  isPythonImportedModule,
+  resolvePythonImportTarget,
+} from '../../core/ingestion/languages/python/import-target.js';
 import { extractParsedFile } from '../../core/ingestion/scope-extractor-bridge.js';
 import { parseSourceSafe } from '../../core/tree-sitter/safe-parse.js';
 import { createParserForLanguage } from '../../core/tree-sitter/parser-loader.js';
@@ -98,10 +108,24 @@ function signatures(parser: Parser, source: string) {
           )
       : def;
     const params = callable?.childForFieldName('parameters');
-    if (!params) continue;
+    if (!params) {
+      // Only infer object.__init__ for a plain class body. Bases, decorators
+      // and class-body code can supply a constructor that accepts keywords.
+      const body = def.childForFieldName('body');
+      const defaultConstructor =
+        isClass &&
+        !def.childForFieldName('superclasses')?.namedChildCount &&
+        body?.namedChildren.every(
+          (n) =>
+            n.type === 'pass_statement' ||
+            n.type === 'comment' ||
+            (n.type === 'expression_statement' && n.firstNamedChild?.type === 'string'),
+        );
+      if (!defaultConstructor) continue;
+    }
     const keywords = new Set<string>();
     let arbitrary = false;
-    for (const [i, param] of params.namedChildren.entries()) {
+    for (const [i, param] of (params?.namedChildren ?? []).entries()) {
       if (param.type === 'positional_separator') {
         keywords.clear();
         continue;
@@ -125,62 +149,153 @@ function signatures(parser: Parser, source: string) {
   return result;
 }
 
-function modulePath(module: string, callerFile: string) {
-  const relative = module.match(/^\.+/)?.[0].length ?? 0;
-  const tail = module.slice(relative).replaceAll('.', '/');
-  if (!relative) return tail;
-  return path.posix.join(path.posix.dirname(callerFile), ...Array(relative - 1).fill('..'), tail);
+// Module resolution and re-exports must use the same Git image as the call.
+async function pythonFiles(cwd: string, revision: string | undefined) {
+  const args = revision
+    ? ['ls-tree', '-rz', '--name-only', revision]
+    : [
+        'ls-files',
+        '-z',
+        '--cached',
+        ...(revision === undefined ? ['--others', '--exclude-standard'] : []),
+        '--',
+        '*.py',
+      ];
+  const { stdout } = await run('git', args, { cwd, maxBuffer: 32 * 1024 * 1024 });
+  return new Set(stdout.split('\0').filter((file) => file.endsWith('.py')));
 }
 
-// An aggregated CALLS edge names the containing function, not the expression.
-// Recover import spellings before assigning a keyword to a particular call.
-function calleeSpellings(root: Node, callerFile: string, target: Target): Set<string> {
-  const names = new Set<string>(callerFile === target.filePath ? [target.name] : []);
-  const targetModule = target.filePath.replace(/\.py$/, '').replace(/\/__init__$/, '');
-  const matches = (module: string) => {
-    const p = modulePath(module, callerFile);
-    return (
-      !!p && (targetModule === p || (!module.startsWith('.') && targetModule.endsWith('/' + p)))
-    );
-  };
-  for (const statement of root.namedChildren) {
-    if (statement.type !== 'import_statement' && statement.type !== 'import_from_statement')
-      continue;
-    const from = statement.childForFieldName('module_name')?.text;
-    for (const imported of statement.childrenForFieldName('name')) {
-      const original = imported.childForFieldName('name')?.text ?? imported.text;
-      const alias = imported.childForFieldName('alias')?.text ?? original;
-      if (from && matches(from) && original === target.name) names.add(alias);
-      const module = from ? from + (from.endsWith('.') ? '' : '.') + original : original;
-      if (matches(module)) names.add(alias + '.' + target.name);
-    }
-  }
-  return names;
-}
-
-// A CALLS edge covers the whole caller. Check the lexical binding of each
-// expression in the requested Git image so a nested parameter or a rebound
-// import with the same spelling cannot inherit the outer call's diagnosis.
-function moduleBindingAtCall(parsed: ParsedFile) {
+function sourceBindings(parsed: ParsedFile) {
   const scopes = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
   const sites = new Map(
     parsed.referenceSites
       .filter((site) => site.kind === 'call')
       .map((site) => [rangeKey(site.atRange), site.lookupScope ?? site.inScope]),
   );
-  return (node: Node, spelling: string): boolean => {
-    const head = spelling.split('.', 1)[0];
-    const scopeId = sites.get(rangeKey(nodeRange(node)));
-    let scope = scopeId ? scopes.get(scopeId) : undefined;
+  const imports = groupBy(parsed.parsedImports, (imp) =>
+    imp.atRange ? rangeKey(imp.atRange) : '',
+  );
+  // A CALLS edge covers a whole caller. The nearest active lexical claim
+  // identifies the particular import(s) this expression can actually use.
+  return (call: Node, head: string) => {
+    const at = nodeRange(call);
+    const start = sites.get(rangeKey(at));
+    let scope = start && scopes.get(start);
+    let position: SourcePosition | undefined = at;
     while (scope) {
-      const claims = nameClaimsFor(scope, head);
-      if (scope.id === parsed.moduleScope)
-        return claims.length === 1 && claims[0]?.kind !== 'blocked';
-      if (claims.length) return false;
-      scope = scope.parent ? scopes.get(scope.parent) : undefined;
+      if (scope.id === start || !scope.lookupPolicy?.skipFromChildren) {
+        const selected = selectClaimsAtScope(scope, head, { position, callee: true });
+        if (selected.status !== 'absent') {
+          if (selected.status !== 'selected' || selected.claims.some((c) => c.redirect)) return;
+          if (selected.claims.every((c) => c.kind === 'import')) {
+            const owner = scope.id;
+            return selected.claims.flatMap((c) =>
+              (imports.get(rangeKey(c.range)) ?? []).filter(
+                (imp) =>
+                  'localName' in imp && imp.localName === head && imp.declaredAtScope === owner,
+              ),
+            );
+          }
+          if (
+            scope.id === parsed.moduleScope &&
+            selected.claims.length === 1 &&
+            selected.claims[0].kind === 'binding' &&
+            nameClaimsFor(scope, head).length === 1
+          )
+            return 'local';
+          return;
+        }
+      }
+      if (scope.lookupPolicy?.deferParentActivation) position = undefined;
+      const parent = scope.lookupPolicy?.parentScope ?? scope.parent;
+      scope = parent ? scopes.get(parent) : undefined;
     }
-    return false;
   };
+}
+
+// Walk explicit named imports only. The cycle guard is also needed for
+// "from . import X", whose base is the importing package itself.
+function exportResolver(
+  changes: Iterable<SignatureChange>,
+  allFilePaths: Set<string>,
+  loadFile: (file: string) => Promise<ParsedFile | null>,
+) {
+  const cache = new Map<string, SignatureChange | null>();
+  for (const change of changes) {
+    const key = change.target.filePath + '\0' + change.target.name;
+    cache.set(key, cache.has(key) ? null : change);
+  }
+  return async (moduleFile: string, name: string) => {
+    const seen = new Set<string>();
+    let file: string | null = moduleFile;
+    let result: SignatureChange | null = null;
+    while (file) {
+      const key: string = file + '\0' + name;
+      const cached = cache.get(key);
+      if (cached !== undefined) {
+        result = cached;
+        break;
+      }
+      if (seen.has(key)) break;
+      seen.add(key);
+      const parsed = await loadFile(file);
+      const scope = parsed?.scopes.find((s) => s.id === parsed.moduleScope);
+      if (!parsed || !scope) break;
+      const selected = selectClaimsAtScope(scope, name);
+      if (
+        selected.status !== 'selected' ||
+        selected.claims.length !== 1 ||
+        selected.claims[0].kind !== 'import'
+      )
+        break;
+      const claim = rangeKey(selected.claims[0].range);
+      const imp = parsed.parsedImports.find(
+        (i) =>
+          'localName' in i &&
+          i.localName === name &&
+          i.declaredAtScope === scope.id &&
+          i.atRange &&
+          rangeKey(i.atRange) === claim,
+      );
+      if (!imp || (imp.kind !== 'alias' && imp.kind !== 'named') || !imp.reexportsName) break;
+      file = resolvePythonImportTarget(
+        { ...imp, targetIncludesImportedName: true },
+        { fromFile: file, allFilePaths },
+      );
+      name = imp.importedName;
+    }
+    for (const key of seen) cache.set(key, result);
+    return result;
+  };
+}
+
+function importedCallee(
+  imp: ParsedImport,
+  spelling: string,
+  fromFile: string,
+  allFilePaths: Set<string>,
+) {
+  const ctx = { fromFile, allFilePaths };
+  if (imp.kind === 'named' || imp.kind === 'alias') {
+    if (spelling === imp.localName) {
+      return {
+        file: resolvePythonImportTarget({ ...imp, targetIncludesImportedName: true }, ctx),
+        name: imp.importedName,
+      };
+    }
+    const file = resolvePythonImportTarget(imp, ctx);
+    if (
+      file &&
+      isPythonImportedModule(imp, file, fromFile) &&
+      spelling.startsWith(imp.localName + '.')
+    )
+      return { file, name: spelling.slice(imp.localName.length + 1) };
+  }
+  if (imp.kind === 'namespace') {
+    const prefix = (imp.explicitAlias ? imp.localName : imp.targetRaw) + '.';
+    if (spelling.startsWith(prefix))
+      return { file: resolvePythonImportTarget(imp, ctx), name: spelling.slice(prefix.length) };
+  }
 }
 
 export async function findBrokenKeywordCalls(
@@ -213,6 +328,21 @@ export async function findBrokenKeywordCalls(
   }
   if (!changed.size) return [];
   const rows = await incoming([...changed.keys()]);
+  if (!rows.length) return [];
+  const allFilePaths = await pythonFiles(cwd, after);
+  const exports = new Map<string, ParsedFile | null>();
+  const resolveExport = exportResolver(changed.values(), allFilePaths, async (file) => {
+    const cached = exports.get(file);
+    if (cached !== undefined) return cached;
+    const source = await readImage(cwd, after, file);
+    const tree = source ? parseSourceSafe(parser, source, undefined, undefined, file) : null;
+    const parsed =
+      source && tree && !tree.rootNode.hasError
+        ? extractParsedFile(pythonProvider, source, file, undefined, tree)
+        : null;
+    exports.set(file, parsed);
+    return parsed;
+  });
   const findings: BrokenKeywordCall[] = [];
   for (const [file, callers] of groupBy(rows, (r) => r.filePath)) {
     const text = await readImage(cwd, after, file);
@@ -220,28 +350,41 @@ export async function findBrokenKeywordCalls(
     const tree = parseSourceSafe(parser, text, undefined, undefined, file);
     const root = tree.rootNode;
     if (root.hasError) continue;
-    // Parse and visit each caller file once, even if it calls multiple changed definitions.
-    const byName = new Map<string, SignatureChange | null>();
-    for (const id of new Set(callers.map((caller) => caller.target))) {
-      const change = changed.get(id);
-      if (!change) continue;
-      for (const name of calleeSpellings(root, file, change.target)) {
-        byName.set(name, byName.has(name) ? null : change);
-      }
-    }
-    if (!byName.size) continue;
+    const targetsInFile = new Set(callers.map((caller) => caller.target));
+    const keywords = new Set(
+      [...targetsInFile].flatMap((id) => [...(changed.get(id)?.removed ?? [])]),
+    );
     const parsed = extractParsedFile(pythonProvider, text, file, undefined, tree);
     if (!parsed) continue;
-    const hasModuleBinding = moduleBindingAtCall(parsed);
+    const bindings = sourceBindings(parsed);
     for (const call of walkNamedNodes(root)) {
       if (call.type !== 'call') continue;
-      const spelling = call.childForFieldName('function')?.text ?? '';
-      const change = byName.get(spelling);
-      if (!change || !hasModuleBinding(call, spelling)) continue;
-      const { target, removed } = change;
-      for (const arg of call.childForFieldName('arguments')?.namedChildren ?? []) {
+      const explicit = (call.childForFieldName('arguments')?.namedChildren ?? []).flatMap((arg) => {
         const keyword = arg.type === 'keyword_argument' && arg.childForFieldName('name')?.text;
-        if (keyword && removed.has(keyword))
+        return keyword && keywords.has(keyword) ? [keyword] : [];
+      });
+      if (!explicit.length) continue;
+      const spelling = call.childForFieldName('function')?.text ?? '';
+      const claims = bindings(call, spelling.split('.', 1)[0]);
+      if (!claims) continue;
+      const candidates = new Set<SignatureChange>();
+      if (claims === 'local') {
+        const local = await resolveExport(file, spelling);
+        if (local) candidates.add(local);
+      } else {
+        for (const imp of claims) {
+          const imported = importedCallee(imp, spelling, file, allFilePaths);
+          if (!imported?.file || imported.name.includes('.')) continue;
+          const candidate = await resolveExport(imported.file, imported.name);
+          if (candidate) candidates.add(candidate);
+        }
+      }
+      if (candidates.size !== 1) continue;
+      const [change] = candidates;
+      if (!targetsInFile.has(change.target.id)) continue;
+      const { target, removed } = change;
+      for (const keyword of explicit) {
+        if (removed.has(keyword))
           findings.push({
             target: target.id,
             name: target.name,

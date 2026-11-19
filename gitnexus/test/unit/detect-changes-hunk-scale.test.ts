@@ -252,7 +252,7 @@ describe('#2915 detect_changes hunk scaling', () => {
   });
 
   it('keeps Markdown sections in docs-only reviews and counts them separately beside code', async () => {
-    const dir = makeRepo(['README.md', 'code.ts'], 1);
+    const dir = makeRepo(['README.md', 'guide.mdx', 'code.ts'], 1);
     registerRepo(dir);
     lbugMocks.executeParameterized.mockImplementation(async (_db, query, { bounds }) =>
       String(query).includes('diffPath')
@@ -263,18 +263,24 @@ describe('#2915 detect_changes hunk scaling', () => {
             endLine: 0,
             id: bound.path,
             name: bound.path,
-            type: bound.path === 'README.md' ? 'Section' : 'Function',
+            type: bound.path === 'code.ts' ? 'Function' : 'Section',
           }))
         : [],
     );
     writeFileSync(path.join(dir, 'README.md'), '# Edited section\n');
-    expect((await runDetectChanges()).changed_symbols).toMatchObject([{ type: 'Section' }]);
+    writeFileSync(path.join(dir, 'guide.mdx'), '# Edited MDX section\n');
+    const docs = await runDetectChanges();
+    expect(docs.changed_symbols).toMatchObject([{ type: 'Section' }, { type: 'Section' }]);
+    expect(docs.summary).toMatchObject({
+      changed_count: 2,
+      documentation_basis: 'indexed_headings',
+    });
     writeFileSync(path.join(dir, 'code.ts'), 'function run() {}\n');
     const mixed = await runDetectChanges();
     expect(mixed.summary).toMatchObject({
-      documentation_sections: 1,
+      documentation_sections: 2,
       changed_count: 1,
-      changed_files: 2,
+      changed_files: 3,
     });
     expect(mixed.changed_symbols).toMatchObject([{ type: 'Function' }]);
   });

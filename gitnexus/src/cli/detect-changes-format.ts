@@ -6,6 +6,7 @@ type DetectChangesSummary = {
   changed_files?: number;
   changed_count?: number;
   documentation_sections?: number;
+  documentation_basis?: 'indexed_headings';
   incompatible_call_count?: number;
   affected_count?: number;
   risk_level?: string;
@@ -52,6 +53,8 @@ export function formatDetectChangesResult(result: unknown): string {
   // Both lead the output — a caveat printed after the summary is read too late.
   const notes: string[] = [];
   if (payload.partial) notes.push(t('tool.detectChanges.partial'));
+  if (summary.documentation_basis === 'indexed_headings')
+    notes.push(t('tool.detectChanges.indexedHeadings'));
   if (payload.unmapped_files?.length) {
     notes.push(
       t('tool.detectChanges.unmappedSource', {

@@ -151,6 +151,8 @@ export const en = {
   'tool.detectChanges.riskLevel': 'Risk level: {{risk}}',
   'tool.detectChanges.unknownRisk': 'unknown',
   'tool.detectChanges.docSections': 'Documentation sections changed: {{count}}',
+  'tool.detectChanges.indexedHeadings':
+    'This review uses indexed Markdown headings. If you added or moved headings since indexing, run gitnexus analyze --index-only and repeat the review.',
   'tool.detectChanges.incompatibleCalls': 'Incompatible calls:',
   'tool.detectChanges.removedKeyword':
     '  {{file}}:{{line}} — {{name}} no longer accepts keyword {{keyword}}',

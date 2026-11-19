@@ -63,6 +63,14 @@ describe('formatDetectChangesResult — zero-symbol honesty (#3131)', () => {
     expect(text).toBe('No changes detected.');
   });
 
+  it('explains the indexed snapshot even when a new Markdown heading has no matching symbol', () => {
+    const text = formatDetectChangesResult({
+      summary: { changed_files: 1, changed_count: 0, documentation_basis: 'indexed_headings' },
+    });
+    expect(text).toContain('indexed Markdown headings');
+    expect(text).toContain('gitnexus analyze --index-only');
+  });
+
   it('explains unmapped source files without claiming a query failed or retry will repair the index', () => {
     const text = formatDetectChangesResult({
       partial: true,
