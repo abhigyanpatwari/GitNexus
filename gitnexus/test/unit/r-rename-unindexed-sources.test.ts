@@ -129,6 +129,12 @@ describe('collectRUnindexedSources', () => {
     expect(paths(await collectRUnindexedSources(root, []))).toEqual(['ignored/x.R']);
   });
 
+  it('keeps checking R sources when the ignore file exceeds the read budget', async () => {
+    await write({ '.gitnexusignore': 'kept.R\n#', 'kept.R': 'helper(1)' });
+    await fs.truncate(path.join(root, '.gitnexusignore'), MAX_UNINDEXED_R_SOURCE_BYTES + 1);
+    expect(paths(await collectRUnindexedSources(root, []))).toEqual(['kept.R']);
+  });
+
   it('marks a file over the size cap unreadable instead of reading it', async () => {
     await write({ 'big.R': 'x'.repeat(MAX_UNINDEXED_R_SOURCE_BYTES + 1) });
     expect(await collectRUnindexedSources(root, [])).toEqual([

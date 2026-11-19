@@ -41,9 +41,9 @@ const targets = (source: string, file = 'R/callers.R'): string[] =>
 const lines = (file: string): string[] =>
   fs.readFileSync(path.join(FIXTURES, 'r-chained-receivers', file), 'utf8').split('\n');
 
-/** 1-based line of the first line of `file` that contains `text`. */
-const lineOf = (file: string, text: string): number => {
-  const index = lines(file).findIndex((l) => l.includes(text));
+/** 1-based line of the first matching line after `afterLine`. */
+const lineOf = (file: string, text: string, afterLine = 0): number => {
+  const index = lines(file).findIndex((l, index) => index >= afterLine && l.includes(text));
   if (index < 0) throw new Error(`${text} not in ${file}`);
   return index + 1;
 };
@@ -106,7 +106,8 @@ describe('a chain whose base is a variable: unresolved, with an outcome', () => 
 describe('control: a plain receiver typed through its constructor still resolves', () => {
   it('u$save() binds User.save exactly', () => {
     expect(targets('control')).toEqual(['Method:R/models.R:User.save#0']);
-    expect(outcomesAt('R/callers.R', lineOf('R/callers.R', '  u$save()'))).toEqual([]);
+    const start = lineOf('R/callers.R', 'control <- function()');
+    expect(outcomesAt('R/callers.R', lineOf('R/callers.R', '  u$save()', start))).toEqual([]);
   });
 
   it('a typed base followed by a plain call is unchanged (chain_typed_base)', () => {

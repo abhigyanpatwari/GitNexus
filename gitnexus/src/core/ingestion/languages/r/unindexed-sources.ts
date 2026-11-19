@@ -100,7 +100,11 @@ function tokens(text: string): string[] {
 /** The repository's `.gitnexusignore` rules (the user's explicit "not mine"), if any. */
 async function gitnexusIgnore(repoRoot: string): Promise<Ignore | undefined> {
   try {
-    const text = await readRegularFile(path.join(repoRoot, '.gitnexusignore'), Infinity);
+    // If the rules exceed the read budget, keep checking every unindexed R source.
+    const text = await readRegularFile(
+      path.join(repoRoot, '.gitnexusignore'),
+      MAX_UNINDEXED_R_SOURCE_BYTES,
+    );
     return text === undefined ? undefined : ignore().add(text);
   } catch {
     return undefined;

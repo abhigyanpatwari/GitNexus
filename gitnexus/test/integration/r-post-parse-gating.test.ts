@@ -18,6 +18,15 @@ import fsp from 'node:fs/promises';
 import { runPipelineFromRepo, writeFixtureRepo } from './resolvers/helpers.js';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
 import { rProvider } from '../../src/core/ingestion/languages/r.js';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
+import {
+  emptyParseCache,
+  loadParseCache,
+  saveParseCache,
+  type ParseCache,
+} from '../../src/storage/parse-cache.js';
+import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
 
 const MANIFEST = /[\\/](DESCRIPTION|NAMESPACE)$/;
 
@@ -80,6 +89,53 @@ describe('R post-parse gating', () => {
     await runPipelineFromRepo(makeRepo({ 'R/a.R': 'f <- function() 1\n', ...DECOYS }), () => {});
     expect(postParse).toHaveBeenCalledTimes(1);
   }, 120000);
+
+  it('collects exported types after refining R package visibility in a mixed repo', async () => {
+    const sources = {
+      'R/types.R': [
+        'Box <- R6Class("Box", public=list(counter=1L))',
+        'Slot <- setClass("Slot", slots=c(value="numeric"))',
+      ].join('\n'),
+      'src/other.ts': 'export function message(): string { return "ok" }',
+    };
+    const root = makeRepo({
+      ...sources,
+      DESCRIPTION: 'Package: testpkg\n',
+      NAMESPACE: 'export(Box)\n',
+    });
+    const scanned = Object.entries(sources).map(([path, source]) => ({
+      path,
+      size: Buffer.byteLength(source),
+    }));
+    const storage = makeRepo({});
+    const stage = () => fs.mkdtempSync(path.join(storage, 'stage-'));
+    const cache = emptyParseCache(TEST_PARSE_IDENTITY, {
+      storagePath: storage,
+      writeStoragePath: stage(),
+    });
+    const parse = (parseCache: ParseCache) =>
+      runChunkedParseAndResolve(
+        createKnowledgeGraph(),
+        scanned,
+        Object.keys(sources),
+        scanned.length,
+        root,
+        Date.now(),
+        () => {},
+        { parseCache, workerPoolSize: 1 },
+      );
+    const cold = await parse(cache);
+    await saveParseCache(storage, cache);
+    const warm = await parse(await loadParseCache(storage, TEST_PARSE_IDENTITY, stage()));
+    expect(cold.reparsedFileCount).toBe(scanned.length);
+    expect(warm.reparsedFileCount).toBe(0);
+
+    for (const { exportedTypeMap } of [cold, warm]) {
+      expect(exportedTypeMap.get('src/other.ts')?.get('message')).toBe('string');
+      expect(exportedTypeMap.get('R/types.R')?.has('counter')).toBeFalsy();
+      expect(exportedTypeMap.get('R/types.R')?.has('value')).toBeFalsy();
+    }
+  }, 60000);
 
   it('control: an R repo with the same layout reads the root DESCRIPTION (the spy sees the loader)', async () => {
     const root = makeRepo({ 'R/a.R': 'f <- function() 1\n', ...DECOYS });

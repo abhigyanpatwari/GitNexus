@@ -19,7 +19,7 @@ describe('R unique-name fallback and closure-local functions', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'r-closure-local-fallback'), () => {});
   }, 60000);
 
-  /** `caller -> callee (reason)` for every CALLS edge, sorted. */
+  /** `caller->callee` for every CALLS edge, sorted. */
   const calls = (): string[] =>
     getRelationships(result, 'CALLS')
       .map((e) => `${e.source}->${e.target}`)
