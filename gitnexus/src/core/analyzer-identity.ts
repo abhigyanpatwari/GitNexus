@@ -544,7 +544,7 @@ function readStableFileWithinBudget(
   return stable;
 }
 
-/** Hash a stable file through a fixed-size buffer instead of materializing it. */
+/** Hash a stable file in bounded chunks. */
 function hashStableFile(candidate: string): {
   digest: string;
   state: ReadableFileState;
@@ -566,7 +566,8 @@ function hashStableFile(candidate: string): {
       if (!isDeepStrictEqual(comparableOpened, before.target)) continue;
 
       const hash = createHash('sha256');
-      const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
+      // Keep a byte available to detect growth, including for an initially empty file.
+      const buffer = Buffer.allocUnsafe(Math.min(HASH_BUFFER_BYTES, expectedBytes + 1));
       let bytes = 0;
       while (true) {
         const read = readSync(descriptor, buffer, 0, buffer.length, null);

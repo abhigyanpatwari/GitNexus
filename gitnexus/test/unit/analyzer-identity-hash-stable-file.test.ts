@@ -60,6 +60,15 @@ describe('hashStableFile (#3932)', () => {
     });
   });
 
+  it.each([0, 300_000])('hashes all %i bytes of an artifact', (size) => {
+    const payload = Buffer.alloc(size, 0x5a);
+    actual.writeFileSync(testFile, payload);
+    expect(analyzerIdentityArtifacts.hashStableFile(testFile)).toMatchObject({
+      bytes: size,
+      digest: `sha256:${createHash('sha256').update(payload).digest('hex')}`,
+    });
+  });
+
   it('accepts the Windows zero-device snapshot without changing the stored state', () => {
     mockFileStats('win32', 0n, { dev: 987654321n });
 
