@@ -376,6 +376,27 @@ export interface RepoMeta {
    */
   embeddingDims?: number;
   /**
+   * Embedding identity digests stamped by an analyze whose embeddings were
+   * produced by the inline pipeline (which has no publication step, so no
+   * `vectorGeneration` receipt exists for its rows). The digests are the
+   * `embeddingVectorIdentity` / `embeddingInputIdentity` recipes — the same
+   * values a published run records inside `vectorGeneration` — and they are
+   * the provenance the cross-branch embedding cache (#3631) checks before
+   * copying this slot's rows into a sibling branch's index: a sibling is
+   * reusable only when BOTH digests match the consuming run.
+   *
+   * ABSENT means the slot's embeddings were not produced (or not recorded)
+   * by such a run — absence is not evidence of incompatibility, it is no
+   * evidence at all, so the sibling cache skips the slot. Stamped only when
+   * the inline pipeline actually ran; cleared by `--drop-embeddings`.
+   * Plain strings, like `schemaFingerprint`: storage/ takes no runtime
+   * import of the identity helpers in core/embeddings/.
+   */
+  embeddingIdentity?: {
+    vectorIdentity: string;
+    inputIdentity: string;
+  };
+  /**
    * Member names whose call sites were DROPPED because the receiver's type
    * could not be established (#2744, the second half of #2708). Read by
    * `impact()` / `context()` to report a result as `epistemic: 'lower-bound'`
