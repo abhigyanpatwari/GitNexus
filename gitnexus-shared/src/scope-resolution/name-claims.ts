@@ -64,7 +64,7 @@ export function nameClaimsFor(scope: Scope, name: string): readonly NameClaim[] 
   return byName.get(name) ?? NO_CLAIMS;
 }
 
-function importsFor(imports: readonly ImportEdge[], name: string): readonly ImportEdge[] {
+export function importsFor(imports: readonly ImportEdge[], name: string): readonly ImportEdge[] {
   if (imports.length === 0) return NO_IMPORTS;
   let byName = importsByName.get(imports);
   if (byName === undefined) {

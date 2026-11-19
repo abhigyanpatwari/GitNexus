@@ -245,6 +245,7 @@ export type {
   NameLookupOptions,
 } from './scope-resolution/types.js';
 export {
+  importsFor as scopeImportsForName,
   lookupLexicalName,
   nameClaimsFor,
   selectClaimsAtScope,
