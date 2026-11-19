@@ -8,7 +8,7 @@
  * query text directly — that's the whole point of the split.
  */
 
-export type Broker = 'kafka' | 'rabbitmq' | 'nats';
+export type Broker = 'kafka' | 'rabbitmq' | 'nats' | 'sofamq';
 
 /**
  * Per-pattern payload every topic plugin attaches to its query. Whatever
