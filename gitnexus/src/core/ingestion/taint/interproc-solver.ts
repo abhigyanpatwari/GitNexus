@@ -108,7 +108,9 @@ export interface InterprocResult {
   readonly findings: readonly InterprocFinding[];
   /** Findings dropped by `maxFindings` (post-dedup). */
   readonly droppedFindings: number;
-  /** Summary call-arg edges that matched no outgoing `CALLS` edge of their caller (diagnostics). */
+  /** Lookups of a summary call-arg edge that found no outgoing `CALLS` edge of its
+   *  caller (diagnostics). Counted per lookup: an edge counts once for each
+   *  tainted (parameter, source) state that reaches it. */
   readonly unmatchedCallSites: number;
 }
 
