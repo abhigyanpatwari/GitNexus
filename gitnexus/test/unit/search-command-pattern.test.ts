@@ -79,6 +79,32 @@ describe('searchCommandPattern', () => {
     },
   );
 
+  // A leading unquoted `~` is the home folder. bash expands `~`, `~/x` and
+  // `~user`. PowerShell 7.6 and later expand `~`, `~/x` and `~\x` for native
+  // commands on Windows and earlier versions do not, so no reading is sure.
+  it.each(['bash', 'powershell', 'either'] as const)(
+    'reads no query from a leading tilde in %s',
+    (shell) => {
+      expect(searchCommandPattern('rg ~/UserService src', shell)).toBeNull();
+      expect(searchCommandPattern(String.raw`rg ~\UserService src`, shell)).toBeNull();
+      expect(searchCommandPattern('rg -e ~/UserService src', shell)).toBeNull();
+    },
+  );
+
+  it.each(['bash', 'powershell', 'either'] as const)(
+    'reads a quoted tilde or one outside the query in %s',
+    (shell) => {
+      expect(searchCommandPattern("rg '~/UserService' src", shell)).toBe('~/UserService');
+      expect(searchCommandPattern('rg UserService ~/src', shell)).toBe('UserService');
+      expect(searchCommandPattern('rg Foo~Bar src', shell)).toBe('Foo~Bar');
+    },
+  );
+
+  it('reads `~user` as a home folder in bash only', () => {
+    expect(searchCommandPattern('rg ~UserService src', 'bash')).toBeNull();
+    expect(searchCommandPattern('rg ~UserService src', 'powershell')).toBe('~UserService');
+  });
+
   it('reads a query when the brace expansion is elsewhere or quoted', () => {
     expect(searchCommandPattern('grep -rn UserService --include=*.{ts,tsx} src')).toBe(
       'UserService',

@@ -24,10 +24,12 @@
 // In bash a backslash escapes the next character outside single quotes. In
 // PowerShell it is an ordinary character, a doubled quote inside quotes is one
 // literal quote, and a bare comma, parenthesis, brace or leading `@` builds a
-// value the shell computes, so the command has no reliable query. bash expands
-// an unquoted `{a,b}` or `{1..3}` into several words; the index of each such
-// word is added to `braced` when the caller passes a Set.
-function tokenizeShellCommand(command, shell, braced) {
+// value the shell computes, so the command has no reliable query. A word the
+// shell rewrites before the command sees it has its index added to `expanded`
+// when the caller passes a Set: in bash an unquoted `{a,b}` or `{1..3}` (several
+// words) or a leading `~` (`~`, `~/x`, `~user`); in PowerShell a leading `~`,
+// `~/x` or `~\x`, which 7.6 and later expand on Windows and earlier versions do not.
+function tokenizeShellCommand(command, shell, expanded) {
   const powershell = shell === 'powershell';
   const tokens = [];
   let word = '';
@@ -36,7 +38,7 @@ function tokenizeShellCommand(command, shell, braced) {
   let brace = 0; // 1: inside an unquoted `{`, 2: and it holds `,` or `..`
   let expands = false;
   const push = () => {
-    if (expands && braced) braced.add(tokens.length);
+    if (expands && expanded) expanded.add(tokens.length);
     tokens.push(word);
   };
   for (let i = 0; i < command.length; i++) {
@@ -74,6 +76,10 @@ function tokenizeShellCommand(command, shell, braced) {
       brace = 0;
       expands = false;
     } else {
+      const next = command[i + 1];
+      if (ch === '~' && !started && (!powershell || next === undefined || /[/\\\s]/.test(next))) {
+        expands = true;
+      }
       if (ch === '{') brace = 1;
       else if (brace && (ch === ',' || (ch === '.' && command[i + 1] === '.'))) brace = 2;
       else if (brace === 2 && ch === '}') expands = true;
@@ -200,7 +206,7 @@ function longSearchOptionKind(options, name) {
  * earlier option may still claim it as its value: an option this tool does not
  * have, written without an attached `=value`, declines the whole command.
  */
-function extractSearchCommandPattern(tokens, braced = new Set()) {
+function extractSearchCommandPattern(tokens, expanded = new Set()) {
   const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[0] || '');
   if (!tool) return null;
   const options = SEARCH_TOOL_OPTIONS[tool[1]];
@@ -269,9 +275,9 @@ function extractSearchCommandPattern(tokens, braced = new Set()) {
       break;
     }
   }
-  // A word bash brace-expands becomes several words, so rg or grep does not
-  // receive the query as written.
-  if (braced.has(explicitPattern === null ? patternAt : explicitAt)) return null;
+  // The shell rewrites an expanded word, so rg or grep does not receive the
+  // query as written.
+  if (expanded.has(explicitPattern === null ? patternAt : explicitAt)) return null;
   const result = explicitPattern ?? pattern;
   return !pending && result?.length >= 3 ? result : null;
 }
@@ -293,13 +299,12 @@ const BASH_ASSIGNMENTS =
  */
 function searchCommandPattern(command, shell = 'bash') {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
-  const inBash = () => {
-    const braced = new Set();
-    const tokens = tokenizeShellCommand(command.replace(BASH_ASSIGNMENTS, ''), 'bash', braced);
-    return extractSearchCommandPattern(tokens, braced);
+  const read = (line, lineShell) => {
+    const expanded = new Set();
+    return extractSearchCommandPattern(tokenizeShellCommand(line, lineShell, expanded), expanded);
   };
-  const inPowerShell = () =>
-    extractSearchCommandPattern(tokenizeShellCommand(command, 'powershell'));
+  const inBash = () => read(command.replace(BASH_ASSIGNMENTS, ''), 'bash');
+  const inPowerShell = () => read(command, 'powershell');
   if (shell === 'powershell') return inPowerShell();
   if (shell !== 'either') return inBash();
   const query = inBash();
