@@ -4,8 +4,9 @@
  * Fast-path command for platform hooks.
  * Shells out from Claude Code PreToolUse / Cursor postToolUse hooks.
  *
- * Usage: gitnexus augment <pattern>
- * Returns enriched text to stdout.
+ * Usage: gitnexus augment <pattern...>
+ * Several patterns come from one search with alternatives
+ * (`rg -e FooService -e BarService`). Returns enriched text to stdout.
  *
  * Performance: Must cold-start fast (<500ms).
  * Skips unnecessary initialization (no web server, no full DB warmup).
@@ -13,13 +14,16 @@
 
 import { augment } from '../core/augmentation/engine.js';
 
-export async function augmentCommand(pattern: string): Promise<void> {
-  if (!pattern || pattern.length < 3) {
+export async function augmentCommand(patterns: string | readonly string[]): Promise<void> {
+  const usable = (typeof patterns === 'string' ? [patterns] : patterns).filter(
+    (pattern) => pattern.length >= 3,
+  );
+  if (usable.length === 0) {
     process.exit(0);
   }
 
   try {
-    const result = await augment(pattern, process.cwd());
+    const result = await augment(usable, process.cwd());
 
     if (result) {
       // IMPORTANT: Write to stderr, NOT stdout.

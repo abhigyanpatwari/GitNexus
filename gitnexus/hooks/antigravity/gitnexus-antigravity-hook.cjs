@@ -30,7 +30,7 @@ const {
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
-const { searchCommandPattern } = require('./search-command-pattern.cjs');
+const { searchCommandPatterns } = require('./search-command-pattern.cjs');
 const { resolveHookRepo } = (() => {
   // Installed copies get helpers next to this adapter. The in-tree source
   // tree only ships the adapter, so fall back to the Claude helper copies.
@@ -86,30 +86,30 @@ function extractAugmentContext(stderr) {
 }
 
 /**
- * Extract a usable search token from a tool invocation.
+ * Extract the search patterns from a tool invocation.
  *   - search_file_content / glob: top-level `pattern` (sometimes `query`).
- *   - run_shell_command: the query of an rg/grep that starts the line, read
- *     by search-command-pattern.cjs in this platform's shell.
- * Returns null when the tool is not a recognized search or the pattern is
- * too short.
+ *   - run_shell_command: the queries of an rg/grep that starts the line (every
+ *     `-e` pattern), read by search-command-pattern.cjs in this platform's shell.
+ * Returns an empty list when the tool is not a recognized search or the
+ * pattern is too short.
  */
-function extractPattern(toolName, toolInput) {
+function extractPatterns(toolName, toolInput) {
   if (toolName === 'search_file_content') {
     const q = toolInput.pattern || toolInput.query || '';
-    return typeof q === 'string' && q.length >= 3 ? q : null;
+    return typeof q === 'string' && q.length >= 3 ? [q] : [];
   }
 
   if (toolName === 'glob') {
     const raw = toolInput.pattern || '';
     const match = raw.match(/[*\/]([a-zA-Z][a-zA-Z0-9_-]{2,})/);
-    return match ? match[1] : null;
+    return match ? [match[1]] : [];
   }
 
   if (toolName === 'run_shell_command') {
-    return searchCommandPattern(toolInput.command, SHELL);
+    return searchCommandPatterns(toolInput.command, SHELL);
   }
 
-  return null;
+  return [];
 }
 
 function resolveCliPath() {
@@ -265,7 +265,8 @@ function buildAfterToolContext(input) {
   const toolInput = input.tool_input || {};
   const toolResponse = input.tool_response || {};
   const succeeded = toolSucceeded(toolResponse);
-  const pattern = succeeded ? extractPattern(toolName, toolInput) : null;
+  const patterns = succeeded ? extractPatterns(toolName, toolInput) : [];
+  const pattern = patterns[0] ?? null;
   const command = toolName === 'run_shell_command' ? toolInput.command || '' : '';
   // Where each git mutation ran: the directory of the command, or the one
   // `git -C` names. `dir_path` is relative to the workspace root.
@@ -280,7 +281,7 @@ function buildAfterToolContext(input) {
   const parts = [];
 
   if (pattern && repo) {
-    const augmentText = runAugment(repo.storagePath, repo.lbugPath, cwd, pattern);
+    const augmentText = runAugment(repo.storagePath, repo.lbugPath, cwd, patterns);
     if (augmentText) parts.push(augmentText);
   }
 
@@ -346,11 +347,11 @@ function shouldEmitMcpHint(storagePath) {
   return true;
 }
 
-function runAugment(storagePath, lbugPath, cwd, pattern) {
+function runAugment(storagePath, lbugPath, cwd, patterns) {
   // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
   // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
   // as the augment, or concurrent sessions fan out unbounded probe
-  // subprocesses. The cheap guards (extractPattern, registry lookup) run in
+  // subprocesses. The cheap guards (extractPatterns, registry lookup) run in
   // buildAfterToolContext before this — moving the acquire any earlier would
   // churn slot files on tool calls that never probe.
   const release = acquireHookSlot(storagePath);
@@ -374,10 +375,10 @@ function runAugment(storagePath, lbugPath, cwd, pattern) {
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return shouldEmitMcpHint(storagePath) ? buildMcpQueryHint(pattern) : '';
+      return shouldEmitMcpHint(storagePath) ? buildMcpQueryHint(patterns[0]) : '';
     }
     const cliPath = resolveCliPath();
-    const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);
+    const child = runGitNexusCli(cliPath, ['augment', '--', ...patterns], cwd, 7000);
     if (!child.error && child.status === 0) {
       return extractAugmentContext(child.stderr || '');
     }

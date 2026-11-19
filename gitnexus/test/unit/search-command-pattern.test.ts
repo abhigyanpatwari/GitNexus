@@ -11,8 +11,9 @@ const HELPER = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'search-co
 
 type Shell = 'bash' | 'powershell' | 'either';
 
-const { searchCommandPattern } = createRequire(import.meta.url)(HELPER) as {
+const { searchCommandPattern, searchCommandPatterns } = createRequire(import.meta.url)(HELPER) as {
   searchCommandPattern: (command: unknown, shell?: Shell) => string | null;
+  searchCommandPatterns: (command: unknown, shell?: Shell) => string[];
 };
 
 describe('searchCommandPattern', () => {
@@ -201,5 +202,41 @@ describe('searchCommandPattern', () => {
 
   it.each(['bash', 'powershell'] as const)('reads a Unix-looking query in %s', (shell) => {
     expect(searchCommandPattern('rg /api/users src', shell)).toBe('/api/users');
+  });
+});
+
+describe('searchCommandPatterns', () => {
+  // Every `-e` / `--regexp` is a pattern the search looks for.
+  it.each(['bash', 'powershell', 'either'] as const)(
+    'reads every pattern of a search in %s',
+    (shell) => {
+      expect(searchCommandPatterns('rg -e FooService -e BarService src', shell)).toEqual([
+        'FooService',
+        'BarService',
+      ]);
+      expect(
+        searchCommandPatterns('grep --regexp=FooService --regexp=BarService src', shell),
+      ).toEqual(['FooService', 'BarService']);
+      expect(searchCommandPatterns('rg UserService src', shell)).toEqual(['UserService']);
+    },
+  );
+
+  it('reads at most three patterns and skips short ones', () => {
+    expect(searchCommandPatterns('rg -e x -e LongPattern src')).toEqual(['LongPattern']);
+    expect(searchCommandPatterns('rg -e Alpha -e Bravo -e Charlie -e Delta src')).toEqual([
+      'Alpha',
+      'Bravo',
+      'Charlie',
+    ]);
+  });
+
+  it('reads none when one pattern cannot be read reliably', () => {
+    expect(searchCommandPatterns('rg -e FooService -e {a,b} src')).toEqual([]);
+    expect(searchCommandPatterns('rg --regexp=FooService --regexp=/api src', 'either')).toEqual([]);
+    expect(searchCommandPatterns('cd src && rg -e FooService -e BarService')).toEqual([]);
+  });
+
+  it('gives searchCommandPattern the first pattern', () => {
+    expect(searchCommandPattern('rg -e FooService -e BarService src')).toBe('FooService');
   });
 });

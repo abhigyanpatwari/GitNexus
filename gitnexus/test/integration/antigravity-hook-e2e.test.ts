@@ -456,6 +456,35 @@ describe('antigravity hook adapter e2e', () => {
       }
     });
 
+    // Every `-e` pattern of a search reaches `gitnexus augment`.
+    it('passes every pattern of a shell search to augment', () => {
+      const argsPath = path.join(os.tmpdir(), `antigravity-shell-args-${process.pid}`);
+      const binDir = createHookToolDir({
+        gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+        gitnexusArgsPath: argsPath,
+      });
+      try {
+        fs.rmSync(argsPath, { force: true });
+        runHook(
+          installedHook,
+          {
+            hook_event_name: 'AfterTool',
+            tool_name: 'run_shell_command',
+            tool_input: { command: 'rg -e validateUser -e hashPassword src' },
+            tool_response: { llmContent: '...' },
+            cwd: tmpDir,
+          },
+          tmpDir,
+          { env: hookEnv(binDir) },
+        );
+        const args = JSON.parse(fs.readFileSync(argsPath, 'utf8')) as string[];
+        expect(args.slice(-4)).toEqual(['augment', '--', 'validateUser', 'hashPassword']);
+      } finally {
+        fs.rmSync(argsPath, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
     it('ignores patterns shorter than 3 chars', () => {
       const result = runHook(installedHook, {
         hook_event_name: 'AfterTool',

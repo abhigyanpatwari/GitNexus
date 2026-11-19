@@ -14,7 +14,7 @@ const {
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { resolveHookRepo } = require('./registry-query.cjs');
 const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
-const { searchCommandPattern } = require('./search-command-pattern.cjs');
+const { searchCommandPatterns } = require('./search-command-pattern.cjs');
 
 // Claude Code runs the Bash tool in bash on every platform, Git Bash included.
 // Codex reports its shell tool as `Bash` too and runs PowerShell on Windows, so
@@ -68,23 +68,31 @@ function extractAugmentContext(stderr) {
   return marker === -1 ? '' : output.slice(marker).trim();
 }
 
-/** Extract search pattern from tool input. */
-function extractPattern(toolName, toolInput) {
+/**
+ * Extract the search patterns from tool input. A Bash search may carry several
+ * (`rg -e FooService -e BarService`); `gitnexus augment` reads them together.
+ */
+function extractPatterns(toolName, toolInput) {
   if (toolName === 'Grep') {
-    return toolInput.pattern || null;
+    return toolInput.pattern ? [toolInput.pattern] : [];
   }
 
   if (toolName === 'Glob') {
     const raw = toolInput.pattern || '';
     const match = raw.match(/[*\/]([a-zA-Z][a-zA-Z0-9_-]{2,})/);
-    return match ? match[1] : null;
+    return match ? [match[1]] : [];
   }
 
   if (toolName === 'Bash') {
-    return searchCommandPattern(toolInput.command, BASH_TOOL_SHELL);
+    return searchCommandPatterns(toolInput.command, BASH_TOOL_SHELL);
   }
 
-  return null;
+  return [];
+}
+
+/** The first search pattern of a tool input, or null. */
+function extractPattern(toolName, toolInput) {
+  return extractPatterns(toolName, toolInput)[0] ?? null;
 }
 
 // Warn once per short-lived hook process when orphan containment is unavailable.
@@ -250,7 +258,8 @@ function handlePreToolUse(input, { resolveCli, acquireHookSlot }) {
 
   if (toolName !== 'Grep' && toolName !== 'Glob' && toolName !== 'Bash') return;
 
-  const pattern = extractPattern(toolName, toolInput);
+  const patterns = extractPatterns(toolName, toolInput);
+  const pattern = patterns[0];
   if (!pattern || pattern.length < 3) return;
 
   // Registry row first (persisted external storagePath wins). Local owned
@@ -298,7 +307,7 @@ function handlePreToolUse(input, { resolveCli, acquireHookSlot }) {
         }
         return;
       }
-      const child = runGitNexusCli(target, ['augment', '--', pattern], cwd, 7000);
+      const child = runGitNexusCli(target, ['augment', '--', ...patterns], cwd, 7000);
       if (!child.error && child.status === 0) {
         result = extractAugmentContext(child.stderr || '');
       }

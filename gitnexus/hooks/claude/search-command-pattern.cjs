@@ -204,34 +204,34 @@ function longSearchOptionKind(options, name) {
   return matched.size === 1 ? kind : undefined;
 }
 
+// The most patterns one search passes on (`rg -e A -e B -e C`); `gitnexus
+// augment` reads the same number.
+const MAX_PATTERNS = 3;
+
 /**
- * The query of one tokenized `rg` / `grep` command line, or null when it has
- * none that can be read reliably. A token is never taken as the query while an
+ * The queries of one tokenized `rg` / `grep` command line (every `-e` pattern,
+ * else the first positional one), or none when they cannot be read reliably. A token is never taken as the query while an
  * earlier option may still claim it as its value: an option this tool does not
  * have, written without an attached `=value`, declines the whole command.
  */
-function extractSearchCommandPattern(tokens, expanded = new Set()) {
+function extractSearchCommandPatterns(tokens, expanded = new Set()) {
   const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[0] || '');
-  if (!tool) return null;
+  if (!tool) return [];
   const options = SEARCH_TOOL_OPTIONS[tool[1]];
   let pending = null;
   let endOptions = false;
   let pattern = null;
   let patternAt = -1;
-  let explicitPattern = null;
-  let explicitAt = -1;
-  const explicit = (value, at) => {
-    if (explicitPattern !== null) return;
-    explicitPattern = value;
-    explicitAt = at;
-  };
+  // Every `-e` / `--regexp` is a pattern rg or grep searches for.
+  const explicitPatterns = [];
+  const explicit = (value, at) => explicitPatterns.push({ value, at });
 
   for (let at = 1; at < tokens.length; at++) {
     const token = tokens[at];
     if (pending) {
       // An expanded option value (`--glob {a,b}`) may be several words, so the
       // words after it shift and the query is not the one written.
-      if (expanded.has(at)) return null;
+      if (expanded.has(at)) return [];
       if (pending === 'pattern') explicit(token, at);
       pending = null;
       continue;
@@ -258,14 +258,14 @@ function extractSearchCommandPattern(tokens, expanded = new Set()) {
       } else if (kind === 'file' || kind === 'exit') {
         // File-backed queries are unavailable without reading user files, and
         // an informational option runs no search.
-        return null;
+        return [];
       } else if (attached) {
         // `--name=value` carries its own value and cannot consume the next token.
       } else if (kind === 'value') {
         pending = 'skip';
       } else if (kind !== 'boolean') {
         // An unknown option may consume the next token. Do not guess a pattern.
-        return null;
+        return [];
       }
       continue;
     }
@@ -274,7 +274,7 @@ function extractSearchCommandPattern(tokens, expanded = new Set()) {
     for (let i = 1; i < token.length; i++) {
       const kind = options.short.get(token[i]);
       if (kind === 'boolean') continue;
-      if (kind !== 'pattern' && kind !== 'value') return null;
+      if (kind !== 'pattern' && kind !== 'value') return [];
       const rest = token.slice(i + 1);
       if (rest === '') pending = kind === 'pattern' ? 'pattern' : 'skip';
       else if (kind === 'pattern')
@@ -282,11 +282,19 @@ function extractSearchCommandPattern(tokens, expanded = new Set()) {
       break;
     }
   }
+  const found =
+    explicitPatterns.length > 0
+      ? explicitPatterns
+      : pattern === null
+        ? []
+        : [{ value: pattern, at: patternAt }];
   // The shell rewrites an expanded word, so rg or grep does not receive the
   // query as written.
-  if (expanded.has(explicitPattern === null ? patternAt : explicitAt)) return null;
-  const result = explicitPattern ?? pattern;
-  return !pending && result?.length >= 3 ? result : null;
+  if (pending || found.some(({ at }) => expanded.has(at))) return [];
+  return found
+    .map(({ value }) => value)
+    .filter((value) => value.length >= 3)
+    .slice(0, MAX_PATTERNS);
 }
 
 // bash runs `NAME=value rg x` as `rg x` with NAME set in its environment. The
@@ -299,27 +307,35 @@ const BASH_ASSIGNMENTS =
   /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+/;
 
 /**
- * The query of a command line, or null when it runs no search whose query can
- * be read. `shell` is the shell that reads the line: `bash`, `powershell`, or
- * `either` when the caller cannot tell; then both readings must give the same
- * query (other words, such as a path, may differ).
+ * The queries of a command line: every pattern of the search, at most
+ * MAX_PATTERNS, or none when it runs no search whose queries can be read.
+ * `shell` is the shell that reads the line: `bash`, `powershell`, or `either`
+ * when the caller cannot tell; then both readings must give the same queries
+ * (other words, such as a path, may differ).
  */
-function searchCommandPattern(command, shell = 'bash') {
-  if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
+function searchCommandPatterns(command, shell = 'bash') {
+  if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return [];
   const read = (line, lineShell) => {
     const expanded = new Set();
-    return extractSearchCommandPattern(tokenizeShellCommand(line, lineShell, expanded), expanded);
+    return extractSearchCommandPatterns(tokenizeShellCommand(line, lineShell, expanded), expanded);
   };
   const inBash = () => read(command.replace(BASH_ASSIGNMENTS, ''), 'bash');
   const inPowerShell = () => read(command, 'powershell');
   if (shell === 'powershell') return inPowerShell();
   if (shell !== 'either') return inBash();
-  const query = inBash();
+  const queries = inBash();
   // `either` is the Windows case. Git Bash converts an argument that looks like
   // a Unix path (`/api/x`, `--x=/y`, `/a:/b`), quoted or not, to a Windows path
   // before it starts a native rg.exe, so such a query is not what rg receives.
-  if (query === null || /(^|[=:])\//.test(query)) return null;
-  return query === inPowerShell() ? query : null;
+  if (queries.length === 0 || queries.some((query) => /(^|[=:])\//.test(query))) return [];
+  const other = inPowerShell();
+  const agree = other.length === queries.length && other.every((query, i) => query === queries[i]);
+  return agree ? queries : [];
 }
 
-module.exports = { searchCommandPattern };
+/** The first query of a command line, or null; see searchCommandPatterns. */
+function searchCommandPattern(command, shell = 'bash') {
+  return searchCommandPatterns(command, shell)[0] ?? null;
+}
+
+module.exports = { searchCommandPattern, searchCommandPatterns };
