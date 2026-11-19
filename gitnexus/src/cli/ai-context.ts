@@ -218,7 +218,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 
 ## Always Do
 
-- **MUST run impact analysis before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` (MCP) or \`${runner} impact "symbolName" --direction upstream --repo .\` (CLI fallback); report callers, processes, and risk. Never substitute grep for graph analysis.${
+- **MUST run impact analysis before editing code, config, or tests.** Documentation-only edits are exempt from impact analysis; the detect-changes check below still applies. Use \`impact({target: "symbolName", direction: "upstream"})\` (MCP) or \`${runner} impact "symbolName" --direction upstream --repo .\` (CLI fallback); report callers, processes, and risk. Never substitute grep for graph analysis.${
     hasPdg
       ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
       : ''
@@ -236,10 +236,10 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 
 ## Never Do
 
-- NEVER edit a function, class, or method before MCP/CLI impact analysis.
+- NEVER edit a function, class, or method (a code change) before MCP/CLI impact analysis; documentation-only edits are exempt.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
 - NEVER rename symbols with find-and-replace — use \`rename\` which understands the call graph.
-- NEVER commit before MCP/CLI graph change analysis.
+- NEVER commit code changes before MCP/CLI graph change analysis; documentation-only commits need only the detect-changes check.
 
 ## Resources
 
