@@ -80,3 +80,37 @@ describe('Next.js route mapping', () => {
     }
   });
 });
+
+describe('Rust Axum route mapping', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-axum-routes'), () => {});
+  }, 60000);
+
+  it('creates Route nodes for Axum Router::route declarations', () => {
+    const routes = getNodesByLabel(result, 'Route');
+    expect(routes).toContain('/api/v1/workspace/billing/usage');
+    expect(routes).toContain('/api/v1/workspace/billing/subscription');
+    expect(routes).toContain('/api/v1/provider/accounts/:id/licenses/quantity');
+  });
+
+  it('creates HANDLES_ROUTE edges from the Rust route file', () => {
+    const edges = getRelationships(result, 'HANDLES_ROUTE');
+    const usageRoute = edges.find((e) => e.target === '/api/v1/workspace/billing/usage');
+    expect(usageRoute).toBeDefined();
+    expect(usageRoute!.sourceFilePath).toContain('src/routes.rs');
+    expect(usageRoute!.rel.reason).toBe('rust-axum-route');
+  });
+
+  it('matches frontend fetch consumers to Axum colon-parameter routes', () => {
+    const edges = getRelationships(result, 'FETCHES');
+    expect(
+      edges.find(
+        (e) =>
+          e.sourceFilePath.includes('provider-api.ts') &&
+          e.target === '/api/v1/provider/accounts/:id/licenses/quantity',
+      ),
+    ).toBeDefined();
+  });
+});
