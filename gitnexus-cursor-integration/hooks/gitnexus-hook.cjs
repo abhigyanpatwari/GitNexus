@@ -82,6 +82,8 @@ function tokenizeShellWords(command) {
     } else if (char === "'" || char === '"') {
       quote = char;
       hasToken = true;
+    } else if (char === '\n' && tokens.length === 0 && !hasToken) {
+      // A blank line before the first command ends nothing.
     } else if (/\s/.test(char) && char !== '\n') {
       if (hasToken) tokens.push(current);
       current = '';

@@ -6,7 +6,7 @@
  *
  * Usage: gitnexus augment <pattern...>
  * Several patterns come from one search with alternatives
- * (`rg -e FooService -e BarService`). Returns enriched text to stdout.
+ * (`rg -e FooService -e BarService`). Writes the enriched text to stderr.
  *
  * Performance: Must cold-start fast (<500ms).
  * Skips unnecessary initialization (no web server, no full DB warmup).

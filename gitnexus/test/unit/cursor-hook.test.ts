@@ -1170,6 +1170,8 @@ describe('Shell quoted-pattern parser', () => {
     ['rg UserService&& echo done', 'UserService'],
     // After a wrapper such as `env`, NAME=value is an assignment it reads.
     ["env 'A=1' rg UserService src/", 'UserService'],
+    // A blank line before the command ends nothing.
+    ['\nrg UserService src/', 'UserService'],
     ['rg --max-count 100 UserService src/', 'UserService'],
     ['grep -r UserService src/', 'UserService'],
     ['rg --replace x UserService src/', 'UserService'],

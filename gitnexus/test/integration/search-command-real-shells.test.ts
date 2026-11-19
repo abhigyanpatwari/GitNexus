@@ -160,7 +160,7 @@ function installFakeTools(bin: string): void {
     const exe = path.join(bin, 'rg.exe');
     fs.writeFileSync(
       build,
-      `Add-Type -OutputType ConsoleApplication -OutputAssembly '${exe}' -TypeDefinition @'\n${source}\n'@\n`,
+      `Add-Type -OutputType ConsoleApplication -OutputAssembly '${exe.replaceAll("'", "''")}' -TypeDefinition @'\n${source}\n'@\n`,
     );
     const powershell = onPath('powershell');
     const built = spawnSync(powershell ?? 'powershell', [...POWERSHELL_ARGS, '-File', build], {

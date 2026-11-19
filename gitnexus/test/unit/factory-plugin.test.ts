@@ -317,6 +317,7 @@ describe('Factory Execute pattern parser', () => {
     ['rg -e ab src | grep -e UserService', null],
     ['git --version\ngrep UserService src', null],
     ['rg UserService src\necho done', 'UserService'],
+    ['\nrg UserService src', 'UserService'],
     // An assignment value the shell computes leaves no reliable query.
     ['A=$(true rg UserService src)', null],
     ['env A=$ARGS rg UserService src', null],
