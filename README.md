@@ -117,6 +117,18 @@ Ruby, Rust, Swift, TypeScript, Vue and Zig have registered providers. Support
 varies by construct; see the [language inventories](docs/languages/README.md)
 for measured behavior, exclusions and remaining gaps.
 
+R (experimental) also has a registered provider (`.r` / `.R`, parsed with
+`@eagleoutice/tree-sitter-r`): functions, S4, R6 and RefClass classes with their
+methods and fields, `library()` / `require()` / `source()` imports to local
+packages and files, `obj$method()` and `pkg::fn()` calls, R6 `inherit=` / S4
+`contains=` heritage and NAMESPACE-driven export status. Calls through function
+values, `do.call()`, infix operators and S3 dispatch are not linked; `.Rmd`,
+`box::use()` and external (CRAN) packages are not supported. With `--pdg` it
+builds a control-flow graph (control dependence only, no reaching definitions),
+and `rename` handles plain functions while refusing classes, members, S3 methods,
+exported package functions and names spelled as strings. See
+[docs/languages/r-provider.md](docs/languages/r-provider.md) for coverage and limits.
+
 ## Documentation
 
 <a id="cli-reference"></a>

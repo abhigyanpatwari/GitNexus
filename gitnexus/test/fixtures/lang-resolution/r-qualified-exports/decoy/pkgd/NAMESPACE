@@ -1,0 +1,3 @@
+importFrom(dup, fmt)
+export(fmt)
+export(d_other)

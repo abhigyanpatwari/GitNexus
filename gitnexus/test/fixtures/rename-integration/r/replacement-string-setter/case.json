@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a getter whose setter is defined by a string name (the string \"helper<-\" assigned a function).",
+  "categories": ["replacement-function", "string-setter", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "string.R", "startLine": 0 },
+  "newName": "accessor",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

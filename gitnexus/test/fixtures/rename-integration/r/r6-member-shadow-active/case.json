@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a portable R6 method calls the name bare while an active binding has that name: the call reaches the function being renamed and has no proven edge.",
+  "categories": ["r6", "class-scope", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

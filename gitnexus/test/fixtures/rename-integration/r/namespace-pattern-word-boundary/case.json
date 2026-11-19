@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse to rename when an exportPattern() uses a TRE word boundary (\\< \\>) that the matcher does not model: the pattern is dropped, so the function cannot be proven private.",
+  "categories": ["namespace", "package-export", "export-pattern", "negative", "unchanged-on-error"],
+  "target": { "name": "hidden", "kind": "Function", "file": "R/lib.R", "startLine": 2 },
+  "newName": "worker_step",
+  "expect": { "status": "error", "code": "incomplete_semantics", "planningStatus": "unsupported" },
+  "edges": []
+}

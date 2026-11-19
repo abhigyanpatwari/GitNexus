@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that another file assigns as a top-level variable.",
+  "categories": ["name-collision", "variable", "cross-file", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "a.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}

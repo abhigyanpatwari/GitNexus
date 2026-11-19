@@ -1,0 +1,22 @@
+{
+  "language": "r",
+  "description": "Refuse when a call comes before the body assignment of the same name (probe d4, P1): bindings are read flow-insensitively, so the call may or may not reach the local.",
+  "categories": [
+    "assignment-shadowing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}
