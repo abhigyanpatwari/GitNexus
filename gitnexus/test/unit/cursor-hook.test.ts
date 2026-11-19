@@ -1146,6 +1146,9 @@ describe('Shell quoted-pattern parser', () => {
     ['npx --package rg grep LongPattern src/', 'LongPattern'],
     ['rg UserService; echo done', 'UserService'],
     ['rg UserService&& echo done', 'UserService'],
+    // Assignments before the command belong to it, with or without a wrapper.
+    ['NO_COLOR=1 rg UserService src/', 'UserService'],
+    ['NO_COLOR=1 npx rg UserService src/', 'UserService'],
     ['rg --max-count 100 UserService src/', 'UserService'],
     ['grep -r UserService src/', 'UserService'],
     ['rg --replace x UserService src/', 'UserService'],
@@ -1169,6 +1172,15 @@ describe('Shell quoted-pattern parser', () => {
     ['git log --oneline | grep UserService'],
     ['cat notes.md; grep UserService src'],
     ['ls src || rg UserService src'],
+    // The search ends at the first operator, also when its own pattern comes
+    // from a file or a short -e and a later command has one.
+    ['rg -f patterns.txt src | grep -e UserService'],
+    ['rg -e ab src | grep -e UserService'],
+    ['grep -m && grep UserService x'],
+    // An assignment value the shell computes leaves no reliable query.
+    ['A=$(true rg UserService src)'],
+    ['env A=$(true rg UserService src)'],
+    ['ARGS=( rg UserService src )'],
   ])('extracts no pattern from %j', (command) => {
     expect(parseRgGrepPattern(command)).toBeNull();
   });

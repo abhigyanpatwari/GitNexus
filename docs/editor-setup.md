@@ -24,7 +24,7 @@
 
 > In Claude Code, Codex and Antigravity the stale-index hint follows `git -C <dir>`: it checks the index of the repository the command ran in, and names that checkout when the agent works in another one.
 
-> In every editor, a shell search gets graph context only when `rg` or `grep` is the first command. A search after `&&`, `;` or `|`, such as `cd src && rg UserService .` or `git log | grep fix`, runs normally but receives no graph augmentation.
+> In every editor, a shell search gets graph context only when `rg` or `grep` is the first command. A search after `&&`, `;`, `||` or `|`, such as `cd src && rg UserService .`, `git log | grep fix` or `find . | xargs grep fix`, runs normally but receives no graph augmentation. Leading variable assignments such as `NO_COLOR=1 rg …` are read past in bash, and Cursor and Factory also read past wrappers such as `npx`, `sudo`, `env` and `git grep`. On Windows the Claude Code and Codex hooks cannot tell whether bash or PowerShell runs the command, so a search gets graph context only when both shells read the same query: `rg @Injectable src` or `grep -r Foo --include=*.{ts,tsx} src` get none there.
 
 OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search results and adds a stale-index hint after git mutations. The integration is verified with OpenCode 1.19.5; OpenCode v2 uses a different plugin API.
 

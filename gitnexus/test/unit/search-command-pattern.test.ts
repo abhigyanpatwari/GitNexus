@@ -51,10 +51,23 @@ describe('searchCommandPattern', () => {
       'UserService',
     );
     expect(searchCommandPattern(String.raw`DIR=a\ b rg UserService src`)).toBe('UserService');
+    expect(searchCommandPattern('P=$HOME rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('PATH="$PATH:/opt/bin" rg UserService src')).toBe('UserService');
     // A quoted word is a command name, and a newline ends the command.
     expect(searchCommandPattern("'NO_COLOR=1' rg UserService src")).toBeNull();
     expect(searchCommandPattern('"NO_COLOR"=1 rg UserService src')).toBeNull();
     expect(searchCommandPattern('NO_COLOR=1\nrg UserService src')).toBeNull();
+  });
+
+  // A value the shell computes would end the strip at a blank inside it and
+  // leave the rest of the substitution or array as the command.
+  it.each([
+    'COUNT=$( grep -c TODO notes.md ) echo done',
+    'ARGS=( rg foobar src )',
+    'MSG=$(echo rg foobar)',
+    'A=${X:- grep -rn foo src} rg UserService src',
+  ])('reads no query when an assignment value is computed: %j', (command) => {
+    expect(searchCommandPattern(command)).toBeNull();
   });
 
   // PowerShell has no assignment prefix: it would run `NO_COLOR=1` itself.
@@ -102,6 +115,8 @@ describe('searchCommandPattern', () => {
     it('reads a query both shells read the same way', () => {
       expect(inEither('rg -n "user service" src')).toBe('user service');
       expect(inEither("grep -e 'explicit phrase' src")).toBe('explicit phrase');
+      // Only the path reads differently (bash: .src); the query does not.
+      expect(inEither(String.raw`rg UserService .\src`)).toBe('UserService');
     });
 
     it.each([

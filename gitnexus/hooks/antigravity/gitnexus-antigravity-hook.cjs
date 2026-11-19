@@ -88,8 +88,8 @@ function extractAugmentContext(stderr) {
 /**
  * Extract a usable search token from a tool invocation.
  *   - search_file_content / glob: top-level `pattern` (sometimes `query`).
- *   - run_shell_command: parse rg/grep argv, returning the first non-flag
- *     positional ≥ 3 chars.
+ *   - run_shell_command: the query of an rg/grep that starts the line, read
+ *     by search-command-pattern.cjs in this platform's shell.
  * Returns null when the tool is not a recognized search or the pattern is
  * too short.
  */

@@ -12,8 +12,10 @@
  * none.
  *
  * The Cursor and Factory adapters ship as single files with their own parser,
- * and the OpenCode plugin has its own too; all three apply the same
- * first-command rule.
+ * and the OpenCode plugin has its own too. All of them read no search after
+ * `&&`, `;`, `||` or `|`. They differ in what may come before `rg` or `grep`:
+ * Cursor and Factory also read past wrappers such as `npx`, `sudo`, `env` and
+ * `git grep`, which this helper does not.
  */
 
 // Read literal argv from the first simple command without executing a shell.
@@ -248,28 +250,31 @@ function extractSearchCommandPattern(tokens) {
 
 // bash runs `NAME=value rg x` as `rg x` with NAME set in its environment. The
 // name must be bare: a quoted `'NAME=value'` is a command name. PowerShell has
-// no such prefix and would run `NAME=value` itself.
+// no such prefix and would run `NAME=value` itself. A value may hold `$NAME`,
+// but not a substitution or an array (`$(...)`, `${...}`, a backtick,
+// `(...)`): the strip would end at a blank inside it and read the rest as the
+// command, so such a line keeps its prefix and has no query.
 const BASH_ASSIGNMENTS =
-  /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*[ \t]+)+/;
+  /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+/;
 
 /**
  * The query of a command line, or null when it runs no search whose query can
  * be read. `shell` is the shell that reads the line: `bash`, `powershell`, or
- * `either` when the caller cannot tell; then the two readings must agree.
+ * `either` when the caller cannot tell; then both readings must give the same
+ * query (other words, such as a path, may differ).
  */
 function searchCommandPattern(command, shell = 'bash') {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
-  const tokens =
-    shell === 'powershell'
-      ? tokenizeShellCommand(command, 'powershell')
-      : tokenizeShellCommand(command.replace(BASH_ASSIGNMENTS, ''), 'bash');
-  if (shell === 'either') {
-    const other = tokenizeShellCommand(command, 'powershell');
-    if (other.length !== tokens.length || other.some((token, i) => token !== tokens[i])) {
-      return null;
-    }
-  }
-  return extractSearchCommandPattern(tokens);
+  const inBash = () =>
+    extractSearchCommandPattern(
+      tokenizeShellCommand(command.replace(BASH_ASSIGNMENTS, ''), 'bash'),
+    );
+  const inPowerShell = () =>
+    extractSearchCommandPattern(tokenizeShellCommand(command, 'powershell'));
+  if (shell === 'powershell') return inPowerShell();
+  if (shell !== 'either') return inBash();
+  const query = inBash();
+  return query !== null && query === inPowerShell() ? query : null;
 }
 
 module.exports = { searchCommandPattern };

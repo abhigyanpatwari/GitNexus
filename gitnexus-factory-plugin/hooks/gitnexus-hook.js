@@ -151,6 +151,7 @@ function parseRgGrepPattern(cmd) {
   ]);
   const rgValueFlags = new Set(['-r', '--replace']);
   const patternFlags = new Set(['-e', '--regexp']);
+  const connectors = new Set(['&&', '||', ';', '|', '&']);
   const wrappers = new Set([
     'npx',
     'bunx',
@@ -188,6 +189,9 @@ function parseRgGrepPattern(cmd) {
   let seenWrapper = false;
   let searchCommand = null;
   for (const token of tokens) {
+    // The search ends at the first operator. The tokenizer drops quotes, so a
+    // quoted '|' stops here too: that loses a query, it never adds a wrong one.
+    if (connectors.has(token)) break;
     if (skipNext) {
       skipNext = false;
       if (skipNextAsPattern) {
@@ -197,6 +201,13 @@ function parseRgGrepPattern(cmd) {
       continue;
     }
     if (!foundCmd) {
+      // Assignments before the command (`NO_COLOR=1 rg x`, `env A=1 rg x`)
+      // belong to it. A value with a substitution or an array is computed by
+      // the shell, so the line has no reliable query.
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        if (/\$(?![A-Za-z_])|[`()]/.test(token)) return null;
+        continue;
+      }
       const commandName = basename(token);
       if (wrappers.has(commandName)) {
         seenWrapper = true;
@@ -207,7 +218,6 @@ function parseRgGrepPattern(cmd) {
         if (!token.includes('=') && wrapperFlagsWithValues.has(flagName)) skipNext = true;
         continue;
       }
-      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
       // Only a search that starts the line is read. One after `&&`, `;` or `|`
       // may read a file the command names, the output of the command before
       // it, or another directory after `cd`, and the line alone does not say

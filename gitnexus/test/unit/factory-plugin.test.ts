@@ -294,6 +294,12 @@ describe('Factory Execute pattern parser', () => {
     ["sed -i '' 's/old text/new text/' notes.md && grep -c 'direct tool' notes.md", null],
     ['git log --oneline | grep UserService', null],
     ['cd src && rg UserService', null],
+    ['rg -f patterns.txt src | grep -e UserService', null],
+    ['rg -e ab src | grep -e UserService', null],
+    // Assignments before the command belong to it, unless the shell computes
+    // the value.
+    ['NO_COLOR=1 npx rg UserService src', 'UserService'],
+    ['A=$(true rg UserService src)', null],
     // -f reads patterns from a file; later positionals are paths.
     ['rg -f patterns.txt src/', null],
     ['grep --file=patterns.txt src/', null],
