@@ -1,9 +1,7 @@
 import path from 'node:path';
-import type { LocalBackend, McpToolCallContext, RepoListing } from './local/local-backend.js';
-import { parseListReposPagination } from './local/local-backend.js';
+import type { LocalBackend, McpToolCallContext } from './local/local-backend.js';
 import { parseQueryRepositories } from './local/multi-repo-query.js';
 import { scrubGroupDescription } from './read-only-policy.js';
-import { LIST_REPOS_DEFAULT_LIMIT, LIST_REPOS_MAX_LIMIT } from './tools.js';
 import type { GITNEXUS_TOOLS } from './tools.js';
 
 type GitNexusTool = (typeof GITNEXUS_TOOLS)[number];
@@ -171,20 +169,10 @@ export class McpRepositoryPolicy {
     return { ...(args ?? {}), repo: selected.path };
   }
 
-  private async listAllowedRepos(backend: LocalBackend): Promise<RepoListing[]> {
-    const current = await backend.listRepos();
-    if (!this.restricted) return current;
-    return current
-      .filter((repo) => this.allowedPathKeys.has(normalizedPath(repo.path)))
-      .map((repo) => {
-        const siblings = repo.siblings?.filter((sibling) =>
-          this.allowedPathKeys.has(normalizedPath(sibling.path)),
-        );
-        return {
-          ...repo,
-          siblings: siblings && siblings.length > 0 ? siblings : undefined,
-        };
-      });
+  private listingVisibility(requested?: (path: string) => boolean) {
+    if (!this.restricted) return requested;
+    return (repoPath: string) =>
+      this.allowedPathKeys.has(normalizedPath(repoPath)) && (requested?.(repoPath) ?? true);
   }
 
   async toolSchemaRepoRequirements(backend: LocalBackend): Promise<{
@@ -206,7 +194,7 @@ export class McpRepositoryPolicy {
       };
     }
 
-    // Validated registry cardinality only — no listRepos() staleness git.
+    // Schema introspection only needs the validated registry count.
     // The 0–1 arm stays a cheap countRepos() (no refreshRepos / kuzu cleanup).
     const repoCount = await backend.countRepos();
     if (repoCount <= 1) {
@@ -229,39 +217,6 @@ export class McpRepositoryPolicy {
     return { readOnlyRequiresRepo: false, mutatingRequiresRepo: true };
   }
 
-  private async listReposPage(
-    backend: LocalBackend,
-    params: Record<string, unknown> | undefined,
-  ): Promise<unknown> {
-    const { limit, offset } = parseListReposPagination(params, {
-      defaultLimit: LIST_REPOS_DEFAULT_LIMIT,
-      maxLimit: LIST_REPOS_MAX_LIMIT,
-    });
-    const repositories = await this.listAllowedRepos(backend);
-    repositories.sort((a, b) => {
-      const an = a.name.toLowerCase();
-      const bn = b.name.toLowerCase();
-      if (an !== bn) return an < bn ? -1 : 1;
-      return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
-    });
-
-    const total = repositories.length;
-    const page = repositories.slice(offset, offset + limit);
-    const returned = page.length;
-    const hasMore = offset + returned < total;
-    return {
-      repositories: page,
-      pagination: {
-        total,
-        limit,
-        offset,
-        returned,
-        hasMore,
-        ...(hasMore && { nextOffset: offset + returned }),
-      },
-    };
-  }
-
   private async callTool(
     backend: LocalBackend,
     method: string,
@@ -272,7 +227,7 @@ export class McpRepositoryPolicy {
       throw new Error('Repository arrays are supported only by query (and legacy search).');
     }
     if (!this.configured) return backend.callTool(method, params, ...context);
-    if (method === 'list_repos') return this.listReposPage(backend, params);
+    if (method === 'list_repos') return backend.listReposPage(params, this.listingVisibility());
     if (this.restricted && method.startsWith('group_')) {
       throw new Error('Group tools are unavailable when an MCP repository allowlist is set.');
     }
@@ -386,7 +341,16 @@ export class McpRepositoryPolicy {
             ...context: [McpToolCallContext?]
           ) => policy.callTool(target, method, params, ...context);
         }
-        if (property === 'listRepos') return () => policy.listAllowedRepos(target);
+        if (property === 'listRepos') {
+          return (visible?: (path: string) => boolean) =>
+            target.listRepos(policy.listingVisibility(visible));
+        }
+        if (property === 'listReposPage') {
+          return (
+            params?: Parameters<LocalBackend['listReposPage']>[0],
+            visible?: (path: string) => boolean,
+          ) => target.listReposPage(params, policy.listingVisibility(visible));
+        }
         if (property === 'resolveRepo') {
           return (repo?: string, branch?: string) => policy.resolveRepo(target, repo, branch);
         }

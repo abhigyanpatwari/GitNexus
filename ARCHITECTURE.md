@@ -24,7 +24,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
    - **HTTP bridge:** `serve.ts` → Express (`api.ts`, `mcp-http.ts`) for web UI
    - **CLI direct:** `gitnexus query|context|impact|cypher` in `tool.ts`
 
-4. **Staleness** — `core/git-staleness.ts` compares indexed `lastCommit` to `HEAD` and classifies the result as `current`, `behind`, `diverged` (HEAD moved off the indexed commit, gap uncountable) or `unknown`; `core/staleness-status.ts` builds the one `staleness` payload that MCP `list_repos`, the read tools and the `serve` repo routes all emit.
+4. **Staleness** — `core/git-staleness.ts` compares indexed `lastCommit` to `HEAD` and classifies the result as `current`, `behind`, `diverged` or `unknown`. The MCP read tools and `serve` repo routes use `core/staleness-status.ts` to format the result. MCP `list_repos` skips Git checks and reports `unknown` during discovery.
 
 ## MCP tools
 
