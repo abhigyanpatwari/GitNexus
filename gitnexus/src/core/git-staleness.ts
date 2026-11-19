@@ -138,11 +138,7 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
   }
 }
 
-/**
- * Async variant of {@link checkStaleness} — spawns git as a child process
- * instead of blocking the event loop.  Used by `listRepos()` to check many
- * repos in parallel (issue #1363: 200 repos × sync spawn ≈ 50 s).
- */
+/** Async variant of {@link checkStaleness} for callers that need measured Git freshness. */
 export async function checkStalenessAsync(
   repoPath: string,
   lastCommit: string,
