@@ -132,9 +132,6 @@ export const stalenessPayload = (
   const status = stalenessStatus(info);
   const hint = info.hint ? { hint: info.hint } : {};
 
-  // No ref: bit-identical to the pre-#3291 output for every status. This is
-  // what keeps `list_repos` and both `serve` routes byte-stable, and their
-  // exact-match tests passing unmodified.
   if (!opts.ref) {
     if (status === 'current') return undefined;
     if (status === 'unknown') return opts.includeUnknown ? { status } : undefined;
