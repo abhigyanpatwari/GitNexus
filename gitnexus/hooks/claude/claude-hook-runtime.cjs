@@ -140,14 +140,16 @@ function runGitNexusCli(target, args, cwd, timeout) {
  * Fallback augmentation for the #2396 path: the owner probe either found a
  * GitNexus process holding the DB or could not rule one out. Point the agent at
  * the MCP `query` tool conditionally, since an MCP server may not be available.
- * `pattern` is embedded verbatim; sendHookResponse JSON-escapes it structurally.
+ * Every search pattern is embedded verbatim; sendHookResponse JSON-escapes them
+ * structurally.
  */
-function buildMcpQueryHint(pattern) {
+function buildMcpQueryHint(patterns) {
+  const queries = patterns.map((pattern) => `search_query "${pattern}"`).join(', then ');
   return (
     `[GitNexus] Local augment was skipped because the graph DB may be held by ` +
     `another GitNexus process. If the GitNexus MCP tools are live in this session, call ` +
     `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
-    `search_query "${pattern}".`
+    `${queries}.`
   );
 }
 
@@ -292,7 +294,7 @@ function handlePreToolUse(input, { resolveCli, acquireHookSlot }) {
         );
       }
       if (shouldEmitMcpHint(storagePath)) {
-        result = buildMcpQueryHint(pattern);
+        result = buildMcpQueryHint(patterns);
       }
     } else {
       const target = resolveCli();

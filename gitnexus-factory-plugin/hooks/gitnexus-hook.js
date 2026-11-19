@@ -126,8 +126,9 @@ function tokenizeShellWords(command) {
 function parseRgGrepPattern(cmd) {
   // In a POSIX shell, assignments before the command (`NO_COLOR=1 rg x`) belong
   // to it. Read them on the raw line, where a quoted `'A=1'` (a command name)
-  // keeps its quotes; a substituted or array value is left in place and ends
-  // the read. On Windows the shell may be PowerShell, which runs `NAME=value`
+  // keeps its quotes. A `$NAME` value is read past; a command substitution
+  // (`$(...)`, a backtick) or an array value is left in place and ends the
+  // read. On Windows the shell may be PowerShell, which runs `NAME=value`
   // as a command, so they are not read past there.
   const leadingAssignments =
     /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+/;

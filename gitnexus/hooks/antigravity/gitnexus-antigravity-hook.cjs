@@ -309,15 +309,17 @@ function buildAfterToolContext(input) {
  * lbug DB write lock the CLI `augment` can't run, so point the agent at the MCP
  * `query` tool instead. Phrased conditionally ("if the MCP tools are live") so it
  * stays truthful on every owner path — a confirmed MCP owner, a `serve` owner, or
- * a fail-closed probe where no server is actually confirmed. `pattern` is embedded
- * verbatim; the caller (writeAdditionalContext) JSON-escapes it structurally.
+ * a fail-closed probe where no server is actually confirmed. Every search pattern
+ * is embedded verbatim; the caller (writeAdditionalContext) JSON-escapes them
+ * structurally.
  */
-function buildMcpQueryHint(pattern) {
+function buildMcpQueryHint(patterns) {
+  const queries = patterns.map((pattern) => `search_query "${pattern}"`).join(', then ');
   return (
     `[GitNexus] Local augment was skipped because the graph DB may be held by ` +
     `another GitNexus process. If the GitNexus MCP tools are live in this session, call ` +
     `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
-    `search_query "${pattern}".`
+    `${queries}.`
   );
 }
 
@@ -375,7 +377,7 @@ function runAugment(storagePath, lbugPath, cwd, patterns) {
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return shouldEmitMcpHint(storagePath) ? buildMcpQueryHint(patterns[0]) : '';
+      return shouldEmitMcpHint(storagePath) ? buildMcpQueryHint(patterns) : '';
     }
     const cliPath = resolveCliPath();
     const child = runGitNexusCli(cliPath, ['augment', '--', ...patterns], cwd, 7000);

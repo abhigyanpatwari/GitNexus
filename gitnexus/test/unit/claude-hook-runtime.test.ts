@@ -22,6 +22,7 @@ interface HookRuntime {
     toolName: string,
     toolInput: { command?: string; pattern?: string },
   ) => string | null;
+  buildMcpQueryHint: (patterns: string[]) => string;
 }
 
 function loadRuntime(options: { platform?: string; guard?: string | null } = {}) {
@@ -33,7 +34,8 @@ function loadRuntime(options: { platform?: string; guard?: string | null } = {})
   vm.runInNewContext(
     fs.readFileSync(RUNTIME, 'utf8') +
       // The first pattern the hook passes to `gitnexus augment`.
-      '\nmodule.exports.extractPattern = (name, input) => extractPatterns(name, input)[0] ?? null;',
+      '\nmodule.exports.extractPattern = (name, input) => extractPatterns(name, input)[0] ?? null;' +
+      '\nmodule.exports.buildMcpQueryHint = buildMcpQueryHint;',
     {
       module,
       require: (id: string) => {
@@ -460,5 +462,20 @@ describe('Claude hook package ownership', () => {
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
+  });
+});
+
+// #2396 fallback: when the CLI cannot run, the hint names every pattern.
+describe('MCP query hint', () => {
+  it('names every pattern of the search', () => {
+    expect(loadRuntime().buildMcpQueryHint(['FooService', 'BarService'])).toContain(
+      'search_query "FooService", then search_query "BarService".',
+    );
+  });
+
+  it('reads as before for one pattern', () => {
+    expect(loadRuntime().buildMcpQueryHint(['FooService'])).toMatch(
+      /with search_query "FooService"\.$/,
+    );
   });
 });
