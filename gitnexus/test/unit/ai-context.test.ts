@@ -282,6 +282,17 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('gitnexus-debugging/SKILL.md');
     expect(content).toContain('gitnexus-cli/SKILL.md');
   });
+  it('scopes the generated impact rules to code changes (#3976)', async () => {
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    for (const file of ['CLAUDE.md', 'AGENTS.md']) {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf-8');
+      expect(content).toContain('MUST run impact analysis before editing code, config, or tests.');
+      expect(content).toContain('documentation-only edits are exempt from impact analysis');
+      expect(content).toContain('NEVER commit code changes before MCP/CLI graph change analysis');
+    }
+  });
 
   it('does not duplicate content that already lives in skill files (#856)', async () => {
     // The six sections listed in issue #856 are redundant with the skill
