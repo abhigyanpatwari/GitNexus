@@ -296,6 +296,8 @@ describe('Factory Execute pattern parser', () => {
     ['cd src && rg UserService', null],
     ['rg -f patterns.txt src | grep -e UserService', null],
     ['rg -e ab src | grep -e UserService', null],
+    ['git --version\ngrep UserService src', null],
+    ['rg UserService src\necho done', 'UserService'],
     // Assignments before the command belong to it, unless the shell computes
     // the value.
     ['NO_COLOR=1 npx rg UserService src', 'UserService'],

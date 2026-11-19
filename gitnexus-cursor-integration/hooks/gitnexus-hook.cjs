@@ -82,11 +82,11 @@ function tokenizeShellWords(command) {
     } else if (char === "'" || char === '"') {
       quote = char;
       hasToken = true;
-    } else if (/\s/.test(char)) {
+    } else if (/\s/.test(char) && char !== '\n') {
       if (hasToken) tokens.push(current);
       current = '';
       hasToken = false;
-    } else if (char === ';' || char === '|' || char === '&') {
+    } else if (char === ';' || char === '\n' || char === '|' || char === '&') {
       if (hasToken) tokens.push(current);
       current = '';
       hasToken = false;
@@ -95,7 +95,8 @@ function tokenizeShellWords(command) {
         tokens.push(char + char);
         index += 1;
       } else {
-        tokens.push(char);
+        // A newline ends a command like `;`.
+        tokens.push(char === '\n' ? ';' : char);
       }
     } else {
       current += char;

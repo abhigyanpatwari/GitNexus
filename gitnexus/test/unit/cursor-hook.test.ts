@@ -1177,6 +1177,7 @@ describe('Shell quoted-pattern parser', () => {
     ['rg -f patterns.txt src | grep -e UserService'],
     ['rg -e ab src | grep -e UserService'],
     ['grep -m && grep UserService x'],
+    ['git --version\ngrep UserService src'],
     // An assignment value the shell computes leaves no reliable query.
     ['A=$(true rg UserService src)'],
     ['env A=$(true rg UserService src)'],
