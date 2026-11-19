@@ -31,7 +31,7 @@
     "dompurify": "^3.4.17",
     "gitnexus-shared": "file:../gitnexus-shared",
     "graphology": "^0.26.0",
-    "graphology-indices": "^0.17.0",
+    "graphology-indices": "^0.17.1",
     "graphology-layout-force": "^0.2.4",
     "graphology-layout-forceatlas2": "^0.10.1",
     "graphology-layout-noverlap": "^0.4.2",
