@@ -23,7 +23,7 @@ receiver examples do not establish whole-language, CFG/PDG or rename completenes
 | [C#](csharp-ingestion-gaps.md)               | Trace typed array receivers and qualified nullable fields.               |
 | [Dart](dart-ingestion-gaps.md)               | Correct awaited-call ownership; trace indexed and generic receivers.     |
 | [Go](go-ingestion-gaps.md)                   | Expand ownership coverage beyond the passing receiver matrix.            |
-| [Java](java-ingestion-gaps.md)               | Trace array-element receiver typing.                                     |
+| [Java](java-ingestion-gaps.md)               | Trace nested indexing of a `User[][]` parameter (JAVA-03).               |
 | [JavaScript](javascript-ingestion-gaps.md)   | Preserve JSDoc container evidence for indexed receivers.                 |
 | [Kotlin](kotlin-ingestion-gaps.md)           | Inventory companion and inherited-receiver limits.                       |
 | [Objective-C](objective-c-ingestion-gaps.md) | Add receiver measurements without weakening dynamic-dispatch boundaries. |
