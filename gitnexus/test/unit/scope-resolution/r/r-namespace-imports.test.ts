@@ -510,6 +510,18 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
 
   const F = 'scorelib/R/s.R';
 
+  it('assigns named definitions to the closest registered R source directory', () => {
+    const state = {
+      cfg: config({ outer: '', inner: 'R/subpkg' }),
+      files: [
+        parse('same <- function() 1', 'R/extra/R/outer.R'),
+        parse('same <- function() 2', 'R\\subpkg\\R\\inner.R'),
+      ],
+    };
+    expect(resolve(state, 'outer', 'same')).toEqual(['R/extra/R/outer.R']);
+    expect(resolve(state, 'inner', 'same')).toEqual(['R\\subpkg\\R\\inner.R']);
+  });
+
   it('returns nothing for an external package', () => {
     const s = setup({ [F]: 'mutate <- function(d) d' }, { exports: ['mutate'] });
     expect(resolve(s, 'dplyr', 'mutate')).toBeNull();
@@ -760,6 +772,19 @@ describe('resolveRImportTarget — named imports (NAMESPACE importFrom)', () => 
         });
       }
       expect(paths.scans).toBe(0);
+    });
+
+    it('keeps workspace order, raw paths and nested R directories for wildcard imports', () => {
+      const cfg = config({ rootpkg: '', nested: 'R', empty: 'empty' });
+      const paths = new Set(['R/R/sub.r', 'other/R/skip.R', 'R\\win.R', 'R/skip.py', 'empty.js']);
+      const library = (name: string) =>
+        resolveRImportTarget(name, 'use.R', paths, cfg, {
+          parsedFiles: [],
+          parsedImport: { kind: 'wildcard', targetRaw: name },
+        });
+      expect(library('rootpkg')).toEqual(['R/R/sub.r', 'R\\win.R']);
+      expect(library('nested')).toEqual(['R/R/sub.r']);
+      expect(library('empty')).toBeNull();
     });
 
     it('still builds one memoised index for wildcard imports', () => {

@@ -11,9 +11,38 @@ import type { ParsedFile } from 'gitnexus-shared';
 import { rExportPatternMatches, type RPackageConfig } from './package-config.js';
 import { rBareName } from './bare-name.js';
 import { rStringValue } from './export-pattern.js';
-import { rFileTopLevel, rPackageDirForFile, type RFileTopLevel } from './namespace-imports.js';
+import {
+  rFileTopLevel,
+  rPackageDirForFile,
+  rRDirPrefix,
+  type RFileTopLevel,
+} from './namespace-imports.js';
 import type { ImportResolutionContext } from '../../scope-resolution/contract/scope-resolver.js';
+import { perFileSet } from '../../utils/per-file-set.js';
 import { getWorkspaceFileIndex } from '../../utils/workspace-file-index.js';
+
+/** Matching R/ source prefixes, from the outermost directory to the nearest one. */
+function* rSourceDirectoryPrefixes(filePath: string): Generator<string> {
+  const normalized = filePath.replace(/\\/g, '/');
+  for (const match of normalized.matchAll(/(?:^|\/)R(?=\/)/g)) {
+    yield normalized.slice(0, match.index + match[0].length + 1);
+  }
+}
+
+// A wildcard import needs the raw paths beneath the package's R/ directory in workspace order.
+// A nested R/ directory contributes to each enclosing R/ prefix, as the prefix scan did.
+const rFilesBySourceDirectory = perFileSet((paths: ReadonlySet<string>) => {
+  const directories = new Map<string, string[]>();
+  for (const raw of paths) {
+    if (!/\.[Rr]$/.test(raw)) continue;
+    for (const prefix of rSourceDirectoryPrefixes(raw)) {
+      const files = directories.get(prefix);
+      if (files) files.push(raw);
+      else directories.set(prefix, [raw]);
+    }
+  }
+  return directories;
+});
 
 /**
  * Low-level R import resolver (internal helper).
@@ -103,15 +132,25 @@ function packageDefIndex(
   if (byPackage === undefined) {
     const files = new Map<string, Map<string, RFileTopLevel>>();
     const defining = new Map<string, Map<string, string[]>>();
+    // Invert DESCRIPTION names once for this snapshot. The nearest matching R/ prefix wins,
+    // with the first name retaining an equal directory as in rPackageDirForFile.
+    const namesByPrefix = new Map<string, string>();
+    for (const [name, dir] of rConfig.packages) {
+      const prefix = rRDirPrefix(dir);
+      if (!namesByPrefix.has(prefix)) namesByPrefix.set(prefix, name);
+    }
     for (const parsed of parsedFiles) {
-      const location = rPackageDirForFile(parsed.filePath, rConfig);
-      if (location === undefined) continue;
+      let owner: string | undefined;
+      for (const prefix of rSourceDirectoryPrefixes(parsed.filePath)) {
+        owner = namesByPrefix.get(prefix) ?? owner;
+      }
+      if (owner === undefined) continue;
       const topLevel = rFileTopLevel(parsed);
-      let pkgFiles = files.get(location.name);
-      let pkgDefining = defining.get(location.name);
+      let pkgFiles = files.get(owner);
+      let pkgDefining = defining.get(owner);
       if (pkgFiles === undefined || pkgDefining === undefined) {
-        files.set(location.name, (pkgFiles = new Map()));
-        defining.set(location.name, (pkgDefining = new Map()));
+        files.set(owner, (pkgFiles = new Map()));
+        defining.set(owner, (pkgDefining = new Map()));
       }
       pkgFiles.set(parsed.filePath, topLevel);
       for (const name of topLevel.names) {
@@ -294,6 +333,7 @@ export function resolveRImportTarget(
       rConfig.duplicatePackageDirs?.has(dir)
     )
       return null;
+    return rFilesBySourceDirectory(allFilePaths).get(rRDirPrefix(dir)) ?? null;
   }
 
   if (context?.parsedImport?.kind === 'side-effect') {
