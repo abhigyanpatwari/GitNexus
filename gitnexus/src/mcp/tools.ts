@@ -138,10 +138,12 @@ export const GITNEXUS_TOOLS: ToolDefinition[] = [
 
 Returns a page of repositories — each with name, path, indexed date, last commit, and stats — plus a "pagination" object: { total, limit, offset, returned, hasMore, nextOffset }.
 
-PAGINATION: Results are paginated so a large registry is not truncated by MCP/LLM token limits. "limit" sets the page size (default ${LIST_REPOS_DEFAULT_LIMIT}, max ${LIST_REPOS_MAX_LIMIT}; values above the max are rejected, not capped). "offset" selects the start. To enumerate EVERY repository: when pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset, and repeat until hasMore is false. Repositories are returned in a stable order, so paging never skips or duplicates an entry while the registry is unchanged.
+Discovery skips Git freshness checks and reports staleness.status as "unknown".
+
+Pagination keeps large registries within client response limits. The default page size is ${LIST_REPOS_DEFAULT_LIMIT}. Limits above ${LIST_REPOS_MAX_LIMIT} are rejected. While pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset. Order is stable while the registry is unchanged.
 
 WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
-AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
+AFTER THIS: READ gitnexus://repo/{name}/context to check the selected index against its checkout.
 
 When multiple repos are indexed, repo-scoped read-only tools use the configured
 MCP default or the registered path containing the GitNexus process cwd, unless

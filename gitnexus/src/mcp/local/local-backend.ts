@@ -7,6 +7,9 @@
  */
 
 import { resolveGraphPath } from '../../storage/shared-store.js';
+import { BRANCHES_DIR, branchSlug } from '../../storage/branch-index.js';
+import { mapPool } from '../../storage/map-pool.js';
+import { DiscoveryMetadataCache } from '../../storage/storage-resolver.js';
 import { relationshipIntegrityForCaller } from '../../core/graph/relationship-integrity.js';
 import fs from 'fs/promises';
 import path from 'path';
@@ -86,6 +89,7 @@ import {
   loadMeta,
   RegistryAmbiguousTargetError,
   type RegistryEntry,
+  type DiscoveredRegistryEntry,
   type BranchSummary,
 } from '../../storage/repo-manager.js';
 import {
@@ -1677,6 +1681,8 @@ export interface RepoListing {
   sourceAvailable?: boolean;
 }
 
+type DiscoveryHandle = RepoHandle & Pick<RepoListing, 'contentRetention'>;
+
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
 export interface ListReposPagination {
   /** Total repositories across all pages. */
@@ -1901,6 +1907,9 @@ export class LocalBackend {
 
   private static readonly TOOL_STALENESS_TTL_MS = 5000;
   private repos: Map<string, RepoHandle> = new Map();
+  private readonly discoveryMetadata = new DiscoveryMetadataCache();
+  private registryRefreshSequence = 0;
+  private publishedRegistryRefresh = 0;
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
@@ -2174,17 +2183,28 @@ export class LocalBackend {
   /**
    * Re-read the global registry and update the in-memory repo map.
    * New repos are added, existing repos are updated, removed repos are pruned.
-   * LadybugDB connections for removed repos are NOT closed (they idle-timeout naturally).
+   * Return this request's snapshot even if a later refresh has already published.
    */
-  private async refreshRepos(): Promise<void> {
-    const entries = await listRegisteredRepos({ validate: true });
+  private async refreshRepos(
+    discovery?: DiscoveryMetadataCache,
+  ): Promise<Map<string, DiscoveryHandle>> {
+    const sequence = ++this.registryRefreshSequence;
+    const entries: DiscoveredRegistryEntry[] = discovery
+      ? await listRegisteredRepos({ validate: true, discovery })
+      : await listRegisteredRepos({ validate: true });
+    // Transient inspection failures establish neither a graph replacement nor
+    // source availability. A clone's name-derived id can move on refresh.
+    const priorByCheckout =
+      discovery && entries.some((entry) => !entry.discovery)
+        ? new Map(Array.from(this.repos.values(), (handle) => [handle.repoPath, handle]))
+        : undefined;
 
     // Build the next map from scratch and swap it in atomically. Mutating the
     // live map in place let stale entries influence fresh id assignment: a
     // bare-name id, once handed to the first registry entry, stuck to it across
     // refreshes and reorders, and colliding path suffixes silently overwrote
     // each other so sibling clones disappeared from `list_repos` (#2054).
-    const nextRepos = new Map<string, RepoHandle>();
+    const nextRepos = new Map<string, DiscoveryHandle>();
     const nextContext = new Map<string, CodebaseContext>();
     const assigned = new Map<string, string>(); // id -> resolved repo path
 
@@ -2209,9 +2229,13 @@ export class LocalBackend {
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
 
       const storagePath = entry.storagePath;
-      const lbugPath = resolveGraphPath(storagePath);
+      const prior = priorByCheckout?.get(entry.path);
+      const inspectedGraph = discovery && entry.discovery?.graphPath;
+      const lbugPath =
+        inspectedGraph ??
+        (prior?.storagePath === storagePath ? prior.lbugPath : resolveGraphPath(storagePath));
 
-      const handle: RepoHandle = {
+      const handle: DiscoveryHandle = {
         id,
         name: entry.name,
         repoPath: entry.path,
@@ -2223,6 +2247,7 @@ export class LocalBackend {
         stats: entry.stats,
         branch: entry.branch,
         branches: entry.branches,
+        ...(discovery && { contentRetention: entry.discovery?.contentRetention ?? 'none' }),
       };
 
       nextRepos.set(id, handle);
@@ -2240,6 +2265,11 @@ export class LocalBackend {
       });
     }
 
+    // A slow, earlier validation may finish after another request published a
+    // newer snapshot. It may still render its own page, but cannot evict a
+    // pool or restore a handle from the superseded registry.
+    if (sequence < this.publishedRegistryRefresh) return nextRepos;
+
     // Prune per-clone pool state for databases that are no longer registered.
     // The LadybugDB pool and the init/staleness/reinit maps are keyed by the
     // immutable lbugPath (see ensureInitialized), so a repo id that merely
@@ -2248,13 +2278,15 @@ export class LocalBackend {
     // the resolve→query wrong-clone window for good (#2067). Only a path that
     // dropped out of the registry must release its pooled connection + state.
     const liveLbugPaths = new Set([...nextRepos.values()].map((h) => h.lbugPath));
-    // Branch pools (opened on demand by applyBranchScope) are NOT in this.repos
-    // — branch handles are minted fresh and discarded — so add every registered
-    // branch's lbugPath to the live set. Pure string work over the already-in-
-    // memory registry snapshot; no disk I/O on this hot path (#2106 R3).
-    for (const entry of entries) {
-      for (const b of entry.branches ?? []) {
-        liveLbugPaths.add(getStoragePaths(entry.path, b.branch, entry.storagePath).lbugPath);
+    // Branch pools live in the pin's own slot, including private generations.
+    // Only an opened slot needs its current graph pointer resolved for eviction.
+    if (this.initializedRepos.size > 0) {
+      const openSlots = new Set(Array.from(this.initializedRepos, (key) => path.dirname(key)));
+      for (const entry of entries) {
+        for (const b of entry.branches ?? []) {
+          const slot = path.join(entry.storagePath, BRANCHES_DIR, branchSlug(b.branch));
+          if (openSlots.has(slot)) liveLbugPaths.add(resolveGraphPath(slot));
+        }
       }
     }
     // initializedRepos is the authoritative set of OPENED pool keys (flat AND
@@ -2276,6 +2308,8 @@ export class LocalBackend {
 
     this.repos = nextRepos;
     this.contextCache = nextContext;
+    this.publishedRegistryRefresh = sequence;
+    return nextRepos;
   }
 
   /**
@@ -2877,99 +2911,80 @@ export class LocalBackend {
   }
 
   /**
-   * List all registered repos with their metadata.
-   * Re-reads the global registry so newly indexed repos are discovered
-   * without restarting the MCP server.
-   *
-   * Each entry includes:
-   *   - `staleness`: if the indexed clone's own HEAD has moved past
-   *     the recorded `lastCommit` (option D in the issue's fix list).
-   *   - `siblings`: other registered entries sharing the same
-   *     `remoteUrl` (option B's payoff: callers can see at a glance
-   *     that another clone of the same logical repo is registered).
-   *   - `remoteUrl`: the canonical origin URL recorded at index time.
+   * Full repository listing for resources and startup messages. Preserve its
+   * path order while the paginated tool sorts by name and path.
    */
-  async listRepos(): Promise<RepoListing[]> {
-    await this.refreshRepos();
-    const handles = [...this.repos.values()];
+  async listRepos(visible?: (repoPath: string) => boolean): Promise<RepoListing[]> {
+    return (await this.discoverRepos(visible)).repositories;
+  }
 
-    // Pre-group registered handles by `remoteUrl` so the sibling
-    // lookup is O(1) per handle. We reuse the in-memory `this.repos`
-    // (already populated by `refreshRepos`) instead of doing a fresh
-    // `readRegistry()` per entry — that would be N file reads for N
-    // registered repos.
-    const isWin = process.platform === 'win32';
-    const norm = (p: string) => (isWin ? path.resolve(p).toLowerCase() : path.resolve(p));
-    const byRemote = new Map<string, RepoHandle[]>();
-    for (const h of handles) {
+  private async discoverRepos(
+    visible?: (repoPath: string) => boolean,
+    page?: { limit: number; offset: number },
+  ): Promise<{ repositories: RepoListing[]; total: number }> {
+    const snapshot = await this.refreshRepos(this.discoveryMetadata);
+    const handles = [...snapshot.values()];
+    const allowed = visible ? handles.filter((h) => visible(h.repoPath)) : handles;
+
+    // Keep every visible clone available for sibling references, including
+    // those on other pages. Preserve the current path order within each group.
+    const byRemote = new Map<string, DiscoveryHandle[]>();
+    for (const h of allowed) {
       if (!h.remoteUrl) continue;
-      const list = byRemote.get(h.remoteUrl) ?? [];
-      list.push(h);
-      byRemote.set(h.remoteUrl, list);
+      const group = byRemote.get(h.remoteUrl);
+      if (group) group.push(h);
+      else byRemote.set(h.remoteUrl, [h]);
     }
 
-    // Check staleness for all repos in parallel instead of sequentially.
-    // Each check spawns an async `git rev-list` — with 200 repos the sync
-    // variant took ~50 s; parallel async brings it under a second (#1363).
-    const listing = await Promise.all(
-      handles.map(async (h) => {
-        const [stale, meta] = await Promise.all([
-          checkStalenessAsync(h.repoPath, h.lastCommit),
-          loadMeta(h.storagePath).catch(() => null),
-        ]);
-        const contentRetention = contentRetentionFromMeta(meta);
-        const sourceAvailable = isFullSourceAvailable(
-          contentRetention,
-          contentRetention === 'full' ? await checkoutIsDirectory(h.repoPath) : false,
-        );
-        return { h, stale, source: { contentRetention, sourceAvailable } };
-      }),
-    );
+    let selected = allowed;
+    if (page) {
+      allowed.sort(
+        (a, b) =>
+          compareCodeUnits(a.name.toLowerCase(), b.name.toLowerCase()) ||
+          compareCodeUnits(a.repoPath, b.repoPath),
+      );
+      selected = allowed.slice(page.offset, page.offset + page.limit);
+    }
 
-    return listing.map(({ h, stale, source }) => {
-      const selfNorm = norm(h.repoPath);
-      const siblings = h.remoteUrl
-        ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
-        : [];
-      return {
-        name: h.name,
-        path: h.repoPath,
-        indexedAt: h.indexedAt,
-        lastCommit: h.lastCommit,
-        remoteUrl: h.remoteUrl,
-        stats: h.stats,
-        staleness: stalenessPayload(stale, { includeUnknown: true }),
-        siblings:
-          siblings.length > 0
-            ? siblings.map((s) => ({
-                name: s.name,
-                path: s.repoPath,
-                lastCommit: s.lastCommit,
+    const repositories = await mapPool<DiscoveryHandle, RepoListing>(
+      selected,
+      async (h) => {
+        const contentRetention = h.contentRetention ?? 'none';
+        const siblings = h.remoteUrl
+          ? byRemote.get(h.remoteUrl)?.filter((s) => path.relative(s.repoPath, h.repoPath) !== '')
+          : undefined;
+        return {
+          name: h.name,
+          path: h.repoPath,
+          indexedAt: h.indexedAt,
+          lastCommit: h.lastCommit,
+          remoteUrl: h.remoteUrl,
+          stats: h.stats,
+          staleness: { status: 'unknown' },
+          siblings: siblings?.length
+            ? siblings.map((s) => ({ name: s.name, path: s.repoPath, lastCommit: s.lastCommit }))
+            : undefined,
+          branch: h.branch,
+          branches: h.branches?.length
+            ? h.branches.map(({ branch, indexedAt, lastCommit }) => ({
+                branch,
+                indexedAt,
+                lastCommit,
               }))
             : undefined,
-        branch: h.branch,
-        branches:
-          h.branches && h.branches.length > 0
-            ? h.branches.map((b) => ({
-                branch: b.branch,
-                indexedAt: b.indexedAt,
-                lastCommit: b.lastCommit,
-              }))
-            : undefined,
-        storagePath: h.storagePath,
-        contentRetention: source.contentRetention,
-        sourceAvailable: source.sourceAvailable,
-      };
-    });
+          storagePath: h.storagePath,
+          contentRetention,
+          sourceAvailable: contentRetention === 'full' && (await checkoutIsDirectory(h.repoPath)),
+        };
+      },
+      8,
+    );
+    return { repositories, total: allowed.length };
   }
 
   /**
-   * Lightweight registry count for schema-introspection callers that only
-   * need to know "one repo or many?" without paying the full staleness fan-out
-   * cost that listRepos() incurs. Uses the same validated registry
-   * `refreshRepos` / `selectToolRepository` see (`validate: true` prunes
-   * entries whose metadata is provably gone) so tools/list cannot advertise a
-   * multi-repo schema for ENOENT ghosts. No git processes are spawned.
+   * Read validated registry cardinality for schema introspection without
+   * refreshing routing or formatting a repository listing.
    */
   async countRepos(): Promise<number> {
     const entries = await listRegisteredRepos({ validate: true });
@@ -3002,7 +3017,10 @@ export class LocalBackend {
    * Codepoint comparison (not `localeCompare`) keeps page boundaries stable
    * across machines/locales, matching the existing `refreshRepos` ordering.
    */
-  async listReposPage(params?: { limit?: unknown; offset?: unknown } | null): Promise<{
+  async listReposPage(
+    params?: { limit?: unknown; offset?: unknown } | null,
+    visible?: (repoPath: string) => boolean,
+  ): Promise<{
     repositories: RepoListing[];
     pagination: ListReposPagination;
   }> {
@@ -3011,17 +3029,7 @@ export class LocalBackend {
       maxLimit: LIST_REPOS_MAX_LIMIT,
     });
 
-    // One consistent snapshot per call (listRepos refreshes the registry once),
-    // sorted into a stable total order before slicing.
-    const all = await this.listRepos();
-    all.sort(
-      (a, b) =>
-        compareCodeUnits(a.name.toLowerCase(), b.name.toLowerCase()) ||
-        compareCodeUnits(a.path, b.path),
-    );
-
-    const total = all.length;
-    const repositories = all.slice(offset, offset + limit);
+    const { repositories, total } = await this.discoverRepos(visible, { limit, offset });
     const returned = repositories.length;
     const hasMore = offset + returned < total;
 
