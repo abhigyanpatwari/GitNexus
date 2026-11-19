@@ -90,11 +90,6 @@ function extractPatterns(toolName, toolInput) {
   return [];
 }
 
-/** The first search pattern of a tool input, or null. */
-function extractPattern(toolName, toolInput) {
-  return extractPatterns(toolName, toolInput)[0] ?? null;
-}
-
 // Warn once per short-lived hook process when orphan containment is unavailable.
 let unguardedCliWarned = false;
 

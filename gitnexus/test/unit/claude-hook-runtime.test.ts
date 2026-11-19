@@ -31,7 +31,9 @@ function loadRuntime(options: { platform?: string; guard?: string | null } = {})
   const require = createRequire(RUNTIME);
   const module = { exports: {} as HookRuntime };
   vm.runInNewContext(
-    fs.readFileSync(RUNTIME, 'utf8') + '\nmodule.exports.extractPattern = extractPattern;',
+    fs.readFileSync(RUNTIME, 'utf8') +
+      // The first pattern the hook passes to `gitnexus augment`.
+      '\nmodule.exports.extractPattern = (name, input) => extractPatterns(name, input)[0] ?? null;',
     {
       module,
       require: (id: string) => {
