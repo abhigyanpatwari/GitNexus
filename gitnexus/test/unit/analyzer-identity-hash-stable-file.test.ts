@@ -60,13 +60,14 @@ describe('hashStableFile (#3932)', () => {
     });
   });
 
-  it.each([0, 300_000])('hashes all %i bytes of an artifact', (size) => {
-    const payload = Buffer.alloc(size, 0x5a);
-    actual.writeFileSync(testFile, payload);
-    expect(analyzerIdentityArtifacts.hashStableFile(testFile)).toMatchObject({
-      bytes: size,
-      digest: `sha256:${createHash('sha256').update(payload).digest('hex')}`,
-    });
+  it('hashes only the bytes read when a large file is followed by a short or empty file', () => {
+    for (const payload of [Buffer.alloc(300_000, 0x5a), Buffer.from([0, 0x91]), Buffer.alloc(0)]) {
+      actual.writeFileSync(testFile, payload);
+      expect(analyzerIdentityArtifacts.hashStableFile(testFile)).toMatchObject({
+        bytes: payload.length,
+        digest: `sha256:${createHash('sha256').update(payload).digest('hex')}`,
+      });
+    }
   });
 
   it('accepts the Windows zero-device snapshot without changing the stored state', () => {
