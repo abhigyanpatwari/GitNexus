@@ -209,8 +209,9 @@ function parseRgGrepPattern(cmd) {
       }
       if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
       // Only a search that starts the line is read. One after `&&`, `;` or `|`
-      // reads a file the command names or the output of the command before
-      // it, not the repository.
+      // may read a file the command names, the output of the command before
+      // it, or another directory after `cd`, and the line alone does not say
+      // which.
       if (commandName !== 'rg' && commandName !== 'grep') return null;
       foundCmd = true;
       searchCommand = commandName;

@@ -231,6 +231,8 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: 'grep --unknown-option=value -r UserService src', pattern: 'UserService' },
     { command: 'rg --glob= UserService src', pattern: 'UserService' },
     { command: 'rg UserService - ', pattern: 'UserService' },
+    // Variable assignments before the command belong to it.
+    { command: 'NO_COLOR=1 rg UserService src', pattern: 'UserService' },
   ])('preserves the complete argument in $command', ({ command, pattern }) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBe(pattern);
   });
@@ -286,7 +288,7 @@ describe('Claude hook literal Bash search patterns', () => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
   });
 
-  // #3899: only a search that starts the line searches the repository.
+  // #3899: only a search that starts the line is read.
   it.each([
     "sed -i '' 's/old text/new text/' notes.md && grep -c 'direct `tool' notes.md",
     'git log --oneline | grep UserService',

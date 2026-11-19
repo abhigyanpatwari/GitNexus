@@ -26,8 +26,9 @@ describe('searchCommandPattern', () => {
     },
   );
 
-  // #3899: a search after an operator reads a file the command names or the
-  // output of the command before it, not the repository.
+  // #3899: a search after an operator may read a file the command names, the
+  // output of the command before it, or another directory after `cd`; the line
+  // alone does not say which, so none of them is read.
   it.each(['bash', 'powershell', 'either'] as const)(
     'reads no search after a shell operator in %s',
     (shell) => {
@@ -43,6 +44,23 @@ describe('searchCommandPattern', () => {
       }
     },
   );
+
+  it('reads past variable assignments before the command in bash', () => {
+    expect(searchCommandPattern('NO_COLOR=1 rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern(`LC_ALL=C GREP_COLORS='mt=1;31' grep -rn UserService src`)).toBe(
+      'UserService',
+    );
+    expect(searchCommandPattern(String.raw`DIR=a\ b rg UserService src`)).toBe('UserService');
+    // A quoted word is a command name, and a newline ends the command.
+    expect(searchCommandPattern("'NO_COLOR=1' rg UserService src")).toBeNull();
+    expect(searchCommandPattern('"NO_COLOR"=1 rg UserService src')).toBeNull();
+    expect(searchCommandPattern('NO_COLOR=1\nrg UserService src')).toBeNull();
+  });
+
+  // PowerShell has no assignment prefix: it would run `NO_COLOR=1` itself.
+  it.each(['powershell', 'either'] as const)('reads no assignment prefix in %s', (shell) => {
+    expect(searchCommandPattern('NO_COLOR=1 rg UserService src', shell)).toBeNull();
+  });
 
   it('defaults to bash', () => {
     expect(searchCommandPattern(String.raw`rg user\ service src`)).toBe('user service');

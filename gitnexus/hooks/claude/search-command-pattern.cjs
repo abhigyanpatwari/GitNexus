@@ -3,9 +3,11 @@
  * a shell. The Claude-schema and Antigravity adapters search the graph for it.
  *
  * Only the first simple command of the line is read. A search later in the
- * line (`sed -i x notes.md && grep -c word notes.md`, `git log | grep fix`)
- * reads a file the command names or the output of the command before it, not
- * the repository, so it is not taken as a code search. A query that cannot be
+ * line may read a file the command names (`sed -i x notes.md && grep -c word
+ * notes.md`), the output of the command before it (`git log | grep fix`), or
+ * another directory (`cd src && rg x`), and the line alone does not say which,
+ * so none of them is taken as a code search. In bash, variable assignments
+ * before the command (`NO_COLOR=1 rg x`) belong to it. A query that cannot be
  * read reliably (a shell expansion, an unknown option, a pattern file) gives
  * none.
  *
@@ -244,6 +246,12 @@ function extractSearchCommandPattern(tokens) {
   return !pending && result?.length >= 3 ? result : null;
 }
 
+// bash runs `NAME=value rg x` as `rg x` with NAME set in its environment. The
+// name must be bare: a quoted `'NAME=value'` is a command name. PowerShell has
+// no such prefix and would run `NAME=value` itself.
+const BASH_ASSIGNMENTS =
+  /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*[ \t]+)+/;
+
 /**
  * The query of a command line, or null when it runs no search whose query can
  * be read. `shell` is the shell that reads the line: `bash`, `powershell`, or
@@ -251,7 +259,10 @@ function extractSearchCommandPattern(tokens) {
  */
 function searchCommandPattern(command, shell = 'bash') {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return null;
-  const tokens = tokenizeShellCommand(command, shell === 'powershell' ? 'powershell' : 'bash');
+  const tokens =
+    shell === 'powershell'
+      ? tokenizeShellCommand(command, 'powershell')
+      : tokenizeShellCommand(command.replace(BASH_ASSIGNMENTS, ''), 'bash');
   if (shell === 'either') {
     const other = tokenizeShellCommand(command, 'powershell');
     if (other.length !== tokens.length || other.some((token, i) => token !== tokens[i])) {

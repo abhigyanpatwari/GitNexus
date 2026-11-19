@@ -1162,7 +1162,8 @@ describe('Shell quoted-pattern parser', () => {
     ['rg --file=patterns.txt src/'],
     ['rg -eab src/'],
     ['sudo echo rg UserService src/'],
-    // #3899: a search after an operator does not search the repository.
+    // #3899: only a search that starts the line is read; one after an operator
+    // may read a file, a pipe, or another directory after `cd`.
     ['cd grep && rg LongPattern src/'],
     ["sed -i '' 's/old text/new text/' notes.md && grep -c 'direct tool' notes.md"],
     ['git log --oneline | grep UserService'],
