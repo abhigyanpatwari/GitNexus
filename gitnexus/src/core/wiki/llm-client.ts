@@ -4,7 +4,7 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
  * LLM Client for Wiki Generation
  *
  * OpenAI-compatible API client using native fetch.
- * Supports MiniMax and other OpenAI-compatible endpoints, and the Anthropic
+ * Supports MiniMax, Atlas Cloud, and other OpenAI-compatible endpoints, and the Anthropic
  * Messages API natively (provider 'anthropic').
  *
  * Config priority: CLI flags > env vars > defaults
@@ -13,6 +13,7 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
 export type LLMProvider =
   | 'openai'
   | 'openrouter'
+  | 'atlascloud'
   | 'azure'
   | 'custom'
   | 'cursor'
@@ -60,6 +61,9 @@ export type LLMUserContent =
         }
     >;
 
+export const ATLAS_CLOUD_BASE_URL = 'https://api.atlascloud.ai/v1';
+export const ATLAS_CLOUD_DEFAULT_MODEL = 'deepseek-ai/deepseek-v4-pro';
+
 export interface LLMConfig {
   apiKey: string;
   baseUrl: string;
@@ -84,6 +88,17 @@ export interface LLMResponse {
   content: string;
   promptTokens?: number;
   completionTokens?: number;
+}
+
+export function getProviderEnvApiKey(provider: LLMProvider | undefined): string {
+  if (provider === 'minimax') return process.env.MINIMAX_API_KEY || '';
+  if (provider === 'anthropic') {
+    return process.env.ANTHROPIC_API_KEY || process.env.GITNEXUS_API_KEY || '';
+  }
+  if (provider === 'atlascloud') {
+    return process.env.ATLASCLOUD_API_KEY || process.env.GITNEXUS_API_KEY || '';
+  }
+  return process.env.GITNEXUS_API_KEY || process.env.OPENAI_API_KEY || '';
 }
 
 export function resolveMiniMaxThinkingMode(
@@ -130,16 +145,25 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     savedProvider === 'opencode' ||
     savedProvider === 'grok';
 
+  const envApiKey = getProviderEnvApiKey(savedProvider);
   const apiKey =
-    overrides?.apiKey ||
-    (savedProvider === 'minimax' ? process.env.MINIMAX_API_KEY : undefined) ||
-    (savedProvider === 'anthropic' ? process.env.ANTHROPIC_API_KEY : undefined) ||
-    (savedProvider !== 'minimax' ? process.env.GITNEXUS_API_KEY : undefined) ||
-    (savedProvider !== 'minimax' && savedProvider !== 'anthropic'
-      ? process.env.OPENAI_API_KEY
-      : undefined) ||
-    (reuseSavedHttpConfig ? savedConfig.apiKey : undefined) ||
-    '';
+    overrides?.apiKey || envApiKey || (reuseSavedHttpConfig ? savedConfig.apiKey : undefined) || '';
+  const defaultBaseUrl =
+    savedProvider === 'atlascloud'
+      ? ATLAS_CLOUD_BASE_URL
+      : savedProvider === 'minimax'
+        ? MINIMAX_OPENAI_BASE_URLS.global_en
+        : savedProvider === 'anthropic'
+          ? ANTHROPIC_BASE_URL
+          : 'https://openrouter.ai/api/v1';
+  const defaultModel =
+    savedProvider === 'atlascloud'
+      ? ATLAS_CLOUD_DEFAULT_MODEL
+      : savedProvider === 'minimax'
+        ? MINIMAX_MODEL_IDS[0]
+        : savedProvider === 'anthropic'
+          ? ANTHROPIC_DEFAULT_MODEL
+          : '';
 
   return {
     apiKey,
@@ -147,23 +171,12 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       overrides?.baseUrl ||
       process.env.GITNEXUS_LLM_BASE_URL ||
       (reuseSavedHttpConfig ? savedConfig.baseUrl : undefined) ||
-      (savedProvider === 'minimax'
-        ? MINIMAX_OPENAI_BASE_URLS.global_en
-        : savedProvider === 'anthropic'
-          ? ANTHROPIC_BASE_URL
-          : 'https://openrouter.ai/api/v1'),
+      defaultBaseUrl,
     model:
       overrides?.model ||
       (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
       savedLocalModel ||
-      (localProvider
-        ? ''
-        : (reuseSavedHttpConfig ? savedConfig.model : undefined) ||
-          (savedProvider === 'minimax'
-            ? MINIMAX_MODEL_IDS[0]
-            : savedProvider === 'anthropic'
-              ? ANTHROPIC_DEFAULT_MODEL
-              : '')),
+      (localProvider ? '' : (reuseSavedHttpConfig ? savedConfig.model : undefined) || defaultModel),
     maxTokens:
       readOverrideMaxCompletionTokens(overrides?.maxTokens) ??
       readEnvMaxCompletionTokens(process.env[LLM_MAX_COMPLETION_TOKENS_ENV]) ??
