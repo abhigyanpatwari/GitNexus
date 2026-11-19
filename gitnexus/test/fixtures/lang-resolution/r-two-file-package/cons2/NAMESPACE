@@ -1,0 +1,4 @@
+export(via_import)
+export(via_import_once)
+importFrom(pkgt, twice)
+importFrom(pkgt, once)

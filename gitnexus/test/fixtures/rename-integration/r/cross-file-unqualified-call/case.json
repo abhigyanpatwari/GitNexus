@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse to rename a function called unqualified from another file: R resolves the call by global name, which is not a provable binding.",
+  "categories": ["cross-file", "negative", "unchanged-on-error"],
+  "target": { "name": "compute", "kind": "Function", "file": "lib.R", "startLine": 0 },
+  "newName": "calculate",
+  "expect": { "status": "error", "code": "ambiguous_reference", "planningStatus": "blocked" },
+  "edges": []
+}

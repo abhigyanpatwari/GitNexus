@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse an exported package function whose file also calls an external package (stats::sd): the plan-time NAMESPACE read still sees the export.",
+  "categories": ["namespace", "package-export", "qualified-call", "negative", "unchanged-on-error"],
+  "target": { "name": "hidden", "kind": "Function", "file": "R/pub.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

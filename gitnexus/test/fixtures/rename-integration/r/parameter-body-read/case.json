@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a same-named parameter is read in the body without being called: the parameter is a binding but its body read is an occurrence no edge covers, so the planner stops (incomplete_semantics), where the call of the same parameter is ambiguous_reference.",
+  "categories": ["parameter-shadowing", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "incomplete_semantics",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

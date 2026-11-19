@@ -1,0 +1,22 @@
+{
+  "language": "r",
+  "description": "Refuse a call under a body assignment of a constant (P3): a constant is not a binding the provider models, so the occurrence stays uncovered and the planner refuses it (incomplete_semantics).",
+  "categories": [
+    "assignment-shadowing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "incomplete_semantics",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

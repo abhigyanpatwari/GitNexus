@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse to rename a function in a generated cpp11 wrapper (cpp11.R) that other files call with :::; the next cpp_register() run restores the old name.",
+  "categories": ["generated-source", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "fastsum",
+    "kind": "Function",
+    "file": "R/cpp11.R",
+    "startLine": 2
+  },
+  "newName": "fast_sum",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

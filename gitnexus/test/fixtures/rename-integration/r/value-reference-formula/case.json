@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that a formula spells as a variable.",
+  "categories": ["name-collision", "value-reference", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "ref.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}

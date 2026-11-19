@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse when a chained call of the same name exists (a$b$save()): the chain's receiver is never typed, so the call is an unresolved receiver site that cannot be proved not to reach the function, and the provider does not guess. Before chained calls were sites, the same rename was refused as an uncovered occurrence (incomplete_semantics).",
+  "categories": ["receiver", "negative", "unchanged-on-error"],
+  "target": { "name": "save", "kind": "Function", "file": "save.R", "startLine": 0 },
+  "newName": "store",
+  "expect": { "status": "error", "code": "ambiguous_reference", "planningStatus": "blocked" },
+  "edges": []
+}

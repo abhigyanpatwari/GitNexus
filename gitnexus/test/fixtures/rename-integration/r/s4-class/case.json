@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse an S4 class whose name is spelled only in string literals.",
+  "categories": ["s4", "class", "negative", "unchanged-on-error"],
+  "target": { "name": "Person", "kind": "Class", "file": "person.R", "startLine": 0 },
+  "newName": "Human",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

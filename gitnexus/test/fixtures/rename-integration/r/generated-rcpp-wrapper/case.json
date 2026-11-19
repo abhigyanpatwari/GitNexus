@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse to rename a function in a generated Rcpp wrapper (RcppExports.R): the next compileAttributes() run restores the old name.",
+  "categories": ["generated-source", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "fastsum",
+    "kind": "Function",
+    "file": "R/RcppExports.R",
+    "startLine": 3
+  },
+  "newName": "fast_sum",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

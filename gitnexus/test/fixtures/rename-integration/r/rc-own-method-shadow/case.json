@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the function only: a RefClass method calls its own class method of that name by bare name, so the call stays as written.",
+  "categories": ["refclass", "class-scope", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 1
+  },
+  "edges": []
+}

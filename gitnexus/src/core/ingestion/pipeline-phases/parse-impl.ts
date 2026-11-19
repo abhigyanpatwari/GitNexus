@@ -64,6 +64,7 @@ import { readFileContents } from '../filesystem-walker.js';
 import {
   isLanguageAvailable,
   isGrammarRuntimeSkipped,
+  grammarRebuildPackage,
   createParserForLanguage,
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
@@ -109,7 +110,7 @@ import {
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
 import { resolveOperands } from '../route-extractors/python-const-resolver.js';
 import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
-import { prepareRouteConstantsByProvider } from '../language-provider.js';
+import { prepareRouteConstantsByProvider, runPostParseHooks } from '../language-provider.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -519,9 +520,11 @@ export async function runChunkedParseAndResolve(
 
   // Warn about files skipped due to unavailable parsers
   const skippedByLang = new Map<string, number>();
+  const postParseLanguages = new Set<SupportedLanguages>();
   for (const f of scannedFiles) {
     const lang = languageForScannedFile(f);
     const provider = lang === null ? undefined : getProvider(lang);
+    if (lang && provider?.postParse && isLanguageAvailable(lang)) postParseLanguages.add(lang);
     if (lang && provider?.parseStrategy !== 'standalone' && !isLanguageAvailable(lang)) {
       skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
     }
@@ -536,7 +539,7 @@ export async function runChunkedParseAndResolve(
       );
     } else {
       logger.warn(
-        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild tree-sitter-${lang}`,
+        `Skipping ${count} ${lang} file(s) — ${lang} parser not available (native binding may not have built). Try: npm rebuild ${grammarRebuildPackage(lang)}, then analyze --force`,
       );
     }
   }
@@ -775,6 +778,9 @@ export async function runChunkedParseAndResolve(
   };
 
   const exportedTypeMap: ExportedTypeMap = new Map();
+  // A post-parse hook can change export visibility after chunks have merged. In that case,
+  // collect types from the refined graph below, before enriching file-scope bindings.
+  const chunkExportedTypes = postParseLanguages.size === 0 ? exportedTypeMap : undefined;
   const bindingAccumulator = new BindingAccumulator();
   const allFetchCalls: ExtractedFetchCall[] = [];
   let allFetchWrapperDefs: FetchWrapperDef[] = [];
@@ -1106,7 +1112,7 @@ export async function runChunkedParseAndResolve(
           else markParseCacheChunkStale(parseCache, file.key);
         }
       }
-      const data = mergeChunkResults(graph, symbolTable, ordered, exportedTypeMap);
+      const data = mergeChunkResults(graph, symbolTable, ordered, chunkExportedTypes);
       await applyChunkResults(data, p.chunkIdx, p.fileCount, p.chunkStartMs);
     };
 
@@ -1188,7 +1194,7 @@ export async function runChunkedParseAndResolve(
             graph,
             symbolTable,
             entry.cachedRaw,
-            exportedTypeMap,
+            chunkExportedTypes,
           );
           await applyChunkResults(
             chunkWorkerData,
@@ -1391,6 +1397,9 @@ export async function runChunkedParseAndResolve(
     const deferredProfile = isDeferredResolutionProfileEnabled();
     if (deferredProfile) {
       logDeferredProfile(`deferred band start: routes=${allExtractedRoutes.length}`);
+    }
+    if (postParseLanguages.size > 0) {
+      await runPostParseHooks(postParseLanguages, getProvider, { graph, model, repoPath });
     }
     // Populate `exportedTypeMap` from the in-progress graph so the post-parse
     // enrichment pass (enrichExportedTypeMap) sees cross-file export types.

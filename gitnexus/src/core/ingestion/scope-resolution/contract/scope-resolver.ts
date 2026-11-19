@@ -1571,6 +1571,10 @@ export interface ScopeResolver {
    * hook is strictly additive and never removes an edge the prior tiers
    * would have produced.
    *
+   * By default a lexical NAME CLAIM (`lexicalNames`: a parameter or a local of
+   * the same name) still blocks the call before this hook runs. A provider
+   * opts into the stronger ordering with `qualifiedFreeCallOutranksNameClaim`.
+   *
    * Languages whose qualified calls carry a value/type receiver (`x.foo()`,
    * `Type::foo()`) are served by the receiver-bound-calls pass and leave
    * this undefined.
@@ -1589,6 +1593,18 @@ export interface ScopeResolver {
     workspaceIndex: WorkspaceResolutionIndex,
     allFilePaths: ReadonlySet<string>,
   ) => SymbolDefinition | undefined;
+
+  /**
+   * Opt-in for providers whose `resolveQualifiedFreeCall` reads a path that
+   * cannot be a local binding (a module-qualified path such as `pkg::fn`). When `true`,
+   * `emitFreeCallFallback` runs the hook BEFORE the lexical name-claim block,
+   * and a defined result for a site with `rawQualifiedName` bypasses that
+   * block: the written path names the module, so a local binding of the bare
+   * tail (a parameter, a `let`, a loop variable) cannot be what it means.
+   * Absent or `false`, the hook runs after the block exactly as before, so a
+   * provider that does not set this sees no change in its graph.
+   */
+  readonly qualifiedFreeCallOutranksNameClaim?: boolean;
 
   /**
    * Optional resolver for a qualified CALLEE TEXT whose path syntax only the

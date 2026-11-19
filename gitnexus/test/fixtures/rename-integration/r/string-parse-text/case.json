@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when parse(text = ) code calls the name: the string is evaluated as R code and would not be renamed.",
+  "categories": ["string-lookup", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}
