@@ -102,7 +102,8 @@ describe('Objective-C rename families', () => {
       referenceBindings: new Map(),
       newName: 'execute',
     };
-    expect(objectiveCRenameProvider.checkSafety?.(context)).toBeUndefined();
+    assert(objectiveCRenameProvider.checkSafety);
+    expect(objectiveCRenameProvider.checkSafety(context)).toBeUndefined();
     expect(objectiveCRenameProvider.symbolFamily?.(context)).toEqual([protocol, worker]);
     const scans = vi.spyOn(files, 'values');
     for (const source of sources.slice(0, 2)) {
