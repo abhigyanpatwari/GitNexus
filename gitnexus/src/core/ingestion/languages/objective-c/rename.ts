@@ -524,8 +524,7 @@ export const objectiveCRenameProvider: RenameProvider = {
     const newArity = context.newName.split(':').length - 1;
     if (context.target.type === 'Method' ? oldArity !== newArity : newArity !== 0)
       return invalid('The replacement must preserve the full Objective-C selector arity.');
-    const property = propertyForTarget(context);
-    const family = familyNames(context);
+    const { family, property } = renameTargetFamily(context);
     if (property?.accessors?.custom)
       return unsupported(
         'This property has explicit getter/setter names; its accessor contract needs a separate rename plan.',
@@ -644,7 +643,7 @@ export const objectiveCRenameProvider: RenameProvider = {
       };
   },
   symbolFamily(context) {
-    const family = familyNames(context);
+    const { family } = renameTargetFamily(context);
     return context.definitions.filter((definition) => family.has(definition.qualifiedName));
   },
   checkOccurrence({ occurrence, selected }) {
@@ -674,7 +673,7 @@ export const objectiveCRenameProvider: RenameProvider = {
   rewrite(context) {
     const { source, occurrence } = context;
     let { newName } = context;
-    const property = propertyForTarget(context);
+    const { property } = renameTargetFamily(context);
     if (property) {
       const replacement = renamedProperty(context, property)!;
       newName =
@@ -699,20 +698,47 @@ export const objectiveCRenameProvider: RenameProvider = {
   },
 };
 
+// Each resolution has its own graph. The occurrence contexts for a preview
+// share that graph and its resolved files, including when the target has no property.
+const targetFamilyByGraph = new WeakMap<
+  RenameSemanticContext['graph'],
+  {
+    files: RenameSemanticContext['files'];
+    qualifiedName: string | undefined;
+    family: ReadonlySet<string | undefined>;
+    property: ObjCMemberFact | undefined;
+  }
+>();
+
+function renameTargetFamily(context: RenameSemanticContext) {
+  const cached = targetFamilyByGraph.get(context.graph);
+  const qualifiedName = context.target.qualifiedName;
+  if (cached && cached.files === context.files && cached.qualifiedName === qualifiedName)
+    return cached;
+  const family = familyNames(context);
+  const property = propertyForTarget(context, family);
+  const result = { files: context.files, qualifiedName, family, property };
+  targetFamilyByGraph.set(context.graph, result);
+  return result;
+}
+
 function familyNames(context: RenameSemanticContext): Set<string | undefined> {
   const qualified = context.target.qualifiedName;
   const family = new Set([qualified]);
+  const seen = new Set<ObjectiveCRenameEvidence['symbolFamilies']>();
   for (const source of context.files.values()) {
-    for (const member of objectiveCRenameEvidence(source.parsed)?.symbolFamilies.get(
-      qualified ?? '',
-    ) ?? [])
-      family.add(member);
+    const families = objectiveCRenameEvidence(source.parsed)?.symbolFamilies;
+    if (!families || seen.has(families)) continue;
+    seen.add(families);
+    for (const member of families.get(qualified ?? '') ?? []) family.add(member);
   }
   return family;
 }
 
-function propertyForTarget(context: RenameSemanticContext): ObjCMemberFact | undefined {
-  const family = familyNames(context);
+function propertyForTarget(
+  context: RenameSemanticContext,
+  family: ReadonlySet<string | undefined>,
+): ObjCMemberFact | undefined {
   const properties: ObjCMemberFact[] = [];
   for (const source of context.files.values()) {
     properties.push(
