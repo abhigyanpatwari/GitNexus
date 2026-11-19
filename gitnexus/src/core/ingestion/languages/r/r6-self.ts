@@ -104,38 +104,32 @@ export function fileBindsSelf(program: SyntaxNode): boolean {
 }
 
 /**
- * A per-file classifier for {@link rFunctionOwnsSelf}-style questions: whether a
- * `function_definition` starts a frame in which `self` is not an R6 instance. That holds when it
- * is neither the function of an R6 method nor nested inside another function (a closure in a
- * method sees the method's `self`; a closure in a free function sees the free function's, which
- * is none). The answer for an ancestor is remembered, so the work over a file is linear in its
- * size however deeply functions nest.
+ * Classify functions in one file. An outer free function owns an untyped `self`.
+ * An R6 method gets its class's receiver. A closure inherits it unless the closure binds `self`.
+ * Find outer functions once. Tree-sitter searches from the root for each parent lookup.
  */
 export function createSelfOwnerClassifier(): (fn: SyntaxNode) => boolean {
-  const insideFunction = new Map<number, boolean>();
-  const isInsideFunction = (node: SyntaxNode): boolean => {
-    const path: number[] = [];
-    let answer = false;
-    for (let up = node.parent; up !== null; up = up.parent) {
-      if (up.type === 'function_definition') {
-        answer = true;
-        break;
-      }
-      const known = insideFunction.get(up.id);
-      if (known !== undefined) {
-        answer = known;
-        break;
-      }
-      path.push(up.id);
-    }
-    for (const id of path) insideFunction.set(id, answer);
-    return answer;
-  };
+  let indexedTree: SyntaxNode['tree'] | undefined;
+  const owners = new Set<number>();
   return (fn) => {
     if (fn.type !== 'function_definition') return false;
-    const parent = fn.parent;
-    if (parent !== null && rR6MethodClassName(parent) !== null) return false;
-    return !isInsideFunction(fn);
+    if (indexedTree !== fn.tree) {
+      indexedTree = fn.tree;
+      owners.clear();
+      const pending = [indexedTree.rootNode];
+      for (let parent = pending.pop(); parent !== undefined; parent = pending.pop()) {
+        for (const child of parent.namedChildren) {
+          if (child.type === 'function_definition') {
+            if (parent.type !== 'argument' || rR6MethodClassName(parent) === null)
+              owners.add(child.id);
+            // Its body and defaults inherit this frame, so skip the entire subtree.
+            continue;
+          }
+          pending.push(child);
+        }
+      }
+    }
+    return owners.has(fn.id);
   };
 }
 

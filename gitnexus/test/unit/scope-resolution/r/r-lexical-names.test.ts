@@ -3,10 +3,11 @@
  * scope as lexical names, which stop a call through them from reaching a top-level function of the
  * same name. This pins what is read from the tree and what is not.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import R from '@eagleoutice/tree-sitter-r';
 import { rFunctionLexicalNames } from '../../../../src/core/ingestion/languages/r/captures.js';
+import { createSelfOwnerClassifier } from '../../../../src/core/ingestion/languages/r/r6-self.js';
 import { extractParsedFile } from '../../../../src/core/ingestion/scope-extractor-bridge.js';
 import { rProvider } from '../../../../src/core/ingestion/languages/r.js';
 
@@ -19,6 +20,28 @@ function namesOf(source: string): string[] {
   const fn = tree.rootNode.descendantsOfType('function_definition')[0];
   return rFunctionLexicalNames(fn as never).sort();
 }
+
+describe('createSelfOwnerClassifier', () => {
+  it('classifies closures in bodies and defaults without searching upward from each function', () => {
+    const tree = parser.parse(
+      'outer <- function(f = function() 1) function() f()\nother <- function() 2',
+    );
+    const functions = tree.rootNode.descendantsOfType('function_definition');
+    expect(functions).toHaveLength(4);
+    const parentReads = functions.map((fn) => vi.spyOn(fn, 'parent', 'get'));
+    try {
+      const ownsSelf = createSelfOwnerClassifier();
+      // Query a closure before its enclosing function, as capture order can vary.
+      expect([...functions].reverse().map(ownsSelf)).toEqual([true, false, false, true]);
+      for (const read of parentReads) expect(read).not.toHaveBeenCalled();
+      const otherFile = parser.parse('nextFn <- function() 3');
+      expect(ownsSelf(otherFile.rootNode.descendantsOfType('function_definition')[0])).toBe(true);
+      expect(ownsSelf(functions[1])).toBe(false);
+    } finally {
+      for (const read of parentReads) read.mockRestore();
+    }
+  });
+});
 
 describe('rFunctionLexicalNames', () => {
   it('reads the named formals, with and without defaults, and not the dots', () => {
