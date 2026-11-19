@@ -23,7 +23,7 @@
  *
  * A formal may be spelled bare, in backticks or in quotes (`Class`, `` `Class` ``,
  * `"Class"`); all name the same argument. Partial matching of an abbreviated
- * name (`Cl = "A"`) is not modelled.
+ * name (`Cl = "A"`) is not modelled, so a possible abbreviation also rules out a positional guess.
  */
 
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
@@ -79,17 +79,19 @@ function namingUnnamedArgumentId(argumentList: SyntaxNode, formal: string): numb
   const cached = perTree.get(key);
   if (cached !== undefined) return cached;
 
-  // The first unnamed argument takes the formal, unless an argument anywhere in the
-  // list is spelled with it (R matches by name first), which retracts that choice.
+  // A name anywhere in the list can take the formal before R tries positional matching.
   let found: number | null = null;
   for (const child of argumentList.namedChildren) {
     if (child.type !== 'argument') continue; // comment, comma
     const name = child.childForFieldName('name');
     if (name === null) {
       found ??= child.id;
-    } else if (argumentNameText(name) === formal) {
-      found = null;
-      break;
+    } else {
+      const text = argumentNameText(name);
+      if (text.length > 0 && formal.startsWith(text)) {
+        found = null;
+        break;
+      }
     }
   }
   perTree.set(key, found);
@@ -124,7 +126,20 @@ export function getRMatchedArgument(
   }
   const remaining = formals.filter((formal) => !named.has(formal));
   const index = remaining.indexOf(target);
-  return index === -1 ? null : (unnamed[index] ?? null);
+  const positional = unnamed[index];
+  if (positional === undefined) return null;
+  // An abbreviation may consume this formal or shift an earlier positional argument into it.
+  const throughTarget = remaining.slice(0, index + 1);
+  for (const name of named) {
+    if (
+      name &&
+      !formals.includes(name) &&
+      throughTarget.some((formal) => formal.startsWith(name))
+    ) {
+      return null;
+    }
+  }
+  return positional;
 }
 
 /**
@@ -133,11 +148,7 @@ export function getRMatchedArgument(
  * variable that names the package. The provider models none of them, so a call that spells any
  * of them imports nothing (an edge the call cannot reach is worse than none).
  */
-const ATTACH_CHANGING_ARGUMENTS: ReadonlySet<string> = new Set([
-  'exclude',
-  'include.only',
-  'character.only',
-]);
+const ATTACH_CHANGING_ARGUMENTS = ['exclude', 'include.only', 'character.only'] as const;
 
 /** Per tree, per argument list: whether it spells one of {@link ATTACH_CHANGING_ARGUMENTS}. */
 const attachChangingLists = new WeakMap<object, Map<number, boolean>>();
@@ -158,7 +169,7 @@ function spellsAttachChangingArgument(argumentList: SyntaxNode): boolean {
     const argument = argumentNameText(name);
     if (argument === 'character.only' && child.childForFieldName('value')?.type === 'false')
       continue;
-    if (ATTACH_CHANGING_ARGUMENTS.has(argument)) {
+    if (argument && ATTACH_CHANGING_ARGUMENTS.some((formal) => formal.startsWith(argument))) {
       found = true;
       break;
     }

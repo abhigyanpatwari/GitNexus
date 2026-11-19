@@ -340,6 +340,8 @@ describe('R_QUERIES: documented argument-matching limits', () => {
   it.each([
     ['setClass', 'setClass(Cla = "D")'],
     ['setRefClass', 'setRefClass(Cla = "A")'],
+    ['setClass with a positional argument', 'setClass(Cl = "A", "B")'],
+    ['setRefClass after a positional argument', 'setRefClass("B", `Cl` = "A")'],
   ])('does not recognise a partial argument name in %s', (_label, source) => {
     expect(definitions(source)).toEqual([]);
   });

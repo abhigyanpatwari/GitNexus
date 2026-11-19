@@ -35,6 +35,11 @@ describe('R scope query: imports name only their first argument', () => {
     expect(importSources('source("a.R")')).toEqual(['"a.R"']);
   });
 
+  it('leaves the source unresolved when an abbreviation can consume its position', () => {
+    expect(importSources('library(pack = pkg, "Wrong")')).toEqual([]);
+    expect(importSources('source("Wrong.R", fi = target)')).toEqual([]);
+  });
+
   it('does not import a later argument', () => {
     expect(importSources('library(pkg, lib.loc = lib)')).toEqual(['pkg']);
     expect(importSources('source("a.R", local = env)')).toEqual(['"a.R"']);
@@ -67,6 +72,8 @@ describe('R scope query: imports name only their first argument', () => {
 describe('R scope query: library() arguments that change what is attached', () => {
   it('imports nothing when exclude, include.only or character.only is spelled', () => {
     expect(importSources('library(pkg, exclude = f)')).toEqual([]);
+    expect(importSources('library(pkg, excl = f)')).toEqual([]);
+    expect(importSources('require(pkg, char = TRUE)')).toEqual([]);
     expect(importSources('library(pkg, exclude = c("f", "g"))')).toEqual([]);
     expect(importSources('require(pkg, include.only = "f")')).toEqual([]);
     expect(importSources('library(pkg, character.only = TRUE)')).toEqual([]);
@@ -86,6 +93,11 @@ describe('R scope query: setClass declares only its naming argument', () => {
   it('declares the class from the first argument (positive control)', () => {
     expect(classNames('setClass("A", contains = "VIRTUAL")')).toEqual(['A']);
     expect(classNames('setRefClass("R", contains = "Base")')).toEqual(['R']);
+  });
+
+  it('leaves an abbreviated class unresolved in either argument order', () => {
+    expect(classNames('setClass(Cl = "A", "B")')).toEqual([]);
+    expect(classNames('setRefClass("B", `Cla` = "A")')).toEqual([]);
   });
 
   it('declares a lowercase class name (positive controls)', () => {

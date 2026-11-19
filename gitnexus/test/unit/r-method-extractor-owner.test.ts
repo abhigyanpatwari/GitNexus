@@ -83,6 +83,11 @@ describe('R method extractor: setMethod owner is the signature argument', () => 
     expect(methodOwner(source)).toBe(owner);
   });
 
+  it('declines an abbreviated signature and keeps positional owners ahead of other abbreviations', () => {
+    expect(methodOwner('setMethod("show", sig = "Foo", "Wrong")')).toBeNull();
+    expect(methodOwner('setMethod("show", "Foo", def = function(object) 1)')).toBe('Foo');
+  });
+
   it('names no owner when the signature is not a string or a literal signature call', () => {
     expect(methodOwner('setMethod("show", sig, function(object) 1)')).toBeNull();
     expect(methodOwner('setMethod("show", signature(cls), function(object) 1)')).toBeNull();
