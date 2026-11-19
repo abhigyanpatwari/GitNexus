@@ -44,7 +44,6 @@ describe('R rename: a body assignment that may shadow the renamed function', () 
     ['`=`', 'use <- function(x) { helper = identity; helper(x) }'],
     ['a right assignment', 'use <- function(x) { identity -> helper; helper(x) }'],
     ['a computed value', 'use <- function(x) { helper <- pick(x); x }'],
-    ['NULL', 'use <- function(x) { helper <- NULL; x }'],
     ['a complex target', 'use <- function(x) { helper$a <- 1; x }'],
     [
       'a nested function',
@@ -57,6 +56,7 @@ describe('R rename: a body assignment that may shadow the renamed function', () 
   it.each([
     ['a function literal', 'use <- function(x) { helper <- function(y) 1; helper(x) }'],
     ['a function literal, no call', 'use <- function(x) { helper <- function(y) 1; x }'],
+    ['NULL', 'use <- function(x) { helper <- NULL; x }'],
     ['a constant', 'use <- function(x) { helper <- 2; helper(x) }'],
     ['no assignment', 'use <- function(x) helper(x)'],
     ['another name', 'use <- function(x) { other <- identity; helper(x) }'],

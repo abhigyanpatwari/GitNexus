@@ -96,8 +96,9 @@ describe('rFunctionLexicalNames: ordinary assignments', () => {
     expect(namesOf('f <- function() { a <- -1; b <- NA; c <- Inf; d <- \\(z) z }')).toEqual([]);
   });
 
-  it('keeps NULL as a binding: it is the placeholder of an optional callback', () => {
-    expect(namesOf('f <- function() { a <- NULL }')).toEqual(['a']);
+  it('distinguishes a literal NULL assignment from a formal with a NULL default', () => {
+    expect(namesOf('f <- function() { a <- NULL }')).toEqual([]);
+    expect(namesOf('f <- function(a = NULL) { a() }')).toEqual(['a']);
   });
 
   it('reads the base identifier of a complex target, never the called name', () => {

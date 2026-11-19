@@ -7,7 +7,7 @@ import { MAX_CHAIN_DEPTH } from '../../utils/call-analysis.js';
 import { encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
-import { rLexicalAssignedNames, rReplacementCallTest, rSetterName } from './assignment.js';
+import { collectRFrameNames, rReplacementCallTest, rSetterName } from './assignment.js';
 import { rConstructorAnchorTest } from './receiver-agreement.js';
 import {
   createSelfOwnerClassifier,
@@ -18,12 +18,8 @@ import {
 } from './r6-self.js';
 
 /**
- * Emit R scope captures — a single tree-sitter query run against the R
- * grammar (see `query.ts` for the capture shapes and the rationale for each
- * one). No programmatic enrichment is needed: unlike C/Zig/Rust, R's
- * declarations carry no synthesized arity/parameter metadata, and heritage
- * sites resolve directly by name (no marker encoding, unlike Ruby's
- * `include`/`extend`/`prepend`).
+ * Run the R scope query and attach lexical names, receiver ownership and constructor evidence.
+ * Use the block spans from the query to keep assignments in their owning frame.
  */
 export function emitRScopeCaptures(
   sourceText: string,
@@ -38,6 +34,12 @@ export function emitRScopeCaptures(
   }
 
   const rawMatches = getRScopeQuery().matches(tree.rootNode);
+  const blockScopes = new Set<number>();
+  for (const match of rawMatches) {
+    for (const capture of match.captures) {
+      if (capture.name === 'scope.block') blockScopes.add(capture.node.id);
+    }
+  }
   const out: CaptureMatch[] = [];
   // A file that binds `self` itself (`self <- Foo$new()` at top level) has a variable of that name
   // for its free functions to read, so they do not own `self`.
@@ -73,6 +75,15 @@ export function emitRScopeCaptures(
       if (tag === '@reference.call.free') freeCallNode = c.node;
       if (tag === '@reference.receiver' && c.node.type !== 'identifier') chainedReceiver = c.node;
       if (tag === '@type-binding.constructor') constructorAnchor = c.node;
+      if (tag === '@scope.module' || tag === '@scope.block') {
+        const names = collectRFrameNames(c.node, blockScopes);
+        if (names.size > 0)
+          grouped['@scope.lexical-names'] = syntheticCapture(
+            '@scope.lexical-names',
+            c.node,
+            JSON.stringify([...names]),
+          );
+      }
       if (tag === '@scope.module' && c.node.type === 'program' && !bindsSelf) {
         grouped['@receiver-owner.self'] = syntheticCapture('@receiver-owner.self', c.node, 'self');
       }
@@ -99,7 +110,7 @@ export function emitRScopeCaptures(
     // through one of them stops the lexical walk there instead of reaching a top-level function
     // of the same name.
     if (functionNode !== undefined) {
-      const names = rFunctionLexicalNames(functionNode);
+      const names = rFunctionLexicalNames(functionNode, blockScopes);
       if (names.length > 0) {
         grouped['@scope.lexical-names'] = syntheticCapture(
           '@scope.lexical-names',
@@ -225,7 +236,7 @@ function recordAsSetterCall(grouped: Record<string, Capture>, call: SyntaxNode):
  * per function, so the work over a file is linear in its size; the walk is iterative because a
  * body can nest deeply.
  */
-export function rFunctionLexicalNames(fn: SyntaxNode): string[] {
+export function rFunctionLexicalNames(fn: SyntaxNode, blockScopes?: ReadonlySet<number>): string[] {
   const names = new Set<string>();
   const parameters = fn.childForFieldName('parameters');
   if (parameters !== null) {
@@ -237,21 +248,7 @@ export function rFunctionLexicalNames(fn: SyntaxNode): string[] {
       names.add(name.text);
     }
   }
-  for (const assigned of rLexicalAssignedNames(fn)) names.add(assigned);
-  const stack: SyntaxNode[] = [];
-  const body = fn.childForFieldName('body');
-  if (body !== null) stack.push(body);
-  for (let node = stack.pop(); node !== undefined; node = stack.pop()) {
-    if (node.type === 'function_definition') continue;
-    if (node.type === 'for_statement') {
-      const variable = node.childForFieldName('variable');
-      if (variable?.type === 'identifier' && variable.text.length > 0) names.add(variable.text);
-    }
-    for (let i = node.namedChildCount - 1; i >= 0; i--) {
-      const child = node.namedChild(i);
-      if (child !== null) stack.push(child);
-    }
-  }
+  for (const name of collectRFrameNames(fn, blockScopes)) names.add(name);
   return [...names];
 }
 

@@ -30,8 +30,7 @@ const CONSTANT_VALUE_TYPES: ReadonlySet<string> = new Set([
 
 /**
  * Whether `node` is a constant that can never be a function: a number, a string, `TRUE`/`FALSE`,
- * `NA`, `Inf`, `NaN` or a signed number (`-1`, `+2`). `NULL` is not one: it is the usual
- * placeholder of an optional callback (`helper = NULL`), so a name holding it may hold a function.
+ * `NA`, `Inf`, `NaN` or a signed number (`-1`, `+2`). Callers handle `NULL` separately.
  */
 export function isRConstantValue(node: SyntaxNode): boolean {
   if (CONSTANT_VALUE_TYPES.has(node.type)) return true;
@@ -71,10 +70,10 @@ export function rBoundName(node: SyntaxNode): string | null {
  *    call resolves to it), so it is not a lexical name here;
  *  - a constant (`isRConstantValue`) is skipped by R at a call, which then reaches the outer
  *    function, so it is not either;
- *  - everything else (an identifier, a call, anything computed, `NULL`) may hold a function.
+ *  - a literal `NULL` is also skipped. An identifier, a call or a computed value may hold a function.
  */
 export function isLexicalAssignment(value: SyntaxNode): boolean {
-  return value.type !== 'function_definition' && !isRConstantValue(value);
+  return value.type !== 'function_definition' && value.type !== 'null' && !isRConstantValue(value);
 }
 
 /** The first argument of a call node (`x` of `names(x)`), or null when there is none. */
@@ -153,24 +152,39 @@ const lexicalAssigned = new WeakMap<SyntaxNode['tree'], Map<number, ReadonlySet<
  * `->>` assign outward; `assign()`, `delayedAssign()`, `list2env()`, `local()` and `with()` are not
  * modelled (`local({ x <- f })` is read as an assignment in this frame, which only costs an edge).
  *
- * The one implementation behind both the call side (`rFunctionLexicalNames`) and the rename guard
- * (`checkSafety`), so the two cannot drift apart.
+ * The rename guard conservatively includes nested blocks when looking for a conflicting write.
+ * Call resolution passes its captured block boundaries to the same assignment walker.
  */
 export function rLexicalAssignedNames(fn: SyntaxNode): ReadonlySet<string> {
   let byFunction = lexicalAssigned.get(fn.tree);
   if (byFunction === undefined) lexicalAssigned.set(fn.tree, (byFunction = new Map()));
   const known = byFunction.get(fn.id);
   if (known !== undefined) return known;
+  const names = collectRFrameNames(fn, undefined, false);
+  byFunction.set(fn.id, names);
+  return names;
+}
+
+/** Names bound in this frame. A captured block or function nested inside it owns its assignments. */
+export function collectRFrameNames(
+  frame: SyntaxNode,
+  blockScopes?: ReadonlySet<number>,
+  includeLoopVariables = true,
+): Set<string> {
+  const root = frame.type === 'function_definition' ? frame.childForFieldName('body') : frame;
   const names = new Set<string>();
-  const body = fn.childForFieldName('body');
-  const pending = body === null ? [] : [body];
+  const pending = root === null ? [] : [root];
   for (let node = pending.pop(); node !== undefined; node = pending.pop()) {
-    if (node.type === 'function_definition') continue;
-    const bound = lexicalAssignmentOf(node);
-    if (bound !== null) names.add(bound);
+    if (node.type === 'function_definition' || (node.id !== frame.id && blockScopes?.has(node.id)))
+      continue;
+    if (includeLoopVariables && node.type === 'for_statement') {
+      const variable = node.childForFieldName('variable');
+      if (variable?.type === 'identifier') names.add(variable.text);
+    }
+    const assigned = lexicalAssignmentOf(node);
+    if (assigned !== null) names.add(assigned);
     for (const child of node.namedChildren) pending.push(child);
   }
-  byFunction.set(fn.id, names);
   return names;
 }
 

@@ -125,14 +125,16 @@ describe('a top-level assignment in the caller file (r-assignment-locals-module,
       .filter((e) => e.source === source && e.sourceFilePath === file)
       .map((e) => `${e.rel.targetId}:${e.rel.reason}:${e.rel.confidence}`);
 
-  it.each([
-    ['d10 helper <- identity', 'd10_f', 'R/d2.R'],
-    [
-      'd14 helper <- 5 (a constant: the outer function is the right target here)',
-      'd14_f',
-      'R/d3.R',
-    ],
-  ])('%s: the unique-name guess reaches the function of another file', (_label, caller, file) => {
-    expect(guesses(caller, file)).toEqual(['Function:R/d1.R:helper:global-name-fallback:0.5']);
+  it('a file-level function alias shadows the function in another file', () => {
+    expect(guesses('d10_f', 'R/d2.R')).toEqual([]);
+  });
+
+  it('a constant permits R to continue looking for a callable', () => {
+    expect(guesses('d14_f', 'R/d3.R')).toEqual(['Function:R/d1.R:helper:global-name-fallback:0.5']);
+  });
+
+  it('a local block owns its alias while sibling blocks can still reach the outer function', () => {
+    expect(guesses('inside', 'R/d4.R')).toEqual([]);
+    expect(guesses('outside', 'R/d4.R')).toEqual(['Function:R/d4.R:outer:local-call:0.85']);
   });
 });
