@@ -63,9 +63,11 @@ import {
  * One resolved call edge from the `CALLS` graph. The join to a summary's
  * call-arg edge is by CALLEE NAME (the callee node's declared name), NOT by
  * call-site line — line-base parity between the CFG harvest (1-based) and the
- * reference site is fragile, while the callee identity is exact and the
- * context-insensitive model tatints the callee's parameter the same way at
- * every call site to it.
+ * reference site is fragile, and the context-insensitive model taints the
+ * callee's parameter the same way at every call site to it. A name is not an
+ * identity: when one caller has edges to two distinct callees that share a
+ * name, a call-arg edge with that name joins both, and the flow is reported
+ * for each (an over-report, never a missed flow).
  */
 export interface InterprocCallEdge {
   readonly callerId: string;
@@ -106,7 +108,7 @@ export interface InterprocResult {
   readonly findings: readonly InterprocFinding[];
   /** Findings dropped by `maxFindings` (post-dedup). */
   readonly droppedFindings: number;
-  /** Call edges whose call-site line matched no summary edge (diagnostics). */
+  /** Summary call-arg edges that matched no outgoing `CALLS` edge of their caller (diagnostics). */
   readonly unmatchedCallSites: number;
 }
 
