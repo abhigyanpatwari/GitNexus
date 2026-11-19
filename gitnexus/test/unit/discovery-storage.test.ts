@@ -129,8 +129,14 @@ it('a later page reads the replacement while the older metadata parse is pending
   await writeMetadata(primary, { contentRetention: 'full' });
   const replacement = path.join(slot, 'replacement');
   await writeMetadata(replacement, { contentRetention: 'none' });
-  const { promise: blocked, resolve: release } = Promise.withResolvers<void>();
-  const { promise: started, resolve: announce } = Promise.withResolvers<void>();
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let announce!: () => void;
+  const started = new Promise<void>((resolve) => {
+    announce = resolve;
+  });
   const realRead = fs.readFile.bind(fs) as typeof fs.readFile;
   const read = vi.spyOn(fs, 'readFile').mockImplementationOnce(async (...args) => {
     // Keep the descriptor's bytes but delay its result. Windows does not
