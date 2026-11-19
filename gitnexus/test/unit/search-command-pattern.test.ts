@@ -72,12 +72,15 @@ describe('searchCommandPattern', () => {
 
   // bash expands an unquoted `{a,b}` or `{1..3}` into several words, so a query
   // written that way is not the one rg or grep receives.
-  it.each(['rg {foo,bar} src', 'rg foo{1..3} src', 'rg -e {a,b} src'])(
-    'reads no query from the brace expansion in %j',
-    (command) => {
-      expect(searchCommandPattern(command)).toBeNull();
-    },
-  );
+  it.each([
+    'rg {foo,bar} src',
+    'rg foo{1..3} src',
+    'rg -e {a,b} src',
+    // --glob takes `foo`, and `bar` becomes the query.
+    'rg --glob {foo,bar} UserService src',
+  ])('reads no query from the brace expansion in %j', (command) => {
+    expect(searchCommandPattern(command)).toBeNull();
+  });
 
   // A leading unquoted `~` is the home folder. bash expands `~`, `~/x` and
   // `~user`. PowerShell 7.6 and later expand `~`, `~/x` and `~\x` for native
@@ -147,9 +150,14 @@ describe('searchCommandPattern', () => {
       'rg {UserService} src',
       'rg @arguments',
       'rg "partial $QUERY" src',
-      'rg partial`$ src',
     ])('reads no query from %j, which the shell computes', (command) => {
       expect(inPowerShell(command)).toBeNull();
+    });
+
+    // A backtick escapes the next character, so this passes the literal
+    // `partial$`. The helper does not read escapes and declines the line.
+    it('declines a backtick escape', () => {
+      expect(inPowerShell('rg partial`$ src')).toBeNull();
     });
   });
 

@@ -225,6 +225,9 @@ function extractSearchCommandPattern(tokens, expanded = new Set()) {
   for (let at = 1; at < tokens.length; at++) {
     const token = tokens[at];
     if (pending) {
+      // An expanded option value (`--glob {a,b}`) may be several words, so the
+      // words after it shift and the query is not the one written.
+      if (expanded.has(at)) return null;
       if (pending === 'pattern') explicit(token, at);
       pending = null;
       continue;
