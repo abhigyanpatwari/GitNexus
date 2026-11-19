@@ -213,10 +213,12 @@ function parseRgGrepPattern(cmd) {
     }
     if (!foundCmd) {
       // After a wrapper such as `env` or `sudo`, `NAME=value` is an assignment
-      // that wrapper reads, quoted or not. A substituted or array value is
-      // computed by the shell, so the line has no reliable query.
+      // that wrapper reads, quoted or not. It is an ordinary argument to the
+      // shell, which splits a `$NAME` value on blanks and computes a
+      // substitution, so a value with `$`, a backtick or parentheses leaves no
+      // reliable query.
       if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
-        if (/\$(?![A-Za-z_])|[`()]/.test(token)) return null;
+        if (/[$`()]/.test(token)) return null;
         continue;
       }
       const commandName = basename(token);

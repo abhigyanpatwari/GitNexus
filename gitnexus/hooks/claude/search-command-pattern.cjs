@@ -8,8 +8,12 @@
  * another directory (`cd src && rg x`), and the line alone does not say which,
  * so none of them is taken as a code search. In bash, variable assignments
  * before the command (`NO_COLOR=1 rg x`) belong to it. A query that cannot be
- * read reliably (a shell expansion, an unknown option, a pattern file) gives
- * none.
+ * read reliably (an expansion the shell always performs, such as `$x`, `{a,b}`
+ * or a leading `~`; an unknown option; a pattern file) gives none. An unquoted
+ * glob (`*`, `?`, `[...]`) is read as written: bash leaves it unchanged unless
+ * a file in the working directory matches, and declining it would also drop
+ * regex searches such as `rg handle.*Request src`. The reading is best effort:
+ * it never changes the command, it only decides whether to add graph context.
  *
  * The Cursor and Factory adapters keep their own parser in their hook file,
  * since their installs do not carry the Claude helpers, and the OpenCode

@@ -1202,6 +1202,8 @@ describe('Shell quoted-pattern parser', () => {
     // An assignment value the shell computes leaves no reliable query.
     ['A=$(true rg UserService src)'],
     ['env A=$(true rg UserService src)'],
+    // After a wrapper the shell splits a `$NAME` value on blanks.
+    ['env A=$ARGS rg UserService src/'],
     ['ARGS=( rg UserService src )'],
     // A quoted `'A=foo'` is a command name, not an assignment.
     ["'A=foo' rg UserService src"],

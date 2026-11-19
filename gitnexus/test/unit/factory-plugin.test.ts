@@ -319,6 +319,7 @@ describe('Factory Execute pattern parser', () => {
     ['rg UserService src\necho done', 'UserService'],
     // An assignment value the shell computes leaves no reliable query.
     ['A=$(true rg UserService src)', null],
+    ['env A=$ARGS rg UserService src', null],
     ["'A=foo' rg UserService src", null],
     // -f reads patterns from a file; later positionals are paths.
     ['rg -f patterns.txt src/', null],
