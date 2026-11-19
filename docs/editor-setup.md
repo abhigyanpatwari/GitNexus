@@ -20,7 +20,9 @@
 
 > **Relocated Claude Code config:** if `CLAUDE_CONFIG_DIR` is set, `gitnexus setup` and `gitnexus uninstall` use it the way Claude Code does — the MCP entry goes to `$CLAUDE_CONFIG_DIR/.claude.json` and skills, hooks and `settings.json` under `$CLAUDE_CONFIG_DIR` — instead of `~/.claude.json` and `~/.claude/`. Run them from a shell where the variable has the value Claude Code sees.
 
-> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query. Of the three, only **Antigravity** also carries the stale-index hint[¹](#fn-antigravity-hooks).
+
+> In Claude Code, Codex and Antigravity the stale-index hint follows `git -C <dir>`: it checks the index of the repository the command ran in, and names that checkout when the agent works in another one.
 
 OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search results and adds a stale-index hint after git mutations. The integration is verified with OpenCode 1.19.5; OpenCode v2 uses a different plugin API.
 
