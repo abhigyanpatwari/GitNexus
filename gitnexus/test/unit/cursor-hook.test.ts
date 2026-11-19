@@ -1141,7 +1141,6 @@ describe('Shell quoted-pattern parser', () => {
     [String.raw`C:\Users\me\bin\rg.exe UserService src/`, 'UserService'],
     ['rg.exe "validateUser" src/', 'validateUser'],
     ['grep.cmd -e LongPattern src/', 'LongPattern'],
-    ['cd grep && rg LongPattern src/', 'LongPattern'],
     ['npx rg "User Service" src/', 'User Service'],
     ['npx --yes rg UserService src/', 'UserService'],
     ['npx --package rg grep LongPattern src/', 'LongPattern'],
@@ -1163,6 +1162,12 @@ describe('Shell quoted-pattern parser', () => {
     ['rg --file=patterns.txt src/'],
     ['rg -eab src/'],
     ['sudo echo rg UserService src/'],
+    // #3899: a search after an operator does not search the repository.
+    ['cd grep && rg LongPattern src/'],
+    ["sed -i '' 's/old text/new text/' notes.md && grep -c 'direct tool' notes.md"],
+    ['git log --oneline | grep UserService'],
+    ['cat notes.md; grep UserService src'],
+    ['ls src || rg UserService src'],
   ])('extracts no pattern from %j', (command) => {
     expect(parseRgGrepPattern(command)).toBeNull();
   });

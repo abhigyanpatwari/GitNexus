@@ -489,6 +489,7 @@ const HOOK_HELPERS = [
   'resolve-analyze-cmd.cjs',
   'registry-query.cjs',
   'git-mutation-command.cjs',
+  'search-command-pattern.cjs',
 ] as const;
 
 // Only names copied by the former Claude/Codex installer belong to this

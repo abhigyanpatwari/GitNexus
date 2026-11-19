@@ -24,11 +24,13 @@
 
 > In Claude Code, Codex and Antigravity the stale-index hint follows `git -C <dir>`: it checks the index of the repository the command ran in, and names that checkout when the agent works in another one.
 
+> In every editor, a shell search gets graph context only when `rg` or `grep` is the first command. A search after `&&`, `;` or `|`, such as `cd src && rg UserService .` or `git log | grep fix`, runs normally but receives no graph augmentation.
+
 OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search results and adds a stale-index hint after git mutations. The integration is verified with OpenCode 1.19.5; OpenCode v2 uses a different plugin API.
 
 For Bash tools, the hooks recognize literal commands and known options; ambiguous shell constructs are skipped. Stale-index hints concern the current OpenCode project.
 
-Bash search augmentation requires `rg` or `grep` to be the first command. A search preceded by `cd`, such as `cd src && rg UserService .`, runs normally but receives no graph augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to get graph context.
+To get graph context for a search, use a direct search command or OpenCode's `grep`/`glob` tools.
 
 <a id="fn-antigravity-hooks"></a>
 

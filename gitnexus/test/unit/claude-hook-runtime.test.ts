@@ -285,6 +285,28 @@ describe('Claude hook literal Bash search patterns', () => {
   ])('declines an empty, malformed, or expanded argument in %s', (command) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
   });
+
+  // #3899: only a search that starts the line searches the repository.
+  it.each([
+    "sed -i '' 's/old text/new text/' notes.md && grep -c 'direct `tool' notes.md",
+    'git log --oneline | grep UserService',
+    'cd src && rg UserService',
+  ])('declines a search after a shell operator in %s', (command) => {
+    expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
+  });
+
+  // Codex runs its Bash tool in PowerShell on Windows, so the query must read
+  // the same in both shells there.
+  it('reads the query only when bash and PowerShell agree on win32', () => {
+    const runtime = loadRuntime({ platform: 'win32' });
+    expect(runtime.extractPattern('Bash', { command: 'rg "user service" src' })).toBe(
+      'user service',
+    );
+    expect(runtime.extractPattern('Bash', { command: String.raw`rg C:\Users src` })).toBeNull();
+    expect(loadRuntime().extractPattern('Bash', { command: String.raw`rg C:\Users src` })).toBe(
+      'C:Users',
+    );
+  });
 });
 
 describe('Claude hook package ownership', () => {

@@ -30,6 +30,7 @@ const {
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
+const { searchCommandPattern } = require('./search-command-pattern.cjs');
 const { resolveHookRepo } = (() => {
   // Installed copies get helpers next to this adapter. The in-tree source
   // tree only ships the adapter, so fall back to the Claude helper copies.
@@ -105,44 +106,7 @@ function extractPattern(toolName, toolInput) {
   }
 
   if (toolName === 'run_shell_command') {
-    const cmd = toolInput.command || '';
-    if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
-
-    const tokens = cmd.split(/\s+/);
-    let foundCmd = false;
-    let skipNext = false;
-    const flagsWithValues = new Set([
-      '-e',
-      '-f',
-      '-m',
-      '-A',
-      '-B',
-      '-C',
-      '-g',
-      '--glob',
-      '-t',
-      '--type',
-      '--include',
-      '--exclude',
-    ]);
-
-    for (const token of tokens) {
-      if (skipNext) {
-        skipNext = false;
-        continue;
-      }
-      if (!foundCmd) {
-        if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
-        continue;
-      }
-      if (token.startsWith('-')) {
-        if (flagsWithValues.has(token)) skipNext = true;
-        continue;
-      }
-      const cleaned = token.replace(/['"]/g, '');
-      return cleaned.length >= 3 ? cleaned : null;
-    }
-    return null;
+    return searchCommandPattern(toolInput.command, SHELL);
   }
 
   return null;

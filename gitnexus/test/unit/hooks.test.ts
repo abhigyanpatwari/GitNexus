@@ -628,10 +628,19 @@ describe('extractPattern coverage', () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain("toolName === 'Glob'");
     });
+  }
 
-    it(`${label} hook extracts pattern from Bash grep/rg commands`, () => {
+  // Both adapters read shell searches through the shared helper. The commands
+  // themselves are covered in search-command-pattern.test.ts.
+  for (const [label, hookPath, shell] of [
+    ['CJS', CJS_RUNTIME, 'BASH_TOOL_SHELL'],
+    ['Antigravity', ANTIGRAVITY_HOOK, 'SHELL'],
+  ] as const) {
+    it(`${label} hook reads shell searches through the shared helper`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toMatch(/\\brg\\b.*\\bgrep\\b/);
+      expect(source).toContain("require('./search-command-pattern.cjs')");
+      expect(source).toContain(`searchCommandPattern(toolInput.command, ${shell})`);
+      expect(source).not.toMatch(/\\brg\\b.*\\bgrep\\b/);
     });
   }
 });
@@ -1588,6 +1597,7 @@ describe.skipIf(process.platform === 'win32')(
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
         'git-mutation-command.cjs',
+        'search-command-pattern.cjs',
         'win-rm-list-json.ps1',
       ]) {
         fs.copyFileSync(path.join(claudeHooksDir, helper), path.join(stageDir, helper));
@@ -1915,6 +1925,7 @@ describe.skipIf(process.platform !== 'linux')(
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
         'git-mutation-command.cjs',
+        'search-command-pattern.cjs',
       ]) {
         fs.copyFileSync(path.join(hookSrcDir, f), path.join(stagedDir, f));
       }
@@ -2240,6 +2251,42 @@ describe('PreToolUse augmentation filtering (integration)', () => {
         expect(output!.hookEventName).toBe('PreToolUse');
         expect(output!.additionalContext).toContain('[GitNexus] 1 related symbol found');
       } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
+    // #3899: a grep after `&&` counts matches in a file, it is no code search.
+    it(`${label}: queries the graph only for a Bash search that starts the line`, () => {
+      const markerPath = path.join(os.tmpdir(), 'gn-hook-bash-search-' + process.pid + '-' + label);
+      const binDir = createHookToolDir({
+        gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+        gitnexusMarkerPath: markerPath,
+      });
+      const run = (command: string) =>
+        runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: hookEnv(binDir) },
+        );
+      try {
+        fs.rmSync(markerPath, { force: true });
+        const filter = run("sed -i '' 's/a/b/' notes.md && grep -c 'validateUser' notes.md");
+        expect(parseHookOutput(filter.stdout)).toBeNull();
+        expect(fs.existsSync(markerPath)).toBe(false);
+
+        const search = run('rg validateUser src');
+        expect(parseHookOutput(search.stdout)!.additionalContext).toContain(
+          '[GitNexus] 1 related symbol found',
+        );
+        expect(fs.existsSync(markerPath)).toBe(true);
+      } finally {
+        fs.rmSync(markerPath, { force: true });
         fs.rmSync(binDir, { recursive: true, force: true });
       }
     });

@@ -137,7 +137,6 @@ function parseRgGrepPattern(cmd) {
   ]);
   const rgValueFlags = new Set(['-r', '--replace']);
   const patternFlags = new Set(['-e', '--regexp']);
-  const connectors = new Set(['&&', '||', ';', '|', '&']);
   const wrappers = new Set([
     'npx',
     'bunx',
@@ -172,7 +171,6 @@ function parseRgGrepPattern(cmd) {
       .pop()
       ?.replace(/\.(exe|cmd|bat)$/i, '');
 
-  let previousToken;
   let seenWrapper = false;
   let searchCommand = null;
   for (const token of tokens) {
@@ -182,46 +180,28 @@ function parseRgGrepPattern(cmd) {
         skipNextAsPattern = false;
         if (token.length >= 3) return token;
       }
-      previousToken = token;
       continue;
     }
     if (!foundCmd) {
-      if (connectors.has(token)) {
-        seenWrapper = false;
-        previousToken = token;
-        continue;
-      }
       const commandName = basename(token);
       if (wrappers.has(commandName)) {
         seenWrapper = true;
-        previousToken = token;
         continue;
       }
       if (seenWrapper && token.startsWith('-')) {
         const flagName = token.split('=', 1)[0];
         if (!token.includes('=') && wrapperFlagsWithValues.has(flagName)) skipNext = true;
-        previousToken = token;
         continue;
       }
-      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
-        previousToken = token;
-        continue;
-      }
-      const atCommandPosition =
-        previousToken === undefined ||
-        connectors.has(previousToken) ||
-        wrappers.has(basename(previousToken)) ||
-        seenWrapper;
-      if (atCommandPosition && (commandName === 'rg' || commandName === 'grep')) {
-        foundCmd = true;
-        searchCommand = commandName;
-      } else if (seenWrapper) {
-        seenWrapper = false;
-      }
-      previousToken = token;
+      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+      // Only a search that starts the line is read. One after `&&`, `;` or `|`
+      // reads a file the command names or the output of the command before
+      // it, not the repository.
+      if (commandName !== 'rg' && commandName !== 'grep') return null;
+      foundCmd = true;
+      searchCommand = commandName;
       continue;
     }
-    previousToken = token;
     if (endOfOptions) {
       if (explicitPatternSeen || patternFileSeen) continue;
       return token.length >= 3 ? token : null;

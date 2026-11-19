@@ -289,6 +289,10 @@ describe('Factory Execute pattern parser', () => {
     ['rg ab src/', null],
     // rg/grep only counts at command position, not as an argument.
     ['echo rg UserService', null],
+    // #3899: nor after a shell operator, where it reads a file or a pipe.
+    ["sed -i '' 's/old text/new text/' notes.md && grep -c 'direct tool' notes.md", null],
+    ['git log --oneline | grep UserService', null],
+    ['cd src && rg UserService', null],
     // -f reads patterns from a file; later positionals are paths.
     ['rg -f patterns.txt src/', null],
     ['grep --file=patterns.txt src/', null],
