@@ -2974,7 +2974,10 @@ export class LocalBackend {
             : undefined,
           storagePath: h.storagePath,
           contentRetention,
-          sourceAvailable: contentRetention === 'full' && (await checkoutIsDirectory(h.repoPath)),
+          sourceAvailable: isFullSourceAvailable(
+            contentRetention,
+            contentRetention === 'full' && (await checkoutIsDirectory(h.repoPath)),
+          ),
         };
       },
       8,

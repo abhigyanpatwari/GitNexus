@@ -1766,7 +1766,7 @@ export async function listRegisteredRepos(opts?: {
         inspection.reason === 'Storage directory contains data but no valid ownership metadata.'));
   const inspections = await mapPool(
     entries,
-    discovery ? (entry) => inspectRegisteredStorage(entry, discovery) : inspectRegisteredStorage,
+    (entry) => inspectRegisteredStorage(entry, discovery),
     8,
   );
   for (const [entry, inspection] of entries.map(

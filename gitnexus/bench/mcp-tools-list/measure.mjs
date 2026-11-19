@@ -2,45 +2,16 @@
  * Build-free bench for unrestricted MCP `tools/list` with many registered
  * repos (#3259 / #3184 / #1363).
  *
- * WHY THIS EXISTS. `toolSchemaRepoRequirements` used to call
- * `listAllowedRepos()` → `listRepos()` → one `git rev-list` per registry row
- * (`checkStalenessAsync`). #1363 made that fan-out parallel (~50 s serial →
- * <1 s). #3259 removes it from schema introspection: `countRepos()` reads the
- * validated registry (`fs.access`, no git). Staleness git stays on
- * `list_repos`. Graph output and unit tests cannot see "we stopped spawning
- * git on tools/list" — putting `listRepos()` back still returns the same
- * tool roster and the same required-repo flags.
- *
- * ARMS:
- *
- * - `n_repos` / `count_repos` / `list_repos` — EXACT, and they are the FLOOR.
- *   The ratio arms only mean something while the corpus still pays N parallel
- *   `rev-list`s. Shrink it to three rows and both sides are cheap; the ratio
- *   can still pass while the property the bench claims to guard is gone.
- *
- * - `tools_listed` — EXACT. `listTools` must still return the full
- *   `GITNEXUS_TOOLS` roster. A schema path that errors or filters the set
- *   would otherwise hide behind a "fast" timing arm.
- *
- * - `schema_read_only_requires_repo` / `schema_mutating_requires_repo` —
- *   EXACT. On this unrestricted N-repo fixture there is no cwd default, so
- *   both flags must stay true. Skipping the cwd probe and advertising a
- *   single-repo schema would pass every timing arm.
- *
- * - `count_vs_listRepos_ratio` — UPPER timing arm, a RATIO not a millisecond
- *   ceiling. `countRepos_ms / listRepos_ms`. Putting staleness git back on
- *   `countRepos` collapses this toward 1. Wall-clock is runner-speed-
- *   dependent; this repo has already been bitten by a fixed ms budget.
- *
- * - `listTools_vs_listRepos_ratio` — UPPER timing arm. The user-visible
- *   `tools/list` path over the old `listRepos()` hot path. Restoring
- *   `listRepos()` on schema introspection collapses this toward 1+.
+ * Discovery and schema introspection both skip per-repository Git freshness.
+ * Compare each operation to the former workload: one concurrent rev-list per
+ * fixture repository. Every control read must confirm that its index is at HEAD.
+ * Separately check that counting and schema introspection never request a listing.
  *
  * Isolated `GITNEXUS_HOME` — never touches `~/.gitnexus`. Also clears
  * `GITNEXUS_MCP_ALLOWED_REPOS`, `GITNEXUS_MCP_DEFAULT_REPO`, and
  * `GITNEXUS_MCP_READ_ONLY` so the invoking shell cannot shrink the roster.
  * Each fixture row is a real git repo whose `lastCommit` matches HEAD, so
- * `listRepos()` pays `rev-list` instead of failing open. The default root is
+ * the control performs a real revision comparison. The default root is
  * `mkdtempSync`; set `BENCH_ROOT` to reuse a tree across local runs.
  *
  * Usage:
@@ -48,11 +19,14 @@
  *   node --import tsx bench/mcp-tools-list/measure.mjs --check
  *   BENCH_REPOS=3 node --import tsx bench/mcp-tools-list/measure.mjs   # report only
  */
-import { execFileSync } from 'node:child_process';
+import assert from 'node:assert/strict';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { mock } from 'node:test';
+import { promisify } from 'node:util';
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -67,6 +41,7 @@ const baselines = JSON.parse(readFileSync(new URL('./baselines.json', import.met
 
 const CHECK = process.argv.includes('--check');
 const PINNED_REPS = 7;
+const execFileAsync = promisify(execFile);
 
 function positiveInt(value, fallback) {
   const n = Number(value);
@@ -196,11 +171,46 @@ const backend = new LocalBackend();
 await backend.init();
 const policy = await createMcpRepositoryPolicy(backend);
 
-const countTimed = await fastest(() => backend.countRepos(), REPS);
+const rawRegistry = await listRegisteredRepos({ validate: false });
+assert.equal(rawRegistry.length, N, 'Git control must cover the entire fixture');
+const gitTimed = await fastest(
+  () =>
+    Promise.all(
+      rawRegistry.map(async (entry) => {
+        const { stdout } = await execFileAsync(
+          'git',
+          ['rev-list', '--left-right', '--count', `${entry.lastCommit}...HEAD`],
+          { cwd: entry.path, timeout: 10_000 },
+        );
+        assert.equal(
+          stdout.trim(),
+          '0\t0',
+          `Git control expected the indexed HEAD in ${entry.path}`,
+        );
+      }),
+    ),
+  REPS,
+);
 const listTimed = await fastest(() => backend.listRepos(), REPS);
+assert.deepEqual(
+  listTimed.last.map((repo) => repo.path).sort(),
+  rawRegistry.map((repo) => repo.path).sort(),
+);
+assert.ok(
+  listTimed.last.every((repo) => repo.staleness?.status === 'unknown'),
+  'discovery must report unknown freshness',
+);
+const listSpy = mock.method(backend, 'listRepos');
+const pageSpy = mock.method(backend, 'listReposPage');
+const countTimed = await fastest(() => backend.countRepos(), REPS);
 const listToolsTimed = await fastest(() => listToolsOnce(backend), REPS);
 const schema = await policy.toolSchemaRepoRequirements(backend);
-const rawRegistry = await listRegisteredRepos({ validate: false });
+assert.equal(
+  listSpy.mock.callCount() + pageSpy.mock.callCount(),
+  0,
+  'counting and schema introspection must skip repository listing',
+);
+mock.restoreAll();
 
 const countRepos = countTimed.last;
 const listRepos = listTimed.last.length;
@@ -208,8 +218,11 @@ const toolsListed = listToolsTimed.last;
 const countMs = countTimed.ms;
 const listReposMs = listTimed.ms;
 const listToolsMs = listToolsTimed.ms;
-const countRatio = listReposMs === 0 ? Infinity : countMs / listReposMs;
-const listToolsRatio = listReposMs === 0 ? Infinity : listToolsMs / listReposMs;
+const timingArms = [
+  ['count_vs_git', countMs],
+  ['listRepos_vs_git', listReposMs],
+  ['listTools_vs_git', listToolsMs],
+];
 
 console.log(`n_repos                      : ${N}  (expect ${baselines.n_repos})`);
 console.log(`count_repos                  : ${countRepos}  (expect ${baselines.count_repos})`);
@@ -223,14 +236,13 @@ console.log(
 console.log(
   `schema_mutating_requires_repo  : ${schema.mutatingRequiresRepo}  (expect ${baselines.schema_mutating_requires_repo})`,
 );
+for (const [name, ms] of timingArms) {
+  console.log(
+    `${name}_ratio: ${(ms / gitTimed.ms).toFixed(3)}  (budget <= ${baselines[`${name}_budget`]})`,
+  );
+}
 console.log(
-  `count_vs_listRepos_ratio     : ${countRatio.toFixed(3)}  (budget <= ${baselines.count_vs_listRepos_budget})`,
-);
-console.log(
-  `listTools_vs_listRepos_ratio : ${listToolsRatio.toFixed(3)}  (budget <= ${baselines.listTools_vs_listRepos_budget})`,
-);
-console.log(
-  `reps                       : ${REPS}   count ${countMs.toFixed(2)}ms / listRepos ${listReposMs.toFixed(2)}ms / listTools ${listToolsMs.toFixed(2)}ms / rawRegistry ${rawRegistry.length}`,
+  `reps                       : ${REPS}   count ${countMs.toFixed(2)}ms / listRepos ${listReposMs.toFixed(2)}ms / listTools ${listToolsMs.toFixed(2)}ms / git ${gitTimed.ms.toFixed(2)}ms`,
 );
 
 if (!CHECK) process.exit(0);
@@ -239,7 +251,7 @@ if (process.env.BENCH_REPOS && Number(process.env.BENCH_REPOS) !== baselines.n_r
   console.error(
     `\nFAIL BENCH_REPOS=${process.env.BENCH_REPOS} is ignored under --check.\n` +
       `  n_repos is pinned in baselines.json (${baselines.n_repos}). A smaller\n` +
-      `  corpus makes both timing arms cheap and the ratios stop measuring git.`,
+      `  corpus changes the Git control and its timing ratios.`,
   );
   process.exit(1);
 }
@@ -255,8 +267,6 @@ const nReposBudget = requireNumeric('n_repos');
 const countBudget = requireNumeric('count_repos');
 const listBudget = requireNumeric('list_repos');
 const toolsBudget = requireNumeric('tools_listed');
-const countRatioBudget = requireNumeric('count_vs_listRepos_budget');
-const listToolsRatioBudget = requireNumeric('listTools_vs_listRepos_budget');
 const readOnlyExpect = requireBoolean('schema_read_only_requires_repo');
 const mutatingExpect = requireBoolean('schema_mutating_requires_repo');
 
@@ -265,8 +275,6 @@ for (const got of [
   countBudget,
   listBudget,
   toolsBudget,
-  countRatioBudget,
-  listToolsRatioBudget,
   readOnlyExpect,
   mutatingExpect,
 ]) {
@@ -320,22 +328,11 @@ if (typeof mutatingExpect === 'boolean' && schema.mutatingRequiresRepo !== mutat
   );
 }
 
-if (Number.isFinite(countRatioBudget) && countRatio > countRatioBudget) {
-  fail(
-    `count_vs_listRepos_ratio: ${countRatio.toFixed(3)} exceeds ${countRatioBudget}.\n` +
-      `  countRepos should stay far cheaper than listRepos. A collapse toward 1.0\n` +
-      `  usually means staleness git is back on the count path.\n` +
-      `  Re-run on an idle machine before investigating, and check \`reps\` first.`,
-  );
-}
-
-if (Number.isFinite(listToolsRatioBudget) && listToolsRatio > listToolsRatioBudget) {
-  fail(
-    `listTools_vs_listRepos_ratio: ${listToolsRatio.toFixed(3)} exceeds ${listToolsRatioBudget}.\n` +
-      `  tools/list should stay cheaper than the old listRepos() hot path. A\n` +
-      `  collapse toward 1.0+ usually means schema introspection calls listRepos\n` +
-      `  again. Re-run on an idle machine before investigating, and check \`reps\`.`,
-  );
+for (const [name, ms] of timingArms) {
+  const budget = requireNumeric(`${name}_budget`);
+  const ratio = ms / gitTimed.ms;
+  if (typeof budget !== 'number') fail(budget.missing);
+  else if (!(ratio <= budget)) fail(`${name}_ratio: ${ratio.toFixed(3)} exceeds ${budget}.`);
 }
 
 if (failed) process.exit(1);

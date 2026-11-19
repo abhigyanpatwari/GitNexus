@@ -81,7 +81,6 @@ export interface IndexedRef {
 
 /**
  * The wire shape for staleness on MCP tools and the `serve` repo routes.
- * Discovery reports `unknown` directly because it skips Git checks.
  *
  * Two forms, chosen by whether the caller supplies a {@link IndexedRef}:
  *

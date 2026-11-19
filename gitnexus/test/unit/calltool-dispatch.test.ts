@@ -347,6 +347,7 @@ describe('LocalBackend.countRepos', () => {
     );
 
     await expect(backend.countRepos()).resolves.toBe(1);
+    expect(backend.cachedRepoCount()).toBe(0);
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
 
@@ -5388,6 +5389,26 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
     expect(new Set(collected)).toEqual(new Set(entries.map((e) => e.path))); // exact set
   });
 
+  it('sorts pages by name while the full listing and off-page siblings keep path order', async () => {
+    const entries = ['zeta', 'middle', 'alpha'].map((name, index) => ({
+      ...MOCK_REPO_ENTRY,
+      name,
+      path: `/repos/${index}`,
+      storagePath: `/repos/${index}/.gitnexus`,
+      remoteUrl: 'https://example.com/shared',
+    }));
+    vi.mocked(listRegisteredRepos).mockResolvedValue(entries);
+
+    expect((await backend.listRepos()).map((repo) => repo.name)).toEqual([
+      'zeta',
+      'middle',
+      'alpha',
+    ]);
+    const page = await backend.listReposPage({ limit: 2 });
+    expect(page.repositories.map((repo) => repo.name)).toEqual(['alpha', 'middle']);
+    expect(page.repositories[1]?.siblings?.map((repo) => repo.name)).toEqual(['zeta', 'alpha']);
+  });
+
   it('orders pages deterministically by name then path, stable across calls', async () => {
     // Scrambled input order; two entries deliberately SHARE a name (collision)
     // and must be tie-broken by path, never collapsed.
@@ -5784,18 +5805,26 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(res).not.toHaveProperty('error');
   });
 
-  it('evicts an opened branch pool when the repo leaves the registry (#2106 R3)', async () => {
-    // Open the branch pool via a tool call (ensureInitialized records its key).
-    await backend.callTool('query', { query: 'auth', repo: 'multi', branch: 'feature/x' });
-    lbugMocks.closeLbug.mockClear();
-    await backend.callTool('list_repos', {});
-    expect(lbugMocks.closeLbug).not.toHaveBeenCalledWith(branchLbug);
-    // Unregister the repo, then trigger a refresh (init re-reads the registry).
-    (listRegisteredRepos as any).mockResolvedValue([]);
-    await backend.init();
-    const closedPaths = lbugMocks.closeLbug.mock.calls.map((c: any[]) => String(c[0]));
-    expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
-  });
+  it.each(['lbug', `lbug.generation.${'a'.repeat(32)}`])(
+    'keeps the open branch pool for %s until the repo leaves the registry (#2106 R3)',
+    async (filename) => {
+      const slot = path.dirname(branchLbug);
+      const graph = path.join(slot, filename);
+      if (filename !== 'lbug') {
+        writeFileSync(graph, 'stub');
+        writeFileSync(path.join(slot, 'gitnexus.json'), JSON.stringify({ graphPath: filename }));
+      }
+      await backend.callTool('query', { query: 'auth', repo: 'multi', branch: 'feature/x' });
+      expect(lbugMocks.initLbug).toHaveBeenCalledWith(graph, graph);
+      lbugMocks.closeLbug.mockClear();
+      await backend.callTool('list_repos', {});
+      expect(lbugMocks.closeLbug).not.toHaveBeenCalledWith(graph);
+
+      vi.mocked(listRegisteredRepos).mockResolvedValue([]);
+      await backend.init();
+      expect(lbugMocks.closeLbug).toHaveBeenCalledWith(graph);
+    },
+  );
 });
 
 // #2655 review: the per-index tool-staleness cache must key by lbugPath, not
