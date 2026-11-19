@@ -1032,6 +1032,7 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
   ];
   const BOUND_TARGET_FILES = [
     'legacyscore/R/l.R', // dup_fn: the later importFrom() (legacyscore) wins
+    'scorelib/R/dotted.R', // tidy and tally bind by their exact names beside S3 methods.
     // scorelib/R/nested.R is absent: `nest_fn` also has a closure-local definition, so no import binds.
     'scorelib/R/plain.R',
     'scorelib/R/r6.R',
@@ -1123,9 +1124,9 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       );
     });
 
-    it('does not link the provider file of a shadowed, unexported or dotted-only name', () => {
+    it('does not link the provider file of a shadowed or unexported name', () => {
       const all = CALLER_FILES.flatMap((f) => importTargets(f));
-      expect(all.filter((t) => /own_dup|dup\.R|internal|dotted/.test(t))).toEqual([]);
+      expect(all.filter((t) => /own_dup|dup\.R|internal/.test(t))).toEqual([]);
     });
 
     it('never links an external package import to a same-named file in another language', () => {
@@ -1150,20 +1151,15 @@ describe('R NAMESPACE importFrom() bindings to local packages', () => {
       ]);
     });
 
-    it('never binds tidy to print.tidy when print.tidy is defined first', () => {
-      // finalize would index `print.tidy` under `tidy`; the guard refuses the import instead, so
-      // there is no 0.85 edge to the wrong def. Now the fallback no longer sees `print.tidy`
-      // as a tail-`tidy` candidate (a bare call cannot invoke it), so the call resolves to the
-      // bare def at 0.5 (was: ambiguous, no edge).
+    it('binds tidy by import when print.tidy is defined first', () => {
       expect(edgeSummaries('print_before_bare_user', 'analytics/R/dotted_use.R')).toEqual([
-        'tidy:scorelib/R/dotted.R:global-name-fallback:0.5',
+        'tidy:scorelib/R/dotted.R:import-resolved:0.85',
       ]);
     });
 
-    it('also refuses the mirror layout (bare def first): the guard is order-blind', () => {
-      // Same 0.5 fallback edge to the bare def (was: no edge).
+    it('binds tally by import when the bare function is defined first', () => {
       expect(edgeSummaries('bare_before_print_user', 'analytics/R/dotted_use.R')).toEqual([
-        'tally:scorelib/R/dotted.R:global-name-fallback:0.5',
+        'tally:scorelib/R/dotted.R:import-resolved:0.85',
       ]);
     });
 

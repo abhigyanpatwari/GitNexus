@@ -420,12 +420,12 @@ const CASES: ReadonlyMap<SupportedLanguages, ConformanceCase> = new Map([
   [
     SupportedLanguages.R,
     {
-      files: ['scripts/main.R', 'vendor/ggplot2.py', 'pkgA/R/utils.R'],
+      files: ['scripts/main.R', 'vendor/ggplot2.R', 'vendor/ggplot2.py', 'pkgA/R/utils.R'],
       fromFile: 'scripts/main.R',
       resolutionConfig: undefined,
       external: 'ggplot2',
-      decoy: 'vendor/ggplot2.py',
-      reachesDecoy: 'ggplot2.py',
+      decoy: 'vendor/ggplot2.R',
+      reachesDecoy: '"ggplot2.R"',
       parsedImport: (targetRaw) =>
         targetRaw === 'ggplot2'
           ? { kind: 'wildcard', targetRaw }
