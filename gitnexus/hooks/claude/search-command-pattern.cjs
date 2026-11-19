@@ -11,8 +11,9 @@
  * read reliably (a shell expansion, an unknown option, a pattern file) gives
  * none.
  *
- * The Cursor and Factory adapters ship as single files with their own parser,
- * and the OpenCode plugin has its own too. All of them read no search after
+ * The Cursor and Factory adapters keep their own parser in their hook file,
+ * since their installs do not carry the Claude helpers, and the OpenCode
+ * plugin has its own too. All of them read no search after
  * `&&`, `;`, `||` or `|`. They differ in what may come before `rg` or `grep`:
  * Cursor and Factory also read past wrappers such as `npx`, `sudo`, `env` and
  * `git grep`, which this helper does not.
