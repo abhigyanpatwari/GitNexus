@@ -315,7 +315,11 @@ function searchCommandPattern(command, shell = 'bash') {
   if (shell === 'powershell') return inPowerShell();
   if (shell !== 'either') return inBash();
   const query = inBash();
-  return query !== null && query === inPowerShell() ? query : null;
+  // `either` is the Windows case. Git Bash converts an argument that looks like
+  // a Unix path (`/api/x`, `--x=/y`, `/a:/b`), quoted or not, to a Windows path
+  // before it starts a native rg.exe, so such a query is not what rg receives.
+  if (query === null || /(^|[=:])\//.test(query)) return null;
+  return query === inPowerShell() ? query : null;
 }
 
 module.exports = { searchCommandPattern };

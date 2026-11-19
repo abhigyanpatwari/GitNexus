@@ -181,5 +181,25 @@ describe('searchCommandPattern', () => {
     ])('reads no query from %j, which the two shells read differently', (command) => {
       expect(inEither(command)).toBeNull();
     });
+
+    // Git Bash converts an argument that looks like a Unix path, quoted or not,
+    // to a Windows path before it starts rg.exe (`/api/users` reaches rg as
+    // `C:/Program Files/Git/api/users`).
+    it.each([
+      'rg /api/users src',
+      "rg '/api/users' src",
+      'rg --regexp=/api src',
+      'rg key=/api src',
+    ])('reads no query from %j, which Git Bash converts to a Windows path', (command) => {
+      expect(inEither(command)).toBeNull();
+    });
+
+    it('keeps a query with a slash that Git Bash does not convert', () => {
+      expect(inEither('rg api/users src')).toBe('api/users');
+    });
+  });
+
+  it.each(['bash', 'powershell'] as const)('reads a Unix-looking query in %s', (shell) => {
+    expect(searchCommandPattern('rg /api/users src', shell)).toBe('/api/users');
   });
 });
