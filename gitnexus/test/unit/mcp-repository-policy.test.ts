@@ -1,7 +1,10 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { LocalBackend, RepoListing } from '../../src/mcp/local/local-backend.js';
+import { LocalBackend, type RepoListing } from '../../src/mcp/local/local-backend.js';
 import { createMcpRepositoryPolicy } from '../../src/mcp/repository-policy.js';
 import { createMCPServer } from '../../src/mcp/server.js';
 import { createStreamableHttpHandler, startMcpHttpServer } from '../../src/mcp/http-transport.js';
@@ -34,23 +37,44 @@ const REPOS: RepoListing[] = [
   },
 ];
 
-function createBackend(repos = REPOS) {
-  return {
-    listRepos: vi.fn().mockResolvedValue(repos.map((repo) => ({ ...repo }))),
-    countRepos: vi.fn().mockResolvedValue(repos.length),
-    cachedRepoCount: vi.fn().mockReturnValue(repos.length),
+let home: string;
+beforeAll(async () => {
+  home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-list-policy-'));
+  const entries = await Promise.all(
+    REPOS.map(async (repo) => {
+      const storagePath = path.join(home, path.basename(repo.path));
+      await fs.mkdir(storagePath);
+      await fs.writeFile(path.join(storagePath, 'lbug'), '');
+      await fs.writeFile(
+        path.join(storagePath, 'gitnexus.json'),
+        JSON.stringify({ repoPath: repo.path, storagePath }),
+      );
+      return { ...repo, storagePath, remoteUrl: 'https://example.org/shared.git' };
+    }),
+  );
+  await fs.writeFile(path.join(home, 'registry.json'), JSON.stringify(entries));
+});
+beforeEach(() => {
+  vi.stubEnv('GITNEXUS_HOME', home);
+});
+afterAll(async () => fs.rm(home, { recursive: true, force: true }));
+
+function createBackend() {
+  return Object.assign(new LocalBackend(), {
+    countRepos: vi.fn().mockResolvedValue(REPOS.length),
+    cachedRepoCount: vi.fn().mockReturnValue(REPOS.length),
     callTool: vi.fn().mockImplementation(async (name: string, args: Record<string, unknown>) => ({
       name,
       args,
     })),
     resolveRepo: vi.fn().mockImplementation(async (repo?: string) => ({
-      name: repos.find((entry) => entry.path === repo)?.name ?? repo ?? repos[0]?.name,
-      repoPath: repo ?? repos[0]?.path,
+      name: REPOS.find((entry) => entry.path === repo)?.name ?? repo ?? REPOS[0]?.name,
+      repoPath: repo ?? REPOS[0]?.path,
       lastCommit: 'a'.repeat(40),
     })),
     selectToolRepository: vi.fn().mockImplementation(async (repo?: string) => ({
-      name: repos.find((entry) => entry.path === repo)?.name ?? repo ?? repos[0]?.name,
-      repoPath: repo ?? repos[0]?.path,
+      name: REPOS.find((entry) => entry.path === repo)?.name ?? repo ?? REPOS[0]?.name,
+      repoPath: repo ?? REPOS[0]?.path,
       lastCommit: 'a'.repeat(40),
     })),
     getContext: vi.fn().mockReturnValue(null),
@@ -60,7 +84,7 @@ function createBackend(repos = REPOS) {
     queryProcessDetail: vi.fn().mockResolvedValue({ error: 'not found' }),
     readGroupContractsResource: vi.fn().mockResolvedValue('contracts'),
     readGroupStatusResource: vi.fn().mockResolvedValue('status'),
-  } as unknown as LocalBackend;
+  });
 }
 
 afterEach(() => {
@@ -93,32 +117,37 @@ describe('MCP repository policy', () => {
   });
 
   it('filters list_repos before applying pagination and totals', async () => {
-    const alpha = REPOS[0];
-    if (!alpha) throw new Error('Alpha fixture is required');
-    const backend = createBackend([
-      {
-        ...alpha,
-        siblings: [{ name: 'Duplicate', path: '/repos/duplicate-one', lastCommit: 'c' }],
-      },
-      ...REPOS.slice(1),
-    ]);
+    const backend = createBackend();
     const policy = await createMcpRepositoryPolicy(backend, {
-      GITNEXUS_MCP_ALLOWED_REPOS: 'Beta,Alpha',
+      GITNEXUS_MCP_ALLOWED_REPOS: '/repos/duplicate-two,Alpha',
     });
     const scoped = policy.scopeBackend(backend);
 
-    const page = (await scoped.callTool('list_repos', { limit: 1, offset: 0 })) as {
-      repositories: RepoListing[];
-      pagination: { total: number; returned: number; hasMore: boolean; nextOffset?: number };
-    };
+    const params = { limit: 1, offset: 0 };
+    const page = await scoped.listReposPage(params, () => true);
     expect(page.repositories.map((repo) => repo.name)).toEqual(['Alpha']);
-    expect(page.repositories[0]?.siblings).toBeUndefined();
+    expect(page.repositories[0]?.siblings?.map((repo) => repo.path)).toEqual([
+      '/repos/duplicate-two',
+    ]);
     expect(page.pagination).toMatchObject({
       total: 2,
       returned: 1,
       hasMore: true,
       nextOffset: 1,
     });
+    await expect(scoped.callTool('list_repos', params)).resolves.toEqual(page);
+    const second = await scoped.listReposPage({ ...params, offset: 1 });
+    expect(second.repositories.map((repo) => repo.path)).toEqual(['/repos/duplicate-two']);
+    expect(second.pagination.hasMore).toBe(false);
+    await expect(scoped.listReposPage({ ...params, offset: 2 })).resolves.toMatchObject({
+      repositories: [],
+      pagination: { total: 2, returned: 0, hasMore: false },
+    });
+    const onlyAlpha = vi.fn((path: string) => path === '/repos/alpha');
+    const narrowed = await scoped.listRepos(onlyAlpha);
+    expect(narrowed.map((repo) => repo.name)).toEqual(['Alpha']);
+    expect(narrowed[0]?.siblings).toBeUndefined();
+    expect(onlyAlpha.mock.calls.flat()).not.toContain('/repos/duplicate-one');
     expect(backend.callTool).not.toHaveBeenCalled();
   });
 
@@ -167,7 +196,7 @@ describe('MCP repository policy', () => {
     });
     const alpha = REPOS[0];
     if (!alpha) throw new Error('Alpha fixture is required');
-    vi.mocked(backend.listRepos).mockResolvedValue([{ ...alpha }]);
+    vi.spyOn(backend, 'listRepos').mockResolvedValue([{ ...alpha }]);
 
     await expect(policy.toolSchemaRepoRequirements(backend)).resolves.toEqual({
       readOnlyRequiresRepo: true,
@@ -316,6 +345,10 @@ describe('MCP repository policy', () => {
     expect(backend.callTool).toHaveBeenLastCalledWith('query', {
       search_query: 'auth',
       repo: 'newly-indexed',
+    });
+    await expect(scoped.callTool('list_repos', { limit: 1, offset: 1 })).resolves.toMatchObject({
+      repositories: [{ name: 'Beta' }],
+      pagination: { total: REPOS.length },
     });
   });
 
