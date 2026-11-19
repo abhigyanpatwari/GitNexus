@@ -91,6 +91,10 @@ const AVAILABLE = SHELLS.filter((shell) => shell.exe !== null);
 
 const CASES = [
   'rg UserService src',
+  '\nrg UserService src',
+  '\nNO_COLOR=1 rg UserService src',
+  '& rg UserService src',
+  "&'grep' UserService src",
   'grep -rn UserService src',
   "rg 'user service' src",
   'rg "user service" src',
@@ -110,6 +114,8 @@ const CASES = [
   String.raw`rg 'path\name' src`,
   "rg 'can''t' src",
   'rg first,second src',
+  'rg List<notes.md',
+  'rg UserService 2>errors.txt',
   'rg /api/users src',
   "rg '/api/users' src",
   'rg //api/users src',

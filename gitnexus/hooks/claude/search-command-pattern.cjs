@@ -27,9 +27,9 @@
 // Quotes group words; expansions and malformed input have no reliable query.
 // In bash a backslash escapes the next character outside single quotes. In
 // PowerShell it is an ordinary character, a doubled quote inside quotes is one
-// literal quote, and a bare comma, parenthesis, brace or leading `@` builds a
-// value the shell computes, so the command has no reliable query. A word the
-// shell rewrites before the command sees it has its index added to `expanded`
+// literal quote. Parentheses, braces and a leading `@` can compute values.
+// Bare commas are skipped, including literal commas passed to native tools.
+// A word the shell rewrites before invocation has its index added to `expanded`
 // when the caller passes a Set: in bash an unquoted `{a,b}` or `{1..3}` (several
 // words) or a leading `~` (`~`, `~/x`, `~user`); in PowerShell a leading `~`,
 // `~/x` or `~\x`, which 7.6 and later expand on Windows and earlier versions do not.
@@ -71,6 +71,12 @@ function tokenizeShellCommand(command, shell, expanded) {
       started = true;
     } else if (powershell && (/[,(){}]/.test(ch) || (ch === '@' && !started))) {
       return [];
+    } else if (powershell && !started && /[1-6*]/.test(ch) && command[i + 1] === '>') {
+      // PowerShell stream redirection starts with the descriptor (2> or *>).
+      break;
+    } else if (powershell && started && (ch === '<' || ch === '>')) {
+      // Inside an argument, PowerShell passes angle brackets to the native tool.
+      word += ch;
     } else if (/[;&|<>\n\r]/.test(ch) || (ch === '#' && !started)) {
       break;
     } else if (/\s/.test(ch)) {
@@ -300,8 +306,10 @@ function extractSearchCommandPatterns(tokens, expanded = new Set()) {
 // but not a substitution or an array (`$(...)`, `${...}`, a backtick,
 // `(...)`): the strip would end at a blank inside it and read the rest as the
 // command, so such a line keeps its prefix and has no query.
+// Leading blank lines precede the first command. After an assignment, only
+// horizontal whitespace can join it to the command on the same line.
 const BASH_ASSIGNMENTS =
-  /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+/;
+  /^[ \t\n]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)*/;
 
 /**
  * The queries of a command line: every pattern of the search, at most
@@ -317,7 +325,8 @@ function searchCommandPatterns(command, shell = 'bash') {
     return extractSearchCommandPatterns(tokenizeShellCommand(line, lineShell, expanded), expanded);
   };
   const inBash = () => read(command.replace(BASH_ASSIGNMENTS, ''), 'bash');
-  const inPowerShell = () => read(command, 'powershell');
+  // A leading PowerShell call operator invokes the command word that follows.
+  const inPowerShell = () => read(command.trimStart().replace(/^&(?!&)/, ''), 'powershell');
   if (shell === 'powershell') return inPowerShell();
   if (shell !== 'either') return inBash();
   const queries = inBash();

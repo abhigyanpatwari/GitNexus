@@ -92,8 +92,9 @@ withTestLbugDB(
         const result = await augment(['login', 'hash'], handle.dbPath);
 
         expect(result).toContain('[GitNexus]');
-        expect(result).toContain('hash (src/utils.ts)');
-        expect(result).toMatch(/login/);
+        const lines = result.split('\n');
+        expect(lines).toContain('hash (src/utils.ts)');
+        expect(lines).toContain('login (src/auth.ts)');
       });
 
       it('skips patterns shorter than 3 characters in a list', async () => {

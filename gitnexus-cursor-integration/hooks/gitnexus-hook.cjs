@@ -118,8 +118,10 @@ function parseRgGrepPattern(cmd) {
   // (`$(...)`, a backtick) or an array value is left in place and ends the
   // read. On Windows the shell may be PowerShell, which runs `NAME=value`
   // as a command, so they are not read past there.
+  // Blank lines may precede the assignments. The command must follow the last
+  // assignment on the same line.
   const leadingAssignments =
-    /^[ \t]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+/;
+    /^[ \t\n]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+(?=\S)/;
   const line = typeof cmd === 'string' ? cmd : '';
   const tokens = tokenizeShellWords(
     process.platform === 'win32' ? line : line.replace(leadingAssignments, ''),

@@ -21,6 +21,7 @@ describe('searchCommandPattern', () => {
     'reads a search that starts the line in %s',
     (shell) => {
       expect(searchCommandPattern('rg UserService src', shell)).toBe('UserService');
+      expect(searchCommandPattern('\n \t\nrg UserService src', shell)).toBe('UserService');
       expect(searchCommandPattern('grep -rn UserService src | head', shell)).toBe('UserService');
       expect(searchCommandPattern('rg UserService src; echo done', shell)).toBe('UserService');
       expect(searchCommandPattern("rg 'user service' src", shell)).toBe('user service');
@@ -48,6 +49,7 @@ describe('searchCommandPattern', () => {
 
   it('reads past variable assignments before the command in bash', () => {
     expect(searchCommandPattern('NO_COLOR=1 rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('\nNO_COLOR=1 rg UserService src')).toBe('UserService');
     expect(searchCommandPattern(`LC_ALL=C GREP_COLORS='mt=1;31' grep -rn UserService src`)).toBe(
       'UserService',
     );
@@ -58,6 +60,7 @@ describe('searchCommandPattern', () => {
     expect(searchCommandPattern("'NO_COLOR=1' rg UserService src")).toBeNull();
     expect(searchCommandPattern('"NO_COLOR"=1 rg UserService src')).toBeNull();
     expect(searchCommandPattern('NO_COLOR=1\nrg UserService src')).toBeNull();
+    expect(searchCommandPattern('\nNO_COLOR=1 \nrg UserService src')).toBeNull();
   });
 
   // A value the shell computes would end the strip at a blank inside it and
@@ -134,6 +137,18 @@ describe('searchCommandPattern', () => {
   describe('in PowerShell', () => {
     const inPowerShell = (command: string) => searchCommandPattern(command, 'powershell');
 
+    it('reads a literal search invoked by the call operator', () => {
+      expect(inPowerShell('  & rg UserService src')).toBe('UserService');
+      expect(inPowerShell(String.raw`&'C:\Program Files\rg.exe' UserService src`)).toBe(
+        'UserService',
+      );
+      expect(inPowerShell('& $tool UserService src')).toBeNull();
+      expect(inPowerShell('echo done; & rg UserService src')).toBeNull();
+      expect(inPowerShell('&& rg UserService src')).toBeNull();
+      expect(searchCommandPattern('& rg UserService src', 'bash')).toBeNull();
+      expect(searchCommandPattern('& rg UserService src', 'either')).toBeNull();
+    });
+
     it('keeps a backslash as an ordinary character', () => {
       expect(inPowerShell(String.raw`rg C:\Users\me src`)).toBe(String.raw`C:\Users\me`);
       expect(inPowerShell(String.raw`rg "path\name" src`)).toBe(String.raw`path\name`);
@@ -145,8 +160,15 @@ describe('searchCommandPattern', () => {
       expect(inPowerShell('rg "say ""hello""" src')).toBe('say "hello"');
     });
 
+    it('preserves angle brackets inside a native argument', () => {
+      expect(inPowerShell('rg List<User> src')).toBe('List<User>');
+      expect(inPowerShell('rg --regexp=Foo>Bar src')).toBe('Foo>Bar');
+      expect(inPowerShell('rg UserService 2>errors.txt')).toBe('UserService');
+      expect(inPowerShell('rg *>errors.txt UserService')).toBeNull();
+      expect(searchCommandPattern('rg List<User> src', 'either')).toBeNull();
+    });
+
     it.each([
-      'rg first,second src',
       'rg (Get-Pattern) src',
       'rg {UserService} src',
       'rg @arguments',
@@ -177,8 +199,6 @@ describe('searchCommandPattern', () => {
       String.raw`rg C:\Users src`,
       // bash: cant; PowerShell: can't
       "rg 'can''t' src",
-      // bash: one word; PowerShell: an array
-      'rg first,second src',
     ])('reads no query from %j, which the two shells read differently', (command) => {
       expect(inEither(command)).toBeNull();
     });
@@ -202,6 +222,10 @@ describe('searchCommandPattern', () => {
 
   it.each(['bash', 'powershell'] as const)('reads a Unix-looking query in %s', (shell) => {
     expect(searchCommandPattern('rg /api/users src', shell)).toBe('/api/users');
+  });
+
+  it.each(['powershell', 'either'] as const)('skips bare commas in %s', (shell) => {
+    expect(searchCommandPattern('rg first,second src', shell)).toBeNull();
   });
 });
 

@@ -1138,12 +1138,13 @@ describe.each([
     Object.defineProperty(process, 'platform', { value: original });
   });
 
-  it.each(['NO_COLOR=1 rg UserService src/', 'NO_COLOR=1 npx rg UserService src/'])(
-    'reads %j',
-    (command) => {
-      expect(parseRgGrepPattern(command)).toBe(expected);
-    },
-  );
+  it.each([
+    'NO_COLOR=1 rg UserService src/',
+    'NO_COLOR=1 npx rg UserService src/',
+    '\nNO_COLOR=1 rg UserService src/',
+  ])('reads %j', (command) => {
+    expect(parseRgGrepPattern(command)).toBe(expected);
+  });
 });
 
 describe('Shell quoted-pattern parser', () => {
@@ -1172,6 +1173,7 @@ describe('Shell quoted-pattern parser', () => {
     ["env 'A=1' rg UserService src/", 'UserService'],
     // A blank line before the command ends nothing.
     ['\nrg UserService src/', 'UserService'],
+    ['\nNO_COLOR=1 \nrg UserService src/', null],
     ['rg --max-count 100 UserService src/', 'UserService'],
     ['grep -r UserService src/', 'UserService'],
     ['rg --replace x UserService src/', 'UserService'],

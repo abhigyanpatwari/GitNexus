@@ -286,9 +286,12 @@ describe.each([
     Object.defineProperty(process, 'platform', { value: original });
   });
 
-  it('reads NO_COLOR=1 npx rg UserService src', () => {
-    expect(parseRgGrepPattern('NO_COLOR=1 npx rg UserService src')).toBe(expected);
-  });
+  it.each(['NO_COLOR=1 npx rg UserService src', '\nNO_COLOR=1 rg UserService src'])(
+    'reads %j',
+    (command) => {
+      expect(parseRgGrepPattern(command)).toBe(expected);
+    },
+  );
 });
 
 describe('Factory Execute pattern parser', () => {
@@ -318,6 +321,7 @@ describe('Factory Execute pattern parser', () => {
     ['git --version\ngrep UserService src', null],
     ['rg UserService src\necho done', 'UserService'],
     ['\nrg UserService src', 'UserService'],
+    ['\nNO_COLOR=1 \nrg UserService src', null],
     // An assignment value the shell computes leaves no reliable query.
     ['A=$(true rg UserService src)', null],
     ['env A=$ARGS rg UserService src', null],
