@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a getter called inside a nested assignment target (helper(z)$a <- 2, names(helper(z)) <- v).",
+  "categories": ["replacement-function", "getter-setter", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "nested.R", "startLine": 0 },
+  "newName": "accessor",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

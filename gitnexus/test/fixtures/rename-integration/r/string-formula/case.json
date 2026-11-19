@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a formula string calls the name: as.formula() parses it as R code and it would not be renamed.",
+  "categories": ["string-lookup", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

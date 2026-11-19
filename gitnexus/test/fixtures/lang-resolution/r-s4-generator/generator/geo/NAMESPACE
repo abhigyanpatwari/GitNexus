@@ -1,0 +1,4 @@
+exportMethods(area)
+exportClasses(Circle)
+export(area)
+export(Circle)

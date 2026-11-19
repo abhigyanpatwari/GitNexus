@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse when the new name is bound to a value not shown to be a constant (a call result that may be a function) inside a test_that() block that also calls the old name: after the rename that call would reach the block-local binding.",
+  "categories": ["name-collision", "block-scope", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "foo.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}
