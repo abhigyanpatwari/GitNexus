@@ -109,12 +109,11 @@ const DEFERRED_SCOPE_TYPES = new Set([
 ]);
 
 /** Statements after which later code in the same scope may not run. */
+/** Exits that stop later sequential statements in the same block (`break` / `continue` do not). */
 const EXIT_NODE_TYPES = new Set([
   'return_statement',
   'throw_expression',
   'exit_statement',
-  'break_statement',
-  'continue_statement',
   'goto_statement',
 ]);
 
@@ -184,10 +183,17 @@ export function extractPhpRouterRequireBindings(
     let childMustRun = mustRun && (isTry || MUST_RUN_CONTAINER_TYPES.has(node.type));
     const ordered: WalkFrame[] = [];
     for (const child of children) {
-      // The try body and catch may stop early; only `finally` always runs.
-      const runs = childMustRun && (!isTry || child.type === 'finally_clause');
+      // Try/catch bodies may skip; `finally` always runs once the try statement is reached.
+      const runs =
+        isTry && child.type === 'finally_clause'
+          ? mustRun
+          : isTry && child.type === 'catch_clause'
+            ? false
+            : childMustRun;
       ordered.push({ node: child, group, mustRun: runs });
-      if (mayExit.has(child.id)) childMustRun = false;
+      if (!isTry || child.type !== 'finally_clause') {
+        if (mayExit.has(child.id)) childMustRun = false;
+      }
     }
     for (let i = ordered.length - 1; i >= 0; i--) walk.push(ordered[i]);
   };

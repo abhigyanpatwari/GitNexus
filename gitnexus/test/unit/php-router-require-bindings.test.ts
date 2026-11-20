@@ -519,6 +519,59 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     ]);
   });
 
+  it('treats require in finally as unguarded even when the try body may return', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  try {
+    return;
+  } finally {
+    require_once __DIR__ . '/../routes/web.php';
+  }
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings).toEqual([
+      expect.objectContaining({ prefix: 'api', unguarded: true, once: true }),
+    ]);
+    const map = resolvePhpRouterRequireBindings(
+      new Set(['bootstrap/app.php', 'routes/web.php']),
+      bindings,
+    );
+    expect(map.get('routes/web.php')?.map((ctx) => ctx.prefix)).toEqual(['api']);
+  });
+
+  it('does not treat a break inside a loop as guarding a later require in the same block', () => {
+    const source = `<?php
+$app->router->group(['prefix' => 'api'], function ($router) {
+  foreach ([1] as $x) {
+    break;
+  }
+  require __DIR__ . '/../routes/web.php';
+});
+$app->router->group(['prefix' => 'later'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+});
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(
+      bindings.find((b) => b.requiredPath === 'routes/web.php' && b.prefix === 'api')?.unguarded,
+    ).toBe(true);
+    expect(webContexts(source)).toEqual(['api']);
+  });
+
+  it('drops a second unguarded require_once of the same file in one host', () => {
+    expect(
+      webContexts(`<?php
+$app->router->group(['prefix' => 'a'], function ($router) {
+  require_once __DIR__ . '/../routes/web.php';
+  require_once __DIR__ . '/../routes/web.php';
+});
+`),
+    ).toEqual(['a']);
+  });
+
   it('matches uppercase router GROUP for extraction gate', () => {
     expect(
       shouldExtractPhpRouterRequireBindings(`<?php

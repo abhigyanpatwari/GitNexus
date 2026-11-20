@@ -559,14 +559,11 @@ export function resolveRouteHandlerSymbols(
       if (controllerDef) {
         methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
         if (!methodId) {
-          const exact = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName);
-          if (exact.length === 0) {
-            methodId = routeHandlerMethodCaseInsensitiveFallback(
-              model.symbols,
-              controllerDef,
-              route.methodName,
-            );
-          }
+          methodId = routeHandlerMethodCaseInsensitiveFallback(
+            model.symbols,
+            controllerDef,
+            route.methodName,
+          );
         }
       }
     } else if (!route.controllerName && route.methodName) {

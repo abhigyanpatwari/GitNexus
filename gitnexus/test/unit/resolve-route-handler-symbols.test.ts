@@ -600,6 +600,24 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
     expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
   });
 
+  it('uses case-insensitive fallback when unrelated same-name methods make the exact lookup ambiguous', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+    model.symbols.add(CTRL, 'INDEX', 'method:Other.INDEX#1', 'Method', {
+      ownerId: 'class:Other',
+    });
+    model.symbols.add(CTRL, 'INDEX', 'method:Other.INDEX#2', 'Method', {
+      ownerId: 'class:Other',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'INDEX' })], []);
+
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
+  });
+
   it('a case-insensitive match owned by another class is not stamped', () => {
     const model = createSemanticModel();
     model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
