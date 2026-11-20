@@ -237,6 +237,9 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: 'rg UserService - ', pattern: 'UserService' },
     // Variable assignments before the command belong to it.
     { command: 'NO_COLOR=1 rg UserService src', pattern: 'UserService' },
+    // So do wrappers that run it (#4023).
+    { command: 'npx rg UserService src', pattern: 'UserService' },
+    { command: 'git grep -n UserService', pattern: 'UserService' },
   ])('preserves the complete argument in $command', ({ command, pattern }) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBe(pattern);
   });
