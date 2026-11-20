@@ -993,6 +993,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       // Query each depth level separately (LadybugDB doesn't support list comprehensions on paths)
       // For depth 1: direct connections only
       // For depth 2+: chain multiple single-hop queries
+      // Fetch one extra raw row so an exactly full page remains a complete result.
+      const depthRowLimits = [300, 200, 100];
       const depthQueries: Promise<any[]>[] = [];
 
       // Depth 1 query - direct connections with edge metadata
@@ -1016,7 +1018,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
@@ -1033,7 +1035,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `
           : isFileTarget
             ? `
@@ -1052,7 +1054,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
@@ -1069,7 +1071,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `;
       if (import.meta.env.DEV) {
         console.log(`🔍 Impact d=1 query:\n${d1Query}`);
@@ -1098,7 +1100,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r2.type AS edgeType,
               r2.confidence AS confidence,
               r2.reason AS reason
-            LIMIT 200
+            LIMIT ${depthRowLimits[1] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
@@ -1118,7 +1120,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r2.type AS edgeType,
               r2.confidence AS confidence,
               r2.reason AS reason
-            LIMIT 200
+            LIMIT ${depthRowLimits[1] + 1}
           `;
         depthQueries.push(executeQuery(d2Query));
       }
@@ -1147,7 +1149,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r3.type AS edgeType,
               r3.confidence AS confidence,
               r3.reason AS reason
-            LIMIT 100
+            LIMIT ${depthRowLimits[2] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
@@ -1169,7 +1171,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r3.type AS edgeType,
               r3.confidence AS confidence,
               r3.reason AS reason
-            LIMIT 100
+            LIMIT ${depthRowLimits[2] + 1}
           `;
         depthQueries.push(executeQuery(d3Query));
       }
@@ -1177,6 +1179,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       // Wait for all depth queries
       const depthResults = await Promise.allSettled(depthQueries);
       const failedDepths: number[] = [];
+      const cappedDepths: number[] = [];
 
       // Combine results by depth
       interface NodeInfo {
@@ -1200,7 +1203,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           if (import.meta.env.DEV) console.warn(`Impact d=${d} query failed:`, result.reason);
           return;
         }
-        result.value.forEach((row: any) => {
+        let rows = result.value;
+        const limit = depthRowLimits[idx];
+        if (rows.length > limit) {
+          cappedDepths.push(d);
+          rows = rows.slice(0, limit);
+        }
+        rows.forEach((row: any) => {
           const nodeId = Array.isArray(row) ? row[0] : row.id;
           const filePath = Array.isArray(row) ? row[3] : row.filePath;
 
@@ -1230,11 +1239,19 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
       const totalAffected = allNodeIds.length;
 
-      const traversalNote = failedDepths.length
-        ? `Incomplete traversal. Failed depth queries: ${failedDepths.join(', ')}. Retry before editing.`
-        : undefined;
+      const traversalNotes = [];
+      if (failedDepths.length)
+        traversalNotes.push(
+          `Failed depth queries: ${failedDepths.join(', ')}. Retry before editing.`,
+        );
+      if (cappedDepths.length)
+        traversalNotes.push(
+          `Row limit exceeded at ${cappedDepths.map((d) => 'd=' + d).join(', ')}. Counts are lower bounds.`,
+        );
+      const incompleteWalk = traversalNotes.length > 0;
+      const traversalNote = `Incomplete traversal. ${traversalNotes.join(' ')}`;
       if (totalAffected === 0) {
-        if (traversalNote) return `RISK: UNKNOWN\n${traversalNote}`;
+        if (incompleteWalk) return `RISK: UNKNOWN\n${traversalNote}`;
         if (isFileTarget) {
           const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           const targetFileName = (targetFilePath || target).split('/').pop() || target;
@@ -1371,6 +1388,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       }
 
       const directCount = depth1.length;
+      const observedDirect = cappedDepths.includes(1) ? 'at least ' + directCount : directCount;
       const processCount = affectedProcesses.length;
       const clusterCount = affectedClusters.length;
       const enrichmentCapped = allNodeIds.length > maxIdsForContext;
@@ -1389,13 +1407,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         processCount,
         moduleCount: clusterCount,
         impactedCount: totalAffected,
-        incompleteWalk: failedDepths.length > 0,
+        incompleteWalk,
         unusedAxes,
       });
 
       // ===== COMPACT TABULAR OUTPUT =====
       const lines: string[] = [
-        `🔴 IMPACT: ${target} | ${direction} | ${totalAffected} affected`,
+        `🔴 IMPACT: ${target} | ${direction} | ${incompleteWalk ? 'at least ' : ''}${totalAffected} affected`,
         `Confidence: High ${confidenceBuckets.high} | Medium ${confidenceBuckets.medium} | Low ${confidenceBuckets.low}`,
         ``,
         `AFFECTED PROCESSES:`,
@@ -1432,8 +1450,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         ...(clusterClassificationFailed
           ? ['Note: direct/indirect cluster classification is unavailable.']
           : []),
-        ...(traversalNote ? [traversalNote] : []),
-        `- Direct callers: ${failedDepths.includes(1) ? 'unavailable' : directCount}`,
+        ...(incompleteWalk ? [traversalNote] : []),
+        `- Direct callers: ${failedDepths.includes(1) ? 'unavailable' : observedDirect}`,
         `- Processes affected: ${processQueryFailed ? 'unavailable' : processCount}`,
         `- Clusters affected: ${clusterQueryFailed ? 'unavailable' : clusterCount}`,
         ``,
@@ -1506,7 +1524,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       }
 
       // Compact footer
-      lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
+      if (!incompleteWalk) lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
       lines.push(`⚠️ Optional: grep("${target}") for dynamic patterns`);
       if (multipleMatchWarning) {
         lines.push(multipleMatchWarning);

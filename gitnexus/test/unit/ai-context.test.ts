@@ -1230,6 +1230,23 @@ Old content here.
     expect(content).not.toContain('.claude/skills/generated/');
   });
 
+  it.each(['AGENTS.md', 'CLAUDE.md'] as const)(
+    'reports only the selected %s as skipped',
+    async (instructionFile) => {
+      const result = await generateAIContextFiles(
+        tmpDir,
+        storagePath,
+        'TestProject',
+        { nodes: 42, edges: 84, processes: 3 },
+        undefined,
+        { instructionFile, skipAgentsMd: true, skipSkills: true },
+      );
+      expect(result.files.filter((file) => file.includes('--skip-agents-md'))).toEqual([
+        instructionFile + ' (skipped via --skip-agents-md)',
+      ]);
+    },
+  );
+
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
     const stats = { nodes: 42, edges: 84, processes: 3 };
     const agentsPath = path.join(tmpDir, 'AGENTS.md');

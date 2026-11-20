@@ -38,6 +38,8 @@ it('suppresses a docs-only gap but still warns for an earlier unindexed code cha
     fs.writeFileSync(path.join(repo, 'guide.MDX'), '# Usage\n');
     commitAll(repo, 'docs');
     expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(true);
+    vi.stubEnv('GIT_LITERAL_PATHSPECS', '1');
+    expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(true);
     fs.writeFileSync(path.join(repo, 'app.py'), 'v = 2\n');
     commitAll(repo, 'change code');
     fs.writeFileSync(path.join(repo, 'README.md'), 'more notes\n');
@@ -47,6 +49,24 @@ it('suppresses a docs-only gap but still warns for an earlier unindexed code cha
     fs.mkdirSync(docs);
     expect(spawnSync('git', ['config', 'diff.relative', 'true'], { cwd: repo }).status).toBe(0);
     expect(onlyMarkdownChanged(docs, docs, base, readHead(docs, docs).head)).toBe(false);
+  } finally {
+    vi.unstubAllEnvs();
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+it('keeps a stale hint when git is configured to hide submodule changes', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hook-gitlink-'));
+  const git = (args: string[]) => expect(spawnSync('git', args, { cwd: repo }).status).toBe(0);
+  try {
+    initGitRepo(repo);
+    fs.writeFileSync(path.join(repo, 'README.md'), 'base');
+    commitAll(repo, 'base');
+    const base = readHead(repo, repo).head;
+    git(['update-index', '--add', '--cacheinfo', '160000,' + base + ',vendor']);
+    git(['commit', '-qm', 'track submodule']);
+    git(['config', 'diff.ignoreSubmodules', 'all']);
+    expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(false);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

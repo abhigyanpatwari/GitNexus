@@ -42,6 +42,63 @@ describe('Graph-RAG impact risk contract', () => {
     expect(output).toContain('Direct callers: unavailable');
   });
 
+  it.each([
+    [2, 200, 200],
+    [2, 200, 201],
+    [3, 100, 100],
+    [3, 100, 101],
+  ])('checks d=%i with a %i-row budget and %i available rows', async (depth, limit, rows) => {
+    const executeQuery = vi.fn(async (query: string) => {
+      if (query.includes("WHERE n.name = 'target'"))
+        return [{ id: 'target-id', nodeType: 'Function', filePath: 'src/target.ts' }];
+      if (query.includes('1 AS depth')) return [{ id: 'direct', filePath: 'src/one.ts' }];
+      if (query.includes(depth + ' AS depth')) {
+        return Array.from({ length: rows }, (_, i) => ({
+          id: 'leaf-' + i,
+          filePath: 'src/leaf.ts',
+        }));
+      }
+      return [];
+    });
+    const output = await impactTool({ ...noOpBackend, executeQuery }).invoke({
+      target: 'target',
+      direction: 'upstream',
+      maxDepth: depth,
+    });
+    expect(executeQuery).toHaveBeenCalledWith(expect.stringContaining('LIMIT ' + (limit + 1)));
+    expect(output).toContain(limit + 1 + ' affected');
+    if (rows === limit) {
+      expect(output).toContain('RISK: LOW');
+      expect(output).not.toContain('Incomplete traversal');
+    } else {
+      expect(output).toContain('RISK: UNKNOWN');
+      expect(output).toContain('Row limit exceeded at d=' + depth);
+      expect(output).not.toContain('GRAPH ANALYSIS COMPLETE');
+    }
+  });
+
+  it('reports an incomplete walk when every retained row is filtered out', async () => {
+    const executeQuery = vi.fn(async (query: string) => {
+      if (query.includes("WHERE n.name = 'target'"))
+        return [{ id: 'target-id', nodeType: 'Function', filePath: 'src/target.ts' }];
+      if (query.includes('1 AS depth'))
+        return Array.from({ length: 301 }, (_, i) => ({
+          id: 'node-' + i,
+          filePath: i < 300 ? 'a.test.ts' : 'src/overflow.ts',
+        }));
+      return [];
+    });
+    const output = await impactTool({ ...noOpBackend, executeQuery }).invoke({
+      target: 'target',
+      direction: 'downstream',
+      maxDepth: 1,
+    });
+    expect(output).toContain('RISK: UNKNOWN');
+    expect(output).toContain('Row limit exceeded at d=1');
+    expect(output).not.toContain('self-contained');
+    expect(executeQuery).toHaveBeenCalledWith(expect.stringContaining('LIMIT 301'));
+  });
+
   it('renders failed enrichment as unavailable and fails the risk gate closed', async () => {
     const executeQuery = vi.fn(async (query: string) => {
       if (query.includes("WHERE n.name = 'target'")) {
@@ -202,7 +259,7 @@ describe('Graph-RAG impact risk contract', () => {
       }
       const depth = query.includes('3 AS depth') ? 3 : query.includes('2 AS depth') ? 2 : 1;
       if (query.includes('CodeRelation') && query.includes(` ${depth} AS depth`)) {
-        return Array.from({ length: 200 }, (_, index) => ({
+        return Array.from({ length: [300, 200, 1][depth - 1] }, (_, index) => ({
           id: `d${depth}-${index}`,
           name: `node-${depth}-${index}`,
           nodeType: 'Function',

@@ -807,13 +807,14 @@ export async function generateAIContextFiles(
     hasSpringActuator: options?.hasSpringActuator ?? false,
   });
   const createdFiles: string[] = [];
+  const instructionFiles = selectedInstructionFiles(options?.instructionFile);
 
   if (options?.skipAgentsMd) {
-    for (const name of selectedInstructionFiles()) {
+    for (const name of instructionFiles) {
       createdFiles.push(`${name} (skipped via --skip-agents-md)`);
     }
   } else {
-    for (const name of selectedInstructionFiles(options?.instructionFile)) {
+    for (const name of instructionFiles) {
       const result = await upsertGitNexusSection(
         path.join(repoPath, name),
         content,

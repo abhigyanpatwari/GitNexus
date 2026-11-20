@@ -269,6 +269,7 @@ function onlyMarkdownChanged(directory, cwd, base, head) {
   const result = spawnSync(
     'git',
     [
+      '--no-literal-pathspecs',
       '-C',
       directory,
       'diff',
@@ -276,6 +277,7 @@ function onlyMarkdownChanged(directory, cwd, base, head) {
       '--no-ext-diff',
       '--no-renames',
       '--no-relative',
+      '--ignore-submodules=none',
       base,
       head,
       '--',
