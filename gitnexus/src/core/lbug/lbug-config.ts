@@ -482,6 +482,26 @@ export const estimateBufferPool = (
 ): number =>
   clampBufferPool(graphElementCount * POOL_BYTES_PER_ELEMENT * granuleRatio(pageSize), pageSize);
 
+// The 209 MiB of node CSV in the source-heavy #3972 fixture needed 768 MiB
+// for COPY. Building its keyword indexes succeeded with a 1,664 MiB pool.
+const COPY_POOL_BYTES_PER_TEXT_BYTE = 4;
+const FTS_POOL_BYTES_PER_TEXT_BYTE = 8;
+
+export const estimateWriteBufferPool = (
+  graphElementCount: number,
+  estimatedTextBytes: number,
+  buildFts: boolean,
+  pageSize: number | undefined = getOsPageSize(),
+): number =>
+  clampBufferPool(
+    Math.max(
+      graphElementCount * POOL_BYTES_PER_ELEMENT,
+      estimatedTextBytes *
+        (buildFts ? FTS_POOL_BYTES_PER_TEXT_BYTE : COPY_POOL_BYTES_PER_TEXT_BYTE),
+    ) * granuleRatio(pageSize),
+    pageSize,
+  );
+
 /**
  * Optional per-run buffer-pool size hint (bytes). The analyze orchestrator sets
  * it once the graph size is known (after the pipeline, before the DB open) so

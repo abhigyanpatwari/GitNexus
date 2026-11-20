@@ -22,7 +22,8 @@
  * an import-resolved edge: a reader who cannot tell the two apart has no way
  * to discount the guess.
  */
-export const GLOBAL_NAME_FALLBACK_REASON = 'global-name-fallback';
+import { GLOBAL_NAME_FALLBACK_REASON } from 'gitnexus-shared';
+export { GLOBAL_NAME_FALLBACK_REASON };
 
 /**
  * Reasons excluded from process tracing and large-graph community detection.

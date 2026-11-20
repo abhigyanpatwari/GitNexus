@@ -13,7 +13,13 @@
 
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
+import {
+  NODE_TABLES,
+  REL_TYPES,
+  impactEdgePredicate,
+  scoreImpactRisk,
+  unusedAxesForImpactWalk,
+} from 'gitnexus-shared';
 import type {
   EnrichedSearchResult,
   GrepOptions,
@@ -996,6 +1002,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       // Fetch one extra raw row so an exactly full page remains a complete result.
       const depthRowLimits = [300, 200, 100];
       const depthQueries: Promise<any[]>[] = [];
+      const edgeEvidence = (edge: 'r' | 'r1' | 'r2' | 'r3') =>
+        `${impactEdgePredicate(edge)} AND (${edge}.confidence IS NULL OR ${edge}.confidence >= ${minConf})`;
 
       // Depth 1 query - direct connections with edge metadata
       // For File targets: find callers of any code element with matching filePath
@@ -1007,7 +1015,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE callee.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
               AND r.type IN [${relTypeFilter}]
               AND affected.filePath <> callee.filePath
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeEvidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1024,7 +1032,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
             MATCH (affected)-[r:CodeRelation]->(target)
             WHERE r.type IN [${relTypeFilter}]
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeEvidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1043,7 +1051,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE caller.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
               AND r.type IN [${relTypeFilter}]
               AND caller.filePath <> affected.filePath
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeEvidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1060,7 +1068,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
             MATCH (target)-[r:CodeRelation]->(affected)
             WHERE r.type IN [${relTypeFilter}]
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeEvidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1088,8 +1096,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (affected)-[r2:CodeRelation]->(a)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
               AND affected.id <> target.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeEvidence('r2')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1108,8 +1116,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (a)-[r2:CodeRelation]->(affected)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
               AND affected.id <> target.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeEvidence('r2')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1136,9 +1144,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (affected)-[r3:CodeRelation]->(b)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}] AND r3.type IN [${relTypeFilter}]
               AND affected.id <> target.id AND affected.id <> a.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
-              AND (r3.confidence IS NULL OR r3.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeEvidence('r2')}
+              AND ${edgeEvidence('r3')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1158,9 +1166,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (b)-[r3:CodeRelation]->(affected)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}] AND r3.type IN [${relTypeFilter}]
               AND affected.id <> target.id AND affected.id <> a.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
-              AND (r3.confidence IS NULL OR r3.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeEvidence('r2')}
+              AND ${edgeEvidence('r3')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 

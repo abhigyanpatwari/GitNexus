@@ -21,6 +21,33 @@ describe('Graph-RAG impact risk contract', () => {
     expect(description).toContain('MCP File impact does not');
   });
 
+  it.each(['upstream', 'downstream'] as const)(
+    'filters name-only calls at every %s hop',
+    async (direction) => {
+      const executeQuery = vi.fn(async (query: string) =>
+        query.includes("WHERE n.name = 'target'")
+          ? [{ id: 'target-id', nodeType: 'Function', filePath: 'target.ts' }]
+          : [],
+      );
+      await impactTool({ ...noOpBackend, executeQuery }).invoke({
+        target: 'target',
+        direction,
+        maxDepth: 3,
+      });
+      for (const [depth, aliases] of [
+        [1, ['r']],
+        [2, ['r1', 'r2']],
+        [3, ['r1', 'r2', 'r3']],
+      ] as const) {
+        const query = executeQuery.mock.calls
+          .map(([sql]) => sql)
+          .find((sql) => sql.includes(depth + ' AS depth'));
+        for (const alias of aliases)
+          expect(query).toContain(alias + ".reason <> 'global-name-fallback'");
+      }
+    },
+  );
+
   it('withholds a low verdict when direct callers are unavailable but depth two succeeds', async () => {
     const executeQuery = vi.fn(async (query: string) => {
       if (query.includes("WHERE n.name = 'target'"))
