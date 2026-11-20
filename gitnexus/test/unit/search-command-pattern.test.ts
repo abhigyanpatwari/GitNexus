@@ -109,6 +109,8 @@ describe('searchCommandPattern', () => {
   });
 
   it('reads git grep options before revisions and leaves pathspecs alone', () => {
+    expect(searchCommandPattern('git grep TODO src/')).toBe('TODO');
+    expect(searchCommandPattern('git grep TODO HEAD -- src/')).toBe('TODO');
     expect(searchCommandPatterns('git grep -nFi -C2 -e First -e Second HEAD -- -e')).toEqual([
       'First',
       'Second',
