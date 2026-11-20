@@ -6,6 +6,8 @@ import type { TypeImportAttribution } from '../ingestion/language-provider.js';
 import { isTestFilePath } from '../ingestion/utils/test-file-path.js';
 import { readSafeBoundedBytes } from '../group/extractors/fs-utils.js';
 import { contentRetentionFromMeta } from '../content-retention.js';
+import { DOCUMENTATION_LINK_REASON } from '../graph/edge-reasons.js';
+import { segmentCjkSpans } from '../search/cjk-segmentation.js';
 import { chunk } from '../../lib/utils.js';
 import { loadMeta } from '../../storage/repo-meta.js';
 import { metadataMatchesGraph } from '../../storage/vector-generation.js';
@@ -68,19 +70,25 @@ export async function findTypeImporters(
     db,
     `
     MATCH (caller:File)-[link:CodeRelation]->(owner:File {id:$ownerId})
-    WHERE link.type = 'IMPORTS'
+    WHERE link.type = 'IMPORTS' AND (link.reason IS NULL OR link.reason <> $documentationLink)
       ${minConfidence > 0 ? 'AND link.confidence >= $minConfidence' : ''}
       AND (caller.content IS NULL OR caller.content = '' OR caller.content CONTAINS $name
            ${implicit ? 'OR (caller.content CONTAINS $marker AND regexp_matches(caller.content, $pattern))' : ''})
     WITH caller, link.confidence AS confidence, size(coalesce(caller.content, '')) AS chars
     ORDER BY caller.id LIMIT ${maxCandidates + 1}
     MATCH (caller)-[r:CodeRelation]->(other:File)
-    WHERE r.type = 'IMPORTS'
+    WHERE r.type = 'IMPORTS' AND (r.reason IS NULL OR r.reason <> $documentationLink)
     RETURN caller.id AS id, caller.name AS name, caller.filePath AS filePath, confidence, chars, other.filePath AS importedPath
     ORDER BY caller.id, other.id LIMIT ${maxImportPaths + 1}`,
     {
       ownerId,
-      name,
+      // Each token occurs in both raw and bigram-indexed content. Use the longest
+      // as a selective prefilter, then verify the full name in hashed source.
+      name: segmentCjkSpans(name)
+        .trim()
+        .split(/\s+/)
+        .reduce((best, token) => (token.length > best.length ? token : best)),
+      documentationLink: DOCUMENTATION_LINK_REASON,
       ...(implicit && { marker: implicit.marker, pattern: implicit.pattern }),
       ...(minConfidence > 0 && { minConfidence }),
     },

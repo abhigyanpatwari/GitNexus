@@ -10,12 +10,12 @@ import { DOCUMENTATION_LINK_REASON } from '../graph/edge-reasons.js';
 import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
 import { toZeroBasedLine } from './utils/line-base.js';
+import { isIndexedDocumentationPath } from './utils/documentation-path.js';
 import type { GraphNode } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 
 const HEADING_RE = /^(#{1,6})\s+(.+)$/;
 const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
-const MD_EXTENSIONS = new Set(['.md', '.mdx']);
 
 interface MdFile {
   path: string;
@@ -31,8 +31,7 @@ export const processMarkdown = (
   let totalLinks = 0;
 
   for (const file of files) {
-    const ext = path.extname(file.path).toLowerCase();
-    if (!MD_EXTENSIONS.has(ext)) continue;
+    if (!isIndexedDocumentationPath(file.path)) continue;
 
     const fileNodeId = generateId('File', file.path);
     // Skip if file node doesn't exist (shouldn't happen, structure-processor creates it)

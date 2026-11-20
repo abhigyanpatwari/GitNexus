@@ -66,15 +66,15 @@ export function formatDetectChangesResult(result: unknown): string {
     const examples = skipped
       .slice(0, 5)
       .map(({ filePath, reason }) =>
-        filePath ? `${formatPathForTerminal(filePath)} (${reason})` : reason,
+        filePath
+          ? `${formatPathForTerminal(filePath)} (${formatPathForTerminal(reason)})`
+          : formatPathForTerminal(reason),
       );
     if (skipped.length > examples.length) examples.push('…');
     notes.push(t('tool.detectChanges.keywordCoverage', { examples: examples.join(', ') }));
   }
   if (summary.documentation_basis === 'indexed_headings')
     notes.push(t('tool.detectChanges.indexedHeadings'));
-  if (!summary.changed_count && summary.documentation_sections)
-    notes.push(t('tool.detectChanges.docSections', { count: summary.documentation_sections }));
   if (payload.unmapped_files?.length) {
     notes.push(
       t('tool.detectChanges.unmappedSource', {
@@ -90,7 +90,9 @@ export function formatDetectChangesResult(result: unknown): string {
       t(payload.partial ? 'tool.detectChanges.truncatedDegraded' : 'tool.detectChanges.truncated'),
     );
 
-  if ((summary.changed_count ?? 0) === 0) {
+  if ((summary.changed_count ?? 0) === 0 && !payload.incompatible_calls?.length) {
+    if (summary.documentation_sections)
+      notes.push(t('tool.detectChanges.docSections', { count: summary.documentation_sections }));
     // Parse-fail payloads set `partial` and an honest `message` (#2915/#3131).
     // Production *clean* trees also set English `message: 'No changes detected.'`
     // — that must go through `t('tool.detectChanges.noChanges')` or zh-CN never
@@ -105,6 +107,7 @@ export function formatDetectChangesResult(result: unknown): string {
     // Confirmed no-overlap: files parsed, mapping succeeded, zero symbols.
     // `queryDegraded` is `partial: true` with the same counts and no message —
     // do not call that a confirmed mapping (#3131 honesty).
+    if (summary.documentation_sections) return notes.join('\n');
     if (!payload.partial && (summary.changed_files ?? 0) > 0) {
       return [
         ...notes,

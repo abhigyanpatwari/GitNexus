@@ -32,7 +32,7 @@ const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const {
   gitMutationDirectories,
   readHead,
-  onlyMarkdownChanged,
+  canSkipMarkdownReindex,
 } = require('./git-mutation-command.cjs');
 const { searchCommandPatterns } = require('./search-command-pattern.cjs');
 const { resolveHookRepo } = (() => {
@@ -409,7 +409,10 @@ function buildStaleIndexHint(repo, gitCwd, cwd) {
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;
   }
 
-  if (currentHead === lastCommit || onlyMarkdownChanged(gitCwd, cwd, lastCommit, currentHead))
+  if (
+    currentHead === lastCommit ||
+    canSkipMarkdownReindex(gitCwd, cwd, lastCommit, currentHead, resolveCliPath)
+  )
     return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });

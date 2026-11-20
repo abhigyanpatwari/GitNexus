@@ -5,6 +5,8 @@ import { isTemplateRouteCandidate } from '../utils/template-file.js';
 import { dartQueryHooks } from './dart/query-provider.js';
 import { pythonQueryHooks } from './python/query-provider.js';
 import { swiftQueryHooks } from './swift/query-provider.js';
+import { tsJsHooks } from './typescript/query-provider.js';
+import { zigQueryHooks } from './zig/query-provider.js';
 
 /** Capabilities available to graph queries without initializing ingestion. */
 export type QueryLanguageHooks = Pick<
@@ -17,13 +19,6 @@ export type QueryLanguageHooks = Pick<
 >;
 type QueryLanguageProvider = QueryLanguageHooks & Pick<LanguageProvider, 'id'>;
 
-const tsJsHooks: QueryLanguageHooks = {
-  async notExportedIsFilePrivate(filePath, content) {
-    const { hasFilePrivateExportSemantics } = await import('./typescript/file-private-exports.js');
-    return hasFilePrivateExportSemantics(filePath, content);
-  },
-};
-
 const hooks: Partial<Record<SupportedLanguages, QueryLanguageHooks>> = {
   [SupportedLanguages.Python]: pythonQueryHooks,
   [SupportedLanguages.Dart]: dartQueryHooks,
@@ -31,7 +26,7 @@ const hooks: Partial<Record<SupportedLanguages, QueryLanguageHooks>> = {
   [SupportedLanguages.TypeScript]: tsJsHooks,
   [SupportedLanguages.JavaScript]: tsJsHooks,
   [SupportedLanguages.Swift]: swiftQueryHooks,
-  [SupportedLanguages.Zig]: { notExportedIsFilePrivate: true },
+  [SupportedLanguages.Zig]: zigQueryHooks,
 };
 export const providerNonInitializingImportReasons: readonly string[] = [
   ...new Set(

@@ -100,6 +100,23 @@ describe('formatDetectChangesResult — zero-symbol honesty (#3131)', () => {
     expect(text).not.toMatch(/queries failed|No changes detected|no indexed symbols overlap/i);
   });
 
+  it('prints a verified caller when shifted hunks overlap no indexed symbol', () => {
+    const text = formatDetectChangesResult({
+      partial: true,
+      unmapped_files: ['model.py'],
+      summary: {
+        changed_count: 0,
+        changed_files: 1,
+        risk_level: 'high',
+        incompatible_call_count: 1,
+      },
+      incompatible_calls: [{ name: 'charge', filePath: 'use.py', line: 2, keyword: 'legacy' }],
+    });
+    expect(text).toContain('use.py:2');
+    expect(text).toContain('legacy');
+    expect(text).toContain('high');
+  });
+
   it('escapes Git-decoded terminal controls while leaving structured paths intact', () => {
     const diff = [
       'diff --git "a/evil\\033]52;c;VEVTVA==\\007.ts" "b/evil\\033]52;c;VEVTVA==\\007.ts"',

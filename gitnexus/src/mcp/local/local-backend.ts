@@ -16,7 +16,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import {
   scoreImpactRisk,
-  impactEdgePredicate,
+  GLOBAL_NAME_FALLBACK_REASON,
   unusedAxesForImpactWalk,
   getLanguageFromFilename,
   blockedRenameResult,
@@ -68,6 +68,7 @@ import type {
   CallCompatibilityTarget,
 } from '../../core/ingestion/call-compatibility.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
+import { isIndexedDocumentationPath } from '../../core/ingestion/utils/documentation-path.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -1431,7 +1432,9 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
     case 'all':
       return [...args, 'HEAD', '-U0'];
     case 'compare':
-      return baseRef ? [...args, baseRef, '-U0'] : null;
+      return typeof baseRef === 'string' && baseRef.length > 0 && !baseRef.startsWith('-')
+        ? [...args, '-U0', '--end-of-options', baseRef, '--']
+        : null;
     case 'unstaged':
     default:
       return [...args, '-U0'];
@@ -6992,7 +6995,12 @@ export class LocalBackend {
     // Ignore CR-only EOL differences, while preserving meaningful whitespace changes.
     // execFileSync receives an argv array, so refs never pass through a shell.
     const diffArgs = buildDetectChangesDiffArgs(scope, params.base_ref);
-    if (!diffArgs) return { error: 'base_ref is required for "compare" scope' };
+    if (!diffArgs)
+      return {
+        error: params.base_ref
+          ? 'base_ref must be a Git revision for "compare" scope'
+          : 'base_ref is required for "compare" scope',
+      };
 
     let diffOutput: string;
     let diffCwd: string;
@@ -7044,6 +7052,7 @@ export class LocalBackend {
         cwd: diffCwd,
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
+        timeout: 120_000,
         windowsHide: true,
         // Keep Git warnings out of CLI/MCP stderr; failures retain stderr in err.message.
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -7099,11 +7108,13 @@ export class LocalBackend {
     // The graph may still use the pre-rename path, while the caller check
     // needs the destination in the selected post-image.
     const { getQueryProviderForFile, isIndexedSourceFile } = await loadQueryProviders();
+    const checkersByPath = new Map<string, CallCompatibilityProvider>();
     const renamedSourcePaths = new Map<string, string>();
     for (const { filePath, oldFilePath } of fileDiffs) {
+      const provider = getQueryProviderForFile(filePath);
+      if (provider?.callCompatibility) checkersByPath.set(filePath, provider.callCompatibility);
       const hunks = hunksByPath.get(filePath);
       if (hunks && oldFilePath) {
-        const provider = getQueryProviderForFile(filePath);
         if (!provider || provider !== getQueryProviderForFile(oldFilePath)) continue;
         renamedSourcePaths.set(oldFilePath, filePath);
         if (!hunksByPath.has(oldFilePath)) hunksByPath.set(oldFilePath, hunks);
@@ -7162,15 +7173,17 @@ export class LocalBackend {
     // `labels(n)`, not `labels(n)[0]`: it returns the label as a scalar STRING,
     // and subscripting a string is 1-based over its characters, so `[0]` was
     // always "" and `changed_symbols[].type` never carried a type at all.
-    const symbolQuery = `
+    const declarationRowLimit = 16384;
+    const symbolQuery = (includeDeclarations: boolean) => `
         UNWIND $bounds AS b
         MATCH (n) WHERE (n.filePath IN $paths OR ANY(s IN $suffixes WHERE n.filePath ENDS WITH s))
           AND (n.filePath = b.path OR n.filePath ENDS WITH b.suffix)
           AND NOT n.id STARTS WITH 'BasicBlock:'
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
-          AND n.startLine <= b.hi AND n.endLine >= b.lo
+          AND (${includeDeclarations ? 'b.path IN $declarationPaths OR ' : ''}(n.startLine <= b.hi AND n.endLine >= b.lo))
         RETURN b.path AS diffPath, n.id AS id, n.name AS name, labels(n) AS type,
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+        ${includeDeclarations ? `LIMIT ${declarationRowLimit + 1}` : ''}
       `;
 
     // Batches run concurrently: each `executeParameterized` holds one connection
@@ -7178,16 +7191,34 @@ export class LocalBackend {
     // the safety rule documented on `mapConcurrent` itself (`lib/utils.ts`; why
     // the list needs a ceiling at all is in core/lbug/query-batch.ts) — not the
     // single-query sequential rule the arm64 macOS module loop below follows.
+    let declarationScanIncomplete = false;
     const batchResults = await mapConcurrent(
       chunk(bounds, LBUG_QUERY_BATCH_SIZE),
-      (batch) =>
-        executeParameterized(repo.lbugPath, symbolQuery, {
-          bounds: batch,
-          // Both halves of the redundant conjunct, derived from the batch in
-          // hand so the prefilter sees exactly the files this query asks about.
-          paths: batch.map((bound) => bound.path),
-          suffixes: batch.map((bound) => bound.suffix),
-        }),
+      async (batch) => {
+        // Hunk coordinates belong to the post-image. A declaration can move beyond
+        // its indexed span, so the provider compares declarations across both images.
+        const declarationPaths = batch
+          .map(({ path }) => path)
+          .filter((p) => checkersByPath.has(renamedSourcePaths.get(p) ?? p));
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          symbolQuery(declarationPaths.length > 0),
+          {
+            bounds: batch,
+            ...(declarationPaths.length && { declarationPaths }),
+            // Both halves of the redundant conjunct, derived from the batch in
+            // hand so the prefilter sees exactly the files this query asks about.
+            paths: batch.map((bound) => bound.path),
+            suffixes: batch.map((bound) => bound.suffix),
+          },
+        );
+        if (declarationPaths.length && rows.length > declarationRowLimit) {
+          queryDegraded = true;
+          declarationScanIncomplete = true;
+          return rows.slice(0, declarationRowLimit);
+        }
+        return rows;
+      },
       { onError: (error) => logQueryError('detect-changes:file-symbols', error) },
     );
     // A batch whose query failed comes back `undefined`: those symbols are
@@ -7260,35 +7291,27 @@ export class LocalBackend {
     }
 
     const targetsByChecker = new Map<CallCompatibilityProvider, CallCompatibilityTarget[]>();
-    // Rows are sorted by file path, so resolve the capability once per file.
-    let lastFilePath: string | undefined;
-    let checker: CallCompatibilityProvider | undefined;
+    for (const checker of checkersByPath.values()) targetsByChecker.set(checker, []);
+    const indexedTargets = new Map<string, CallCompatibilityTarget>();
     for (const sym of symbolRows) {
       if (unusableRows.has(sym)) continue;
       const diffPath = sym.diffPath;
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
-      const hunks = hunksByPath.get(diffPath) ?? [];
-      if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
       // A suffix fallback is a hint, not proof that this is the changed file.
       const renamedTo = renamedSourcePaths.get(diffPath);
       if (renamedTo && exactlyMatchedPaths.has(renamedTo)) continue;
-      if (sym.filePath === diffPath) mappedPaths.add(renamedTo ?? diffPath);
-      if (changedSymbols.has(sym.id)) continue;
-
       const filePath = renamedTo ?? sym.filePath;
-      if (lastFilePath !== filePath) {
-        checker = getQueryProviderForFile(filePath)?.callCompatibility;
-        lastFilePath = filePath;
-      }
-      if (checker) {
+      const checker = checkersByPath.get(filePath);
+      if (checker && !indexedTargets.has(sym.id)) {
         const target = { id: sym.id, name: sym.name, type: sym.type, filePath };
         if (checker.acceptsTarget(target)) {
-          const group = targetsByChecker.get(checker);
-          if (group) group.push(target);
-          else targetsByChecker.set(checker, [target]);
+          targetsByChecker.get(checker)!.push(target);
+          indexedTargets.set(sym.id, target);
         }
       }
-
+      if (!hunksOverlapRange(hunksByPath.get(diffPath) ?? [], sym.startLine, sym.endLine)) continue;
+      if (sym.filePath === diffPath) mappedPaths.add(renamedTo ?? diffPath);
+      if (changedSymbols.has(sym.id)) continue;
       changedSymbols.set(sym.id, {
         id: sym.id,
         name: sym.name,
@@ -7296,6 +7319,45 @@ export class LocalBackend {
         filePath: sym.filePath,
         change_type: 'touched',
       });
+    }
+
+    let keywordCheck:
+      | import('../../core/analysis/call-compatibility.js').CallCompatibilityReport
+      | undefined;
+    if (targetsByChecker.size) {
+      try {
+        const unavailable = await this.fullSourceUnavailable(repo);
+        const { checkCallCompatibility } =
+          await import('../../core/analysis/call-compatibility.js');
+        keywordCheck = await checkCallCompatibility(
+          repo.lbugPath,
+          { directory: diffCwd, scope, base: params.base_ref, files: fileDiffs },
+          targetsByChecker,
+          logQueryError,
+          unavailable?.reason,
+        );
+        if (declarationScanIncomplete || batchResults.includes(undefined)) {
+          keywordCheck.complete = false;
+          keywordCheck.skipped.push({ reason: 'incomplete-declaration-scan' });
+        }
+      } catch (error) {
+        logQueryError('detect-changes:call-compatibility', error);
+        keywordCheck = {
+          findings: [],
+          complete: false,
+          skipped: [{ reason: 'signature-check-failed' }],
+        };
+      }
+    }
+    const brokenCalls = keywordCheck?.findings ?? [];
+    // A declaration comparison identifies the edited symbol even when the diff
+    // and the index use different lines. Include it in process lookup and counts.
+    for (const call of brokenCalls) {
+      const target = indexedTargets.get(call.target);
+      if (target && !changedSymbols.has(target.id)) {
+        mappedPaths.add(target.filePath);
+        changedSymbols.set(target.id, { ...target, change_type: 'touched' });
+      }
     }
 
     // An empty successful query cannot prove a source diff is safe: its rows
@@ -7318,14 +7380,14 @@ export class LocalBackend {
     // Keep docs-only reviews useful. In mixed diffs report their volume once;
     // section headings should not displace changed code or inflate its count.
     let documentationSections = 0;
-    const markdown = /\.mdx?$/;
     const docsOnly = fileDiffs.every(
       ({ filePath, oldFilePath }) =>
-        markdown.test(filePath) && (!oldFilePath || markdown.test(oldFilePath)),
+        isIndexedDocumentationPath(filePath) &&
+        (!oldFilePath || isIndexedDocumentationPath(oldFilePath)),
     );
     if (!docsOnly) {
       for (const [id, symbol] of changedSymbols) {
-        if (symbol.type === 'Section' && markdown.test(symbol.filePath)) {
+        if (symbol.type === 'Section' && isIndexedDocumentationPath(symbol.filePath)) {
           changedSymbols.delete(id);
           documentationSections++;
         }
@@ -7386,38 +7448,6 @@ export class LocalBackend {
     }
 
     const processCount = affectedProcesses.size;
-    let keywordCheck:
-      | import('../../core/analysis/call-compatibility.js').CallCompatibilityReport
-      | undefined;
-    if (targetsByChecker.size) {
-      try {
-        const unavailable = await this.fullSourceUnavailable(repo);
-        if (unavailable) {
-          keywordCheck = {
-            findings: [],
-            complete: false,
-            skipped: [{ reason: unavailable.reason }],
-          };
-        } else {
-          const { checkCallCompatibility } =
-            await import('../../core/analysis/call-compatibility.js');
-          keywordCheck = await checkCallCompatibility(
-            repo.lbugPath,
-            { directory: diffCwd, scope, base: params.base_ref, files: fileDiffs },
-            targetsByChecker,
-            logQueryError,
-          );
-        }
-      } catch (error) {
-        logQueryError('detect-changes:call-compatibility', error);
-        keywordCheck = {
-          findings: [],
-          complete: false,
-          skipped: [{ reason: 'signature-check-failed' }],
-        };
-      }
-    }
-    const brokenCalls = keywordCheck?.findings ?? [];
     const processRisk =
       processCount > 15
         ? 'critical'
@@ -9152,6 +9182,7 @@ export class LocalBackend {
       }
     }
 
+    let omittedNameOnlyCalls = 0;
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
       if (checkOverloads) {
@@ -9202,9 +9233,9 @@ export class LocalBackend {
       const query =
         direction === 'upstream'
           ? // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
-            `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes AND ${impactEdgePredicate('r')}${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`
+            `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated, r.reason AS reason LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`
           : // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
-            `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes AND ${impactEdgePredicate('r')}${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
+            `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated, r.reason AS reason LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
 
       try {
         const queryParams = {
@@ -9250,18 +9281,29 @@ export class LocalBackend {
           assertSymbolIdentity(queryRowValue(row, 'relType', 5));
         }
 
-        const edges: ImpactFrontierEdge[] = related.map((rel) => ({
-          id: rel.id || rel[1],
-          name: rel.name || rel[2],
-          type: rel.type || rel[3],
-          filePath: rel.filePath || rel[4] || '',
-          relType: rel.relType || rel[5],
-          confidence: rel.confidence ?? rel[6],
-          sourceId: String(rel.sourceId ?? rel[0] ?? ''),
-          // Set only by languages that compute static gating (Zig); null/undefined
-          // from older indexes or other languages reads as live.
-          ...((rel.staticGated ?? rel[7]) === true ? { staticGated: true } : {}),
-        }));
+        const edges: ImpactFrontierEdge[] = [];
+        for (const rel of related) {
+          if (
+            (rel.relType ?? rel[5]) === 'CALLS' &&
+            (rel.reason ?? rel[8]) === GLOBAL_NAME_FALLBACK_REASON
+          ) {
+            if (includeTests || !isTestFilePath(rel.filePath ?? rel[4] ?? ''))
+              omittedNameOnlyCalls++;
+            continue;
+          }
+          edges.push({
+            id: rel.id || rel[1],
+            name: rel.name || rel[2],
+            type: rel.type || rel[3],
+            filePath: rel.filePath || rel[4] || '',
+            relType: rel.relType || rel[5],
+            confidence: rel.confidence ?? rel[6],
+            sourceId: String(rel.sourceId ?? rel[0] ?? ''),
+            // Set only by languages that compute static gating (Zig); null/undefined
+            // from older indexes or other languages reads as live.
+            ...((rel.staticGated ?? rel[7]) === true ? { staticGated: true } : {}),
+          });
+        }
 
         if (depth === 1) edges.push(...typeImportEdges);
 
@@ -9365,7 +9407,7 @@ export class LocalBackend {
           ? [...new Set([...nextFrontier, ...objectCallableFrontier])]
           : nextFrontier;
     }
-    const incompleteWalk = !traversalComplete;
+    const incompleteWalk = !traversalComplete || omittedNameOnlyCalls > 0;
 
     // Stamp the finalized, order-independent bridge evidence (strongest across
     // all parents) onto each impacted item. Deferred from the BFS loop so a
@@ -9858,41 +9900,50 @@ export class LocalBackend {
       risk,
       riskSharedAxes,
       riskScale,
-      ...(risk === 'UNKNOWN'
+      ...(omittedNameOnlyCalls > 0
         ? {
-            riskNote: typeImportsIncomplete
-              ? 'Some module imports could not be attributed to the target type from indexed source within the inspection limits. The observed callers are a lower bound.'
-              : traversalCapped
-                ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
-                  `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
-                  'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
-                  'before treating the change as safe.'
-                : incompleteWalk
-                  ? 'Impact traversal was incomplete. The observed caller count is a lower bound. Retry impact before treating the change as safe.'
-                  : processQueryFailed || moduleQueryFailed
-                    ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
-                      'are lower bounds; retry impact before treating the change as safe.'
-                    : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
-                      ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
-                        'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
-                        'treating the change as safe.'
-                      : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
-                        'a caller reaching it through a reference class this index does not record — ' +
-                        'plain-object property access, a bare-identifier read of a module-scope const — ' +
-                        'produces no edge to find. Confirm with a text search before treating the ' +
-                        'change as safe.',
+            riskNote:
+              'Calls resolved by name alone were omitted. The observed impact is a lower bound.',
           }
-        : {}),
+        : risk === 'UNKNOWN'
+          ? {
+              riskNote: typeImportsIncomplete
+                ? 'Some module imports could not be attributed to the target type from indexed source within the inspection limits. The observed callers are a lower bound.'
+                : traversalCapped
+                  ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
+                    `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
+                    'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
+                    'before treating the change as safe.'
+                  : incompleteWalk
+                    ? 'Impact traversal was incomplete. The observed caller count is a lower bound. Retry impact before treating the change as safe.'
+                    : processQueryFailed || moduleQueryFailed
+                      ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
+                        'are lower bounds; retry impact before treating the change as safe.'
+                      : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
+                        ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
+                          'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
+                          'treating the change as safe.'
+                        : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+                          'a caller reaching it through a reference class this index does not record — ' +
+                          'plain-object property access, a bare-identifier read of a module-scope const — ' +
+                          'produces no edge to find. Confirm with a text search before treating the ' +
+                          'change as safe.',
+            }
+          : {}),
       ...epistemic,
-      ...(typeImportsIncomplete &&
+      ...((typeImportsIncomplete || omittedNameOnlyCalls > 0) &&
         !opts.skipEpistemic && {
           epistemic: 'lower-bound',
           boundaries: [
             ...(epistemic.boundaries ?? []),
-            'Indexed module imports could not all be attributed to the target type.',
+            ...(typeImportsIncomplete
+              ? ['Indexed module imports could not all be attributed to the target type.']
+              : []),
+            ...(omittedNameOnlyCalls ? ['Calls resolved by name alone were omitted.'] : []),
           ],
         }),
-      ...((!traversalComplete || enrichmentDegraded) && { partial: true }),
+      ...(omittedNameOnlyCalls > 0 && { omittedNameOnlyCalls }),
+      ...((incompleteWalk || enrichmentDegraded) && { partial: true }),
       summary: {
         direct: directCount,
         processes_affected: processCount,

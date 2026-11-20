@@ -319,7 +319,7 @@ import {
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
 import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
-import { generateAIContextFiles } from '../cli/ai-context.js';
+import { generateAIContextFiles, hasInstructionBlock } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
@@ -3271,7 +3271,7 @@ async function runFullAnalysisInner(
           (options.registryName ||
             (options.instructionFile &&
               !options.skipAgentsMd &&
-              !existsSync(path.join(repoPath, options.instructionFile))))
+              !(await hasInstructionBlock(path.join(repoPath, options.instructionFile)))))
         ) {
           try {
             await generateAIContextFiles(

@@ -168,6 +168,14 @@ const SEED = [
 
   `MATCH (f:File {id:'py:file:DatabaseClient'}) SET f.content = "__all__ = ['DatabaseClient']\\nclass DatabaseClient: pass\nclass ShadowOnly: pass"`,
   `MATCH (f:File {id:'py:file:app'}) SET f.content = 'from db.database_client import Order'`,
+  `CREATE (:File {id:'doc:guide', name:'guide.md', filePath:'guide.md', content:'The DatabaseClient API'})`,
+  `MATCH (caller:File {id:'ts:file:app'}), (doc:File {id:'doc:guide'}) CREATE (caller)-[:CodeRelation {type:'IMPORTS', reason:'markdown-link'}]->(doc)`,
+  `MATCH (doc:File {id:'doc:guide'}), (owner:File {id:'py:file:DatabaseClient'}) CREATE (doc)-[:CodeRelation {type:'IMPORTS', reason:'markdown-link'}]->(owner)`,
+  `CREATE (:Class {id:'Class:src/ledger.py:账单记录', name:'账单记录', filePath:'src/ledger.py', startLine:0, endLine:0})`,
+  `CREATE (:File {id:'File:src/ledger.py', name:'ledger.py', filePath:'src/ledger.py', content:'class 账单 单记 记录: pass'})`,
+  `CREATE (:File {id:'File:src/consumer.py', name:'consumer.py', filePath:'src/consumer.py', content:'from ledger import 账单 单记 记录'})`,
+  `MATCH (f:File {id:'File:src/ledger.py'}), (c:Class {id:'Class:src/ledger.py:账单记录'}) CREATE (f)-[:CodeRelation {type:'DEFINES'}]->(c)`,
+  `MATCH (a:File {id:'File:src/consumer.py'}), (f:File {id:'File:src/ledger.py'}) CREATE (a)-[:CodeRelation {type:'IMPORTS', confidence:1.0}]->(f)`,
   `CREATE (:Class {id:'py:class:ShadowOnly', name:'ShadowOnly', filePath:'src/db/database_client.py', startLine:3, endLine:3, isExported:true})`,
   `MATCH (f:File {id:'py:file:DatabaseClient'}), (c:Class {id:'py:class:ShadowOnly'}) CREATE (f)-[:CodeRelation {type:'DEFINES', confidence:1.0}]->(c)`,
   ...Object.entries(pythonImporters).flatMap(([name, source]) => [
@@ -254,6 +262,7 @@ const SEED = [
   ),
 
   // C — non-JVM
+  `CREATE (:Function {id:'c:fn:unbound', name:'uses_pool', filePath:'src/other.c', startLine:0, endLine:2})`,
   ...nonJvmNodes(
     'c',
     'c',
@@ -265,6 +274,7 @@ const SEED = [
     'src/runtime/runtime.c',
     'src/main.c',
   ),
+  `MATCH (a:Function {id:'c:fn:unbound'}), (b:Class {id:'c:class:MemoryPool'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.5, reason:'global-name-fallback'}]->(b)`,
 
   // C++ — non-JVM
   ...nonJvmNodes(
@@ -347,6 +357,37 @@ withTestLbugDB(
     let backend: LocalBackend;
     beforeAll(() => {
       backend = (handle as any)._backend;
+    });
+
+    it('finds an imported name when retained content uses Han bigrams', async () => {
+      const result = await backend.callTool('impact', {
+        target: '账单记录',
+        direction: 'upstream',
+        maxDepth: 1,
+      });
+      expect(result.partial).toBeUndefined();
+      expect(result.byDepth[1]).toEqual(
+        expect.arrayContaining([expect.objectContaining({ filePath: 'src/consumer.py' })]),
+      );
+    });
+
+    it('counts bound C callers and discloses a name-only edge at the confidence floor', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'MemoryPool',
+        direction: 'upstream',
+        maxDepth: 1,
+        minConfidence: 0.5,
+      });
+      expect(result).toMatchObject({
+        risk: 'UNKNOWN',
+        epistemic: 'lower-bound',
+        partial: true,
+        omittedNameOnlyCalls: 1,
+      });
+      expect(result.byDepth[1].map((item: { name: string }) => item.name)).toContain('allocate');
+      expect(result.byDepth[1].map((item: { name: string }) => item.name)).not.toContain(
+        'uses_pool',
+      );
     });
 
     it('dispatches type import attribution through the selected provider', async () => {
@@ -571,6 +612,8 @@ withTestLbugDB(
       const fileHashes: Record<string, string> = {};
       const sources = {
         ...pythonImporters,
+        'ledger.py': 'class 账单记录: pass',
+        'consumer.py': 'from ledger import 账单记录',
         'registry.py': registryBytes,
         'db/database_client.py':
           "__all__ = ['DatabaseClient']\nclass DatabaseClient: pass\nclass ShadowOnly: pass",

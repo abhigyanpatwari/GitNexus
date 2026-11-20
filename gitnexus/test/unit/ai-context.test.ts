@@ -2372,6 +2372,23 @@ Indexed as **${name}**${counts}. Lean block.
     }
   });
 
+  it('keeps the custom parenthetical when the project name changes', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-note-'));
+    try {
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed('Old', ' (preview)'));
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'New', {
+        nodes: 12,
+        edges: 20,
+        processes: 3,
+      });
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf8')).toBe(
+        seed('New', ' (preview)'),
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the existing stats-line prefix when updating a keep marker', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-prefix-'));
     const storage = path.join(dir, '.gitnexus');

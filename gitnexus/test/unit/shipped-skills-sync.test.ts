@@ -212,10 +212,11 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // line), so the fragments here are the parts every copy shares.
   it('keeps the partial/truncated degradation guidance in every impact-analysis copy', () => {
     const required = [
-      '`partial: true` (a graph query failed) or `truncated: true` (the changed-symbol',
-      'listing was capped)',
-      'a zero there means unseen, not unaffected.',
-      'tick the pre-commit check.',
+      '`partial: true`',
+      '`truncated: true`',
+      '`unmapped_files`',
+      '`incompatible_call_skips`',
+      'investigate incomplete coverage before committing.',
     ];
     const copies = standardSkillCopies('gitnexus-impact-analysis');
     // Guard the guard: an empty copy list would make the loop below vacuous.

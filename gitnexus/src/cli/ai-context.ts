@@ -86,6 +86,12 @@ function findSectionMarkerIndex(content: string, marker: string, startFrom = 0):
   return -1;
 }
 
+export async function hasInstructionBlock(filePath: string): Promise<boolean> {
+  const content = await fs.readFile(filePath, 'utf8').catch(() => '');
+  const start = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+  return start >= 0 && findSectionMarkerIndex(content, GITNEXUS_END_MARKER, start) >= 0;
+}
+
 /**
  * Generate the full GitNexus context content.
  *
@@ -525,9 +531,13 @@ async function upsertGitNexusSection(
 
       if (statsMatch) {
         const statsPrefix = statsMatch[1];
-        const statsLine = noStats
-          ? `${statsPrefix} **${projectName}**`
-          : `${statsPrefix} **${projectName}** (${newStatsInner})`;
+        const customParenthetical =
+          !statsMatch[3] &&
+          /^\s*\(/.test(existingSection.slice(statsMatch.index! + statsMatch[0].length));
+        const statsLine =
+          noStats || customParenthetical
+            ? `${statsPrefix} **${projectName}**`
+            : `${statsPrefix} **${projectName}** (${newStatsInner})`;
         const updatedSection = existingSection.replace(STATS_LINE_PATTERN, () => statsLine);
         // Background refreshes preserve count-only changes in lean blocks (#2907).
         if (comparable(updatedSection) === comparable(existingSection)) {

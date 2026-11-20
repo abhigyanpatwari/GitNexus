@@ -278,7 +278,8 @@ withTestLbugDB(
           id: string;
         }[];
         const calls = "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALLS'";
-        const reasons = ' RETURN r.reason AS reason ORDER BY reason';
+        const reasons =
+          ' RETURN r.reason AS reason, r.confidence AS confidence ORDER BY reason, confidence';
         const baseline = await executeQuery(calls + reasons);
         try {
           for (const [type, reason] of [
@@ -293,8 +294,10 @@ withTestLbugDB(
             );
           }
           const before = await executeQuery(calls + ' AND ' + impactEdgePredicate('r') + reasons);
-          expect(before).toContainEqual({ reason: 'test-bound-call' });
-          expect(before).not.toContainEqual({ reason: 'global-name-fallback' });
+          expect(before).toContainEqual({ reason: 'test-bound-call', confidence: 0.5 });
+          expect(before).not.toContainEqual(
+            expect.objectContaining({ reason: 'global-name-fallback' }),
+          );
           await expect(deleteGlobalResolutionEdges()).resolves.toEqual({ edgesDeleted: 3 });
           expect(await executeQuery(calls + reasons)).toEqual(before);
         } finally {

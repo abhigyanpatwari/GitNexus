@@ -4,7 +4,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { getProviderForFile } from '../../src/core/ingestion/languages/index.js';
+import * as signatureImages from '../../src/core/ingestion/languages/python/signature-images.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
+
+// Pass-through by default; one test replaces a single caller-image read.
+vi.mock('../../src/core/ingestion/languages/python/signature-images.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof signatureImages>();
+  return { ...actual, callerImages: vi.fn(actual.callerImages) };
+});
 
 const capability = getProviderForFile('model.py')?.callCompatibility;
 if (!capability) throw new Error('Missing named-argument compatibility provider');
@@ -133,11 +140,17 @@ it.each(['all', 'staged', 'compare'])(
       filePath,
     };
     await fs.writeFile(path.join(dir, filePath), 'def charge(legacy=None): pass\n');
-    await fs.writeFile(
-      path.join(dir, 'Use.PY'),
-      'from Billing import charge\ncharge(legacy=True)\n',
-    );
+    // `use.py` already exists: on a case-insensitive checkout `Use.PY` would
+    // overwrite it and Git would keep the lowercase path.
+    const caller = 'Pay.PY';
+    await fs.writeFile(path.join(dir, caller), 'from Billing import charge\ncharge(legacy=True)\n');
     commitAll(dir, 'original mixed-case target');
+    expect(
+      execFileSync('git', ['ls-files', '--', caller, filePath], { cwd: dir, encoding: 'utf8' })
+        .trim()
+        .split('\n')
+        .sort(),
+    ).toEqual([filePath, caller]);
     await fs.writeFile(path.join(dir, filePath), 'def charge(): pass\n');
     execFileSync('git', ['add', filePath], { cwd: dir });
     if (scope === 'compare') commitAll(dir, 'remove legacy');
@@ -146,11 +159,11 @@ it.each(['all', 'staged', 'compare'])(
       scope,
       scope === 'compare' ? 'HEAD^' : undefined,
       [mixedTarget],
-      async () => [{ target: mixedTarget.id, filePath: 'Use.PY', relationType: 'CALLS' }],
+      async () => [{ target: mixedTarget.id, filePath: caller, relationType: 'CALLS' }],
     );
     expect(result).toMatchObject({
       complete: false,
-      findings: [{ filePath: 'Use.PY', target: mixedTarget.id, keyword: 'legacy' }],
+      findings: [{ filePath: caller, target: mixedTarget.id, keyword: 'legacy' }],
       skipped: [{ filePath, reason: expect.stringContaining('missing from the index') }],
     });
     const withoutEdge = await findBrokenKeywordCalls(
@@ -219,21 +232,48 @@ it('prefers an exact module suffix and reports ambiguity between other staged sp
   });
 });
 
-it.each(['', '# declaration removed\n'])(
-  'discloses a removed declaration in a surviving file',
-  async (source) => {
-    await fs.writeFile(path.join(dir, 'model.py'), source);
-    execFileSync('git', ['add', 'model.py'], { cwd: dir });
-    for (const scope of ['staged', 'all']) {
-      const result = await findBrokenKeywordCalls(dir, scope, undefined, [target], incoming);
-      expect(result).toMatchObject({
-        complete: false,
-        findings: [],
-        skipped: [{ filePath: 'model.py', reason: expect.stringContaining('Invoice') }],
-      });
-    }
-  },
-);
+it.each([
+  ['an empty module', ''],
+  ['a comment-only module', '# declaration removed\n'],
+])('discloses a called declaration removed from %s', async (_, source) => {
+  await fs.writeFile(path.join(dir, 'model.py'), source);
+  execFileSync('git', ['add', 'model.py'], { cwd: dir });
+  for (const scope of ['staged', 'all']) {
+    const result = await findBrokenKeywordCalls(dir, scope, undefined, [target], incoming);
+    expect(result).toEqual({
+      complete: false,
+      findings: [],
+      skipped: [
+        {
+          filePath: 'model.py',
+          reason: 'Declaration removed; keyword compatibility unavailable for Invoice',
+        },
+      ],
+    });
+  }
+});
+
+it('keeps a removed declaration clean when every indexed caller in the diff dropped the call', async () => {
+  await fs.writeFile(path.join(dir, 'model.py'), '');
+  await fs.writeFile(path.join(dir, 'use.py'), 'def build():\n    return None\n');
+  expect(
+    await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming, [
+      { filePath: 'model.py' },
+      { filePath: 'use.py' },
+    ]),
+  ).toEqual({ complete: true, findings: [], skipped: [] });
+});
+
+it('does not withhold a clean check for a removed declaration without callers', async () => {
+  await fs.writeFile(path.join(dir, 'model.py'), '');
+  const calls = vi.fn(async () => []);
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], calls)).toEqual({
+    complete: true,
+    findings: [],
+    skipped: [],
+  });
+  expect(calls).toHaveBeenCalledWith([target.id]);
+});
 
 it('reads nested re-exports under literal pathspecs and treats an empty module as having no exports', async () => {
   await fs.mkdir(path.join(dir, 'pkg'));
@@ -868,4 +908,443 @@ it('checks a 2,000-line caller with few bindings even beyond the small-tree cuto
     complete: true,
     findings: [{ line: 2002, keyword: 'legacy' }],
   });
+});
+
+it('checks literal ** keys and discloses computed ** mappings for a removed named keyword', async () => {
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    [
+      'from model import Invoice',
+      "Invoice(**{'legacy': True})",
+      'Invoice(**options)',
+      "Invoice(**{'other': True})",
+    ].join('\n'),
+  );
+  commitAll(dir, 'mapping callers');
+  await writeModel('');
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming);
+  expect(result.findings).toEqual([
+    { target: target.id, name: 'Invoice', filePath: 'use.py', line: 2, keyword: 'legacy' },
+  ]);
+  expect(result).toMatchObject({
+    complete: false,
+    skipped: [
+      { filePath: 'use.py', reason: 'Cannot verify keys supplied by ** at a call to Invoice' },
+    ],
+  });
+});
+
+it('admits a ** caller even when the removed keyword is not written in the file', async () => {
+  await fs.writeFile(path.join(dir, 'use.py'), 'from model import Invoice\nInvoice(**options)\n');
+  commitAll(dir, 'mapping-only caller');
+  await writeModel('');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toMatchObject({
+    complete: false,
+    findings: [],
+    skipped: [{ filePath: 'use.py', reason: expect.stringContaining('**') }],
+  });
+});
+
+it('discloses computed mappings through a renamed re-export for indexed and new callers', async () => {
+  const caller = 'from facade import Bill\nBill(**options)\n';
+  await fs.writeFile(path.join(dir, 'facade.py'), 'from model import Invoice as Bill\n');
+  await fs.writeFile(path.join(dir, 'use.py'), caller);
+  commitAll(dir, 'an indexed caller through a facade');
+  await writeModel('');
+  await fs.writeFile(path.join(dir, 'new.py'), caller);
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming, [
+    { filePath: 'model.py' },
+    { filePath: 'new.py' },
+  ]);
+  expect(result.complete).toBe(false);
+  expect(result.skipped).toEqual(
+    ['new.py', 'use.py'].map((filePath) => ({
+      filePath,
+      reason: 'Cannot verify keys supplied by ** at a call to Invoice',
+    })),
+  );
+});
+
+it('attributes parenthesized callees, spaced dotted names and local aliases to the changed target', async () => {
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    [
+      'import model',
+      'from model import Invoice',
+      '(Invoice)(legacy=True)',
+      'model . Invoice(legacy=True)',
+      'Bill = Invoice',
+      'Bill(legacy=True)',
+      'Qualified = model.Invoice',
+      'Qualified(legacy=True)',
+      'from elsewhere import Other',
+      'Unrelated = Other',
+      'Unrelated(legacy=True)',
+    ].join('\n'),
+  );
+  commitAll(dir, 'callee spellings');
+  await writeModel('');
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming);
+  expect(result).toMatchObject({ complete: true, skipped: [] });
+  expect(result.findings.map((call) => call.line)).toEqual([3, 4, 6, 8]);
+});
+
+it('discloses an ambiguous alias that may name the changed target and keeps unrelated calls silent', async () => {
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    [
+      'from model import Invoice',
+      'from elsewhere import Other',
+      'Maker = Invoice',
+      'if flag:',
+      '    Maker = Other',
+      'Maker(legacy=True)',
+      'def build(factory):',
+      '    factory(legacy=True)',
+      '    return Other(legacy=True)',
+    ].join('\n'),
+  );
+  commitAll(dir, 'ambiguous alias');
+  await writeModel('');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual({
+    complete: false,
+    findings: [],
+    skipped: [{ filePath: 'use.py', reason: 'A conditional binding at line 6 may call Invoice' }],
+  });
+});
+
+it('attributes cls, type(self) and self.__class__ inside the changed class only', async () => {
+  const model = (params: string) =>
+    [
+      'class Invoice:',
+      `    def __init__(self${params}):`,
+      '        pass',
+      '    @classmethod',
+      '    def make(cls):',
+      '        return cls(legacy=True)',
+      '    def copy(self):',
+      '        return type(self)(legacy=True)',
+      '    def clone(self):',
+      '        return self.__class__(legacy=True)',
+      '    @staticmethod',
+      '    def build(cls):',
+      '        return cls(legacy=True)',
+      'class Other:',
+      '    def __init__(self, legacy=True):',
+      '        pass',
+      '    @classmethod',
+      '    def make(cls):',
+      '        return cls(legacy=True)',
+      '',
+    ].join('\n');
+  await fs.writeFile(path.join(dir, 'model.py'), model(', legacy=True'));
+  commitAll(dir, 'receivers');
+  await fs.writeFile(path.join(dir, 'model.py'), model(''));
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], async () => [], [
+    { filePath: 'model.py' },
+  ]);
+  expect(result).toMatchObject({ complete: true, skipped: [] });
+  expect(result.findings.map((call) => call.line)).toEqual([6, 8, 10]);
+});
+
+it.each([
+  ['a decorated dataclass', '@dataclass\nclass Invoice:\n    legacy: bool = False\n'],
+  ['a class with a metaclass', 'class Invoice(metaclass=Meta):\n    legacy = None\n'],
+  [
+    'a conditional initializer',
+    'class Invoice:\n    if flag:\n        def __init__(self, legacy=None): pass\n',
+  ],
+])('keeps a method body edit clean for %s', async (_, header) => {
+  const model = (body: string) => header + '    def total(self):\n        return ' + body + '\n';
+  await fs.writeFile(path.join(dir, 'model.py'), model('1'));
+  commitAll(dir, 'opaque constructor');
+  await fs.writeFile(path.join(dir, 'model.py'), '"""Edited module."""\n' + model('2'));
+  const calls = vi.fn(incoming);
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], calls)).toEqual({
+    complete: true,
+    findings: [],
+    skipped: [],
+  });
+  expect(calls).not.toHaveBeenCalled();
+});
+
+it('discloses a changed dataclass field instead of reporting the class clean', async () => {
+  await fs.writeFile(
+    path.join(dir, 'model.py'),
+    '@dataclass\nclass Invoice:\n    legacy: bool = False\n',
+  );
+  commitAll(dir, 'dataclass');
+  await fs.writeFile(path.join(dir, 'model.py'), '@dataclass\nclass Invoice:\n    pass\n');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual({
+    complete: false,
+    findings: [],
+    skipped: [{ filePath: 'model.py', reason: 'Signature unavailable or ambiguous for Invoice' }],
+  });
+});
+
+it.each([
+  [
+    'a same-file chain of plain and builtin bases',
+    'class Root:\n    pass\nclass Base(Root, Exception):\n    pass\n',
+    { complete: true, findings: [{ filePath: 'use.py', line: 5 }] },
+  ],
+  [
+    'a same-file base with a metaclass',
+    'class Base(metaclass=Meta):\n    pass\n',
+    {
+      complete: false,
+      findings: [],
+      skipped: [{ filePath: 'use.py', reason: expect.stringContaining('metaclass') }],
+    },
+  ],
+  [
+    'an imported base',
+    'from framework import Base\n',
+    {
+      complete: false,
+      findings: [],
+      skipped: [{ filePath: 'use.py', reason: expect.stringContaining('metaclass') }],
+    },
+  ],
+])(
+  'reports a constructor through %s only when the default metaclass is proven',
+  async (_, base, expected) => {
+    const model = (params: string) =>
+      base + `class Invoice(Base):\n    def __init__(self${params}):\n        pass\n`;
+    await fs.writeFile(path.join(dir, 'model.py'), model(', legacy=True'));
+    commitAll(dir, 'base chain');
+    await fs.writeFile(path.join(dir, 'model.py'), model(''));
+    expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toMatchObject(
+      expected,
+    );
+  },
+);
+
+it('discloses a changed signature that has no supplied target, but not a body-only edit', async () => {
+  const lib = (params: string, body: string) =>
+    `def target(amount${params}):\n    return ${body}\n\ndef pad10():\n    return 10\n`;
+  await fs.writeFile(path.join(dir, 'lib.py'), lib(', legacy=False', 'amount'));
+  commitAll(dir, 'library');
+  const pad = { id: 'Function:lib.py:pad10', name: 'pad10', type: 'Function', filePath: 'lib.py' };
+  const check = () =>
+    findBrokenKeywordCalls(dir, 'all', undefined, [pad], async () => [], [{ filePath: 'lib.py' }]);
+  await fs.writeFile(path.join(dir, 'lib.py'), '# moved\n'.repeat(6) + lib(', legacy=False', '0'));
+  expect(await check()).toEqual({ complete: true, findings: [], skipped: [] });
+  await fs.writeFile(path.join(dir, 'lib.py'), '# moved\n'.repeat(6) + lib('', 'amount'));
+  expect(await check()).toEqual({
+    complete: false,
+    findings: [],
+    skipped: [
+      {
+        filePath: 'lib.py',
+        reason: 'Signature changed for target, but no indexed target was supplied',
+      },
+    ],
+  });
+});
+
+it('discloses a re-export retargeted to an incompatible definition without indexed targets', async () => {
+  await fs.writeFile(path.join(dir, 'old_impl.py'), 'def save(amount, legacy=False): pass\n');
+  await fs.writeFile(path.join(dir, 'new_impl.py'), 'def save(amount): pass\n');
+  await fs.writeFile(path.join(dir, 'same_impl.py'), 'def save(amount, legacy=True): pass\n');
+  await fs.writeFile(path.join(dir, 'api.py'), 'from old_impl import save\n');
+  commitAll(dir, 're-export');
+  const check = () =>
+    findBrokenKeywordCalls(dir, 'all', undefined, [], async () => [], [{ filePath: 'api.py' }]);
+  await fs.writeFile(path.join(dir, 'api.py'), 'from same_impl import save\n');
+  expect(await check()).toEqual({ complete: true, findings: [], skipped: [] });
+  await fs.writeFile(path.join(dir, 'api.py'), 'from new_impl import save\n');
+  expect(await check()).toEqual({
+    complete: false,
+    findings: [],
+    skipped: [
+      {
+        filePath: 'api.py',
+        reason:
+          'Re-export save now resolves to new_impl.py instead of old_impl.py; keyword calls through this module are not verified',
+      },
+    ],
+  });
+  const restricted = await findBrokenKeywordCalls(
+    dir,
+    'all',
+    undefined,
+    [],
+    async () => [],
+    [{ filePath: 'api.py' }],
+    'caller source unavailable',
+  );
+  expect(restricted).toMatchObject({
+    complete: false,
+    skipped: [{ filePath: 'api.py', reason: expect.stringContaining('Re-export save') }],
+  });
+});
+
+it('follows a definition that moved behind a re-export to its callers', async () => {
+  await fs.writeFile(path.join(dir, 'billing.py'), 'def charge(): pass\n');
+  await fs.writeFile(path.join(dir, 'model.py'), 'def charge(legacy=None): pass\n');
+  await fs.writeFile(path.join(dir, 'use.py'), 'from model import charge\ncharge(legacy=True)\n');
+  commitAll(dir, 'local definition');
+  await fs.writeFile(path.join(dir, 'model.py'), 'from billing import charge\n');
+  const charge = {
+    id: 'Function:model.py:charge',
+    name: 'charge',
+    type: 'Function',
+    filePath: 'model.py',
+  };
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [charge], async () => [
+    { target: charge.id, filePath: 'use.py', relationType: 'CALLS' },
+  ]);
+  expect(result).toEqual({
+    complete: true,
+    findings: [
+      { target: charge.id, name: 'charge', filePath: 'use.py', line: 2, keyword: 'legacy' },
+    ],
+    skipped: [],
+  });
+});
+
+it('stops before parsing a caller once the extraction budget is spent', async () => {
+  const callers = Array.from({ length: 300 }, (_, i) => `c${String(i).padStart(3, '0')}.py`);
+  for (const file of callers)
+    await fs.writeFile(path.join(dir, file), 'from model import Invoice\nInvoice(legacy=True)\n');
+  await fs.writeFile(path.join(dir, 'z.py'), 'from model import Invoice\nInvoice(legacy=\n');
+  await writeModel('');
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], async () =>
+    [...callers, 'z.py'].map((filePath) => ({
+      target: target.id,
+      filePath,
+      relationType: 'CALLS',
+    })),
+  );
+  expect(result.findings.length).toBeGreaterThan(200);
+  expect(result.skipped).toContainEqual({
+    filePath: 'z.py',
+    reason: 'Python scope extraction budget exceeded',
+  });
+});
+
+it('keeps findings already proven when a later caller image cannot be read', async () => {
+  const actual = await vi.importActual<typeof signatureImages>(
+    '../../src/core/ingestion/languages/python/signature-images.js',
+  );
+  vi.mocked(signatureImages.callerImages).mockImplementationOnce(async function* (cwd, rev, files) {
+    yield* actual.callerImages(cwd, rev, files.slice(0, 1));
+    throw new Error('git cat-file failed');
+  });
+  for (const file of ['a.py', 'b.py'])
+    await fs.writeFile(path.join(dir, file), 'from model import Invoice\nInvoice(legacy=True)\n');
+  await writeModel('');
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], async () =>
+    ['a.py', 'b.py'].map((filePath) => ({ target: target.id, filePath, relationType: 'CALLS' })),
+  );
+  expect(result).toEqual({
+    complete: false,
+    findings: [
+      { target: target.id, name: 'Invoice', filePath: 'a.py', line: 2, keyword: 'legacy' },
+    ],
+    skipped: [
+      {
+        filePath: 'b.py',
+        reason:
+          'Caller images could not be read from Git; later files were not checked (git cat-file failed)',
+      },
+    ],
+  });
+});
+
+it('discloses a call whose name a conditional import may bind to the changed target', async () => {
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    [
+      'try:',
+      '    from model import Invoice',
+      'except ImportError:',
+      '    from elsewhere import Invoice',
+      'Invoice(legacy=True)',
+    ].join('\n'),
+  );
+  commitAll(dir, 'conditional import');
+  await writeModel('');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual({
+    complete: false,
+    findings: [],
+    skipped: [{ filePath: 'use.py', reason: 'A conditional binding at line 5 may call Invoice' }],
+  });
+});
+
+it('checks calls inside the diff without reading indexed callers or other modules when caller source is unavailable', async () => {
+  await fs.writeFile(path.join(dir, 'bridge.py'), 'from model import Invoice\n');
+  commitAll(dir, 'bridge');
+  await writeModel('');
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    'from model import Invoice\nfrom bridge import Invoice as Bridged\nInvoice(legacy=True)\nBridged(legacy=True)\n',
+  );
+  const calls = vi.fn(incoming);
+  const result = await findBrokenKeywordCalls(
+    dir,
+    'all',
+    undefined,
+    [target],
+    calls,
+    [{ filePath: 'model.py' }, { filePath: 'use.py' }],
+    'caller source unavailable',
+  );
+  expect(calls).not.toHaveBeenCalled();
+  expect(result).toEqual({
+    complete: false,
+    findings: [
+      { target: target.id, name: 'Invoice', filePath: 'use.py', line: 3, keyword: 'legacy' },
+    ],
+    skipped: [
+      { filePath: 'model.py', reason: 'caller source unavailable' },
+      { filePath: 'bridge.py', reason: 'caller source unavailable' },
+    ],
+  });
+});
+
+it('does not spend scope extractions on unrelated ** calls in a large diff', async () => {
+  const files = Array.from({ length: 40 }, (_, i) => `helpers${i}.py`);
+  for (const file of files)
+    await fs.writeFile(
+      path.join(dir, file),
+      'from helpers import helper\n' +
+        Array.from({ length: 400 }, (_, i) => `helper(x${i}, **options)`).join('\n'),
+    );
+  await writeModel('');
+  const result = await findBrokenKeywordCalls(
+    dir,
+    'all',
+    undefined,
+    [target],
+    incoming,
+    [...files, 'model.py'].map((filePath) => ({ filePath })),
+  );
+  expect(result).toEqual({
+    complete: true,
+    findings: [
+      { target: target.id, name: 'Invoice', filePath: 'use.py', line: 5, keyword: 'legacy' },
+    ],
+    skipped: [],
+  });
+});
+
+it('anchors a moved definition on a multi-name re-export statement', async () => {
+  await fs.writeFile(path.join(dir, 'billing.py'), 'def charge(): pass\ndef other(): pass\n');
+  await fs.writeFile(path.join(dir, 'model.py'), 'def charge(legacy=None): pass\n');
+  await fs.writeFile(path.join(dir, 'use.py'), 'from model import charge\ncharge(legacy=True)\n');
+  commitAll(dir, 'local definition');
+  await fs.writeFile(path.join(dir, 'model.py'), 'from billing import other, charge\n');
+  const charge = {
+    id: 'Function:model.py:charge',
+    name: 'charge',
+    type: 'Function',
+    filePath: 'model.py',
+  };
+  expect(
+    await findBrokenKeywordCalls(dir, 'all', undefined, [charge], async () => [
+      { target: charge.id, filePath: 'use.py', relationType: 'CALLS' },
+    ]),
+  ).toMatchObject({ complete: true, findings: [{ filePath: 'use.py', line: 2 }] });
 });

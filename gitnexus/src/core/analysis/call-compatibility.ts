@@ -24,8 +24,10 @@ export async function checkCallCompatibility(
   },
   groups: ReadonlyMap<CallCompatibilityProvider, CallCompatibilityTarget[]>,
   onError: (context: string, error: unknown) => void,
+  callerSourceUnavailable?: string,
 ): Promise<CallCompatibilityReport> {
   const report: CallCompatibilityReport = { findings: [], complete: true, skipped: [] };
+  const unavailable = new Error('Caller source unavailable');
   for (const [checker, targets] of groups) {
     try {
       const result = await checker.check(
@@ -34,6 +36,9 @@ export async function checkCallCompatibility(
         image.base,
         targets,
         async (targetIds) => {
+          // A declaration-only comparison uses the selected diff images. Enforce
+          // retention before a changed signature can trigger any caller reads.
+          if (callerSourceUnavailable) throw unavailable;
           const batches = await mapConcurrent(
             chunk(targetIds, LBUG_ID_PROBE_BATCH_SIZE),
             (ids) =>
@@ -55,11 +60,17 @@ export async function checkCallCompatibility(
           return batches.flatMap((rows) => rows ?? []);
         },
         image.files,
+        callerSourceUnavailable,
       );
       for (const call of result.findings) report.findings.push(call);
       for (const entry of result.skipped) report.skipped.push(entry);
       if (!result.complete) report.complete = false;
     } catch (error) {
+      if (error === unavailable && callerSourceUnavailable) {
+        report.complete = false;
+        report.skipped.push({ reason: callerSourceUnavailable });
+        continue;
+      }
       onError('detect-changes:call-compatibility', error);
       report.complete = false;
       report.skipped.push({ reason: 'signature-check-failed' });

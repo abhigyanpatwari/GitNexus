@@ -17,6 +17,7 @@ import {
   NODE_TABLES,
   REL_TYPES,
   impactEdgePredicate,
+  GLOBAL_NAME_FALLBACK_REASON,
   scoreImpactRisk,
   unusedAxesForImpactWalk,
 } from 'gitnexus-shared';
@@ -1002,8 +1003,10 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       // Fetch one extra raw row so an exactly full page remains a complete result.
       const depthRowLimits = [300, 200, 100];
       const depthQueries: Promise<any[]>[] = [];
-      const edgeEvidence = (edge: 'r' | 'r1' | 'r2' | 'r3') =>
-        `${impactEdgePredicate(edge)} AND (${edge}.confidence IS NULL OR ${edge}.confidence >= ${minConf})`;
+      const edgeConfidence = (edge: string) =>
+        `(${edge}.confidence IS NULL OR ${edge}.confidence >= ${minConf})`;
+      const edgeEvidence = (edge: 'r1' | 'r2') =>
+        `${impactEdgePredicate(edge)} AND ${edgeConfidence(edge)}`;
 
       // Depth 1 query - direct connections with edge metadata
       // For File targets: find callers of any code element with matching filePath
@@ -1015,7 +1018,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE callee.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
               AND r.type IN [${relTypeFilter}]
               AND affected.filePath <> callee.filePath
-              AND ${edgeEvidence('r')}
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1032,7 +1035,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
             MATCH (affected)-[r:CodeRelation]->(target)
             WHERE r.type IN [${relTypeFilter}]
-              AND ${edgeEvidence('r')}
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1051,7 +1054,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE caller.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
               AND r.type IN [${relTypeFilter}]
               AND caller.filePath <> affected.filePath
-              AND ${edgeEvidence('r')}
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1068,7 +1071,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
             MATCH (target)-[r:CodeRelation]->(affected)
             WHERE r.type IN [${relTypeFilter}]
-              AND ${edgeEvidence('r')}
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1097,7 +1100,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
               AND affected.id <> target.id
               AND ${edgeEvidence('r1')}
-              AND ${edgeEvidence('r2')}
+              AND ${edgeConfidence('r2')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1117,7 +1120,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
               AND affected.id <> target.id
               AND ${edgeEvidence('r1')}
-              AND ${edgeEvidence('r2')}
+              AND ${edgeConfidence('r2')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1146,7 +1149,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               AND affected.id <> target.id AND affected.id <> a.id
               AND ${edgeEvidence('r1')}
               AND ${edgeEvidence('r2')}
-              AND ${edgeEvidence('r3')}
+              AND ${edgeConfidence('r3')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1168,7 +1171,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               AND affected.id <> target.id AND affected.id <> a.id
               AND ${edgeEvidence('r1')}
               AND ${edgeEvidence('r2')}
-              AND ${edgeEvidence('r3')}
+              AND ${edgeConfidence('r3')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1188,6 +1191,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const depthResults = await Promise.allSettled(depthQueries);
       const failedDepths: number[] = [];
       const cappedDepths: number[] = [];
+      let omittedNameOnlyCalls = 0;
 
       // Combine results by depth
       interface NodeInfo {
@@ -1223,6 +1227,12 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
           // Skip test files if includeTests is false
           if (!showTests && isTestFile(filePath)) return;
+          const edgeType = Array.isArray(row) ? row[6] : row.edgeType;
+          const reason = Array.isArray(row) ? row[8] : row.reason;
+          if (edgeType === 'CALLS' && reason === GLOBAL_NAME_FALLBACK_REASON) {
+            omittedNameOnlyCalls++;
+            return;
+          }
 
           // Avoid duplicates (a node might appear at multiple depths)
           if (nodeId && !seenIds.has(nodeId)) {
@@ -1235,9 +1245,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               nodeType: Array.isArray(row) ? row[2] : row.nodeType,
               filePath: filePath,
               startLine: Array.isArray(row) ? row[4] : row.startLine,
-              edgeType: Array.isArray(row) ? row[5] : row.edgeType || 'CALLS',
-              confidence: Array.isArray(row) ? row[6] : (row.confidence ?? 1.0),
-              reason: Array.isArray(row) ? row[7] : row.reason || '',
+              edgeType: edgeType || 'CALLS',
+              confidence: (Array.isArray(row) ? row[7] : row.confidence) ?? 1.0,
+              reason: reason || '',
             };
             byDepth.get(d)!.push(info);
             allNodeIds.push(nodeId);
@@ -1248,6 +1258,10 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const totalAffected = allNodeIds.length;
 
       const traversalNotes: string[] = [];
+      if (omittedNameOnlyCalls)
+        traversalNotes.push(
+          `Calls omitted because only the name matched: ${omittedNameOnlyCalls}. Counts are lower bounds.`,
+        );
       if (failedDepths.length)
         traversalNotes.push(
           `Failed depth queries: ${failedDepths.join(', ')}. Retry before editing.`,

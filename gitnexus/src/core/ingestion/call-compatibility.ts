@@ -44,5 +44,7 @@ export interface CallCompatibilityProvider {
     targets: readonly CallCompatibilityTarget[],
     incoming: CallCompatibilityLookup,
     changedFiles?: readonly CallCompatibilityFile[],
+    /** When set, only source images of the changed files may be inspected. */
+    callerSourceUnavailable?: string,
   ) => Promise<CallCompatibilityResult>;
 }

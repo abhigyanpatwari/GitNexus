@@ -22,22 +22,30 @@ describe('Graph-RAG impact risk contract', () => {
   });
 
   it.each(['upstream', 'downstream'] as const)(
-    'filters name-only calls at every %s hop',
+    'reports omitted name-only calls and never expands them on a %s walk',
     async (direction) => {
       const executeQuery = vi.fn(async (query: string) =>
         query.includes("WHERE n.name = 'target'")
           ? [{ id: 'target-id', nodeType: 'Function', filePath: 'target.ts' }]
-          : [],
+          : query.includes('1 AS depth')
+            ? [
+                {
+                  id: 'candidate',
+                  filePath: 'caller.c',
+                  edgeType: 'CALLS',
+                  reason: 'global-name-fallback',
+                },
+              ]
+            : [],
       );
-      await impactTool({ ...noOpBackend, executeQuery }).invoke({
+      const output = await impactTool({ ...noOpBackend, executeQuery }).invoke({
         target: 'target',
         direction,
         maxDepth: 3,
       });
       for (const [depth, aliases] of [
-        [1, ['r']],
-        [2, ['r1', 'r2']],
-        [3, ['r1', 'r2', 'r3']],
+        [2, ['r1']],
+        [3, ['r1', 'r2']],
       ] as const) {
         const query = executeQuery.mock.calls
           .map(([sql]) => sql)
@@ -45,6 +53,8 @@ describe('Graph-RAG impact risk contract', () => {
         for (const alias of aliases)
           expect(query).toContain(alias + ".reason <> 'global-name-fallback'");
       }
+      expect(output).toContain('RISK: UNKNOWN');
+      expect(output).toContain('Calls omitted because only the name matched: 1');
     },
   );
 

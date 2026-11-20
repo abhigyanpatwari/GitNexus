@@ -309,6 +309,8 @@ describe('run-analyze module', () => {
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     try {
       execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      await fs.writeFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), '# Local instructions\n');
+      execSync('git add CLAUDE.md', { cwd: tmpRepo.dbPath });
       execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
         cwd: tmpRepo.dbPath,
         stdio: 'pipe',
@@ -339,6 +341,9 @@ describe('run-analyze module', () => {
         await expect(
           fs.readFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), 'utf8'),
         ).resolves.toContain('indexed by GitNexus as **kept**');
+        await expect(
+          fs.readFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), 'utf8'),
+        ).resolves.toContain('# Local instructions');
         await expect(fs.access(path.join(tmpRepo.dbPath, 'AGENTS.md'))).rejects.toMatchObject({
           code: 'ENOENT',
         });

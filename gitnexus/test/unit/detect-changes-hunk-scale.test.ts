@@ -386,6 +386,83 @@ describe('provider call compatibility in detect_changes', () => {
     });
   });
 
+  it('does not read unchanged re-export endpoints at reduced retention', async () => {
+    const dir = makeRepo(['api.py', 'previous.py', 'current.py'], 1);
+    writeFileSync(path.join(dir, 'api.py'), 'from previous import charge\n');
+    writeFileSync(path.join(dir, 'previous.py'), 'def charge(legacy=False): pass\n');
+    writeFileSync(path.join(dir, 'current.py'), 'def charge(): pass\n');
+    commitAll(dir, 'publish charge');
+    writeFileSync(path.join(dir, 'api.py'), 'from current import charge\n');
+    registerRepo(dir);
+    writeFileSync(
+      path.join(dir, '.gitnexus', 'meta.json'),
+      JSON.stringify({ contentRetention: 'none' }),
+    );
+    const images = await import('../../src/core/ingestion/languages/python/signature-images.js');
+    const read = vi.spyOn(images, 'readImage');
+    try {
+      const result = await runDetectChanges();
+      expect(result).toMatchObject({
+        partial: true,
+        summary: { incompatible_calls_checked: false },
+      });
+      const paths = read.mock.calls.map((args) => args[2]);
+      expect(paths).not.toContain('previous.py');
+      expect(paths).not.toContain('current.py');
+    } finally {
+      read.mockRestore();
+    }
+  });
+
+  it.each(['symbol', 'none'])(
+    'checks a body-only edit without reading callers at %s retention',
+    async (contentRetention) => {
+      const dir = makeKeywordChange();
+      const original = execFileSync('git', ['show', 'HEAD:model.py'], {
+        cwd: dir,
+        encoding: 'utf8',
+      });
+      writeFileSync(path.join(dir, 'model.py'), original.replace('pass', 'return amount'));
+      writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), JSON.stringify({ contentRetention }));
+      const result = await runDetectChanges();
+      expect(result.partial).toBeUndefined();
+      expect(result.summary).toMatchObject({ risk_level: 'low', incompatible_calls_checked: true });
+    },
+  );
+
+  it('checks a removed keyword when its declaration moved outside the indexed hunk span', async () => {
+    const dir = makeKeywordChange();
+    const preamble = '# setup\n'.repeat(8);
+    const before = 'def charge(amount, legacy=None):\n    return amount\n';
+    writeFileSync(path.join(dir, 'model.py'), preamble + before);
+    commitAll(dir, 'move definition below preamble');
+    writeFileSync(path.join(dir, 'model.py'), before.replace(', legacy=None', ''));
+    execFileSync('git', ['add', 'model.py'], { cwd: dir });
+    const id = 'Function:model.py:charge';
+    lbugMocks.executeParameterized.mockImplementation(async (_db, query, params) => {
+      if (query.includes('r.type AS relationType'))
+        return [{ target: id, filePath: 'use.py', relationType: 'CALLS' }];
+      if (!query.includes('diffPath')) return [];
+      const rows = [
+        {
+          diffPath: 'model.py',
+          filePath: 'model.py',
+          type: 'Function',
+          id,
+          name: 'charge',
+          startLine: 8,
+          endLine: 9,
+        },
+      ];
+      return params.declarationPaths?.includes('model.py') ? rows : [];
+    });
+    expect(await runDetectChanges('staged')).toMatchObject({
+      summary: { risk_level: 'high', incompatible_call_count: 1, changed_count: 1 },
+      changed_symbols: [{ id, name: 'charge' }],
+      incompatible_calls: [{ name: 'charge', filePath: 'use.py', keyword: 'legacy' }],
+    });
+  });
+
   it('reports a new staged caller even before it has a graph edge', async () => {
     const dir = makeKeywordChange();
     writeFileSync(
@@ -450,6 +527,62 @@ describe('provider call compatibility in detect_changes', () => {
       spy.mockRestore();
     }
   });
+
+  it.each([
+    { processes: 5, broken: false, risk: 'unknown' },
+    { processes: 6, broken: false, risk: 'high' },
+    { processes: 16, broken: true, risk: 'critical' },
+  ])(
+    'preserves $risk risk for $processes affected processes under incomplete caller coverage',
+    async ({ processes, broken, risk }) => {
+      makeKeywordChange();
+      const answer = lbugMocks.executeParameterized.getMockImplementation()!;
+      lbugMocks.executeParameterized.mockImplementation((db, query, params) =>
+        query.includes('p.id AS pid')
+          ? Promise.resolve(
+              Array.from({ length: processes }, (_, i) => ({
+                nodeId: 'Function:model.py:charge',
+                pid: 'Process:' + i,
+                label: 'process ' + i,
+                processType: 'cross_community',
+                stepCount: 2,
+                step: 1,
+              })),
+            )
+          : answer(db, query, params),
+      );
+      const helper = await import('../../src/core/ingestion/languages/python/signature-changes.js');
+      const spy = vi.spyOn(helper, 'findBrokenKeywordCalls').mockResolvedValue({
+        findings: broken
+          ? [
+              {
+                target: 'Function:model.py:charge',
+                name: 'charge',
+                keyword: 'legacy',
+                filePath: 'use.py',
+                line: 2,
+              },
+            ]
+          : [],
+        complete: false,
+        skipped: Array.from({ length: 1001 }, (_, i) => ({
+          filePath: 'caller' + i,
+          reason: 'unavailable',
+        })),
+      });
+      try {
+        const result = await runDetectChanges();
+        expect(result).toMatchObject({
+          summary: { affected_count: processes, risk_level: risk },
+          partial: true,
+          truncated: true,
+        });
+        expect(result).toHaveProperty('incompatible_call_skips.length', 1000);
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
 });
 
 beforeEach(() => {
@@ -468,7 +601,7 @@ describe('#2915 detect_changes hunk scaling', () => {
   });
 
   it('keeps Markdown sections in docs-only reviews and counts them separately beside code', async () => {
-    const dir = makeRepo(['README.md', 'guide.mdx', 'code.ts'], 1);
+    const dir = makeRepo(['README.MD', 'guide.Mdx', 'code.ts'], 1);
     registerRepo(dir);
     lbugMocks.executeParameterized.mockImplementation(async (_db, query, { bounds }) =>
       String(query).includes('diffPath')
@@ -483,8 +616,8 @@ describe('#2915 detect_changes hunk scaling', () => {
           }))
         : [],
     );
-    writeFileSync(path.join(dir, 'README.md'), '# Edited section\n');
-    writeFileSync(path.join(dir, 'guide.mdx'), '# Edited MDX section\n');
+    writeFileSync(path.join(dir, 'README.MD'), '# Edited section\n');
+    writeFileSync(path.join(dir, 'guide.Mdx'), '# Edited MDX section\n');
     const docs = await runDetectChanges();
     expect(docs.changed_symbols).toMatchObject([{ type: 'Section' }, { type: 'Section' }]);
     expect(docs.summary).toMatchObject({
@@ -525,7 +658,8 @@ describe('#2915 detect_changes hunk scaling', () => {
     });
   });
 
-  it.each(['README.MD', 'README.markdown'])('omits the reindex hint for %s', async (file) => {
+  it('omits the reindex hint for an unindexed documentation extension', async () => {
+    const file = 'README.markdown';
     const dir = makeRepo([file], 1);
     registerRepo(dir);
     writeFileSync(path.join(dir, file), '# Changed\n');
