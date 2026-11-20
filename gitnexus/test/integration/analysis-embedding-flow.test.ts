@@ -39,6 +39,8 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
   // Retrying pending embeddings must also reuse an unchanged dirty graph.
   await fs.writeFile(path.join(repo, 'a.ts'), `${content}\n// dirty snapshot\n`);
   const accepted: string[] = [];
+  const subBatchSize = 8;
+  const batchesBeforeOutage = 8;
   let fail = true;
   let requests = 0;
   let graphWasReady = false;
@@ -48,19 +50,22 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
   server = createServer(async (request, response) => {
     try {
       requests++;
+      const unavailable = fail && requests > batchesBeforeOutage;
       expect(graphWasReady).toBe(true);
       expect(graphWasVisible).toBe(true);
       const published = await loadMeta(slot);
       expect(published?.graphGeneration).toBeDefined();
       expect(published?.incrementalInProgress).toBeUndefined();
       expect(published?.embeddingJob).toBeDefined();
-      let body = '';
-      for await (const chunk of request) body += chunk;
-      const { input } = JSON.parse(body) as { input: string[] };
-      if (fail && accepted.length >= 64) {
+      // The client can cancel a sibling upload after the first 503. An
+      // unavailable provider can reject the request before reading its body.
+      if (unavailable) {
         response.writeHead(503).end('temporarily unavailable');
         return;
       }
+      let body = '';
+      for await (const chunk of request) body += chunk;
+      const { input } = JSON.parse(body) as { input: string[] };
       accepted.push(...input);
       response.setHeader('content-type', 'application/json');
       response.end(
@@ -85,7 +90,7 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
   vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', 'durable-fixture');
   vi.stubEnv('GITNEXUS_EMBEDDING_DIMS', '4');
   vi.stubEnv('GITNEXUS_EMBEDDING_MAX_ATTEMPTS', '1');
-  vi.stubEnv('GITNEXUS_EMBEDDING_SUB_BATCH_SIZE', '8');
+  vi.stubEnv('GITNEXUS_EMBEDDING_SUB_BATCH_SIZE', String(subBatchSize));
   vi.stubEnv('GITNEXUS_EMBEDDING_CONCURRENCY', '4');
   const resources = resolveAnalysisResourceBudget({
     effectiveMemoryBytes: 4 * 1024 ** 3,
@@ -132,7 +137,7 @@ it('publishes before HTTP work and resumes without parsing or repeating durable 
   releasePublication();
   await expect(firstRun).rejects.toThrow(/unfinished|incomplete/);
   expect(endpointErrors).toEqual([]);
-  expect(accepted).toHaveLength(64);
+  expect(accepted).toHaveLength(batchesBeforeOutage * subBatchSize);
   const interrupted = await loadMeta(slot);
   expect(interrupted?.graphGeneration).toBeDefined();
   expect(interrupted?.embeddingJob).toBeDefined();

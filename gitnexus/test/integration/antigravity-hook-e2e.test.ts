@@ -485,6 +485,39 @@ describe('antigravity hook adapter e2e', () => {
       }
     });
 
+    // #4023: the adapter read these before #3899 moved it to the shared helper.
+    it.each([
+      ['npx rg validateUser src', 'validateUser'],
+      ['sudo grep -rn hashPassword src', 'hashPassword'],
+      ['git grep -n issueToken', 'issueToken'],
+    ])('passes the query of %j, run by a wrapper, to augment', (command, query) => {
+      const argsPath = path.join(os.tmpdir(), `antigravity-wrapper-args-${process.pid}`);
+      const binDir = createHookToolDir({
+        gitnexusStderr: `[GitNexus] 1 related symbol found:\n\n${query} (src/auth.ts)\n`,
+        gitnexusArgsPath: argsPath,
+      });
+      try {
+        fs.rmSync(argsPath, { force: true });
+        runHook(
+          installedHook,
+          {
+            hook_event_name: 'AfterTool',
+            tool_name: 'run_shell_command',
+            tool_input: { command },
+            tool_response: { llmContent: '...' },
+            cwd: tmpDir,
+          },
+          tmpDir,
+          { env: hookEnv(binDir) },
+        );
+        const args = JSON.parse(fs.readFileSync(argsPath, 'utf8')) as string[];
+        expect(args.slice(-3)).toEqual(['augment', '--', query]);
+      } finally {
+        fs.rmSync(argsPath, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
     it('ignores patterns shorter than 3 chars', () => {
       const result = runHook(installedHook, {
         hook_event_name: 'AfterTool',
