@@ -16,6 +16,13 @@
  */
 import type { RouteFrameworkAlias } from '../core/ingestion/language-provider.js';
 
+const instructionFiles = ['AGENTS.md', 'CLAUDE.md'] as const;
+export type InstructionFile = (typeof instructionFiles)[number];
+
+export function selectedInstructionFiles(selected?: InstructionFile): InstructionFile[] {
+  return instructionFiles.filter((name) => selected === undefined || name === selected);
+}
+
 export interface AnalyzeOptions {
   /** Keep this repository current with serialized incremental refreshes. */
   watch?: boolean;
@@ -44,6 +51,7 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  instructionFile?: InstructionFile;
   /**
    * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
    * default. Threaded to both the worker (CFG build) and scope-resolution

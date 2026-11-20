@@ -29,6 +29,8 @@ import type {
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { NotebookLineSegment } from './ipynb-extractor.js';
 import type { CallRouter } from './call-routing.js';
+import { getQueryProvider, type QueryLanguageHooks } from './languages/query-providers.js';
+import type { CallCompatibilityProvider } from './call-compatibility.js';
 import type { CallExtractor } from './call-types.js';
 import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
@@ -273,11 +275,34 @@ export interface PostParseContext {
   readonly repoPath: string;
 }
 
+/** Attribute a file-to-file IMPORTS edge to a particular type using verified source. */
+export interface TypeImportAttribution {
+  readonly supportsFile: (filePath: string) => boolean;
+  /** Conservative text prefilter for an import that can omit the type's name. */
+  readonly implicitImportSyntax?: { readonly marker: string; readonly pattern: string };
+  readonly createClassifier: (target: {
+    ownerPath: string;
+    name: string;
+    readOwner: () => Promise<string | undefined>;
+  }) => Promise<
+    (
+      filePath: string,
+      source: string,
+      resolvedImports: ReadonlySet<string>,
+    ) => boolean | undefined | Promise<boolean | undefined>
+  >;
+}
+
 interface LanguageProviderConfig {
+  readonly callCompatibility?: CallCompatibilityProvider;
   // ── Identity ──────────────────────────────────────────────────────
   readonly id: SupportedLanguages;
   /** File extensions that map to this language (e.g., ['.ts', '.tsx']) */
   readonly extensions: readonly string[];
+  /** Related inputs that produce graph facts in a standalone phase without using this grammar. */
+  readonly additionalIndexedExtensions?: ReadonlySet<string>;
+  /** Persisted file-to-file IMPORTS reasons that do not imply initialization order. */
+  readonly nonInitializingImportReasons?: readonly string[];
 
   /**
    * Files with the same provider-local key are re-examined together when any
@@ -425,7 +450,12 @@ interface LanguageProviderConfig {
    *
    * Default: undefined, read as `false`.
    */
-  readonly notExportedIsFilePrivate?: boolean | ((filePath: string, content: string) => boolean);
+  readonly notExportedIsFilePrivate?:
+    | boolean
+    | ((filePath: string, content: string) => boolean | Promise<boolean>);
+
+  /** Limit upstream type importers to proven uses. Omit to traverse the owning file. */
+  readonly typeImportAttribution?: TypeImportAttribution;
 
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
@@ -1484,11 +1514,14 @@ const DEFAULTS: Pick<LanguageProvider, 'mroStrategy'> = {
 };
 
 /** Define a language provider — required fields must be supplied, optional fields get sensible defaults. */
-export function defineLanguage(config: LanguageProviderConfig): LanguageProvider {
+export function defineLanguage(
+  config: Omit<LanguageProviderConfig, keyof QueryLanguageHooks>,
+): LanguageProvider {
   const builtIns = config.builtInNames;
   return {
     ...DEFAULTS,
     ...config,
+    ...getQueryProvider(config.id),
     isBuiltInName: builtIns ? (name: string) => builtIns.has(name) : () => false,
   };
 }

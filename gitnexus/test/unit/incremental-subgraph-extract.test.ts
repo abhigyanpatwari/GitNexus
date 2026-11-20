@@ -241,6 +241,19 @@ describe('extractChangedSubgraph', () => {
     expect(sub.relationships.map((r) => r.id)).toEqual(['tp1']);
   });
 
+  it('refreshes name-only calls between unchanged files without expanding the write set', () => {
+    const graph = createKnowledgeGraph();
+    graph.addNode(makeFileNode('caller', 'caller.js'));
+    graph.addNode(makeFileNode('target', 'target.js'));
+    graph.addRelationship(makeRel('guess', 'caller', 'target', 'CALLS', 'global-name-fallback'));
+    expect(computeEffectiveWriteSet(graph, new Set(['target.js']))).toEqual(new Set(['target.js']));
+    graph.addRelationship(makeRel('bound', 'caller', 'target', 'CALLS', 'import-resolved'));
+
+    expect(
+      extractChangedSubgraph(graph, new Set(['third.js'])).relationships.map((r) => r.id),
+    ).toEqual(['guess']);
+  });
+
   it('always includes INJECTS edges even between two unchanged files (#2200)', () => {
     // A DI consumer→implementer INJECTS edge whose endpoints (consumer.java,
     // impl.java) are both unchanged, but the interface (or a sibling

@@ -111,13 +111,10 @@ const MAX_AUGMENT_SYMBOLS = 6;
  * Returns empty string on any error (graceful failure).
  */
 export async function augment(patterns: string | readonly string[], cwd?: string): Promise<string> {
-  const lookups = (typeof patterns === 'string' ? [patterns] : patterns)
-    .filter((pattern) => typeof pattern === 'string' && pattern.length >= 3)
-    .map((pattern) => ({
-      pattern,
-      firstWord: escapeCypherString(pattern.trim()).split(/\s+/)[0],
-    }))
-    .filter(({ firstWord }) => firstWord.length >= 2)
+  const lookups = (typeof patterns === 'string' ? [patterns] : (patterns ?? []))
+    .filter((pattern) => typeof pattern === 'string')
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern.length >= 3)
     .slice(0, MAX_AUGMENT_PATTERNS);
   if (lookups.length === 0) return '';
 
@@ -148,11 +145,9 @@ export async function augment(patterns: string | readonly string[], cwd?: string
 
     // The first `limit` symbols of one pattern, in BM25 file order. The file
     // loop stops once it has them, since later files only add symbols past it.
-    const findSymbols = async (
-      pattern: string,
-      patternFirstWord: string,
-      limit: number,
-    ): Promise<SymbolMatch[]> => {
+    const findSymbols = async (pattern: string, limit: number): Promise<SymbolMatch[]> => {
+      // BM25 can match individual words. Match graph symbols against the whole pattern.
+      const escapedName = escapeCypherString(pattern);
       // Step 1: BM25 search (fast, no embeddings)
       const { results: bm25Results } = await searchFTSFromLbug(pattern, 10, repoId);
 
@@ -167,7 +162,7 @@ export async function augment(patterns: string | readonly string[], cwd?: string
             repoId,
             `
           MATCH (n) WHERE n.filePath = '${escaped}'
-          AND n.name CONTAINS '${patternFirstWord}'
+          AND n.name CONTAINS '${escapedName}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           ORDER BY id
           LIMIT 3
@@ -195,9 +190,9 @@ export async function augment(patterns: string | readonly string[], cwd?: string
           repoId,
           `
         MATCH (n)
-        WHERE n.name CONTAINS '${patternFirstWord}'
+        WHERE n.name CONTAINS '${escapedName}'
         RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
-          CASE WHEN n.name = '${patternFirstWord}' THEN 0 ELSE 1 END AS exactRank
+          CASE WHEN n.name = '${escapedName}' THEN 0 ELSE 1 END AS exactRank
         ORDER BY exactRank, id
         LIMIT 5
       `,
@@ -219,8 +214,8 @@ export async function augment(patterns: string | readonly string[], cwd?: string
     // One pattern keeps its top 5 symbols; several share MAX_AUGMENT_SYMBOLS.
     const perPattern = lookups.length === 1 ? 5 : Math.floor(MAX_AUGMENT_SYMBOLS / lookups.length);
     const symbolMatches: SymbolMatch[] = [];
-    for (const { pattern, firstWord } of lookups) {
-      symbolMatches.push(...(await findSymbols(pattern, firstWord, perPattern)));
+    for (const pattern of lookups) {
+      symbolMatches.push(...(await findSymbols(pattern, perPattern)));
     }
 
     if (symbolMatches.length === 0) return '';

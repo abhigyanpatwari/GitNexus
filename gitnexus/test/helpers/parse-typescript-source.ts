@@ -92,7 +92,7 @@ export function parseTypeScript(fileName: string, source: string): ParsedSource 
   const ast = parse(source, {
     sourceFilename: fileName,
     sourceType: 'unambiguous',
-    plugins: PARSE_PLUGINS,
+    plugins: /\.[jt]sx$/i.test(fileName) ? [...PARSE_PLUGINS, 'jsx'] : PARSE_PLUGINS,
     errorRecovery: true,
     attachComment: true,
     ranges: true,

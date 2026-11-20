@@ -173,7 +173,10 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // that is not listed here is a fragment nothing protects.
   it('keeps the UNKNOWN-risk guidance in every impact-analysis copy', () => {
     const required = [
-      '| **Zero callers found**         | **UNKNOWN** |',
+      '| UNKNOWN | Empty upstream walk',
+      '| MEDIUM | 5–14 |',
+      '| HIGH | 15–199 |',
+      '| CRITICAL | 200 or more |',
       '`UNKNOWN` is not a low rung on this scale',
       'Confirm with a text search before',
     ];
@@ -209,10 +212,11 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // line), so the fragments here are the parts every copy shares.
   it('keeps the partial/truncated degradation guidance in every impact-analysis copy', () => {
     const required = [
-      '`partial: true` (a graph query failed) or `truncated: true` (the changed-symbol',
-      'listing was capped)',
-      'a zero there means unseen, not unaffected.',
-      'tick the pre-commit check.',
+      '`partial: true`',
+      '`truncated: true`',
+      '`unmapped_files`',
+      '`incompatible_call_skips`',
+      'investigate incomplete coverage before committing.',
     ];
     const copies = standardSkillCopies('gitnexus-impact-analysis');
     // Guard the guard: an empty copy list would make the loop below vacuous.

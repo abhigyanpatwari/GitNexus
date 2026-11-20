@@ -1,5 +1,13 @@
 # Migration Guide
 
+## Upstream impact risk (#3972)
+
+Upstream `impact` now rates the number of direct dependants. On a complete, nonempty walk, 5 direct dependants trigger MEDIUM, 15 trigger HIGH and 200 trigger CRITICAL. Process membership, module membership and indirect reach remain available in the summary. An edit gate based on HIGH or CRITICAL can therefore fire less often for a symbol with few direct callers on many flows. Downstream thresholds are unchanged.
+
+Impact omits calls inferred solely from a unique name. When a walk encounters these calls, the MCP reports `omittedNameOnlyCalls`, marks the counts as a lower bound, and returns UNKNOWN for a provisional LOW or MEDIUM rating. The web impact report also shows the omitted count. Raw graph queries can inspect these edges using `reason = 'global-name-fallback'`.
+
+An explicit `gitnexus analyze` refreshes counts in the managed instruction block, including when the index is current. A tracked instruction file can therefore change on a count-only update. Use `--instruction-file AGENTS.md` or `--instruction-file CLAUDE.md` to update one file, or `--index-only` to skip instruction files.
+
 ## Stable community and process IDs (#3855)
 
 The next analysis after upgrading rebuilds the derived graph with new IDs:

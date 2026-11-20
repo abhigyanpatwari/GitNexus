@@ -91,8 +91,7 @@ import {
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
-  deleteAllInjects,
-  deleteAllAdvisedBy,
+  deleteGlobalResolutionEdges,
   deleteAllDestinations,
   deleteSpringAopEvidenceNodes,
   deleteSpringAutoConfigurationDeclarations,
@@ -105,6 +104,7 @@ import {
 } from './lbug/lbug-adapter.js';
 import {
   estimateBufferPool,
+  estimateWriteBufferPool,
   setBufferPoolSizeHint,
   resolveNativeSafeStorageDir,
   getEffectiveBufferPoolSize,
@@ -319,7 +319,7 @@ import {
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
 import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
-import { generateAIContextFiles } from '../cli/ai-context.js';
+import { generateAIContextFiles, hasInstructionBlock } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
@@ -543,6 +543,8 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  instructionFile?: 'AGENTS.md' | 'CLAUDE.md';
+  refreshCounts?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
   /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
@@ -3263,28 +3265,35 @@ async function runFullAnalysisInner(
             branch: placement.branch,
             storagePath,
           });
-          if (!placement.branch) {
-            try {
-              await generateAIContextFiles(
-                repoPath,
-                storagePath,
-                options.registryName,
-                existingMeta.stats ?? {},
-                undefined,
-                {
-                  skipAgentsMd: options.skipAgentsMd,
-                  skipSkills: options.skipSkills,
-                  noStats: options.noStats,
-                  defaultBranch: options.defaultBranch,
-                  // Fast path does not re-run PDG. Using `options.pdg` would
-                  // strip PDG bullets from AGENTS.md on a rename-only analyze.
-                  hasPdg: existingMeta.pdg != null,
-                  hasSpringActuator: existingMeta.springActuator?.enabled === true,
-                },
-              );
-            } catch {
-              /* best-effort — never fail the fast path over a context refresh */
-            }
+        }
+        if (
+          !placement.branch &&
+          (options.registryName ||
+            (options.instructionFile &&
+              !options.skipAgentsMd &&
+              !(await hasInstructionBlock(path.join(repoPath, options.instructionFile)))))
+        ) {
+          try {
+            await generateAIContextFiles(
+              repoPath,
+              storagePath,
+              await preparedAnalysisName(repoPath, options),
+              existingMeta.stats ?? {},
+              undefined,
+              {
+                skipAgentsMd: options.skipAgentsMd,
+                instructionFile: options.instructionFile,
+                refreshCounts: options.refreshCounts,
+                skipSkills: options.skipSkills,
+                noStats: options.noStats || existingMeta.stats?.nodes === undefined,
+                defaultBranch: options.defaultBranch,
+                // The fast path reuses the persisted graph capabilities.
+                hasPdg: existingMeta.pdg != null,
+                hasSpringActuator: existingMeta.springActuator?.enabled === true,
+              },
+            );
+          } catch {
+            /* best-effort — never fail the fast path over a context refresh */
           }
         }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
@@ -3826,7 +3835,10 @@ async function runFullAnalysisInner(
   // Used both to drive the incremental DB writeback (when eligible) and to
   // populate meta.json.fileHashes for the next run.
   const allFilePaths: string[] = [];
+  let descriptionBytes = 0;
   pipelineResult.graph.forEachNode((n) => {
+    const description = n.properties?.description;
+    if (typeof description === 'string') descriptionBytes += Buffer.byteLength(description);
     if (n.label === 'File') {
       const fp = n.properties?.filePath as string | undefined;
       if (fp) allFilePaths.push(fp);
@@ -4106,22 +4118,25 @@ async function runFullAnalysisInner(
     }
   }
 
-  // Size the buffer pool to the graph just built by the pipeline (a page cache
-  // over the on-disk index, which scales with node/edge count) instead of the
-  // fixed 2 GiB default, whose eager commit dominates large-repo analyze. The
-  // size is clamped to [COPY-safety floor, default], so it only ever shrinks
-  // the pool; env override / no-hint paths are unchanged. See
-  // resolveBufferManagerSize / estimateBufferPool.
+  // COPY needs room for both graph structure and the source text stored in its tables.
+  // Full retention writes file text and symbol snippets. Symbol retention writes
+  // only snippets. Descriptions are a separate column, already retention-filtered.
+  const sourceBytes = pipelineResult.scannedFileBytes ?? 0;
+  const fileBytes = contentRetention === 'full' ? sourceBytes : 0;
+  const snippetBytes = contentRetention === 'none' ? 0 : sourceBytes;
+  const graphElements =
+    pipelineResult.graph.nodeCount +
+    pipelineResult.graph.relationshipCount +
+    (pipelineResult.graphEmitManifest?.totalRows ?? 0);
+  const fullWritePool = estimateWriteBufferPool(
+    graphElements,
+    fileBytes + snippetBytes + descriptionBytes,
+    !ftsDisabledReason,
+  );
+  // FTS re-tokenizes entire affected tables even on a selective write. With
+  // FTS disabled, keep the smaller incremental pool unless the plan escalates.
   setBufferPoolSizeHint(
-    estimateBufferPool(
-      pipelineResult.graph.nodeCount +
-        pipelineResult.graph.relationshipCount +
-        // Streamed edges left the heap but still get COPYed, so they are part of
-        // the real load volume (#2680). The hint only ever SHRINKS the pool, so
-        // omitting them would starve the COPY at exactly the scale streaming
-        // exists to serve.
-        (pipelineResult.graphEmitManifest?.totalRows ?? 0),
-    ),
+    isFullRebuild || !ftsDisabledReason ? fullWritePool : estimateBufferPool(graphElements),
   );
 
   // The checkpoint counters are process-global (`analyze --watch` reruns analyze in
@@ -4844,6 +4859,7 @@ async function runFullAnalysisInner(
         await closeLbug();
         if (buildPath === lbugPath) liveIndexMutationStarted = true;
         await wipeLbugDbFiles(buildPath);
+        setBufferPoolSizeHint(fullWritePool);
         await initAnalysisLbug(buildPath);
         walCheckpointDriver = startWalCheckpointDriver();
         await loadGraphToLbug(
@@ -4954,23 +4970,9 @@ async function runFullAnalysisInner(
           //    "Leiden runs on the FULL graph" correctness invariant.
           await deleteAllCommunitiesAndProcesses();
         }
-        // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
-        //     validity is a whole-program property (a third-file change to the
-        //     interface or an implementer creates/invalidates edges between two
-        //     untouched files), so endpoint-writability extraction can't refresh
-        //     them; extractChangedSubgraph re-includes all of them from the
-        //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
-        //     Communities delete — NOT inside the `options.pdg` block below: the
-        //     di phase runs on every persisting analyze (same !skipGraphPhases
-        //     regime as communities/processes) while the graph-wide re-include
-        //     is unconditional, so a pdg-gated delete would append without
-        //     deleting on every non-pdg incremental run (N runs = N copies of
-        //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
-        await deleteAllInjects();
-        // 2b. Spring AOP pointcuts are matched against the full resolved graph;
-        // a third-file change can invalidate an edge between unchanged files.
-        // Rebuild the complete ADVISED_BY set on every incremental writeback.
-        await deleteAllAdvisedBy();
+        // A third file can change injection bindings, advice targets or unique-name
+        // guesses between unchanged endpoints. The subgraph re-emits all three.
+        await deleteGlobalResolutionEdges();
         await deleteSpringAopEvidenceNodes();
         // 2b-bis. Drop the whole async messaging overlay. A RESOLVED
         //     Destination deliberately stores no filePath (so the per-file
@@ -6529,6 +6531,8 @@ async function runFullAnalysisInner(
           undefined,
           {
             skipAgentsMd: options.skipAgentsMd,
+            instructionFile: options.instructionFile,
+            refreshCounts: options.refreshCounts,
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,

@@ -102,6 +102,12 @@ withTestLbugDB(
         expect(await augment(['ab', ''], handle.dbPath)).toBe('');
       });
 
+      it('matches each complete phrase in a multi-pattern search', async () => {
+        const lines = (await augment(['login failed', 'hash'], handle.dbPath)).split('\n');
+        expect(lines).toContain('hash (src/utils.ts)');
+        expect(lines).not.toContain('login (src/auth.ts)');
+      });
+
       it('returns empty string for a non-matching pattern', async () => {
         const result = await augment('nonexistent_xyz', handle.dbPath);
         expect(result).toBe('');
@@ -358,6 +364,10 @@ withTestLbugDB(
       it("returns empty string for whitespace-only pattern (CONTAINS '' guard)", async () => {
         const result = await augmentNoFts('    ', handle.dbPath);
         expect(result).toBe('');
+      });
+
+      it('does not suggest a symbol matching only the first word in a phrase', async () => {
+        expect(await augmentNoFts('login attempt failed', handle.dbPath)).toBe('');
       });
 
       it('returns empty string when no nodes match the CONTAINS query', async () => {

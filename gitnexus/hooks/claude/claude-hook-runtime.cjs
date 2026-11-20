@@ -13,7 +13,11 @@ const {
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 const { resolveHookRepo } = require('./registry-query.cjs');
-const { gitMutationDirectories, readHead } = require('./git-mutation-command.cjs');
+const {
+  gitMutationDirectories,
+  readHead,
+  canSkipMarkdownReindex,
+} = require('./git-mutation-command.cjs');
 const { searchCommandPatterns } = require('./search-command-pattern.cjs');
 
 // Claude Code runs the Bash tool in bash on every platform, Git Bash included.
@@ -340,7 +344,7 @@ function sendHookResponse(hookEventName, message) {
  * lastCommit stored in the registered index metadata. If they differ, notify the
  * agent so it can decide when to reindex.
  */
-function handlePostToolUse(input) {
+function handlePostToolUse(input, { resolveCli }) {
   const toolName = input.tool_name || '';
   if (toolName !== 'Bash') return;
 
@@ -355,7 +359,10 @@ function handlePostToolUse(input) {
   const command = (input.tool_input || {}).command || '';
   const hints = [];
   for (const gitCwd of gitMutationDirectories(command, cwd, BASH_TOOL_SHELL)) {
-    const hint = staleIndexHint(gitCwd, cwd);
+    const hint = staleIndexHint(gitCwd, cwd, () => {
+      const target = resolveCli();
+      return target?.command === process.execPath ? target.args[0] : null;
+    });
     if (hint && !hints.includes(hint)) hints.push(hint);
   }
   if (hints.length > 0) sendHookResponse('PostToolUse', hints.join('\n'));
@@ -365,7 +372,7 @@ function handlePostToolUse(input) {
  * The hint for the repository a git mutation ran in, from `gitCwd`. Empty when
  * that repository has no index or its index is at HEAD.
  */
-function staleIndexHint(gitCwd, cwd) {
+function staleIndexHint(gitCwd, cwd, resolveCliPath) {
   const repo = resolveHookRepo(gitCwd, cwd);
   if (!repo) return '';
 
@@ -382,7 +389,11 @@ function staleIndexHint(gitCwd, cwd) {
   }
 
   // If HEAD matches last indexed commit, no reindex needed
-  if (currentHead === lastCommit) return '';
+  if (
+    currentHead === lastCommit ||
+    canSkipMarkdownReindex(gitCwd, cwd, lastCommit, currentHead, resolveCliPath)
+  )
+    return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
   const indexed = !lastCommit

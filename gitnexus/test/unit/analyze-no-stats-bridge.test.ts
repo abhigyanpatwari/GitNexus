@@ -215,44 +215,51 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 
-  it('passes stats:false as noStats to generateAIContextFiles on the --skills regeneration path (#1477)', async () => {
-    runFullAnalysisMock.mockResolvedValueOnce({
-      repoName: 'repo',
-      repoPath: '/repo',
-      stats: {
-        files: 1,
-        nodes: 10,
-        edges: 20,
-        communities: 0,
-        processes: 5,
-      },
-      alreadyUpToDate: false,
-      pipelineResult: { communityResult: undefined },
-    });
-
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-    try {
-      const { analyzeCommand } = await import('../../src/cli/analyze.js');
-
-      await analyzeCommand(undefined, { skills: true, stats: false });
-
-      expect(generateSkillFilesMock).toHaveBeenCalledTimes(1);
-      expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
-      const aiCtxOpts = generateAIContextFilesMock.mock.calls[0]![5];
-      expect(aiCtxOpts).toEqual({
-        skipAgentsMd: undefined,
-        skipSkills: undefined,
-        // #243: resolved default branch threaded into the --skills regen path.
-        defaultBranch: 'main',
-        noStats: true,
-        // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
-        hasPdg: false,
-        hasSpringActuator: false,
+  it.each([{ skills: [] }, { skills: [{ name: 'a', label: 'A', symbolCount: 10, fileCount: 2 }] }])(
+    'passes the regenerated inventory and --no-stats to the instruction writer ($skills)',
+    async ({ skills }) => {
+      generateSkillFilesMock.mockResolvedValueOnce({ skills, outputPath: '/repo/.claude/skills' });
+      runFullAnalysisMock.mockResolvedValueOnce({
+        repoName: 'repo',
+        repoPath: '/repo',
+        stats: {
+          files: 1,
+          nodes: 10,
+          edges: 20,
+          communities: 0,
+          processes: 5,
+        },
+        alreadyUpToDate: false,
+        pipelineResult: { communityResult: undefined },
       });
-    } finally {
-      exitSpy.mockRestore();
-    }
-  });
+
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      try {
+        const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+        await analyzeCommand(undefined, { skills: true, stats: false });
+
+        expect(generateSkillFilesMock).toHaveBeenCalledTimes(1);
+        expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
+        const call = generateAIContextFilesMock.mock.calls[0];
+        expect(call?.[4]).toEqual(skills);
+        const aiCtxOpts = call?.[5];
+        expect(aiCtxOpts).toEqual({
+          refreshCounts: true,
+          skipAgentsMd: undefined,
+          skipSkills: undefined,
+          // #243: resolved default branch threaded into the --skills regen path.
+          defaultBranch: 'main',
+          noStats: true,
+          // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
+          hasPdg: false,
+          hasSpringActuator: false,
+        });
+      } finally {
+        exitSpy.mockRestore();
+      }
+    },
+  );
 
   it('applies --no-stats to an already up-to-date index (#3618)', async () => {
     // The fast path returns before generateAIContextFiles, so the flag only
@@ -271,6 +278,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
 
     expect(refreshStatsLineMock).toHaveBeenCalledTimes(1);
     expect(refreshStatsLineMock).toHaveBeenCalledWith('/repo', stats, {
+      refreshCounts: true,
       noStats: true,
       skipAgentsMd: undefined,
     });
@@ -285,6 +293,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
       '/repo',
       {},
       {
+        refreshCounts: true,
         noStats: false,
         skipAgentsMd: undefined,
       },
@@ -302,6 +311,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
         '/repo',
         {},
         {
+          refreshCounts: true,
           noStats: true,
           skipAgentsMd: true,
         },

@@ -79,13 +79,15 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 
 ## Risk Assessment
 
-| Affected                       | Risk     |
-| ------------------------------ | -------- |
-| <5 symbols, few processes      | LOW      |
-| 5-15 symbols, 2-5 processes    | MEDIUM   |
-| >15 symbols or many processes  | HIGH     |
-| Critical path (auth, payments) | CRITICAL |
-| **Zero callers found**         | **UNKNOWN** |
+Upstream risk counts direct dependants. The tool reports indirect reach, processes and modules separately.
+
+| Risk | Upstream direct dependants | Downstream thresholds (any one) |
+| --- | --- | --- |
+| CRITICAL | 200 or more | 30 direct, 5 processes, 5 modules, or 200 total |
+| HIGH | 15–199 | 15 direct, 3 processes, 3 modules, or 100 total |
+| MEDIUM | 5–14 | 5 direct or 30 total |
+| LOW | Fewer than 5 on a nonempty walk | Below the MEDIUM thresholds |
+| UNKNOWN | Empty upstream walk, or incomplete evidence for a LOW/MEDIUM rating | Incomplete evidence for a LOW/MEDIUM rating |
 
 `UNKNOWN` is not a low rung on this scale — it means the walk could not answer.
 An empty caller set is equally consistent with "genuinely unused" and "the
@@ -138,10 +140,10 @@ Add `repo` once more than one repository is indexed, and `worktree: "<abs
 path>"` when your changes are in a linked worktree the server was not launched
 from.
 
-`partial: true` (a graph query failed) or `truncated: true` (the changed-symbol
-listing was capped) means the result is short of the truth, and reads like
-`UNKNOWN` above: a zero there means unseen, not unaffected. Re-run it rather
-than tick the pre-commit check.
+`partial: true` means some changed source, callers, or graph evidence could
+not be checked. Inspect `unmapped_files` and `incompatible_call_skips` for
+coverage gaps. `truncated: true` means a listing reached its display limit.
+Use the summary counts and investigate incomplete coverage before committing.
 
 A wrong-worktree zero carries neither flag and is shape-identical to a genuine
 clean result, so confirm the checkout you edited is the one that was diffed
@@ -160,7 +162,7 @@ before treating an empty change set as a passed check.
 2. READ gitnexus://repo/my-app/processes
    → LoginFlow and TokenRefresh touch validateUser
 
-3. Risk: 2 direct callers, 2 processes = MEDIUM
+3. Risk: 2 direct callers, 2 processes = LOW
    Repository: my-app (/abs/path/my-app)  Worktree: same  Index: current
 ```
 

@@ -135,32 +135,12 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { generateId } from '../../../../lib/utils.js';
 import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 
-/**
- * Reason suffix for a pair reachable only through imports that run later —
- * `import()` and function-local imports.
- *
- * `check --cycles` matches this EXACTLY, so a provider that overrides the base
- * reason keeps its deferred edges filterable — the suffix travels with it.
- */
-export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
+import {
+  DEFERRED_IMPORT_REASON_SUFFIX,
+  TYPE_ONLY_IMPORT_REASON_SUFFIX,
+} from '../../../graph/edge-reasons.js';
 
-/**
- * Reason suffix for a pair reachable only through imports the compiler erases —
- * TypeScript `import type` / `import { type X }`.
- *
- * A second suffix rather than a reuse of {@link DEFERRED_IMPORT_REASON_SUFFIX}:
- * both are excluded from the cycle query, but "runs later" and "never runs" are
- * opposite answers about the emitted program, and the reason string is the only
- * place the graph records which one this pair is.
- */
-export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';
-
-/**
- * Dart pubspec identity edges are incremental metadata, not initialization
- * edges. Kept here so the cycle query can name the reason without importing
- * a language provider into MCP startup.
- */
-export const DART_PACKAGE_IDENTITY_REASON = 'dart-scope: package identity dependency';
+export { DEFERRED_IMPORT_REASON_SUFFIX, TYPE_ONLY_IMPORT_REASON_SUFFIX };
 
 /**
  * How much of an import survives to run time. Lower is stronger; a pair takes

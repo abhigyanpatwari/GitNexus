@@ -1230,6 +1230,23 @@ Old content here.
     expect(content).not.toContain('.claude/skills/generated/');
   });
 
+  it.each(['AGENTS.md', 'CLAUDE.md'] as const)(
+    'reports only the selected %s as skipped',
+    async (instructionFile) => {
+      const result = await generateAIContextFiles(
+        tmpDir,
+        storagePath,
+        'TestProject',
+        { nodes: 42, edges: 84, processes: 3 },
+        undefined,
+        { instructionFile, skipAgentsMd: true, skipSkills: true },
+      );
+      expect(result.files.filter((file) => file.includes('--skip-agents-md'))).toEqual([
+        instructionFile + ' (skipped via --skip-agents-md)',
+      ]);
+    },
+  );
+
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
     const stats = { nodes: 42, edges: 84, processes: 3 };
     const agentsPath = path.join(tmpDir, 'AGENTS.md');
@@ -2077,6 +2094,38 @@ describe('refreshStatsLine takes --no-stats on an up-to-date index (#3618)', () 
     return fs.readFile(path.join(dir, name), 'utf-8');
   }
 
+  it.each(['AGENTS.md', 'CLAUDE.md'] as const)(
+    'refreshes only the selected %s on explicit analyze',
+    async (instructionFile) => {
+      const original =
+        '# Custom\r\n<!-- gitnexus:start -->\r\nIndexed as **my-repo** (1 symbols, 2 relationships, 3 execution flows).\r\n<!-- gitnexus:end -->\r\n';
+      const dir = await seed(['AGENTS.md', 'CLAUDE.md'], original);
+      try {
+        const options = { instructionFile, refreshCounts: true };
+        expect((await refreshStatsLine(dir, STATS, options)).files).toEqual([instructionFile]);
+        expect(await read(dir, instructionFile)).toBe(
+          original.replace(
+            '1 symbols, 2 relationships, 3 execution flows',
+            '493905 symbols, 698316 relationships, 300 execution flows',
+          ),
+        );
+        const other = instructionFile === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
+        await generateAIContextFiles(
+          dir,
+          path.join(dir, '.gitnexus'),
+          'my-repo',
+          { ...STATS, nodes: 42 },
+          undefined,
+          options,
+        );
+        expect(await read(dir, instructionFile)).toContain('42 symbols');
+        expect(await read(dir, other)).toBe(original);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('drops the counts and per-skill counts, preserving the rest of the block', async () => {
     const dir = await seed(
       ['AGENTS.md', 'CLAUDE.md'],
@@ -2323,6 +2372,23 @@ Indexed as **${name}**${counts}. Lean block.
     }
   });
 
+  it('keeps the custom parenthetical when the project name changes', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-note-'));
+    try {
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed('Old', ' (preview)'));
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'New', {
+        nodes: 12,
+        edges: 20,
+        processes: 3,
+      });
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf8')).toBe(
+        seed('New', ' (preview)'),
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the existing stats-line prefix when updating a keep marker', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-prefix-'));
     const storage = path.join(dir, '.gitnexus');
@@ -2563,6 +2629,69 @@ describe('block heading levels follow the file (#2774)', () => {
       expect(original).toContain('\n## GitNexus — Code Intelligence\n');
       expect(result.files).toContain('AGENTS.md (preserved)');
       expect(await fs.readFile(file, 'utf-8')).toBe(original);
+    });
+  });
+
+  it.each([false, true])(
+    'changes only the counts during explicit analysis (keep=%s)',
+    async (keep) => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        const options = { refreshCounts: true, instructionFile: 'CLAUDE.md' as const };
+        await generateAIContextFiles(dir, storage, 'P', stats, undefined, options);
+        const block = (await fs.readFile(file, 'utf8')).trimEnd();
+        const original =
+          '    npm ci\n\n' +
+          (keep
+            ? block.replace(
+                '<!-- gitnexus:start -->',
+                '<!-- gitnexus:start -->\n<!-- gitnexus:keep -->',
+              )
+            : block) +
+          '\n\nNotes.  \n\n';
+        await fs.writeFile(file, original);
+        await generateAIContextFiles(
+          dir,
+          storage,
+          'P',
+          { ...stats, nodes: 91 },
+          undefined,
+          options,
+        );
+        expect(await fs.readFile(file, 'utf8')).toBe(
+          original.replace(stats.nodes + ' symbols', '91 symbols'),
+        );
+      });
+    },
+  );
+
+  it('retains each file’s community skills until a fresh inventory replaces them', async () => {
+    await withRepo(async (dir, storage) => {
+      const options = { skipSkills: true, refreshCounts: true };
+      const skills = [{ name: 'gitnexus-area-auth', label: 'Auth', symbolCount: 40, fileCount: 2 }];
+      await generateAIContextFiles(dir, storage, 'P', stats, skills, {
+        ...options,
+        instructionFile: 'AGENTS.md',
+      });
+      const agents = path.join(dir, 'AGENTS.md');
+      const claude = path.join(dir, 'CLAUDE.md');
+      const original = await fs.readFile(agents, 'utf8');
+      const fresh = { ...stats, nodes: 91 };
+      await generateAIContextFiles(dir, storage, 'P', fresh, undefined, options);
+      expect(await fs.readFile(agents, 'utf8')).toBe(
+        original.replace(stats.nodes + ' symbols', '91 symbols'),
+      );
+      expect(await fs.readFile(claude, 'utf8')).not.toContain('gitnexus-area-auth');
+
+      await generateAIContextFiles(dir, storage, 'P', fresh, undefined, {
+        ...options,
+        noStats: true,
+      });
+      expect(await fs.readFile(agents, 'utf8')).toContain(
+        '| Work in the Auth area | `.claude/skills/gitnexus-area-auth/SKILL.md` |',
+      );
+      await generateAIContextFiles(dir, storage, 'P', fresh, [], options);
+      expect(await fs.readFile(agents, 'utf8')).not.toContain('## CLI');
     });
   });
 

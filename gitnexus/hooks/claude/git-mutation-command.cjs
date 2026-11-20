@@ -262,4 +262,82 @@ function readHead(directory, cwd) {
   return { head, checkout: root === here ? null : path.resolve(root) };
 }
 
-module.exports = { gitMutationDirectories, readHead };
+// Compare the entire gap, including both paths of a rename. Unknown bases and
+// failed comparisons must leave the stale hint enabled.
+function onlyMarkdownChanged(directory, cwd, base, head) {
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(base)) return false;
+  const paths = [
+    '--',
+    ':(top,glob)**',
+    ':(top,exclude,icase,glob)**/*.md',
+    ':(top,exclude,icase,glob)**/*.mdx',
+    ':(top,exclude,icase,glob)**/*.markdown',
+  ];
+  const deadline = Date.now() + 3000;
+  const result = spawnSync(
+    'git',
+    [
+      '--no-literal-pathspecs',
+      '-C',
+      directory,
+      'diff',
+      '--quiet',
+      '--no-ext-diff',
+      '--no-renames',
+      '--no-relative',
+      '--ignore-submodules=none',
+      base,
+      head,
+      ...paths,
+    ],
+    { cwd, timeout: 3000, windowsHide: true, stdio: 'ignore' },
+  );
+  if (result.status !== 0) return false;
+  const dirty = spawnSync(
+    'git',
+    [
+      '--no-literal-pathspecs',
+      '--no-optional-locks',
+      '-C',
+      directory,
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--no-renames',
+      '--untracked-files=all',
+      '--ignore-submodules=none',
+      ...paths,
+    ],
+    { cwd, timeout: Math.max(1, deadline - Date.now()), maxBuffer: 256, windowsHide: true },
+  );
+  return dirty.status === 0 && dirty.stdout.length === 0;
+}
+
+function canSkipMarkdownReindex(directory, cwd, base, head, resolveCliPath) {
+  if (!onlyMarkdownChanged(directory, cwd, base, head)) return false;
+  const cli = resolveCliPath();
+  if (!cli || !path.isAbsolute(cli)) return false;
+  try {
+    const result = spawnSync(process.execPath, [cli, 'status', '--json'], {
+      cwd: directory,
+      timeout: 3000,
+      encoding: 'utf8',
+      windowsHide: true,
+      maxBuffer: 65536,
+    });
+    if (result.status !== 0) return false;
+    const status = JSON.parse(result.stdout);
+    return (
+      status.index?.commit === base &&
+      status.current?.commit === head &&
+      !status.workspaceIndexBranch &&
+      status.index.runnerIdentityStatus === 'current' &&
+      Array.isArray(status.index.incompleteReasons) &&
+      status.index.incompleteReasons.length === 0
+    );
+  } catch {
+    return false;
+  }
+}
+
+module.exports = { gitMutationDirectories, readHead, onlyMarkdownChanged, canSkipMarkdownReindex };

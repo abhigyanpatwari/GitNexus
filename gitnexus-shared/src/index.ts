@@ -28,6 +28,7 @@ export type { MroStrategy } from './mro-strategy.js';
 
 // Impact risk scoring
 export { scoreImpactRisk, unusedAxesForImpactWalk } from './impact-risk.js';
+export { GLOBAL_NAME_FALLBACK_REASON, impactEdgePredicate } from './graph/edge-reasons.js';
 export type {
   ImpactRisk,
   ImpactRiskAxis,

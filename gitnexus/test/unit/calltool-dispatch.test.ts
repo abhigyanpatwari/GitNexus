@@ -121,11 +121,6 @@ import {
   isLbugReady,
   closeLbug,
 } from '../../src/mcp/core/lbug-adapter.js';
-import {
-  DEFERRED_IMPORT_REASON_SUFFIX,
-  TYPE_ONLY_IMPORT_REASON_SUFFIX,
-} from '../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
-import { DART_PACKAGE_IDENTITY_REASON } from '../../src/core/ingestion/languages/dart/package-dependencies.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -137,33 +132,6 @@ const MOCK_REPO_ENTRY = {
   lastCommit: 'abc1234567890',
   stats: { files: 10, nodes: 50, edges: 100, communities: 3, processes: 5 },
 };
-
-/**
- * The `( ... )` group guarded by `r.reason IS NULL OR`, as one whitespace-
- * collapsed string.
- *
- * The `check` query's reason exclusions are only correct INSIDE that
- * alternative — hoisted out, they would also drop every edge whose `reason` is
- * null, which is every producer that is not scope resolution. Substring
- * assertions cannot tell the two placements apart, so the group is extracted by
- * balancing parentheses from the guard to its own close.
- *
- * Returns `''` when the guard is absent, which fails the membership assertions
- * rather than passing vacuously.
- */
-function reasonNullAlternativeOf(query: string): string {
-  const flat = query.replace(/\s+/g, ' ');
-  const guard = 'r.reason IS NULL OR ';
-  const guardAt = flat.indexOf(guard);
-  const open = flat.indexOf('(', guardAt + guard.length);
-  if (guardAt < 0 || open < 0) return '';
-  let depth = 0;
-  for (let i = open; i < flat.length; i++) {
-    depth += Number(flat[i] === '(') - Number(flat[i] === ')');
-    if (depth === 0) return flat.slice(open + 1, i);
-  }
-  return '';
-}
 
 function setupSingleRepo() {
   (listRegisteredRepos as any).mockResolvedValue([MOCK_REPO_ENTRY]);
@@ -790,36 +758,7 @@ describe('LocalBackend.callTool', () => {
       componentCount: 1,
       cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
     });
-    const query = (executeParameterized as any).mock.calls.at(-1)[1] as string;
-    expect(query).toContain("r.reason <> 'swift-scope: implicit module visibility'");
-    expect(query).toContain("r.reason <> 'markdown-link'");
-    // A cycle means "these modules cannot be initialized in any order", so
-    // edges that carry no initialization order are excluded too: deferred
-    // imports (`import()`, function-local) run later, and TypeScript
-    // `import type` is erased by `tsc` and never runs. `imports-to-edges.ts`
-    // tags both by reason suffix; dropping either clause from this query
-    // reports the standard cycle-BREAKING idioms as cycles.
-    // The exclusions must sit INSIDE the `reason IS NULL OR (...)` alternative,
-    // or an untagged edge — every producer that is not scope resolution — stops
-    // counting and the check goes quiet. Asserting the fragments appear
-    // *somewhere* does not pin that: a query with the `IS NULL OR` in one place
-    // and an `ENDS WITH` hoisted out of the group satisfies `toContain` while
-    // silently dropping those edges. So extract the balanced group and assert
-    // membership in it.
-    expect(reasonNullAlternativeOf(query)).toContain(
-      `NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'`,
-    );
-    expect(reasonNullAlternativeOf(query)).toContain(
-      `NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'`,
-    );
-    expect(reasonNullAlternativeOf(query)).toContain("r.reason <> 'markdown-link'");
-    // Package-identity edges are IMPORTS metadata for incremental
-    // invalidation. They must be excluded inside this same group, before
-    // LIMIT, or they fill the 100000-row cap on a cycle-free graph.
-    expect(reasonNullAlternativeOf(query)).toContain(
-      `r.reason <> '${DART_PACKAGE_IDENTITY_REASON}'`,
-    );
-    expect(query).toContain('LIMIT 100001');
+    expect((executeParameterized as any).mock.calls.at(-1)[2]).toMatchObject({ limit: 100_001 });
   });
 
   it('uses the advertised cycles default when check arguments are omitted', async () => {

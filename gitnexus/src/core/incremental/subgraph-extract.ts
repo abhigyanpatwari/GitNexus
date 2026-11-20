@@ -51,6 +51,7 @@
 
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { createKnowledgeGraph } from '../graph/graph.js';
+import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import type { KnowledgeGraph } from '../graph/types.js';
 import {
   isSpringAutoConfigurationDeclaration,
@@ -108,7 +109,7 @@ export const isGraphWideNode = (node: GraphNode): boolean =>
 // touched, so the endpoint-writability rule would strand a stale
 // consumer→implementer edge (or miss a new one). Always re-extracted from the
 // fresh graph; the orchestrator unconditionally delete-alls the old rows
-// first (`deleteAllInjects`). Crash-recovery: delete-then-COPY is not atomic
+// first (`deleteGlobalResolutionEdges`). Crash-recovery: delete-then-COPY is not atomic
 // by design — a crash between them loses INJECTS edges until the next
 // analyze, and the `incrementalInProgress` dirty flag (saved before any
 // delete) forces a full rebuild on the next run. Temporary absence is
@@ -120,6 +121,8 @@ export const isGraphWideNode = (node: GraphNode): boolean =>
 // DECLARES itself is generic, however: only the two Spring-owned reasons are
 // graph-wide, leaving future metadata systems under their own lifecycle.
 export const isGraphWideRelationship = (relationship: GraphRelationship): boolean =>
+  // Adding or removing a third definition changes workspace-wide name uniqueness.
+  (relationship.type === 'CALLS' && relationship.reason === GLOBAL_NAME_FALLBACK_REASON) ||
   relationship.type === 'TAINT_PATH' ||
   relationship.type === 'CALL_SUMMARY' ||
   relationship.type === 'INJECTS' ||

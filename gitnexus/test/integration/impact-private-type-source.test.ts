@@ -14,6 +14,9 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
 }));
 
 const sources: Record<string, string> = {
+  'invoice.py': 'class Invoice:\n    pass\n\ndef total():\n    return 1\n',
+  'billing.py': 'from invoice import Invoice\ndef bill():\n    return Invoice()\n',
+  'totals.py': 'from invoice import total\ndef report():\n    return total()\n',
   'clause.ts': 'interface ClauseEntry { value: string }\nexport { ClauseEntry };\n',
   'commented.ts':
     'interface CommentedEntry {}\nexport function verifyCommented() {}\n// exported separately\nexport { CommentedEntry };\n',
@@ -77,6 +80,17 @@ withTestLbugDB(
           .filter((item: { id: string }) => item.id.startsWith('File:'))
           .map((item: { id: string }) => item.id),
       ).toEqual([`File:${importer}`]);
+    });
+
+    it('reports only evidenced Python class dependants when a module exports several symbols', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'Invoice',
+        direction: 'upstream',
+        maxDepth: 1,
+      });
+      expect(result.byDepth[1].map((row: { filePath: string }) => row.filePath)).toEqual([
+        'billing.py',
+      ]);
     });
 
     it('retains importers of a class exposed through an exported value alias', async () => {
