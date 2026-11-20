@@ -5,16 +5,32 @@
 Generate LLM-powered documentation from your knowledge graph:
 
 ```bash
-# Requires an LLM API key (OPENAI_API_KEY, etc.)
+# Requires an LLM API key (MINIMAX_API_KEY, ANTHROPIC_API_KEY, GITNEXUS_API_KEY or OPENAI_API_KEY)
 gitnexus wiki
+gitnexus wiki --api-key <key>  # or pass the key on the command line
 
-# Use a custom model or provider (default model: minimax/minimax-m2.5)
+# Use a custom model or provider (default model: MiniMax-M3)
 gitnexus wiki --model gpt-4o
 gitnexus wiki --base-url https://api.anthropic.com/v1
+gitnexus wiki --provider anthropic  # Anthropic Messages API (default model: claude-opus-5-5)
 gitnexus wiki --provider grok   # local Grok Build CLI (uses `grok login`, no API key)
+# Providers: minimax, anthropic, openai, openrouter, azure, custom,
+# and the local agent CLIs cursor, claude, codex, opencode and grok
+
+# Azure OpenAI with a legacy deployment URL also needs an api-version
+gitnexus wiki --provider azure --api-version 2024-10-21 \
+  --base-url https://<resource>.openai.azure.com/openai/deployments/<deployment>
+
+# Turn reasoning mode on or off. MiniMax-M3 uses adaptive thinking unless
+# --no-reasoning-model is set; o1, o3 and their -mini or -preview models are detected.
+gitnexus wiki --reasoning-model
+gitnexus wiki --no-reasoning-model
 
 # Force full regeneration
 gitnexus wiki --force
+
+# Run more LLM calls in parallel (default: 3)
+gitnexus wiki --concurrency 6
 
 # Increase the timeout or retries for large codebases or slow LLM providers
 gitnexus wiki --timeout <seconds>  # LLM request timeout in seconds (default: disabled)
@@ -33,7 +49,27 @@ GITNEXUS_ALLOW_INSECURE_CONNECTION=llama-box.local,192.168.1.23
 
 # Change the output language
 gitnexus wiki --lang <lang>  # e.g. english, chinese, spanish, japanese
+
+# Review the module structure before any page is generated
+gitnexus wiki --review
+
+# Print the commands and responses of a local agent CLI provider
+gitnexus wiki --provider claude --verbose
+
+# Publish the wiki as a public GitHub Gist after generation (needs the GitHub CLI, `gh`)
+gitnexus wiki --gist
 ```
+
+`--provider`, `--model`, `--base-url`, `--api-key`, `--api-version` and `--reasoning-model`
+are saved to `~/.gitnexus/config.json`, so later runs reuse them without the flags. The API
+key is stored there as plain text. Switching to another `--provider` clears the saved key,
+base URL, model, api-version and reasoning setting. `--api-version` is appended to requests
+only for Azure: `--provider azure` or an Azure OpenAI base URL.
+
+`--review` stops after modules are grouped. It prints the module tree, saves it as
+`module_tree.json` in the wiki output folder, and asks whether to continue. Answer `edit` to
+open the file in `$EDITOR` (or `$VISUAL`, else `vi`) and generate pages from the edited tree,
+or `n` to stop. In a non-interactive shell, generation continues without asking.
 
 The completion limit must be a positive integer supported by your model. It applies to
 OpenAI-compatible HTTP providers; local agent CLI providers manage their own limits.
