@@ -1984,50 +1984,30 @@ const analyzeCommandImpl = async (
         );
         if (skillResult.skills.length > 0) {
           barLog(`  Generated ${skillResult.skills.length} skill files`);
-          // Re-generate AI context files now that we have skill info
-          const s = result.stats;
-          const communityResult = result.pipelineResult?.communityResult;
-          let aggregatedClusterCount = 0;
-          if (communityResult?.communities) {
-            const groups = new Map<string, number>();
-            for (const c of communityResult.communities) {
-              const label = c.heuristicLabel || c.label || 'Unknown';
-              groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-            }
-            aggregatedClusterCount = Array.from(groups.values()).filter(
-              (count: number) => count >= 5,
-            ).length;
-          }
-          await generateAIContextFiles(
-            repoPath,
-            result.storagePath,
-            result.repoName,
-            {
-              files: s.files ?? 0,
-              nodes: s.nodes ?? 0,
-              edges: s.edges ?? 0,
-              communities: s.communities,
-              clusters: aggregatedClusterCount,
-              processes: s.processes,
-            },
-            skillResult.skills,
-            {
-              skipAgentsMd,
-              instructionFile: options.instructionFile,
-              refreshCounts: true,
-              skipSkills,
-              // Same resolved branch as the main run (#243) so the --skills
-              // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
-              // to "main".
-              defaultBranch: resolvedDefaultBranch,
-              // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
-              // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
-              noStats: options.stats === false,
-              hasPdg: options.pdg === true,
-              hasSpringActuator: options.springActuator !== undefined,
-            },
-          );
         }
+        // An empty inventory clears links to previously generated community skills.
+        await generateAIContextFiles(
+          repoPath,
+          result.storagePath,
+          result.repoName,
+          result.stats,
+          skillResult.skills,
+          {
+            skipAgentsMd,
+            instructionFile: options.instructionFile,
+            refreshCounts: true,
+            skipSkills,
+            // Same resolved branch as the main run (#243) so the --skills
+            // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
+            // to "main".
+            defaultBranch: resolvedDefaultBranch,
+            // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
+            // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
+            noStats: options.stats === false,
+            hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuator !== undefined,
+          },
+        );
       } catch {
         /* best-effort */
       }

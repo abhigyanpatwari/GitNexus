@@ -137,6 +137,8 @@ function regressionReviewGuidance(defaultBranch: string, runner?: string): strin
  *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
 export interface GitNexusContentOptions {
   generatedSkills?: GeneratedSkillInfo[];
+  /** Managed block from this file, used when community skills were not regenerated. */
+  previousSection?: string;
   groupNames?: string[];
   noStats?: boolean;
   skipSkills?: boolean;
@@ -161,6 +163,16 @@ export interface GitNexusContentOptions {
   hasSpringActuator?: boolean;
 }
 
+function retainedCommunitySkillRows(section: string, noStats?: boolean): string {
+  const rows =
+    section.match(
+      /^\| Work in the [^\n|]+ area(?: \(\d+ symbols\))?[ \t]*\|[ \t]*`\.claude\/skills\/[^/`\n]+\/SKILL\.md`[ \t]*\|[ \t]*$/gm,
+    ) ?? [];
+  return rows
+    .map((row) => (noStats ? row.replace(/ \(\d+ symbols\)(?=[ \t]*\|)/, '') : row))
+    .join('\n');
+}
+
 export function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
@@ -177,17 +189,12 @@ export function generateGitNexusContent(
     hasSpringActuator = false,
   } = opts;
   const generatedRows =
-    generatedSkills && generatedSkills.length > 0
-      ? generatedSkills
-          .map(
-            (s) =>
-              // The per-cluster count is as volatile as the header parenthetical,
-              // so --no-stats drops it too (#2907) — otherwise the flag that
-              // promises "omit volatile symbol counts" left a churning one behind.
-              `| Work in the ${s.label} area${noStats ? '' : ` (${s.symbolCount} symbols)`} | \`.claude/skills/${s.name}/SKILL.md\` |`,
-          )
-          .join('\n')
-      : '';
+    generatedSkills
+      ?.map(
+        (s) =>
+          `| Work in the ${s.label} area${noStats ? '' : ` (${s.symbolCount} symbols)`} | \`.claude/skills/${s.name}/SKILL.md\` |`,
+      )
+      .join('\n') ?? retainedCommunitySkillRows(opts.previousSection ?? '', noStats);
 
   // Standard skill rows reference files installed by installSkills(). When
   // --skip-skills suppresses that install, these rows must be omitted — else
@@ -430,7 +437,7 @@ function stripVolatileCounts(section: string): string {
  */
 async function upsertGitNexusSection(
   filePath: string,
-  content: string,
+  render: (previousSection?: string) => string,
   projectName: string,
   stats: RepoStats,
   noStats?: boolean,
@@ -443,7 +450,7 @@ async function upsertGitNexusSection(
     // Same `.trim() + '\n'` shape the update paths write. Creating without the
     // trailing newline made the NEXT analyze dirty a freshly committed file
     // even at unchanged counts, purely to append it (#2907).
-    await fs.writeFile(filePath, content.trim() + '\n', 'utf-8');
+    await fs.writeFile(filePath, render().trim() + '\n', 'utf-8');
     return 'created';
   }
 
@@ -544,7 +551,7 @@ async function upsertGitNexusSection(
     // The write below trims the file, which can change what its first lines
     // are (a blank line before front matter, an indented first line), so the
     // title is looked for in the text as it will be written.
-    const placed = nestUnderExistingTitle(content, before.trimStart() + after);
+    const placed = nestUnderExistingTitle(render(existingSection), before.trimStart() + after);
     if (comparable(existingSection) === comparable(placed)) {
       return repairLineEndings();
     }
@@ -558,7 +565,7 @@ async function upsertGitNexusSection(
   // Append new section, deciding its heading level from the trimmed text that
   // is written rather than the text that was read.
   const kept = existingContent.trim();
-  const newContent = kept + '\n\n' + nestUnderExistingTitle(content, kept) + '\n';
+  const newContent = kept + '\n\n' + nestUnderExistingTitle(render(), kept) + '\n';
   await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
 }
@@ -796,16 +803,18 @@ export async function generateAIContextFiles(
     logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
   }
 
-  const content = generateGitNexusContent(projectName, stats, {
-    generatedSkills,
-    groupNames,
-    noStats: options?.noStats,
-    skipSkills: options?.skipSkills,
-    runnerPath,
-    defaultBranch: options?.defaultBranch ?? 'main',
-    hasPdg: options?.hasPdg ?? false,
-    hasSpringActuator: options?.hasSpringActuator ?? false,
-  });
+  const render = (previousSection?: string) =>
+    generateGitNexusContent(projectName, stats, {
+      generatedSkills,
+      previousSection,
+      groupNames,
+      noStats: options?.noStats,
+      skipSkills: options?.skipSkills,
+      runnerPath,
+      defaultBranch: options?.defaultBranch ?? 'main',
+      hasPdg: options?.hasPdg ?? false,
+      hasSpringActuator: options?.hasSpringActuator ?? false,
+    });
   const createdFiles: string[] = [];
   const instructionFiles = selectedInstructionFiles(options?.instructionFile);
 
@@ -817,7 +826,7 @@ export async function generateAIContextFiles(
     for (const name of instructionFiles) {
       const result = await upsertGitNexusSection(
         path.join(repoPath, name),
-        content,
+        render,
         projectName,
         stats,
         options?.noStats,

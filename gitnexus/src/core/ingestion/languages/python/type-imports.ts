@@ -124,7 +124,36 @@ export const createPythonTypeImportClassifier: TypeImportAttribution['createClas
     if (!source.includes('__all__')) return !className.startsWith('_');
     const root = parseRoot(source);
     if (!root || root.hasError) return undefined;
-    return pythonLiteralAll(root)?.includes(className);
+    const names = pythonLiteralAll(root);
+    if (names !== undefined) return names.includes(className);
+    // A mention in prose does not bind the export list. An identifier or
+    // reflective key can refer to a list whose contents we cannot establish.
+    const skipDocstring = (node: Parser.SyntaxNode) => {
+      if (node.type !== 'expression_statement') return false;
+      const value = node.firstNamedChild;
+      return (
+        value?.type === 'string' &&
+        !value.namedChildren.some((child) => child.type === 'interpolation')
+      );
+    };
+    for (const node of walkNamedNodes(root, skipDocstring)) {
+      if (
+        (node.type === 'identifier' || node.type === 'string_content') &&
+        node.endIndex - node.startIndex === 7 &&
+        node.text === '__all__'
+      )
+        return undefined;
+      if (node.type === 'call') {
+        const fn = node.childForFieldName('function');
+        if (
+          fn?.type === 'identifier' &&
+          fn.endIndex - fn.startIndex === 4 &&
+          (fn.text === 'exec' || fn.text === 'eval')
+        )
+          return undefined;
+      }
+    }
+    return !className.startsWith('_');
   };
   return (filePath, source, resolvedImports) => {
     const root = parseRoot(source);

@@ -2648,6 +2648,36 @@ describe('block heading levels follow the file (#2774)', () => {
     },
   );
 
+  it('retains each file’s community skills until a fresh inventory replaces them', async () => {
+    await withRepo(async (dir, storage) => {
+      const options = { skipSkills: true, refreshCounts: true };
+      const skills = [{ name: 'gitnexus-area-auth', label: 'Auth', symbolCount: 40, fileCount: 2 }];
+      await generateAIContextFiles(dir, storage, 'P', stats, skills, {
+        ...options,
+        instructionFile: 'AGENTS.md',
+      });
+      const agents = path.join(dir, 'AGENTS.md');
+      const claude = path.join(dir, 'CLAUDE.md');
+      const original = await fs.readFile(agents, 'utf8');
+      const fresh = { ...stats, nodes: 91 };
+      await generateAIContextFiles(dir, storage, 'P', fresh, undefined, options);
+      expect(await fs.readFile(agents, 'utf8')).toBe(
+        original.replace(stats.nodes + ' symbols', '91 symbols'),
+      );
+      expect(await fs.readFile(claude, 'utf8')).not.toContain('gitnexus-area-auth');
+
+      await generateAIContextFiles(dir, storage, 'P', fresh, undefined, {
+        ...options,
+        noStats: true,
+      });
+      expect(await fs.readFile(agents, 'utf8')).toContain(
+        '| Work in the Auth area | `.claude/skills/gitnexus-area-auth/SKILL.md` |',
+      );
+      await generateAIContextFiles(dir, storage, 'P', fresh, [], options);
+      expect(await fs.readFile(agents, 'utf8')).not.toContain('## CLI');
+    });
+  });
+
   it('nests the block in a CRLF file with a title and keeps CRLF', async () => {
     await withRepo(async (dir, storage) => {
       const file = path.join(dir, 'CLAUDE.md');

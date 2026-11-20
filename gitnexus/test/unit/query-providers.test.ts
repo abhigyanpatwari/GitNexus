@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, assert, expect, it, vi } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import {
@@ -56,6 +56,33 @@ afterEach(() => {
   vi.doUnmock('../../src/core/ingestion/languages/index.js');
   vi.doUnmock('../../src/core/ingestion/languages/typescript/file-private-exports.js');
   vi.doUnmock('../../src/core/ingestion/languages/python.js');
+});
+
+it.each([
+  ['"""No explicit __all__ here."""', 'Public', true],
+  ['"""__all__"""', 'Public', true],
+  ['# no __all__', '_Hidden', false],
+  ['note = "no __all__"', 'Public', true],
+  ['__all__ = []', 'Public', false],
+  ['__all__ = ["_Hidden"]', '_Hidden', true],
+  ['__all__ = names()', 'Public', undefined],
+  ['globals()["__all__"] = names()', 'Public', undefined],
+  ['globals().update({"__all__": names()})', 'Public', undefined],
+  ['def __getattr__(name):\n    if name == "__all__": return names()', 'Public', undefined],
+  ['exec("__all__ = []")', 'Public', undefined],
+] as const)('classifies wildcard import of %s (%s)', async (declaration, name, expected) => {
+  const readOwner = vi.fn(async () => declaration + '\nclass Public: pass\nclass _Hidden: pass\n');
+  const attribution = getQueryProviderForFile('model.py')?.typeImportAttribution;
+  assert(attribution);
+  const classify = await attribution.createClassifier({
+    ownerPath: 'model.py',
+    name,
+    readOwner,
+  });
+  for (const importer of ['a.py', 'b.py']) {
+    expect(await classify(importer, 'from model import *', new Set(['model.py']))).toBe(expected);
+  }
+  expect(readOwner).toHaveBeenCalledTimes(1);
 });
 
 it('classifies query inputs without initializing ingestion or the syntax parsers', async () => {
