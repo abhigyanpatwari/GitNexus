@@ -4,6 +4,7 @@ import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { readSafeBounded } from '../../../group/extractors/fs-utils.js';
+import { isPythonSourceFile } from './query-provider.js';
 
 const run = promisify(execFile);
 const timeout = 15_000;
@@ -206,12 +207,19 @@ export async function* definitionImages(
   }
 }
 
+export interface PythonModuleFiles {
+  /** Paths used by the import resolver, which probes a literal .py suffix. */
+  paths: Set<string>;
+  /** Original Git spelling of a nonstandard suffix, or null for competing spellings. */
+  mixedCasePaths: Map<string, string | null>;
+}
+
 // ls-tree cannot filter by extension. Discard non-Python paths as they arrive
 // so a huge unrelated tree cannot overflow execFile's stdout buffer.
 export async function pythonFiles(
   cwd: string,
   revision: string | undefined,
-): Promise<Set<string> | null> {
+): Promise<PythonModuleFiles | null> {
   const args = revision
     ? ['ls-tree', '-rz', '--name-only', revision]
     : [
@@ -219,12 +227,18 @@ export async function pythonFiles(
         '-z',
         '--cached',
         ...(revision === undefined ? ['--others', '--exclude-standard'] : []),
-        '--',
-        '*.py',
+        // Custom pathspec modes can change the wildcard or its directory reach.
+        ...(process.env.GIT_LITERAL_PATHSPECS ||
+        process.env.GIT_NOGLOB_PATHSPECS ||
+        process.env.GIT_GLOB_PATHSPECS
+          ? []
+          : ['--', '*.[pP][yY]']),
       ];
   const child = spawn('git', args, { cwd, timeout, stdio: ['ignore', 'pipe', 'ignore'] });
   const files = new Set<string>();
+  const mixedCasePaths = new Map<string, string | null>();
   let pathBytes = 0;
+  let pathCount = 0;
   let limited = false;
   const collect = async () => {
     let pending = '';
@@ -233,18 +247,30 @@ export async function pythonFiles(
       const parts = (pending + chunk).split('\0');
       pending = parts.pop() ?? '';
       for (const file of parts) {
-        if (!file.endsWith('.py')) continue;
+        if (!isPythonSourceFile(file)) continue;
         pathBytes += Buffer.byteLength(file);
-        if (files.size >= 250_000 || pathBytes > 32 * 1024 * 1024) {
+        if (++pathCount > 250_000 || pathBytes > 32 * 1024 * 1024) {
           limited = true;
           child.kill();
           return;
         }
-        files.add(file);
+        if (file.endsWith('.py')) {
+          // The exact module wins even if a case variant appeared earlier in Git's listing.
+          files.add(file);
+          mixedCasePaths.delete(file);
+        } else {
+          const modulePath = file.slice(0, -3) + '.py';
+          if (!files.has(modulePath)) {
+            files.add(modulePath);
+            mixedCasePaths.set(modulePath, file);
+          } else if (mixedCasePaths.has(modulePath) && mixedCasePaths.get(modulePath) !== file) {
+            mixedCasePaths.set(modulePath, null);
+          }
+        }
       }
     }
   };
   const [[code]] = await Promise.all([once(child, 'close'), collect()]);
   if (limited || code !== 0) return null;
-  return files;
+  return { paths: files, mixedCasePaths };
 }

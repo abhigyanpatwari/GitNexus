@@ -32,8 +32,11 @@ import {
   pythonFiles,
   readImage,
   type Image,
+  type PythonModuleFiles,
 } from './signature-images.js';
 import { getGitRoot } from '../../../../storage/git.js';
+import { isPythonSourceFile } from './query-provider.js';
+import { pythonValueBindingsInScope } from './builtin-descriptors.js';
 import { compareCodeUnits } from '../../../../lib/utils.js';
 import { nodeRange, rangeKey } from '../rename-tree-sitter.js';
 
@@ -125,33 +128,27 @@ function signatures(root: Node, names: Set<string>) {
       bases?.namedChildren.some((n) => n.type === 'keyword_argument' || n.type.includes('splat'))
     )
       continue;
-    const members = isClass ? def.childForFieldName('body')?.namedChildren : undefined;
-    // In Python the final class-body binding wins. A decorated initializer or
-    // custom allocator can change keyword handling beyond the signature.
-    const initializer = members
-      ?.filter((member) => {
-        const inner =
-          member.type === 'decorated_definition' ? member.childForFieldName('definition') : member;
-        return inner?.childForFieldName('name')?.text === '__init__';
-      })
-      .at(-1);
-    if (initializer && initializer.type !== 'function_definition') continue;
-    if (
-      members?.some(
-        (member) =>
-          (member.type === 'decorated_definition'
-            ? member.childForFieldName('definition')
-            : member
-          )?.childForFieldName('name')?.text === '__new__',
-      )
-    )
-      continue;
+    const body = isClass ? def.childForFieldName('body') : null;
+    let initializer: Node | null | undefined;
+    if (body) {
+      // Only a final, unconditional method definition proves the class's keyword contract.
+      const classSource = body.text;
+      if (classSource.includes('__new__') && pythonValueBindingsInScope(def, '__new__').length)
+        continue;
+      if (classSource.includes('__init__')) {
+        initializer = pythonValueBindingsInScope(def, '__init__').at(-1)?.parent;
+        if (
+          initializer &&
+          (initializer.type !== 'function_definition' || initializer.parent?.id !== body.id)
+        )
+          continue;
+      }
+    }
     const callable = isClass ? initializer : def;
     const params = callable?.childForFieldName('parameters');
     if (!params) {
       // Only infer object.__init__ for a plain class body. Bases, decorators
       // and class-body code can supply a constructor that accepts keywords.
-      const body = def.childForFieldName('body');
       const defaultConstructor =
         isClass &&
         !def.childForFieldName('superclasses')?.namedChildCount &&
@@ -265,8 +262,9 @@ function sourceBindings(parsed: ParsedFile) {
 // "from . import X", whose base is the importing package itself.
 function exportResolver(
   changes: Iterable<SignatureChange>,
-  allFilePaths: Set<string>,
+  files: PythonModuleFiles,
   loadFile: (file: string) => Promise<ParsedFile | null>,
+  skip: (file: string, reason: string) => void,
 ) {
   const definitions = new Map<string, SignatureChange | null>();
   for (const change of changes) {
@@ -274,13 +272,20 @@ function exportResolver(
     const key = change.target.filePath + '\0' + change.target.name;
     definitions.set(key, definitions.has(key) ? null : change);
   }
-  const cache = new Map<string, SignatureChange | null>();
+  type ResolvedExport = { change: SignatureChange; needsIndexedCall: boolean };
+  const cache = new Map<string, ResolvedExport | null>();
   const importIndexes = new WeakMap<ParsedFile, Map<string, ParsedImport>>();
-  return async (moduleFile: string, name: string) => {
-    const seen = new Set<string>();
+  return async (moduleFile: string, name: string, callerFile: string) => {
+    const seen = new Map<string, boolean>();
     let file: string | null = moduleFile;
-    let result: SignatureChange | null = null;
+    let result: ResolvedExport | null = null;
     while (file) {
+      const original = files.mixedCasePaths.get(file);
+      if (original === null) {
+        skip(callerFile, 'Multiple Git paths match the module ' + file);
+        return null;
+      }
+      file = original ?? file;
       const key: string = file + '\0' + name;
       const cached = cache.get(key);
       if (cached !== undefined) {
@@ -288,7 +293,7 @@ function exportResolver(
         break;
       }
       if (seen.has(key)) break;
-      seen.add(key);
+      seen.set(key, original !== undefined);
       const parsed = await loadFile(file);
       const scope = parsed?.scopes.find((s) => s.id === parsed.moduleScope);
       if (!parsed || !scope) break;
@@ -297,7 +302,8 @@ function exportResolver(
       const claim = rangeKey(selected.claims[0].range);
       if (selected.claims[0].kind === 'binding') {
         const definition = definitions.get(key);
-        if (definition?.declaration === claim) result = definition;
+        if (definition?.declaration === claim)
+          result = { change: definition, needsIndexedCall: false };
         break;
       }
       if (selected.claims[0].kind !== 'import') break;
@@ -314,11 +320,16 @@ function exportResolver(
       if (!imp || (imp.kind !== 'alias' && imp.kind !== 'named') || !imp.reexportsName) break;
       file = resolvePythonImportTarget(
         { ...imp, targetIncludesImportedName: true },
-        { fromFile: file, allFilePaths },
+        { fromFile: file, allFilePaths: files.paths },
       );
       name = imp.importedName;
     }
-    for (const key of seen) cache.set(key, result);
+    // Only imports upstream of a nonstandard suffix need an indexed call to corroborate them.
+    for (const [key, mixedSuffix] of Array.from(seen).reverse()) {
+      if (mixedSuffix && result && !result.needsIndexedCall)
+        result = { ...result, needsIndexedCall: true };
+      cache.set(key, result);
+    }
     return result;
   };
 }
@@ -435,7 +446,7 @@ export async function findBrokenKeywordCalls(
   });
   const parse = (file: string, source: Image) => {
     if (source === undefined) skip(file, 'Source unreadable or exceeds the 4 MiB file limit');
-    if (!source) return;
+    if (source == null) return;
     let tree: Parser.Tree;
     try {
       tree = parseSourceSafe(parser, source, undefined, undefined, file);
@@ -511,7 +522,11 @@ export async function findBrokenKeywordCalls(
             ? options[0]
             : undefined;
       if (!id && options.length === 0) continue;
-      if (id && (!oldDefs.has(id) || !newDefs.has(id))) continue;
+      if (id && !oldDefs.has(id)) continue;
+      if (id && !newDefs.has(id)) {
+        skip(file, 'Declaration removed; keyword compatibility unavailable for ' + symbol.name);
+        continue;
+      }
       const prev = id && oldDefs.get(id);
       const next = id && newDefs.get(id);
       if (!prev || !next) {
@@ -526,6 +541,11 @@ export async function findBrokenKeywordCalls(
       if (next.arbitrary) continue;
       const removed = new Set([...prev.keywords].filter((name) => !next.keywords.has(name)));
       if (removed.size || prev.arbitrary) {
+        if (next.moduleLevel && !file.endsWith('.py'))
+          skip(
+            file,
+            'Importers of a module with a nonstandard suffix may be missing from the index',
+          );
         // Passing the bound receiver by keyword was already invalid, even
         // with **kwargs (unless it was positional-only).
         const stillAccepted = prev.arbitrary ? new Set(next.keywords) : undefined;
@@ -544,7 +564,7 @@ export async function findBrokenKeywordCalls(
   const rows = await incoming([...changed.keys()]);
   const supportedCallers = rows.filter((row) => {
     const file = newPaths.get(row.filePath) ?? row.filePath;
-    if (file.endsWith('.py')) return true;
+    if (isPythonSourceFile(file)) return true;
     skip(file, 'Caller source format is unsupported for keyword checking');
     return false;
   });
@@ -554,9 +574,7 @@ export async function findBrokenKeywordCalls(
       skip(filePath, 'Notebook cells are unsupported for keyword checking');
   }
   const graphFiles = groupBy(supportedCallers, (r) => newPaths.get(r.filePath) ?? r.filePath);
-  const diffPaths = new Set(
-    changedFiles.map((f) => f.filePath).filter((file) => file.endsWith('.py')),
-  );
+  const diffPaths = new Set(changedFiles.map((f) => f.filePath).filter(isPythonSourceFile));
   const files = [...new Set([...diffPaths].sort().concat([...graphFiles.keys()].sort()))];
   if (!files.length) return result();
   const allKeywords = new Set([...changed.values()].flatMap((c) => [...c.removed]));
@@ -564,7 +582,7 @@ export async function findBrokenKeywordCalls(
   const localDefs = new Map(
     [...changed.values()].map((c) => [c.target.filePath + '\0' + c.declaration, c]),
   );
-  let paths: Set<string> | null | undefined;
+  let moduleFiles: PythonModuleFiles | null | undefined;
   let resolveExport: ReturnType<typeof exportResolver> | undefined;
   const exports = new Map<string, ParsedFile | null>();
   // Scope extraction can grow superlinearly in densely bound generated code.
@@ -587,7 +605,7 @@ export async function findBrokenKeywordCalls(
     const cached = exports.get(file);
     if (cached !== undefined) return cached;
     const source = await readImage(cwd, after, file);
-    const tree = parse(file, source);
+    const tree = source === '' ? undefined : parse(file, source);
     let parsed = source && tree ? extract(file, source, tree) : null;
     if (source === null) skip(file, 'Imported module is missing from the source image');
     if (parsed?.parsedImports.some((imp) => imp.kind === 'wildcard')) {
@@ -618,9 +636,10 @@ export async function findBrokenKeywordCalls(
       skip(file, 'Caller scan reached the 64 MiB total source limit');
       break;
     }
-    const graphTargets = diffPaths.has(file)
-      ? undefined
-      : new Set(graphCallers.filter((c) => c.relationType === 'CALLS').map((c) => c.target));
+    const indexedTargets = new Set(
+      graphCallers.filter((c) => c.relationType === 'CALLS').map((c) => c.target),
+    );
+    const graphTargets = diffPaths.has(file) ? undefined : indexedTargets;
     const keywords = graphTargets
       ? new Set([...graphTargets].flatMap((id) => [...(changed.get(id)?.removed ?? [])]))
       : allKeywords;
@@ -664,17 +683,25 @@ export async function findBrokenKeywordCalls(
         const local = !spelling.includes('.') && localDefs.get(file + '\0' + claims.declaration);
         if (local) candidates.add(local);
       } else {
-        if (paths === undefined) paths = await pythonFiles(cwd, after);
-        if (!paths) {
+        if (moduleFiles === undefined) moduleFiles = await pythonFiles(cwd, after);
+        if (!moduleFiles) {
           skip(file, 'Python module inventory unavailable or exceeds the path limit');
           continue;
         }
-        resolveExport ??= exportResolver(changed.values(), paths, loadExport);
+        resolveExport ??= exportResolver(changed.values(), moduleFiles, loadExport, skip);
         for (const imp of claims) {
-          const imported = importedCallee(imp, spelling, file, paths);
+          const imported = importedCallee(imp, spelling, file, moduleFiles.paths);
           if (!imported?.file || imported.name.includes('.')) continue;
-          const candidate = await resolveExport(imported.file, imported.name);
-          if (candidate) candidates.add(candidate);
+          const candidate = await resolveExport(imported.file, imported.name, file);
+          if (!candidate) continue;
+          if (candidate.needsIndexedCall && !indexedTargets.has(candidate.change.target.id)) {
+            skip(
+              file,
+              'Cannot verify an import with a nonstandard module suffix without an indexed call',
+            );
+            continue;
+          }
+          candidates.add(candidate.change);
         }
       }
       if (candidates.size !== 1) continue;

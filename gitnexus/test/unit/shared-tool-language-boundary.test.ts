@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import * as t from '@babel/types';
 import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
@@ -95,6 +96,26 @@ function isQueryLiteral(node: AstNode): boolean {
 
 function violations(file: string, source: string): Finding[] {
   const hits: Finding[] = [];
+  const declarationDigests = new WeakMap<t.Node, string>();
+  const declarationDigest = (declaration: t.Node, name: t.Identifier) => {
+    let digest = declarationDigests.get(declaration);
+    if (digest === undefined) {
+      if (
+        declaration.start == null ||
+        declaration.end == null ||
+        name.start == null ||
+        name.end == null
+      )
+        throw new Error('Missing declaration or identifier range in ' + file);
+      digest = createHash('sha256')
+        .update(source.slice(declaration.start, name.start))
+        .update('\0')
+        .update(source.slice(name.typeAnnotation?.start ?? name.end, declaration.end))
+        .digest('hex');
+      declarationDigests.set(declaration, digest);
+    }
+    return digest;
+  };
   if (namesLanguage(file))
     hits.push({ key: 'filename', location: file + ': language-specific filename' });
   const nodes = collectDescendants(parseTypeScript(file, source).ast);
@@ -209,13 +230,23 @@ function violations(file: string, source: string): Finding[] {
     }
     if (!reason) continue;
     const owners: string[] = [];
+    let renamedOwnerDigest: (() => string) | undefined;
     for (let parent = node.parent; parent; parent = parent.parent) {
-      if ((t.isFunctionDeclaration(parent) || t.isClassDeclaration(parent)) && parent.id)
-        owners.push(parent.id.name);
-      else if (t.isClassMethod(parent) || t.isObjectMethod(parent))
-        owners.push(nodeText(source, parent.key));
-      else if (t.isVariableDeclarator(parent) && t.isIdentifier(parent.id))
-        owners.push(parent.id.name);
+      let name: t.Node | null | undefined;
+      if (
+        t.isFunctionDeclaration(parent) ||
+        t.isClassDeclaration(parent) ||
+        t.isVariableDeclarator(parent)
+      )
+        name = t.isIdentifier(parent.id) ? parent.id : undefined;
+      else if (t.isClassMethod(parent) || t.isObjectMethod(parent)) name = parent.key;
+      if (!name) continue;
+      if (!owners.length && t.isIdentifier(name) && !('computed' in parent && parent.computed)) {
+        const declaration = parent;
+        const identifier = name;
+        renamedOwnerDigest = () => declarationDigest(declaration, identifier);
+      }
+      owners.push(t.isIdentifier(name) ? name.name : nodeText(source, name));
     }
     // Keep the operation with the finding: moving a check to another function or
     // changing the operand in an existing file must consume a different baseline key.
@@ -226,6 +257,9 @@ function violations(file: string, source: string): Finding[] {
         : '';
     hits.push({
       key: JSON.stringify([owners, reason, operation]),
+      renamedBindingKey:
+        renamedOwnerDigest &&
+        (() => JSON.stringify([owners.slice(1), renamedOwnerDigest(), reason, operation])),
       location: file + ':' + node.loc?.start.line + ': ' + reason,
     });
   }
@@ -250,6 +284,36 @@ describe('language ownership in shared tool entry points', () => {
     60_000,
   );
 
+  it('allows declaration renames and detects a check moved to another function', () => {
+    const repo = mkdtempSync(path.join(os.tmpdir(), 'gn-language-rename-'));
+    try {
+      initGitRepo(repo);
+      const file = path.join(repo, 'gitnexus-shared/src/impact.ts');
+      mkdirSync(path.dirname(file), { recursive: true });
+      const check = "file.endsWith('.go')";
+      const local = 'const accepts = (file: string) => ' + check + ';';
+      const baseline = [
+        'function legacyFn(file: string) { return ' + check + '; }',
+        'class Rules { legacyMethod(file: string) { return ' + check + '; } }',
+        'class legacyRule { accepts = (file: string) => ' + check + '; }',
+        'function first() { ' + local + ' }',
+        'function second() {}',
+      ].join('\n');
+      writeFileSync(file, baseline);
+      commitAll(repo, 'baseline');
+      const scan = () => newLanguageFindings(repo, 'HEAD', productionPaths, inScope, violations);
+      writeFileSync(file, baseline.replaceAll('legacy', 'renamed'));
+      expect(scan()).toEqual([]);
+      writeFileSync(
+        file,
+        baseline.replace(local, '').replace('second() {}', 'second() { ' + local + ' }'),
+      );
+      expect(scan()).toEqual([expect.stringContaining('gitnexus-shared/src/impact.ts:5:')]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('reports newly introduced behavior in an existing shared file and an untracked web component', () => {
     const repo = mkdtempSync(path.join(os.tmpdir(), 'gn-language-ratchet-'));
     try {
@@ -265,9 +329,16 @@ describe('language ownership in shared tool entry points', () => {
       }).trim();
       writeFileSync(path.join(repo, shared), '// Shift the line of existing debt\n' + prior);
       expect(newLanguageFindings(repo, base, productionPaths, inScope, violations)).toEqual([]);
+      const renamed = prior.replace('legacy', 'newDispatch');
+      writeFileSync(path.join(repo, shared), renamed);
+      expect(newLanguageFindings(repo, base, productionPaths, inScope, violations)).toEqual([]);
+      writeFileSync(path.join(repo, shared), renamed + '\n' + prior);
+      expect(newLanguageFindings(repo, base, productionPaths, inScope, violations)).toEqual([
+        expect.stringContaining(shared + ':1:'),
+      ]);
       writeFileSync(
         path.join(repo, shared),
-        prior.replace('legacy', 'newDispatch') +
+        renamed.replace("file.endsWith('.go')", "file.startsWith('.go')") +
           "\nconst skipReasons = ['swift-scope: implicit module visibility'];",
       );
       const web = 'gitnexus-web/src/Panel.tsx';

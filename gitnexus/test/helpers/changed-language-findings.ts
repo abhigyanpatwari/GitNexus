@@ -5,6 +5,8 @@ import path from 'node:path';
 export interface Finding {
   // key identifies the expression and its enclosing declaration, independent of line offsets.
   key: string;
+  /** A second identity for a declaration whose binding alone was renamed. */
+  renamedBindingKey?: () => string;
   location: string;
 }
 
@@ -65,16 +67,29 @@ export function newLanguageFindings(
     if (!lstatSync(working).isFile()) continue;
     const current = scan(file, readFileSync(working, 'utf8'));
     if (!current.length) continue;
-    const counts = new Map<string, number>();
+    const priorByKey = new Map<string, Finding[]>();
     // Fetch historical contents only for changed files that actually have findings.
     if (previous && inScope(previous)) {
-      for (const { key } of scan(previous, git('cat-file', 'blob', base + ':' + previous))) {
-        counts.set(key, (counts.get(key) ?? 0) + 1);
+      for (const finding of scan(previous, git('cat-file', 'blob', base + ':' + previous))) {
+        const entries = priorByKey.get(finding.key);
+        if (entries) entries.push(finding);
+        else priorByKey.set(finding.key, [finding]);
       }
     }
-    for (const finding of current) {
-      const allowed = counts.get(finding.key) ?? 0;
-      if (allowed > 0) counts.set(finding.key, allowed - 1);
+    const unmatched = current.filter((finding) => !priorByKey.get(finding.key)?.pop());
+    if (!unmatched.length) continue;
+    // Match unchanged owners first. Each remaining baseline occurrence can cover one rename.
+    const renamedCounts = new Map<string, number>();
+    for (const entries of priorByKey.values()) {
+      for (const finding of entries) {
+        const key = finding.renamedBindingKey?.();
+        if (key !== undefined) renamedCounts.set(key, (renamedCounts.get(key) ?? 0) + 1);
+      }
+    }
+    for (const finding of unmatched) {
+      const key = renamedCounts.size ? finding.renamedBindingKey?.() : undefined;
+      const remaining = key === undefined ? 0 : (renamedCounts.get(key) ?? 0);
+      if (key !== undefined && remaining > 0) renamedCounts.set(key, remaining - 1);
       else added.push(finding.location);
     }
   }
