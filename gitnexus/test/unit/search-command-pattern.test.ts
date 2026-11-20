@@ -94,6 +94,33 @@ describe('searchCommandPattern', () => {
     expect(searchCommandPattern('sudo env A=1 npx rg UserService src')).toBe('UserService');
   });
 
+  it.each(['bash', 'powershell', 'either'] as const)(
+    'distinguishes wrapper arguments from executable paths in %s',
+    (shell) => {
+      expect(searchCommandPatterns('sudo --chdir=/tmp/rg grep SearchTerm', shell)).toEqual([]);
+      expect(searchCommandPatterns('npx BIN=/tools/sudo rg SearchTerm', shell)).toEqual([]);
+      expect(searchCommandPatterns('sudo /tools/rg SearchTerm', shell)).toEqual(['SearchTerm']);
+    },
+  );
+
+  it('declines a wrapper path that Bash expands to multiple arguments', () => {
+    expect(searchCommandPatterns('sudo /{usr,opt}/bin/rg SearchTerm')).toEqual([]);
+    expect(searchCommandPatterns('~/bin/rg SearchTerm')).toEqual(['SearchTerm']);
+  });
+
+  it('reads git grep options before revisions and leaves pathspecs alone', () => {
+    expect(searchCommandPatterns('git grep -nFi -C2 -e First -e Second HEAD -- -e')).toEqual([
+      'First',
+      'Second',
+    ]);
+    expect(searchCommandPattern('git grep --color=never --max-count 1 -- -needle')).toBe('-needle');
+    expect(searchCommandPattern('git grep UserService -- -e Other')).toBe('UserService');
+    expect(searchCommandPatterns('git grep UserService -e Other')).toEqual([]);
+    expect(searchCommandPatterns('git grep --col UserService')).toEqual([]);
+    expect(searchCommandPatterns('git grep --include=src UserService')).toEqual([]);
+    expect(searchCommandPattern('grep --col --include=src UserService')).toBe('UserService');
+  });
+
   // PowerShell has no env, time, nice, command, exec or xargs, and no
   // `NAME=value` words after sudo.
   it.each(['powershell', 'either'] as const)('reads no bash-only wrapper in %s', (shell) => {

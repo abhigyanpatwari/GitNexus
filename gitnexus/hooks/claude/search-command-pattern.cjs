@@ -196,6 +196,25 @@ const SEARCH_TOOL_OPTIONS = {
       `),
     }),
   },
+  // Exact options shared by Git and GNU grep. Git has its own abbreviation
+  // rules (--col is ambiguous) and accepts only the short spelling of -e.
+  gitGrep: {
+    short: searchOptionTable({
+      pattern: 'e',
+      file: 'f',
+      value: 'ABCm',
+      boolean: '0123456789EFGHILPachilnoqrvwz',
+    }),
+    long: searchOptionTable({
+      value: optionNames('after-context before-context context max-count'),
+      boolean: optionNames(`
+        basic-regexp count extended-regexp files-with-matches files-without-match fixed-strings
+        ignore-case invert-match line-number null only-matching perl-regexp quiet recursive
+        text word-regexp
+      `),
+      optional: ['color'],
+    }),
+  },
 };
 
 // The kind of a long option name, or undefined when the tool does not have it.
@@ -223,10 +242,8 @@ const MAX_PATTERNS = 3;
  * still claim it as its value: an option this tool does not have, written
  * without an attached `=value`, declines the whole command.
  */
-function extractSearchCommandPatterns(tokens, expanded = new Set(), start = 0) {
-  const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[start] || '');
-  if (!tool) return [];
-  const options = SEARCH_TOOL_OPTIONS[tool[1]];
+function extractSearchCommandPatterns(tokens, expanded, { start, options }) {
+  const gitGrep = options === SEARCH_TOOL_OPTIONS.gitGrep;
   let pending = null;
   let endOptions = false;
   let pattern = null;
@@ -257,10 +274,14 @@ function extractSearchCommandPatterns(tokens, expanded = new Set(), start = 0) {
       }
       continue;
     }
+    // Git stops parsing options at the first pattern or revision. A later
+    // dash-prefixed path must follow -- to be unambiguous.
+    if (gitGrep && pattern !== null) return [];
     if (token.startsWith('--')) {
       const separator = token.indexOf('=');
       const attached = separator !== -1;
       const kind = longSearchOptionKind(options, token.slice(2, attached ? separator : undefined));
+      if (gitGrep && (!kind || (attached && kind === 'boolean'))) return [];
       if (kind === 'pattern') {
         if (attached) explicit(token.slice(separator + 1), at);
         else pending = 'pattern';
@@ -272,7 +293,7 @@ function extractSearchCommandPatterns(tokens, expanded = new Set(), start = 0) {
         // `--name=value` carries its own value and cannot consume the next token.
       } else if (kind === 'value') {
         pending = 'skip';
-      } else if (kind !== 'boolean') {
+      } else if (kind !== 'boolean' && kind !== 'optional') {
         // An unknown option may consume the next token. Do not guess a pattern.
         return [];
       }
@@ -306,43 +327,42 @@ function extractSearchCommandPatterns(tokens, expanded = new Set(), start = 0) {
 // `bunx` run a package binary, so `npx rg` is the ripgrep a project installs,
 // and Windows has a `sudo` too. The others are bash keywords, builtins or Unix
 // tools that PowerShell does not have. `git` counts only before `grep`, with
-// `--no-pager` as the one global option read past. git grep's options are read
-// with the grep table: one that git grep has and GNU grep lacks (`--cached`,
-// `--and`, `-p`) is unknown there and declines the line.
+// `--no-pager` as the one global option read past.
 const WRAPPERS = {
   bash: new Set(['bunx', 'command', 'env', 'exec', 'nice', 'npx', 'sudo', 'time', 'xargs']),
   powershell: new Set(['bunx', 'npx', 'sudo']),
 };
 
 /**
- * The index of the first word that is not a wrapper; the caller reads a search
- * only when that word is `rg` or `grep`. A wrapper's own option is such a word,
- * so it gives no search: some options take a value (`sudo -u bob`, `nice -n
- * 5`) and some run no search (`command -v rg`). In bash, `env` and `sudo` set
- * `NAME=value` words in the environment of the command; a value with
- * parentheses would be a syntax error unquoted, and the quotes are gone here,
- * so it gives -1. `git` gives the index of the `grep` after it, or -1.
+ * Locate the search executable and select its option grammar. Only env and
+ * sudo consume assignment arguments. Wrapper options can consume arguments
+ * or select another operation entirely (for example, `command -v`).
  */
-function searchCommandStart(tokens, shell) {
+function searchCommandStart(tokens, shell, expanded) {
   const wrappers = WRAPPERS[shell];
-  const name = (token) => /(?:^|[/\\])([\w.-]+?)(?:\.exe|\.cmd)?$/i.exec(token)?.[1];
   let assigns = false;
   for (let at = 0; at < tokens.length; at++) {
     const token = tokens[at];
-    if (assigns && /^[A-Za-z_]\w*=/.test(token)) {
-      if (/[()]/.test(token)) return -1;
+    // Brace expansion can insert a second command word. A leading tilde in
+    // an executable path still expands to one path with the same basename.
+    if ((expanded.has(at) && token.includes('{')) || token.startsWith('-')) return null;
+    if (/^[A-Za-z_]\w*=/.test(token)) {
+      if (!assigns || /[()]/.test(token)) return null;
       continue;
     }
-    const command = name(token);
+    const basename = token.slice(Math.max(token.lastIndexOf('/'), token.lastIndexOf('\\')) + 1);
+    const tool = /^(rg|grep)(?:\.exe)?$/.exec(basename);
+    if (tool) return { start: at, options: SEARCH_TOOL_OPTIONS[tool[1]] };
+    const command = basename.replace(/\.(exe|cmd)$/i, '');
     if (command === 'git') {
       let next = at + 1;
       if (tokens[next] === '--no-pager') next++;
-      return tokens[next] === 'grep' ? next : -1;
+      return tokens[next] === 'grep' ? { start: next, options: SEARCH_TOOL_OPTIONS.gitGrep } : null;
     }
-    if (!wrappers.has(command)) return at;
+    if (!wrappers.has(command)) return null;
     assigns = shell === 'bash' && (command === 'env' || command === 'sudo');
   }
-  return -1;
+  return null;
 }
 
 // bash runs `NAME=value rg x` as `rg x` with NAME set in its environment. The
@@ -368,8 +388,8 @@ function searchCommandPatterns(command, shell = 'bash') {
   const read = (line, lineShell) => {
     const expanded = new Set();
     const tokens = tokenizeShellCommand(line, lineShell, expanded);
-    const start = searchCommandStart(tokens, lineShell);
-    return start === -1 ? [] : extractSearchCommandPatterns(tokens, expanded, start);
+    const search = searchCommandStart(tokens, lineShell, expanded);
+    return search ? extractSearchCommandPatterns(tokens, expanded, search) : [];
   };
   const inBash = () => read(command.replace(BASH_ASSIGNMENTS, ''), 'bash');
   // A leading PowerShell call operator invokes the command word that follows.
