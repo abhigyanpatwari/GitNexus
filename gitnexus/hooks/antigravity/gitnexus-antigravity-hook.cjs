@@ -88,9 +88,10 @@ function extractAugmentContext(stderr) {
 /**
  * Extract the search patterns from a tool invocation.
  *   - search_file_content / glob: top-level `pattern` (sometimes `query`).
- *   - run_shell_command: the queries of an rg/grep that starts the line, after
- *     any wrapper such as `npx` or `sudo` (every `-e` pattern), read by
- *     search-command-pattern.cjs in this platform's shell.
+ *   - run_shell_command: the queries of an rg/grep that starts the line, or
+ *     that a wrapper the helper knows runs (`npx`, `sudo`, `git grep`; every
+ *     `-e` pattern), read by search-command-pattern.cjs in this platform's
+ *     shell.
  * Returns an empty list when the tool is not a recognized search or the
  * pattern is too short.
  */
