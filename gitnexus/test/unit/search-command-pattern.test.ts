@@ -63,6 +63,82 @@ describe('searchCommandPattern', () => {
     expect(searchCommandPattern('\nNO_COLOR=1 \nrg UserService src')).toBeNull();
   });
 
+  // #4023: a wrapper runs the next word with its own arguments.
+  it.each(['bash', 'powershell', 'either'] as const)(
+    'reads a search run by npx, bunx, sudo or git in %s',
+    (shell) => {
+      expect(searchCommandPattern('npx rg UserService src', shell)).toBe('UserService');
+      expect(searchCommandPattern('npx.cmd rg UserService src', shell)).toBe('UserService');
+      expect(searchCommandPattern('bunx rg UserService src', shell)).toBe('UserService');
+      expect(searchCommandPattern('sudo grep -rn UserService src', shell)).toBe('UserService');
+      expect(searchCommandPattern('git grep -n UserService HEAD', shell)).toBe('UserService');
+      expect(searchCommandPattern('git --no-pager grep UserService', shell)).toBe('UserService');
+      expect(searchCommandPattern('sudo git grep UserService', shell)).toBe('UserService');
+      expect(searchCommandPatterns('npx rg -e FooService -e BarService src', shell)).toEqual([
+        'FooService',
+        'BarService',
+      ]);
+    },
+  );
+
+  it('reads a search run by a bash wrapper', () => {
+    expect(searchCommandPattern('env NO_COLOR=1 rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('/usr/bin/env rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern("sudo LC_ALL='C' grep -rn UserService src")).toBe('UserService');
+    expect(searchCommandPattern('NO_COLOR=1 npx rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('time rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('nice rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('command rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('exec rg UserService src')).toBe('UserService');
+    expect(searchCommandPattern('xargs grep -l UserService < files.txt')).toBe('UserService');
+    expect(searchCommandPattern('sudo env A=1 npx rg UserService src')).toBe('UserService');
+  });
+
+  // PowerShell has no env, time, nice, command, exec or xargs, and no
+  // `NAME=value` words after sudo.
+  it.each(['powershell', 'either'] as const)('reads no bash-only wrapper in %s', (shell) => {
+    for (const command of [
+      'env NO_COLOR=1 rg UserService src',
+      'time rg UserService src',
+      'xargs grep UserService',
+      'sudo A=1 rg UserService src',
+    ]) {
+      expect(searchCommandPattern(command, shell)).toBeNull();
+    }
+  });
+
+  it.each([
+    // An option of the wrapper may take a value or run no search.
+    'sudo -u bob rg UserService src',
+    'nice -n 5 rg UserService src',
+    'env -i rg UserService src',
+    'env -- rg UserService src',
+    'npx --yes rg UserService src',
+    'time -p rg UserService src',
+    'command -v rg',
+    // git reads a global option, or runs something other than grep.
+    'git -C ../other grep UserService',
+    'git log --grep UserService',
+    'git rg UserService src',
+    // Only env and sudo read `NAME=value`; npx would run `NO_COLOR=1`.
+    'npx NO_COLOR=1 rg UserService src',
+    // An option of git grep that GNU grep lacks.
+    'git grep --cached UserService',
+    'git grep -p UserService',
+    'git grep -e Foo --and -e Bar',
+    // Not a search, or no command after the wrapper.
+    'npx eslint UserService',
+    'sudo',
+    'env A=1',
+    'git grep',
+    // bash rejects an unquoted parenthesis in an argument.
+    'env A=(x) rg UserService src',
+    // A wrapper after an operator is not the first command.
+    'cd src && npx rg UserService',
+  ])('reads no query from %j', (command) => {
+    expect(searchCommandPattern(command)).toBeNull();
+  });
+
   // A value the shell computes would end the strip at a blank inside it and
   // leave the rest of the substitution or array as the command.
   it.each([
@@ -139,6 +215,7 @@ describe('searchCommandPattern', () => {
 
     it('reads a literal search invoked by the call operator', () => {
       expect(inPowerShell('  & rg UserService src')).toBe('UserService');
+      expect(inPowerShell('& npx rg UserService src')).toBe('UserService');
       expect(inPowerShell(String.raw`&'C:\Program Files\rg.exe' UserService src`)).toBe(
         'UserService',
       );

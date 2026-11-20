@@ -7,20 +7,22 @@
  * notes.md`), the output of the command before it (`git log | grep fix`), or
  * another directory (`cd src && rg x`), and the line alone does not say which,
  * so none of them is taken as a code search. In bash, variable assignments
- * before the command (`NO_COLOR=1 rg x`) belong to it. A query that cannot be
- * read reliably (an expansion the shell always performs, such as `$x`, `{a,b}`
- * or a leading `~`; an unknown option; a pattern file) gives none. An unquoted
- * glob (`*`, `?`, `[...]`) is read as written: bash leaves it unchanged unless
- * a file in the working directory matches, and declining it would also drop
- * regex searches such as `rg handle.*Request src`. The reading is best effort:
- * it never changes the command, it only decides whether to add graph context.
+ * before the command (`NO_COLOR=1 rg x`) belong to it. A wrapper that runs the
+ * search (`npx rg x`, `sudo grep x`, `git grep x`) is read past. A query that
+ * cannot be read reliably (an expansion the shell always performs, such as
+ * `$x`, `{a,b}` or a leading `~`; an unknown option; a pattern file) gives
+ * none. An unquoted glob (`*`, `?`, `[...]`) is read as written: bash leaves it
+ * unchanged unless a file in the working directory matches, and declining it
+ * would also drop regex searches such as `rg handle.*Request src`. The reading
+ * is best effort: it never changes the command, it only decides whether to add
+ * graph context.
  *
  * The Cursor and Factory adapters keep their own parser in their hook file,
  * since their installs do not carry the Claude helpers, and the OpenCode
  * plugin has its own too. All of them read no search after
- * `&&`, `;`, `||` or `|`. They differ in what may come before `rg` or `grep`:
- * Cursor and Factory also read past wrappers such as `npx`, `sudo`, `env` and
- * `git grep`, which this helper does not.
+ * `&&`, `;`, `||` or `|`. They differ in the wrappers they read past: Cursor
+ * and Factory also read `pnpm`, `yarn`, `npm` and some wrapper options, and
+ * OpenCode reads none.
  */
 
 // Read literal argv from the first simple command without executing a shell.
@@ -215,14 +217,14 @@ function longSearchOptionKind(options, name) {
 const MAX_PATTERNS = 3;
 
 /**
- * The queries of one tokenized `rg` / `grep` command line (every `-e` pattern,
- * else the first positional one), or none when they cannot be read reliably.
- * A token is never taken as the query while an earlier option may still claim
- * it as its value: an option this tool does not have, written without an
- * attached `=value`, declines the whole command.
+ * The queries of the `rg` / `grep` command at `tokens[start]` (every `-e`
+ * pattern, else the first positional one), or none when they cannot be read
+ * reliably. A token is never taken as the query while an earlier option may
+ * still claim it as its value: an option this tool does not have, written
+ * without an attached `=value`, declines the whole command.
  */
-function extractSearchCommandPatterns(tokens, expanded = new Set()) {
-  const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[0] || '');
+function extractSearchCommandPatterns(tokens, expanded = new Set(), start = 0) {
+  const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[start] || '');
   if (!tool) return [];
   const options = SEARCH_TOOL_OPTIONS[tool[1]];
   let pending = null;
@@ -233,7 +235,7 @@ function extractSearchCommandPatterns(tokens, expanded = new Set()) {
   const explicitPatterns = [];
   const explicit = (value, at) => explicitPatterns.push({ value, at });
 
-  for (let at = 1; at < tokens.length; at++) {
+  for (let at = start + 1; at < tokens.length; at++) {
     const token = tokens[at];
     if (pending) {
       // An expanded option value (`--glob {a,b}`) may be several words, so the
@@ -300,6 +302,49 @@ function extractSearchCommandPatterns(tokens, expanded = new Set()) {
     .slice(0, MAX_PATTERNS);
 }
 
+// Commands that run the word after them, with its own arguments. `npx` and
+// `bunx` run a package binary, so `npx rg` is the ripgrep a project installs,
+// and Windows has a `sudo` too. The others are bash keywords, builtins or Unix
+// tools that PowerShell does not have. `git` counts only before `grep`, with
+// `--no-pager` as the one global option read past. git grep's options are read
+// with the grep table: one that git grep has and GNU grep lacks (`--cached`,
+// `--and`, `-p`) is unknown there and declines the line.
+const WRAPPERS = {
+  bash: new Set(['bunx', 'command', 'env', 'exec', 'nice', 'npx', 'sudo', 'time', 'xargs']),
+  powershell: new Set(['bunx', 'npx', 'sudo']),
+};
+
+/**
+ * The index of the first word that is not a wrapper; the caller reads a search
+ * only when that word is `rg` or `grep`. A wrapper's own option is such a word,
+ * so it gives no search: some options take a value (`sudo -u bob`, `nice -n
+ * 5`) and some run no search (`command -v rg`). In bash, `env` and `sudo` set
+ * `NAME=value` words in the environment of the command; a value with
+ * parentheses would be a syntax error unquoted, and the quotes are gone here,
+ * so it gives -1. `git` gives the index of the `grep` after it, or -1.
+ */
+function searchCommandStart(tokens, shell) {
+  const wrappers = WRAPPERS[shell];
+  const name = (token) => /(?:^|[/\\])([\w.-]+?)(?:\.exe|\.cmd)?$/i.exec(token)?.[1];
+  let assigns = false;
+  for (let at = 0; at < tokens.length; at++) {
+    const token = tokens[at];
+    if (assigns && /^[A-Za-z_]\w*=/.test(token)) {
+      if (/[()]/.test(token)) return -1;
+      continue;
+    }
+    const command = name(token);
+    if (command === 'git') {
+      let next = at + 1;
+      if (tokens[next] === '--no-pager') next++;
+      return tokens[next] === 'grep' ? next : -1;
+    }
+    if (!wrappers.has(command)) return at;
+    assigns = shell === 'bash' && (command === 'env' || command === 'sudo');
+  }
+  return -1;
+}
+
 // bash runs `NAME=value rg x` as `rg x` with NAME set in its environment. The
 // name must be bare: a quoted `'NAME=value'` is a command name. PowerShell has
 // no such prefix and would run `NAME=value` itself. A value may hold `$NAME`,
@@ -322,7 +367,9 @@ function searchCommandPatterns(command, shell = 'bash') {
   if (typeof command !== 'string' || !/\brg\b|\bgrep\b/.test(command)) return [];
   const read = (line, lineShell) => {
     const expanded = new Set();
-    return extractSearchCommandPatterns(tokenizeShellCommand(line, lineShell, expanded), expanded);
+    const tokens = tokenizeShellCommand(line, lineShell, expanded);
+    const start = searchCommandStart(tokens, lineShell);
+    return start === -1 ? [] : extractSearchCommandPatterns(tokens, expanded, start);
   };
   const inBash = () => read(command.replace(BASH_ASSIGNMENTS, ''), 'bash');
   // A leading PowerShell call operator invokes the command word that follows.
