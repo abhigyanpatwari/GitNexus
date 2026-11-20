@@ -299,7 +299,10 @@ describe('run-analyze module', () => {
     }
   });
 
-  it('repeating the same --name on the fast path is a no-op, not an error', async () => {
+  it.each([
+    ['repeating the same --name', { registryName: 'kept' }],
+    ['creating a selected instruction file', { instructionFile: 'CLAUDE.md', skipSkills: true }],
+  ] as const)('preserves the registered name on the fast path when %s', async (_name, options) => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-name-repeat-');
     const tmpHome = await createTempDir('gitnexus-run-analyze-fast-name-repeat-home-');
     const savedHome = process.env.GITNEXUS_HOME;
@@ -328,14 +331,18 @@ describe('run-analyze module', () => {
       await registerRepo(tmpRepo.dbPath, meta, { name: 'kept' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      const result = await runFullAnalysis(
-        tmpRepo.dbPath,
-        { registryName: 'kept' },
-        { onProgress: () => {} },
-      );
+      const result = await runFullAnalysis(tmpRepo.dbPath, options, { onProgress: () => {} });
 
-      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.alreadyUpToDate, result.rebuildReasons.join(', ')).toBe(true);
       expect((await readRegistry())[0].name).toBe('kept');
+      if ('instructionFile' in options) {
+        await expect(
+          fs.readFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), 'utf8'),
+        ).resolves.toContain('indexed by GitNexus as **kept**');
+        await expect(fs.access(path.join(tmpRepo.dbPath, 'AGENTS.md'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      }
     } finally {
       if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = savedHome;

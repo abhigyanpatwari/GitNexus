@@ -480,6 +480,43 @@ async function checkIndexStale(cwd) {
     const payload = parseStatusPayload(child.stdout || '');
     if (!payload || typeof payload.status !== 'string') return null;
     if (payload.status !== 'stale') return null;
+    const base = payload.index?.commit;
+    const head = payload.current?.commit;
+    const commit = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+    if (
+      commit.test(base) &&
+      commit.test(head) &&
+      base !== head &&
+      payload.index.runnerIdentityStatus === 'current' &&
+      Array.isArray(payload.index.incompleteReasons) &&
+      payload.index.incompleteReasons.length === 0 &&
+      !payload.workspaceIndexBranch
+    ) {
+      try {
+        await runCli(
+          { cmd: 'git', argv: [] },
+          [
+            'diff',
+            '--quiet',
+            '--no-relative',
+            '--no-ext-diff',
+            '--no-renames',
+            base,
+            head,
+            '--',
+            ':(top,glob)**',
+            ':(top,exclude,icase,glob)**/*.md',
+            ':(top,exclude,icase,glob)**/*.mdx',
+            ':(top,exclude,icase,glob)**/*.markdown',
+          ],
+          cwd,
+          3000,
+        );
+        return null;
+      } catch {
+        // A changed code path or an unmeasurable comparison keeps the hint.
+      }
+    }
     const indexed = payload?.index?.commit ? String(payload.index.commit).slice(0, 7) : '';
     return (
       `${MARKER} GitNexus index is stale` +

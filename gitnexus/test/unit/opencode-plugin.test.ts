@@ -141,6 +141,33 @@ describe('search augmentation through the public hook', () => {
 
 describe('stale-index hints', () => {
   it.each([
+    ['only Markdown changed', null, [], false],
+    ['code changed', new Error('different'), [], true],
+    ['the index was already incomplete', null, ['scope-extraction-failed'], true],
+  ] as const)('%s', async (_name, diffError, incompleteReasons, expectHint) => {
+    const base = 'a'.repeat(40);
+    const head = 'b'.repeat(40);
+    const status = {
+      status: 'stale',
+      index: { commit: base, runnerIdentityStatus: 'current', incompleteReasons },
+      current: { commit: head },
+    };
+    execFileMock.mockImplementation(
+      (cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
+        cmd === 'git' ? callback(diffError, '', '') : callback(null, JSON.stringify(status), ''),
+    );
+    const result = await invoke('bash', { command: 'git commit -m docs' });
+    expect(result !== 'hits').toBe(expectHint);
+    if (incompleteReasons.length === 0) {
+      expect(execFileMock.mock.calls[1][1]).toEqual(
+        expect.arrayContaining(['diff', '--no-relative', '--no-renames', base, head]),
+      );
+    } else {
+      expect(execFileMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it.each([
     'git commit -m x',
     'git merge main',
     'git rebase main',

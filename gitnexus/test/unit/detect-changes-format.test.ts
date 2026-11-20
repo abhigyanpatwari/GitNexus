@@ -41,6 +41,23 @@ describe('formatDetectChangesResult — zero-symbol honesty (#3131)', () => {
     expect(text).not.toContain('PARTIAL RESULT');
   });
 
+  it('shows keyword locations, the omitted count, and documentation sections', () => {
+    const text = formatDetectChangesResult({
+      summary: { changed_count: 1, documentation_sections: 3, incompatible_call_count: 16 },
+      incompatible_calls: Array.from({ length: 16 }, (_, i) => ({
+        filePath: 'use.py',
+        line: i + 1,
+        name: 'charge',
+        keyword: 'legacy',
+      })),
+    });
+    expect(text).toContain('Documentation sections changed: 3');
+    expect(text).toContain('Incompatible calls:');
+    expect(text).toMatch(/use\.py:15.*charge.*legacy/);
+    expect(text).not.toContain('use.py:16');
+    expect(text).toContain('... and 1 more');
+  });
+
   it('does not claim no-overlap when a degraded query left changed_count at zero', () => {
     const text = formatDetectChangesResult({
       partial: true,

@@ -14,6 +14,9 @@
  * file). Node IDs are namespaced by language to avoid collisions.
  */
 import { describe, it, expect, beforeAll, vi } from 'vitest';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
@@ -75,6 +78,23 @@ function nonJvmNodes(
 }
 
 // ─── Combined seed for all languages ─────────────────────────────────────────
+
+const pythonImporters = {
+  'except.py':
+    'from db.database_client import DatabaseClient\ntry: pass\nexcept DatabaseClient: pass',
+  'registry.py': 'from db.database_client import DatabaseClient\nregistry = [DatabaseClient]',
+  'star_reexport.py': 'from db.database_client import\\\n  *',
+  'method.py': 'from db.database_client import DatabaseClient as Client\nClient.from_dict({})',
+  'enum_member.py': 'import db.database_client as m\nstatus = m.DatabaseClient.OPEN',
+  'annotation.py':
+    'from db.database_client import DatabaseClient\ndef check(x: DatabaseClient): pass',
+  'public_api.py': 'from db.database_client import DatabaseClient as Public',
+  'wild.py': 'from db.database_client import *',
+  'sibling.py': 'from db.database_client import Order\nfrom elsewhere import DatabaseClient',
+  'noise.py': 'from db.database_client import Order\ndef f(**kwargs): return (',
+  'shadow.py': 'import db.database_client as m\ndef f(m): return m.ShadowOnly',
+  'namespace_sibling.py': 'import db.database_client as m\ny = m.Order\n# m.DatabaseClient',
+};
 
 const SEED = [
   // Java — JVM topology
@@ -139,6 +159,15 @@ const SEED = [
     'src/services/service.py',
     'src/app.py',
   ),
+
+  `MATCH (f:File {id:'py:file:DatabaseClient'}) SET f.content = "__all__ = ['DatabaseClient']\\nclass DatabaseClient: pass\nclass ShadowOnly: pass"`,
+  `MATCH (f:File {id:'py:file:app'}) SET f.content = 'from db.database_client import Order'`,
+  `CREATE (:Class {id:'py:class:ShadowOnly', name:'ShadowOnly', filePath:'src/db/database_client.py', startLine:3, endLine:3, isExported:true})`,
+  `MATCH (f:File {id:'py:file:DatabaseClient'}), (c:Class {id:'py:class:ShadowOnly'}) CREATE (f)-[:CodeRelation {type:'DEFINES', confidence:1.0}]->(c)`,
+  ...Object.entries(pythonImporters).flatMap(([name, source]) => [
+    `CREATE (:File {id:'py:file:${name}', name:'${name}', filePath:'src/${name}', content:${JSON.stringify(source)}})`,
+    `MATCH (a:File {id:'py:file:${name}'}), (b:File {id:'py:file:DatabaseClient'}) CREATE (a)-[:CodeRelation {type:'IMPORTS', confidence:1.0}]->(b)`,
+  ]),
 
   // C# — non-JVM
   ...nonJvmNodes(
@@ -271,24 +300,16 @@ function suiteFor(
       expect(allNames).toContain(callerName);
     });
 
-    it(
-      lang === 'Python'
-        ? 'excludes a module-only importer from class impact'
-        : 'impact(upstream) surfaces the file importer',
-      async () => {
-        const result = await getBackend().callTool('impact', {
-          target: className,
-          direction: 'upstream',
-          includeTests: true,
-        });
-        expect(result).not.toHaveProperty('error');
-        const allNames = Object.values(result.byDepth as Record<string, any[]>)
-          .flat()
-          .map((d: any) => d.name);
-        if (lang === 'Python') expect(allNames).not.toContain(importerFileName);
-        else expect(allNames).toContain(importerFileName);
-      },
-    );
+    it('impact(upstream) surfaces the file importer', async () => {
+      const result = await getBackend().callTool('impact', {
+        target: className,
+        direction: 'upstream',
+        includeTests: true,
+      });
+      expect(result.byDepth[1].map((entry: { name: string }) => entry.name)).toContain(
+        importerFileName,
+      );
+    });
 
     it(`context() returns found with kind Class`, async () => {
       const result = await getBackend().callTool('context', {
@@ -320,6 +341,57 @@ withTestLbugDB(
     let backend: LocalBackend;
     beforeAll(() => {
       backend = (handle as any)._backend;
+    });
+
+    it('includes named, aliased, qualified and wildcard class imports and excludes sibling-only files', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'DatabaseClient',
+        direction: 'upstream',
+        maxDepth: 1,
+        includeTests: true,
+      });
+      expect(result).not.toHaveProperty('partial');
+      const imports = result.byDepth[1].filter((row: { type: string }) => row.type === 'File');
+      expect(imports.map((row: { name: string }) => row.name).sort()).toEqual([
+        'annotation.py',
+        'enum_member.py',
+        'except.py',
+        'method.py',
+        'public_api.py',
+        'registry.py',
+        'star_reexport.py',
+        'wild.py',
+      ]);
+      expect(result.risk).toBe('MEDIUM');
+    });
+
+    it('does not assign a shadowed namespace receiver to the imported class', async () => {
+      const result = await backend.callTool('impact', {
+        target: 'ShadowOnly',
+        direction: 'upstream',
+        maxDepth: 1,
+      });
+      expect(result).toMatchObject({ risk: 'UNKNOWN', partial: true, impactedCount: 0 });
+    });
+
+    it('withholds risk if the checkout differs from the indexed importer and retains other proved rows', async () => {
+      const file = path.join(handle.tmpHandle.dbPath, 'checkout/src/registry.py');
+      const source = await fs.readFile(file, 'utf8');
+      try {
+        await fs.appendFile(file, '\n# local edit');
+        const result = await backend.callTool('impact', {
+          target: 'DatabaseClient',
+          direction: 'upstream',
+          maxDepth: 1,
+          includeTests: true,
+        });
+        expect(result).toMatchObject({ risk: 'UNKNOWN', partial: true, epistemic: 'lower-bound' });
+        const names = result.byDepth[1].map((row: { name: string }) => row.name);
+        expect(names).toContain('method.py');
+        expect(names).not.toContain('registry.py');
+      } finally {
+        await fs.writeFile(file, source);
+      }
     });
 
     // JVM languages
@@ -367,7 +439,7 @@ withTestLbugDB(
       () => backend,
       'DatabaseClient',
       'connect',
-      'app.py',
+      'annotation.py',
       'src/db/database_client.py',
     );
     suiteFor(
@@ -447,12 +519,37 @@ withTestLbugDB(
     seed: SEED,
     poolAdapter: true,
     afterSetup: async (handle) => {
+      const repoPath = path.join(handle.tmpHandle.dbPath, 'checkout');
+      await fs.mkdir(path.join(repoPath, 'src/db'), { recursive: true });
+      const indexedAt = new Date().toISOString();
+      const fileHashes: Record<string, string> = {};
+      const sources = {
+        ...pythonImporters,
+        'db/database_client.py':
+          "__all__ = ['DatabaseClient']\nclass DatabaseClient: pass\nclass ShadowOnly: pass",
+        'app.py': 'from db.database_client import Order',
+      };
+      for (const [name, source] of Object.entries(sources)) {
+        const filePath = `src/${name}`;
+        await fs.writeFile(path.join(repoPath, filePath), source);
+        fileHashes[filePath] = createHash('sha256').update(source).digest('hex');
+      }
+      await fs.writeFile(
+        path.join(handle.tmpHandle.dbPath, 'gitnexus.json'),
+        JSON.stringify({
+          indexedAt,
+          repoPath,
+          lastCommit: 'abc123',
+          contentRetention: 'full',
+          fileHashes,
+        }),
+      );
       vi.mocked(listRegisteredRepos).mockResolvedValue([
         {
           name: 'test-repo',
-          path: '/test/repo',
+          path: repoPath,
           storagePath: handle.tmpHandle.dbPath,
-          indexedAt: new Date().toISOString(),
+          indexedAt,
           lastCommit: 'abc123',
           stats: { files: 20, nodes: 60, communities: 0, processes: 0 },
         },

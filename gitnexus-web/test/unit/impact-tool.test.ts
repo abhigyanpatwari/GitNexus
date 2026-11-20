@@ -21,6 +21,27 @@ describe('Graph-RAG impact risk contract', () => {
     expect(description).toContain('MCP File impact does not');
   });
 
+  it('withholds a low verdict when direct callers are unavailable but depth two succeeds', async () => {
+    const executeQuery = vi.fn(async (query: string) => {
+      if (query.includes("WHERE n.name = 'target'"))
+        return [{ id: 'target-id', nodeType: 'Function', filePath: 'target.ts' }];
+      if (query.includes('1 AS depth')) throw new Error('depth one failed');
+      if (query.includes('2 AS depth'))
+        return [{ id: 'indirect', name: 'indirect', nodeType: 'Function', filePath: 'two.ts' }];
+      return [];
+    });
+    const output = await impactTool({ ...noOpBackend, executeQuery }).invoke({
+      target: 'target',
+      direction: 'upstream',
+      maxDepth: 2,
+    });
+    expect(output).toContain('indirect');
+    expect(output).toContain('RISK: UNKNOWN');
+    expect(output).toContain('Shared-axes: UNKNOWN');
+    expect(output).toContain('Failed depth queries: 1');
+    expect(output).toContain('Direct callers: unavailable');
+  });
+
   it('renders failed enrichment as unavailable and fails the risk gate closed', async () => {
     const executeQuery = vi.fn(async (query: string) => {
       if (query.includes("WHERE n.name = 'target'")) {

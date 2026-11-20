@@ -2598,6 +2598,39 @@ describe('block heading levels follow the file (#2774)', () => {
     });
   });
 
+  it.each([false, true])(
+    'changes only the counts during explicit analysis (keep=%s)',
+    async (keep) => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        const options = { refreshCounts: true, instructionFile: 'CLAUDE.md' as const };
+        await generateAIContextFiles(dir, storage, 'P', stats, undefined, options);
+        const block = (await fs.readFile(file, 'utf8')).trimEnd();
+        const original =
+          '    npm ci\n\n' +
+          (keep
+            ? block.replace(
+                '<!-- gitnexus:start -->',
+                '<!-- gitnexus:start -->\n<!-- gitnexus:keep -->',
+              )
+            : block) +
+          '\n\nNotes.  \n\n';
+        await fs.writeFile(file, original);
+        await generateAIContextFiles(
+          dir,
+          storage,
+          'P',
+          { ...stats, nodes: 91 },
+          undefined,
+          options,
+        );
+        expect(await fs.readFile(file, 'utf8')).toBe(
+          original.replace(stats.nodes + ' symbols', '91 symbols'),
+        );
+      });
+    },
+  );
+
   it('nests the block in a CRLF file with a title and keeps CRLF', async () => {
     await withRepo(async (dir, storage) => {
       const file = path.join(dir, 'CLAUDE.md');

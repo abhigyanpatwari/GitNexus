@@ -59,6 +59,17 @@ describe('scoreImpactRisk', () => {
     });
   });
 
+  it.each([
+    [4, 'LOW'],
+    [5, 'MEDIUM'],
+    [14, 'MEDIUM'],
+    [15, 'HIGH'],
+    [199, 'HIGH'],
+    [200, 'CRITICAL'],
+  ] as const)('scores %i direct upstream dependants as %s', (directCount, risk) => {
+    expect(scoreImpactRisk({ ...base, directCount, impactedCount: directCount }).risk).toBe(risk);
+  });
+
   it('keeps indirect reach separate from direct risk', () => {
     expect(
       scoreImpactRisk({ ...base, directCount: 1, impactedCount: 201, processCount: 20 }).risk,

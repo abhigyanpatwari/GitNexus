@@ -129,12 +129,14 @@ export const zhCN = {
     'diff 触及 {{files}} 个文件，但没有索引符号与这些 hunk 重叠 — 并非干净工作区。',
   'tool.detectChanges.partial':
     '结果不完整：变更符号或流程映射不完整。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.partialCheck': '结果不完整：变更分析未完成。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.keywordCoverage': 'Python 关键字检查不完整：{{examples}}',
   'tool.detectChanges.unmappedSource':
     '变更源码文件未映射到符号：{{files}}。请重建索引并检查 diff；仅重试可能无法解决符号缺失或源码范围不匹配。',
   'tool.detectChanges.truncated':
-    '列表已截断：已变更符号列表被截断，未列出全部变更符号。计数与风险等级仍涵盖全部符号。',
+    '列表已截断：一个或多个结果列表未完整显示。计数涵盖全部已观测结果。',
   'tool.detectChanges.truncatedDegraded':
-    '列表已截断：已变更符号列表被截断。本次运行同时不完整，因此计数为下限而非总数。',
+    '列表已截断：一个或多个结果列表未完整显示。本次运行不完整，因此计数为下限。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',

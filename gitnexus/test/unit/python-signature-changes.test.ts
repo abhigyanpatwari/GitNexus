@@ -6,6 +6,9 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { findBrokenKeywordCalls } from '../../src/mcp/local/python-signature-changes.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 
+const findingsFor = async (...args: Parameters<typeof findBrokenKeywordCalls>) =>
+  (await findBrokenKeywordCalls(...args)).findings;
+
 let dir: string;
 const target = {
   id: 'Class:model.py:Invoice',
@@ -42,7 +45,7 @@ afterEach(async () => {
 
 it('reports the removed keyword at the aliased constructor call', async () => {
   await writeModel('');
-  expect(await findBrokenKeywordCalls(dir, 'compare', 'HEAD', [target], incoming)).toEqual([
+  expect(await findingsFor(dir, 'compare', 'HEAD', [target], incoming)).toEqual([
     { target: target.id, name: 'Invoice', filePath: 'use.py', line: 5, keyword: 'legacy' },
   ]);
 });
@@ -53,9 +56,9 @@ it('checks lexical bindings when the same caller also contains a nested call to 
     path.join(dir, 'use.py'),
     'from model import Invoice as Bill\ndef build():\n    Bill(legacy=True)\n    def nested(Bill):\n        Bill(legacy=True)\n',
   );
-  expect(
-    (await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).map((c) => c.line),
-  ).toEqual([3]);
+  expect((await findingsFor(dir, 'all', undefined, [target], incoming)).map((c) => c.line)).toEqual(
+    [3],
+  );
 });
 
 it('skips a module alias rebound to another class', async () => {
@@ -64,7 +67,7 @@ it('skips a module alias rebound to another class', async () => {
     path.join(dir, 'use.py'),
     'from model import Invoice as Bill\nfrom elsewhere import Invoice as Bill\ndef build():\n    Bill(legacy=True)\n',
   );
-  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual([]);
+  expect(await findingsFor(dir, 'all', undefined, [target], incoming)).toEqual([]);
 });
 
 it('resolves global and nonlocal imports to their Python owner', async () => {
@@ -88,9 +91,9 @@ it('resolves global and nonlocal imports to their Python owner', async () => {
       '        return Imported(legacy=True)',
     ].join('\n'),
   );
-  expect(
-    (await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).map((c) => c.line),
-  ).toEqual([4, 9]);
+  expect((await findingsFor(dir, 'all', undefined, [target], incoming)).map((c) => c.line)).toEqual(
+    [4, 9],
+  );
 });
 
 it('checks the active export when a changed definition is rebound', async () => {
@@ -100,14 +103,14 @@ it('checks the active export when a changed definition is rebound', async () => 
     'class Invoice:\n    def __init__(self, **kwargs): pass\n',
   );
   await fs.appendFile(path.join(dir, 'model.py'), 'from other import Invoice\n');
-  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual([]);
+  expect(await findingsFor(dir, 'all', undefined, [target], incoming)).toEqual([]);
 });
 
 it('reads root-relative indexed callers from a subdirectory of the checkout', async () => {
   await writeModel('');
   const nested = path.join(dir, 'nested');
   await fs.mkdir(nested);
-  const calls = await findBrokenKeywordCalls(nested, 'all', undefined, [target], incoming);
+  const calls = await findingsFor(nested, 'all', undefined, [target], incoming);
   expect(calls.map((c) => [c.filePath, c.line])).toEqual([['use.py', 5]]);
 });
 
@@ -116,10 +119,8 @@ it('checks the staged image, including the staged callers', async () => {
   execFileSync('git', ['add', 'model.py'], { cwd: dir });
   await writeModel(', **kwargs');
   await fs.writeFile(path.join(dir, 'use.py'), '');
-  expect(await findBrokenKeywordCalls(dir, 'staged', undefined, [target], incoming)).toHaveLength(
-    1,
-  );
-  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual([]);
+  expect(await findingsFor(dir, 'staged', undefined, [target], incoming)).toHaveLength(1);
+  expect(await findingsFor(dir, 'all', undefined, [target], incoming)).toEqual([]);
 });
 
 it.each(['..', '...'])('reads both endpoints for a %s commit range', async (separator) => {
@@ -127,7 +128,7 @@ it.each(['..', '...'])('reads both endpoints for a %s commit range', async (sepa
   commitAll(dir, 'remove keyword');
   await writeModel(', **kwargs');
   await fs.writeFile(path.join(dir, 'use.py'), '');
-  const findings = await findBrokenKeywordCalls(
+  const findings = await findingsFor(
     dir,
     'compare',
     'HEAD^' + separator + 'HEAD',
@@ -142,7 +143,7 @@ it.each(['..', '...'])('reads both endpoints for a %s commit range', async (sepa
 it('does not query callers when the replacement still accepts the keyword', async () => {
   const calls = vi.fn(incoming);
   await writeModel(', **options: object');
-  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], calls)).toEqual([]);
+  expect(await findingsFor(dir, 'all', undefined, [target], calls)).toEqual([]);
   expect(calls).not.toHaveBeenCalled();
 });
 
@@ -162,9 +163,9 @@ it('distinguishes a function-local import from a sibling import, a parameter and
       '    return Bill(legacy=True)',
     ].join('\n'),
   );
-  expect(
-    (await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).map((c) => c.line),
-  ).toEqual([4]);
+  expect((await findingsFor(dir, 'all', undefined, [target], incoming)).map((c) => c.line)).toEqual(
+    [4],
+  );
 });
 
 it.each([
@@ -177,7 +178,7 @@ it.each([
   'checks initializer deletion only for a known default constructor: %s',
   async (replacement, broken) => {
     await fs.writeFile(path.join(dir, 'model.py'), replacement);
-    expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toHaveLength(
+    expect(await findingsFor(dir, 'all', undefined, [target], incoming)).toHaveLength(
       broken ? 1 : 0,
     );
   },
@@ -209,7 +210,7 @@ it('follows the staged package export and distinguishes compatible dotted import
   await fs.writeFile(path.join(pkg, '__init__.py'), 'from .other import Invoice as Order\n');
   const targets = [{ ...target, filePath: 'pkg/model.py' }];
   const lines = async (scope: string) =>
-    (await findBrokenKeywordCalls(dir, scope, undefined, targets, incoming)).map((c) => c.line);
+    (await findingsFor(dir, scope, undefined, targets, incoming)).map((c) => c.line);
   expect(await lines('staged')).toEqual([6, 7, 9]);
   expect(await lines('all')).toEqual([7, 9]);
   await fs.writeFile(path.join(pkg, '__init__.py'), 'from . import Order\n');
@@ -225,7 +226,359 @@ it.each([
   commitAll(dir, 'original function');
   await fs.writeFile(path.join(dir, 'model.py'), 'def f(*, b): pass\n');
   const func = { ...target, name: 'f', type: 'Function' };
-  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [func], incoming)).toHaveLength(
-    broken ? 1 : 0,
+  expect(await findingsFor(dir, 'all', undefined, [func], incoming)).toHaveLength(broken ? 1 : 0);
+});
+
+it('checks new calls from the staged diff without an indexed edge', async () => {
+  await writeModel('');
+  await fs.writeFile(path.join(dir, 'new.py'), 'from model import Invoice\nInvoice(legacy=True)\n');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  await fs.writeFile(path.join(dir, 'new.py'), '');
+  const result = await findBrokenKeywordCalls(dir, 'staged', undefined, [target], async () => [], [
+    { filePath: 'new.py' },
+  ]);
+  expect(result).toMatchObject({
+    complete: true,
+    findings: [{ filePath: 'new.py', line: 2 }],
+    skipped: [],
+  });
+});
+
+it('uses the index as the before-image for unstaged changes', async () => {
+  await writeModel('');
+  execFileSync('git', ['add', 'model.py'], { cwd: dir });
+  await writeModel(', **kwargs');
+  expect(await findingsFor(dir, 'unstaged', undefined, [target], incoming)).toEqual([]);
+  await writeModel(', *, second=False');
+  execFileSync('git', ['add', 'model.py'], { cwd: dir });
+  await writeModel('');
+  await fs.writeFile(path.join(dir, 'use.py'), 'from model import Invoice\nInvoice(second=True)\n');
+  expect(await findingsFor(dir, 'unstaged', undefined, [target], incoming)).toMatchObject([
+    { keyword: 'second' },
+  ]);
+});
+
+it('uses the actual merge base of diverged endpoints', async () => {
+  execFileSync('git', ['switch', '-c', 'left'], { cwd: dir });
+  await writeModel('');
+  commitAll(dir, 'left removed keyword');
+  execFileSync('git', ['switch', '-c', 'right', 'HEAD^'], { cwd: dir });
+  await writeModel('');
+  commitAll(dir, 'right independently removed it');
+  expect(await findingsFor(dir, 'compare', 'left...right', [target], incoming)).toHaveLength(1);
+  expect(await findingsFor(dir, 'compare', 'left..right', [target], incoming)).toEqual([]);
+});
+
+it('separates two removed keywords at a single call from two distinct calls on the same line', async () => {
+  await writeModel(', a, b');
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    'from model import Invoice\nInvoice(a=1,b=2); Invoice(a=3)\n',
   );
+  commitAll(dir, 'two keywords');
+  await writeModel('');
+  expect(await findingsFor(dir, 'all', undefined, [target], incoming)).toMatchObject([
+    { line: 2, keyword: 'a', keywords: ['a', 'b'] },
+    { line: 2, keyword: 'a' },
+  ]);
+});
+
+it.each(['all', 'staged', 'compare'])(
+  'keeps proven calls and reports an oversized caller in %s',
+  async (scope) => {
+    await writeModel('');
+    await fs.writeFile(path.join(dir, 'big.py'), '#' + 'x'.repeat(4 * 1024 * 1024));
+    execFileSync('git', ['add', '.'], { cwd: dir });
+    const base = scope === 'compare' ? 'HEAD^..HEAD' : undefined;
+    if (scope === 'compare') commitAll(dir, 'oversized caller');
+    const calls = async () => [...(await incoming()), { target: target.id, filePath: 'big.py' }];
+    const result = await findBrokenKeywordCalls(dir, scope, base, [target], calls);
+    expect(result).toMatchObject({
+      complete: false,
+      findings: [{ filePath: 'use.py' }],
+      skipped: [{ filePath: 'big.py', reason: expect.stringContaining('4 MiB') }],
+    });
+  },
+);
+
+it('reports syntax-error, wildcard, and dense callers without asserting a clean check', async () => {
+  await writeModel('');
+  await fs.writeFile(path.join(dir, 'bad.py'), 'Invoice(legacy=\n');
+  await fs.writeFile(path.join(dir, 'star.py'), 'from model import *\nInvoice(legacy=True)\n');
+  await fs.writeFile(
+    path.join(dir, 'dense.py'),
+    'from model import Invoice\n' +
+      Array.from({ length: 4500 }, (_, i) => 'v' + i + '=0').join('\n') +
+      '\nInvoice(legacy=True)\n',
+  );
+  const files = ['bad.py', 'star.py', 'dense.py'].map((filePath) => ({ filePath }));
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming, files);
+  expect(result.complete).toBe(false);
+  expect(result.findings).toHaveLength(1);
+  expect(result.skipped).toEqual(
+    expect.arrayContaining([
+      { filePath: 'bad.py', reason: 'Python syntax error' },
+      { filePath: 'star.py', reason: expect.stringContaining('Wildcard') },
+      { filePath: 'dense.py', reason: expect.stringContaining('budget') },
+    ]),
+  );
+});
+
+it('matches nested and top-level signatures to their lexical declarations, including a same-module caller', async () => {
+  const model = (params: string) =>
+    'def charge(' +
+    params +
+    '): pass\ndef outer():\n    def charge(' +
+    params +
+    '): pass\n    charge(legacy=True)\ncharge(legacy=True)\n';
+  await fs.writeFile(path.join(dir, 'model.py'), model('legacy=False'));
+  commitAll(dir, 'nested names');
+  await fs.writeFile(path.join(dir, 'model.py'), model(''));
+  const targets = [
+    { ...target, type: 'Function', id: 'Function:model.py:outer.charge@2:4', name: 'charge' },
+    { ...target, type: 'Function', id: 'Function:model.py:charge', name: 'charge' },
+  ];
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, targets, async () => [], [
+    { filePath: 'model.py' },
+  ]);
+  expect(result.findings).toMatchObject([
+    { target: 'Function:model.py:outer.charge@2:4', line: 4 },
+    { target: 'Function:model.py:charge', line: 5 },
+  ]);
+});
+
+it('compares renamed modules with their old paths, and ignores genuinely missing images', async () => {
+  await fs.rename(path.join(dir, 'model.py'), path.join(dir, 'invoice.py'));
+  await fs.writeFile(path.join(dir, 'invoice.py'), 'class Invoice: pass\n');
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    'from invoice import Invoice\nInvoice(legacy=True)\n',
+  );
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming, [
+    { filePath: 'invoice.py', oldFilePath: 'model.py' },
+    { filePath: 'deleted.py' },
+  ]);
+  expect(result).toMatchObject({ complete: true, findings: [{ filePath: 'use.py' }] });
+});
+
+it('uses the last initializer and withholds dynamic constructor claims', async () => {
+  await fs.writeFile(
+    path.join(dir, 'model.py'),
+    'class Invoice:\n    def __init__(self): pass\n    def __init__(self, legacy=True): pass\n',
+  );
+  expect(await findingsFor(dir, 'all', undefined, [target], incoming)).toEqual([]);
+  for (const model of [
+    'class Invoice(metaclass=Meta):\n    def __init__(self): pass\n',
+    '@wrap\nclass Invoice:\n    pass\n',
+  ]) {
+    await fs.writeFile(path.join(dir, 'model.py'), model);
+    expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toMatchObject({
+      findings: [],
+      complete: false,
+    });
+  }
+});
+
+it('resolves a root-package export after importing a submodule', async () => {
+  await fs.mkdir(path.join(dir, 'pkg'));
+  await fs.writeFile(path.join(dir, 'pkg', 'sub.py'), '');
+  await fs.writeFile(path.join(dir, 'pkg', '__init__.py'), 'from model import Invoice\n');
+  await fs.writeFile(path.join(dir, 'use.py'), 'import pkg.sub\npkg.Invoice(legacy=True)\n');
+  await writeModel('');
+  expect(await findingsFor(dir, 'all', undefined, [target], incoming)).toMatchObject([{ line: 2 }]);
+});
+
+it('records indexed inheritance as unverified while preserving proven direct calls', async () => {
+  await writeModel('');
+  await fs.writeFile(
+    path.join(dir, 'sub.py'),
+    'from model import Invoice\nclass Credit(Invoice): pass\n',
+  );
+  const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], async () => [
+    ...(await incoming()),
+    { filePath: 'sub.py', target: target.id, unverified: 'inherited-constructor' },
+  ]);
+  expect(result).toMatchObject({
+    complete: false,
+    findings: [{ filePath: 'use.py' }],
+    skipped: [{ filePath: 'sub.py', reason: expect.stringContaining('super().__init__') }],
+  });
+});
+
+it('keeps decorated function body-only edits clean and exposes changes to the decorated contract', async () => {
+  await fs.writeFile(path.join(dir, 'model.py'), '@wrap\ndef charge(legacy=None):\n    return 1\n');
+  commitAll(dir, 'wrapped function');
+  const func = { ...target, type: 'Function', name: 'charge' };
+  await fs.writeFile(path.join(dir, 'model.py'), '@wrap\ndef charge(legacy=None):\n    return 2\n');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [func], incoming)).toEqual({
+    findings: [],
+    complete: true,
+    skipped: [],
+  });
+  await fs.writeFile(path.join(dir, 'model.py'), '@wrap\ndef charge():\n    return 2\n');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [func], incoming)).toMatchObject({
+    findings: [],
+    complete: false,
+    skipped: [{ filePath: 'model.py', reason: expect.stringContaining('Decorated') }],
+  });
+});
+
+it('does not treat newly added definitions in an existing module as an incomplete check', async () => {
+  await fs.appendFile(path.join(dir, 'model.py'), '\n@wrap\ndef fresh(legacy=None): pass\n');
+  const t = {
+    id: 'Function:model.py:fresh',
+    name: 'fresh',
+    filePath: 'model.py',
+    type: 'Function',
+  };
+  const calls = vi.fn(incoming);
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [t], calls)).toEqual({
+    findings: [],
+    complete: true,
+    skipped: [],
+  });
+  expect(calls).not.toHaveBeenCalled();
+});
+
+it('uses lexical owner across shifted lines, and withholds findings for ambiguous IDs', async () => {
+  const source = (first: string, second: string) =>
+    'def left():\n    def charge(' +
+    first +
+    '): pass\n    charge(legacy=True)\ndef right():\n    def charge(' +
+    second +
+    '): pass\n    charge(legacy=True)\n';
+  await fs.writeFile(path.join(dir, 'model.py'), source('legacy=None', 'legacy=None'));
+  commitAll(dir, 'both callers');
+  await fs.writeFile(path.join(dir, 'model.py'), '\n\n\n' + source('legacy=None', ''));
+  const t = {
+    type: 'Function',
+    name: 'charge',
+    filePath: 'model.py',
+    id: 'Function:model.py:right.charge@7:4',
+  };
+  const check = async (id: string) =>
+    findBrokenKeywordCalls(dir, 'all', undefined, [{ ...t, id }], async () => [], [
+      { filePath: 'model.py' },
+    ]);
+  expect(await check(t.id)).toMatchObject({
+    complete: true,
+    findings: [{ target: t.id, line: 9 }],
+  });
+  expect(await check('opaque-id')).toMatchObject({ complete: false, findings: [] });
+});
+
+it('dense comments and assignments using the removed word do not consume a scope extraction', async () => {
+  await writeModel('');
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    '# legacy\n' + Array.from({ length: 4500 }, (_, i) => 'v' + i + '=0').join('\n'),
+  );
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual({
+    complete: true,
+    findings: [],
+    skipped: [],
+  });
+});
+
+it('discloses a wildcard re-export instead of silently losing the staged caller', async () => {
+  await fs.writeFile(path.join(dir, 'pub.py'), 'from model import *\n');
+  await fs.writeFile(path.join(dir, 'use.py'), 'from pub import Invoice\nInvoice(legacy=True)\n');
+  await writeModel('');
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  expect(await findBrokenKeywordCalls(dir, 'staged', undefined, [target], incoming)).toMatchObject({
+    complete: false,
+    findings: [],
+    skipped: [{ filePath: 'pub.py', reason: expect.stringContaining('exported binding') }],
+  });
+});
+
+it('treats absent blobs for added and deleted files as normal staged changes', async () => {
+  await fs.writeFile(path.join(dir, 'new.py'), 'class New: pass\n');
+  await fs.unlink(path.join(dir, 'model.py'));
+  execFileSync('git', ['add', '-A'], { cwd: dir });
+  const added = { type: 'Class', name: 'New', id: 'Class:new.py:New', filePath: 'new.py' };
+  expect(await findBrokenKeywordCalls(dir, 'staged', undefined, [target, added], incoming)).toEqual(
+    {
+      findings: [],
+      complete: true,
+      skipped: [],
+    },
+  );
+});
+
+it('checks explicit keywords previously captured by **kwargs and keeps uncertainty for dynamic unpacking', async () => {
+  await writeModel(', keep=False, legacy=False, **extra');
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    [
+      'from model import Invoice',
+      'Invoice(keep=True)',
+      'Invoice(legacy=True, anything=0, keep=True)',
+      'Invoice(arbitrary=True, **values)',
+      'Invoice(**values)',
+      'Invoice(self=True)',
+    ].join('\n'),
+  );
+  commitAll(dir, 'variadic constructor');
+  await writeModel(', keep=False');
+  const r = await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming);
+  expect(r.findings).toMatchObject([
+    { line: 3, keywords: ['legacy', 'anything'] },
+    { line: 4, keyword: 'arbitrary' },
+  ]);
+  expect(r).toMatchObject({
+    complete: false,
+    skipped: [{ filePath: 'use.py', reason: expect.stringContaining('**') }],
+  });
+});
+
+it('reports a formerly arbitrary keyword even when no named parameter disappeared', async () => {
+  await fs.writeFile(path.join(dir, 'model.py'), 'def charge(**kwargs): pass\n');
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    'from model import charge\ncharge(keep=1, unexpected=2)\ncharge(keep=1)\n',
+  );
+  commitAll(dir, 'kwargs only');
+  await fs.writeFile(path.join(dir, 'model.py'), 'def charge(*, keep): pass\n');
+  const func = { ...target, type: 'Function', name: 'charge' };
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [func], incoming)).toMatchObject({
+    complete: true,
+    findings: [{ line: 2, keyword: 'unexpected' }],
+  });
+});
+
+it.each([
+  ['if enabled:', 'else:'],
+  ['try:', 'except ImportError:'],
+])('keeps conditional same-qualified definitions ambiguous (%s)', async (first, alternate) => {
+  const definitions = (params: string) =>
+    first +
+    '\n    def charge(' +
+    params +
+    '): pass\n' +
+    alternate +
+    '\n    def charge(**kwargs): pass\n';
+  await fs.writeFile(path.join(dir, 'model.py'), definitions('legacy=False'));
+  commitAll(dir, 'conditional contracts');
+  await fs.writeFile(path.join(dir, 'model.py'), definitions(''));
+  const func = { ...target, id: 'Function:model.py:charge', type: 'Function', name: 'charge' };
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [func], incoming)).toMatchObject({
+    complete: false,
+    findings: [],
+    skipped: [{ filePath: 'model.py', reason: expect.stringContaining('ambiguous') }],
+  });
+});
+
+it('checks a 2,000-line caller with few bindings even beyond the small-tree cutoff', async () => {
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    'from model import Invoice\ndef work(logger):\n' +
+      Array.from({ length: 1999 }, (_, i) => '    logger.info("message", ' + i + ')').join('\n') +
+      '\n    Invoice(legacy=True)\n',
+  );
+  await writeModel('');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toMatchObject({
+    complete: true,
+    findings: [{ line: 2002, keyword: 'legacy' }],
+  });
 });

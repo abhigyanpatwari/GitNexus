@@ -236,6 +236,140 @@ async function detectChangesForCodePy(
   return runDetectChanges();
 }
 
+// Use real git snapshots and Python extraction through the public tool entry.
+// Only the DB relation rows are supplied by the fixture.
+function makeKeywordChange(addSeparator = false) {
+  const dir = makeRepo(['model.py', 'use.py'], 1);
+  const original = 'def charge(\n    amount,\n    legacy=None,\n):\n    pass\n';
+  writeFileSync(path.join(dir, 'model.py'), original);
+  writeFileSync(path.join(dir, 'use.py'), 'from model import charge\ncharge(1, legacy=True)\n');
+  commitAll(dir, 'add keyword caller');
+  writeFileSync(
+    path.join(dir, 'model.py'),
+    addSeparator
+      ? original.replace('):', '    /,\n):')
+      : original.replace('    legacy=None,\n', ''),
+  );
+  registerRepo(dir);
+  const id = 'Function:model.py:charge';
+  lbugMocks.executeParameterized.mockImplementation(async (_db, query, params) => {
+    if (String(query).includes('diffPath'))
+      return [
+        {
+          diffPath: 'model.py',
+          startLine: 0,
+          endLine: 4,
+          type: 'Function',
+          name: 'charge',
+          filePath: 'model.py',
+          id,
+        },
+      ];
+    if (String(query).includes("'CALLS', 'EXTENDS'") && params.ids.includes(id))
+      return [{ target: id, filePath: 'use.py' }];
+    return [];
+  });
+  return dir;
+}
+
+describe('Python keyword compatibility in detect_changes', () => {
+  it.each([false, true])(
+    'promotes an incompatible call to high risk (addition-only: %s)',
+    async (addSeparator) => {
+      makeKeywordChange(addSeparator);
+      const result = await runDetectChanges();
+      expect(result).toMatchObject({
+        summary: {
+          risk_level: 'high',
+          affected_count: 0,
+          incompatible_call_count: 1,
+          incompatible_calls_checked: true,
+        },
+        incompatible_calls: [{ name: 'charge', keyword: 'legacy', filePath: 'use.py', line: 2 }],
+      });
+      expect(result.partial).toBeUndefined();
+    },
+  );
+
+  it('reports unavailable retained source', async () => {
+    const dir = makeKeywordChange();
+    writeFileSync(
+      path.join(dir, '.gitnexus', 'meta.json'),
+      JSON.stringify({ contentRetention: 'none' }),
+    );
+    expect(await runDetectChanges()).toMatchObject({
+      partial: true,
+      summary: { risk_level: 'unknown', incompatible_calls_checked: false },
+      incompatible_call_skips: [{ reason: 'content-retention' }],
+    });
+  });
+
+  it('reports a new staged caller even before it has a graph edge', async () => {
+    const dir = makeKeywordChange();
+    writeFileSync(
+      path.join(dir, 'new_use.py'),
+      'from model import charge\ncharge(2, legacy=False)\n',
+    );
+    execFileSync('git', ['add', 'model.py', 'new_use.py'], { cwd: dir });
+    expect(await runDetectChanges('staged')).toMatchObject({
+      summary: { risk_level: 'high', incompatible_call_count: 2 },
+      partial: true,
+      unmapped_files: ['new_use.py'],
+      incompatible_calls: [
+        { filePath: 'new_use.py', line: 2 },
+        { filePath: 'use.py', line: 2 },
+      ],
+    });
+  });
+
+  it('reports a failed check without claiming the indexed caller is safe', async () => {
+    makeKeywordChange();
+    const helper = await import('../../src/mcp/local/python-signature-changes.js');
+    const spy = vi.spyOn(helper, 'findBrokenKeywordCalls').mockRejectedValue(new Error('fixture'));
+    try {
+      expect(await runDetectChanges()).toMatchObject({
+        partial: true,
+        summary: { risk_level: 'unknown', incompatible_calls_checked: false },
+        incompatible_call_skips: [{ reason: 'signature-check-failed' }],
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('caps the listing while counting every observed incompatible call site', async () => {
+    makeKeywordChange();
+    const helper = await import('../../src/mcp/local/python-signature-changes.js');
+    const findings = Array.from({ length: 1001 }, (_, i) => ({
+      target: 'Function:model.py:charge',
+      name: 'charge',
+      keyword: 'legacy',
+      filePath: 'use.py',
+      line: i + 1,
+    }));
+    const spy = vi.spyOn(helper, 'findBrokenKeywordCalls').mockResolvedValue({
+      findings,
+      complete: false,
+      skipped: [{ filePath: 'other.py', reason: 'file-too-large' }],
+    });
+    try {
+      const result = await runDetectChanges();
+      expect(result).toMatchObject({
+        partial: true,
+        truncated: true,
+        summary: {
+          risk_level: 'high',
+          incompatible_call_count: 1001,
+          incompatible_calls_checked: false,
+        },
+      });
+      expect(result).toHaveProperty('incompatible_calls.length', 1000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 beforeEach(() => {
   lbugMocks.executeParameterized.mockReset();
   lbugMocks.executeParameterized.mockResolvedValue([]);
@@ -283,6 +417,37 @@ describe('#2915 detect_changes hunk scaling', () => {
       changed_files: 3,
     });
     expect(mixed.changed_symbols).toMatchObject([{ type: 'Function' }]);
+  });
+
+  it('separates Markdown sections even when the changed code has no mapped symbol', async () => {
+    const dir = makeRepo(['guide.md', 'unindexed.ts'], 1);
+    registerRepo(dir);
+    writeFileSync(path.join(dir, 'guide.md'), '# Changed\n');
+    writeFileSync(path.join(dir, 'unindexed.ts'), 'export const value = 1;\n');
+    lbugMocks.executeParameterized.mockResolvedValue([
+      {
+        diffPath: 'guide.md',
+        filePath: 'guide.md',
+        id: 'Section:guide.md:Changed',
+        name: 'Changed',
+        type: 'Section',
+        startLine: 0,
+        endLine: 0,
+      },
+    ]);
+    expect(await runDetectChanges()).toMatchObject({
+      summary: { documentation_sections: 1, changed_count: 0, risk_level: 'unknown' },
+      changed_symbols: [],
+      unmapped_files: ['unindexed.ts'],
+      partial: true,
+    });
+  });
+
+  it.each(['README.MD', 'README.markdown'])('omits the reindex hint for %s', async (file) => {
+    const dir = makeRepo([file], 1);
+    registerRepo(dir);
+    writeFileSync(path.join(dir, file), '# Changed\n');
+    expect((await runDetectChanges()).summary).not.toHaveProperty('documentation_basis');
   });
 
   it.each(['notes.txt', 'README.md', 'config.json', 'config.yaml'])(

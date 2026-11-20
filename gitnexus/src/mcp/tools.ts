@@ -450,9 +450,9 @@ ${HOT_READ_STALENESS_NOTE}`,
 
 GIT WORKTREE SUPPORT: The server automatically detects its linked git worktree. Pass worktree to review changes in a different checkout.
 
-Returns changed symbols, affected processes and risk. Mixed diffs count Markdown sections separately. incompatible_calls lists Python calls passing a removed keyword. summary.incompatible_call_count includes findings beyond the 1000-row limit.
-- partial: true — mapping is incomplete, so risk_level is "unknown" instead of a ranked level. A failed symbol query (or an unparseable diff) degrades changed_symbols, both counts, and derived processes; a failed process lookup degrades only affected_processes and risk, leaving changed-symbol counts sound. unmapped_files lists changed supported source files with no mapped symbols, including source renames without hunks: their symbols may be missing, unindexed, or outside indexed ranges even when every query succeeded. Rebuild the index and inspect those diffs; retry alone may not resolve this state. changed_count:0 with partial:true is NOT a clean pre-commit check.
-- truncated: true — the changed_symbols LISTING was capped for this response. summary.changed_count counts every symbol the run observed: the true total normally, a LOWER BOUND when partial:true. Compare it with the array length rather than trusting the array.`,
+Mixed diffs count Markdown sections separately. incompatible_calls lists statically resolved Python call sites passing removed keywords. summary.incompatible_call_count includes sites beyond the 1000-row limit. When checked, summary.incompatible_calls_checked records coverage. False means partial: incompatible_call_skips explains why and proven high/critical risk is retained. Dynamic calls and **kwargs expansion are outside this check.
+- partial: true — mapping or keyword coverage is incomplete. Failed symbol queries and unparseable diffs degrade both counts and risk; failed process lookups degrade affected_processes and risk. unmapped_files lists supported source files with no mapped symbols, including source renames without hunks. Rebuild the index and inspect the diff. A zero count with partial:true is inconclusive.
+- truncated: true — a listing was capped. Summary counts include every result observed and may be lower bounds when partial:true.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',

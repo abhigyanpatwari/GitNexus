@@ -7158,6 +7158,16 @@ export class LocalBackend {
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).
     const hunksByPath = coalesceHunksByPath(fileDiffs);
+    // The graph may still use the pre-rename path, while the caller check
+    // needs the destination in the selected post-image.
+    const pythonRenames = new Map<string, string>();
+    for (const { filePath, oldFilePath } of fileDiffs) {
+      const hunks = hunksByPath.get(filePath);
+      if (hunks && oldFilePath?.endsWith('.py') && filePath.endsWith('.py')) {
+        pythonRenames.set(oldFilePath, filePath);
+        if (!hunksByPath.has(oldFilePath)) hunksByPath.set(oldFilePath, hunks);
+      }
+    }
 
     // One row per changed file: the anchored forms of its path, and the [lo, hi]
     // span of its whole touched region (coalesced ranges are sorted and
@@ -7308,6 +7318,7 @@ export class LocalBackend {
       logQueryError('detect-changes:symbol-identity', new SymbolIdentityError());
     }
 
+    const pythonTargets = [];
     for (const sym of symbolRows) {
       if (unusableRows.has(sym)) continue;
       const diffPath = sym.diffPath;
@@ -7315,8 +7326,19 @@ export class LocalBackend {
       const hunks = hunksByPath.get(diffPath) ?? [];
       if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
       // A suffix fallback is a hint, not proof that this is the changed file.
-      if (sym.filePath === diffPath) mappedPaths.add(diffPath);
+      const renamedTo = pythonRenames.get(diffPath);
+      if (renamedTo && exactlyMatchedPaths.has(renamedTo)) continue;
+      if (sym.filePath === diffPath) mappedPaths.add(renamedTo ?? diffPath);
       if (changedSymbols.has(sym.id)) continue;
+
+      if (sym.filePath.endsWith('.py') && (sym.type === 'Class' || sym.type === 'Function')) {
+        pythonTargets.push({
+          id: sym.id,
+          name: sym.name,
+          type: sym.type,
+          filePath: renamedTo ?? sym.filePath,
+        });
+      }
 
       changedSymbols.set(sym.id, {
         id: sym.id,
@@ -7351,9 +7373,12 @@ export class LocalBackend {
     // Keep docs-only reviews useful. In mixed diffs report their volume once;
     // section headings should not displace changed code or inflate its count.
     let documentationSections = 0;
-    const markdown = /\.(?:mdx?|markdown)$/i;
-    const docsOnly = fileDiffs.every((diff) => markdown.test(diff.filePath));
-    if (Array.from(changedSymbols.values()).some((s) => !markdown.test(s.filePath))) {
+    const markdown = /\.mdx?$/;
+    const docsOnly = fileDiffs.every(
+      ({ filePath, oldFilePath }) =>
+        markdown.test(filePath) && (!oldFilePath || markdown.test(oldFilePath)),
+    );
+    if (!docsOnly) {
       for (const [id, symbol] of changedSymbols) {
         if (symbol.type === 'Section' && markdown.test(symbol.filePath)) {
           changedSymbols.delete(id);
@@ -7416,50 +7441,70 @@ export class LocalBackend {
     }
 
     const processCount = affectedProcesses.size;
-    const pythonTargets = Array.from(changedSymbols.values()).filter(
-      (s) => s.filePath.endsWith('.py') && (s.type === 'Class' || s.type === 'Function'),
-    );
     let brokenCalls: import('./python-signature-changes.js').BrokenKeywordCall[] = [];
-    if (pythonTargets.length && /^-(?!-- )/m.test(diffOutput)) {
+    let keywordCheck:
+      | { complete: boolean; skipped: { filePath?: string; reason: string }[] }
+      | undefined;
+    if (pythonTargets.length) {
       try {
-        if (!(await this.fullSourceUnavailable(repo))) {
+        const unavailable = await this.fullSourceUnavailable(repo);
+        if (unavailable) {
+          keywordCheck = { complete: false, skipped: [{ reason: unavailable.reason }] };
+        } else {
           const { findBrokenKeywordCalls } = await import('./python-signature-changes.js');
-          brokenCalls = await findBrokenKeywordCalls(
+          let callerLookupFailed = false;
+          const result = await findBrokenKeywordCalls(
             diffCwd,
             scope,
             params.base_ref,
             pythonTargets,
-            async (ids) =>
-              executeParameterized(
-                repo.lbugPath,
-                `
+            async (targetIds) => {
+              const batches = await mapConcurrent(
+                chunk(targetIds, LBUG_ID_PROBE_BATCH_SIZE),
+                (ids) =>
+                  executeParameterized(
+                    repo.lbugPath,
+                    `
               MATCH (caller)-[r:CodeRelation]->(target)
-              WHERE target.id IN $ids AND r.type = 'CALLS'
-              RETURN DISTINCT target.id AS target, caller.filePath AS filePath
+              WHERE target.id IN $ids AND r.type IN ['CALLS', 'EXTENDS']
+              RETURN DISTINCT target.id AS target, caller.filePath AS filePath,
+                CASE WHEN r.type = 'EXTENDS' THEN 'inherited-constructor' ELSE NULL END AS unverified
             `,
-                { ids },
-              ),
+                    { ids },
+                  ),
+                { onError: (error) => logQueryError('detect-changes:python-callers', error) },
+              );
+              callerLookupFailed = batches.includes(undefined);
+              return batches.flatMap((rows) => rows ?? []);
+            },
+            fileDiffs,
           );
+          brokenCalls = result.findings;
+          keywordCheck = callerLookupFailed
+            ? { complete: false, skipped: [{ reason: 'caller-query-failed' }, ...result.skipped] }
+            : { complete: result.complete, skipped: result.skipped };
         }
       } catch (error) {
         logQueryError('detect-changes:python-signatures', error);
-        queryDegraded = true;
+        keywordCheck = { complete: false, skipped: [{ reason: 'signature-check-failed' }] };
       }
     }
-    // A degraded run cannot rank risk. A swallowed failure leaves processCount short — usually
-    // zero — so a broken run scored `low` next to its own `partial:true`: a
-    // false all-clear from a pre-commit gate. `unknown` is what the CLI
-    // formatter already prints when a run has no risk level at all
-    // (`tool.detectChanges.unknownRisk`), so no consumer needs a new value.
-    const risk = queryDegraded
-      ? 'unknown'
-      : processCount > 15
+    const processRisk =
+      processCount > 15
         ? 'critical'
-        : brokenCalls.length > 0 || processCount > 5
+        : processCount > 5
           ? 'high'
           : processCount > 0
             ? 'medium'
             : 'low';
+    let risk = processRisk;
+    if (brokenCalls.length) {
+      // An observed incompatible call proves at least high risk even when
+      // a new caller was discovered in an as-yet unindexed file.
+      if (processRisk !== 'critical') risk = 'high';
+    } else if (queryDegraded || (keywordCheck?.complete === false && processCount <= 5)) {
+      risk = 'unknown';
+    }
 
     // A repo-wide diff can touch thousands of symbols, and the whole array goes
     // into one MCP payload (the CLI slices with --limit; an MCP client has no
@@ -7491,8 +7536,12 @@ export class LocalBackend {
         ...(docsOnly && { documentation_basis: 'indexed_headings' }),
         ...(documentationSections > 0 && { documentation_sections: documentationSections }),
         ...(brokenCalls.length > 0 && { incompatible_call_count: brokenCalls.length }),
+        ...(keywordCheck && { incompatible_calls_checked: keywordCheck.complete }),
       },
       changed_symbols: listedSymbols,
+      ...(keywordCheck?.skipped.length && {
+        incompatible_call_skips: keywordCheck.skipped.slice(0, DETECT_CHANGES_MAX_LISTED_SYMBOLS),
+      }),
       ...(brokenCalls.length > 0 && {
         incompatible_calls: brokenCalls.slice(0, DETECT_CHANGES_MAX_LISTED_SYMBOLS),
       }),
@@ -7500,8 +7549,12 @@ export class LocalBackend {
       ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
       // Failed queries or unmapped source files leave counts/risk incomplete;
       // the safety gate must not treat that as a clean result (#2283).
-      ...(queryDegraded && { partial: true }),
-      ...(listedSymbols.length < changedSymbols.size && { truncated: true }),
+      ...((queryDegraded || keywordCheck?.complete === false) && { partial: true }),
+      ...((listedSymbols.length < changedSymbols.size ||
+        brokenCalls.length > DETECT_CHANGES_MAX_LISTED_SYMBOLS ||
+        (keywordCheck?.skipped.length ?? 0) > DETECT_CHANGES_MAX_LISTED_SYMBOLS) && {
+        truncated: true,
+      }),
     };
   }
 
@@ -8967,6 +9020,8 @@ export class LocalBackend {
     const visited = new Set<string>([symId]);
     const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
     let frontier = [symId];
+    const pythonImportEdges: ImpactFrontierEdge[] = [];
+    let pythonImportsIncomplete = false;
     const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
     let traversalCappedAtDepth: number | undefined;
@@ -9039,9 +9094,36 @@ export class LocalBackend {
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
           const exported = r.isExported ?? r[4];
-          // Python has direct constructor CALLS edges to the class. An import
-          // of its module can refer exclusively to a different declaration.
-          if (direction === 'upstream' && /\.pyi?$/i.test(String(r.filePath ?? r[3]))) continue;
+          const ownerPath = String(r.filePath ?? r[3]);
+          if (direction === 'upstream' && /\.pyi?$/i.test(ownerPath)) {
+            if (relationTypes.includes('IMPORTS')) {
+              const { pythonClassImporters } = await import('./python-class-importers.js');
+              const { matches, complete } = await pythonClassImporters(
+                repo,
+                r.id ?? r[0],
+                ownerPath,
+                sym.name ?? sym[1],
+                includeTests,
+                safeMinConfidence,
+              );
+              for (const row of matches) {
+                pythonImportEdges.push({
+                  id: row.id,
+                  name: row.name,
+                  filePath: row.filePath,
+                  type: 'File',
+                  sourceId: symId,
+                  relType: 'IMPORTS',
+                  confidence: row.confidence,
+                });
+              }
+              if (!complete) {
+                pythonImportsIncomplete = true;
+                traversalComplete = false;
+              }
+            }
+            continue;
+          }
           if (direction === 'upstream' && exported === false) {
             // Lazy like the other provider lookups on this backend: the
             // registry pulls every language module, and this branch is the
@@ -9264,6 +9346,8 @@ export class LocalBackend {
           // from older indexes or other languages reads as live.
           ...((rel.staticGated ?? rel[7]) === true ? { staticGated: true } : {}),
         }));
+
+        if (depth === 1) edges.push(...pythonImportEdges);
 
         // The pdg bridge is the ONE consumer here that accumulates sequentially
         // rather than per-node: at depth ≥ 2 an edge inherits
@@ -9868,28 +9952,38 @@ export class LocalBackend {
       riskScale,
       ...(risk === 'UNKNOWN'
         ? {
-            riskNote: traversalCapped
-              ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
-                `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
-                'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
-                'before treating the change as safe.'
-              : incompleteWalk
-                ? 'Impact traversal was incomplete. The observed caller count is a lower bound. Retry impact before treating the change as safe.'
-                : processQueryFailed || moduleQueryFailed
-                  ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
-                    'are lower bounds; retry impact before treating the change as safe.'
-                  : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
-                    ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
-                      'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
-                      'treating the change as safe.'
-                    : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
-                      'a caller reaching it through a reference class this index does not record — ' +
-                      'plain-object property access, a bare-identifier read of a module-scope const — ' +
-                      'produces no edge to find. Confirm with a text search before treating the ' +
-                      'change as safe.',
+            riskNote: pythonImportsIncomplete
+              ? 'Some Python module imports could not be attributed to the class from indexed source within the inspection limits. The observed callers are a lower bound.'
+              : traversalCapped
+                ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
+                  `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
+                  'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
+                  'before treating the change as safe.'
+                : incompleteWalk
+                  ? 'Impact traversal was incomplete. The observed caller count is a lower bound. Retry impact before treating the change as safe.'
+                  : processQueryFailed || moduleQueryFailed
+                    ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
+                      'are lower bounds; retry impact before treating the change as safe.'
+                    : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
+                      ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
+                        'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
+                        'treating the change as safe.'
+                      : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+                        'a caller reaching it through a reference class this index does not record — ' +
+                        'plain-object property access, a bare-identifier read of a module-scope const — ' +
+                        'produces no edge to find. Confirm with a text search before treating the ' +
+                        'change as safe.',
           }
         : {}),
       ...epistemic,
+      ...(pythonImportsIncomplete &&
+        !opts.skipEpistemic && {
+          epistemic: 'lower-bound',
+          boundaries: [
+            ...(epistemic.boundaries ?? []),
+            'Indexed Python module imports could not all be attributed to a class.',
+          ],
+        }),
       ...((!traversalComplete || enrichmentDegraded) && { partial: true }),
       summary: {
         direct: directCount,

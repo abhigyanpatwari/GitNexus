@@ -79,13 +79,15 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 
 ## Risk Assessment
 
-| Affected                       | Risk     |
-| ------------------------------ | -------- |
-| <5 symbols, few processes      | LOW      |
-| 5-15 symbols, 2-5 processes    | MEDIUM   |
-| >15 symbols or many processes  | HIGH     |
-| Critical path (auth, payments) | CRITICAL |
-| **Zero callers found**         | **UNKNOWN** |
+Upstream risk counts direct dependants. The tool reports indirect reach, processes and modules separately.
+
+| Risk | Upstream direct dependants | Downstream thresholds (any one) |
+| --- | --- | --- |
+| CRITICAL | 200 or more | 30 direct, 5 processes, 5 modules, or 200 total |
+| HIGH | 15–199 | 15 direct, 3 processes, 3 modules, or 100 total |
+| MEDIUM | 5–14 | 5 direct or 30 total |
+| LOW | Fewer than 5 on a nonempty walk | Below the MEDIUM thresholds |
+| UNKNOWN | Empty upstream walk, or incomplete evidence for a LOW/MEDIUM rating | Incomplete evidence for a LOW/MEDIUM rating |
 
 `UNKNOWN` is not a low rung on this scale — it means the walk could not answer.
 An empty caller set is equally consistent with "genuinely unused" and "the

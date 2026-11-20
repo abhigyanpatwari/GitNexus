@@ -138,14 +138,17 @@ export const en = {
     'Diff touched {{files}} file(s) but no indexed symbols overlap those hunks — not a clean tree.',
   'tool.detectChanges.partial':
     'PARTIAL RESULT: changed-symbol or process mapping is incomplete. Do not read this as a clean pre-commit check.',
+  'tool.detectChanges.partialCheck':
+    'PARTIAL RESULT: change analysis is incomplete. Do not read this as a clean pre-commit check.',
+  'tool.detectChanges.keywordCoverage': 'Python keyword check incomplete: {{examples}}',
   'tool.detectChanges.unmappedSource':
     'No symbols mapped for changed source files: {{files}}. Rebuild the index and inspect the diff; retry alone may not resolve missing or out-of-range symbols.',
   'tool.detectChanges.truncated':
-    'LISTING CAPPED: the changed-symbol list was capped, so it does not name every changed symbol. The counts and risk level still cover all of them.',
+    'LISTING CAPPED: one or more result lists were shortened. Counts include all observed results.',
   // The reassurance above is only true on its own. When the run also degraded,
   // `changed_count` was summed from the batches that SUCCEEDED, so it is a floor.
   'tool.detectChanges.truncatedDegraded':
-    'LISTING CAPPED: the changed-symbol list was capped. The run also degraded, so the counts are a lower bound, not a total.',
+    'LISTING CAPPED: one or more result lists were shortened. The run was incomplete, so the counts are a lower bound.',
   'tool.detectChanges.changesSummary': 'Changes: {{files}} files, {{symbols}} symbols',
   'tool.detectChanges.affectedProcesses': 'Affected processes: {{count}}',
   'tool.detectChanges.riskLevel': 'Risk level: {{risk}}',

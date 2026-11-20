@@ -38,6 +38,7 @@ type DetectChangesResult = {
   affected_processes?: AffectedProcess[];
   unmapped_files?: string[];
   incompatible_calls?: import('../mcp/local/python-signature-changes.js').BrokenKeywordCall[];
+  incompatible_call_skips?: { filePath?: string; reason: string }[];
 };
 
 export function formatDetectChangesResult(result: unknown): string {
@@ -52,9 +53,28 @@ export function formatDetectChangesResult(result: unknown): string {
   // LISTING (never the counts), so a short list is not proof of a short diff.
   // Both lead the output — a caveat printed after the summary is read too late.
   const notes: string[] = [];
-  if (payload.partial) notes.push(t('tool.detectChanges.partial'));
+  if (payload.partial)
+    notes.push(
+      t(
+        payload.incompatible_call_skips?.length
+          ? 'tool.detectChanges.partialCheck'
+          : 'tool.detectChanges.partial',
+      ),
+    );
+  if (payload.incompatible_call_skips?.length) {
+    const skipped = payload.incompatible_call_skips;
+    const examples = skipped
+      .slice(0, 5)
+      .map(({ filePath, reason }) =>
+        filePath ? `${formatPathForTerminal(filePath)} (${reason})` : reason,
+      );
+    if (skipped.length > examples.length) examples.push('…');
+    notes.push(t('tool.detectChanges.keywordCoverage', { examples: examples.join(', ') }));
+  }
   if (summary.documentation_basis === 'indexed_headings')
     notes.push(t('tool.detectChanges.indexedHeadings'));
+  if (!summary.changed_count && summary.documentation_sections)
+    notes.push(t('tool.detectChanges.docSections', { count: summary.documentation_sections }));
   if (payload.unmapped_files?.length) {
     notes.push(
       t('tool.detectChanges.unmappedSource', {
@@ -123,7 +143,7 @@ export function formatDetectChangesResult(result: unknown): string {
         t('tool.detectChanges.removedKeyword', {
           file: formatPathForTerminal(call.filePath),
           line: call.line,
-          keyword: call.keyword,
+          keyword: (call.keywords ?? [call.keyword]).join(', '),
           name: call.name,
         }),
       );

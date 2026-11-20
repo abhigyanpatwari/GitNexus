@@ -1078,22 +1078,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       if (import.meta.env.DEV) {
         console.log(`🔍 Impact d=1 query:\n${d1Query}`);
       }
-      depthQueries.push(
-        executeQuery(d1Query)
-          .then((results) => {
-            if (import.meta.env.DEV) {
-              console.log(`📊 Impact d=1 results: ${results.length} rows`);
-              if (results.length > 0) {
-                console.log('   Sample:', results.slice(0, 3));
-              }
-            }
-            return results;
-          })
-          .catch((err) => {
-            if (import.meta.env.DEV) console.warn('Impact d=1 query failed:', err);
-            return [];
-          }),
-      );
+      depthQueries.push(executeQuery(d1Query));
 
       // Depth 2 query - 2 hops
       if (depth >= 2) {
@@ -1139,12 +1124,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r2.reason AS reason
             LIMIT 200
           `;
-        depthQueries.push(
-          executeQuery(d2Query).catch((err) => {
-            if (import.meta.env.DEV) console.warn('Impact d=2 query failed:', err);
-            return [];
-          }),
-        );
+        depthQueries.push(executeQuery(d2Query));
       }
 
       // Depth 3 query - 3 hops
@@ -1195,16 +1175,12 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r3.reason AS reason
             LIMIT 100
           `;
-        depthQueries.push(
-          executeQuery(d3Query).catch((err) => {
-            if (import.meta.env.DEV) console.warn('Impact d=3 query failed:', err);
-            return [];
-          }),
-        );
+        depthQueries.push(executeQuery(d3Query));
       }
 
       // Wait for all depth queries
-      const depthResults = await Promise.all(depthQueries);
+      const depthResults = await Promise.allSettled(depthQueries);
+      const failedDepths: number[] = [];
 
       // Combine results by depth
       interface NodeInfo {
@@ -1221,9 +1197,14 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const allNodeIds: string[] = [];
       const seenIds = new Set<string>();
 
-      depthResults.forEach((results, idx) => {
+      depthResults.forEach((result, idx) => {
         const d = idx + 1;
-        results.forEach((row: any) => {
+        if (result.status === 'rejected') {
+          failedDepths.push(d);
+          if (import.meta.env.DEV) console.warn(`Impact d=${d} query failed:`, result.reason);
+          return;
+        }
+        result.value.forEach((row: any) => {
           const nodeId = Array.isArray(row) ? row[0] : row.id;
           const filePath = Array.isArray(row) ? row[3] : row.filePath;
 
@@ -1253,7 +1234,11 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
       const totalAffected = allNodeIds.length;
 
+      const traversalNote = failedDepths.length
+        ? `Incomplete traversal. Failed depth queries: ${failedDepths.join(', ')}. Retry before editing.`
+        : undefined;
       if (totalAffected === 0) {
+        if (traversalNote) return `RISK: UNKNOWN\n${traversalNote}`;
         if (isFileTarget) {
           const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           const targetFileName = (targetFilePath || target).split('/').pop() || target;
@@ -1410,7 +1395,11 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         impactedCount: totalAffected,
         unusedAxes,
       });
-      const { risk, riskSharedAxes, riskScale } = scored;
+      const riskAfterWalk = (value: typeof scored.risk) =>
+        traversalNote && (value === 'LOW' || value === 'MEDIUM') ? 'UNKNOWN' : value;
+      const risk = riskAfterWalk(scored.risk);
+      const riskSharedAxes = riskAfterWalk(scored.riskSharedAxes);
+      const { riskScale } = scored;
 
       // ===== COMPACT TABULAR OUTPUT =====
       const lines: string[] = [
@@ -1451,7 +1440,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         ...(clusterClassificationFailed
           ? ['Note: direct/indirect cluster classification is unavailable.']
           : []),
-        `- Direct callers: ${directCount}`,
+        ...(traversalNote ? [traversalNote] : []),
+        `- Direct callers: ${failedDepths.includes(1) ? 'unavailable' : directCount}`,
         `- Processes affected: ${processQueryFailed ? 'unavailable' : processCount}`,
         `- Clusters affected: ${clusterQueryFailed ? 'unavailable' : clusterCount}`,
         ``,

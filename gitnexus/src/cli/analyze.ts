@@ -1839,7 +1839,7 @@ const analyzeCommandImpl = async (
           ['AGENTS.md', continuation.prepared.selfCommitSafety.agentsMd],
           ['CLAUDE.md', continuation.prepared.selfCommitSafety.claudeMd],
         ])
-      : options.selfCommit === true
+      : !continuation && options.selfCommit === true
         ? snapshotSelfCommitSafety(repoPath, contextFiles)
         : undefined;
     const result = continuation

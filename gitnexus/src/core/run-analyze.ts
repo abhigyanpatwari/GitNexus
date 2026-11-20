@@ -3265,30 +3265,35 @@ async function runFullAnalysisInner(
             branch: placement.branch,
             storagePath,
           });
-          if (!placement.branch) {
-            try {
-              await generateAIContextFiles(
-                repoPath,
-                storagePath,
-                options.registryName,
-                existingMeta.stats ?? {},
-                undefined,
-                {
-                  skipAgentsMd: options.skipAgentsMd,
-                  instructionFile: options.instructionFile,
-                  refreshCounts: options.refreshCounts,
-                  skipSkills: options.skipSkills,
-                  noStats: options.noStats,
-                  defaultBranch: options.defaultBranch,
-                  // Fast path does not re-run PDG. Using `options.pdg` would
-                  // strip PDG bullets from AGENTS.md on a rename-only analyze.
-                  hasPdg: existingMeta.pdg != null,
-                  hasSpringActuator: existingMeta.springActuator?.enabled === true,
-                },
-              );
-            } catch {
-              /* best-effort — never fail the fast path over a context refresh */
-            }
+        }
+        if (
+          !placement.branch &&
+          (options.registryName ||
+            (options.instructionFile &&
+              !options.skipAgentsMd &&
+              !existsSync(path.join(repoPath, options.instructionFile))))
+        ) {
+          try {
+            await generateAIContextFiles(
+              repoPath,
+              storagePath,
+              await preparedAnalysisName(repoPath, options),
+              existingMeta.stats ?? {},
+              undefined,
+              {
+                skipAgentsMd: options.skipAgentsMd,
+                instructionFile: options.instructionFile,
+                refreshCounts: options.refreshCounts,
+                skipSkills: options.skipSkills,
+                noStats: options.noStats || existingMeta.stats?.nodes === undefined,
+                defaultBranch: options.defaultBranch,
+                // The fast path reuses the persisted graph capabilities.
+                hasPdg: existingMeta.pdg != null,
+                hasSpringActuator: existingMeta.springActuator?.enabled === true,
+              },
+            );
+          } catch {
+            /* best-effort — never fail the fast path over a context refresh */
           }
         }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──

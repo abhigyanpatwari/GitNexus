@@ -54,6 +54,9 @@ export interface AIContextOptions {
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
+// Matches the template and lean headers, including wrapped Markdown counts.
+const STATS_LINE_PATTERN =
+  /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)(\s+\(\d+\s+symbols,\s+\d+\s+relationships,\s+\d+\s+execution\s+flows\))?/m;
 
 /**
  * Find the index of a section marker that occupies its own line.
@@ -510,22 +513,21 @@ async function upsertGitNexusSection(
       // The parenthetical is optional so a count-free line left by a prior
       // --no-stats run still matches — letting the name refresh, and letting
       // counts return if --no-stats is later dropped.
-      const statsPattern = /^(Indexed as|indexed by GitNexus as) \*\*[^*]+\*\*(?: \([^)]+\))?/m;
-      const statsMatch = existingSection.match(statsPattern);
+      const statsMatch = existingSection.match(STATS_LINE_PATTERN);
 
       if (statsMatch) {
         const statsPrefix = statsMatch[1];
         const statsLine = noStats
           ? `${statsPrefix} **${projectName}**`
           : `${statsPrefix} **${projectName}** (${newStatsInner})`;
-        const updatedSection = existingSection.replace(statsPattern, () => statsLine);
+        const updatedSection = existingSection.replace(STATS_LINE_PATTERN, () => statsLine);
         // Background refreshes preserve count-only changes in lean blocks (#2907).
         if (comparable(updatedSection) === comparable(existingSection)) {
           return repairLineEndings();
         }
         const before = existingContent.substring(0, startIdx);
         const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-        await writeWithLineEnding(filePath, (before + updatedSection + after).trim() + '\n', eol);
+        await writeWithLineEnding(filePath, before + updatedSection + after, eol);
         return 'updated';
       }
       // Keep marker present but no stats line matched. Section is preserved
@@ -546,7 +548,9 @@ async function upsertGitNexusSection(
       return repairLineEndings();
     }
     const newContent = before + placed + after;
-    await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
+    const countOnly =
+      refreshCounts && stripVolatileCounts(existingSection) === stripVolatileCounts(placed);
+    await writeWithLineEnding(filePath, countOnly ? newContent : newContent.trim() + '\n', eol);
     return 'updated';
   }
 
@@ -998,10 +1002,6 @@ export async function refreshStatsLine(
       ? `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`
       : undefined;
   if (!noStats && counts === undefined) return { files: [] };
-  // Accept the verbose template and compact `Indexed as **name**` line,
-  // including counts wrapped by Markdown formatters. Leave trailing text alone.
-  const statsPattern =
-    /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)(\s+\(\d+\s+symbols,\s+\d+\s+relationships,\s+\d+\s+execution\s+flows\))?/m;
   const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?=[ \t]*\|)/gm;
   const updated: string[] = [];
   for (const name of options?.instructionFile
@@ -1022,7 +1022,7 @@ export async function refreshStatsLine(
     const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
     const block = content.substring(startIdx, blockEnd);
     let newBlock = block.replace(
-      statsPattern,
+      STATS_LINE_PATTERN,
       (
         match,
         prefix: string,

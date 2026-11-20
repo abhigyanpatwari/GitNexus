@@ -43,6 +43,10 @@ it('suppresses a docs-only gap but still warns for an earlier unindexed code cha
     fs.writeFileSync(path.join(repo, 'README.md'), 'more notes\n');
     commitAll(repo, 'more docs');
     expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(false);
+    const docs = path.join(repo, 'docs');
+    fs.mkdirSync(docs);
+    expect(spawnSync('git', ['config', 'diff.relative', 'true'], { cwd: repo }).status).toBe(0);
+    expect(onlyMarkdownChanged(docs, docs, base, readHead(docs, docs).head)).toBe(false);
   } finally {
     fs.rmSync(repo, { recursive: true, force: true });
   }

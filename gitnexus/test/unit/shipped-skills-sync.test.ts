@@ -173,7 +173,10 @@ describe('intended standard-skill improvements stay in every applicable copy', (
   // that is not listed here is a fragment nothing protects.
   it('keeps the UNKNOWN-risk guidance in every impact-analysis copy', () => {
     const required = [
-      '| **Zero callers found**         | **UNKNOWN** |',
+      '| UNKNOWN | Empty upstream walk',
+      '| MEDIUM | 5–14 |',
+      '| HIGH | 15–199 |',
+      '| CRITICAL | 200 or more |',
       '`UNKNOWN` is not a low rung on this scale',
       'Confirm with a text search before',
     ];

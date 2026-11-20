@@ -275,6 +275,7 @@ function onlyMarkdownChanged(directory, cwd, base, head) {
       '--quiet',
       '--no-ext-diff',
       '--no-renames',
+      '--no-relative',
       base,
       head,
       '--',

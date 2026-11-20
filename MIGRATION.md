@@ -1,5 +1,9 @@
 # Migration Guide
 
+## Upstream impact risk (#3972)
+
+Upstream `impact` now rates the number of direct dependants. On a complete, nonempty walk, 5 direct dependants trigger MEDIUM, 15 trigger HIGH and 200 trigger CRITICAL. Process membership, module membership and indirect reach remain available in the summary. An edit gate based on HIGH or CRITICAL can therefore fire less often for a symbol with few direct callers on many flows. Downstream thresholds are unchanged.
+
 ## Stable community and process IDs (#3855)
 
 The next analysis after upgrading rebuilds the derived graph with new IDs:
