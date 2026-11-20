@@ -44,6 +44,12 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-antigravity.test.ts',
   'test/unit/claude-hook-launcher.test.ts',
   'test/unit/claude-hook-runtime.test.ts',
+  // Runs search commands through the real shells (Git Bash, Windows PowerShell,
+  // pwsh, bash) and checks the hook's reading against what rg receives.
+  'test/integration/search-command-real-shells.test.ts',
+  // The shared search-term reader; its PowerShell and `either` readings are
+  // string tests, the real-shell file above checks them against real shells.
+  'test/unit/search-command-pattern.test.ts',
   'test/unit/claude-hook-build.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/opencode-plugin.test.ts',

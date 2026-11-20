@@ -24,11 +24,13 @@
 
 > In Claude Code, Codex and Antigravity the stale-index hint follows `git -C <dir>`: it checks the index of the repository the command ran in, and names that checkout when the agent works in another one.
 
+> In every editor, a shell search gets graph context only when `rg` or `grep` is the first command. A search after `&&`, `;`, `||` or `|`, such as `cd src && rg UserService .`, `git log | grep fix` or `find . | xargs grep fix`, runs normally but receives no graph augmentation. Leading variable assignments such as `NO_COLOR=1 rg …` are read past in bash, and Cursor and Factory also read past wrappers such as `npx`, `sudo`, `env` and `git grep`. On Windows the Claude Code and Codex hooks cannot tell whether bash or PowerShell runs the command, so a search gets graph context only when both shells read the same query: `rg @Injectable src` or `grep -r Foo --include=*.{ts,tsx} src` get none there. In Claude Code, Codex and Antigravity a search with several patterns (`rg -e FooService -e BarService`) gets graph context for each of them, up to three. The hooks read the command without running a shell, so they are best effort: when the shell would rewrite the search term first (a leading `~`, `{a,b}`, `$(…)` and similar), the search runs without graph context.
+
 OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search results and adds a stale-index hint after git mutations. The integration is verified with OpenCode 1.19.5; OpenCode v2 uses a different plugin API.
 
 For Bash tools, the hooks recognize literal commands and known options; ambiguous shell constructs are skipped. Stale-index hints concern the current OpenCode project.
 
-Bash search augmentation requires `rg` or `grep` to be the first command. A search preceded by `cd`, such as `cd src && rg UserService .`, runs normally but receives no graph augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to get graph context.
+To get graph context for a search, use a direct search command or OpenCode's `grep`/`glob` tools.
 
 <a id="fn-antigravity-hooks"></a>
 

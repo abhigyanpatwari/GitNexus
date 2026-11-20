@@ -18,6 +18,7 @@ const {
   readHead,
   onlyMarkdownChanged,
 } = require('./git-mutation-command.cjs');
+const { searchCommandPatterns } = require('./search-command-pattern.cjs');
 
 // Claude Code runs the Bash tool in bash on every platform, Git Bash included.
 // Codex reports its shell tool as `Bash` too and runs PowerShell on Windows, so
@@ -71,247 +72,26 @@ function extractAugmentContext(stderr) {
   return marker === -1 ? '' : output.slice(marker).trim();
 }
 
-// Read literal argv from the first simple command without executing a shell.
-// Quotes group words; expansions and malformed input have no reliable query.
-function tokenizeShellCommand(command) {
-  const tokens = [];
-  let word = '';
-  let quote = null;
-  let started = false;
-  for (let i = 0; i < command.length; i++) {
-    const ch = command[i];
-    if (ch === '\\' && quote !== "'") {
-      const next = command[++i];
-      if (next === undefined) return [];
-      if (next === '\n') continue;
-      if (quote === '"' && !['"', '\\', '$', '`'].includes(next)) word += '\\';
-      word += next;
-      started = true;
-    } else if (
-      quote !== "'" &&
-      (ch === '`' ||
-        (ch === '$' &&
-          (/[\w{([*@#?$!-]/.test(command[i + 1] || '') ||
-            (!quote && ['"', "'"].includes(command[i + 1])))))
-    ) {
-      return [];
-    } else if (quote) {
-      if (ch === quote) quote = null;
-      else word += ch;
-    } else if (ch === '"' || ch === "'") {
-      quote = ch;
-      started = true;
-    } else if (/[;&|<>\n\r]/.test(ch) || (ch === '#' && !started)) {
-      break;
-    } else if (/\s/.test(ch)) {
-      if (started) tokens.push(word);
-      word = '';
-      started = false;
-    } else {
-      word += ch;
-      started = true;
-    }
-  }
-  if (quote) return [];
-  if (started) tokens.push(word);
-  return tokens;
-}
-
-// How each option of the two supported search tools reads its argument,
-// classified against ripgrep 14.1.1 and GNU grep 3.11 (`--help` plus one run of
-// each option against the binary). `value` consumes the next token unless the
-// value is attached; `boolean` never does; `pattern` carries the query;
-// `file` reads queries from a file; `exit` prints information and searches
-// nothing. The tools disagree on single letters (-E, -r, -T, -d, -h, -I, -L).
-const optionNames = (text) => text.trim().split(/\s+/);
-
-function searchOptionTable(kinds) {
-  const table = new Map();
-  for (const [kind, names] of Object.entries(kinds)) {
-    // A string lists one-letter options; an array lists long names.
-    for (const name of names) table.set(name, kind);
-  }
-  return table;
-}
-
-const SEARCH_TOOL_OPTIONS = {
-  rg: {
-    // ripgrep matches long names exactly and drops a `=` after a short option.
-    abbreviations: false,
-    shortEquals: true,
-    short: searchOptionTable({
-      pattern: 'e',
-      file: 'f',
-      exit: 'hV',
-      value: 'ABCEMTdgjmrt',
-      boolean: '.0FHILNPSUabcilnopqsuvwxz',
-    }),
-    long: searchOptionTable({
-      pattern: ['regexp'],
-      file: ['file'],
-      exit: ['files', 'generate', 'help', 'pcre2-version', 'type-list', 'version'],
-      value: optionNames(`
-        after-context before-context color colors context context-separator dfa-size-limit encoding
-        engine field-context-separator field-match-separator glob hostname-bin hyperlink-format
-        iglob ignore-file max-columns max-count max-depth max-filesize path-separator pre pre-glob
-        regex-size-limit replace sort sortr threads type type-add type-clear type-not
-      `),
-      boolean: optionNames(`
-        auto-hybrid-regex binary block-buffered byte-offset case-sensitive column count
-        count-matches crlf debug files-with-matches files-without-match fixed-strings follow
-        glob-case-insensitive heading hidden ignore ignore-case ignore-dot ignore-exclude
-        ignore-file-case-insensitive ignore-files ignore-global ignore-messages ignore-parent
-        ignore-vcs include-zero invert-match json line-buffered line-number line-regexp
-        max-columns-preview messages mmap multiline multiline-dotall no-auto-hybrid-regex no-binary
-        no-block-buffered no-byte-offset no-column no-config no-context-separator no-crlf
-        no-encoding no-filename no-fixed-strings no-follow no-glob-case-insensitive no-heading
-        no-hidden no-ignore no-ignore-dot no-ignore-exclude no-ignore-file-case-insensitive
-        no-ignore-files no-ignore-global no-ignore-messages no-ignore-parent no-ignore-vcs
-        no-include-zero no-invert-match no-json no-line-buffered no-line-number
-        no-max-columns-preview no-messages no-mmap no-multiline no-multiline-dotall
-        no-one-file-system no-pcre2 no-pcre2-unicode no-pre no-require-git no-search-zip
-        no-sort-files no-stats no-text no-trim no-unicode null null-data one-file-system
-        only-matching passthru pcre2 pcre2-unicode pretty quiet require-git search-zip smart-case
-        sort-files stats stop-on-nonmatch text trace trim unicode unrestricted vimgrep with-filename
-        word-regexp
-      `),
-    }),
-  },
-  grep: {
-    // GNU grep accepts a prefix of a long name only when it names ONE option
-    // (`--no` is rejected as ambiguous), where two spellings of one option
-    // count as one (`--col` is --color). It reads the value of --color only
-    // when it is attached with `=`.
-    abbreviations: true,
-    aliases: { colour: 'color' },
-    shortEquals: false,
-    short: searchOptionTable({
-      pattern: 'e',
-      file: 'f',
-      exit: 'V',
-      value: 'ABCDXdm',
-      boolean: '0123456789EFGHILPRTUZabchilnoqrsuvwxyz',
-    }),
-    long: searchOptionTable({
-      pattern: ['regexp'],
-      file: ['file'],
-      exit: ['help', 'version'],
-      value: optionNames(`
-        after-context before-context binary-files context devices directories exclude exclude-dir
-        exclude-from group-separator include label max-count
-      `),
-      boolean: optionNames(`
-        basic-regexp binary byte-offset color colour count dereference-recursive extended-regexp
-        files-with-matches files-without-match fixed-strings ignore-case initial-tab invert-match
-        line-buffered line-number line-regexp no-filename no-group-separator no-ignore-case
-        no-messages null null-data only-matching perl-regexp quiet recursive silent text
-        with-filename word-regexp
-      `),
-    }),
-  },
-};
-
-// The kind of a long option name, or undefined when the tool does not have it.
-function longSearchOptionKind(options, name) {
-  const exact = options.long.get(name);
-  if (exact || !options.abbreviations || name === '') return exact;
-  const matched = new Set();
-  let kind;
-  for (const [candidate, candidateKind] of options.long) {
-    if (!candidate.startsWith(name)) continue;
-    matched.add((options.aliases && options.aliases[candidate]) || candidate);
-    kind = candidateKind;
-  }
-  return matched.size === 1 ? kind : undefined;
-}
-
 /**
- * The query of one tokenized `rg` / `grep` command line, or null when it has
- * none that can be read reliably. A token is never taken as the query while an
- * earlier option may still claim it as its value: an option this tool does not
- * have, written without an attached `=value`, declines the whole command.
+ * Extract the search patterns from tool input. A Bash search may carry several
+ * (`rg -e FooService -e BarService`); `gitnexus augment` reads them together.
  */
-function extractSearchCommandPattern(tokens) {
-  const tool = /(?:^|[/\\])(rg|grep)(?:\.exe)?$/.exec(tokens[0] || '');
-  if (!tool) return null;
-  const options = SEARCH_TOOL_OPTIONS[tool[1]];
-  let pending = null;
-  let endOptions = false;
-  let pattern = null;
-  let explicitPattern = null;
-
-  for (const token of tokens.slice(1)) {
-    if (pending) {
-      if (pending === 'pattern') explicitPattern ??= token;
-      pending = null;
-      continue;
-    }
-    if (!endOptions && token === '--') {
-      endOptions = true;
-      continue;
-    }
-    // A lone `-` is the standard-input operand, not an option.
-    if (endOptions || !token.startsWith('-') || token === '-') {
-      pattern ??= token;
-      continue;
-    }
-    if (token.startsWith('--')) {
-      const separator = token.indexOf('=');
-      const attached = separator !== -1;
-      const kind = longSearchOptionKind(options, token.slice(2, attached ? separator : undefined));
-      if (kind === 'pattern') {
-        if (attached) explicitPattern ??= token.slice(separator + 1);
-        else pending = 'pattern';
-      } else if (kind === 'file' || kind === 'exit') {
-        // File-backed queries are unavailable without reading user files, and
-        // an informational option runs no search.
-        return null;
-      } else if (attached) {
-        // `--name=value` carries its own value and cannot consume the next token.
-      } else if (kind === 'value') {
-        pending = 'skip';
-      } else if (kind !== 'boolean') {
-        // An unknown option may consume the next token. Do not guess a pattern.
-        return null;
-      }
-      continue;
-    }
-    // A bundle of short options: every letter before the last is a switch, and
-    // a letter that takes a value reads the rest of the token or the next one.
-    for (let i = 1; i < token.length; i++) {
-      const kind = options.short.get(token[i]);
-      if (kind === 'boolean') continue;
-      if (kind !== 'pattern' && kind !== 'value') return null;
-      const rest = token.slice(i + 1);
-      if (rest === '') pending = kind === 'pattern' ? 'pattern' : 'skip';
-      else if (kind === 'pattern')
-        explicitPattern ??= options.shortEquals && rest.startsWith('=') ? rest.slice(1) : rest;
-      break;
-    }
-  }
-  const result = explicitPattern ?? pattern;
-  return !pending && result?.length >= 3 ? result : null;
-}
-
-/** Extract search pattern from tool input. */
-function extractPattern(toolName, toolInput) {
+function extractPatterns(toolName, toolInput) {
   if (toolName === 'Grep') {
-    return toolInput.pattern || null;
+    return toolInput.pattern ? [toolInput.pattern] : [];
   }
 
   if (toolName === 'Glob') {
     const raw = toolInput.pattern || '';
     const match = raw.match(/[*\/]([a-zA-Z][a-zA-Z0-9_-]{2,})/);
-    return match ? match[1] : null;
+    return match ? [match[1]] : [];
   }
 
   if (toolName === 'Bash') {
-    const cmd = toolInput.command || '';
-    if (typeof cmd !== 'string' || !/\brg\b|\bgrep\b/.test(cmd)) return null;
-    return extractSearchCommandPattern(tokenizeShellCommand(cmd));
+    return searchCommandPatterns(toolInput.command, BASH_TOOL_SHELL);
   }
 
-  return null;
+  return [];
 }
 
 // Warn once per short-lived hook process when orphan containment is unavailable.
@@ -364,14 +144,16 @@ function runGitNexusCli(target, args, cwd, timeout) {
  * Fallback augmentation for the #2396 path: the owner probe either found a
  * GitNexus process holding the DB or could not rule one out. Point the agent at
  * the MCP `query` tool conditionally, since an MCP server may not be available.
- * `pattern` is embedded verbatim; sendHookResponse JSON-escapes it structurally.
+ * Every search pattern is embedded verbatim; sendHookResponse JSON-escapes them
+ * structurally.
  */
-function buildMcpQueryHint(pattern) {
+function buildMcpQueryHint(patterns) {
+  const queries = patterns.map((pattern) => `search_query "${pattern}"`).join(', then ');
   return (
     `[GitNexus] Local augment was skipped because the graph DB may be held by ` +
     `another GitNexus process. If the GitNexus MCP tools are live in this session, call ` +
     `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
-    `search_query "${pattern}".`
+    `${queries}.`
   );
 }
 
@@ -477,7 +259,8 @@ function handlePreToolUse(input, { resolveCli, acquireHookSlot }) {
 
   if (toolName !== 'Grep' && toolName !== 'Glob' && toolName !== 'Bash') return;
 
-  const pattern = extractPattern(toolName, toolInput);
+  const patterns = extractPatterns(toolName, toolInput);
+  const pattern = patterns[0];
   if (!pattern || pattern.length < 3) return;
 
   // Registry row first (persisted external storagePath wins). Local owned
@@ -515,7 +298,7 @@ function handlePreToolUse(input, { resolveCli, acquireHookSlot }) {
         );
       }
       if (shouldEmitMcpHint(storagePath)) {
-        result = buildMcpQueryHint(pattern);
+        result = buildMcpQueryHint(patterns);
       }
     } else {
       const target = resolveCli();
@@ -525,7 +308,7 @@ function handlePreToolUse(input, { resolveCli, acquireHookSlot }) {
         }
         return;
       }
-      const child = runGitNexusCli(target, ['augment', '--', pattern], cwd, 7000);
+      const child = runGitNexusCli(target, ['augment', '--', ...patterns], cwd, 7000);
       if (!child.error && child.status === 0) {
         result = extractAugmentContext(child.stderr || '');
       }

@@ -490,8 +490,8 @@ program
   .action(createLbugLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
-  .command('augment <pattern>')
-  .description('Augment a search pattern with knowledge graph context (used by hooks)')
+  .command('augment <pattern...>')
+  .description('Augment search patterns with knowledge graph context (used by hooks)')
   .action(createLbugLazyAction(() => import('./augment.js'), 'augmentCommand'));
 
 program
