@@ -49,7 +49,7 @@ import {
   validateBranchName,
   GitNexusRcError,
 } from './analyze-config.js';
-import type { AnalyzeOptions } from './analyze-options.js';
+import { selectedInstructionFiles, type AnalyzeOptions } from './analyze-options.js';
 import {
   parseCliPreparedAnalysis,
   receiveCliAnalysisContinuation,
@@ -1831,9 +1831,7 @@ const analyzeCommandImpl = async (
     // further down) writes to them, so selfCommitContextFiles can tell a
     // pre-existing unstaged user edit apart from this run's stats refresh
     // and refuse to sweep the former into the latter's commit.
-    const contextFiles = options.instructionFile
-      ? [options.instructionFile]
-      : ['AGENTS.md', 'CLAUDE.md'];
+    const contextFiles = selectedInstructionFiles(options.instructionFile);
     const selfCommitSafety = continuation?.prepared.selfCommitSafety
       ? new Map([
           ['AGENTS.md', continuation.prepared.selfCommitSafety.agentsMd],

@@ -34,6 +34,7 @@ import {
   type Image,
 } from './signature-images.js';
 import { getGitRoot } from '../../../../storage/git.js';
+import { compareCodeUnits } from '../../../../lib/utils.js';
 import { nodeRange, rangeKey } from '../rename-tree-sitter.js';
 
 const run = promisify(execFile);
@@ -425,7 +426,7 @@ export async function findBrokenKeywordCalls(
   };
   const findings: BrokenKeywordCall[] = [];
   const result = (): CallCompatibilityResult => ({
-    findings: findings.sort((a, b) => a.filePath.localeCompare(b.filePath) || a.line - b.line),
+    findings: findings.sort((a, b) => compareCodeUnits(a.filePath, b.filePath) || a.line - b.line),
     complete: skipped.size === 0,
     skipped: [...skipped].map(([filePath, reasons]) => ({
       filePath,
@@ -648,16 +649,14 @@ export async function findBrokenKeywordCalls(
     if (!calls.length) continue;
     const parsed = extract(file, text, tree);
     if (!parsed) continue;
+    // A star import can replace any lexical binding in this file through its runtime __all__.
+    if (parsed.parsedImports.some((imp) => imp.kind === 'wildcard')) {
+      skip(file, 'Wildcard import may change the call binding');
+      continue;
+    }
     const bindings = sourceBindings(parsed);
-    const hasWildcard = parsed.parsedImports.some((i) => i.kind === 'wildcard');
     for (const { call, explicit, unpacked } of calls) {
       const spelling = call.childForFieldName('function')?.text ?? '';
-      // A star import can replace an otherwise exact lexical binding. Its
-      // runtime __all__ is not proven from the current pair of source images.
-      if (hasWildcard) {
-        skip(file, 'Wildcard import may change the call binding');
-        continue;
-      }
       const claims = bindings(call, spelling.split('.', 1)[0]);
       if (!claims) continue;
       const candidates = new Set<SignatureChange>();

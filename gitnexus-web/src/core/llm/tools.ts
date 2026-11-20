@@ -1383,19 +1383,15 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         impactedCount: totalAffected,
         enrichmentTruncated: enrichmentCapped,
       });
-      const scored = scoreImpactRisk({
+      const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
         direction,
         directCount,
         processCount,
         moduleCount: clusterCount,
         impactedCount: totalAffected,
+        incompleteWalk: failedDepths.length > 0,
         unusedAxes,
       });
-      const riskAfterWalk = (value: typeof scored.risk) =>
-        traversalNote && (value === 'LOW' || value === 'MEDIUM') ? 'UNKNOWN' : value;
-      const risk = riskAfterWalk(scored.risk);
-      const riskSharedAxes = riskAfterWalk(scored.riskSharedAxes);
-      const { riskScale } = scored;
 
       // ===== COMPACT TABULAR OUTPUT =====
       const lines: string[] = [

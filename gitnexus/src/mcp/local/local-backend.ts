@@ -194,7 +194,6 @@ import type { UndecidedSatisfactionSummary } from '../../core/ingestion/scope-re
 import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resolution/scope-extraction-failures.js';
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import { VALUE_REF_EDGE_REASON } from '../../core/ingestion/scope-resolution/value-ref-edges.js';
-import { readInitializationImports } from '../../core/lbug/initialization-imports.js';
 import {
   fnLineOf,
   isPdgDegradedLayerStatus,
@@ -217,6 +216,8 @@ import {
   type PdgBridgeEvidenceInfo,
   type PdgLayerStatus,
 } from './pdg-impact.js';
+
+const loadQueryProviders = () => import('../../core/ingestion/languages/query-providers.js');
 
 /**
  * Candidate `type`s that label enrichment newly populates (#2687). Before that,
@@ -3474,6 +3475,7 @@ export class LocalBackend {
     }
     await this.ensureInitialized(repo);
     const rowLimit = 100_001;
+    const { readInitializationImports } = await import('../../core/lbug/initialization-imports.js');
     const rows = await readInitializationImports(repo.lbugPath, rowLimit);
     if (rows.length === rowLimit) {
       return {
@@ -7095,8 +7097,7 @@ export class LocalBackend {
     const hunksByPath = coalesceHunksByPath(fileDiffs);
     // The graph may still use the pre-rename path, while the caller check
     // needs the destination in the selected post-image.
-    const { getQueryProviderForFile, isIndexedSourceFile } =
-      await import('../../core/ingestion/languages/query-providers.js');
+    const { getQueryProviderForFile, isIndexedSourceFile } = await loadQueryProviders();
     const renamedSourcePaths = new Map<string, string>();
     for (const { filePath, oldFilePath } of fileDiffs) {
       const hunks = hunksByPath.get(filePath);
@@ -9004,14 +9005,14 @@ export class LocalBackend {
             frontier.push(rid);
           }
         }
+        const queryProviders =
+          direction === 'upstream' && fileRows.length > 0 ? await loadQueryProviders() : undefined;
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
           const exported = r.isExported ?? r[4];
           const ownerPath = String(r.filePath ?? r[3]);
-          if (direction === 'upstream') {
-            const { getQueryProviderForFile } =
-              await import('../../core/ingestion/languages/query-providers.js');
-            const provider = getQueryProviderForFile(ownerPath);
+          if (queryProviders) {
+            const provider = queryProviders.getQueryProviderForFile(ownerPath);
             const filePrivate = provider?.notExportedIsFilePrivate;
             if (
               exported === false &&
@@ -9803,24 +9804,16 @@ export class LocalBackend {
       enrichmentTruncated:
         !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
     });
-    const {
-      risk: scoredRisk,
-      riskSharedAxes: scoredSharedAxes,
-      riskScale,
-    } = scoreImpactRisk({
+    const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
       direction,
       directCount,
       processCount,
       moduleCount,
       impactedCount: impacted.length,
+      incompleteWalk,
       unusedAxes,
     });
-    // Failed and capped walks both leave counts as lower bounds.
     const traversalCapped = traversalCappedAtDepth !== undefined;
-    const riskAfterWalk = (score: typeof scoredRisk) =>
-      incompleteWalk && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
-    const risk = riskAfterWalk(scoredRisk);
-    const riskSharedAxes = riskAfterWalk(scoredSharedAxes);
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};

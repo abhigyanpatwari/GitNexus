@@ -74,9 +74,6 @@ describe('scoreImpactRisk', () => {
     expect(
       scoreImpactRisk({ ...base, directCount: 1, impactedCount: 201, processCount: 20 }).risk,
     ).toBe('LOW');
-    expect(scoreImpactRisk({ ...base, directCount: 200, impactedCount: 200 }).risk).toBe(
-      'CRITICAL',
-    );
   });
 
   it('preserves UNKNOWN only for an empty upstream walk', () => {
@@ -133,6 +130,7 @@ describe('scoreImpactRisk', () => {
     ];
     const scored = scoreImpactRisk({
       ...base,
+      direction: 'downstream',
       directCount: 2,
       processCount: 4,
       moduleCount: 4,
@@ -142,6 +140,23 @@ describe('scoreImpactRisk', () => {
     expect(scored.risk).toBe('LOW');
     expect(scored.riskSharedAxes).toBe('LOW');
   });
+
+  it.each([
+    [2, 'UNKNOWN'],
+    [5, 'UNKNOWN'],
+    [15, 'HIGH'],
+    [200, 'CRITICAL'],
+  ] as const)(
+    'withholds only unproven scores for an incomplete walk with %i direct callers',
+    (directCount, expected) => {
+      expect(
+        scoreImpactRisk({ ...base, directCount, impactedCount: directCount, incompleteWalk: true }),
+      ).toMatchObject({
+        risk: expected,
+        riskSharedAxes: expected,
+      });
+    },
+  );
 
   it('withholds a low verdict when enrichment fails', () => {
     const scored = scoreImpactRisk({

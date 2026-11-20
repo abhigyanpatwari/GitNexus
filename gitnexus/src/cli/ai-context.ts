@@ -14,6 +14,7 @@ import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { isEnoent } from './editor-targets.js';
+import { selectedInstructionFiles, type InstructionFile } from './analyze-options.js';
 import { logger } from '../core/logger.js';
 
 // ESM equivalent of __dirname
@@ -31,7 +32,7 @@ interface RepoStats {
 
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
-  instructionFile?: 'AGENTS.md' | 'CLAUDE.md';
+  instructionFile?: InstructionFile;
   /** Explicit analysis refreshes displayed counts. Background updates avoid count-only writes. */
   refreshCounts?: boolean;
   noStats?: boolean;
@@ -807,35 +808,22 @@ export async function generateAIContextFiles(
   });
   const createdFiles: string[] = [];
 
-  if (!options?.skipAgentsMd && options?.instructionFile !== 'CLAUDE.md') {
-    // Create AGENTS.md (standard for Cursor, Windsurf, OpenCode, Cline, etc.)
-    const agentsPath = path.join(repoPath, 'AGENTS.md');
-    const agentsResult = await upsertGitNexusSection(
-      agentsPath,
-      content,
-      projectName,
-      stats,
-      options?.noStats,
-      options?.refreshCounts,
-    );
-    createdFiles.push(`AGENTS.md (${agentsResult})`);
-  }
-  if (!options?.skipAgentsMd && options?.instructionFile !== 'AGENTS.md') {
-    // Create CLAUDE.md (for Claude Code)
-    const claudePath = path.join(repoPath, 'CLAUDE.md');
-    const claudeResult = await upsertGitNexusSection(
-      claudePath,
-      content,
-      projectName,
-      stats,
-      options?.noStats,
-      options?.refreshCounts,
-    );
-    createdFiles.push(`CLAUDE.md (${claudeResult})`);
-  }
   if (options?.skipAgentsMd) {
-    createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
-    createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
+    for (const name of selectedInstructionFiles()) {
+      createdFiles.push(`${name} (skipped via --skip-agents-md)`);
+    }
+  } else {
+    for (const name of selectedInstructionFiles(options?.instructionFile)) {
+      const result = await upsertGitNexusSection(
+        path.join(repoPath, name),
+        content,
+        projectName,
+        stats,
+        options?.noStats,
+        options?.refreshCounts,
+      );
+      createdFiles.push(`${name} (${result})`);
+    }
   }
 
   // Install standard skills directly under .claude/skills/ (unless --skip-skills)
@@ -905,9 +893,7 @@ export async function refreshBaseRefLine(
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
   const updated: string[] = [];
-  for (const name of options?.instructionFile
-    ? [options.instructionFile]
-    : ['AGENTS.md', 'CLAUDE.md']) {
+  for (const name of selectedInstructionFiles(options?.instructionFile)) {
     const filePath = path.join(repoPath, name);
     if (!(await fileExists(filePath))) continue;
     let content: string;
@@ -1004,9 +990,7 @@ export async function refreshStatsLine(
   if (!noStats && counts === undefined) return { files: [] };
   const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?=[ \t]*\|)/gm;
   const updated: string[] = [];
-  for (const name of options?.instructionFile
-    ? [options.instructionFile]
-    : ['AGENTS.md', 'CLAUDE.md']) {
+  for (const name of selectedInstructionFiles(options?.instructionFile)) {
     const filePath = path.join(repoPath, name);
     if (!(await fileExists(filePath))) continue;
     let content: string;

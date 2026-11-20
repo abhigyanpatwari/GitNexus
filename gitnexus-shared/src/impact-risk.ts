@@ -20,6 +20,8 @@ export interface ImpactRiskInput {
   processCount: number;
   moduleCount: number;
   impactedCount: number;
+  /** A failed or capped traversal may have missed dependencies. */
+  incompleteWalk?: boolean;
   unusedAxes?: readonly UnusedImpactRiskAxis[];
 }
 
@@ -133,24 +135,21 @@ const INCOMPLETE_SAMPLE_REASONS: ReadonlySet<UnusedImpactRiskReason> = new Set([
   'enrichment-truncated',
 ]);
 
+function riskFromSample(observed: ImpactRisk, incomplete: boolean): ImpactRisk {
+  return incomplete && (observed === 'LOW' || observed === 'MEDIUM') ? 'UNKNOWN' : observed;
+}
+
 export function scoreImpactRisk(input: ImpactRiskInput): ImpactRiskResult {
   const unusedAxes = input.unusedAxes ?? [];
   const observedRisk = score(countsWithUnmeasuredAxesZeroed(input));
+  const sharedRisk = score({ ...input, processCount: 0, moduleCount: 0 });
+  const incompleteWalk = input.incompleteWalk === true;
   const incompleteSample = unusedAxes.some((unused) =>
     INCOMPLETE_SAMPLE_REASONS.has(unused.reason),
   );
-  // Failed queries and truncated samples make observed process/module counts
-  // lower bounds. Preserve any HIGH/CRITICAL warning already proved by those
-  // counts, but never emit a confident LOW/MEDIUM edit gate from an incomplete
-  // enrichment pass.
-  const risk =
-    incompleteSample && (observedRisk === 'LOW' || observedRisk === 'MEDIUM')
-      ? 'UNKNOWN'
-      : observedRisk;
-
   return {
-    risk,
-    riskSharedAxes: score({ ...input, processCount: 0, moduleCount: 0 }),
+    risk: riskFromSample(observedRisk, incompleteWalk || incompleteSample),
+    riskSharedAxes: riskFromSample(sharedRisk, incompleteWalk),
     riskScale: {
       comparableAcrossKinds: unusedAxes.length === 0,
       unusedAxes,

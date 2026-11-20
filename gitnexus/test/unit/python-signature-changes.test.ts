@@ -83,6 +83,22 @@ it('keeps observed callers when notebook call sites cannot be checked', async ()
   expect(result.skipped.map((skip) => skip.filePath)).toEqual(['indexed.ipynb', 'unindexed.ipynb']);
 });
 
+it('orders caller paths by code unit regardless of the host locale', async () => {
+  const paths = ['ä.py', 'z.py', 'a.py', 'B.py'];
+  for (const filePath of paths) {
+    await fs.writeFile(
+      path.join(dir, filePath),
+      'from model import Invoice\nInvoice(legacy=True)\n',
+    );
+  }
+  commitAll(dir, 'add callers');
+  await writeModel('');
+  const calls = await findingsFor(dir, 'all', undefined, [target], async () =>
+    paths.map((filePath) => ({ target: target.id, filePath, relationType: 'CALLS' })),
+  );
+  expect(calls.map((call) => call.filePath)).toEqual(['B.py', 'a.py', 'z.py', 'ä.py']);
+});
+
 it('pairs batched definition images across missing, renamed and unusual paths', async () => {
   await writeModel('');
   const suffix = process.platform === 'win32' ? ' name.py' : '\nname.py';
