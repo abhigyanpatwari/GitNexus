@@ -140,7 +140,7 @@ export const en = {
     'PARTIAL RESULT: changed-symbol or process mapping is incomplete. Do not read this as a clean pre-commit check.',
   'tool.detectChanges.partialCheck':
     'PARTIAL RESULT: change analysis is incomplete. Do not read this as a clean pre-commit check.',
-  'tool.detectChanges.keywordCoverage': 'Python keyword check incomplete: {{examples}}',
+  'tool.detectChanges.keywordCoverage': 'Call compatibility check incomplete: {{examples}}',
   'tool.detectChanges.unmappedSource':
     'No symbols mapped for changed source files: {{files}}. Rebuild the index and inspect the diff; retry alone may not resolve missing or out-of-range symbols.',
   'tool.detectChanges.truncated':

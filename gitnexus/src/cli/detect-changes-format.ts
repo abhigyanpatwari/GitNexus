@@ -37,7 +37,7 @@ type DetectChangesResult = {
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
   unmapped_files?: string[];
-  incompatible_calls?: import('../mcp/local/python-signature-changes.js').BrokenKeywordCall[];
+  incompatible_calls?: import('../core/ingestion/call-compatibility.js').BrokenKeywordCall[];
   incompatible_call_skips?: { filePath?: string; reason: string }[];
 };
 

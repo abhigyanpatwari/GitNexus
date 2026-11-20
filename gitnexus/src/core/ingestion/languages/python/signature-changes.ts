@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type Parser from 'tree-sitter';
 import {
+  isNotebookFilename,
   lookupLexicalName,
   selectClaimsAtScope,
   SupportedLanguages,
@@ -9,52 +10,43 @@ import {
   type ParsedImport,
   type ImportEdge,
 } from 'gitnexus-shared';
-import { pythonProvider } from '../../core/ingestion/languages/python.js';
+import type { LanguageProvider } from '../../language-provider.js';
+import type {
+  BrokenKeywordCall,
+  CallCompatibilityLookup,
+  CallCompatibilityTarget,
+  CallCompatibilityFile,
+  CallCompatibilityResult,
+} from '../../call-compatibility.js';
 import {
   isPythonImportedModule,
   pythonNamespaceReceiverPaths,
   resolvePythonImportTarget,
-} from '../../core/ingestion/languages/python/import-target.js';
-import { extractParsedFile } from '../../core/ingestion/scope-extractor-bridge.js';
-import { ParseTimeoutError, parseSourceSafe } from '../../core/tree-sitter/safe-parse.js';
-import { createParserForLanguage } from '../../core/tree-sitter/parser-loader.js';
-import { callerImages, pythonFiles, readImage, type Image } from './python-signature-images.js';
-import { getGitRoot } from '../../storage/git.js';
-import { nodeRange, rangeKey } from '../../core/ingestion/languages/rename-tree-sitter.js';
+} from './import-target.js';
+import { extractParsedFile } from '../../scope-extractor-bridge.js';
+import { ParseTimeoutError, parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { createParserForLanguage } from '../../../tree-sitter/parser-loader.js';
+import {
+  callerImages,
+  definitionImages,
+  pythonFiles,
+  readImage,
+  type Image,
+} from './signature-images.js';
+import { getGitRoot } from '../../../../storage/git.js';
+import { nodeRange, rangeKey } from '../rename-tree-sitter.js';
 
 const run = promisify(execFile);
 const smallScopeTree = 12_000;
 type Node = Parser.SyntaxNode;
-type Target = { id: string; name: string; type: string; filePath: string };
-type Caller = {
-  target: string;
-  filePath: string;
-  unverified?: 'inherited-constructor' | 'super-initializer';
-};
 type SignatureChange = {
-  target: Target;
+  target: CallCompatibilityTarget;
   removed: Set<string>;
   // When **kwargs is removed, every explicit name outside this set breaks.
   stillAccepted?: Set<string>;
   declaration: string;
   moduleLevel: boolean;
 };
-type ChangedFile = { filePath: string; oldFilePath?: string };
-export type BrokenKeywordCall = {
-  target: string;
-  name: string;
-  filePath: string;
-  line: number;
-  keyword: string;
-  keywords?: string[];
-};
-
-export interface KeywordCheck {
-  findings: BrokenKeywordCall[];
-  complete: boolean;
-  skipped: { filePath: string; reason: string }[];
-}
-
 function groupBy<T>(values: readonly T[], key: (value: T) => string) {
   const groups = new Map<string, T[]>();
   for (const value of values) {
@@ -414,13 +406,14 @@ function tooDenseForScopeExtraction(root: Node): boolean {
 }
 
 export async function findBrokenKeywordCalls(
+  provider: LanguageProvider,
   directory: string,
   scope: string,
   base: string | undefined,
-  targets: Target[],
-  incoming: (ids: string[]) => Promise<Caller[]>,
-  changedFiles: readonly ChangedFile[] = [],
-): Promise<KeywordCheck> {
+  targets: readonly CallCompatibilityTarget[],
+  incoming: CallCompatibilityLookup,
+  changedFiles: readonly CallCompatibilityFile[] = [],
+): Promise<CallCompatibilityResult> {
   const cwd = getGitRoot(directory) ?? directory;
   const [before, after] = await diffImages(cwd, scope, base);
   const parser = await createParserForLanguage(SupportedLanguages.Python);
@@ -431,7 +424,7 @@ export async function findBrokenKeywordCalls(
     skipped.set(file, reasons);
   };
   const findings: BrokenKeywordCall[] = [];
-  const result = (): KeywordCheck => ({
+  const result = (): CallCompatibilityResult => ({
     findings: findings.sort((a, b) => a.filePath.localeCompare(b.filePath) || a.line - b.line),
     complete: skipped.size === 0,
     skipped: [...skipped].map(([filePath, reasons]) => ({
@@ -463,11 +456,28 @@ export async function findBrokenKeywordCalls(
   );
   const oldPaths = new Map(changedFiles.map((f) => [f.filePath, f.oldFilePath ?? f.filePath]));
   const definitions = groupBy(targets, (t) => newPaths.get(t.filePath) ?? t.filePath);
-  for (const [file, symbols] of definitions) {
-    const [oldText, newText] = await Promise.all([
-      readImage(cwd, before, oldPaths.get(file) ?? file),
-      readImage(cwd, after, file),
-    ]);
+  const definitionPaths = [...definitions.keys()];
+  const maxFiles = 4096;
+  const maxSourceBytes = 64 * 1024 * 1024;
+  if (definitionPaths.length > maxFiles)
+    skip(
+      definitionPaths[maxFiles],
+      `Definition scan limit reached; ${definitionPaths.length - maxFiles} files omitted`,
+    );
+  let definitionBytes = 0;
+  for await (const [file, oldText, newText] of definitionImages(
+    cwd,
+    before,
+    after,
+    definitionPaths.slice(0, maxFiles),
+    oldPaths,
+  )) {
+    const symbols = definitions.get(file)!;
+    definitionBytes += Buffer.byteLength(oldText ?? '') + Buffer.byteLength(newText ?? '');
+    if (definitionBytes > maxSourceBytes) {
+      skip(file, 'Definition scan reached the 64 MiB total source limit');
+      break;
+    }
     // No old contract for a new file, and no live calls into a deleted file.
     if (oldText === null || newText === null || (oldText !== undefined && oldText === newText))
       continue;
@@ -531,10 +541,18 @@ export async function findBrokenKeywordCalls(
   }
   if (!changed.size) return result();
   const rows = await incoming([...changed.keys()]);
-  const graphFiles = groupBy(
-    rows.filter((r) => r.filePath.endsWith('.py')),
-    (r) => newPaths.get(r.filePath) ?? r.filePath,
-  );
+  const supportedCallers = rows.filter((row) => {
+    const file = newPaths.get(row.filePath) ?? row.filePath;
+    if (file.endsWith('.py')) return true;
+    skip(file, 'Caller source format is unsupported for keyword checking');
+    return false;
+  });
+  // Edited notebooks may contain new call sites before a CALLS edge exists.
+  for (const { filePath } of changedFiles) {
+    if (isNotebookFilename(filePath))
+      skip(filePath, 'Notebook cells are unsupported for keyword checking');
+  }
+  const graphFiles = groupBy(supportedCallers, (r) => newPaths.get(r.filePath) ?? r.filePath);
   const diffPaths = new Set(
     changedFiles.map((f) => f.filePath).filter((file) => file.endsWith('.py')),
   );
@@ -560,7 +578,7 @@ export async function findBrokenKeywordCalls(
     }
     extractions++;
     remainingNodes -= nodes;
-    const parsed = extractParsedFile(pythonProvider, source, file, undefined, tree);
+    const parsed = extractParsedFile(provider, source, file, undefined, tree);
     if (!parsed) skip(file, 'Python scope extraction failed');
     return parsed ?? null;
   };
@@ -578,7 +596,6 @@ export async function findBrokenKeywordCalls(
     exports.set(file, parsed);
     return parsed;
   };
-  const maxFiles = 4096;
   if (files.length > maxFiles)
     skip(files[maxFiles], `Caller scan limit reached; ${files.length - maxFiles} files omitted`);
   let callerBytes = 0;
@@ -589,20 +606,20 @@ export async function findBrokenKeywordCalls(
     }
     if (!text) continue;
     const graphCallers = graphFiles.get(file) ?? [];
-    if (graphCallers.some((c) => c.unverified)) {
+    if (graphCallers.some((c) => c.relationType === 'EXTENDS')) {
       skip(
         file,
         'Subclass constructor or super().__init__ forwarding may depend on the changed signature',
       );
     }
     callerBytes += Buffer.byteLength(text);
-    if (callerBytes > 64 * 1024 * 1024) {
+    if (callerBytes > maxSourceBytes) {
       skip(file, 'Caller scan reached the 64 MiB total source limit');
       break;
     }
     const graphTargets = diffPaths.has(file)
       ? undefined
-      : new Set(graphCallers.filter((c) => !c.unverified).map((c) => c.target));
+      : new Set(graphCallers.filter((c) => c.relationType === 'CALLS').map((c) => c.target));
     const keywords = graphTargets
       ? new Set([...graphTargets].flatMap((id) => [...(changed.get(id)?.removed ?? [])]))
       : allKeywords;

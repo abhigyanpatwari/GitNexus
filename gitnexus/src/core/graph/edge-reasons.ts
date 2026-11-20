@@ -49,3 +49,8 @@ export const isHeuristicEdgeReason = (reason: string): boolean =>
  * (`queryImportersBatch`).
  */
 export const MODULE_MEMBERSHIP_REASON = 'module-membership';
+
+/** Persisted IMPORTS reason values shared by emitters and initialization-cycle checks. */
+export const DOCUMENTATION_LINK_REASON = 'markdown-link';
+export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
+export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';

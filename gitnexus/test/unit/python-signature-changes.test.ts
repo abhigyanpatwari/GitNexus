@@ -3,8 +3,12 @@ import { execFileSync } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { findBrokenKeywordCalls } from '../../src/mcp/local/python-signature-changes.js';
+import { getProviderForFile } from '../../src/core/ingestion/languages/index.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
+
+const capability = getProviderForFile('model.py')?.callCompatibility;
+if (!capability) throw new Error('Missing named-argument compatibility provider');
+const findBrokenKeywordCalls = capability.check;
 
 const findingsFor = async (...args: Parameters<typeof findBrokenKeywordCalls>) =>
   (await findBrokenKeywordCalls(...args)).findings;
@@ -26,8 +30,19 @@ const incoming = () =>
     {
       target: target.id,
       filePath: 'use.py',
+      relationType: 'CALLS' as const,
     },
   ]);
+
+it('registers the check for supported declarations in source images', () => {
+  expect(capability.acceptsTarget(target)).toBe(true);
+  expect(capability.acceptsTarget({ ...target, type: 'Function' })).toBe(true);
+  expect(capability.acceptsTarget({ ...target, type: 'Property' })).toBe(false);
+  for (const filePath of ['model.ipynb', 'model.pyi']) {
+    expect(capability.acceptsTarget({ ...target, filePath })).toBe(false);
+  }
+  expect(capability.relationTypes).toEqual(['CALLS', 'EXTENDS']);
+});
 
 beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keyword-'));
@@ -48,6 +63,84 @@ it('reports the removed keyword at the aliased constructor call', async () => {
   expect(await findingsFor(dir, 'compare', 'HEAD', [target], incoming)).toEqual([
     { target: target.id, name: 'Invoice', filePath: 'use.py', line: 5, keyword: 'legacy' },
   ]);
+});
+
+it('keeps observed callers when notebook call sites cannot be checked', async () => {
+  await writeModel('');
+  const result = await findBrokenKeywordCalls(
+    dir,
+    'all',
+    undefined,
+    [target],
+    async () => [
+      ...(await incoming()),
+      { target: target.id, filePath: 'indexed.ipynb', relationType: 'CALLS' },
+    ],
+    [{ filePath: 'unindexed.ipynb' }],
+  );
+  expect(result.complete).toBe(false);
+  expect(result.findings.map((call) => call.filePath)).toEqual(['use.py']);
+  expect(result.skipped.map((skip) => skip.filePath)).toEqual(['indexed.ipynb', 'unindexed.ipynb']);
+});
+
+it('pairs batched definition images across missing, renamed and unusual paths', async () => {
+  await writeModel('');
+  const suffix = process.platform === 'win32' ? ' name.py' : '\nname.py';
+  const oldPath = 'before' + suffix;
+  const newPath = 'after' + suffix;
+  const body = 'def extra(legacy=None): pass\n';
+  await fs.writeFile(path.join(dir, oldPath), body);
+  execFileSync('git', ['add', oldPath], { cwd: dir });
+  execFileSync('git', ['commit', '-qm', 'other original definition'], { cwd: dir });
+  execFileSync('git', ['mv', oldPath, newPath], { cwd: dir });
+  await fs.writeFile(path.join(dir, newPath), 'def extra(): pass\n');
+  const extra = {
+    id: 'Function:' + oldPath + ':extra',
+    name: 'extra',
+    type: 'Function',
+    filePath: oldPath,
+  };
+  await fs.writeFile(path.join(dir, 'new.py'), body);
+  execFileSync('git', ['add', '.'], { cwd: dir });
+  const added = { ...extra, id: 'Function:new.py:extra', filePath: 'new.py' };
+  const edges = vi.fn(incoming);
+  const result = await findBrokenKeywordCalls(
+    dir,
+    'staged',
+    undefined,
+    [added, extra, target],
+    edges,
+    [{ filePath: newPath, oldFilePath: oldPath }],
+  );
+  expect(edges).toHaveBeenCalledWith([extra.id, target.id]);
+  expect(result).toMatchObject({ complete: true, findings: [{ filePath: 'use.py' }] });
+});
+
+it('reports an unmerged index entry as unreadable during a batched definition check', async () => {
+  await fs.writeFile(path.join(dir, 'extra.py'), 'def extra(): pass\n');
+  commitAll(dir, 'second definition');
+  const blob = execFileSync('git', ['rev-parse', 'HEAD:model.py'], {
+    cwd: dir,
+    encoding: 'utf8',
+  }).trim();
+  execFileSync('git', ['update-index', '--force-remove', 'model.py'], { cwd: dir });
+  execFileSync('git', ['update-index', '--index-info'], {
+    cwd: dir,
+    input: [1, 2, 3].map((stage) => `100644 ${blob} ${stage}\tmodel.py\n`).join(''),
+  });
+  const extra = {
+    id: 'Function:extra.py:extra',
+    filePath: 'extra.py',
+    name: 'extra',
+    type: 'Function',
+  };
+  for (const scope of ['unstaged', 'staged']) {
+    const result = await findBrokenKeywordCalls(dir, scope, undefined, [target, extra], incoming);
+    expect(result).toMatchObject({
+      complete: false,
+      skipped: [{ filePath: 'model.py', reason: expect.stringContaining('unreadable') }],
+    });
+  }
 });
 
 it('checks lexical bindings when the same caller also contains a nested call to a parameter', async () => {
@@ -291,7 +384,10 @@ it.each(['all', 'staged', 'compare'])(
     execFileSync('git', ['add', '.'], { cwd: dir });
     const base = scope === 'compare' ? 'HEAD^..HEAD' : undefined;
     if (scope === 'compare') commitAll(dir, 'oversized caller');
-    const calls = async () => [...(await incoming()), { target: target.id, filePath: 'big.py' }];
+    const calls = async () => [
+      ...(await incoming()),
+      { target: target.id, filePath: 'big.py', relationType: 'CALLS' as const },
+    ];
     const result = await findBrokenKeywordCalls(dir, scope, base, [target], calls);
     expect(result).toMatchObject({
       complete: false,
@@ -396,7 +492,7 @@ it('records indexed inheritance as unverified while preserving proven direct cal
   );
   const result = await findBrokenKeywordCalls(dir, 'all', undefined, [target], async () => [
     ...(await incoming()),
-    { filePath: 'sub.py', target: target.id, unverified: 'inherited-constructor' },
+    { filePath: 'sub.py', target: target.id, relationType: 'EXTENDS' as const },
   ]);
   expect(result).toMatchObject({
     complete: false,

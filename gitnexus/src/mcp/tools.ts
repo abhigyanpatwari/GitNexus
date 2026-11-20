@@ -367,7 +367,7 @@ INGESTION: graph_integrity reports repository-wide source-reference identity/spa
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
 - undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
-- callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Zig/Python registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
+- callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Coverage depends on the provider’s captured references; bare callback arguments can be missing. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or exact coverage. Use impact() before edits; read gitnexus://repo/{name}/process/{processName} for a full flow.
 
@@ -450,7 +450,7 @@ ${HOT_READ_STALENESS_NOTE}`,
 
 GIT WORKTREE SUPPORT: The server automatically detects its linked git worktree. Pass worktree to review changes in a different checkout.
 
-Mixed diffs count Markdown sections separately. incompatible_calls lists statically resolved Python call sites passing removed keywords. summary.incompatible_call_count includes sites beyond the 1000-row limit. When checked, summary.incompatible_calls_checked records coverage. False means partial: incompatible_call_skips explains why and proven high/critical risk is retained. Dynamic calls and **kwargs expansion are outside this check.
+Mixed diffs count Markdown sections separately. incompatible_calls lists call sites whose language provider verified a removed keyword. summary.incompatible_call_count includes sites beyond the 1000-row limit. When checked, summary.incompatible_calls_checked records coverage. False means partial: incompatible_call_skips explains why and proven high/critical risk is retained. Providers report unresolved argument expansions as coverage limits.
 - partial: true — mapping or keyword coverage is incomplete. Failed symbol queries and unparseable diffs degrade both counts and risk; failed process lookups degrade affected_processes and risk. unmapped_files lists supported source files with no mapped symbols, including source renames without hunks. Rebuild the index and inspect the diff. A zero count with partial:true is inconclusive.
 - truncated: true — a listing was capped. Summary counts include every result observed and may be lower bounds when partial:true.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
@@ -571,7 +571,7 @@ INGESTION: graph_integrity is separate from completeness. "unverified" means sou
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
 - undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
-- callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Zig/Python registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
+- callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Coverage depends on the provider’s captured references; bare callback arguments can be missing. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or apparently exact coverage from an older analyzer.
 
 PDG MODE: mode:"pdg" requires analyze --pdg; incompatible with crossDepth/@group. relationTypes/minConfidence filter inter-symbol reach. A statement-anchored slice uses a 1-based line inside the target; omit line for whole-symbol dependence.

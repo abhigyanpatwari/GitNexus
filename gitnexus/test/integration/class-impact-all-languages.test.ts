@@ -79,10 +79,14 @@ function nonJvmNodes(
 
 // ─── Combined seed for all languages ─────────────────────────────────────────
 
+const registryBytes = Buffer.from(
+  '# coding: latin-1\nfrom db.database_client import DatabaseClient\nregistry = [DatabaseClient] # café',
+  'latin1',
+);
 const pythonImporters = {
   'except.py':
     'from db.database_client import DatabaseClient\ntry: pass\nexcept DatabaseClient: pass',
-  'registry.py': 'from db.database_client import DatabaseClient\nregistry = [DatabaseClient]',
+  'registry.py': registryBytes.toString('utf8'), // File.content uses the ingestion decoder.
   'star_reexport.py': 'from db.database_client import\\\n  *',
   'method.py': 'from db.database_client import DatabaseClient as Client\nClient.from_dict({})',
   'enum_member.py': 'import db.database_client as m\nstatus = m.DatabaseClient.OPEN',
@@ -133,6 +137,8 @@ const SEED = [
     'src/routes/auth.ts',
     'src/app.ts',
   ),
+
+  `MATCH (f:File {id:'ts:file:app'}) SET f.content = 'use ALL'`,
 
   // JavaScript — non-JVM
   ...nonJvmNodes(
@@ -343,6 +349,44 @@ withTestLbugDB(
       backend = (handle as any)._backend;
     });
 
+    it('dispatches type import attribution through the selected provider', async () => {
+      const providers = await import('../../src/core/ingestion/languages/query-providers.js');
+      const lookup = providers.getQueryProviderForFile;
+      const owner = 'src/auth/AuthService.ts';
+      const classify = vi.fn(
+        async (_file: string, _source: string, _imports: ReadonlySet<string>) => false,
+      );
+      const createClassifier = vi.fn(async () => classify);
+      const providerLookup = vi
+        .spyOn(providers, 'getQueryProviderForFile')
+        .mockImplementation((file) => {
+          const registered = lookup(file);
+          if (!registered || file !== owner) return registered;
+          return {
+            ...registered,
+            typeImportAttribution: {
+              supportsFile: (filePath) => filePath.endsWith('.ts'),
+              implicitImportSyntax: { marker: 'ALL', pattern: 'ALL' },
+              createClassifier,
+            },
+          };
+        });
+      try {
+        const result = await backend.callTool('impact', {
+          target: 'AuthService',
+          direction: 'upstream',
+          maxDepth: 1,
+        });
+        expect(createClassifier).toHaveBeenCalledWith(
+          expect.objectContaining({ ownerPath: owner, name: 'AuthService' }),
+        );
+        expect(classify).toHaveBeenCalledWith('src/app.ts', 'use ALL', new Set([owner]));
+        expect(result.byDepth[1].map((row: { name: string }) => row.name)).toEqual(['loginUser']);
+      } finally {
+        providerLookup.mockRestore();
+      }
+    });
+
     it('includes named, aliased, qualified and wildcard class imports and excludes sibling-only files', async () => {
       const result = await backend.callTool('impact', {
         target: 'DatabaseClient',
@@ -374,11 +418,13 @@ withTestLbugDB(
       expect(result).toMatchObject({ risk: 'UNKNOWN', partial: true, impactedCount: 0 });
     });
 
-    it('withholds risk if the checkout differs from the indexed importer and retains other proved rows', async () => {
+    it('withholds a changed importer even when both byte sequences decode to the same text', async () => {
       const file = path.join(handle.tmpHandle.dbPath, 'checkout/src/registry.py');
-      const source = await fs.readFile(file, 'utf8');
+      const changed = Buffer.from(registryBytes);
+      changed[changed.length - 1] = 0xe8;
+      expect(changed.toString('utf8')).toBe(registryBytes.toString('utf8'));
       try {
-        await fs.appendFile(file, '\n# local edit');
+        await fs.writeFile(file, changed);
         const result = await backend.callTool('impact', {
           target: 'DatabaseClient',
           direction: 'upstream',
@@ -390,7 +436,7 @@ withTestLbugDB(
         expect(names).toContain('method.py');
         expect(names).not.toContain('registry.py');
       } finally {
-        await fs.writeFile(file, source);
+        await fs.writeFile(file, registryBytes);
       }
     });
 
@@ -525,9 +571,11 @@ withTestLbugDB(
       const fileHashes: Record<string, string> = {};
       const sources = {
         ...pythonImporters,
+        'registry.py': registryBytes,
         'db/database_client.py':
           "__all__ = ['DatabaseClient']\nclass DatabaseClient: pass\nclass ShadowOnly: pass",
         'app.py': 'from db.database_client import Order',
+        'app.ts': 'use ALL',
       };
       for (const [name, source] of Object.entries(sources)) {
         const filePath = `src/${name}`;

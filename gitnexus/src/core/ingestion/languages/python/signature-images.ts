@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import { lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { readSafeBounded } from '../../core/group/extractors/fs-utils.js';
+import { readSafeBounded } from '../../../group/extractors/fs-utils.js';
 
 const run = promisify(execFile);
 const timeout = 15_000;
@@ -74,6 +74,26 @@ function gitBatch(
   });
 }
 
+// cat-file also returns "missing" for an unmerged index or an inaccessible
+// object. Only the selected tree/index can confirm an ordinary absent path.
+async function confirmedMissing(cwd: string, rev: string, paths: string[]): Promise<string[]> {
+  if (!paths.length) return [];
+  try {
+    const list = rev
+      ? ['ls-tree', '-z', '--full-tree', '--name-only', rev]
+      : ['ls-files', '-z', '--cached'];
+    const { stdout } = await run('git', ['--literal-pathspecs', ...list, '--', ...paths], {
+      cwd,
+      timeout,
+      maxBuffer: 2 * 1024 * 1024,
+    });
+    const present = new Set(stdout.split('\0'));
+    return paths.filter((file) => !present.has(file));
+  } catch {
+    return [];
+  }
+}
+
 export async function* callerImages(
   cwd: string,
   rev: string | undefined,
@@ -88,33 +108,46 @@ export async function* callerImages(
       continue;
     }
     const regular = group.filter((file) => !/[\r\n]/.test(file));
-    for (const file of group) {
-      if (/[\r\n]/.test(file)) yield [file, await readImage(cwd, rev, file)];
-    }
-    if (!regular.length) continue;
-    const metadata = await gitBatch(
-      cwd,
-      '--batch-check',
-      regular.map((file) => rev + ':' + file),
-      2 * 1024 * 1024,
-    );
-    const lines = metadata.toString().split('\n');
-    const blobs: { file: string; oid: string; bytes: number }[] = [];
+    const lines = regular.length
+      ? (
+          await gitBatch(
+            cwd,
+            '--batch-check',
+            regular.map((file) => rev + ':' + file),
+            2 * 1024 * 1024,
+          )
+        )
+          .toString()
+          .split('\n')
+      : [];
+    const headers = new Map<string, { oid: string; bytes: number } | null>();
+    const missing: string[] = [];
     for (const [index, file] of regular.entries()) {
       const header = /^([a-f\d]+) blob (\d+)$/.exec(lines[index]);
-      if (!header || Number(header[2]) > sourceLimit) {
-        yield [file, lines[index]?.endsWith(' missing') ? null : undefined];
-      } else {
-        blobs.push({ file, oid: header[1], bytes: Number(header[2]) });
-      }
+      if (header && Number(header[2]) <= sourceLimit)
+        headers.set(file, { oid: header[1], bytes: Number(header[2]) });
+      else if (lines[index]?.endsWith(' missing')) missing.push(file);
     }
-    for (let start = 0; start < blobs.length; ) {
-      let end = start;
+    for (const file of await confirmedMissing(cwd, rev, missing)) headers.set(file, null);
+    // Emit in request order, including missing and unusual paths, so two
+    // revisions can be compared in lockstep without retaining whole images.
+    for (let index = 0; index < group.length; ) {
+      const file = group[index];
+      const header = headers.get(file);
+      if (!header) {
+        const missing = header === null ? null : undefined;
+        yield [file, /[\r\n]/.test(file) ? await readImage(cwd, rev, file) : missing];
+        index++;
+        continue;
+      }
+      const batch: { file: string; oid: string; bytes: number }[] = [];
       let bytes = 0;
-      do {
-        bytes += blobs[end++].bytes;
-      } while (end < blobs.length && bytes + blobs[end].bytes <= sourceLimit);
-      const batch = blobs.slice(start, end);
+      while (index < group.length) {
+        const header = headers.get(group[index]);
+        if (!header || bytes + header.bytes > sourceLimit) break;
+        batch.push({ file: group[index++], ...header });
+        bytes += header.bytes;
+      }
       // Object IDs pin content to the sizes just checked even if the index moves.
       const contents = await gitBatch(
         cwd,
@@ -135,8 +168,41 @@ export async function* callerImages(
         yield [blob.file, contents.toString('utf8', offset, offset + blob.bytes)];
         offset += blob.bytes + 1;
       }
-      start = end;
     }
+  }
+}
+
+/** Preserve rename pairs while keeping only a bounded batch from each revision in memory. */
+export async function* definitionImages(
+  cwd: string,
+  before: string,
+  after: string | undefined,
+  paths: string[],
+  oldPaths: ReadonlyMap<string, string>,
+): AsyncGenerator<[string, Image, Image]> {
+  if (paths.length === 1) {
+    const file = paths[0];
+    const [oldText, newText] = await Promise.all([
+      readImage(cwd, before, oldPaths.get(file) ?? file),
+      readImage(cwd, after, file),
+    ]);
+    yield [file, oldText, newText];
+    return;
+  }
+  const old = callerImages(
+    cwd,
+    before,
+    paths.map((file) => oldPaths.get(file) ?? file),
+  );
+  try {
+    for await (const [file, newText] of callerImages(cwd, after, paths)) {
+      const entry = await old.next();
+      if (entry.done || entry.value[0] !== (oldPaths.get(file) ?? file))
+        throw new Error('Git returned mismatched definition paths');
+      yield [file, entry.value[1], newText];
+    }
+  } finally {
+    await old.return(undefined);
   }
 }
 

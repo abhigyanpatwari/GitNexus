@@ -141,10 +141,10 @@ describe('search augmentation through the public hook', () => {
 
 describe('stale-index hints', () => {
   it.each([
-    ['only Markdown changed', null, [], false],
-    ['code changed', new Error('different'), [], true],
-    ['the index was already incomplete', null, ['scope-extraction-failed'], true],
-  ] as const)('%s', async (_name, diffError, incompleteReasons, expectHint) => {
+    ['commit comparison fails', 'diff', []],
+    ['working tree check times out', 'status', []],
+    ['the index was already incomplete', '', ['scope-extraction-failed']],
+  ] as const)('keeps the hint when %s', async (_name, failingCommand, incompleteReasons) => {
     const base = 'a'.repeat(40);
     const head = 'b'.repeat(40);
     const status = {
@@ -153,18 +153,16 @@ describe('stale-index hints', () => {
       current: { commit: head },
     };
     execFileMock.mockImplementation(
-      (cmd: string, _argv: string[], _options: unknown, callback: Callback) =>
-        cmd === 'git' ? callback(diffError, '', '') : callback(null, JSON.stringify(status), ''),
+      (cmd: string, argv: string[], _options: unknown, callback: Callback) => {
+        if (cmd !== 'git') return callback(null, JSON.stringify(status), '');
+        callback(argv.includes(failingCommand) ? new Error('git failed') : null, '', '');
+      },
     );
     const result = await invoke('bash', { command: 'git commit -m docs' });
-    expect(result !== 'hits').toBe(expectHint);
-    if (incompleteReasons.length === 0) {
-      expect(execFileMock.mock.calls[1][1]).toEqual(
-        expect.arrayContaining(['diff', '--no-relative', '--no-renames', base, head]),
-      );
-    } else {
-      expect(execFileMock).toHaveBeenCalledTimes(1);
-    }
+    expect(result).toContain('index is stale');
+    expect(execFileMock).toHaveBeenCalledTimes(
+      incompleteReasons.length > 0 ? 1 : failingCommand === 'diff' ? 2 : 3,
+    );
   });
 
   it.each([

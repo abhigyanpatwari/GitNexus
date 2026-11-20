@@ -868,11 +868,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           p.includes('.test.') ||
           p.includes('.spec.') ||
           p.includes('__tests__') ||
-          p.includes('__mocks__') ||
-          p.endsWith('.test.ts') ||
-          p.endsWith('.test.tsx') ||
-          p.endsWith('.spec.ts') ||
-          p.endsWith('.spec.tsx')
+          p.includes('__mocks__')
         );
       };
 

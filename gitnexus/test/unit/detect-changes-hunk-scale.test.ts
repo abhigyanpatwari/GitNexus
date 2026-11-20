@@ -265,14 +265,96 @@ function makeKeywordChange(addSeparator = false) {
           id,
         },
       ];
-    if (String(query).includes("'CALLS', 'EXTENDS'") && params.ids.includes(id))
-      return [{ target: id, filePath: 'use.py' }];
+    if (
+      String(query).includes('r.type AS relationType') &&
+      params.ids.includes(id) &&
+      params.relationTypes.includes('CALLS')
+    )
+      return [{ target: id, filePath: 'use.py', relationType: 'CALLS' }];
     return [];
   });
   return dir;
 }
 
-describe('Python keyword compatibility in detect_changes', () => {
+describe('provider call compatibility in detect_changes', () => {
+  it('runs each registered checker and keeps findings when a different checker fails', async () => {
+    const dir = makeRepo(['a.ts', 'b.rb', 'c.go'], 2);
+    for (const file of ['a.ts', 'b.rb', 'c.go']) editEveryNthLine(dir, file, 2, 1);
+    registerRepo(dir);
+    mockSymbolRows(
+      ['a.ts', 'b.rb', 'c.go'].map((filePath) => ({
+        filePath,
+        name: 'run',
+        startLine: 0,
+        endLine: 1,
+      })),
+    );
+    const registry = await import('../../src/core/ingestion/languages/query-providers.js');
+    const base = registry.getQueryProviderForFile('a.ts')!;
+    const found = {
+      target: 'Function:a.ts:run',
+      name: 'run',
+      keyword: 'arg',
+      filePath: 'caller.ts',
+      line: 2,
+    };
+    const check = vi.fn().mockResolvedValue({ findings: [found], complete: true, skipped: [] });
+    const failing = vi.fn().mockRejectedValue(new Error('provider check failed'));
+    const capability = { acceptsTarget: () => true, relationTypes: [] as const, check };
+    const resolver = vi
+      .spyOn(registry, 'getQueryProviderForFile')
+      .mockImplementation((file) =>
+        file === 'a.ts'
+          ? { ...base, callCompatibility: capability }
+          : file === 'b.rb'
+            ? { ...base, callCompatibility: { ...capability, check: failing } }
+            : base,
+      );
+    try {
+      expect(await runDetectChanges()).toMatchObject({
+        partial: true,
+        summary: {
+          risk_level: 'high',
+          incompatible_call_count: 1,
+          incompatible_calls_checked: false,
+        },
+        incompatible_calls: [found],
+        incompatible_call_skips: [{ reason: 'signature-check-failed' }],
+      });
+      expect(
+        check.mock.calls.map((args) =>
+          args[3].map((target: { filePath: string }) => target.filePath),
+        ),
+      ).toEqual([['a.ts']]);
+      expect(failing).toHaveBeenCalledTimes(1);
+    } finally {
+      resolver.mockRestore();
+    }
+  });
+
+  it('leaves providers without call compatibility out of the subcheck', async () => {
+    const dir = makeRepo(['a.ts'], 2);
+    editEveryNthLine(dir, 'a.ts', 2, 1);
+    registerRepo(dir);
+    mockSymbolRows([{ filePath: 'a.ts', name: 'run', startLine: 0, endLine: 1 }]);
+    const result = await runDetectChanges();
+    expect(result.summary).not.toHaveProperty('incompatible_calls_checked');
+    expect(result.partial).toBeUndefined();
+  });
+
+  it('maps an edited source rename to the indexed symbol when both paths share a provider', async () => {
+    const dir = makeRepo(['before.ts'], 12);
+    execFileSync('git', ['mv', 'before.ts', 'after.ts'], { cwd: dir });
+    editEveryNthLine(dir, 'after.ts', 12, 12);
+    execFileSync('git', ['add', 'after.ts'], { cwd: dir });
+    registerRepo(dir);
+    mockSymbolRows([{ filePath: 'before.ts', name: 'run', startLine: 0, endLine: 11 }]);
+    const result = await runDetectChanges('staged');
+    expect(result.changed_symbols).toMatchObject([{ name: 'run' }]);
+    expect(result.unmapped_files).toBeUndefined();
+    expect(result.partial).toBeUndefined();
+  });
+
   it.each([false, true])(
     'promotes an incompatible call to high risk (addition-only: %s)',
     async (addSeparator) => {
@@ -324,7 +406,7 @@ describe('Python keyword compatibility in detect_changes', () => {
 
   it('reports a failed check without claiming the indexed caller is safe', async () => {
     makeKeywordChange();
-    const helper = await import('../../src/mcp/local/python-signature-changes.js');
+    const helper = await import('../../src/core/ingestion/languages/python/signature-changes.js');
     const spy = vi.spyOn(helper, 'findBrokenKeywordCalls').mockRejectedValue(new Error('fixture'));
     try {
       expect(await runDetectChanges()).toMatchObject({
@@ -339,7 +421,7 @@ describe('Python keyword compatibility in detect_changes', () => {
 
   it('caps the listing while counting every observed incompatible call site', async () => {
     makeKeywordChange();
-    const helper = await import('../../src/mcp/local/python-signature-changes.js');
+    const helper = await import('../../src/core/ingestion/languages/python/signature-changes.js');
     const findings = Array.from({ length: 1001 }, (_, i) => ({
       target: 'Function:model.py:charge',
       name: 'charge',

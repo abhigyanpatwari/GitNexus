@@ -6,6 +6,7 @@
  * cross-file links.
  */
 
+import { DOCUMENTATION_LINK_REASON } from '../graph/edge-reasons.js';
 import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
 import { toZeroBasedLine } from './utils/line-base.js';
@@ -156,7 +157,7 @@ export const processMarkdown = (
           sourceId: fileNodeId,
           targetId: targetFileId,
           confidence: 0.8,
-          reason: 'markdown-link',
+          reason: DOCUMENTATION_LINK_REASON,
         });
         totalLinks++;
       }

@@ -130,7 +130,7 @@ export const zhCN = {
   'tool.detectChanges.partial':
     '结果不完整：变更符号或流程映射不完整。请勿将其视为通过的提交前检查。',
   'tool.detectChanges.partialCheck': '结果不完整：变更分析未完成。请勿将其视为通过的提交前检查。',
-  'tool.detectChanges.keywordCoverage': 'Python 关键字检查不完整：{{examples}}',
+  'tool.detectChanges.keywordCoverage': '调用兼容性检查不完整：{{examples}}',
   'tool.detectChanges.unmappedSource':
     '变更源码文件未映射到符号：{{files}}。请重建索引并检查 diff；仅重试可能无法解决符号缺失或源码范围不匹配。',
   'tool.detectChanges.truncated':
