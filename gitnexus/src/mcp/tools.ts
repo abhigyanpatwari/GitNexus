@@ -451,7 +451,7 @@ ${HOT_READ_STALENESS_NOTE}`,
 GIT WORKTREE SUPPORT: The server automatically detects its linked git worktree. Pass worktree to review changes in a different checkout.
 
 Mixed diffs count Markdown sections separately. incompatible_calls lists call sites whose language provider verified a removed keyword. summary.incompatible_call_count includes sites beyond the 1000-row limit. When checked, summary.incompatible_calls_checked records coverage. False means partial: incompatible_call_skips explains why and proven high/critical risk is retained. Providers report unresolved argument expansions as coverage limits.
-- partial: true — mapping or keyword coverage is incomplete. Failed symbol queries and unparseable diffs degrade both counts and risk; failed process lookups degrade affected_processes and risk. unmapped_files lists supported source files with no mapped symbols, including source renames without hunks. Rebuild the index and inspect the diff. A zero count with partial:true is inconclusive.
+- partial: true — symbol mapping, process lookup, or keyword checking was incomplete. Failed symbol queries and unparseable diffs can affect both counts and risk. A failed process lookup alone leaves changed_count intact but can undercount affected processes and affect risk. unmapped_files lists supported source files with no mapped symbols, including source renames without hunks. Rebuild the index and inspect the diff. A zero count with partial:true is inconclusive.
 - truncated: true — a listing was capped. Summary counts include every result observed and may be lower bounds when partial:true.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {

@@ -936,6 +936,35 @@ describe('#2915 detect_changes hunk scaling', () => {
     expect(result.summary.risk_level).toBe('unknown');
   });
 
+  it('keeps the mapped symbol count when only process lookup fails', async () => {
+    const file = 'main.ts';
+    const repoDir = makeRepo([file], 1);
+    editEveryNthLine(repoDir, file, 1, 1);
+    registerRepo(repoDir);
+    lbugMocks.executeParameterized.mockImplementation(async (_db: string, query: string) => {
+      if (query.includes('STEP_IN_PROCESS')) throw new Error('injected process lookup failure');
+      if (!query.includes('diffPath')) return [];
+      return [
+        {
+          id: 'Function:main.ts:main',
+          name: 'main',
+          type: 'Function',
+          diffPath: file,
+          filePath: file,
+          startLine: 0,
+          endLine: 0,
+        },
+      ];
+    });
+
+    expect(await runDetectChanges()).toMatchObject({
+      partial: true,
+      summary: { changed_count: 1, affected_count: 0, risk_level: 'unknown' },
+      changed_symbols: [{ name: 'main' }],
+      affected_processes: [],
+    });
+  });
+
   it('reports a run whose every batch failed as unknown risk, not a clean zero', async () => {
     const repoDir = makeRepo(['code.py'], 4);
     writeFileSync(path.join(repoDir, 'code.py'), 'line 1 changed\nline 2\nline 3\nline 4\n');
