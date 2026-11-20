@@ -70,6 +70,7 @@ describe('Graph-RAG impact risk contract', () => {
     if (rows === limit) {
       expect(output).toContain('RISK: LOW');
       expect(output).not.toContain('Incomplete traversal');
+      expect(output).toContain('GRAPH ANALYSIS COMPLETE');
     } else {
       expect(output).toContain('RISK: UNKNOWN');
       expect(output).toContain('Row limit exceeded at d=' + depth);
@@ -132,6 +133,7 @@ describe('Graph-RAG impact risk contract', () => {
     expect(output).not.toContain('AFFECTED PROCESSES:\n- None found');
     expect(output).toContain('RISK: UNKNOWN');
     expect(output).toContain('risk is unresolved because enrichment failed');
+    expect(output).not.toContain('GRAPH ANALYSIS COMPLETE');
     expect(output).toContain('- Processes affected: unavailable');
   });
 
@@ -141,7 +143,7 @@ describe('Graph-RAG impact risk contract', () => {
         return [{ id: 'target-id', nodeType: 'Function', filePath: 'src/target.ts' }];
       }
       if (query.includes('MATCH (affected)-[r:CodeRelation]->(target)')) {
-        return Array.from({ length: 200 }, (_, i) => ({
+        return Array.from({ length: 301 }, (_, i) => ({
           id: 'caller-' + i,
           name: 'caller' + i,
           nodeType: 'Function',
@@ -172,6 +174,9 @@ describe('Graph-RAG impact risk contract', () => {
     });
 
     expect(output).toContain('RISK: CRITICAL');
+    expect(output).toContain('Shared-axes: CRITICAL');
+    expect(output).toContain('Direct callers: at least 300');
+    expect(output).toContain('Row limit exceeded at d=1');
     expect(output).toContain('AFFECTED CLUSTERS:\n- Unavailable (enrichment query failed)');
     expect(output).toContain('- Processes affected: 5');
     expect(output).toContain('- Clusters affected: unavailable');
@@ -210,6 +215,7 @@ describe('Graph-RAG impact risk contract', () => {
 
     expect(output).toContain('- Core (classification-unavailable, 1 symbols)');
     expect(output).toContain('direct/indirect cluster classification is unavailable');
+    expect(output).not.toContain('GRAPH ANALYSIS COMPLETE');
     expect(output).not.toContain('process/module axes were unused');
   });
 
@@ -279,6 +285,7 @@ describe('Graph-RAG impact risk contract', () => {
     });
 
     expect(output).toContain('process/cluster enrichment is partial (first 500 symbols)');
+    expect(output).not.toContain('GRAPH ANALYSIS COMPLETE');
     expect(output).toContain('enrichment-truncated');
     expect(output).not.toContain('enrichment-budget-exhausted');
   });

@@ -1239,7 +1239,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
       const totalAffected = allNodeIds.length;
 
-      const traversalNotes = [];
+      const traversalNotes: string[] = [];
       if (failedDepths.length)
         traversalNotes.push(
           `Failed depth queries: ${failedDepths.join(', ')}. Retry before editing.`,
@@ -1524,7 +1524,15 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       }
 
       // Compact footer
-      if (!incompleteWalk) lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
+      if (
+        !incompleteWalk &&
+        !enrichmentCapped &&
+        !processQueryFailed &&
+        !clusterQueryFailed &&
+        !clusterClassificationFailed
+      ) {
+        lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
+      }
       lines.push(`⚠️ Optional: grep("${target}") for dynamic patterns`);
       if (multipleMatchWarning) {
         lines.push(multipleMatchWarning);
