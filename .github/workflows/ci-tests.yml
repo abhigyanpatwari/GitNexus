@@ -1089,6 +1089,7 @@ jobs:
           set -euo pipefail
           npm ci
           npm run build
+          node test/compat/watch-backend.mjs chokidar-v6
         working-directory: gitnexus
       # Switch to the engines-floor Node AFTER building — native deps built on
       # 22.x load across the whole 22.x ABI line, and nothing installs after this
@@ -1103,6 +1104,7 @@ jobs:
           set -euo pipefail
           node --version
           node --version | grep -q '^v22\.18\.' || { echo "expected Node 22.18.x" >&2; exit 1; }
+          node test/compat/watch-backend.mjs chokidar
           for m in \
             core/embeddings/runtime-install \
             core/embeddings/onnxruntime-node-resolver \

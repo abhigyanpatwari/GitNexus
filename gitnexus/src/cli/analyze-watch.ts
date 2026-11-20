@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { getHeapStatistics } from 'node:v8';
 import { watchFile, unwatchFile } from 'node:fs';
-import { watch, type FSWatcher } from 'chokidar';
+import { loadWatch, type FSWatcher } from './watch-backend.js';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
 import {
   analyzeFailureMayHaveMutatedLiveIndex,
@@ -317,6 +317,7 @@ export async function startWatchFileLoop(
   /** Absolute `GITNEXUS_RC` path; its edits, replacements and removal reload config. */
   externalConfigPath?: string,
 ): Promise<WatchFileLoop> {
+  const watch = await loadWatch();
   let ignorePath = await createWatchIgnorePredicate(repoPath);
   let ignoreControlValid = true;
   let rearmPending = false;

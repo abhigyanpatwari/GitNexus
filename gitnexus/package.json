@@ -88,7 +88,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
     "busboy": "^1.6.0",
-    "chokidar": "^6.0.0",
+    "chokidar": "^5.0.0",
     "cli-progress": "^3.12.0",
     "commander": "^15.0.0",
     "cors": "^2.8.5",
@@ -124,6 +124,9 @@
     "tree-sitter-rust": "0.24.0",
     "tree-sitter-typescript": "0.23.2",
     "uuid": "^14.0.0"
+  },
+  "optionalDependencies": {
+    "chokidar-v6": "npm:chokidar@^6.0.0"
   },
   "gitnexusEmbeddingStack": {
     "@huggingface/transformers": "^4.1.0",
