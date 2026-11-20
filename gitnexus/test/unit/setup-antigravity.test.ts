@@ -258,6 +258,9 @@ describe('setupAntigravity', () => {
     await expect(
       fs.access(path.join(destDir, 'git-mutation-command.cjs')),
     ).resolves.toBeUndefined();
+    await expect(
+      fs.access(path.join(destDir, 'search-command-pattern.cjs')),
+    ).resolves.toBeUndefined();
   });
 
   // The hook entry of an earlier setup runs whatever adapter is on disk, and the
@@ -438,6 +441,7 @@ const WIN_RM_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'win-rm-list-json.
 const RESOLVE_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'resolve-analyze-cmd.cjs');
 const REGISTRY_QUERY_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'registry-query.cjs');
 const GIT_MUTATION_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'git-mutation-command.cjs');
+const SEARCH_PATTERN_SRC = path.join(PROJECT_ROOT, 'hooks', 'claude', 'search-command-pattern.cjs');
 
 async function stageAdapter(): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-antigravity-adapter-'));
@@ -453,6 +457,7 @@ async function stageAdapter(): Promise<string> {
   await fs.copyFile(RESOLVE_SRC, path.join(tmp, 'resolve-analyze-cmd.cjs'));
   await fs.copyFile(REGISTRY_QUERY_SRC, path.join(tmp, 'registry-query.cjs'));
   await fs.copyFile(GIT_MUTATION_SRC, path.join(tmp, 'git-mutation-command.cjs'));
+  await fs.copyFile(SEARCH_PATTERN_SRC, path.join(tmp, 'search-command-pattern.cjs'));
   return path.join(tmp, 'gitnexus-antigravity-hook.cjs');
 }
 

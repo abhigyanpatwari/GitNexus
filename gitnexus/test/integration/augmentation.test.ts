@@ -72,7 +72,7 @@ vi.mock('../../src/storage/storage-resolver.js', async (importOriginal) => {
   };
 });
 
-let augment: (pattern: string, cwd?: string) => Promise<string>;
+let augment: (patterns: string | readonly string[], cwd?: string) => Promise<string>;
 let augmentNoFts: (pattern: string, cwd?: string) => Promise<string>;
 
 withTestLbugDB(
@@ -85,6 +85,21 @@ withTestLbugDB(
         expect(result.length).toBeGreaterThan(0);
         expect(result).toContain('[GitNexus]');
         expect(result).toContain('login');
+      });
+
+      // `rg -e login -e hash` searches for both; each pattern gets its own lookup.
+      it('returns symbols for every pattern it is given', async () => {
+        const result = await augment(['login', 'hash'], handle.dbPath);
+
+        expect(result).toContain('[GitNexus]');
+        const lines = result.split('\n');
+        expect(lines).toContain('hash (src/utils.ts)');
+        expect(lines).toContain('login (src/auth.ts)');
+      });
+
+      it('skips patterns shorter than 3 characters in a list', async () => {
+        expect(await augment(['ab', 'hash'], handle.dbPath)).toContain('hash (src/utils.ts)');
+        expect(await augment(['ab', ''], handle.dbPath)).toBe('');
       });
 
       it('returns empty string for a non-matching pattern', async () => {
