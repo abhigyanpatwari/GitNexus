@@ -6,6 +6,7 @@ import {
   buildModuleScopeIndex,
   buildQualifiedNameIndex,
   createEagerImportVisibility,
+  lookupLexicalName,
   type BindingRef,
   type ImportEdge,
   type Scope,
@@ -14,7 +15,10 @@ import {
 import { resolveReferenceSites } from '../../../src/core/ingestion/resolve-references.js';
 import { resolveCallerGraphId } from '../../../src/core/ingestion/scope-resolution/graph-bridge/ids.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
-import { withCachedNameLookups } from '../../../src/core/ingestion/scope-resolution/scope/name-lookup-cache.js';
+import {
+  cachedNameLookupStart,
+  withCachedNameLookups,
+} from '../../../src/core/ingestion/scope-resolution/scope/name-lookup-cache.js';
 import { lookupNameClaim } from '../../../src/core/ingestion/scope-resolution/scope/walkers.js';
 
 function fixture(depth: number) {
@@ -267,6 +271,55 @@ describe('read-only name lookup navigation', () => {
       expect(measure(depth, withoutCache)).toBe((depth * (depth + 3)) / 2);
       expect(measure(depth, withCachedNameLookups)).toBe(2 * depth + 1);
     }
+  });
+
+  it('walks nested scopes once for an outer name even with unrelated claims and imports', () => {
+    for (const depth of [24, 96]) {
+      const f = fixture(depth);
+      for (const scope of f.scopes.slice(1)) {
+        const alias: ImportEdge = {
+          kind: 'named',
+          localName: 'other',
+          targetFile: 'other.dart',
+          targetExportedName: 'x',
+        };
+        Object.assign(scope, {
+          nameClaims: [{ name: 'local', kind: 'blocked', range: scope.range }],
+          imports: [alias],
+        });
+        f.imports.set(scope.id, [{ ...alias, localName: 'finalized' }]);
+      }
+      withCachedNameLookups(f.indexes, () => {
+        for (let i = depth; i > 0; i--) {
+          expect(lookupNameClaim(`scope${i}`, 'items', f.indexes).scope?.id).toBe('scope0');
+        }
+      });
+      expect(f.reads()).toBeLessThanOrEqual(2 * depth + 1);
+    }
+  });
+
+  it('preserves names visible in only one of the raw and finalized import lists', () => {
+    const f = fixture(8);
+    const mid = f.scopes[4]!;
+    const raw: ImportEdge = {
+      kind: 'namespace',
+      localName: 'raw',
+      targetFile: 'raw.dart',
+      targetExportedName: '*',
+    };
+    Object.assign(mid, { imports: [raw] });
+    f.imports.set(mid.id, [{ ...raw, localName: 'finalized', targetFile: 'final.dart' }]);
+    withCachedNameLookups(f.indexes, () => {
+      for (const name of ['raw', 'finalized']) {
+        const start = cachedNameLookupStart('scope8', name, f.indexes);
+        expect(lookupLexicalName(start, name, { scopes: f.indexes.scopeTree }).scope?.id).toBe(
+          name === 'raw' ? mid.id : undefined,
+        );
+        expect(lookupNameClaim('scope8', name, f.indexes).scope?.id).toBe(
+          name === 'finalized' ? mid.id : undefined,
+        );
+      }
+    });
   });
 
   it('stops adding shortcuts at the entry cap and walks the remaining names', () => {

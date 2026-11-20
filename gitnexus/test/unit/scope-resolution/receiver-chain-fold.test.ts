@@ -12,7 +12,10 @@ import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-
 import { reconcileOwnership } from '../../../src/core/ingestion/scope-resolution/pipeline/reconcile-ownership.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
-import { foldReceiverChain } from '../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js';
+import {
+  foldReceiverChain,
+  resolveCompoundReceiverClass,
+} from '../../../src/core/ingestion/scope-resolution/passes/compound-receiver.js';
 import { decodeReceiverChain } from '../../../src/core/ingestion/utils/receiver-chain-codec.js';
 import { buildScopeModel, type ScopeModelFixture } from '../../helpers/scope-model.js';
 
@@ -120,6 +123,83 @@ function foldIn(ctx: FoldContext, encoded: string, overrides: FoldOptions = {}) 
 }
 
 const fold = (encoded: string) => foldIn(ctx, encoded);
+
+describe('declaration-anchored receiver owners', () => {
+  it('reuses hits and misses across sites and reports generic spelling on each hit', () => {
+    const fixture = buildScopeModel(
+      typescriptScopeResolver,
+      `class Box<T> {}
+declare const box: Box<string>;
+declare const missing: Missing;
+box; missing;
+box; missing;
+box;`,
+      'owners.ts',
+    );
+    const seen: string[] = [];
+    const reports: [string, string][] = [];
+    const options: FoldOptions = {
+      declaredReceiverOwners: new WeakMap(),
+      qualifiedTypeLookupSpelling: (type) => {
+        seen.push(type.rawName);
+        return undefined;
+      },
+      recordReceiverType: (spelling, id) => reports.push([spelling, id]),
+    };
+    const resolve = (name: string, line: number, extra?: FoldOptions) =>
+      resolveCompoundReceiverClass(name, fixture.moduleScope, fixture.scopes, fixture.index, {
+        ...options,
+        lookupPosition: { startLine: line, startCol: 0 },
+        ...extra,
+      });
+    const owner = resolve('box', 4);
+    expect(owner?.qualifiedName).toBe('Box');
+    expect(resolve('box', 5)).toBe(owner);
+    expect(resolve('missing', 4)).toBeUndefined();
+    expect(resolve('missing', 5)).toBeUndefined();
+    expect(seen).toEqual(['Box<string>', 'Missing']);
+    expect(reports).toEqual([
+      ['Box<string>', owner!.nodeId],
+      ['Box<string>', owner!.nodeId],
+    ]);
+
+    // A caller that records whether lookup needed a name fallback must
+    // observe the lookup even when this declaration already has a cached owner.
+    expect(resolve('box', 6, { onNameFallback: () => {} })).toBe(owner);
+    expect(seen).toEqual(['Box<string>', 'Missing', 'Box<string>']);
+  });
+
+  it('keeps same-spelled classes anchored to their separate declarations', () => {
+    const fixture = buildScopeModel(
+      typescriptScopeResolver,
+      `class Owner { work() {} }
+declare const outer: Owner;
+outer.work();
+function innerCall() {
+  class Owner { work() {} }
+  const inner: Owner = new Owner();
+  inner.work();
+}`,
+      'local-owners.ts',
+    );
+    const declaredReceiverOwners: FoldOptions['declaredReceiverOwners'] = new WeakMap();
+    const ownerIds = fixture.sites
+      .filter((site) => site.kind === 'call' && site.name === 'work')
+      .map(
+        (site) =>
+          resolveCompoundReceiverClass(
+            site.explicitReceiver!.name,
+            site.inScope,
+            fixture.scopes,
+            fixture.index,
+            { declaredReceiverOwners, lookupPosition: site.atRange },
+          )?.nodeId,
+      );
+    const definitions = fixture.parsed.localDefs.filter((def) => def.type === 'Class');
+    expect(definitions).toHaveLength(2);
+    expect(ownerIds).toEqual(definitions.map((def) => def.nodeId));
+  });
+});
 
 describe('foldReceiverChain', () => {
   it('types a single call step through the method return type', () => {
