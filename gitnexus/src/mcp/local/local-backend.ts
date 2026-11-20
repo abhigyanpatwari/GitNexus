@@ -9365,6 +9365,7 @@ export class LocalBackend {
           ? [...new Set([...nextFrontier, ...objectCallableFrontier])]
           : nextFrontier;
     }
+    const incompleteWalk = !traversalComplete;
 
     // Stamp the finalized, order-independent bridge evidence (strongest across
     // all parents) onto each impacted item. Deferred from the BFS loop so a
@@ -9816,12 +9817,12 @@ export class LocalBackend {
       impactedCount: impacted.length,
       unusedAxes,
     });
-    // Capped counts are lower bounds: keep a proven HIGH/CRITICAL, never a LOW/MEDIUM (#3442).
+    // Failed and capped walks both leave counts as lower bounds.
     const traversalCapped = traversalCappedAtDepth !== undefined;
-    const riskAfterCap = (score: typeof scoredRisk) =>
-      traversalCapped && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
-    const risk = riskAfterCap(scoredRisk);
-    const riskSharedAxes = riskAfterCap(scoredSharedAxes);
+    const riskAfterWalk = (score: typeof scoredRisk) =>
+      incompleteWalk && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
+    const risk = riskAfterWalk(scoredRisk);
+    const riskSharedAxes = riskAfterWalk(scoredSharedAxes);
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};
@@ -9872,18 +9873,20 @@ export class LocalBackend {
                 `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
                 'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
                 'before treating the change as safe.'
-              : processQueryFailed || moduleQueryFailed
-                ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
-                  'are lower bounds; retry impact before treating the change as safe.'
-                : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
-                  ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
-                    'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
-                    'treating the change as safe.'
-                  : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
-                    'a caller reaching it through a reference class this index does not record — ' +
-                    'plain-object property access, a bare-identifier read of a module-scope const — ' +
-                    'produces no edge to find. Confirm with a text search before treating the ' +
-                    'change as safe.',
+              : incompleteWalk
+                ? 'Impact traversal was incomplete. The observed caller count is a lower bound. Retry impact before treating the change as safe.'
+                : processQueryFailed || moduleQueryFailed
+                  ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
+                    'are lower bounds; retry impact before treating the change as safe.'
+                  : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
+                    ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
+                      'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
+                      'treating the change as safe.'
+                    : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+                      'a caller reaching it through a reference class this index does not record — ' +
+                      'plain-object property access, a bare-identifier read of a module-scope const — ' +
+                      'produces no edge to find. Confirm with a text search before treating the ' +
+                      'change as safe.',
           }
         : {}),
       ...epistemic,

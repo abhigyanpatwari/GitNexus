@@ -271,18 +271,24 @@ function suiteFor(
       expect(allNames).toContain(callerName);
     });
 
-    it(`impact(upstream) surfaces the file importer`, async () => {
-      const result = await getBackend().callTool('impact', {
-        target: className,
-        direction: 'upstream',
-        includeTests: true,
-      });
-      expect(result).not.toHaveProperty('error');
-      const allNames = Object.values(result.byDepth as Record<string, any[]>)
-        .flat()
-        .map((d: any) => d.name);
-      expect(allNames).toContain(importerFileName);
-    });
+    it(
+      lang === 'Python'
+        ? 'excludes a module-only importer from class impact'
+        : 'impact(upstream) surfaces the file importer',
+      async () => {
+        const result = await getBackend().callTool('impact', {
+          target: className,
+          direction: 'upstream',
+          includeTests: true,
+        });
+        expect(result).not.toHaveProperty('error');
+        const allNames = Object.values(result.byDepth as Record<string, any[]>)
+          .flat()
+          .map((d: any) => d.name);
+        if (lang === 'Python') expect(allNames).not.toContain(importerFileName);
+        else expect(allNames).toContain(importerFileName);
+      },
+    );
 
     it(`context() returns found with kind Class`, async () => {
       const result = await getBackend().callTool('context', {

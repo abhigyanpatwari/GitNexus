@@ -67,6 +67,50 @@ it('skips a module alias rebound to another class', async () => {
   expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual([]);
 });
 
+it('resolves global and nonlocal imports to their Python owner', async () => {
+  await writeModel('');
+  await fs.writeFile(
+    path.join(dir, 'use.py'),
+    [
+      'from model import Invoice as Bill',
+      'def use_global():',
+      '    global Bill',
+      '    return Bill(legacy=True)',
+      'def outer():',
+      '    from model import Invoice as Imported',
+      '    def inner():',
+      '        nonlocal Imported',
+      '        return Imported(legacy=True)',
+      'def other():',
+      '    Imported = object',
+      '    def inner():',
+      '        nonlocal Imported',
+      '        return Imported(legacy=True)',
+    ].join('\n'),
+  );
+  expect(
+    (await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).map((c) => c.line),
+  ).toEqual([4, 9]);
+});
+
+it('checks the active export when a changed definition is rebound', async () => {
+  await writeModel('');
+  await fs.writeFile(
+    path.join(dir, 'other.py'),
+    'class Invoice:\n    def __init__(self, **kwargs): pass\n',
+  );
+  await fs.appendFile(path.join(dir, 'model.py'), 'from other import Invoice\n');
+  expect(await findBrokenKeywordCalls(dir, 'all', undefined, [target], incoming)).toEqual([]);
+});
+
+it('reads root-relative indexed callers from a subdirectory of the checkout', async () => {
+  await writeModel('');
+  const nested = path.join(dir, 'nested');
+  await fs.mkdir(nested);
+  const calls = await findBrokenKeywordCalls(nested, 'all', undefined, [target], incoming);
+  expect(calls.map((c) => [c.filePath, c.line])).toEqual([['use.py', 5]]);
+});
+
 it('checks the staged image, including the staged callers', async () => {
   await writeModel('');
   execFileSync('git', ['add', 'model.py'], { cwd: dir });
@@ -125,6 +169,7 @@ it('distinguishes a function-local import from a sibling import, a parameter and
 
 it.each([
   ['class Invoice:\n    pass\n', true],
+  ['class Invoice:\n    def total(self): return 1\n', true],
   ['class Invoice(Base):\n    pass\n', false],
   ['class Invoice:\n    def __new__(cls, **kwargs): pass\n', false],
   ['@replace_constructor\nclass Invoice:\n    pass\n', false],

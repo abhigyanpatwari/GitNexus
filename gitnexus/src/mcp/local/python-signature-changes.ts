@@ -2,12 +2,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type Parser from 'tree-sitter';
 import {
-  nameClaimsFor,
+  lookupLexicalName,
   selectClaimsAtScope,
   SupportedLanguages,
   type ParsedFile,
   type ParsedImport,
-  type SourcePosition,
+  type ImportEdge,
 } from 'gitnexus-shared';
 import { pythonProvider } from '../../core/ingestion/languages/python.js';
 import {
@@ -18,6 +18,7 @@ import { extractParsedFile } from '../../core/ingestion/scope-extractor-bridge.j
 import { parseSourceSafe } from '../../core/tree-sitter/safe-parse.js';
 import { createParserForLanguage } from '../../core/tree-sitter/parser-loader.js';
 import { readSafeBounded } from '../../core/group/extractors/fs-utils.js';
+import { getGitRoot } from '../../storage/git.js';
 import {
   nodeRange,
   rangeKey,
@@ -29,7 +30,7 @@ const sourceLimit = 4 * 1024 * 1024;
 type Node = Parser.SyntaxNode;
 type Target = { id: string; name: string; type: string; filePath: string };
 type Caller = { target: string; filePath: string };
-type SignatureChange = { target: Target; removed: Set<string> };
+type SignatureChange = { target: Target; removed: Set<string>; declaration: string };
 export type BrokenKeywordCall = {
   target: string;
   name: string;
@@ -94,7 +95,10 @@ async function diffImages(
 // whose keyword contract can be read directly from the Python definition.
 function signatures(parser: Parser, source: string) {
   const root = parseSourceSafe(parser, source).rootNode;
-  const result = new Map<string, { keywords: Set<string>; arbitrary: boolean }>();
+  const result = new Map<
+    string,
+    { keywords: Set<string>; arbitrary: boolean; declaration: string }
+  >();
   if (root.hasError) return result;
   for (const def of root.namedChildren) {
     const isClass = def.type === 'class_definition';
@@ -119,6 +123,12 @@ function signatures(parser: Parser, source: string) {
           (n) =>
             n.type === 'pass_statement' ||
             n.type === 'comment' ||
+            (n.type === 'function_definition' &&
+              !['__init__', '__new__'].includes(n.childForFieldName('name')?.text ?? '') &&
+              !n.childForFieldName('return_type') &&
+              n
+                .childForFieldName('parameters')
+                ?.namedChildren.every((p) => p.type === 'identifier')) ||
             (n.type === 'expression_statement' && n.firstNamedChild?.type === 'string'),
         );
       if (!defaultConstructor) continue;
@@ -144,6 +154,7 @@ function signatures(parser: Parser, source: string) {
     result.set((isClass ? 'Class:' : 'Function:') + name.text, {
       keywords,
       arbitrary,
+      declaration: rangeKey(nodeRange(def)),
     });
   }
   return result;
@@ -172,44 +183,45 @@ function sourceBindings(parsed: ParsedFile) {
       .filter((site) => site.kind === 'call')
       .map((site) => [rangeKey(site.atRange), site.lookupScope ?? site.inScope]),
   );
-  const imports = groupBy(parsed.parsedImports, (imp) =>
-    imp.atRange ? rangeKey(imp.atRange) : '',
-  );
-  // A CALLS edge covers a whole caller. The nearest active lexical claim
-  // identifies the particular import(s) this expression can actually use.
+  const imports = new Map<ImportEdge, ParsedImport>();
+  const byScope = new Map<string, ImportEdge[]>();
+  for (const imp of parsed.parsedImports) {
+    if (imp.kind !== 'named' && imp.kind !== 'alias' && imp.kind !== 'namespace') continue;
+    const edge: ImportEdge = {
+      localName: imp.localName,
+      kind: imp.kind,
+      targetFile: null,
+      targetExportedName: imp.importedName,
+      atRange: imp.atRange,
+      linkStatus: 'unresolved',
+    };
+    const owner = imp.declaredAtScope ?? parsed.moduleScope;
+    const bucket = byScope.get(owner);
+    if (bucket) bucket.push(edge);
+    else byScope.set(owner, [edge]);
+    imports.set(edge, imp);
+  }
+  const sources = {
+    scopes: { getScope: (id: string) => scopes.get(id) },
+    importsAt: (owner: ParsedFile['scopes'][number]) => byScope.get(owner.id) ?? [],
+  };
   return (call: Node, head: string) => {
-    const at = nodeRange(call);
-    const start = sites.get(rangeKey(at));
-    let scope = start && scopes.get(start);
-    let position: SourcePosition | undefined = at;
-    while (scope) {
-      if (scope.id === start || !scope.lookupPolicy?.skipFromChildren) {
-        const selected = selectClaimsAtScope(scope, head, { position, callee: true });
-        if (selected.status !== 'absent') {
-          if (selected.status !== 'selected' || selected.claims.some((c) => c.redirect)) return;
-          if (selected.claims.every((c) => c.kind === 'import')) {
-            const owner = scope.id;
-            return selected.claims.flatMap((c) =>
-              (imports.get(rangeKey(c.range)) ?? []).filter(
-                (imp) =>
-                  'localName' in imp && imp.localName === head && imp.declaredAtScope === owner,
-              ),
-            );
-          }
-          if (
-            scope.id === parsed.moduleScope &&
-            selected.claims.length === 1 &&
-            selected.claims[0].kind === 'binding' &&
-            nameClaimsFor(scope, head).length === 1
-          )
-            return 'local';
-          return;
-        }
-      }
-      if (scope.lookupPolicy?.deferParentActivation) position = undefined;
-      const parent = scope.lookupPolicy?.parentScope ?? scope.parent;
-      scope = parent ? scopes.get(parent) : undefined;
+    const position = nodeRange(call);
+    const anchor = sites.get(rangeKey(position));
+    if (!anchor) return;
+    const selected = lookupLexicalName(anchor, head, sources, { position, purpose: 'value' });
+    if (selected.imports.length) {
+      return selected.imports.flatMap((edge) => {
+        const imp = imports.get(edge);
+        return imp ? [imp] : [];
+      });
     }
+    if (
+      selected.scope?.id === parsed.moduleScope &&
+      selected.bindings.length === 1 &&
+      selected.bindings[0].origin === 'local'
+    )
+      return 'local';
   };
 }
 
@@ -220,11 +232,12 @@ function exportResolver(
   allFilePaths: Set<string>,
   loadFile: (file: string) => Promise<ParsedFile | null>,
 ) {
-  const cache = new Map<string, SignatureChange | null>();
+  const definitions = new Map<string, SignatureChange | null>();
   for (const change of changes) {
     const key = change.target.filePath + '\0' + change.target.name;
-    cache.set(key, cache.has(key) ? null : change);
+    definitions.set(key, definitions.has(key) ? null : change);
   }
+  const cache = new Map<string, SignatureChange | null>();
   return async (moduleFile: string, name: string) => {
     const seen = new Set<string>();
     let file: string | null = moduleFile;
@@ -242,13 +255,14 @@ function exportResolver(
       const scope = parsed?.scopes.find((s) => s.id === parsed.moduleScope);
       if (!parsed || !scope) break;
       const selected = selectClaimsAtScope(scope, name);
-      if (
-        selected.status !== 'selected' ||
-        selected.claims.length !== 1 ||
-        selected.claims[0].kind !== 'import'
-      )
-        break;
+      if (selected.status !== 'selected' || selected.claims.length !== 1) break;
       const claim = rangeKey(selected.claims[0].range);
+      if (selected.claims[0].kind === 'binding') {
+        const definition = definitions.get(key);
+        if (definition?.declaration === claim) result = definition;
+        break;
+      }
+      if (selected.claims[0].kind !== 'import') break;
       const imp = parsed.parsedImports.find(
         (i) =>
           'localName' in i &&
@@ -299,12 +313,13 @@ function importedCallee(
 }
 
 export async function findBrokenKeywordCalls(
-  cwd: string,
+  directory: string,
   scope: string,
   base: string | undefined,
   targets: Target[],
   incoming: (ids: string[]) => Promise<Caller[]>,
 ): Promise<BrokenKeywordCall[]> {
+  const cwd = getGitRoot(directory) ?? directory;
   const [before, after] = await diffImages(cwd, scope, base);
   const parser = await createParserForLanguage(SupportedLanguages.Python);
   const changed = new Map<string, SignatureChange>();
@@ -323,7 +338,7 @@ export async function findBrokenKeywordCalls(
       const next = newDefs.get(key);
       if (!prev || !next || next.arbitrary) continue;
       const removed = new Set([...prev.keywords].filter((name) => !next.keywords.has(name)));
-      if (removed.size) changed.set(target.id, { target, removed });
+      if (removed.size) changed.set(target.id, { target, removed, declaration: next.declaration });
     }
   }
   if (!changed.size) return [];

@@ -35,6 +35,7 @@ it('suppresses a docs-only gap but still warns for an earlier unindexed code cha
     commitAll(repo, 'indexed base');
     const base = readHead(repo, repo).head;
     fs.writeFileSync(path.join(repo, 'README.md'), 'notes\n');
+    fs.writeFileSync(path.join(repo, 'guide.MDX'), '# Usage\n');
     commitAll(repo, 'docs');
     expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(true);
     fs.writeFileSync(path.join(repo, 'app.py'), 'v = 2\n');

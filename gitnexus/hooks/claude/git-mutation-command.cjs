@@ -280,6 +280,7 @@ function onlyMarkdownChanged(directory, cwd, base, head) {
       '--',
       ':(top,glob)**',
       ':(top,exclude,icase,glob)**/*.md',
+      ':(top,exclude,icase,glob)**/*.mdx',
       ':(top,exclude,icase,glob)**/*.markdown',
     ],
     { cwd, timeout: 3000, windowsHide: true, stdio: 'ignore' },
