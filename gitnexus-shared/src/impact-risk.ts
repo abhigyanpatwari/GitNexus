@@ -20,6 +20,8 @@ export interface ImpactRiskInput {
   processCount: number;
   moduleCount: number;
   impactedCount: number;
+  /** A failed or capped traversal may have missed dependencies. */
+  incompleteWalk?: boolean;
   unusedAxes?: readonly UnusedImpactRiskAxis[];
 }
 
@@ -40,7 +42,15 @@ function score(
 ): ImpactRisk {
   const { direction, directCount, processCount, moduleCount, impactedCount } = input;
 
-  if (direction === 'upstream' && impactedCount === 0) return 'UNKNOWN';
+  // Upstream measures the immediate edit boundary. Flow membership and
+  // transitive reach remain available in the impact summary at every depth.
+  if (direction === 'upstream') {
+    if (impactedCount === 0) return 'UNKNOWN';
+    if (directCount >= 200) return 'CRITICAL';
+    if (directCount >= 15) return 'HIGH';
+    if (directCount >= 5) return 'MEDIUM';
+    return 'LOW';
+  }
   if (directCount >= 30 || processCount >= 5 || moduleCount >= 5 || impactedCount >= 200) {
     return 'CRITICAL';
   }
@@ -125,24 +135,21 @@ const INCOMPLETE_SAMPLE_REASONS: ReadonlySet<UnusedImpactRiskReason> = new Set([
   'enrichment-truncated',
 ]);
 
+function riskFromSample(observed: ImpactRisk, incomplete: boolean): ImpactRisk {
+  return incomplete && (observed === 'LOW' || observed === 'MEDIUM') ? 'UNKNOWN' : observed;
+}
+
 export function scoreImpactRisk(input: ImpactRiskInput): ImpactRiskResult {
   const unusedAxes = input.unusedAxes ?? [];
   const observedRisk = score(countsWithUnmeasuredAxesZeroed(input));
+  const sharedRisk = score({ ...input, processCount: 0, moduleCount: 0 });
+  const incompleteWalk = input.incompleteWalk === true;
   const incompleteSample = unusedAxes.some((unused) =>
     INCOMPLETE_SAMPLE_REASONS.has(unused.reason),
   );
-  // Failed queries and truncated samples make observed process/module counts
-  // lower bounds. Preserve any HIGH/CRITICAL warning already proved by those
-  // counts, but never emit a confident LOW/MEDIUM edit gate from an incomplete
-  // enrichment pass.
-  const risk =
-    incompleteSample && (observedRisk === 'LOW' || observedRisk === 'MEDIUM')
-      ? 'UNKNOWN'
-      : observedRisk;
-
   return {
-    risk,
-    riskSharedAxes: score({ ...input, processCount: 0, moduleCount: 0 }),
+    risk: riskFromSample(observedRisk, incompleteWalk || incompleteSample),
+    riskSharedAxes: riskFromSample(sharedRisk, incompleteWalk),
     riskScale: {
       comparableAcrossKinds: unusedAxes.length === 0,
       unusedAxes,

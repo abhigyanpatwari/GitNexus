@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename when a string only mentions the name as a word, not as a call: prose is not code.",
+  "categories": ["string-lookup", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

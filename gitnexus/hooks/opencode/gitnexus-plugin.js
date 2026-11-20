@@ -409,7 +409,7 @@ function shouldSkipAugmentForShell(invocation, pattern) {
 
 // Hooks share OpenCode's event loop. Wait asynchronously for the bounded CLI
 // process so a slow index cannot freeze the UI or other sessions.
-function runCli(invocation, args, cwd, timeout) {
+function runCli(invocation, args, cwd, timeout, maxBuffer = 1024 * 1024) {
   return new Promise((resolve, reject) => {
     execFile(
       invocation.cmd,
@@ -417,7 +417,7 @@ function runCli(invocation, args, cwd, timeout) {
       {
         encoding: 'utf-8',
         timeout,
-        maxBuffer: 1024 * 1024,
+        maxBuffer,
         cwd,
         windowsHide: true,
         ...(invocation.useShell ? { shell: true } : {}),
@@ -480,6 +480,67 @@ async function checkIndexStale(cwd) {
     const payload = parseStatusPayload(child.stdout || '');
     if (!payload || typeof payload.status !== 'string') return null;
     if (payload.status !== 'stale') return null;
+    const base = payload.index?.commit;
+    const head = payload.current?.commit;
+    const commit = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+    if (
+      commit.test(base) &&
+      commit.test(head) &&
+      base !== head &&
+      payload.index.runnerIdentityStatus === 'current' &&
+      Array.isArray(payload.index.incompleteReasons) &&
+      payload.index.incompleteReasons.length === 0 &&
+      !payload.workspaceIndexBranch
+    ) {
+      const git = { cmd: 'git', argv: ['--no-literal-pathspecs'] };
+      const paths = [
+        '--',
+        ':(top,glob)**',
+        ':(top,exclude,icase,glob)**/*.md',
+        ':(top,exclude,icase,glob)**/*.mdx',
+        ':(top,exclude,icase,glob)**/*.markdown',
+      ];
+      const deadline = Date.now() + 3000;
+      try {
+        await runCli(
+          git,
+          [
+            'diff',
+            '--quiet',
+            '--no-relative',
+            '--no-ext-diff',
+            '--no-renames',
+            '--ignore-submodules=none',
+            base,
+            head,
+            ...paths,
+          ],
+          cwd,
+          3000,
+        );
+        // HEAD drift skips the CLI's working-tree scan. Any porcelain record
+        // (staged, unstaged or untracked), timeout or overflow keeps the hint.
+        const dirty = await runCli(
+          git,
+          [
+            '--no-optional-locks',
+            'status',
+            '--porcelain=v1',
+            '-z',
+            '--no-renames',
+            '--untracked-files=all',
+            '--ignore-submodules=none',
+            ...paths,
+          ],
+          cwd,
+          Math.max(1, deadline - Date.now()),
+          256,
+        );
+        if (dirty.stdout.length === 0) return null;
+      } catch {
+        // Git could not establish that both comparisons were clean.
+      }
+    }
     const indexed = payload?.index?.commit ? String(payload.index.commit).slice(0, 7) : '';
     return (
       `${MARKER} GitNexus index is stale` +

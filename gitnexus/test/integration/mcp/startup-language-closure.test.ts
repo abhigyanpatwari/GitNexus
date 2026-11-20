@@ -36,17 +36,8 @@
  * --http` reaches it through its own `await import(...)` in `mcpCommand`, not
  * through `server.js`, so nothing about `server.js` staying clean constrains it.
  *
- * `local-backend.js`'s closure is TODAY a strict subset of `server.js`'s (156
- * of 380 modules, none of them absent from the server's), so it cannot surface
- * an offender the server probe would miss. It is kept anyway, for two reasons
- * that survive that measurement. The subset relation is an observation about
- * the current graph and nothing enforces it: the day `server.js` stops reaching
- * the local backend eagerly (remote-only default, lazy backend selection), the
- * server probe's anchor — `dist/mcp/resources.js` — keeps passing while the
- * module #2802 actually changed goes unobserved. Its own entry pins
- * `dist/mcp/local/pdg-impact.js` as an anchor, which is coverage the server
- * entry does not and cannot provide. And since the probes run concurrently, the
- * marginal wall-clock cost is ~0: it finishes inside the server probe's window.
+ * Both transports receive their backend at runtime. Probe the backend separately
+ * to exercise the group service and CFG imports that the transports skip.
  *
  * Lazy `await import(...)` inside a function body remains the sanctioned escape
  * hatch: it does not run at startup, so the probe does not see it. A top-level
@@ -131,53 +122,27 @@ const CFG_LEAVES_ALLOWED: ReadonlySet<string> = new Set([
   'dist/core/ingestion/cfg/reaching-def-reason-codec.js',
 ]);
 
-// Observed on Node 22.18 against a clean build at the tip of this branch:
-// server.js 380 distinct modules, local-backend.js 156, cli/mcp.js 4. Treat
-// these as a snapshot, not a contract — they moved twice inside this branch
-// alone (the group-extractor and cfg/emit closures each took ~100 and ~7 out),
-// and only the FLOORS below are asserted. The floors sit well under the
-// observed counts so normal dependency churn doesn't trip them, while a probe
-// that silently loaded nothing still fails.
-//
-// `mcp/http-transport.js` is the largest startup entry — measured 516 modules,
-// +136 over server.js for express, cors and the SDK's Streamable-HTTP/SSE
-// transports. It is what `gitnexus mcp --http` starts and the hosted-deploy
-// path, and `mcpCommand` imports it directly, not via `server.js`; because that
-// edge runs one way only, a static import added inside `http-transport.ts`
-// would reinstate #2802 on the HTTP path with every other row here green. The
-// probes run concurrently, so its marginal wall-clock cost is ~0 — it finishes
-// alongside the others rather than after them.
-//
-// `mcp/resources.js` (measured 57 modules, 0 offenders) and `mcp/staleness.js`
-// (53, 0) are named in the #2802 write-up but deliberately get NO rows: both
-// are eagerly inside the closures of `server.js` and `http-transport.js`
-// (each appears in both probes' module lists), so any offender they acquired
-// surfaces on those rows already. They would earn rows only if something made
-// them reachable other than eagerly-from-the-server.
-const ENTRIES = [
+const TRANSPORTS = [
   {
     entry: 'mcp/server.js',
-    anchor: ['dist/mcp/resources.js', GROUP_ANCHOR, CFG_ANCHOR],
+    anchor: ['dist/mcp/resources.js', 'dist/mcp/repository-policy.js'],
     minModules: 100,
   },
   {
     entry: 'mcp/http-transport.js',
-    anchor: ['dist/mcp/server.js', GROUP_ANCHOR, CFG_ANCHOR],
+    anchor: ['dist/mcp/server.js', 'dist/mcp/repository-policy.js'],
     minModules: 100,
   },
+] as const satisfies readonly ModuleLoadRequest[];
+
+const ENTRIES = [
+  ...TRANSPORTS,
   {
     entry: 'mcp/local/local-backend.js',
     anchor: ['dist/mcp/local/pdg-impact.js', GROUP_ANCHOR, CFG_ANCHOR],
     minModules: 50,
   },
-  // The one row with a single anchor, because it is subject to ONE policy. Its
-  // whole design is a 4-module leaf closure that reaches nothing first-party
-  // beyond `stdio-context → stdio-capture`, so it can never reach
-  // `core/group/service.js` and cannot be given the group anchor honestly. It
-  // is excluded from the group policy below for that reason: a row that cannot
-  // fail for any reason related to the policy it is listed under is exactly the
-  // vacuity this file's probe exists to prevent. Its leaf-only closure is
-  // pinned exhaustively by `import-closure.test.ts` instead.
+  // import-closure.test.ts pins the CLI's leaf-only closure.
   { entry: 'cli/mcp.js', anchor: 'dist/mcp/stdio-context.js', minModules: 3 },
 ] as const satisfies readonly ModuleLoadRequest[];
 
@@ -208,6 +173,14 @@ describe('MCP startup module-load closure (#2802)', () => {
     probes = await probeModuleLoads(ENTRIES);
   }, 90_000);
 
+  it.each(TRANSPORTS)('$entry loads no local backend, group parser, or CFG module', ({ entry }) => {
+    const probe = probes.get(entry);
+    expect(probe.modules).not.toContain('dist/mcp/local/local-backend.js');
+    expect(probe.matching(/(^|\/)core\/group\//)).toEqual([]);
+    expect(probe.matching(FORBIDDEN_GROUP_RE)).toEqual([]);
+    expect(probe.matching(INGESTION_CFG_RE)).toEqual([]);
+  });
+
   // `%s` over the bare entries, not `$entry` over the request objects: vitest
   // quotes an interpolated object property, and `importing dist/'mcp/server.js'`
   // reads like a typo in CI output.
@@ -229,24 +202,11 @@ describe('MCP startup module-load closure (#2802)', () => {
     },
   );
 
-  // Pins the two derivations above. The risk each guards is a policy going
-  // SILENT, not its exact membership: drop an anchor from every entry and the
-  // derived list empties, so the `it.each` registers zero cases and the whole
-  // policy disappears without one red test. Asserting non-emptiness catches
-  // exactly that; asserting the literal list would reinstate, one layer down,
-  // the hand-maintained list the derivation exists to remove — every entry
-  // added or removed would then need editing in two places.
-  //
-  // `cli/mcp.js` is pinned OUT of both policies deliberately. It is a 4-module
-  // leaf closure that cannot reach either policed chain, so listing it would
-  // give each policy a row that cannot fail — the vacuity this file exists to
-  // prevent. That exclusion is a real property, so it is asserted rather than
-  // left to the comment above.
   it.each([
     ['group', GROUP_POLICY_ENTRIES],
     ['cfg-leaf', CFG_POLICY_ENTRIES],
-  ])('the %s policy runs over a non-empty entry set that excludes cli/mcp.js', (_name, entries) => {
-    expect(entries.length).toBeGreaterThan(0);
+  ])('the %s policy covers the local backend and excludes the CLI leaf', (_name, entries) => {
+    expect(entries).toContain('mcp/local/local-backend.js');
     expect(entries).not.toContain('cli/mcp.js');
   });
 

@@ -91,21 +91,32 @@ async function findRepoForCwd(cwd: string): Promise<{
   }
 }
 
+/** Most search patterns one augment call reads, as from `rg -e A -e B -e C`. */
+const MAX_AUGMENT_PATTERNS = 3;
+/** Symbols several patterns share, so the hook stays within its time limit. */
+const MAX_AUGMENT_SYMBOLS = 6;
+
 /**
- * Augment a search pattern with knowledge graph context.
+ * Augment one or more search patterns with knowledge graph context.
  *
- * 1. BM25 search for the pattern
+ * 1. BM25 search for each pattern
  * 2. For top matches, fetch callers/callees/processes
  * 3. Rank by internal cluster cohesion (not exposed)
  * 4. Format as structured text block
  *
+ * Several patterns come from one search with alternatives
+ * (`rg -e FooService -e BarService`); each gets its own lookup, and they share
+ * the symbol budget so the hook stays within its time limit.
+ *
  * Returns empty string on any error (graceful failure).
  */
-export async function augment(pattern: string, cwd?: string): Promise<string> {
-  if (!pattern || pattern.length < 3) return '';
-
-  const patternFirstWord = escapeCypherString(pattern.trim()).split(/\s+/)[0];
-  if (!patternFirstWord || patternFirstWord.length < 2) return '';
+export async function augment(patterns: string | readonly string[], cwd?: string): Promise<string> {
+  const lookups = (typeof patterns === 'string' ? [patterns] : (patterns ?? []))
+    .filter((pattern) => typeof pattern === 'string')
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern.length >= 3)
+    .slice(0, MAX_AUGMENT_PATTERNS);
+  if (lookups.length === 0) return '';
 
   const workDir = cwd || process.cwd();
 
@@ -124,78 +135,96 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
       await initLbug(repoId, repo.lbugPath);
     }
 
-    // Step 1: BM25 search (fast, no embeddings)
-    const { results: bm25Results } = await searchFTSFromLbug(pattern, 10, repoId);
-
-    // Step 2: Map BM25 file results to symbols
-    const symbolMatches: Array<{
+    type SymbolMatch = {
       nodeId: string;
       name: string;
       type: string;
       filePath: string;
       score: number;
-    }> = [];
+    };
 
-    for (const result of bm25Results.slice(0, 5)) {
-      const escaped = escapeCypherString(result.filePath);
-      try {
-        const symbols = await executeQuery(
-          repoId,
-          `
+    // The first `limit` symbols of one pattern, in BM25 file order. The file
+    // loop stops once it has them, since later files only add symbols past it.
+    const findSymbols = async (pattern: string, limit: number): Promise<SymbolMatch[]> => {
+      // BM25 can match individual words. Match graph symbols against the whole pattern.
+      const escapedName = escapeCypherString(pattern);
+      // Step 1: BM25 search (fast, no embeddings)
+      const { results: bm25Results } = await searchFTSFromLbug(pattern, 10, repoId);
+
+      // Step 2: Map BM25 file results to symbols
+      const symbolMatches: SymbolMatch[] = [];
+
+      for (const result of bm25Results.slice(0, 5)) {
+        if (symbolMatches.length >= limit) break;
+        const escaped = escapeCypherString(result.filePath);
+        try {
+          const symbols = await executeQuery(
+            repoId,
+            `
           MATCH (n) WHERE n.filePath = '${escaped}'
-          AND n.name CONTAINS '${patternFirstWord}'
+          AND n.name CONTAINS '${escapedName}'
           RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath
           ORDER BY id
           LIMIT 3
         `,
-        );
-        for (const sym of symbols) {
+          );
+          for (const sym of symbols) {
+            symbolMatches.push({
+              nodeId: sym.id || sym[0],
+              name: sym.name || sym[1],
+              type: sym.type || sym[2],
+              filePath: sym.filePath || sym[3],
+              score: result.score,
+            });
+          }
+        } catch {
+          /* skip */
+        }
+      }
+
+      // FTS ranks files by mentions, so a widely referenced symbol's definition
+      // may not be present in the top file results. Fall back to graph names
+      // whenever those files produce no symbol match, regardless of FTS health.
+      if (symbolMatches.length === 0) {
+        const fallbackRows = await executeQuery(
+          repoId,
+          `
+        MATCH (n)
+        WHERE n.name CONTAINS '${escapedName}'
+        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
+          CASE WHEN n.name = '${escapedName}' THEN 0 ELSE 1 END AS exactRank
+        ORDER BY exactRank, id
+        LIMIT 5
+      `,
+        ).catch(() => []);
+        for (const sym of fallbackRows) {
           symbolMatches.push({
             nodeId: sym.id || sym[0],
             name: sym.name || sym[1],
             type: sym.type || sym[2],
             filePath: sym.filePath || sym[3],
-            score: result.score,
+            score: 1.0,
           });
         }
-      } catch {
-        /* skip */
       }
-    }
 
-    // FTS ranks files by mentions, so a widely referenced symbol's definition
-    // may not be present in the top file results. Fall back to graph names
-    // whenever those files produce no symbol match, regardless of FTS health.
-    if (symbolMatches.length === 0) {
-      const fallbackRows = await executeQuery(
-        repoId,
-        `
-        MATCH (n)
-        WHERE n.name CONTAINS '${patternFirstWord}'
-        RETURN n.id AS id, n.name AS name, labels(n)[0] AS type, n.filePath AS filePath,
-          CASE WHEN n.name = '${patternFirstWord}' THEN 0 ELSE 1 END AS exactRank
-        ORDER BY exactRank, id
-        LIMIT 5
-      `,
-      ).catch(() => []);
-      for (const sym of fallbackRows) {
-        symbolMatches.push({
-          nodeId: sym.id || sym[0],
-          name: sym.name || sym[1],
-          type: sym.type || sym[2],
-          filePath: sym.filePath || sym[3],
-          score: 1.0,
-        });
-      }
+      return symbolMatches.slice(0, limit);
+    };
+
+    // One pattern keeps its top 5 symbols; several share MAX_AUGMENT_SYMBOLS.
+    const perPattern = lookups.length === 1 ? 5 : Math.floor(MAX_AUGMENT_SYMBOLS / lookups.length);
+    const symbolMatches: SymbolMatch[] = [];
+    for (const pattern of lookups) {
+      symbolMatches.push(...(await findSymbols(pattern, perPattern)));
     }
 
     if (symbolMatches.length === 0) return '';
 
     // Step 3: Batch-fetch callers/callees/processes/cohesion for top matches
     // Uses batched WHERE n.id IN [...] queries instead of per-symbol queries
-    const uniqueSymbols = symbolMatches
-      .slice(0, 5)
-      .filter((sym, i, arr) => arr.findIndex((s) => s.nodeId === sym.nodeId) === i);
+    const uniqueSymbols = symbolMatches.filter(
+      (sym, i, arr) => arr.findIndex((s) => s.nodeId === sym.nodeId) === i,
+    );
 
     if (uniqueSymbols.length === 0) return '';
 

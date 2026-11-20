@@ -83,6 +83,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
+    "@eagleoutice/tree-sitter-r": "1.1.2",
     "@ladybugdb/core": "0.22.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
@@ -123,6 +124,9 @@
     "tree-sitter-rust": "0.24.0",
     "tree-sitter-typescript": "0.23.2",
     "uuid": "^14.0.0"
+  },
+  "optionalDependencies": {
+    "chokidar-v6": "npm:chokidar@^6.0.0"
   },
   "gitnexusEmbeddingStack": {
     "@huggingface/transformers": "^4.1.0",
@@ -169,6 +173,7 @@
     "node": "^22.18.0 || >=24.11.0"
   },
   "bundleDependencies": [
+    "@eagleoutice/tree-sitter-r",
     "tree-sitter",
     "tree-sitter-c-sharp",
     "tree-sitter-cpp",

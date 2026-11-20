@@ -175,52 +175,76 @@ export const objectiveCScopeResolver: ScopeResolver = {
   },
 };
 
+/** @internal Join overlapping rename families, moving only members of the smaller set. */
+export function joinObjectiveCSymbolFamily(
+  families: Map<string, Set<string>>,
+  name: string,
+  related: readonly { readonly qualifiedName: string }[],
+): void {
+  let family = families.get(name);
+  if (!family) {
+    family = new Set([name]);
+    families.set(name, family);
+  }
+  for (const { qualifiedName } of related) {
+    const other = families.get(qualifiedName);
+    if (other === family) continue;
+    if (!other) {
+      family.add(qualifiedName);
+      families.set(qualifiedName, family);
+      continue;
+    }
+    const smaller = family.size < other.size ? family : other;
+    const larger = smaller === family ? other : family;
+    for (const member of smaller) {
+      larger.add(member);
+      families.set(member, larger);
+    }
+    family = larger;
+  }
+}
+
 /** Override, protocol, and category declarations share a source selector contract. */
 function objectiveCSymbolFamilies(
   workspace: ObjCWorkspaceFacts,
 ): ReadonlyMap<string, ReadonlySet<string>> {
   const families = new Map<string, Set<string>>();
-  const join = (methods: readonly { readonly qualifiedName: string }[]) => {
-    const merged = new Set(
-      methods.flatMap((method) => [
-        ...(families.get(method.qualifiedName) ?? [method.qualifiedName]),
-      ]),
-    );
-    for (const name of merged) families.set(name, merged);
-  };
   const all = [...workspace.methodsByExactOwner.values()].flat();
   for (const method of all) {
-    join([method]);
     if (method.ownerKind === 'protocol') {
       for (const parent of protocolHierarchy(workspace, method.ownerName)) {
-        join([
-          method,
-          ...findExactOwnerMethods(
+        joinObjectiveCSymbolFamily(
+          families,
+          method.qualifiedName,
+          findExactOwnerMethods(
             workspace,
             objcProtocolQualifiedName(parent),
             method.methodKind,
             method.selector,
           ),
-        ]);
+        );
       }
       for (const className of workspace.classesByProtocol.get(method.ownerName) ?? []) {
-        join([
-          method,
-          ...findDispatchMethods(workspace, className, method.methodKind, method.selector).methods,
-        ]);
+        joinObjectiveCSymbolFamily(
+          families,
+          method.qualifiedName,
+          findDispatchMethods(workspace, className, method.methodKind, method.selector).methods,
+        );
       }
     } else {
       const className = method.hostClass ?? method.ownerName;
-      join([
-        method,
-        ...findDispatchMethods(workspace, className, method.methodKind, method.selector).methods,
-      ]);
+      joinObjectiveCSymbolFamily(
+        families,
+        method.qualifiedName,
+        findDispatchMethods(workspace, className, method.methodKind, method.selector).methods,
+      );
       const parent = workspace.superclassByClass.get(className);
       if (parent)
-        join([
-          method,
-          ...findDispatchMethods(workspace, parent, method.methodKind, method.selector).methods,
-        ]);
+        joinObjectiveCSymbolFamily(
+          families,
+          method.qualifiedName,
+          findDispatchMethods(workspace, parent, method.methodKind, method.selector).methods,
+        );
     }
   }
   for (const members of workspace.membersByOwner.values())
@@ -245,38 +269,41 @@ function objectiveCSymbolFamilies(
       const properties = (workspace.membersByOwner.get(owner) ?? []).filter(
         (member) => member.kind === 'property' && member.name === property.name,
       );
-      join([property, ...properties, ...related, ...ivars]);
+      joinObjectiveCSymbolFamily(families, property.qualifiedName, [
+        ...properties,
+        ...related,
+        ...ivars,
+      ]);
       const matches = (member: ObjCMemberFact) =>
         member.kind === 'property' && member.name === property.name;
       const methodKind = property.accessors?.methodKind ?? '-';
       if (property.ownerKind === 'protocol') {
         for (const parent of workspace.protocolParents.get(property.ownerName) ?? []) {
-          join([
-            property,
-            ...findMembersOnReceiver(
+          joinObjectiveCSymbolFamily(
+            families,
+            property.qualifiedName,
+            findMembersOnReceiver(
               { kind: 'protocol', name: parent, methodKind },
               workspace,
               matches,
             ),
-          ]);
+          );
         }
         for (const name of workspace.classesByProtocol.get(property.ownerName) ?? []) {
-          join([
-            property,
-            ...findMembersOnReceiver({ kind: 'class', name, methodKind }, workspace, matches),
-          ]);
+          joinObjectiveCSymbolFamily(
+            families,
+            property.qualifiedName,
+            findMembersOnReceiver({ kind: 'class', name, methodKind }, workspace, matches),
+          );
         }
       } else {
         const parent = workspace.superclassByClass.get(property.hostClass ?? property.ownerName);
         if (parent)
-          join([
-            property,
-            ...findMembersOnReceiver(
-              { kind: 'class', name: parent, methodKind },
-              workspace,
-              matches,
-            ),
-          ]);
+          joinObjectiveCSymbolFamily(
+            families,
+            property.qualifiedName,
+            findMembersOnReceiver({ kind: 'class', name: parent, methodKind }, workspace, matches),
+          );
       }
     }
   return families;

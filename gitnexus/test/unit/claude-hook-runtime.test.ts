@@ -22,6 +22,7 @@ interface HookRuntime {
     toolName: string,
     toolInput: { command?: string; pattern?: string },
   ) => string | null;
+  buildMcpQueryHint: (patterns: string[]) => string;
 }
 
 function loadRuntime(options: { platform?: string; guard?: string | null } = {}) {
@@ -31,7 +32,10 @@ function loadRuntime(options: { platform?: string; guard?: string | null } = {})
   const require = createRequire(RUNTIME);
   const module = { exports: {} as HookRuntime };
   vm.runInNewContext(
-    fs.readFileSync(RUNTIME, 'utf8') + '\nmodule.exports.extractPattern = extractPattern;',
+    fs.readFileSync(RUNTIME, 'utf8') +
+      // The first pattern the hook passes to `gitnexus augment`.
+      '\nmodule.exports.extractPattern = (name, input) => extractPatterns(name, input)[0] ?? null;' +
+      '\nmodule.exports.buildMcpQueryHint = buildMcpQueryHint;',
     {
       module,
       require: (id: string) => {
@@ -231,6 +235,11 @@ describe('Claude hook literal Bash search patterns', () => {
     { command: 'grep --unknown-option=value -r UserService src', pattern: 'UserService' },
     { command: 'rg --glob= UserService src', pattern: 'UserService' },
     { command: 'rg UserService - ', pattern: 'UserService' },
+    // Variable assignments before the command belong to it.
+    { command: 'NO_COLOR=1 rg UserService src', pattern: 'UserService' },
+    // So do wrappers that run it (#4023).
+    { command: 'npx rg UserService src', pattern: 'UserService' },
+    { command: 'git grep -n UserService', pattern: 'UserService' },
   ])('preserves the complete argument in $command', ({ command, pattern }) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBe(pattern);
   });
@@ -284,6 +293,28 @@ describe('Claude hook literal Bash search patterns', () => {
     'grep -V UserService src',
   ])('declines an empty, malformed, or expanded argument in %s', (command) => {
     expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
+  });
+
+  // #3899: only a search that starts the line is read.
+  it.each([
+    "sed -i '' 's/old text/new text/' notes.md && grep -c 'direct `tool' notes.md",
+    'git log --oneline | grep UserService',
+    'cd src && rg UserService',
+  ])('declines a search after a shell operator in %s', (command) => {
+    expect(loadRuntime().extractPattern('Bash', { command })).toBeNull();
+  });
+
+  // Codex runs its Bash tool in PowerShell on Windows, so the query must read
+  // the same in both shells there.
+  it('reads the query only when bash and PowerShell agree on win32', () => {
+    const runtime = loadRuntime({ platform: 'win32' });
+    expect(runtime.extractPattern('Bash', { command: 'rg "user service" src' })).toBe(
+      'user service',
+    );
+    expect(runtime.extractPattern('Bash', { command: String.raw`rg C:\Users src` })).toBeNull();
+    expect(loadRuntime().extractPattern('Bash', { command: String.raw`rg C:\Users src` })).toBe(
+      'C:Users',
+    );
   });
 });
 
@@ -434,5 +465,20 @@ describe('Claude hook package ownership', () => {
     } finally {
       fs.rmSync(temp, { recursive: true, force: true });
     }
+  });
+});
+
+// #2396 fallback: when the CLI cannot run, the hint names every pattern.
+describe('MCP query hint', () => {
+  it('names every pattern of the search', () => {
+    expect(loadRuntime().buildMcpQueryHint(['FooService', 'BarService'])).toContain(
+      'search_query "FooService", then search_query "BarService".',
+    );
+  });
+
+  it('reads as before for one pattern', () => {
+    expect(loadRuntime().buildMcpQueryHint(['FooService'])).toMatch(
+      /with search_query "FooService"\.$/,
+    );
   });
 });

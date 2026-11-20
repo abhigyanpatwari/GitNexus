@@ -76,10 +76,15 @@ updates:
       tree-sitter-grammars:
         patterns:
           - tree-sitter-*
+          - '@eagleoutice/tree-sitter-*'
         exclude-patterns:
           - tree-sitter
           - tree-sitter-cli
     ignore:
+      # The required watcher supports Node 22.18. Newer Node versions use chokidar-v6.
+      - dependency-name: chokidar
+        update-types:
+          - version-update:semver-major
       # Pin the tree-sitter runtime at 0.21.x until the drift check
       # reports all grammars are peer-dep compatible with 0.25.
       - dependency-name: tree-sitter

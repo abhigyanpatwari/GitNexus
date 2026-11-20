@@ -444,16 +444,18 @@ describe('setupClaudeCode', () => {
         'Claude Code hooks',
         result,
       );
-      expect(result.errors.length).toBe(5);
+      expect(result.errors.length).toBe(7);
       expect(result.errors.some((e) => e.includes('resolve-analyze-cmd.cjs'))).toBe(true);
       expect(result.errors.some((e) => e.includes('registry-query.cjs'))).toBe(true);
       expect(result.errors.every((e) => e.startsWith('Claude Code hooks:'))).toBe(true);
       // Only the hard-required .cjs helpers gate registration; win-rm is best-effort.
       expect([...failedRequired].sort()).toEqual([
+        'git-mutation-command.cjs',
         'hook-db-lock-probe.cjs',
         'hook-lock.cjs',
         'registry-query.cjs',
         'resolve-analyze-cmd.cjs',
+        'search-command-pattern.cjs',
       ]);
       expect(failedRequired).not.toContain('win-rm-list-json.ps1');
     } finally {
@@ -473,6 +475,8 @@ describe('setupClaudeCode', () => {
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
+        'git-mutation-command.cjs',
+        'search-command-pattern.cjs',
       ]) {
         await fs.writeFile(path.join(srcDir, h), '// stub\n', 'utf-8');
       }

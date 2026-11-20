@@ -14,7 +14,7 @@
  * by hooks.test.ts and hook-db-lock-probe.test.ts. Here we assert the Factory
  * hook WIRES them and behaves correctly on the Factory-specific paths.
  */
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
@@ -272,6 +272,28 @@ describe('Factory hook source regressions', () => {
 
 // ─── Execute pattern parsing (shares the Cursor adapter's #2938 matrix) ─
 
+// A POSIX shell runs `NAME=value rg x` as `rg x`. On Windows the shell may be
+// PowerShell, which runs `NAME=value` itself, so the line runs no search there.
+describe.each([
+  ['linux', 'UserService'],
+  ['win32', null],
+] as const)('Factory Execute parser with a leading assignment on %s', (platform, expected) => {
+  const original = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: platform });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: original });
+  });
+
+  it.each(['NO_COLOR=1 npx rg UserService src', '\nNO_COLOR=1 rg UserService src'])(
+    'reads %j',
+    (command) => {
+      expect(parseRgGrepPattern(command)).toBe(expected);
+    },
+  );
+});
+
 describe('Factory Execute pattern parser', () => {
   it.each([
     ['rg "User Service" src/', 'User Service'],
@@ -289,6 +311,21 @@ describe('Factory Execute pattern parser', () => {
     ['rg ab src/', null],
     // rg/grep only counts at command position, not as an argument.
     ['echo rg UserService', null],
+    // #3899: nor after a shell operator, where it may read a file, a pipe, or
+    // another directory after `cd`.
+    ["sed -i '' 's/old text/new text/' notes.md && grep -c 'direct tool' notes.md", null],
+    ['git log --oneline | grep UserService', null],
+    ['cd src && rg UserService', null],
+    ['rg -f patterns.txt src | grep -e UserService', null],
+    ['rg -e ab src | grep -e UserService', null],
+    ['git --version\ngrep UserService src', null],
+    ['rg UserService src\necho done', 'UserService'],
+    ['\nrg UserService src', 'UserService'],
+    ['\nNO_COLOR=1 \nrg UserService src', null],
+    // An assignment value the shell computes leaves no reliable query.
+    ['A=$(true rg UserService src)', null],
+    ['env A=$ARGS rg UserService src', null],
+    ["'A=foo' rg UserService src", null],
     // -f reads patterns from a file; later positionals are paths.
     ['rg -f patterns.txt src/', null],
     ['grep --file=patterns.txt src/', null],

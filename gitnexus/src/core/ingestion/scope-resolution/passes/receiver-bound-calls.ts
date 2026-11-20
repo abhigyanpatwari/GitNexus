@@ -751,6 +751,16 @@ interface ReceiverBoundOptions {
   readonly unresolvedInheritanceByClass?: ReadonlySet<string>;
 }
 
+function isReceiverSite(site: ReferenceSite): site is ReferenceSite & {
+  readonly kind: 'call' | 'read' | 'write';
+  readonly explicitReceiver: NonNullable<ReferenceSite['explicitReceiver']>;
+} {
+  return (
+    site.explicitReceiver !== undefined &&
+    (site.kind === 'call' || site.kind === 'read' || site.kind === 'write')
+  );
+}
+
 function emitReceiverBoundCallsInPass(
   graph: KnowledgeGraph,
   scopes: ScopeResolutionIndexes,
@@ -762,6 +772,12 @@ function emitReceiverBoundCallsInPass(
   model: SemanticModel,
   options: ReceiverBoundOptions,
 ): ReceiverBoundResult {
+  // Files without receiver sites still supply classes, inherited members and
+  // namespace targets to the workspace indexes when any receiver needs them.
+  const firstFile = parsedFiles.findIndex((file) => file.referenceSites.some(isReceiverSite));
+  if (firstFile === -1) {
+    return { emitted: 0, dispatchFanoutSkipped: 0, dispatchFanoutSkippedNames: [] };
+  }
   let emitted = 0;
   let dispatchFanoutSkipped = 0;
   const dispatchFanoutSkippedNames: string[] = [];
@@ -1046,8 +1062,35 @@ function emitReceiverBoundCallsInPass(
           );
           return def === 'ambiguous' ? undefined : def;
         });
+  const stableTypeBindings =
+    options.onSelectedCall === undefined && options.recordSourceBinding === undefined;
+  // Case 4 reads each simple binding at its declaration position. Its lookup
+  // omits the compound fold's decoration stripper, so it has its own answers.
+  const simpleTypeOwners = stableTypeBindings
+    ? new WeakMap<TypeRef, SymbolDefinition | null>()
+    : undefined;
+  const classBindingOfSimpleType = (
+    ref: TypeRef,
+    spelling: string,
+    lookup: ClassBindingLookup,
+  ): SymbolDefinition | undefined => {
+    const cached = simpleTypeOwners?.get(ref);
+    if (cached !== undefined) return cached ?? undefined;
+    const owner = resolveClassBindingForName(
+      ref.declaredAtScope,
+      spelling,
+      scopes,
+      undefined,
+      lookup,
+    );
+    simpleTypeOwners?.set(ref, owner ?? null);
+    return owner;
+  };
   const compoundOpts = {
     fieldFallback,
+    declaredReceiverOwners: stableTypeBindings
+      ? new WeakMap<TypeRef, SymbolDefinition | null>()
+      : undefined,
     elementTypeOf: provider.elementTypeOf,
     namespaceExportsIncludeImportedNames: provider.namespaceExportsIncludeImportedNames === true,
     namespaceMemberVisible,
@@ -1620,7 +1663,10 @@ function emitReceiverBoundCallsInPass(
   };
 
   const resolveReceiverNamespace = provider.createReceiverNamespaceResolver?.(scopes, index);
-  for (const parsed of parsedFiles) {
+  for (let fileIndex = firstFile; fileIndex < parsedFiles.length; fileIndex++) {
+    const parsed = parsedFiles[fileIndex];
+    const firstSite = parsed.referenceSites.findIndex(isReceiverSite);
+    if (firstSite === -1) continue;
     const namespaceCache = createNamespaceTargetCache(
       parsed,
       scopes,
@@ -1678,7 +1724,8 @@ function emitReceiverBoundCallsInPass(
     // Producer dependencies are local to the call's file. A source range is
     // attempted once initially, then only when a producer it awaited resolves.
     // This handles reverse capture order without rescanning the workspace.
-    const workQueue = options.selectedCalls === undefined ? undefined : [...parsed.referenceSites];
+    const workQueue =
+      options.selectedCalls === undefined ? undefined : parsed.referenceSites.slice(firstSite);
     const sites = workQueue ?? parsed.referenceSites;
     const waitingByProducer = new Map<string, Map<string, ReferenceSite>>();
     const waitForProducer = (producerKey: string, site: ReferenceSite): void => {
@@ -1693,9 +1740,9 @@ function emitReceiverBoundCallsInPass(
       waitingByProducer.delete(producerKey);
       for (const site of waiting.values()) workQueue?.push(site);
     };
-    for (const site of sites) {
-      if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
-      if (site.explicitReceiver === undefined) continue;
+    for (let i = workQueue === undefined ? firstSite : 0; i < sites.length; i++) {
+      const site = sites[i];
+      if (!isReceiverSite(site)) continue;
       // Primaries and terminal suppressions are stable across dependency
       // replay. Revisit only consumers whose producer was not known yet.
       if (
@@ -3144,13 +3191,7 @@ function emitReceiverBoundCallsInPass(
         );
         let ownerDef =
           qualifiedOwner === undefined
-            ? resolveClassBindingForName(
-                typeRef.declaredAtScope,
-                typeApplication ?? typeRef.rawName,
-                scopes,
-                undefined,
-                typeLookup,
-              )
+            ? classBindingOfSimpleType(typeRef, typeApplication ?? typeRef.rawName, typeLookup)
             : (qualifiedOwner ?? undefined);
         // `findClassBindingInScope(..., typeRef.rawName)` only works when
         // rawName is itself a class symbol reachable through scope bindings.
@@ -3166,22 +3207,19 @@ function emitReceiverBoundCallsInPass(
         // MANUFACTURED by erasing type arguments, where the file may never
         // have named it at all. The lookup above already answered that case on
         // grounds; re-asking it here without any would undo them.
-        const typeClaim = lookupNameClaim(typeRef.declaredAtScope, typeRef.rawName, scopes, {
-          position: typeRef.lookupPosition,
-          purpose: typeRef.lookupPurpose ?? 'type',
-        });
-        if (
-          ownerDef === undefined &&
-          qualifiedOwner !== null &&
-          typeApplication === undefined &&
-          !hasExplicitNameClaim(typeClaim, typeRef.rawName)
-        ) {
+        if (ownerDef === undefined && qualifiedOwner !== null && typeApplication === undefined) {
           const qnameIds = scopes.qualifiedNames.get(typeRef.rawName);
           if (qnameIds.length === 1) {
             const qdef = scopes.defs.get(qnameIds[0]!);
             if (qdef !== undefined && isClassLike(qdef.type)) {
-              ownerDef = qdef;
-              sourceBindingGrounded = false;
+              const claim = lookupNameClaim(typeRef.declaredAtScope, typeRef.rawName, scopes, {
+                position: typeRef.lookupPosition,
+                purpose: typeRef.lookupPurpose ?? 'type',
+              });
+              if (!hasExplicitNameClaim(claim, typeRef.rawName)) {
+                ownerDef = qdef;
+                sourceBindingGrounded = false;
+              }
             }
           }
         }

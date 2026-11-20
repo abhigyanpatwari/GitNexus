@@ -23,8 +23,7 @@
  *
  * Structural (source-parsed) rather than value-imported: both constants are
  * module-private, and exporting them purely to be testable would widen two
- * public surfaces to satisfy a test. Same idiom as
- * `detect-changes-local-id-stability.test.ts`.
+ * public surfaces to satisfy a test.
  */
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'fs';

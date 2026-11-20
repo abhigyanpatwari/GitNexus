@@ -25,13 +25,36 @@ describe('detect_changes EOL filtering', () => {
     ['unstaged', undefined, [...GUARD_FLAGS, '-U0']],
     ['staged', undefined, [...GUARD_FLAGS, '--staged', '-U0']],
     ['all', undefined, [...GUARD_FLAGS, 'HEAD', '-U0']],
-    ['compare', 'main', [...GUARD_FLAGS, 'main', '-U0']],
+    ['compare', 'main', [...GUARD_FLAGS, '-U0', '--end-of-options', 'main', '--']],
   ])('adds the EOL and prefix guards for %s scope', (scope, baseRef, expected) => {
     expect(buildDetectChangesDiffArgs(scope, baseRef)).toEqual(expected);
   });
 
   it('requires a base ref for compare scope', () => {
     expect(buildDetectChangesDiffArgs('compare')).toBeNull();
+  });
+
+  it('rejects an option-shaped compare base before spawning Git', () => {
+    expect(buildDetectChangesDiffArgs('compare', '--not-a-revision')).toBeNull();
+  });
+
+  it('treats a compare base as a revision even when a tracked file has the same name', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'gitnexus-compare-ref-'));
+    try {
+      initGitRepo(dir);
+      writeFileSync(path.join(dir, 'topic'), 'before\n');
+      commitAll(dir, 'base');
+      writeFileSync(path.join(dir, 'topic'), 'after\n');
+      expect(() =>
+        execFileSync('git', diffArgsFor('compare', 'topic'), { cwd: dir, stdio: 'pipe' }),
+      ).toThrow();
+      execFileSync('git', ['branch', 'topic'], { cwd: dir });
+      expect(
+        execFileSync('git', diffArgsFor('compare', 'topic'), { cwd: dir, encoding: 'utf8' }),
+      ).toContain('+after');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('suppresses CRLF-only changes but retains other whitespace changes', () => {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { getHeapStatistics } from 'node:v8';
 import { watchFile, unwatchFile } from 'node:fs';
-import { watch, type FSWatcher } from 'chokidar';
+import { loadWatch, type FSWatcher } from './watch-backend.js';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
 import {
   analyzeFailureMayHaveMutatedLiveIndex,
@@ -132,6 +132,7 @@ export async function resolveWatchOptions(
     ['--skills', cli.skills],
     ['--default-branch', cli.defaultBranch],
     ['--skip-agents-md', cli.skipAgentsMd],
+    ['--instruction-file', cli.instructionFile],
     ['--skip-skills', cli.skipSkills],
     ['--no-stats', cli.stats === false],
     ['--self-commit', cli.selfCommit],
@@ -164,6 +165,7 @@ export async function resolveWatchOptions(
       ['dropEmbeddings', config.dropEmbeddings],
       ['defaultBranch', config.defaultBranch],
       ['skipAgentsMd', config.skipAgentsMd !== undefined],
+      ['instructionFile', config.instructionFile !== undefined],
       ['skipSkills', config.skipSkills !== undefined],
       ['stats', config.stats !== undefined],
       ['springActuator', config.springActuator],
@@ -317,6 +319,7 @@ export async function startWatchFileLoop(
   /** Absolute `GITNEXUS_RC` path; its edits, replacements and removal reload config. */
   externalConfigPath?: string,
 ): Promise<WatchFileLoop> {
+  const watch = await loadWatch();
   let ignorePath = await createWatchIgnorePredicate(repoPath);
   let ignoreControlValid = true;
   let rearmPending = false;

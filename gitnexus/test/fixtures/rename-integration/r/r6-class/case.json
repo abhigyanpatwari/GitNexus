@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse an R6 class whose members and constructor are reached through $new and self.",
+  "categories": ["r6", "class", "negative", "unchanged-on-error"],
+  "target": { "name": "Account", "kind": "Class", "file": "account.R", "startLine": 0 },
+  "newName": "Wallet",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

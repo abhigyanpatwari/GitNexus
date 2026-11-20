@@ -52,7 +52,7 @@ For Claude Code, Cursor, and Codex, setup keeps an existing URL-based `gitnexus`
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
 
-> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query. Of the three, only **Antigravity** also carries the stale-index hint.
 
 ### Community Integrations
 
@@ -288,6 +288,7 @@ gitnexus analyze --no-parse-cache # Re-parse every source file, then rebuild gra
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
+gitnexus analyze --instruction-file CLAUDE.md  # Refresh only CLAUDE.md (or choose AGENTS.md)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits (does not skip standard skills; use --skip-skills; community --skills files are unaffected)
 gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
@@ -353,7 +354,7 @@ Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
 `--max-file-size`, `--max-processes`, `--max-process-branching`,
 `--max-process-trace-depth`, `--max-entry-point-candidates`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
-embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`,
+embedding flags, `--skills`, `--default-branch`, `--instruction-file`, `--skip-agents-md`,
 `--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`
 are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a warning.
 
@@ -540,7 +541,7 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig, R
 
 ### Language Feature Matrix
 
@@ -561,8 +562,11 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
+| R (experimental) | ✓  | ✓              | ✓       | ✓        | —                | ✓                     | ✓      | —          | —            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
+
+**R (experimental)** — `.r` / `.R` files, parsed with `@eagleoutice/tree-sitter-r`. Extracts functions, S4 classes, R6 classes and RefClass (`setRefClass`) classes with their methods and fields, and resolves `library()` / `require()` / `source()` imports to local packages and files, `obj$method()` and `pkg::fn()` calls, R6 `inherit=` / S4 `contains=` heritage and NAMESPACE-driven export status. Calls through function values, `do.call()`, infix operators and S3 dispatch are not linked, and `.Rmd` files, `box::use()` and external (CRAN) packages are not supported. With `--pdg` it also builds a control-flow graph (control dependence only; R has no reaching definitions), and `rename` handles plain functions while refusing classes, members, S3 methods, exported package functions and names spelled as strings. See [docs/languages/r-provider.md](../docs/languages/r-provider.md) for the full coverage and limits.
 
 ## Agent Skills
 

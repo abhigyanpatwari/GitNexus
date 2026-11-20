@@ -34,6 +34,12 @@ const builtins = new Set(builtinModules.flatMap((name) => [name, `node:${name}`]
 // Each exception is non-parser infrastructure reached by the conservative
 // ingestion boundary. New outside inputs must receive an explicit decision.
 const infrastructure: Record<string, string> = {
+  'core/ingestion/call-compatibility.ts:storage/git.ts':
+    'Type-only diff contract used when checking callers of changed declarations.',
+  'core/ingestion/languages/python/signature-changes.ts:storage/git.ts':
+    'Selects Git images for query-time signature comparisons.',
+  'core/ingestion/languages/python/signature-images.ts:core/group/extractors/fs-utils.ts':
+    'Reads bounded caller source for query-time signature comparisons.',
   'config/ignore-service.ts:storage/git.ts':
     'Ignore-file discovery changes the enumerated source inputs, already included in chunk keys.',
   'core/analyzer-identity.ts:storage/repo-manager.ts':
@@ -270,7 +276,7 @@ describe('parse artifact input ownership', () => {
     for (const file of PARSE_CACHE_BASE_FILES)
       expect(existsSync(path.join(sourceRoot, file)), file).toBe(true);
     for (const source of Object.values(GRAMMAR_SOURCES)) {
-      expect(source.packageName).toMatch(/^tree-sitter-/);
+      expect(source.packageName).toMatch(/^(?:@[a-z0-9_.-]+\/)?tree-sitter-/);
       expect(typeof source.load).toBe('function');
     }
   });

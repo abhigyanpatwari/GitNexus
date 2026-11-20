@@ -32,7 +32,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MAX_REPO_CONTROL_FILE_BYTES, readRepoControlFile } from '../config/repo-control-file.js';
 import { logger } from '../core/logger.js';
-import { normalizeRouterAliases } from '../core/ingestion/languages/go/route-config.js';
+import { providerAnalyzeConfig } from '../core/ingestion/languages/analyze-config.js';
 import {
   InvalidBranchError,
   sanitizeDetectedBranch,
@@ -67,13 +67,11 @@ type ValueKind =
   | 'embeddings'
   | 'branch'
   | 'path'
-  | 'router-aliases';
+  | 'instruction-file';
 
-interface KeySpec {
-  /** The `AnalyzeOptions` field this config key normalizes into. */
+type KeySpec = {
   target: keyof AnalyzeOptions;
-  kind: ValueKind;
-}
+} & ({ kind: ValueKind } | { normalize: (value: unknown, source: string) => unknown });
 
 /**
  * Allowed `.gitnexusrc` keys and how each maps onto `AnalyzeOptions`.
@@ -92,6 +90,7 @@ const KEY_SPECS: Record<string, KeySpec> = {
   skipAgentsMd: { target: 'skipAgentsMd', kind: 'boolean' },
   skipContextFiles: { target: 'skipAgentsMd', kind: 'boolean' },
   skipAiContext: { target: 'skipAgentsMd', kind: 'boolean' },
+  instructionFile: { target: 'instructionFile', kind: 'instruction-file' },
   skipSkills: { target: 'skipSkills', kind: 'boolean' },
   pdg: { target: 'pdg', kind: 'boolean' },
   indexOnly: { target: 'indexOnly', kind: 'boolean' },
@@ -119,13 +118,7 @@ const KEY_SPECS: Record<string, KeySpec> = {
   // built-in convention set, is otherwise invisible to route_map consumers.
   // Listing it here adds it to the cross-file consumer scan.
   fetchWrappers: { target: 'fetchWrappers', kind: 'string-array' },
-  // Go router types reached through an in-house wrapper package that are the
-  // gin/echo engine (`type Engine = gin.Engine`). The indexer cannot read the
-  // dependency's source, so the equivalence is declared, never guessed.
-  goRouterAliases: { target: 'routeFrameworkAliases', kind: 'router-aliases' },
-  // Go functions that wrap a route handler (`common.Wrapper(api.CreateJob)`);
-  // the wrapped first argument becomes the route's handler.
-  goHandlerWrappers: { target: 'routeHandlerWrappers', kind: 'string-array' },
+  ...providerAnalyzeConfig,
   // Explicit local Actuator snapshot input (#2418). The path itself is safe in
   // project config; payload contents are never copied into the graph wholesale.
   springActuator: { target: 'springActuator', kind: 'path' },
@@ -189,13 +182,23 @@ export function validateBranchName(value: string, source: string): string {
 }
 
 const normalizeValue = (
-  kind: ValueKind,
+  spec: KeySpec,
   value: unknown,
   key: string,
   configSource: string,
 ): unknown => {
   const source = `${configSource} "${key}"`;
-  switch (kind) {
+  if ('normalize' in spec) {
+    try {
+      return spec.normalize(value, source);
+    } catch (error) {
+      throw new GitNexusRcError((error as Error).message);
+    }
+  }
+  switch (spec.kind) {
+    case 'instruction-file':
+      if (value === 'AGENTS.md' || value === 'CLAUDE.md') return value;
+      throw new GitNexusRcError(`${source} must be AGENTS.md or CLAUDE.md.`);
     case 'boolean':
       if (typeof value !== 'boolean') {
         throw new GitNexusRcError(`${source} must be a boolean (true/false).`);
@@ -316,12 +319,6 @@ const normalizeValue = (
         `${source} must be a boolean or a non-negative integer (node cap; 0 disables the cap).`,
       );
     }
-    case 'router-aliases':
-      try {
-        return normalizeRouterAliases(value, source);
-      } catch (error) {
-        throw new GitNexusRcError((error as Error).message);
-      }
     default:
       // Exhaustive — kept for forward-compat if a new kind is added.
       throw new GitNexusRcError(`${source}: unsupported config value kind.`);
@@ -357,7 +354,7 @@ const normalizeLevel = (
       );
     }
     setBy.set(spec.target, key);
-    (out as Record<string, unknown>)[spec.target] = normalizeValue(spec.kind, value, key, source);
+    (out as Record<string, unknown>)[spec.target] = normalizeValue(spec, value, key, source);
   }
 
   return out;

@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that a later top-level variable assigns: the assignment would delete the renamed function.",
+  "categories": ["name-collision", "variable", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "vars.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}

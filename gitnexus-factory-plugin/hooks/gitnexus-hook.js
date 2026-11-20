@@ -95,11 +95,13 @@ function tokenizeShellWords(command) {
     } else if (char === "'" || char === '"') {
       quote = char;
       hasToken = true;
-    } else if (/\s/.test(char)) {
+    } else if (char === '\n' && tokens.length === 0 && !hasToken) {
+      // A blank line before the first command ends nothing.
+    } else if (/\s/.test(char) && char !== '\n') {
       if (hasToken) tokens.push(current);
       current = '';
       hasToken = false;
-    } else if (char === ';' || char === '|' || char === '&') {
+    } else if (char === ';' || char === '\n' || char === '|' || char === '&') {
       if (hasToken) tokens.push(current);
       current = '';
       hasToken = false;
@@ -108,7 +110,8 @@ function tokenizeShellWords(command) {
         tokens.push(char + char);
         index += 1;
       } else {
-        tokens.push(char);
+        // A newline ends a command like `;`.
+        tokens.push(char === '\n' ? ';' : char);
       }
     } else {
       current += char;
@@ -123,7 +126,20 @@ function tokenizeShellWords(command) {
 
 /** Recover the search pattern from an `rg`/`grep` command line. */
 function parseRgGrepPattern(cmd) {
-  const tokens = tokenizeShellWords(cmd);
+  // In a POSIX shell, assignments before the command (`NO_COLOR=1 rg x`) belong
+  // to it. Read them on the raw line, where a quoted `'A=1'` (a command name)
+  // keeps its quotes. A `$NAME` value is read past; a command substitution
+  // (`$(...)`, a backtick) or an array value is left in place and ends the
+  // read. On Windows the shell may be PowerShell, which runs `NAME=value`
+  // as a command, so they are not read past there.
+  // Blank lines may precede the assignments. The command must follow the last
+  // assignment on the same line.
+  const leadingAssignments =
+    /^[ \t\n]*(?:[A-Za-z_]\w*=(?:[^\s"'\\;&|<>$`()]|\$(?=[A-Za-z_])|\\.|"(?:[^"\\$`]|\$(?=[A-Za-z_])|\\.)*"|'[^']*')*[ \t]+)+(?=\S)/;
+  const line = typeof cmd === 'string' ? cmd : '';
+  const tokens = tokenizeShellWords(
+    process.platform === 'win32' ? line : line.replace(leadingAssignments, ''),
+  );
   let foundCmd = false;
   let skipNext = false;
   let skipNextAsPattern = false;
@@ -186,56 +202,49 @@ function parseRgGrepPattern(cmd) {
       .pop()
       ?.replace(/\.(exe|cmd|bat)$/i, '');
 
-  let previousToken;
   let seenWrapper = false;
   let searchCommand = null;
   for (const token of tokens) {
+    // The search ends at the first operator. The tokenizer drops quotes, so a
+    // quoted '|' stops here too: that loses a query, it never adds a wrong one.
+    if (connectors.has(token)) break;
     if (skipNext) {
       skipNext = false;
       if (skipNextAsPattern) {
         skipNextAsPattern = false;
         if (token.length >= 3) return token;
       }
-      previousToken = token;
       continue;
     }
     if (!foundCmd) {
-      if (connectors.has(token)) {
-        seenWrapper = false;
-        previousToken = token;
+      // After a wrapper such as `env` or `sudo`, `NAME=value` is an assignment
+      // that wrapper reads, quoted or not. It is an ordinary argument to the
+      // shell, which splits a `$NAME` value on blanks and computes a
+      // substitution, so a value with `$`, a backtick or parentheses leaves no
+      // reliable query.
+      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
+        if (/[$`()]/.test(token)) return null;
         continue;
       }
       const commandName = basename(token);
       if (wrappers.has(commandName)) {
         seenWrapper = true;
-        previousToken = token;
         continue;
       }
       if (seenWrapper && token.startsWith('-')) {
         const flagName = token.split('=', 1)[0];
         if (!token.includes('=') && wrapperFlagsWithValues.has(flagName)) skipNext = true;
-        previousToken = token;
         continue;
       }
-      if (seenWrapper && /^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) {
-        previousToken = token;
-        continue;
-      }
-      const atCommandPosition =
-        previousToken === undefined ||
-        connectors.has(previousToken) ||
-        wrappers.has(basename(previousToken)) ||
-        seenWrapper;
-      if (atCommandPosition && (commandName === 'rg' || commandName === 'grep')) {
-        foundCmd = true;
-        searchCommand = commandName;
-      } else if (seenWrapper) {
-        seenWrapper = false;
-      }
-      previousToken = token;
+      // Only a search that starts the line is read. One after `&&`, `;` or `|`
+      // may read a file the command names, the output of the command before
+      // it, or another directory after `cd`, and the line alone does not say
+      // which.
+      if (commandName !== 'rg' && commandName !== 'grep') return null;
+      foundCmd = true;
+      searchCommand = commandName;
       continue;
     }
-    previousToken = token;
     if (endOfOptions) {
       if (explicitPatternSeen || patternFileSeen) continue;
       return token.length >= 3 ? token : null;

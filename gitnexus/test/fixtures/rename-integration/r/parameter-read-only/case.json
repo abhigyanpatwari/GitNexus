@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename a function while same-named parameters are declared but never called: a parameter that is not called does not shadow a call, so only the definition is renamed.",
+  "categories": ["parameter-shadowing", "positive", "same-file"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 1
+  },
+  "edges": []
+}

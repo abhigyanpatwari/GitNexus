@@ -1,7 +1,7 @@
 # Language Ingestion Gap Inventories
 
 These inventories are the starting point for language-specific plans. There is one
-`<language>-ingestion-gaps.md` file for each of the 18 languages in
+`<language>-ingestion-gaps.md` file for each of the 19 languages in
 [SCOPE_RESOLVERS](../../gitnexus/src/core/ingestion/scope-resolution/pipeline/registry.ts).
 Names match provider directories; `jvm` is shared infrastructure, not another language.
 
@@ -23,12 +23,13 @@ receiver examples do not establish whole-language, CFG/PDG or rename completenes
 | [C#](csharp-ingestion-gaps.md)               | Trace typed array receivers and qualified nullable fields.               |
 | [Dart](dart-ingestion-gaps.md)               | Correct awaited-call ownership; trace indexed and generic receivers.     |
 | [Go](go-ingestion-gaps.md)                   | Expand ownership coverage beyond the passing receiver matrix.            |
-| [Java](java-ingestion-gaps.md)               | Trace array-element receiver typing.                                     |
+| [Java](java-ingestion-gaps.md)               | Trace nested indexing of a `User[][]` parameter (JAVA-03).               |
 | [JavaScript](javascript-ingestion-gaps.md)   | Preserve JSDoc container evidence for indexed receivers.                 |
 | [Kotlin](kotlin-ingestion-gaps.md)           | Inventory companion and inherited-receiver limits.                       |
 | [Objective-C](objective-c-ingestion-gaps.md) | Add receiver measurements without weakening dynamic-dispatch boundaries. |
 | [PHP](php-ingestion-gaps.md)                 | Retain PHPDoc container types and establish namespace owners.            |
 | [Python](python-ingestion-gaps.md)           | Audit constructor-field and module ownership coverage.                   |
+| [R](r-ingestion-gaps.md)                     | Type receivers beyond same-function constructors; revisit R-02 and R-12. |
 | [Ruby](ruby-ingestion-gaps.md)               | Isolated by #3871 (RUBY-01); add recall behind that guard.               |
 | [Rust](rust-ingestion-gaps.md)               | Measure conservative smart-pointer limits before widening them.          |
 | [Swift](swift-ingestion-gaps.md)             | Type indexed receivers, then revalidate historical reports.              |
@@ -51,12 +52,12 @@ The receiver harness has separate states:
 - **RESOLVES:** the terminal call reaches its full expected declaration ID, with no same-named edge to a different owner. This proves only the supplied fixture.
 - **WRONG-TARGET:** at least one same-named call reaches another declaration, including any guessed edge from an untyped control.
 - **VISIBLE-GAP:** no matching edge, with a recorded receiver-unresolved drop. Some cells intentionally represent untyped negative controls.
-- **INVISIBLE-GAP:** neither the edge nor the receiver drop is recorded; drop counts cannot reveal this loss.
+- **INVISIBLE-GAP:** neither the edge nor a counted receiver drop is recorded; drop counts cannot reveal this loss. An informational note from the shared receiver pass is not in any drop count, so consumers that derive impact bounds from counted unresolved receivers do not see it.
 - **N/A:** the harness declares this spelling inapplicable to its measurement. Read its reason before interpreting language support.
 - **GRAMMAR-UNAVAILABLE:** the parser did not load. No behavior was measured; this is not a product-gap verdict.
 
-An all-N/A row (C or COBOL) does not mean complete ingestion. Vue now has an executable SFC row. Zig and
-Objective-C have dedicated tests but no row in this shape arm. A fully resolving
+An all-N/A row (C or COBOL) does not mean complete ingestion. Vue now has an executable SFC row. Zig,
+Objective-C and R have dedicated tests but no row in this shape arm (R: the receiver corpus linked from its inventory). A fully resolving
 row also proves only its fixed examples. The baseline's count arm includes
 external and unknown receivers, so total drops are not an actionable bug count.
 

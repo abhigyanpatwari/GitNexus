@@ -1,4 +1,4 @@
-import type { ScopeId } from 'gitnexus-shared';
+import { nameClaimsFor, scopeImportsForName, type ScopeId } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 
 interface LookupCache {
@@ -83,7 +83,8 @@ export function cachedCallerLookupStart(start: ScopeId, scopes: ScopeResolutionI
 
 /** Path-compress scopes with no possible fact for this spelling. This caches
  * navigation only; ownership, source-position filtering and targets still go
- * through lookupLexicalName. Policies and imports are conservative barriers.
+ * through lookupLexicalName. Both lexical and finalized imports can bind a
+ * name, depending on the caller. Look up the spelling in both snapshots.
  * A lookup that skips enclosing classes depends on every scope on its way, so
  * it keeps its own start. The entry cap bounds memory by scope count even with
  * many distinct names. */
@@ -120,9 +121,9 @@ export function cachedNameLookupStart(
       scope.typeBindings.has(name) ||
       scope.lexicalNames?.has(name) ||
       scope.ownsReceivers?.has(name) ||
-      (scope.nameClaims?.length ?? 0) > 0 ||
-      scope.imports.length > 0 ||
-      (scopes.imports.edgesAt(id)?.length ?? 0) > 0 ||
+      nameClaimsFor(scope, name).length > 0 ||
+      scopeImportsForName(scope.imports, name).length > 0 ||
+      scopeImportsForName(scopes.imports.edgesAt(id) ?? scope.imports, name).length > 0 ||
       scopes.bindings.get(id)?.has(name) ||
       scopes.bindingAugmentations.get(id)?.has(name) ||
       scopes.accessibleNamespacesByScope?.has(id) ||

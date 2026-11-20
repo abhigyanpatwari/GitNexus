@@ -389,6 +389,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -418,6 +419,7 @@ jobs:
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
+          GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: >-
           npx vitest run
           --shard="$SHARD"
@@ -649,6 +651,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -683,6 +686,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
           GITNEXUS_TEST_REPORT: ${{ matrix.os }}-${{ matrix.shard }}.json
+          GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: npx tsx scripts/run-cross-platform.ts --shard="$SHARD"
         working-directory: gitnexus
       - name: Upload platform execution report
@@ -1089,6 +1093,7 @@ jobs:
           set -euo pipefail
           npm ci
           npm run build
+          node test/compat/watch-backend.mjs chokidar-v6
         working-directory: gitnexus
       # Switch to the engines-floor Node AFTER building — native deps built on
       # 22.x load across the whole 22.x ABI line, and nothing installs after this
@@ -1103,6 +1108,7 @@ jobs:
           set -euo pipefail
           node --version
           node --version | grep -q '^v22\.18\.' || { echo "expected Node 22.18.x" >&2; exit 1; }
+          node test/compat/watch-backend.mjs chokidar
           for m in \
             core/embeddings/runtime-install \
             core/embeddings/onnxruntime-node-resolver \
@@ -1419,14 +1425,10 @@ jobs:
         run: node --import tsx bench/swift-package-imports/measure.mjs --check
         working-directory: gitnexus
 
-      - name: MCP tools/list countRepos vs listRepos guards (#3259, #3184)
+      - name: MCP discovery and tools/list vs Git freshness (#3259, #3979)
         if: ${{ !cancelled() }}
-        # Build-free: exact registry cardinality + tool-roster + schema-flag
-        # floors, then ratio timing only (countRepos/listRepos and
-        # listTools/listRepos). No millisecond ceiling — this repo has
-        # already been bitten by a fixed ms budget. Isolated GITNEXUS_HOME;
-        # fixture is N real git repos so listRepos pays rev-list. See
-        # bench/mcp-tools-list/measure.mjs.
+        # Compare validated counting, listing and tools/list to a full fixture
+        # freshness check. The benchmark also checks the roster and schema.
         run: node --import tsx bench/mcp-tools-list/measure.mjs --check
         working-directory: gitnexus
 

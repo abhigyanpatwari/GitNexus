@@ -22,7 +22,8 @@
  * an import-resolved edge: a reader who cannot tell the two apart has no way
  * to discount the guess.
  */
-export const GLOBAL_NAME_FALLBACK_REASON = 'global-name-fallback';
+import { GLOBAL_NAME_FALLBACK_REASON } from 'gitnexus-shared';
+export { GLOBAL_NAME_FALLBACK_REASON };
 
 /**
  * Reasons excluded from process tracing and large-graph community detection.
@@ -49,3 +50,8 @@ export const isHeuristicEdgeReason = (reason: string): boolean =>
  * (`queryImportersBatch`).
  */
 export const MODULE_MEMBERSHIP_REASON = 'module-membership';
+
+/** Persisted IMPORTS reason values shared by emitters and initialization-cycle checks. */
+export const DOCUMENTATION_LINK_REASON = 'markdown-link';
+export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
+export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';

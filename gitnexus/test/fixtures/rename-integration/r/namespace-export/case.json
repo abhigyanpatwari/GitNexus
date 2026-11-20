@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a package function that NAMESPACE exports, because the export entry would go stale.",
+  "categories": ["namespace", "package-export", "negative", "unchanged-on-error"],
+  "target": { "name": "compute", "kind": "Function", "file": "R/lib.R", "startLine": 0 },
+  "newName": "calculate",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

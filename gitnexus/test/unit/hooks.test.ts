@@ -64,6 +64,14 @@ const PLUGIN_HOOK = path.resolve(
   'gitnexus-hook.js',
 );
 const CJS_RUNTIME = path.join(path.dirname(CJS_HOOK), 'claude-hook-runtime.cjs');
+const ANTIGRAVITY_HOOK = path.resolve(
+  __dirname,
+  '..',
+  '..',
+  'hooks',
+  'antigravity',
+  'gitnexus-antigravity-hook.cjs',
+);
 const CJS_HOOK_DB_PROBE = path.resolve(
   __dirname,
   '..',
@@ -263,7 +271,10 @@ function loadRegistryQuery() {
       lbugPath: string;
       metadata: { lastCommit?: string } | null;
     } | null;
-    resolveHookRepo: (cwd: string) => {
+    resolveHookRepo: (
+      cwd: string,
+      spawnCwd?: string,
+    ) => {
       path: string;
       storagePath: string;
       lbugPath: string;
@@ -617,46 +628,50 @@ describe('extractPattern coverage', () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       expect(source).toContain("toolName === 'Glob'");
     });
+  }
 
-    it(`${label} hook extracts pattern from Bash grep/rg commands`, () => {
+  // Both adapters read shell searches through the shared helper. The commands
+  // themselves are covered in search-command-pattern.test.ts.
+  for (const [label, hookPath, shell] of [
+    ['CJS', CJS_RUNTIME, 'BASH_TOOL_SHELL'],
+    ['Antigravity', ANTIGRAVITY_HOOK, 'SHELL'],
+  ] as const) {
+    it(`${label} hook reads shell searches through the shared helper`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toMatch(/\\brg\\b.*\\bgrep\\b/);
+      expect(source).toContain("require('./search-command-pattern.cjs')");
+      expect(source).toContain(`searchCommandPatterns(toolInput.command, ${shell})`);
+      expect(source).toContain("['augment', '--', ...patterns]");
+      expect(source).not.toMatch(/\\brg\\b.*\\bgrep\\b/);
     });
   }
 });
 
-// ─── PostToolUse: git mutation regex coverage ───────────────────────
+// ─── PostToolUse: git mutation detection ────────────────────────────
 
-describe('Git mutation regex', () => {
-  const GIT_REGEX = /\\bgit\\s\+\(commit\|merge\|rebase\|cherry-pick\|pull\)/;
-
-  for (const [label, hookPath] of [['CJS', CJS_RUNTIME]] as const) {
-    it(`${label} hook detects git commit`, () => {
+describe('Git mutation detection', () => {
+  // Both adapters ask the shared helper, so they recognize the same commands.
+  // The commands themselves are covered in git-mutation-command.test.ts.
+  for (const [label, hookPath] of [
+    ['CJS', CJS_RUNTIME],
+    ['Antigravity', ANTIGRAVITY_HOOK],
+  ] as const) {
+    it(`${label} hook detects git mutations through the shared helper`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('commit');
-    });
-
-    it(`${label} hook detects git merge`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('merge');
-    });
-
-    it(`${label} hook detects git rebase`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('rebase');
-    });
-
-    it(`${label} hook detects git cherry-pick`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('cherry-pick');
-    });
-
-    it(`${label} hook detects git pull`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      // 'pull' in the regex alternation
-      expect(source).toMatch(/commit\|merge\|rebase\|cherry-pick\|pull/);
+      expect(source).toContain("require('./git-mutation-command.cjs')");
+      expect(source).toContain('gitMutationDirectories(command, ');
+      expect(source).not.toMatch(/commit\|merge\|rebase\|cherry-pick\|pull/);
     });
   }
+
+  // Reading the command resolves each `-C` path on disk, which a failed
+  // command must not cause.
+  it('CJS hook checks the exit code before it reads the command', () => {
+    const source = fs.readFileSync(CJS_RUNTIME, 'utf-8');
+    const handler = source.slice(source.indexOf('function handlePostToolUse'));
+    const exitCodeCheck = handler.indexOf('toolOutput.exit_code !== 0');
+    expect(exitCodeCheck).toBeGreaterThan(-1);
+    expect(exitCodeCheck).toBeLessThan(handler.indexOf('gitMutationDirectories(command, '));
+  });
 });
 
 // ─── Source code regression: PreToolUse concurrency guard (#1486) ──
@@ -1397,7 +1412,7 @@ describe('PreToolUse source order: tool guard before registry scan', () => {
       expect(end).toBeGreaterThan(start);
       const preBody = source.slice(start, end);
       const grepGuardIdx = preBody.indexOf("toolName !== 'Grep'");
-      const extractIdx = preBody.indexOf('extractPattern(');
+      const extractIdx = preBody.indexOf('extractPatterns(');
       const resolveIdx = preBody.indexOf('resolveHookRepo(');
       expect(grepGuardIdx).toBeGreaterThanOrEqual(0);
       expect(extractIdx).toBeGreaterThan(grepGuardIdx);
@@ -1418,8 +1433,8 @@ describe('Hook slot gates the DB-owner probe (source order, #2163)', () => {
 
   // T1: pin cheap guards → acquireHookSlot → probe. The probe spawns lsof/ps,
   // so it must sit BEHIND the per-repo slot cap; and the acquire must stay
-  // AFTER the cheap gating (extractPattern), or every tool call churns slot
-  // files. The antigravity adapter splits the cheap gating (extractPattern in
+  // AFTER the cheap gating (extractPatterns), or every tool call churns slot
+  // files. The antigravity adapter splits the cheap gating (extractPatterns in
   // buildAfterToolContext) from probe+augment (runAugment), so its slice
   // spans both functions to express the same call-order contract.
   for (const [label, hookPath, sliceStart, sliceEnd] of [
@@ -1431,14 +1446,14 @@ describe('Hook slot gates the DB-owner probe (source order, #2163)', () => {
       'function buildStaleIndexHint',
     ],
   ] as const) {
-    it(`${label}: extractPattern → acquireHookSlot → hasGitNexusServerOwner`, () => {
+    it(`${label}: extractPatterns → acquireHookSlot → hasGitNexusServerOwner`, () => {
       const source = fs.readFileSync(hookPath, 'utf-8');
       const start = source.indexOf(sliceStart);
       const end = source.indexOf(sliceEnd);
       expect(start).toBeGreaterThanOrEqual(0);
       expect(end).toBeGreaterThan(start);
       const slice = source.slice(start, end);
-      const patternIdx = slice.indexOf('extractPattern(');
+      const patternIdx = slice.indexOf('extractPatterns(');
       const acquireIdx = slice.indexOf('acquireHookSlot(');
       const probeIdx = slice.indexOf('hasGitNexusServerOwner(');
       expect(patternIdx).toBeGreaterThanOrEqual(0);
@@ -1447,14 +1462,14 @@ describe('Hook slot gates the DB-owner probe (source order, #2163)', () => {
     });
   }
 
-  it('Antigravity: extractPattern appears before resolveHookRepo', () => {
+  it('Antigravity: extractPatterns appears before resolveHookRepo', () => {
     const source = fs.readFileSync(ANTIGRAVITY_HOOK, 'utf-8');
     const start = source.indexOf('function buildAfterToolContext');
     const end = source.indexOf('function buildMcpQueryHint');
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const body = source.slice(start, end);
-    const extractIdx = body.indexOf('extractPattern(');
+    const extractIdx = body.indexOf('extractPatterns(');
     const resolveIdx = body.indexOf('resolveHookRepo(');
     expect(extractIdx).toBeGreaterThanOrEqual(0);
     expect(resolveIdx).toBeGreaterThan(extractIdx);
@@ -1582,6 +1597,8 @@ describe.skipIf(process.platform === 'win32')(
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
+        'git-mutation-command.cjs',
+        'search-command-pattern.cjs',
         'win-rm-list-json.ps1',
       ]) {
         fs.copyFileSync(path.join(claudeHooksDir, helper), path.join(stageDir, helper));
@@ -1908,6 +1925,8 @@ describe.skipIf(process.platform !== 'linux')(
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
+        'git-mutation-command.cjs',
+        'search-command-pattern.cjs',
       ]) {
         fs.copyFileSync(path.join(hookSrcDir, f), path.join(stagedDir, f));
       }
@@ -2233,6 +2252,70 @@ describe('PreToolUse augmentation filtering (integration)', () => {
         expect(output!.hookEventName).toBe('PreToolUse');
         expect(output!.additionalContext).toContain('[GitNexus] 1 related symbol found');
       } finally {
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
+    // Every `-e` pattern of a search reaches `gitnexus augment`.
+    it(`${label}: passes every pattern of a Bash search to augment`, () => {
+      const argsPath = path.join(os.tmpdir(), 'gn-hook-bash-args-' + process.pid + '-' + label);
+      const binDir = createHookToolDir({
+        gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+        gitnexusArgsPath: argsPath,
+      });
+      try {
+        fs.rmSync(argsPath, { force: true });
+        runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command: 'rg -e validateUser -e hashPassword src' },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: hookEnv(binDir) },
+        );
+        const args = JSON.parse(fs.readFileSync(argsPath, 'utf8')) as string[];
+        expect(args.slice(-4)).toEqual(['augment', '--', 'validateUser', 'hashPassword']);
+      } finally {
+        fs.rmSync(argsPath, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+
+    // #3899: a grep after `&&` counts matches in a file, it is no code search.
+    it(`${label}: queries the graph only for a Bash search that starts the line`, () => {
+      const markerPath = path.join(os.tmpdir(), 'gn-hook-bash-search-' + process.pid + '-' + label);
+      const binDir = createHookToolDir({
+        gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
+        gitnexusMarkerPath: markerPath,
+      });
+      const run = (command: string) =>
+        runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Bash',
+            tool_input: { command },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: hookEnv(binDir) },
+        );
+      try {
+        fs.rmSync(markerPath, { force: true });
+        const filter = run("sed -i '' 's/a/b/' notes.md && grep -c 'validateUser' notes.md");
+        expect(parseHookOutput(filter.stdout)).toBeNull();
+        expect(fs.existsSync(markerPath)).toBe(false);
+
+        const search = run('rg validateUser src');
+        expect(parseHookOutput(search.stdout)!.additionalContext).toContain(
+          '[GitNexus] 1 related symbol found',
+        );
+        expect(fs.existsSync(markerPath)).toBe(true);
+      } finally {
+        fs.rmSync(markerPath, { force: true });
         fs.rmSync(binDir, { recursive: true, force: true });
       }
     });
@@ -3823,8 +3906,9 @@ describe('PostToolUse staleness detection with gitnexus.json (integration)', () 
     it(`${label}: prefers gitnexus.json over meta.json when both are present (dual-write steady state)`, () => {
       const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
       const metaJsonPath = path.join(gitNexusDir, 'meta.json');
-      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'freshcommit', stats: {} }));
-      fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'stalecommit', stats: {} }));
+      // Only a commit id is echoed in the hint, so the two are spelled as ids.
+      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'f'.repeat(40), stats: {} }));
+      fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: '5'.repeat(40), stats: {} }));
 
       try {
         const result = runHook(hookPath, {
@@ -3839,7 +3923,7 @@ describe('PostToolUse staleness detection with gitnexus.json (integration)', () 
         expect(output).not.toBeNull();
         // Reports staleness against gitnexus.json's commit, not meta.json's —
         // proves gitnexus.json is consulted first.
-        expect(output!.additionalContext).toContain('freshco');
+        expect(output!.additionalContext).toContain('last indexed: fffffff)');
       } finally {
         fs.rmSync(gitnexusJsonPath, { force: true });
         fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
@@ -4778,6 +4862,9 @@ describe('Linked git worktree resolution', () => {
         const output = parseHookOutput(result.stdout);
         expect(output).not.toBeNull();
         expect(output!.additionalContext).toContain('stale');
+        // `analyze` clears the hint when it runs in the worktree, so the hint
+        // must not send the agent to the canonical repo.
+        expect(output!.additionalContext).not.toContain(mainRepo);
       } finally {
         fs.rmSync(root, { recursive: true, force: true });
       }
@@ -5092,6 +5179,62 @@ describe('Hook metadata-filename drift guard', () => {
       expect(source).toContain('gitnexus.json');
     });
   }
+});
+
+// Windows looks for `git.exe` in the working directory of a child before PATH.
+// A hook that read a directory in a command has git started somewhere else and
+// passes the directory with -C. The stand-in is a shell script, hence not on
+// Windows.
+describe.skipIf(process.platform === 'win32')('Hook registry resolver spawn directory', () => {
+  let root: string;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-resolver-spawn-'));
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('starts git in the directory the caller names and finds the same repository', () => {
+    const repoDir = path.join(root, 'repo');
+    const sessionDir = path.join(root, 'session');
+    const storagePath = path.join(repoDir, '.gitnexus');
+    const bin = path.join(root, 'bin');
+    const log = path.join(root, 'started-in.log');
+    for (const dir of [repoDir, sessionDir, storagePath, bin]) fs.mkdirSync(dir);
+    initRepoWithCommit(repoDir);
+    fs.writeFileSync(path.join(storagePath, 'gitnexus.json'), JSON.stringify({ lastCommit: 'a' }));
+    writeHookRegistry(path.join(root, 'home'), [{ name: 'repo', path: repoDir, storagePath }]);
+
+    const realGit = spawnSync('sh', ['-c', 'command -v git'], { encoding: 'utf-8' }).stdout;
+    fs.writeFileSync(
+      path.join(bin, 'git'),
+      `#!/bin/sh\npwd -P >> "${log}"\nexec "${realGit.trim()}" "$@"\n`,
+      { mode: 0o755 },
+    );
+    vi.stubEnv('GITNEXUS_HOME', path.join(root, 'home'));
+    vi.stubEnv('GITNEXUS_STORAGE_PATH', undefined);
+    vi.stubEnv('GITNEXUS_STORAGE_ROOT', undefined);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`);
+    const startedIn = () => {
+      const lines = fs.readFileSync(log, 'utf-8').trim().split('\n');
+      fs.rmSync(log);
+      return [...new Set(lines)];
+    };
+
+    const resolver = loadRegistryQuery();
+    const nested = path.join(repoDir, 'src');
+    fs.mkdirSync(nested);
+
+    const direct = resolver.resolveHookRepo(nested);
+    expect(direct).toMatchObject({ path: repoDir, storagePath });
+    expect(startedIn()).toEqual([fs.realpathSync(nested)]);
+
+    expect(resolver.resolveHookRepo(nested, sessionDir)).toEqual(direct);
+    expect(startedIn()).toEqual([fs.realpathSync(sessionDir)]);
+  });
 });
 
 describe('Hook registry resolver drift guard', () => {

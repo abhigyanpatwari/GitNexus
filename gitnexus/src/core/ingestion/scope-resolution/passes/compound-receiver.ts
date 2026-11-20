@@ -112,6 +112,9 @@ interface ResolveCompoundReceiverOptions {
    * matches the returned class and reads the arguments off that spelling.
    */
   readonly recordReceiverType?: ReceiverTypeRecorder;
+  /** Owners of declaration-anchored types under this provider's lookup hooks.
+   *  A receiver pass may share this map while its scope bindings are immutable. */
+  readonly declaredReceiverOwners?: WeakMap<TypeRef, SymbolDefinition | null>;
   /** When true (default), if method lookup fails on the receiver's
    *  class, walk its fields and try the lookup on each field's class.
    *  Phase-9C "unified fixpoint" — Python-shaped heuristic. */
@@ -510,15 +513,21 @@ function classOfDeclaredType(
   // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
   // would let a sixth quietly not — which is the hole this helper exists to
   // close, one level up.
-  const lookup: ClassBindingLookup = {
-    position: typeRef.lookupPosition,
-    purpose: typeRef.lookupPurpose ?? 'type',
-    onNameFallback: options.onNameFallback,
-    qualifiedTypeSpellings: options.qualifiedTypeSpellings,
-  };
   // The report keeps the spelling it always had, whichever lookup answers: it
   // is read only for type ARGUMENTS (#2912), and the qualified spelling has none.
   const spelling = erasedTypeApplication(typeRef) ?? typeRef.rawName;
+  // The cascade can omit the provider's stripper. Its answer may differ from
+  // the folded lookup of the same declaration. Fallback observers also need
+  // the actual lookup at each site to record whether its binding was grounded.
+  const owners =
+    stripDecoration === options.stripTypePreservingDecoration &&
+    options.onNameFallback === undefined
+      ? options.declaredReceiverOwners
+      : undefined;
+  const cached = owners?.get(typeRef);
+  if (cached !== undefined) {
+    return noteReceiverType(options.recordReceiverType, spelling, cached ?? undefined);
+  }
   // An awaitable WRAPPER never names an owner. A spelling the language can
   // unwrap under `await` (`Future<User>`, carried whole by a provider that
   // keeps the wrapper so a member of the un-awaited value is not typed as a
@@ -531,8 +540,15 @@ function classOfDeclaredType(
   // advances it; a member folded directly off it declines. A language that
   // strips the wrapper at capture time answers no await route and is unchanged.
   if (options.elementTypeOf?.(spelling, { kind: 'await' }) !== undefined) {
-    return noteReceiverType(options.recordReceiverType, spelling, undefined);
+    owners?.set(typeRef, null);
+    return undefined;
   }
+  const lookup: ClassBindingLookup = {
+    position: typeRef.lookupPosition,
+    purpose: typeRef.lookupPurpose ?? 'type',
+    onNameFallback: options.onNameFallback,
+    qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+  };
   const qualified = classOfQualifiedTypeSpelling(
     typeRef,
     scopes,
@@ -550,6 +566,7 @@ function classOfDeclaredType(
           lookup,
         )
       : (qualified ?? undefined);
+  owners?.set(typeRef, def ?? null);
   return noteReceiverType(options.recordReceiverType, spelling, def);
 }
 

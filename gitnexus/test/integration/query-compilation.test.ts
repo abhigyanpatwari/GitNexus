@@ -34,6 +34,7 @@ describe('Query compilation smoke tests', () => {
     [SupportedLanguages.Kotlin]: 'Test.kt',
     [SupportedLanguages.Swift]: 'test.swift',
     [SupportedLanguages.Dart]: 'test.dart',
+    [SupportedLanguages.R]: 'test.R',
   };
 
   // Known query compilation failures — remove from this set as PRs fix them

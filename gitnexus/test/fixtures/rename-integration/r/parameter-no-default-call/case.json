@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse when a parameter without a default is named like the function and called: the argument may be a function (the call is the parameter's) or not (R skips it and reaches the function), which cannot be told apart statically.",
+  "categories": ["parameter-shadowing", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "use.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "ambiguous_reference", "planningStatus": "blocked" },
+  "edges": []
+}

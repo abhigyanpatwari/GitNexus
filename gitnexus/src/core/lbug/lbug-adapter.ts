@@ -10,7 +10,7 @@ import { closeQueryResults } from './query-result-utils.js';
 import { chunk } from '../../lib/utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { escapeCypherString } from './cypher-escape.js';
-import { MODULE_MEMBERSHIP_REASON } from '../graph/edge-reasons.js';
+import { GLOBAL_NAME_FALLBACK_REASON, MODULE_MEMBERSHIP_REASON } from '../graph/edge-reasons.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -3399,20 +3399,31 @@ const deleteAllRelationshipsOfType = async (
   duplicateNoun: string,
   exactReasons?: readonly string[],
 ): Promise<{ edgesDeleted: number }> => {
+  const reasonFilter =
+    exactReasons === undefined || exactReasons.length === 0
+      ? ''
+      : ` AND (${exactReasons
+          .map((reason) => `r.reason = '${escapeCypherString(reason)}'`)
+          .join(' OR ')})`;
+  return deleteRelationshipsWhere(
+    `r.type = '${escapeCypherString(relType)}'${reasonFilter}`,
+    relType,
+    logTag,
+    duplicateNoun,
+  );
+};
+
+const deleteRelationshipsWhere = async (
+  predicate: string,
+  edgeDescription: string,
+  logTag: string,
+  duplicateNoun: string,
+): Promise<{ edgesDeleted: number }> => {
   const c = conn;
-  if (!c) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
+  if (!c) throw new Error('LadybugDB not initialized. Call initLbug first.');
   return withConnLock(async () => {
     let edgesDeleted = 0;
     let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-    const reasonFilter =
-      exactReasons === undefined || exactReasons.length === 0
-        ? ''
-        : ` AND (${exactReasons
-            .map((reason) => `r.reason = '${escapeCypherString(reason)}'`)
-            .join(' OR ')})`;
-    const predicate = `r.type = '${escapeCypherString(relType)}'${reasonFilter}`;
     try {
       countResult = await c.query(
         `MATCH ()-[r:CodeRelation]->() WHERE ${predicate} RETURN count(r) AS cnt`,
@@ -3443,7 +3454,7 @@ const deleteAllRelationshipsOfType = async (
       }
       if (countResult) await closeQueryResults(countResult);
       throw new Error(
-        `[${logTag}] failed to clear existing ${relType} edges before incremental ` +
+        `[${logTag}] failed to clear existing ${edgeDescription} edges before incremental ` +
           `re-write (${msg}) — aborting to avoid ${duplicateNoun}; ` +
           `the next run will full-rebuild`,
       );
@@ -3622,6 +3633,15 @@ export const deleteSpringAutoConfigurationDeclarations = async (): Promise<{
     'spring-auto-configuration',
     'duplicate auto-configuration declarations',
     SPRING_AUTO_CONFIGURATION_REASONS,
+  );
+
+/** These edge sets are always recomputed together. Scan CodeRelation once. */
+export const deleteGlobalResolutionEdges = () =>
+  deleteRelationshipsWhere(
+    `r.type IN ['INJECTS', 'ADVISED_BY'] OR (r.type = 'CALLS' AND r.reason = '${GLOBAL_NAME_FALLBACK_REASON}')`,
+    'global resolution',
+    'incremental',
+    'duplicate resolution edges',
   );
 
 /**

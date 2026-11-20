@@ -1,0 +1,24 @@
+{
+  "language": "r",
+  "description": "Refuse to rename a plain function called in its own file while a default-less parameter of the same name is called in a second file: the argument may or may not be a function, so that call may reach either.",
+  "categories": [
+    "call-graph",
+    "cross-file",
+    "parameter-shadowing",
+    "negative",
+    "unchanged-on-error"
+  ],
+  "target": {
+    "name": "compute",
+    "kind": "Function",
+    "file": "lib.R",
+    "startLine": 0
+  },
+  "newName": "calculate",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

@@ -5,6 +5,9 @@ import { formatPathForTerminal } from './format-path.js';
 type DetectChangesSummary = {
   changed_files?: number;
   changed_count?: number;
+  documentation_sections?: number;
+  documentation_basis?: 'indexed_headings';
+  incompatible_call_count?: number;
   affected_count?: number;
   risk_level?: string;
   message?: string;
@@ -34,6 +37,8 @@ type DetectChangesResult = {
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
   unmapped_files?: string[];
+  incompatible_calls?: import('../core/ingestion/call-compatibility.js').BrokenKeywordCall[];
+  incompatible_call_skips?: { filePath?: string; reason: string }[];
 };
 
 export function formatDetectChangesResult(result: unknown): string {
@@ -48,7 +53,28 @@ export function formatDetectChangesResult(result: unknown): string {
   // LISTING (never the counts), so a short list is not proof of a short diff.
   // Both lead the output — a caveat printed after the summary is read too late.
   const notes: string[] = [];
-  if (payload.partial) notes.push(t('tool.detectChanges.partial'));
+  if (payload.partial)
+    notes.push(
+      t(
+        payload.incompatible_call_skips?.length
+          ? 'tool.detectChanges.partialCheck'
+          : 'tool.detectChanges.partial',
+      ),
+    );
+  if (payload.incompatible_call_skips?.length) {
+    const skipped = payload.incompatible_call_skips;
+    const examples = skipped
+      .slice(0, 5)
+      .map(({ filePath, reason }) =>
+        filePath
+          ? `${formatPathForTerminal(filePath)} (${formatPathForTerminal(reason)})`
+          : formatPathForTerminal(reason),
+      );
+    if (skipped.length > examples.length) examples.push('…');
+    notes.push(t('tool.detectChanges.keywordCoverage', { examples: examples.join(', ') }));
+  }
+  if (summary.documentation_basis === 'indexed_headings')
+    notes.push(t('tool.detectChanges.indexedHeadings'));
   if (payload.unmapped_files?.length) {
     notes.push(
       t('tool.detectChanges.unmappedSource', {
@@ -64,7 +90,9 @@ export function formatDetectChangesResult(result: unknown): string {
       t(payload.partial ? 'tool.detectChanges.truncatedDegraded' : 'tool.detectChanges.truncated'),
     );
 
-  if ((summary.changed_count ?? 0) === 0) {
+  if ((summary.changed_count ?? 0) === 0 && !payload.incompatible_calls?.length) {
+    if (summary.documentation_sections)
+      notes.push(t('tool.detectChanges.docSections', { count: summary.documentation_sections }));
     // Parse-fail payloads set `partial` and an honest `message` (#2915/#3131).
     // Production *clean* trees also set English `message: 'No changes detected.'`
     // — that must go through `t('tool.detectChanges.noChanges')` or zh-CN never
@@ -79,6 +107,7 @@ export function formatDetectChangesResult(result: unknown): string {
     // Confirmed no-overlap: files parsed, mapping succeeded, zero symbols.
     // `queryDegraded` is `partial: true` with the same counts and no message —
     // do not call that a confirmed mapping (#3131 honesty).
+    if (summary.documentation_sections) return notes.join('\n');
     if (!payload.partial && (summary.changed_files ?? 0) > 0) {
       return [
         ...notes,
@@ -99,6 +128,8 @@ export function formatDetectChangesResult(result: unknown): string {
       symbols: summary.changed_count ?? 0,
     }),
   );
+  if (summary.documentation_sections)
+    lines.push(t('tool.detectChanges.docSections', { count: summary.documentation_sections }));
   lines.push(t('tool.detectChanges.affectedProcesses', { count: summary.affected_count ?? 0 }));
   lines.push(
     t('tool.detectChanges.riskLevel', {
@@ -106,6 +137,25 @@ export function formatDetectChangesResult(result: unknown): string {
     }),
   );
   lines.push('');
+
+  if (payload.incompatible_calls?.length) {
+    lines.push(t('tool.detectChanges.incompatibleCalls'));
+    const shown = payload.incompatible_calls.slice(0, 15);
+    for (const call of shown) {
+      lines.push(
+        t('tool.detectChanges.removedKeyword', {
+          file: formatPathForTerminal(call.filePath),
+          line: call.line,
+          keyword: (call.keywords ?? [call.keyword]).join(', '),
+          name: call.name,
+        }),
+      );
+    }
+    const total = summary.incompatible_call_count ?? payload.incompatible_calls.length;
+    if (total > shown.length)
+      lines.push(t('tool.detectChanges.overflowMore', { count: total - shown.length }));
+    lines.push('');
+  }
 
   const changed = Array.isArray(payload.changed_symbols) ? payload.changed_symbols : [];
   if (changed.length > 0) {

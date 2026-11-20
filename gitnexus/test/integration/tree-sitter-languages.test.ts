@@ -783,6 +783,52 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
+  describe('R', () => {
+    it('parses functions, S4 classes, R6 classes, and methods', async () => {
+      await loadLanguage(SupportedLanguages.R);
+      const content = readFixture('simple.r');
+      const provider = getProvider(SupportedLanguages.R);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+      const named = extractDefinitions(matches).map((d) => `${d.type}:${d.name}`);
+
+      // `name <- function(...)` assignments
+      expect(named).toContain('definition.function:add');
+      expect(named).toContain('definition.function:private_helper');
+      expect(named).toContain('definition.function:run');
+      // S4: setClass -> class, setGeneric -> function, setMethod -> method
+      expect(named).toContain('definition.class:Point');
+      expect(named).toContain('definition.function:distance');
+      expect(named).toContain('definition.method:distance');
+      // R6 via the namespaced `R6::R6Class(...)` spelling, with its members
+      expect(named).toContain('definition.class:Counter');
+      expect(named).toContain('definition.method:increment');
+      expect(named).toContain('definition.property:count');
+    });
+
+    it('captures library()/source() imports and free, member, namespaced, and piped calls', async () => {
+      await loadLanguage(SupportedLanguages.R);
+      const content = readFixture('simple.r');
+      const provider = getProvider(SupportedLanguages.R);
+      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
+
+      const imports: string[] = [];
+      for (const match of matches) {
+        for (const capture of match.captures) {
+          if (capture.name === 'import.source') imports.push(capture.node.text);
+        }
+      }
+      expect(imports).toEqual(['R6', '"helpers.R"']);
+
+      const calls = extractCapturedCallNames(matches);
+      expect(calls).toContain('increment'); // counter$increment()
+      expect(calls).toContain('new'); // Counter$new()
+      expect(calls).toContain('median'); // stats::median()
+      // Both stages of the native pipe `c(...) |> add(4) |> private_helper()`
+      expect(calls).toContain('add');
+      expect(calls).toContain('private_helper');
+    });
+  });
+
   describe('unhappy path', () => {
     it('returns null/undefined for unsupported file extensions', () => {
       expect(getLanguageFromFilename('archive.xyz')).toBeNull();

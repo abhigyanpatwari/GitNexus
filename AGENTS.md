@@ -1,5 +1,5 @@
-<!-- version: 1.18.0 -->
-<!-- Last updated: 2026-10-17 -->
+<!-- version: 1.20.0 -->
+<!-- Last updated: 2026-10-25 -->
 
 Last reviewed: 2026-10-17
 
@@ -41,6 +41,9 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**, **[CONTRIBUTING.md](CONTRIBUTING.md)**, **[GUARDRAILS.md](GUARDRAILS.md)**
 - **Objective-C provider work:** read **[docs/languages/objective-c-provider.md](docs/languages/objective-c-provider.md)** before changing Objective-C parsing or resolution.
+- Keep shared analysis code language-agnostic across ingestion, MCP tools, CLI, HTTP, and web Graph-RAG. Put language syntax, filename conventions, and semantic rules in the owning provider or format processor. Shared callers select a registered capability and handle unavailable or incomplete evidence. Register concrete implementations at the registry boundary.
+- CI checks the shared tool and analysis entry points on every run and compares changed runtime code with the PR merge base. Run `GITNEXUS_LANGUAGE_BOUNDARY_BASE=origin/main npm test -- test/unit/shared-tool-language-boundary.test.ts` from `gitnexus/` to check the current working tree, including untracked source files.
+- **R provider work:** read **[docs/languages/r-provider.md](docs/languages/r-provider.md)** and **[docs/languages/r-ingestion-gaps.md](docs/languages/r-ingestion-gaps.md)** before changing R parsing or resolution.
 - **Call & inheritance resolution (RFC #909 Ring 3):** See ARCHITECTURE.md § Scope-Resolution Pipeline. All languages resolve calls and inheritance through the scope-resolution pipeline (`Registry.lookup`, `preEmitInheritanceEdges`, `emitHeritageEdges`, `buildMro` → `MethodDispatchIndex`). **Shared code in `gitnexus/src/core/ingestion/` must not name languages** — plug language behavior in via `LanguageProvider` / `ScopeResolver` hooks. A language plugs in by implementing `ScopeResolver` (`scope-resolution/contract/scope-resolver.ts`) and registering it in `SCOPE_RESOLVERS`. (The legacy call-resolution DAG + `@heritage` capture path were removed in RING4-1 #942.)
 - **Cursor:** `.cursor/index.mdc` (always-on); `.cursor/rules/*.mdc` (glob-scoped). Legacy `.cursorrules` deprecated.
 - **GitNexus:** standard skills in `.claude/skills/gitnexus-*/`; MCP rules in `gitnexus:start` block below.
@@ -92,6 +95,8 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date       | Version | Change                                                                                                                                                                                                                                                               |
 | ---------- | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-10-25 | 1.20.0  | Added the R ingestion gaps inventory (`docs/languages/r-ingestion-gaps.md`) next to the R provider guide as a required reference before changing R parsing or resolution. |
+| 2026-10-17 | 1.19.0  | Added the R provider guide as the required reference before changing R parsing or resolution.                                                                                                                                                                        |
 | 2026-10-17 | 1.18.0  | Require the reviewed preview's single-use `plan_token` when applying semantic rename (#2973). |
 | 2026-09-24 | 1.17.0  | Clones with the same `origin` URL now share a store automatically; `--no-share` records a lasting opt-out (#3352).                                                                                                                                                   |
 | 2026-09-24 | 1.16.0  | Documented the shared worktree index store (`<GITNEXUS_HOME>/stores/`, `analyze --share-with`, `GITNEXUS_SHARED_STORE=off`) in the storage notes (#3352).                                                                                                            |

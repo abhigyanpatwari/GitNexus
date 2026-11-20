@@ -3,7 +3,7 @@
 // Heap re-spawn removed — only analyze.ts needs the 8GB heap (via its own ensureHeap()).
 // Removing it from here improves MCP server startup time significantly.
 
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { packageVersion } from '../core/package-version.js';
 import {
   createAnalyzerLbugLazyAction,
@@ -98,6 +98,12 @@ program
     '--skills',
     'Generate repo-specific skill files from detected communities ' +
       '(no-op when --index-only is also set).',
+  )
+  .addOption(
+    new Option('--instruction-file <file>', 'Update only the selected instruction file').choices([
+      'AGENTS.md',
+      'CLAUDE.md',
+    ]),
   )
   .option(
     '--skip-agents-md',
@@ -484,8 +490,8 @@ program
   .action(createLbugLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
-  .command('augment <pattern>')
-  .description('Augment a search pattern with knowledge graph context (used by hooks)')
+  .command('augment <pattern...>')
+  .description('Augment search patterns with knowledge graph context (used by hooks)')
   .action(createLbugLazyAction(() => import('./augment.js'), 'augmentCommand'));
 
 program

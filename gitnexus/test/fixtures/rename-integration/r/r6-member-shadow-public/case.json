@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a portable R6 method calls the name bare while the class has a public member of that name: R6 methods do not see members by bare name, so the call reaches the function being renamed, but the index records it as blocked by the member and proves no edge.",
+  "categories": ["r6", "class-scope", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

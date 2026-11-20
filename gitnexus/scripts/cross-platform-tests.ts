@@ -44,6 +44,12 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-antigravity.test.ts',
   'test/unit/claude-hook-launcher.test.ts',
   'test/unit/claude-hook-runtime.test.ts',
+  // Runs search commands through the real shells (Git Bash, Windows PowerShell,
+  // pwsh, bash) and checks the hook's reading against what rg receives.
+  'test/integration/search-command-real-shells.test.ts',
+  // The shared search-term reader; its PowerShell and `either` readings are
+  // string tests, the real-shell file above checks them against real shells.
+  'test/unit/search-command-pattern.test.ts',
   'test/unit/claude-hook-build.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/opencode-plugin.test.ts',
@@ -126,6 +132,9 @@ const PLATFORM_LOGIC = [
   'test/unit/repo-manager-finalize-invariant.test.ts',
   'test/unit/git-utils.test.ts',
   'test/unit/hooks.test.ts',
+  // A `git -C` path is resolved with the platform's path rules, and a network
+  // path is refused on Windows only; Ubuntu alone would never read that half.
+  'test/unit/git-mutation-command.test.ts',
   'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',
   'test/unit/factory-plugin.test.ts',
@@ -133,6 +142,7 @@ const PLATFORM_LOGIC = [
   'test/unit/pool-wal-recovery.test.ts',
   'test/unit/lbug-adapter-wal-schema.test.ts',
   'test/unit/detect-changes-worktree.test.ts',
+  'test/unit/python-signature-changes.test.ts',
   'test/unit/detect-changes-stderr.test.ts',
   'test/unit/eval-server-bind-restriction.test.ts',
   'test/unit/ignore-service.test.ts',
@@ -216,6 +226,11 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-objective-c.test.ts',
   'test/integration/rename-provider-php.test.ts',
   'test/integration/rename-provider-python.test.ts',
+  // Only R part 1 is listed; parts 2-5 run on the Linux coverage shards only. Each part is a
+  // real indexing run per fixture, and this list is already long. (Historical: the parts were
+  // first left off because the shard command went through cmd.exe, whose 8191-char limit left
+  // no room. run-cross-platform.ts no longer uses a shell, so that limit no longer applies.)
+  'test/integration/rename-provider-r.test.ts',
   'test/integration/rename-provider-ruby.test.ts',
   'test/integration/rename-provider-rust.test.ts',
   'test/integration/rename-provider-swift.test.ts',

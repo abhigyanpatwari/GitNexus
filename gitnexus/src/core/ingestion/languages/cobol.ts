@@ -14,6 +14,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import { collectCobolSourceCfgs } from './cobol/flow.js';
 import { cobolRenameProvider } from './cobol/rename.js';
+import { COBOL_EXTENSIONS } from '../cobol/file-types.js';
 import {
   emitCobolScopeCaptures,
   interpretCobolImport,
@@ -24,7 +25,7 @@ import {
 export const cobolProvider = defineLanguage({
   id: SupportedLanguages.Cobol,
   parseStrategy: 'standalone',
-  extensions: ['.cbl', '.cob', '.cobol', '.cpy', '.copybook'],
+  extensions: [...COBOL_EXTENSIONS],
   entryPointPatterns: [],
   astFrameworkPatterns: [],
   treeSitterQueries: '',

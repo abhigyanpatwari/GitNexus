@@ -30,6 +30,12 @@
 
 > Per-repo read-only tools take an optional `repo` parameter. Omit it when only one repo is indexed, an MCP default is configured, or the GitNexus process cwd is inside a registered path without crossing into an unindexed nested Git checkout; otherwise pass it explicitly. Mutating tools require `repo` when multiple repos are indexed and no MCP default exists. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`, except `read_file` and `grep`, which read the checkout and do not accept `branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
+### Repository discovery
+
+`list_repos` returns a page of visible repositories. When `pagination.hasMore` is true, pass `pagination.nextOffset` as the next call's `offset`. Under an MCP allowlist, page totals and sibling lists include only allowed repositories. An allowed sibling can appear on a different page.
+
+Discovery skips Git freshness checks and returns `staleness.status` as `unknown`. Read `gitnexus://repo/{name}/context` to check a selected index against its checkout. The listing's `lastCommit` identifies the indexed commit.
+
 ### AdonisJS taint coverage
 
 The TypeScript/JavaScript model recognizes directly assigned or destructured results of `input`, `qs`,

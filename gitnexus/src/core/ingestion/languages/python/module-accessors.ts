@@ -251,7 +251,7 @@ function literalAllAssignment(
  * assignment, replayed in source order; any other read, write, or import of
  * `__all__` leaves the value unknown.
  */
-export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void {
+export function pythonLiteralAll(root: SyntaxNode): readonly string[] | undefined {
   let names: string[] | undefined;
   let literal = true;
   walkNamedTree(root, (node) => {
@@ -268,7 +268,12 @@ export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void
     // number of statements.
     else names.push(...assignment.names);
   });
-  if (literal && names !== undefined) literalAllByFile.set(filePath, names);
+  return literal ? names : undefined;
+}
+
+export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void {
+  const names = pythonLiteralAll(root);
+  if (names !== undefined) literalAllByFile.set(filePath, names);
 }
 
 export function collectPythonCaptureSideChannel(
