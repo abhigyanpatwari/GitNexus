@@ -125,6 +125,9 @@
     "tree-sitter-typescript": "0.23.2",
     "uuid": "^14.0.0"
   },
+  "optionalDependencies": {
+    "chokidar-v6": "npm:chokidar@^6.0.0"
+  },
   "gitnexusEmbeddingStack": {
     "@huggingface/transformers": "^4.1.0",
     "onnxruntime-node": "^1.24.0"
