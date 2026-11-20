@@ -807,6 +807,33 @@ describe('#2915 detect_changes hunk scaling', () => {
     expect(calls[0].query).not.toContain('$hunk');
   });
 
+  it.each(['local.ts', 'local.py'])(
+    '#2699 maps %s by position and only reports its id',
+    async (file) => {
+      const repoDir = makeRepo([file], 1);
+      writeFileSync(path.join(repoDir, file), 'value = 1\n');
+      registerRepo(repoDir);
+      await runDetectChanges();
+
+      const calls = symbolQueryCalls();
+      expect(calls).toHaveLength(1);
+      const { query } = calls[0];
+      const [predicates, projection] = query.split('RETURN');
+      expect(predicates).toContain('n.startLine IS NOT NULL AND n.endLine IS NOT NULL');
+      expect(predicates).toContain('n.startLine <= b.hi AND n.endLine >= b.lo');
+      expect(predicates).toContain("NOT n.id STARTS WITH 'BasicBlock:'");
+      expect(predicates).not.toMatch(/n\.id\s*(?:=|IN\b)/i);
+      expect(projection).toContain('n.id AS id');
+      if (file === 'local.py') {
+        expect(projection).toMatch(
+          /ORDER BY b\.path, \(n\.filePath = b\.path\) DESC, n\.id LIMIT \d+/,
+        );
+      } else {
+        expect(projection).not.toMatch(/ORDER BY|LIMIT/);
+      }
+    },
+  );
+
   it('bounds each file by its touched span, in the graph 0-based line space', async () => {
     const repoDir = makeRepo(['big.txt'], 100);
     // Source lines 20 and 60 (1-based) — the span the engine may prefilter on.

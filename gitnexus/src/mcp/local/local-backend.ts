@@ -7183,7 +7183,7 @@ export class LocalBackend {
           AND (${includeDeclarations ? 'b.path IN $declarationPaths OR ' : ''}(n.startLine <= b.hi AND n.endLine >= b.lo))
         RETURN b.path AS diffPath, n.id AS id, n.name AS name, labels(n) AS type,
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
-        ${includeDeclarations ? `LIMIT ${declarationRowLimit + 1}` : ''}
+        ${includeDeclarations ? `ORDER BY b.path, (n.filePath = b.path) DESC, n.id LIMIT ${declarationRowLimit + 1}` : ''}
       `;
 
     // Batches run concurrently: each `executeParameterized` holds one connection
@@ -9633,10 +9633,8 @@ export class LocalBackend {
         }
       }
 
-      // If we capped chunks, mark traversal incomplete so caller knows results are partial
-      if (chunksProcessed * CHUNK_SIZE < impacted.length) {
-        traversalComplete = false;
-      }
+      // The walk can finish even when the enrichment budget covers only part of it.
+      if (chunksProcessed * CHUNK_SIZE < impacted.length) enrichmentDegraded = true;
 
       // (total_hits, filePath, name) is NOT unique across distinct entry points —
       // two of them collide on all three in this repo alone (`step`, same file,
