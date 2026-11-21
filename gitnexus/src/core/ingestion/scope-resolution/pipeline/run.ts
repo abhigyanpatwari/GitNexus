@@ -113,7 +113,7 @@ import {
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
-import { AUTO_SPILL_SCOPE_RESOLVERS } from './registry.js';
+import { buildsPdg } from './registry.js';
 import {
   findEnclosingClassDef,
   hasExplicitNameClaim,
@@ -314,11 +314,29 @@ export function applyPreciseCallResultBindings(
 }
 import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
 import {
+  type DiskBackedScopeTree,
   ScopeShardReadError,
   TransitionalScopeTree,
   trySealTemporaryScopeTree,
 } from '../../../../storage/scope-index-store.js';
 import { forceGc } from '../../../../storage/parsedfile-store.js';
+
+/** Keep post-resolution inference visible through every view of an evicted scope. */
+function diskBackedParsedFile(file: ParsedFile, disk: DiskBackedScopeTree): ParsedFile {
+  if (file.callResultAssignmentSites?.length) {
+    const writable = new Set(file.callResultAssignmentSites.map((site) => site.inScope));
+    for (const scope of file.scopes) {
+      if (writable.has(scope.id)) disk.retainTypeBindings(scope);
+    }
+  }
+  const moduleScope = file.moduleScope;
+  return {
+    ...file,
+    get scopes() {
+      return disk.getFileScopes(moduleScope);
+    },
+  };
+}
 
 import { logger } from '../../../logger.js';
 
@@ -1093,7 +1111,7 @@ export function runScopeResolution(
   const allowPressureSpill =
     diskScopeSetting === undefined &&
     input.pdg === true &&
-    AUTO_SPILL_SCOPE_RESOLVERS.has(provider) &&
+    buildsPdg(provider) &&
     scopeStorePath !== undefined &&
     input.onResolved === undefined &&
     !parseTruthyEnv(process.env.INGESTION_EMIT_SCOPES);
@@ -1429,48 +1447,8 @@ export function runScopeResolution(
     );
   }
 
-  // Value defs bound at MODULE LEVEL. A read of a block-local `const` must not
-  // mint an edge — that would retain the inert locals `pruneLocalSymbols` drops.
-  //
-  // Built HERE, above the out-of-core seal, and deliberately from `parsedFiles`
-  // rather than `emitParsedFiles`. The seal below replaces the latter with a
-  // scope-STRIPPED copy, so building this after it walked `scopes: []` for every
-  // file and produced an empty set — which the filter then reads as "no def is
-  // module-level" and drops EVERY `Const`/`Variable`/`Static` ACCESSES edge in
-  // the repo, in all languages, on the one path (`GITNEXUS_DISK_SCOPE_INDEX=1`)
-  // taken by the largest repos. Nothing failed and nothing logged; the edges
-  // were simply absent, which is the confident-empty answer this PR exists to
-  // remove.
-  //
-  // ── The question is "is this def FUNCTION-LOCAL?", so ask exactly that ──
-  //
-  // This was first written as an ALLOWLIST of module-scope value defs, and that
-  // shape carried a defect that only shows outside JavaScript. A value def is
-  // not partitioned into {module-level, block-local}; there is a third home —
-  // a CLASS body. Java/C# fields and Python class attributes live there, and an
-  // allowlist keyed on "module level" excludes all of them by construction.
-  // Worse, the guard written to make that safe could not fire: the set is armed
-  // whenever a Module scope is FOUND, and Java has module scopes while having no
-  // module-level values at all, so for Java it armed permanently empty.
-  //
-  // Inverting it removes the whole class. A BLOCKLIST of defs positively
-  // identified as function-local fails safe: anything the walk does not
-  // recognise — a Java field, a Python class attribute, a language whose scopes
-  // could not be inspected at all — is emitted rather than dropped. That also
-  // retires `moduleScopesInspected`; there is nothing left to arm, because an
-  // empty blocklist and an uninspected one mean the same thing and both mean
-  // "emit". The failure mode moves from "silently deletes a whole edge class"
-  // to "retains an inert local", which is the direction this work wants.
-  //
-  // Built HERE, above the out-of-core seal, and deliberately from `parsedFiles`
-  // rather than `emitParsedFiles`. The seal below replaces the latter with a
-  // scope-STRIPPED copy, so building this after it walked `scopes: []` for every
-  // file and produced an empty set. Under the old allowlist that read as "no def
-  // is module-level" and dropped EVERY `Const`/`Variable`/`Static` ACCESSES edge
-  // in the repo on the one path (`GITNEXUS_DISK_SCOPE_INDEX=1`) taken by the
-  // largest repos. Under the blocklist the same mistake would merely stop
-  // filtering — still wrong, still worth the ordering, no longer catastrophic.
-  //
+  // Identify function-local values while all files are resident. Emission uses
+  // this set to filter inert locals while preserving module values and fields.
   // A scope is function-local when its chain to the root passes through a
   // `Function`. `Block`/`Expression`/`Object` alone are not enough: a bare block
   // at module level still holds module-level values, and a `Namespace` nested in
@@ -1501,9 +1479,7 @@ export function runScopeResolution(
 
   probeEmit('locals-end', `localValues=${functionLocalValueDefIds.size}`);
   // ── Out-of-core scope seal boundary ─────────────────────────────────────
-  // Eligible providers can serve the remaining scope reads by ID, including
-  // passes that visit scopes from many files. Drop the resident tree and both
-  // parsed-file aliases only after the disk-backed tree is ready.
+  // Drop resident scope payloads only after all emitters can read their shards.
   let emitParsedFiles: readonly ParsedFile[] = parsedFiles;
   const tree = indexes.scopeTree;
   const shouldSeal =
@@ -1516,8 +1492,9 @@ export function runScopeResolution(
   }
   using temporarySpill =
     shouldSeal && !forceScopeSpill ? trySealTemporaryScopeTree(tree, scopeStorePath) : undefined;
-  if (temporarySpill || (shouldSeal && forceScopeSpill)) {
-    emitParsedFiles = parsedFiles.map((p) => ({ ...p, scopes: [] }));
+  const disk = shouldSeal && (temporarySpill || forceScopeSpill) ? tree.sealedTree : null;
+  if (disk !== null) {
+    emitParsedFiles = parsedFiles.map((file) => diskBackedParsedFile(file, disk));
     parsedFiles.length = 0;
     // The phase shares this map across languages. Other languages may still
     // need worker records that are unavailable from the file store.
@@ -2225,22 +2202,6 @@ export function runScopeResolution(
         // entirely when the language has no registered model.
         if (taintSpec !== undefined) {
           const t1 = PROF ? performance.now() : 0;
-          // The disk seal strips ParsedFile.scopes. Restore only this file's
-          // lexical context for both taint consumers, then release it with this
-          // iteration. Passing the stripped file silently blocks every sink;
-          // an imports-only fallback would instead lose local shadow barriers.
-          let taintParsed = pf;
-          if (pf.scopes.length === 0) {
-            const scopes: Scope[] = [];
-            const pending = [pf.moduleScope];
-            for (let i = 0; i < pending.length; i++) {
-              const scope = indexes.scopeTree.getScope(pending[i]);
-              if (scope === undefined) continue;
-              scopes.push(scope);
-              for (const child of indexes.scopeTree.getChildren(scope.id)) pending.push(child);
-            }
-            taintParsed = { ...pf, scopes };
-          }
           const taint = emitFileTaint(
             pdgTarget,
             wellFormed,
@@ -2249,7 +2210,7 @@ export function runScopeResolution(
             taintLimits,
             (message) => logger.warn(message), // unconditional — R4/R6
             rdSolve,
-            taintParsed,
+            pf,
             refine,
           );
           if (PROF) taintMs += performance.now() - t1;
@@ -2285,7 +2246,7 @@ export function runScopeResolution(
                 ? taintLimits.maxFacts
                 : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
               rdSolve,
-              taintParsed,
+              pf,
               refine,
             );
             harvestedSummaries.push(...harvest.summaries);
@@ -2427,7 +2388,7 @@ export function runScopeResolution(
 
   for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
   input.onResolved?.({
-    parsedFiles,
+    parsedFiles: emitParsedFiles,
     indexes,
     referenceBindings: referenceBindings!,
   });

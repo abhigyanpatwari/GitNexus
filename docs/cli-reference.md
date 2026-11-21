@@ -227,7 +227,7 @@ Notes:
 
 | Scope index variable | Default | Effect | When to tune |
 | --- | --- | --- | --- |
-| `GITNEXUS_DISK_SCOPE_INDEX` | Unset or blank (automatic) | TypeScript PDG builds with a backing store spill lexical scopes to disk at 70% or more of the V8 heap limit, when full-scope access is unnecessary. `1`, `true`, or `yes` forces disk storage. Other nonblank values, including `0`, keep scopes resident. | Use `0` to avoid shard I/O or `1` to explicitly select disk-backed resolution. |
+| `GITNEXUS_DISK_SCOPE_INDEX` | Unset or blank (automatic) | Any language that builds a PDG can spill lexical scopes to a backing store at 70% or more of the V8 heap limit. Full-scope debug output and resolved-file callbacks keep scopes resident in automatic mode. `1`, `true`, or `yes` forces disk storage. Other nonblank values, including `0`, keep scopes resident. | Use `0` to avoid shard I/O or `1` to explicitly select disk-backed resolution. |
 
 | HTTP embedding variable | Default | Effect | When to tune |
 | --- | --- | --- | --- |

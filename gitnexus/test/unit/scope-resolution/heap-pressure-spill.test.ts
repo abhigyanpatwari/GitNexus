@@ -45,14 +45,21 @@ it.each([
   { scenario: 'resident override', ratio: 0.8, setting: '0', seal: false },
   { scenario: 'disk override with headroom', ratio: 0.4, setting: '1', seal: true },
   { scenario: 'ordinary indexing', ratio: 0.8, pdg: false, seal: false },
-  { scenario: 'provider without disk parity', ratio: 0.8, unregistered: true, seal: false },
+  { scenario: 'provider without CFG support', ratio: 0.8, noCfg: true, seal: false },
   { scenario: 'scope enumeration', ratio: 0.8, enumerate: true, seal: false },
   { scenario: 'resolved-file observer', ratio: 0.8, observe: true, seal: false },
+  {
+    scenario: 'resolved-file observer with disk override',
+    ratio: 0.4,
+    setting: '1',
+    observe: true,
+    seal: true,
+  },
   { scenario: 'empty backing path', ratio: 0.8, emptyStore: true, seal: false },
   { scenario: 'no backing store', ratio: 0.8, noStore: true, seal: false },
 ])(
   '$scenario',
-  ({ ratio, setting, pdg = true, unregistered, enumerate, observe, noStore, emptyStore, seal }) => {
+  ({ ratio, setting, pdg = true, noCfg, enumerate, observe, noStore, emptyStore, seal }) => {
     vi.stubEnv('GITNEXUS_DISK_SCOPE_INDEX', setting);
     vi.stubEnv('INGESTION_EMIT_SCOPES', enumerate ? '1' : undefined);
     mockHeapRatio(ratio);
@@ -72,9 +79,21 @@ it.each([
         pdg,
         preExtractedParsedFiles: pending,
         scopeIndexStorePath: noStore ? undefined : emptyStore ? '' : store,
-        onResolved: observe ? ({ parsedFiles }) => expect(parsedFiles).toHaveLength(1) : undefined,
+        onResolved: observe
+          ? ({ parsedFiles }) => {
+              expect(parsedFiles.map((parsed) => parsed.filePath)).toEqual([file.filePath]);
+              expect(parsedFiles[0].scopes.map((scope) => scope.id)).toEqual(
+                file.scopes.map((scope) => scope.id),
+              );
+            }
+          : undefined,
       },
-      unregistered ? { ...typescriptScopeResolver } : typescriptScopeResolver,
+      noCfg
+        ? {
+            ...typescriptScopeResolver,
+            languageProvider: { ...typescriptProvider, cfgVisitor: undefined },
+          }
+        : typescriptScopeResolver,
     );
 
     expect(sealCall).toHaveBeenCalledTimes(seal ? 1 : 0);
