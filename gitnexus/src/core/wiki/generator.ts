@@ -105,6 +105,12 @@ export interface WikiRunResult {
   moduleTree?: ModuleTreeNode[];
 }
 
+/** An existing wiki whose files a full generation groups again (see removeStalePages). */
+interface PreviousGrouping {
+  moduleFiles: Record<string, string[]>;
+  changedFiles: string[];
+}
+
 // ─── Constants ────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
@@ -290,13 +296,12 @@ export class WikiGenerator {
       return { pagesGenerated: 0, mode: 'up-to-date', failedModules: [] };
     }
 
-    // Force mode: delete snapshot to force full re-grouping
+    // Force mode: regenerate every page, from a new grouping unless the saved
+    // tree was edited since the last generation (see discardSavedGrouping)
     if (forceMode) {
       // A failure must not leave the previous wiki marked complete at this commit.
       await fs.rm(path.join(this.wikiDir, 'meta.json'), { force: true });
-      try {
-        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
-      } catch {}
+      await this.discardSavedGrouping(existingMeta);
       // Delete existing module pages so they get regenerated
       const existingFiles = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
       for (const f of existingFiles) {
@@ -355,7 +360,10 @@ export class WikiGenerator {
 
   // ─── Full Generation ────────────────────────────────────────────────
 
-  private async fullGeneration(currentCommit: string): Promise<WikiRunResult> {
+  private async fullGeneration(
+    currentCommit: string,
+    previous?: PreviousGrouping,
+  ): Promise<WikiRunResult> {
     let pagesGenerated = 0;
 
     // Phase 0: Gather structure
@@ -393,6 +401,8 @@ export class WikiGenerator {
       };
       return reviewResult;
     }
+
+    if (previous) await this.removeStalePages(moduleTree, previous);
 
     // Phase 2: Generate module pages (parallel with concurrency limit)
     const totalModules = this.countModules(moduleTree);
@@ -1059,11 +1069,11 @@ export class WikiGenerator {
         15,
         'Significant new files detected, running full generation...',
       );
-      // Delete old snapshot to force re-grouping
-      try {
-        await fs.unlink(path.join(this.wikiDir, 'first_module_tree.json'));
-      } catch {}
-      const fullResult = await this.fullGeneration(currentCommit);
+      await this.discardSavedGrouping(existingMeta);
+      const fullResult = await this.fullGeneration(currentCommit, {
+        moduleFiles: existingMeta.moduleFiles,
+        changedFiles,
+      });
       return { ...fullResult, mode: 'incremental' };
     }
 
@@ -1441,5 +1451,64 @@ export class WikiGenerator {
       JSON.stringify(tree, null, 2),
       'utf-8',
     );
+  }
+
+  /**
+   * Drop the saved grouping, so that buildModuleTree asks the model to group
+   * the files again. buildModuleTree reads module_tree.json first, as a tree
+   * the user edited, but every completed generation also writes that file for
+   * the HTML viewer. While it still holds the tree meta.json records, it is
+   * that generation's output rather than an edit, and it is dropped as well.
+   */
+  private async discardSavedGrouping(meta: WikiMeta | null): Promise<void> {
+    await fs.rm(path.join(this.wikiDir, 'first_module_tree.json'), { force: true });
+    if (!meta) return;
+    const treePath = path.join(this.wikiDir, 'module_tree.json');
+    try {
+      const saved = JSON.parse(await fs.readFile(treePath, 'utf-8'));
+      if (JSON.stringify(saved) === JSON.stringify(meta.moduleTree)) {
+        await fs.rm(treePath, { force: true });
+      }
+    } catch {
+      // No tree saved, or not JSON: buildModuleTree skips it too.
+    }
+  }
+
+  /**
+   * Before a full generation that groups an existing wiki's files again,
+   * delete the pages the new tree makes stale: the generation writes the
+   * pages that are missing and skips the others. A module page is kept when
+   * the previous grouping had a module of that name with the same files and
+   * none of them changed, and a parent page when its sub-module pages are
+   * kept as well. Pages of modules that are gone are deleted.
+   */
+  private async removeStalePages(
+    tree: ModuleTreeNode[],
+    previous: PreviousGrouping,
+  ): Promise<void> {
+    const changed = new Set(previous.changedFiles);
+    const unchanged = (name: string, files: string[]): boolean => {
+      const before = new Set(previous.moduleFiles[name] ?? []);
+      return (
+        before.size === files.length &&
+        files.every((file) => before.has(file) && !changed.has(file))
+      );
+    };
+    const kept = new Set(['overview']);
+    for (const node of tree) {
+      const children = node.children ?? [];
+      const keptChildren = children.filter((child) => unchanged(child.name, child.files));
+      for (const child of keptChildren) kept.add(child.slug);
+      const files = children.length > 0 ? children.flatMap((child) => child.files) : node.files;
+      if (keptChildren.length === children.length && unchanged(node.name, files)) {
+        kept.add(node.slug);
+      }
+    }
+    const entries = await fs.readdir(this.wikiDir).catch(() => [] as string[]);
+    for (const entry of entries) {
+      if (entry.endsWith('.md') && !kept.has(entry.slice(0, -'.md'.length))) {
+        await fs.rm(path.join(this.wikiDir, entry), { force: true });
+      }
+    }
   }
 }

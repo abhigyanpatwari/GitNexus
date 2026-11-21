@@ -71,6 +71,12 @@ only for Azure: `--provider azure` or an Azure OpenAI base URL.
 open the file in `$EDITOR` (or `$VISUAL`, else `vi`) and generate pages from the edited tree,
 or `n` to stop. In a non-interactive shell, generation continues without asking.
 
+`--force` groups the files into modules again before regenerating every page, unless
+`module_tree.json` was edited since the last generation: an edited tree is kept. A run that
+finds more than five new files since the last generation also groups the files again, then
+rewrites only the pages of modules whose files changed and deletes the pages of modules that
+are gone.
+
 The completion limit must be a positive integer supported by your model. It applies to
 OpenAI-compatible HTTP providers; local agent CLI providers manage their own limits.
 For reasoning models, the limit includes reasoning tokens as well as the visible answer.
