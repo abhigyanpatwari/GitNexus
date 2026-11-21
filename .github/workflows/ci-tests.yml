@@ -1856,6 +1856,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        id: uv
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1871,16 +1872,19 @@ jobs:
           path: eval/pytest-locked.xml
           retention-days: 5
       - uses: ./.github/actions/setup-gitnexus
+        id: setup
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         with:
           build: 'true'
       - name: Exercise real workflow evidence preflight
-        if: ${{ !cancelled() }}
+        id: preflight
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: >-
           npx vitest run test/unit/skill-evolution-workflow.test.ts
           --reporter=default --reporter=./scripts/execution-reporter.ts --outputFile=preflight.json
         working-directory: gitnexus
       - name: Upload preflight execution report
-        if: always()
+        if: ${{ !cancelled() && (steps.preflight.outcome == 'success' || steps.preflight.outcome == 'failure') }}
         uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-preflight
