@@ -177,6 +177,33 @@ describe('shouldIgnorePath', () => {
     });
   });
 
+  describe('IntelliJ project files and Gradle lockfiles (#1060)', () => {
+    it.each([
+      'metadata-io.iml',
+      'oss-datahub.metadata-io.main-1.iml',
+      'project.ipr',
+      'project.iws',
+      'gradle.lockfile',
+      'buildscript-gradle.lockfile',
+      'gradle-2.13.lockfile',
+    ])('ignores %s', (fileName) => {
+      expect(shouldIgnorePath(fileName)).toBe(true);
+      expect(shouldIgnorePath(`metadata-io/${fileName}`)).toBe(true);
+    });
+
+    it.each([
+      'src/iml.ts',
+      'src/lockfile.ts',
+      'src/LockfileParser.java',
+      'src/ImlReader.kt',
+      'build.gradle',
+      'settings.gradle.kts',
+      'gradle/libs.versions.toml',
+    ])('still indexes %s', (filePath) => {
+      expect(shouldIgnorePath(filePath)).toBe(false);
+    });
+  });
+
   describe('compound extensions', () => {
     it('ignores .min.js files', () => {
       expect(shouldIgnorePath('dist/bundle.min.js')).toBe(true);
@@ -365,6 +392,17 @@ describe('.gitnexusignore negation overrides hardcoded DEFAULT_IGNORE_LIST (#771
 
     expect(filter.childrenIgnored(mkPath('_next'))).toBe(false);
     expect(filter.childrenIgnored(mkPath('android/app/src/main/assets/public/_next'))).toBe(false);
+  });
+
+  it('`!*.iml` negation indexes IntelliJ module files again (#1060)', async () => {
+    const before = await createIgnoreFilter(tmpDir);
+    expect(before.ignored(mkPath('metadata-io/metadata-io.iml'))).toBe(true);
+
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), '!*.iml\n');
+    const filter = await createIgnoreFilter(tmpDir);
+
+    expect(filter.ignored(mkPath('metadata-io/metadata-io.iml'))).toBe(false);
+    expect(filter.ignored(mkPath('metadata-io/gradle.lockfile'))).toBe(true);
   });
 
   it('prunes a nested env directory only when pyvenv.cfg identifies a virtual environment', async () => {
