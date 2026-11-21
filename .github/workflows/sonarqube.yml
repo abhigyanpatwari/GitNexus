@@ -1,0 +1,65 @@
+name: SonarQube
+
+on:
+  workflow_call:
+
+jobs:
+  build:
+    name: Analyze with coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Download CLI and web LCOV
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: sonar-coverage
+          path: ${{ runner.temp }}/sonar-coverage
+          digest-mismatch: error
+          github-token: ${{ github.token }}
+          run-id: ${{ github.event.workflow_run.id || github.run_id }}
+
+      - name: Prepare repository-relative LCOV
+        shell: bash
+        run: |
+          mkdir -p coverage
+          for package in gitnexus gitnexus-web; do
+            report="$RUNNER_TEMP/sonar-coverage/$package/coverage/lcov.info"
+            if ! grep -q '^SF:' "$report" || ! grep -Eq '^DA:[0-9]+,[0-9]+' "$report"; then
+              echo "::error::Missing source or line coverage for $package" >&2
+              exit 1
+            fi
+            while IFS= read -r source; do
+              if [[ "$source" != src/* || "/$source/" == *"/../"* || ! -f "$package/$source" ]]; then
+                echo "::error::Invalid LCOV source for $package in the scanned revision" >&2
+                exit 1
+              fi
+            done < <(sed -n 's/^SF://p' "$report")
+            sed "s|^SF:|SF:$package/|" "$report"
+          done > coverage/lcov.info
+
+      - name: Cache SonarQube packages
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.sonar/cache
+          key: ${{ runner.os }}-sonar
+          restore-keys: ${{ runner.os }}-sonar
+
+      - name: Authenticate to SonarQube
+        uses: SonarSource/sonarqube-auth-action@b372e2c2930aadfcc4f4399446da1e12772709ad # v1.2
+        id: auth
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
+        with:
+          # workflow_run's GITHUB_SHA is the receiving workflow's default branch tip.
+          args: ${{ github.event_name == 'workflow_run' && format('-Dsonar.branch.name=main -Dsonar.scm.revision={0}', github.event.workflow_run.head_sha) || '' }}
