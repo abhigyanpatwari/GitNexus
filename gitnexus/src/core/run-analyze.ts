@@ -41,6 +41,7 @@ import { constants as fsConstants, existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
+import { forceGc } from '../storage/parsedfile-store.js';
 import { assertLbugPublicationReady, consolidateLbugForPublication } from './lbug/publication.js';
 import { requireExclusiveIndexLock, sweepStagingArtifacts } from '../storage/index-lock.js';
 import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
@@ -5171,6 +5172,12 @@ async function runFullAnalysisInner(
       );
       progress('fts', 90, 'Search indexes skipped (previous native abort)');
     } else if (ftsAvailable) {
+      if (!isIncremental && options.pdg && options.resources?.automatic === false) {
+        // COPY is complete. Reclaim spare V8 pages before native tokenization
+        // when they occupy a substantial fraction of the database reservation.
+        const { heapTotal, heapUsed } = process.memoryUsage();
+        if (heapTotal - heapUsed >= options.resources.parse.graphPoolBytes / 2) forceGc();
+      }
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
       // pre-existing row (#2544/#2546) must not discard this run's otherwise-

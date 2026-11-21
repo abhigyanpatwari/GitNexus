@@ -117,6 +117,30 @@ interface ScopeShard {
   byId: Map<ScopeId, Scope>;
 }
 
+/** Revive children before their containers so map entries and shared definitions
+ * are canonical before the enclosing scope is constructed. Keeping this walk
+ * outside JSON.parse lets V8 use its fast parser on every shard cache miss. */
+function decodeScopeShard(raw: string): Scope[] {
+  const revive = makeInterningReviver(
+    new Map<string, string>(),
+    new Map<string, SymbolDefinition>(),
+  );
+  function visit(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) value[i] = visit(value[i]);
+      return value;
+    }
+    if (value !== null && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      for (const key of Object.keys(record)) record[key] = visit(record[key]);
+    }
+    return revive('', value);
+  }
+  const scopes: unknown = JSON.parse(raw);
+  if (!Array.isArray(scopes)) throw new Error('Expected an array of scopes');
+  return visit(scopes) as Scope[];
+}
+
 /** Point lookups, file views and ordered map iteration share one bounded shard cache. */
 export class DiskBackedScopeTree implements ScopeTree, ReadonlyMap<ScopeId, Scope> {
   private readonly dir: string;
@@ -231,13 +255,10 @@ export class DiskBackedScopeTree implements ScopeTree, ReadonlyMap<ScopeId, Scop
       this.lru.set(shard, cached);
       return cached;
     }
-    const pool = new Map<string, string>();
-    const defPool = new Map<string, SymbolDefinition>();
     let decoded: ScopeShard;
     try {
       const raw = readFileSync(path.join(this.dir, shard), 'utf-8');
-      const fileScopes = JSON.parse(raw, makeInterningReviver(pool, defPool)) as Scope[];
-      if (!Array.isArray(fileScopes)) throw new Error('Expected an array of scopes');
+      const fileScopes = decodeScopeShard(raw);
       const byId = new Map<ScopeId, Scope>();
       for (let i = 0; i < fileScopes.length; i++) {
         const scope = fileScopes[i];
