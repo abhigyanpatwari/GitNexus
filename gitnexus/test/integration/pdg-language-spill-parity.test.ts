@@ -85,7 +85,6 @@ for (const language of pdgLanguages) {
           pdg: true,
           parsedFileStorePath: dirs.dir(),
           workerPoolSize: 1,
-          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
           skipGraphPhases: true,
         });
         const nodes = [...graph.iterNodes()].sort((a, b) => a.id.localeCompare(b.id));
@@ -98,7 +97,7 @@ for (const language of pdgLanguages) {
       expect(seal).not.toHaveBeenCalled();
       expect(await run(0.8)).toEqual(resident);
       expect(seal).toHaveBeenCalledOnce();
-      expect(seal.mock.contexts[0].sealed).toBe(true);
+      expect(seal.mock.contexts[0]).toHaveProperty('sealed', true);
     },
     120_000,
   );
