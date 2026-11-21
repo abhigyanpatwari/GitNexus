@@ -15,6 +15,7 @@ import type { Scope, ScopeId, SymbolDefinition, BindingRef } from 'gitnexus-shar
 import {
   persistScopeShards,
   DiskBackedScopeTree,
+  ScopeShardReadError,
   TransitionalScopeTree,
   clearScopeIndexStore,
   getScopeIndexStoreDir,
@@ -83,6 +84,17 @@ describe('DiskBackedScopeTree — value-faithful stand-in for buildScopeTree', (
     // Re-query the first file's scopes AFTER the others evicted its shard —
     // a fresh load must still be value-identical.
     expect(disk.getScope(ALL[0].id)).toEqual(resident.getScope(ALL[0].id));
+  });
+
+  it('reports unreadable shard data as a storage failure', () => {
+    const root = mkdtempSync(path.join(tmp, 'corrupt-'));
+    const skeleton = persistScopeShards(root, ALL);
+    const tree = new DiskBackedScopeTree(root, skeleton);
+    const id = ALL[0].id;
+    const entry = skeleton.get(id);
+    if (!entry) throw new Error('Missing fixture scope');
+    writeFileSync(path.join(getScopeIndexStoreDir(root), entry.shard), 'invalid JSON');
+    expect(() => tree.getScope(id)).toThrow(ScopeShardReadError);
   });
 
   it('collapses the shared def to ONE object on load (localDefs === binding.def)', () => {

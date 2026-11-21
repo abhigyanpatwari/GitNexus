@@ -23,11 +23,12 @@
  * scopes is resident, not all of them.
  */
 
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type { Scope, ScopeId, ScopeTree, SymbolDefinition } from 'gitnexus-shared';
 import { buildScopeTree } from 'gitnexus-shared';
 import { mapReplacer } from './parse-cache.js';
+import { logger } from '../core/logger.js';
 import { makeInterningReviver } from './parsedfile-store.js';
 
 const STORE_DIRNAME = 'scope-index-store';
@@ -190,10 +191,14 @@ export class DiskBackedScopeTree implements ScopeTree {
     }
     const pool = new Map<string, string>();
     const defPool = new Map<string, SymbolDefinition>();
-    const raw = readFileSync(path.join(this.dir, shard), 'utf-8');
-    const fileScopes = JSON.parse(raw, makeInterningReviver(pool, defPool)) as Scope[];
     const decoded = new Map<ScopeId, Scope>();
-    for (const s of fileScopes) decoded.set(s.id, s);
+    try {
+      const raw = readFileSync(path.join(this.dir, shard), 'utf-8');
+      const fileScopes = JSON.parse(raw, makeInterningReviver(pool, defPool)) as Scope[];
+      for (const s of fileScopes) decoded.set(s.id, s);
+    } catch (cause) {
+      throw new ScopeShardReadError(`Failed to read scope shard ${shard}`, { cause });
+    }
     this.lru.set(shard, decoded);
     if (this.lru.size > this.maxResidentShards) {
       const oldest = this.lru.keys().next().value as string | undefined;
@@ -270,4 +275,39 @@ export class TransitionalScopeTree implements ScopeTree {
   getAncestors(id: ScopeId): readonly ScopeId[] {
     return this.active.getAncestors(id);
   }
+}
+
+/** A persisted scope can no longer be served. Emission must propagate this
+ * error even if a per-file CFG or taint failure would normally be isolated. */
+export class ScopeShardReadError extends Error {}
+
+/** A pressure-triggered seal owns its directory until the last emit reader.
+ * Explicitly selected stores can belong to callers retaining a scope tree. */
+export function trySealTemporaryScopeTree(
+  tree: TransitionalScopeTree,
+  storagePath: string,
+): Disposable | undefined {
+  let directory: string | undefined;
+  const cleanup = () => {
+    if (directory === undefined) return;
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } catch (err) {
+      logger.warn({ err }, 'Could not remove temporary scope shards');
+    }
+  };
+  try {
+    mkdirSync(storagePath, { recursive: true });
+    directory = mkdtempSync(path.join(storagePath, 'scope-spill-'));
+    tree.seal(directory);
+  } catch (err) {
+    cleanup();
+    logger.warn(
+      { err },
+      'Could not spill scopes to disk under heap pressure; continuing with resident scopes',
+    );
+    return undefined;
+  }
+  logger.info('Spilled scope bindings to disk under heap pressure');
+  return { [Symbol.dispose]: cleanup };
 }

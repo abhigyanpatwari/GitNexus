@@ -313,7 +313,11 @@ export function applyPreciseCallResultBindings(
   return updated;
 }
 import { isValueDefinitionLabel } from '../../utils/ast-helpers.js';
-import { TransitionalScopeTree } from '../../../../storage/scope-index-store.js';
+import {
+  ScopeShardReadError,
+  TransitionalScopeTree,
+  trySealTemporaryScopeTree,
+} from '../../../../storage/scope-index-store.js';
 import { forceGc } from '../../../../storage/parsedfile-store.js';
 
 import { logger } from '../../../logger.js';
@@ -1083,13 +1087,14 @@ export function runScopeResolution(
     }
   }
   const filterWildcardNames = provider.filterWildcardNames;
-  const diskScopeSetting = process.env.GITNEXUS_DISK_SCOPE_INDEX;
+  const diskScopeSetting = process.env.GITNEXUS_DISK_SCOPE_INDEX?.trim() || undefined;
+  const scopeStorePath = input.scopeIndexStorePath?.trim() ? input.scopeIndexStorePath : undefined;
   const forceScopeSpill = parseTruthyEnv(diskScopeSetting);
   const allowPressureSpill =
     diskScopeSetting === undefined &&
     input.pdg === true &&
     AUTO_SPILL_SCOPE_RESOLVERS.has(provider) &&
-    input.scopeIndexStorePath !== undefined &&
+    scopeStorePath !== undefined &&
     input.onResolved === undefined &&
     !parseTruthyEnv(process.env.INGESTION_EMIT_SCOPES);
   const finalized = finalizeScopeModel(parsedFiles, {
@@ -1496,24 +1501,22 @@ export function runScopeResolution(
 
   probeEmit('locals-end', `localValues=${functionLocalValueDefIds.size}`);
   // ── Out-of-core scope seal boundary ─────────────────────────────────────
-  // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
-  // of `Scope.bindings` are behind us for providers registered for automatic
-  // spill. Their emit passes can use point lookups in the sealed tree.
-  // The scopes are pinned from three sides: (1) the model's frozen `scopeTree`
-  // — released by `seal()` nulling its
-  // resident backing from the inside; (2) `input.preExtractedParsedFiles` (held
-  // by the caller for its own post-run release) — released here since run.ts is
-  // its last reader after extract; (3) this function's `parsedFiles` — replaced
-  // by a scope-stripped copy that keeps only what emit reads (referenceSites /
-  // filePath / localDefs). All three released → the heavy payload is collectible.
+  // Eligible providers can serve the remaining scope reads by ID, including
+  // passes that visit scopes from many files. Drop the resident tree and both
+  // parsed-file aliases only after the disk-backed tree is ready.
   let emitParsedFiles: readonly ParsedFile[] = parsedFiles;
-  if (
-    input.scopeIndexStorePath !== undefined &&
-    indexes.scopeTree instanceof TransitionalScopeTree &&
-    (forceScopeSpill || (allowPressureSpill && scopeEmitNeedsHeapHeadroom()))
-  ) {
+  const tree = indexes.scopeTree;
+  const shouldSeal =
+    tree instanceof TransitionalScopeTree &&
+    scopeStorePath !== undefined &&
+    (forceScopeSpill || (allowPressureSpill && scopeEmitNeedsHeapHeadroom()));
+  if (shouldSeal) {
     logHeapProbe('sr-seal-pre', `lang=${provider.language}`);
-    indexes.scopeTree.seal(input.scopeIndexStorePath);
+    if (forceScopeSpill) tree.seal(scopeStorePath);
+  }
+  using temporarySpill =
+    shouldSeal && !forceScopeSpill ? trySealTemporaryScopeTree(tree, scopeStorePath) : undefined;
+  if (temporarySpill || (shouldSeal && forceScopeSpill)) {
     emitParsedFiles = parsedFiles.map((p) => ({ ...p, scopes: [] }));
     parsedFiles.length = 0;
     // The phase shares this map across languages. Other languages may still
@@ -2290,7 +2293,8 @@ export function runScopeResolution(
           }
         }
       } catch (err) {
-        if (err instanceof GraphReferenceIntegrityError) throw err;
+        if (err instanceof GraphReferenceIntegrityError || err instanceof ScopeShardReadError)
+          throw err;
         // Last-resort isolation, mirroring the worker-side per-file try/catch:
         // a shape the predicate misses must cost this one file's CFG, not
         // abort the language's whole scope-resolution pass mid-graph-build.
