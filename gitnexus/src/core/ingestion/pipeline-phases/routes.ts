@@ -343,7 +343,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       routeRegistry.set(key, { ...entry, url });
     };
     for (const route of allExtractedRoutes) {
-      if (!route.routePath) continue;
+      if (route.routePath == null) continue;
       const routeUrl = normalizeExtractedRoutePath(route.routePath, route.prefix);
       if (!selectedRoutes || selectedRoutes.has(route)) {
         addRoute(routeUrl, {

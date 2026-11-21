@@ -178,6 +178,19 @@ export function buildExportedTypeMapFromGraph(
  */
 const ROUTE_EDGE_CONFIDENCE = 0.5;
 
+/** Zero exact match: unique case-insensitive Method of the controller class (PHP route branches only). */
+function routeHandlerMethodCaseInsensitiveFallback(
+  symbols: SymbolTableReader,
+  controllerDef: SymbolDefinition,
+  methodName: string,
+): string | undefined {
+  return symbols.lookupExactUniqueCaseInsensitive(
+    controllerDef.filePath,
+    methodName,
+    controllerDef.nodeId,
+  )?.nodeId;
+}
+
 /**
  * Resolve a route's controller class from its normalized dot-joined
  * fully-qualified name (threaded by the Laravel extractor from a `use`/`::class`
@@ -337,7 +350,14 @@ export const processRoutesFromExtracted = async (
     // Method must live in the controller's own file (the legacy emitter only
     // accepted same-file method resolutions).
     const methodDefs = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName);
-    const methodId = methodDefs[0]?.nodeId;
+    let methodId = methodDefs[0]?.nodeId;
+    if (!methodId) {
+      methodId = routeHandlerMethodCaseInsensitiveFallback(
+        model.symbols,
+        controllerDef,
+        route.methodName,
+      );
+    }
     const sourceId = generateId('File', route.filePath);
 
     if (!methodId) {
@@ -525,7 +545,7 @@ export function resolveRouteHandlerSymbols(
   // Laravel framework routes — controller class + method name.
   for (const route of extractedRoutes) {
     // Match the routes phase's admission rule for extracted declarations.
-    if (!route.routePath) continue;
+    if (route.routePath == null) continue;
     let methodId: string | undefined;
     if (route.controllerName && route.methodName) {
       let controllerDef: SymbolDefinition | undefined;
@@ -536,7 +556,16 @@ export function resolveRouteHandlerSymbols(
         const controllerDefs = model.types.lookupClassByName(route.controllerName);
         if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
       }
-      if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
+      if (controllerDef) {
+        methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
+        if (!methodId) {
+          methodId = routeHandlerMethodCaseInsensitiveFallback(
+            model.symbols,
+            controllerDef,
+            route.methodName,
+          );
+        }
+      }
     } else if (!route.controllerName && route.methodName) {
       methodId = pickSameFileHandler(
         model.symbols.lookupExactAll(route.filePath, route.methodName),

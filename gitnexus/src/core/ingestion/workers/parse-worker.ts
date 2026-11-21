@@ -118,6 +118,11 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
+import {
+  extractPhpRouterRequireBindings,
+  shouldExtractPhpRouterRequireBindings,
+  type ExtractedPhpRouteRequireBinding,
+} from '../route-extractors/php-router-require-bindings.js';
 import type { SharedSpringType } from '../route-extractors/spring-shared.js';
 import {
   collectFunctionCfgs,
@@ -500,6 +505,11 @@ export interface ParseWorkerResult {
    */
   routerModuleAliases?: ExtractedRouterModuleAlias[];
   /**
+   * Bootstrap `$app->router->group(..., require ...)` sites for cross-file
+   * Lumen prefix propagation. Optional for parse-cache backward compatibility.
+   */
+  phpRouterRequireBindings?: ExtractedPhpRouteRequireBinding[];
+  /**
    * Per-file Python module-level string constants (#2391). parse-impl aggregates
    * these into a repo-wide, file-path-keyed map and resolves each decorator
    * route's non-literal path expression against it. Optional for cache backward
@@ -718,6 +728,7 @@ const NOOP_SYMBOL_TABLE: SymbolTableReader = {
   lookupExact: () => undefined,
   lookupExactFull: () => undefined,
   lookupExactAll: () => [],
+  lookupExactUniqueCaseInsensitive: () => undefined,
   lookupCallableByName: () => [],
   getFiles: () => [][Symbol.iterator](),
   getStats: () => ({ fileCount: 0 }),
@@ -3122,6 +3133,15 @@ const processFileGroupFiles = (
     if (provider.isRouteFile?.(file.path)) {
       const extractedRoutes = extractLaravelRoutes(tree, file.path);
       for (const r of extractedRoutes) result.routes.push(r);
+    }
+
+    if (
+      language === SupportedLanguages.PHP &&
+      shouldExtractPhpRouterRequireBindings(file.content)
+    ) {
+      for (const binding of extractPhpRouterRequireBindings(tree, file.path)) {
+        (result.phpRouterRequireBindings ??= []).push(binding);
+      }
     }
 
     // Content-based route extraction via provider hook (path-gate lives on

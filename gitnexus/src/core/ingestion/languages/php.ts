@@ -258,8 +258,8 @@ function phpDescriptionExtractor(
   return phpLeadingDocFallback(nodeLabel, nodeName, captureMap);
 }
 
-/** Detect Laravel route files by path convention. */
-function isPhpRouteFile(filePath: string): boolean {
+/** Detect Laravel/Lumen route files by path convention. */
+export function isPhpRouteFile(filePath: string): boolean {
   return (
     filePath.endsWith('.php') && (filePath.includes('/routes/') || filePath.startsWith('routes/'))
   );
