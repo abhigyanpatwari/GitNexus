@@ -5,6 +5,10 @@ on:
     branches: [main, fix/3852-root-cause]
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
+    outputs:
+      sonar_coverage:
+        description: Whether CI uploaded LCOV for the main-branch analysis
+        value: ${{ jobs.tests.outputs.sonar_coverage }}
 
 permissions:
   contents: read
@@ -42,6 +46,18 @@ jobs:
     uses: ./.github/workflows/ci-tests.yml
     permissions:
       contents: read
+
+  sonar:
+    name: SonarQube
+    needs: tests
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      needs.tests.outputs.sonar_coverage == 'true'
+    uses: ./.github/workflows/sonarqube.yml
+    permissions:
+      contents: read
+      id-token: write
 
   e2e:
     uses: ./.github/workflows/ci-e2e.yml

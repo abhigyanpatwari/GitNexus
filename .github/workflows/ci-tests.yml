@@ -2,6 +2,10 @@ name: Tests
 
 on:
   workflow_call:
+    outputs:
+      sonar_coverage:
+        description: Whether the merged LCOV artifact is available in this run
+        value: ${{ jobs.coverage-merge.outputs.sonar_coverage }}
 
 permissions:
   contents: read
@@ -445,12 +449,12 @@ jobs:
   # Merge the sharded coverage blobs into one report and enforce the real
   # thresholds on the combined ('new') coverage — `vitest --mergeReports` re-runs
   # nothing, it just reduces the stored blobs. Also emits the merged
-  # test-results.json and runs the (unsharded) web + docker suites, so the
-  # `test-reports` artifact keeps the exact shape ci-report.yml consumes for its
-  # base-branch ('baseline') vs new coverage delta.
+  # test-results.json and runs the (unsharded) web + docker suites.
   coverage-merge:
     name: ubuntu / coverage merge
     needs: tests
+    outputs:
+      sonar_coverage: ${{ steps.upload-lcov.outcome == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -481,9 +485,7 @@ jobs:
           --reporter=./scripts/shard-timings-reporter.ts
           --outputFile=test-results.json
           --coverage
-          --coverage.reporter=json-summary
-          --coverage.reporter=json
-          --coverage.reporter=text
+          --coverage.reporter=lcovonly
           --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
       - name: Upload learned coverage timings
@@ -503,7 +505,23 @@ jobs:
           --reporter=../gitnexus/scripts/execution-reporter.ts
           --includeTaskLocation
           --outputFile=web-test-results.json
+          --coverage
+          --coverage.reporter=lcovonly
         working-directory: gitnexus-web
+      - name: Prepare repository-relative LCOV for SonarQube
+        shell: bash
+        run: |
+          for package in gitnexus gitnexus-web; do
+            report="$package/coverage/lcov.info"
+            grep -q '^DA:' "$report"
+            sed "s|^SF:|SF:$package/|" "$report"
+          done > "$RUNNER_TEMP/lcov.info"
+      - name: Upload SonarQube coverage
+        id: upload-lcov
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: sonar-coverage
+          path: ${{ runner.temp }}/lcov.info
       - name: Run docker-server integration tests
         run: node --test docker-server.test.mjs
       - name: Upload test reports
@@ -512,8 +530,6 @@ jobs:
         with:
           name: coverage-reports
           path: |
-            gitnexus/coverage/coverage-summary.json
-            gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
           retention-days: 5
@@ -1887,7 +1903,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
-      - name: Download coverage and web reports
+      - name: Download CLI and web execution reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
@@ -1914,8 +1930,6 @@ jobs:
         with:
           name: test-reports
           path: |
-            gitnexus/coverage/coverage-summary.json
-            gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
             eval/pytest-results.json

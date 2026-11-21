@@ -163,6 +163,11 @@ GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 The `CI Gate` job in `ci.yml` requires the quality and test workflows to pass.
 The browser E2E workflow must pass or be skipped because no web files changed.
 
+The Ubuntu merge job enforces the Vitest coverage thresholds and writes one
+LCOV artifact from the merged CLI shards and web unit tests. SonarQube imports
+that artifact from the same CI run on same-repository pull requests and on
+pushes to `main` that run CI. The sticky PR comment reports test execution.
+
 Branch protection also requires six platform check names from the former
 three-shard matrix. These names remain as aggregate gates: all native shards
 and the `every test executed` audit must succeed before any of them passes.

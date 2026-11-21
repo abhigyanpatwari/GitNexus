@@ -1,20 +1,11 @@
 name: SonarQube
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  workflow_call:
 
 jobs:
   build:
-    name: Build and analyze
-    # GitHub withholds the OIDC token on pull requests from forks.
-    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
+    name: Analyze with coverage
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -25,9 +16,12 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # Build, test, and generate coverage reports here when coverage is configured.
-      # - name: Build and test
-      #   run: <build + test + generate coverage reports>
+      - name: Download LCOV from this run
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: sonar-coverage
+          path: coverage
+          digest-mismatch: error
 
       - name: Cache SonarQube packages
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
