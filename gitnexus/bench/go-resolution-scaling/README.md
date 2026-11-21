@@ -22,6 +22,8 @@ Each package defines its own `Client` struct, field and method. The method passe
 
 The first round records ownership-registry lookups and the total length of the buckets they return. Subsequent rounds use the original registry methods and rotate the order of the sizes. The `GO_RESOLUTION_SCALING` JSON line reports the individual wall times in milliseconds, their medians, the number of definitions, deferred sites and solver iterations, and the fitted time exponent for each pass. An exponent of 1 corresponds to a doubling of time when file count doubles. Inspect the per-size times alongside the fit, especially when the smallest samples take less than a millisecond.
 
+The [CI benchmarks job](../../../.github/workflows/ci-tests.yml) runs the default sweep on the revision under test. At each size it allows up to one ownership lookup, one returned bucket entry, and three callable-flow iterations per Go file, summed over the fixture. The `go-resolution-scaling` artifact retains `measure.json` and the run log for five days. Use the recorded wall times and fitted exponents to compare runs.
+
 ## Measured results
 
 Median milliseconds on Linux x64, Node 22.23.3, with five measured samples per size. Both source revisions used the same Vitest 5.1.0 runner, tree-sitter 0.25.1 runtime and tree-sitter-go 0.25.0 grammar. The release figures therefore describe the tagged resolver source on this harness. The reporter's container and corpus were unavailable.
