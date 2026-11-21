@@ -23,6 +23,7 @@
  * Plan: `docs/plans/2026-04-20-001-refactor-emit-pipeline-generalization-plan.md`.
  */
 
+import v8 from 'node:v8';
 import type {
   CallResultAssignmentSite,
   ParsedFile,
@@ -112,6 +113,7 @@ import {
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
+import { AUTO_SPILL_SCOPE_RESOLVERS } from './registry.js';
 import {
   findEnclosingClassDef,
   hasExplicitNameClaim,
@@ -724,8 +726,8 @@ interface RunScopeResolutionInput {
    */
   readonly preExtractedParsedFiles?: ReadonlyMap<string, ParsedFile>;
   /**
-   * Out-of-core scope index (disk-backed scope seal). When set AND `GITNEXUS_DISK_SCOPE_INDEX` is
-   * enabled, the per-language `scopeTree` is sealed to a disk-backed store at
+   * Out-of-core scope index. Under PDG heap pressure for eligible providers,
+   * or when enabled with `GITNEXUS_DISK_SCOPE_INDEX`, the scope tree is sealed at
    * this path after resolve (before emit), and the heavy `Scope.bindings`
    * payload is dropped from heap — lowering the per-language peak (kernel:
    * ~20→~12 GB) so the analysis fits on smaller-RAM machines. Same storage path
@@ -826,6 +828,13 @@ interface RunScopeResolutionStats {
    * pure data-dependence — so it is harvested for every `--pdg` language.
    */
   readonly callSummaries: readonly CallSummary[];
+}
+
+/** Leave room for call indexes and PDG rows after the last bulk scope read.
+ * The rc.247 reproduction entered emission with over 75% of its 2 GiB heap in use. */
+function scopeEmitNeedsHeapHeadroom(): boolean {
+  const { used_heap_size, heap_size_limit } = v8.getHeapStatistics();
+  return used_heap_size >= heap_size_limit * 0.7;
 }
 
 export function runScopeResolution(
@@ -1074,7 +1083,17 @@ export function runScopeResolution(
     }
   }
   const filterWildcardNames = provider.filterWildcardNames;
+  const diskScopeSetting = process.env.GITNEXUS_DISK_SCOPE_INDEX;
+  const forceScopeSpill = parseTruthyEnv(diskScopeSetting);
+  const allowPressureSpill =
+    diskScopeSetting === undefined &&
+    input.pdg === true &&
+    AUTO_SPILL_SCOPE_RESOLVERS.has(provider) &&
+    input.scopeIndexStorePath !== undefined &&
+    input.onResolved === undefined &&
+    !parseTruthyEnv(process.env.INGESTION_EMIT_SCOPES);
   const finalized = finalizeScopeModel(parsedFiles, {
+    spillableScopeTree: forceScopeSpill || allowPressureSpill,
     moduleExports: provider.moduleExports,
     hooks: {
       ownedMembersBindAtModuleScope: provider.ownedMembersBindAtModuleScope,
@@ -1478,10 +1497,10 @@ export function runScopeResolution(
   probeEmit('locals-end', `localValues=${functionLocalValueDefIds.size}`);
   // ── Out-of-core scope seal boundary ─────────────────────────────────────
   // Pass-A (finalize + propagate + resolve) is done; all whole-language reads
-  // of `Scope.bindings` are behind us. Emit reaches scopes ONLY via
-  // `scopeTree.getScope` (a point lookup), so seal the TransitionalScopeTree to
-  // disk now and drop the resident scopes. The scopes are pinned from THREE
-  // sides: (1) the model's frozen `scopeTree` — released by `seal()` nulling its
+  // of `Scope.bindings` are behind us for providers registered for automatic
+  // spill. Their emit passes can use point lookups in the sealed tree.
+  // The scopes are pinned from three sides: (1) the model's frozen `scopeTree`
+  // — released by `seal()` nulling its
   // resident backing from the inside; (2) `input.preExtractedParsedFiles` (held
   // by the caller for its own post-run release) — released here since run.ts is
   // its last reader after extract; (3) this function's `parsedFiles` — replaced
@@ -1490,14 +1509,18 @@ export function runScopeResolution(
   let emitParsedFiles: readonly ParsedFile[] = parsedFiles;
   if (
     input.scopeIndexStorePath !== undefined &&
-    parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX) &&
-    indexes.scopeTree instanceof TransitionalScopeTree
+    indexes.scopeTree instanceof TransitionalScopeTree &&
+    (forceScopeSpill || (allowPressureSpill && scopeEmitNeedsHeapHeadroom()))
   ) {
     logHeapProbe('sr-seal-pre', `lang=${provider.language}`);
     indexes.scopeTree.seal(input.scopeIndexStorePath);
     emitParsedFiles = parsedFiles.map((p) => ({ ...p, scopes: [] }));
     parsedFiles.length = 0;
-    if (preExtracted !== undefined) (preExtracted as Map<string, ParsedFile>).clear();
+    // The phase shares this map across languages. Other languages may still
+    // need worker records that are unavailable from the file store.
+    if (preExtracted instanceof Map) {
+      for (const file of emitParsedFiles) preExtracted.delete(file.filePath);
+    }
     forceGc();
     logHeapProbe('sr-seal-post', `lang=${provider.language}`);
   }
@@ -2392,11 +2415,11 @@ export function runScopeResolution(
         // taint ⊆ emit likewise: the M3 match+solve+propagate+emit share (#2083 U4).
         (input.pdg === true ? ` pdg=${pdgMs.toFixed(0)}ms taint=${taintMs.toFixed(0)}ms` : '') +
         ` total=${ns(tStart, tEnd).toFixed(0)}ms` +
-        ` (${parsedFiles.length} files)`,
+        ` (${emitParsedFiles.length} files)`,
     );
   }
 
-  logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${parsedFiles.length}`);
+  logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${emitParsedFiles.length}`);
 
   for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
   input.onResolved?.({
@@ -2406,7 +2429,7 @@ export function runScopeResolution(
   });
 
   return {
-    filesProcessed: parsedFiles.length,
+    filesProcessed: emitParsedFiles.length,
     filesSkipped,
     scopeExtractionFailedPaths,
     importsEmitted,

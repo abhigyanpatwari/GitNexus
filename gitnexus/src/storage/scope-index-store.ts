@@ -21,9 +21,6 @@
  * serves `getScope` from a bounded LRU of decoded shards plus a small resident
  * skeleton (`scopeId -> {shard, childIds, parent}`), so only the working set of
  * scopes is resident, not all of them.
- *
- * Default-off: only constructed when `GITNEXUS_DISK_SCOPE_INDEX` is set. The
- * resident `buildScopeTree` path is untouched otherwise.
  */
 
 import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
@@ -221,6 +218,8 @@ export class DiskBackedScopeTree implements ScopeTree {
  * fully-resident behavior byte-identical.
  */
 export class TransitionalScopeTree implements ScopeTree {
+  // Stays resident until the explicit disk override or an eligible provider's
+  // pre-emit heap-pressure check requests a seal.
   private resident: ScopeTree | null;
   private disk: DiskBackedScopeTree | null = null;
 

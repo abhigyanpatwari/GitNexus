@@ -31,6 +31,12 @@ import { zigScopeResolver } from '../../languages/zig/scope-resolver.js';
 import { objectiveCScopeResolver } from '../../languages/objective-c/scope-resolver.js';
 import { rScopeResolver } from '../../languages/r/scope-resolver.js';
 
+/** Resolvers verified to emit the same graph using only point lookups after
+ * sealing. Providers that enumerate scopes during emit need the resident tree. */
+export const AUTO_SPILL_SCOPE_RESOLVERS: ReadonlySet<ScopeResolver> = new Set([
+  typescriptScopeResolver,
+]);
+
 /** Map of `SupportedLanguages` → `ScopeResolver`. The scope-resolution phase
  *  iterates this map directly — every registered resolver runs. This is the
  *  single source of truth for which languages resolve via scope-resolution. */
