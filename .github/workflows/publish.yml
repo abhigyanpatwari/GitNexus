@@ -269,18 +269,6 @@ jobs:
       # ci.yml declares a PR-only SonarQube caller. Test jobs retain contents: read.
       id-token: write
 
-  # Run alongside publication so scanner availability does not gate releases.
-  sonar:
-    name: SonarQube
-    needs: ci
-    if: >-
-      !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-      needs.ci.outputs.sonar_coverage == 'true'
-    uses: ./.github/workflows/sonarqube.yml
-    permissions:
-      contents: read
-      id-token: write
-
   # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
   # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min
   # for actions/create-github-app-token installation tokens). The atomic

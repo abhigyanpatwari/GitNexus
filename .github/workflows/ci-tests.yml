@@ -2,10 +2,6 @@ name: Tests
 
 on:
   workflow_call:
-    outputs:
-      sonar_coverage:
-        description: Whether the merged LCOV artifact is available in this run
-        value: ${{ jobs.coverage-merge.outputs.sonar_coverage }}
 
 permissions:
   contents: read
@@ -453,10 +449,9 @@ jobs:
   coverage-merge:
     name: ubuntu / coverage merge
     needs: tests
-    outputs:
-      sonar_coverage: ${{ steps.upload-lcov.outcome == 'success' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The optional LCOV upload has its own two-minute timeout after the tests.
+    timeout-minutes: 17
     env:
       GITNEXUS_REQUIRE_FTS: '1'
     steps:
@@ -464,6 +459,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
+        id: setup
         with:
           build: 'true'
       - name: Download coverage blobs
@@ -496,9 +492,12 @@ jobs:
           include-hidden-files: true
       # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies
+        id: install-web
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: npm ci
         working-directory: gitnexus-web
       - name: Run gitnexus-web unit tests
+        if: ${{ !cancelled() && steps.install-web.outcome == 'success' }}
         run: >-
           npx vitest run
           --reporter=default
@@ -508,21 +507,8 @@ jobs:
           --coverage
           --coverage.reporter=lcovonly
         working-directory: gitnexus-web
-      - name: Prepare repository-relative LCOV for SonarQube
-        shell: bash
-        run: |
-          for package in gitnexus gitnexus-web; do
-            report="$package/coverage/lcov.info"
-            grep -q '^DA:' "$report"
-            sed "s|^SF:|SF:$package/|" "$report"
-          done > "$RUNNER_TEMP/lcov.info"
-      - name: Upload SonarQube coverage
-        id: upload-lcov
-        uses: ./.github/actions/upload-test-artifact
-        with:
-          name: sonar-coverage
-          path: ${{ runner.temp }}/lcov.info
       - name: Run docker-server integration tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: node --test docker-server.test.mjs
       - name: Upload test reports
         if: always()
@@ -532,6 +518,24 @@ jobs:
           path: |
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
+          retention-days: 5
+      # Vitest writes LCOV before it reports a threshold failure. Preserve the
+      # original test outcomes and let the scanner report any transfer failure.
+      - name: Upload SonarQube coverage
+        if: >-
+          !cancelled() && ((github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sonar-coverage
+          path: |
+            gitnexus/coverage/lcov.info
+            gitnexus-web/coverage/lcov.info
+          if-no-files-found: error
+          overwrite: true
           retention-days: 5
 
   # Single source of truth for the platform-sensitive shard count. TOTAL below

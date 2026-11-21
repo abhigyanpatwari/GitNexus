@@ -194,9 +194,9 @@ jobs:
 
           # ── Overall status ──
           if [[ "$QUALITY" == "success" && "$TESTS" == "success" && ("$E2E" == "success" || "$E2E" == "skipped") ]]; then
-            OVERALL="✅ **All checks passed**"
+            OVERALL="✅ **Quality, tests and applicable E2E checks passed**"
           else
-            OVERALL="❌ **Some checks failed**"
+            OVERALL="❌ **Quality, tests or E2E checks failed or did not finish**"
           fi
 
           # ── Build markdown ──

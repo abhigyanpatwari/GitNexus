@@ -117,7 +117,9 @@ describe('CI report artifact discovery', () => {
       },
     });
     const report = readFileSync(output, 'utf8');
+    expect(report).toContain('Quality, tests and applicable E2E checks passed');
     expect(report).toContain('All **2** tests passed');
+    expect(report).not.toContain('All checks passed');
     expect(report).not.toMatch(/coverage/i);
   });
 
