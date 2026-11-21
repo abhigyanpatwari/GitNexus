@@ -30,3 +30,23 @@ The sanitized release repository was pinned to `7b1af8b`. A single parser worker
 The final candidate passed 205 focused tests across all 19 PDG languages, spill and storage recovery, FTS behavior, resource budgets, and the shared-language boundary. Both TypeScript configurations, lint, and formatting passed. For the earlier streaming candidate, a combined fixture matched the resident and streamed databases on 1,308 basic blocks. A supplemental full-suite run on unchanged source was interrupted after 36 minutes to isolate timing. Its final result is unverified.
 
 The experiment phase used 88 active minutes across three variants. The remaining active budget was shorter than another cold run. The three experiments used the local analyzer and existing dependencies. Claude Code reported about $0.92 in total model usage. The run ledger, optional patches, and raw measurements are under `.context/compound-engineering/ce-optimize/pdg-spill-time-memory/` in the benchmark workspace. The release fix is tracked in [PR #4028](https://github.com/abhigyanpatwari/GitNexus/pull/4028).
+
+## Follow-up on the pushed PR head
+
+The follow-up compared two changes with `b8fd1702f` on the same cold release workload. Each row below pairs adjacent runs. The targets remained 365 seconds and 3,316 MiB peak process RSS. A change needed a consistent improvement of at least 3% in one objective across both run orders, with no confirmed regression in the other.
+
+| Change and run order | Control (s) | Candidate (s) | Control RSS (MiB) | Candidate RSS (MiB) |
+| --- | ---: | ---: | ---: | ---: |
+| Decode scopes on demand, control first | 408.44 | 413.41 | 3,698.20 | 3,252.58 |
+| Decode scopes on demand, candidate first | 506.53 | 454.64 | 3,228.91 | 3,339.77 |
+| Stream PDG blocks on the budgeted CLI, control first | 441.84 | 518.06 | 3,250.63 | 3,438.03 |
+
+Decoding individual scopes shortened TypeScript emission in both pairs, by 8.31 and 23.96 seconds. Each run still read 42,431 shards, and their serialized contents grew from 5.15 to 5.94 billion characters. Whole-run time and peak RSS each improved in only one pair. The median of 3,296.17 MiB met the memory target, but the reversed pair used 110.86 MiB more than its control. We dropped the change. Its compatibility checks covered shared definitions, live type bindings, lookup order, eviction, older shard files and corrupt records.
+
+Streaming basic blocks reduced live JavaScript heap after the final language from 946 to 565 MiB. End-to-end time rose by 76.22 seconds (17.3%) and peak process RSS rose by 187.41 MiB (5.8%) in the first pair, so we stopped testing that variant. On a combined 19-language fixture we observed the CLI writing streamed blocks and verified that all 1,615 nodes and 2,963 relationships, including 1,308 basic blocks, matched the resident build. Both candidate implementations passed the TypeScript checks, and every measured release build matched the reference graph.
+
+The pushed implementation remains the reference and final implementation for this round. Its three cold controls took 408.44–506.53 seconds and used 3,228.91–3,698.20 MiB peak RSS. The median time of 441.84 seconds missed the target by 76.84 seconds. The median RSS of 3,250.63 MiB met the target by 65.38 MiB, with one control above target.
+
+The traces locate much of the RSS variation before database publication. During JavaScript scope resolution the two lower-memory controls shed 501 and 575 MiB of RSS between successive probes. Live heap fell by only 14 and 58 MiB over those intervals. The high-memory control kept its resident pages through that phase. The allocation responsible is still unknown.
+
+The follow-up completed its two-variant budget in 51 minutes, with no additional API spend. The local receipts are in `.context/compound-engineering/ce-optimize/pdg-spill-time-memory-followup/`.
