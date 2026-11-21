@@ -318,6 +318,22 @@ def ci_test_jobs():
     return workflow["jobs"]
 
 
+def test_eval_preflight_collects_evidence_after_pytest_failure(ci_test_jobs):
+    steps = ci_test_jobs["eval-tests"]["steps"]
+    uv = next(step for step in steps if step.get("uses", "").startswith("astral-sh/setup-uv@"))
+    pytest_step = next(step for step in steps if "python -m pytest" in step.get("run", ""))
+    setup = next(step for step in steps if step.get("uses") == "./.github/actions/setup-gitnexus")
+    preflight = next(step for step in steps if step.get("name") == "Exercise real workflow evidence preflight")
+    upload = next(step for step in steps if step.get("with", {}).get("name") == "execution-preflight")
+
+    assert steps.index(pytest_step) < steps.index(setup) < steps.index(preflight) < steps.index(upload)
+    assert not pytest_step.get("continue-on-error", False)
+    assert setup["if"] == "${{ !cancelled() && steps." + uv["id"] + ".outcome == 'success' }}"
+    assert preflight["if"] == "${{ !cancelled() && steps." + setup["id"] + ".outcome == 'success' }}"
+    outcome = f"steps.{preflight['id']}.outcome"
+    assert upload["if"] == "${{ !cancelled() && (" + outcome + " == 'success' || " + outcome + " == 'failure') }}"
+
+
 def test_platform_ci_preserves_required_check_names_with_complete_execution_gates(ci_test_jobs):
     jobs = ci_test_jobs
     gate = jobs["protected-platform-checks"]
@@ -404,10 +420,14 @@ def test_test_artifact_retries_cannot_hide_missing_evidence(ci_test_jobs):
             assert step["with"]["name"] and step["with"]["path"]
 
     artifact_names = set()
-    for job in ci_test_jobs.values():
+    for job_name, job in ci_test_jobs.items():
         for step in job.get("steps", []):
-            assert not step.get("uses", "").startswith("actions/upload-artifact@")
-            if step.get("uses") != "./.github/actions/upload-test-artifact":
+            uses = step.get("uses", "")
+            if uses.startswith("actions/upload-artifact@"):
+                # Only the scanner's optional LCOV handoff may bypass the evidence uploader.
+                assert (job_name, step["with"]["name"]) == ("coverage-merge", "sonar-coverage")
+                assert re.fullmatch(r"actions/upload-artifact@[a-f0-9]{40}", uses)
+            elif uses != "./.github/actions/upload-test-artifact":
                 continue
             name = step["with"]["name"]
             assert name not in artifact_names, f"Retry could overwrite another job: {name}"
