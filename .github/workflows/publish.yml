@@ -266,6 +266,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+      # ci.yml declares a PR-only SonarQube caller. Test jobs retain contents: read.
+      id-token: write
 
   # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
   # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min

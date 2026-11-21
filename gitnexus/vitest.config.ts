@@ -68,7 +68,6 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: [
         'src/cli/index.ts', // CLI entry point (commander wiring)
-        'src/server/**', // HTTP server (requires network)
         'src/core/wiki/**', // Wiki generation (requires LLM)
       ],
       // Auto-ratchet: vitest bumps thresholds when coverage exceeds them.

@@ -163,6 +163,19 @@ GitHub Actions (`.github/workflows/ci.yml`) orchestrate:
 The `CI Gate` job in `ci.yml` requires the quality and test workflows to pass.
 The browser E2E workflow must pass or be skipped because no web files changed.
 
+The Ubuntu coverage merge job enforces the CLI and web Vitest thresholds,
+including coverage from CLI server tests. It uploads both LCOV files after
+the required tests, even when a threshold fails. The SonarQube job checks that
+both reports have line data and that their source paths exist in the checkout.
+A missing or invalid report fails the SonarQube check.
+
+Same-repository code PRs targeting any branch get a scan. Fork PRs run the
+tests and thresholds with read-only permissions. On pushes to `main` that run
+CI, a separate workflow reads the completed Publish run's artifact and scans
+its exact commit. Docs-only changes follow the existing CI path filters.
+The sticky PR comment summarizes quality, tests and E2E. Coverage is reported
+in SonarQube.
+
 Branch protection also requires six platform check names from the former
 three-shard matrix. These names remain as aggregate gates: all native shards
 and the `every test executed` audit must succeed before any of them passes.
