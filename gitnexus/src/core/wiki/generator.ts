@@ -1040,11 +1040,14 @@ export class WikiGenerator {
 
     for (const fp of changedFiles) {
       let found = false;
+      // Every module that lists the file, not only the first: a sub-module's
+      // files are also listed under its parent, parent first (extractModuleFiles).
+      // The sub-module page documents the file, and the parent page is written
+      // from the sub-module pages, so both are regenerated, leaves first.
       for (const [mod, files] of Object.entries(existingMeta.moduleFiles)) {
         if (files.includes(fp)) {
           affectedModules.add(mod);
           found = true;
-          break;
         }
       }
       if (!found && !shouldIgnorePath(fp)) {
