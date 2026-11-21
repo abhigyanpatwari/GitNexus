@@ -178,7 +178,7 @@ export function buildExportedTypeMapFromGraph(
  */
 const ROUTE_EDGE_CONFIDENCE = 0.5;
 
-/** Zero exact match: unique case-insensitive Method of the controller class (PHP route branches only). */
+/** Unique case-insensitive Method of the controller class (PHP routes only; after exact miss or ambiguity). */
 function routeHandlerMethodCaseInsensitiveFallback(
   symbols: SymbolTableReader,
   controllerDef: SymbolDefinition,
@@ -351,7 +351,7 @@ export const processRoutesFromExtracted = async (
     // accepted same-file method resolutions).
     const methodDefs = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName);
     let methodId = methodDefs[0]?.nodeId;
-    if (!methodId) {
+    if (!methodId && route.filePath.endsWith('.php')) {
       methodId = routeHandlerMethodCaseInsensitiveFallback(
         model.symbols,
         controllerDef,
@@ -558,7 +558,7 @@ export function resolveRouteHandlerSymbols(
       }
       if (controllerDef) {
         methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
-        if (!methodId) {
+        if (!methodId && route.filePath.endsWith('.php')) {
           methodId = routeHandlerMethodCaseInsensitiveFallback(
             model.symbols,
             controllerDef,

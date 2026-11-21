@@ -222,6 +222,21 @@ Route::get('/report', ['middleware' => 'auth', 'uses' => $handler]);
     ]);
   });
 
+  it('does not double-prefix a string controller already under the group namespace', () => {
+    const routes = extract(`<?php
+Route::group(['namespace' => 'App\\\\Http\\\\Controllers'], function () {
+    Route::get('/users', 'App\\\\Http\\\\Controllers\\\\UserController@index');
+});
+`);
+    expect(routes).toContainEqual(
+      expect.objectContaining({
+        controllerName: 'App\\Http\\Controllers\\UserController',
+        controllerQualifiedName: 'App.Http.Controllers.UserController',
+        methodName: 'index',
+      }),
+    );
+  });
+
   it('threads fluent namespace into grouped string-action routes', () => {
     const routes = extract(`<?php
 Route::namespace('Admin\\\\Http\\\\Controllers')

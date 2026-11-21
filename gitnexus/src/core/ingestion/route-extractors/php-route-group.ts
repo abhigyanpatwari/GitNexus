@@ -151,6 +151,14 @@ export function qualifyStringActionController(
     return normalizeQualifiedName(controllerName.replace(/^\\+/, ''));
   }
   if (composedNamespace) {
+    const relative = controllerName.replace(/^\\+/, '');
+    if (relative.includes('\\')) {
+      const nsDots = normalizeQualifiedName(composedNamespace);
+      const qualified = normalizeQualifiedName(relative);
+      if (qualified === nsDots || qualified.startsWith(`${nsDots}.`)) {
+        return qualified;
+      }
+    }
     return normalizeQualifiedName(`${composedNamespace}\\${controllerName}`);
   }
   if (controllerName.includes('\\')) {

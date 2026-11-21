@@ -662,16 +662,19 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     ).toEqual([null, 'api']);
   });
 
-  it('a require after a possible early return does not count as already run', () => {
-    expect(
-      webContexts(`<?php
+  it('a require after a possible early return does not count as already run for require_once', () => {
+    const source = `<?php
 if (!$on) { return; }
 require __DIR__ . '/../routes/web.php';
 $app->router->group(['prefix' => 'api'], function ($router) {
   require_once __DIR__ . '/../routes/web.php';
 });
-`),
-    ).toEqual([null, 'api']);
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once && !b.appliesContext)?.unguarded).toBe(false);
+    // Guarded bare require does not populate the host included set, so the later
+    // require_once may-context remains (contract: every context the file may load under).
+    expect(webContexts(source)).toEqual([null, 'api']);
   });
 
   it('a return inside a group closure only guards the rest of that closure', () => {
