@@ -25,6 +25,7 @@ interface PageRequest {
   prompt: string;
 }
 
+// dupe-ok: the same streamed answer as wiki-truncation-recovery.test.ts, which this PR leaves alone
 function streamed(content: string, finishReason = 'stop'): Response {
   const chunk = { choices: [{ delta: { content }, finish_reason: finishReason }] };
   return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
@@ -80,6 +81,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
       await fs.writeFile(path.join(repoPath, file), `export const ${file.slice(0, -3)} = 1;\n`);
     }
     git('init', '-q');
+    git('config', 'commit.gpgsign', 'false');
     git('add', 'billing.ts', 'shipping.ts', 'notes.ts');
     git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'init');
     // A large module split into sub-modules, next to a module without any.
@@ -170,6 +172,23 @@ describe('incremental wiki update of a module with sub-modules', () => {
     expect(await page('commerce')).toContain('Commerce page, revision 1.');
   });
 
+  /** Runs an update whose Billing answer is cut off, so Commerce is held back. */
+  async function failBilling(): Promise<void> {
+    await commitChange('billing.ts');
+    cutOff.add('Billing');
+    expect(await run()).toEqual({
+      pagesGenerated: 0,
+      mode: 'incremental',
+      failedModules: ['Billing', 'Commerce'],
+    });
+    expect(requests.map((r) => r.page)).toEqual(['Billing']);
+    requests = [];
+    revision = 3;
+    cutOff.clear();
+  }
+
+  const pageOrNothing = (slug: string) => page(slug).catch(() => '');
+
   it('holds the parent page back until a failed sub-module page is retried', async () => {
     await commitChange('billing.ts');
     cutOff.add('Billing');
@@ -180,6 +199,11 @@ describe('incremental wiki update of a module with sub-modules', () => {
       failedModules: ['Billing', 'Commerce'],
     });
     expect(requests.map((r) => r.page)).toEqual(['Billing']);
+    // The held-back parent keeps its last page; only the failed page is gone.
+    expect(await pageOrNothing('billing')).toBe('');
+    expect(await page('commerce')).toContain('Commerce page, revision 1.');
+    expect(await page('shipping')).toContain('Shipping page, revision 1.');
+    expect(await page('notes')).toContain('Notes page, revision 1.');
 
     requests = [];
     revision = 3;
@@ -190,5 +214,55 @@ describe('incremental wiki update of a module with sub-modules', () => {
     expect(requests[1].prompt).toContain('Billing page, revision 3.');
     expect(await page('billing')).toContain('Billing page, revision 3.');
     expect(await page('commerce')).toContain('Commerce page, revision 3.');
+  });
+
+  it('removes a parent page whose own answer is cut off, and retries it', async () => {
+    await commitChange('billing.ts');
+    cutOff.add('Commerce');
+
+    // Billing and the overview.
+    expect(await run()).toEqual({
+      pagesGenerated: 2,
+      mode: 'incremental',
+      failedModules: ['Commerce'],
+    });
+    expect(await page('billing')).toContain('Billing page, revision 2.');
+    expect(await pageOrNothing('commerce')).toBe('');
+
+    requests = [];
+    revision = 3;
+    cutOff.clear();
+    expect(await run()).toMatchObject({ failedModules: [] });
+    expect(requests.map((r) => r.page)).toEqual(['Commerce', 'overview']);
+    expect(await page('commerce')).toContain('Commerce page, revision 3.');
+  });
+
+  it('retries a held-back parent when the branch has diverged since the failed run', async () => {
+    await failBilling();
+    // Leave the commit the failed run documented: its history is no longer ours.
+    git('reset', '-q', '--hard', 'HEAD~1');
+    await commitChange('notes.ts');
+
+    expect(await run()).toMatchObject({ mode: 'incremental', failedModules: [] });
+
+    expect(requests.map((r) => r.page)).toEqual(['Billing', 'Commerce', 'overview']);
+    expect(await page('billing')).toContain('Billing page, revision 3.');
+    expect(await page('commerce')).toContain('Commerce page, revision 3.');
+  });
+
+  it('leaves no page of a held-back parent behind when many new files arrive', async () => {
+    await failBilling();
+    const added = Array.from({ length: 6 }, (_, i) => `extra${i}.ts`);
+    for (const file of added) {
+      await fs.writeFile(path.join(repoPath, file), `export const ${file.slice(0, -3)} = 1;\n`);
+    }
+    git('add', ...added);
+    git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'add');
+
+    expect(await run()).toMatchObject({ mode: 'incremental', failedModules: [] });
+
+    // The full generation this falls back to keeps existing pages: the page
+    // from before the failure must be written again, not kept.
+    expect(await pageOrNothing('commerce')).not.toContain('revision 1.');
   });
 });
