@@ -1,0 +1,50 @@
+name: SonarQube on main
+
+on:
+  workflow_run:
+    workflows: [Publish]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    # Only trusted pushes to main can supply code and coverage to the OIDC job.
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.path == '.github/workflows/publish.yml' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      actions: read
+    outputs:
+      ran-ci: ${{ steps.jobs.outputs.ran-ci }}
+    steps:
+      - name: Check whether Publish ran CI
+        id: jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+        run: |
+          ran_ci=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?filter=all&per_page=100" \
+            | jq -s 'any(.[].jobs[]; .name == "ci / CI Gate" and .conclusion != "skipped")')
+          echo "ran-ci=$ran_ci" >> "$GITHUB_OUTPUT"
+
+  sonar:
+    needs: source
+    if: needs.source.outputs.ran-ci == 'true'
+    uses: ./.github/workflows/sonarqube.yml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write

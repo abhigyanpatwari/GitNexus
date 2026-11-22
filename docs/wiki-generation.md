@@ -85,3 +85,10 @@ Use `--force` to replace incomplete pages already saved by an older version.
 For safety, `http://` LLM base URLs are allowed by default only for loopback hosts (`localhost`, `127.0.0.1`, `::1`). `--allow-insecure-connection` and `GITNEXUS_ALLOW_INSECURE_CONNECTION` accept exact hostnames or IP addresses only; do not include schemes, ports, paths, credentials, or wildcards.
 
 The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph.
+
+A module whose source does not fit one page (30,000 tokens) is split by directory, below the
+directory its files share, so a Gradle or Maven module is split at its packages
+(`src — main/entity`). Small neighbouring directories share a page up to the same size, and so
+do the files sitting directly in a directory (`top-level files (1 of 2)`), so only a single file
+larger than a page is cut. A module of three files or fewer stays on one page. IntelliJ project
+files (`.iml`, `.ipr`, `.iws`) and Gradle lockfiles are not indexed, so they get no page.

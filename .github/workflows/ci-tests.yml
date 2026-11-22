@@ -445,14 +445,13 @@ jobs:
   # Merge the sharded coverage blobs into one report and enforce the real
   # thresholds on the combined ('new') coverage — `vitest --mergeReports` re-runs
   # nothing, it just reduces the stored blobs. Also emits the merged
-  # test-results.json and runs the (unsharded) web + docker suites, so the
-  # `test-reports` artifact keeps the exact shape ci-report.yml consumes for its
-  # base-branch ('baseline') vs new coverage delta.
+  # test-results.json and runs the (unsharded) web + docker suites.
   coverage-merge:
     name: ubuntu / coverage merge
     needs: tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The optional LCOV upload has its own two-minute timeout after the tests.
+    timeout-minutes: 17
     env:
       GITNEXUS_REQUIRE_FTS: '1'
     steps:
@@ -460,6 +459,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
+        id: setup
         with:
           build: 'true'
       - name: Download coverage blobs
@@ -481,9 +481,7 @@ jobs:
           --reporter=./scripts/shard-timings-reporter.ts
           --outputFile=test-results.json
           --coverage
-          --coverage.reporter=json-summary
-          --coverage.reporter=json
-          --coverage.reporter=text
+          --coverage.reporter=lcovonly
           --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
       - name: Upload learned coverage timings
@@ -494,17 +492,23 @@ jobs:
           include-hidden-files: true
       # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies
+        id: install-web
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: npm ci
         working-directory: gitnexus-web
       - name: Run gitnexus-web unit tests
+        if: ${{ !cancelled() && steps.install-web.outcome == 'success' }}
         run: >-
           npx vitest run
           --reporter=default
           --reporter=../gitnexus/scripts/execution-reporter.ts
           --includeTaskLocation
           --outputFile=web-test-results.json
+          --coverage
+          --coverage.reporter=lcovonly
         working-directory: gitnexus-web
       - name: Run docker-server integration tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: node --test docker-server.test.mjs
       - name: Upload test reports
         if: always()
@@ -512,10 +516,26 @@ jobs:
         with:
           name: coverage-reports
           path: |
-            gitnexus/coverage/coverage-summary.json
-            gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
+          retention-days: 5
+      # Vitest writes LCOV before it reports a threshold failure. Preserve the
+      # original test outcomes and let the scanner report any transfer failure.
+      - name: Upload SonarQube coverage
+        if: >-
+          !cancelled() && ((github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sonar-coverage
+          path: |
+            gitnexus/coverage/lcov.info
+            gitnexus-web/coverage/lcov.info
+          if-no-files-found: error
+          overwrite: true
           retention-days: 5
 
   # Single source of truth for the platform-sensitive shard count. TOTAL below
@@ -1849,6 +1869,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        id: uv
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1864,16 +1885,19 @@ jobs:
           path: eval/pytest-locked.xml
           retention-days: 5
       - uses: ./.github/actions/setup-gitnexus
+        id: setup
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         with:
           build: 'true'
       - name: Exercise real workflow evidence preflight
-        if: ${{ !cancelled() }}
+        id: preflight
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: >-
           npx vitest run test/unit/skill-evolution-workflow.test.ts
           --reporter=default --reporter=./scripts/execution-reporter.ts --outputFile=preflight.json
         working-directory: gitnexus
       - name: Upload preflight execution report
-        if: always()
+        if: ${{ !cancelled() && (steps.preflight.outcome == 'success' || steps.preflight.outcome == 'failure') }}
         uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-preflight
@@ -1900,7 +1924,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
-      - name: Download coverage and web reports
+      - name: Download CLI and web execution reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
@@ -1927,8 +1951,6 @@ jobs:
         with:
           name: test-reports
           path: |
-            gitnexus/coverage/coverage-summary.json
-            gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
             eval/pytest-results.json

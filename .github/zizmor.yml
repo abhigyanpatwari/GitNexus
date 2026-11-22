@@ -14,6 +14,11 @@ rules:
       # no checkout of fork code occurs. Header comment in the file documents.
       - ci-report.yml
 
+      # Only Publish pushes to main from this repo are eligible. The routing
+      # job has actions:read. The scanner pins checkout and artifact download
+      # to the triggering SHA and run ID and executes no project build steps.
+      - sonarqube-main.yml
+
       # workflow_run is the trusted half of the autofix pipeline. The
       # untrusted half (pr-autofix.yml) runs fork code with permissions:{}
       # and produces only a diff artifact (data, not executable code). The

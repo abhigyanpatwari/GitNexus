@@ -62,7 +62,11 @@ import {
   analysisSupervisorReservation,
   resolveHostAnalysisResources,
 } from '../core/analysis-host-resources.js';
-import type { AnalysisResourceBudget } from '../core/analysis-resource-budget.js';
+import {
+  isConstrainedPdgBuild,
+  type AnalysisResourceBudget,
+} from '../core/analysis-resource-budget.js';
+import { hostGlibcVersion } from '../core/lbug/native-check.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import {
@@ -772,6 +776,7 @@ export async function ensureHeap(
     cleanForwardedTermination?: boolean;
     memoryBudget?: string;
     admittedHeapMb?: number;
+    limitMallocArenas?: boolean;
   } = {},
 ): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
@@ -891,7 +896,7 @@ async function respawnWithHeap(
   source: HeapLimitSource | undefined,
   oomGuidance: string,
   nodeOpts: string,
-  options: { cleanForwardedTermination?: boolean },
+  options: { cleanForwardedTermination?: boolean; limitMallocArenas?: boolean },
 ): Promise<boolean> {
   // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
   // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
@@ -907,7 +912,7 @@ async function respawnWithHeap(
   // the child fight the parent for the debug port and die with EADDRINUSE.
   const preservedExecArgv = process.execArgv.filter((a) => !a.startsWith('--inspect'));
   const childArgs = [...preservedExecArgv, ...cliFlags, ...process.argv.slice(1)];
-  const childEnv = {
+  const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_OPTIONS: [nodeOpts, heapFlag, semiFlag].filter(Boolean).join(' ').trim(),
     [HEAP_LIMIT_SOURCE_ENV]: source,
@@ -916,8 +921,19 @@ async function respawnWithHeap(
     GITNEXUS_ANALYSIS_SUPERVISOR_BYTES:
       process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES ?? String(analysisSupervisorReservation()),
   };
+  // glibc reads its arena limit at startup. Apply the default to the graph
+  // writer. The publication/embedding child inherits the caller's policy.
+  const limitWriterArenas =
+    options.limitMallocArenas &&
+    process.platform === 'linux' &&
+    childEnv.MALLOC_ARENA_MAX === undefined &&
+    !/(?:^|:)glibc\.malloc\.arena_max=/.test(childEnv.GLIBC_TUNABLES ?? '') &&
+    hostGlibcVersion() !== null;
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
-  let childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  let childExit = await runRespawnedAnalyze(
+    childArgs,
+    limitWriterArenas ? { ...childEnv, MALLOC_ARENA_MAX: '2' } : childEnv,
+  );
   if (
     childExit.status === 0 &&
     !childExit.signal &&
@@ -1419,6 +1435,7 @@ const analyzeCommandImpl = async (
 
   let resources: AnalysisResourceBudget;
   let manualHeap = false;
+  let limitMallocArenas = false;
   try {
     const supervisorBytes =
       process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES === undefined
@@ -1455,11 +1472,13 @@ const analyzeCommandImpl = async (
     // a nested heap respawn with a slightly different allocation.
     process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB = String(resources.mainHeapMb);
     process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES = String(supervisorBytes);
+    limitMallocArenas = isConstrainedPdgBuild(options.pdg, resources);
     if (
       !manualHeap &&
       (await ensureHeap({
         memoryBudget: options.memoryBudget,
         admittedHeapMb: resources.mainHeapMb,
+        limitMallocArenas,
       }))
     )
       return;
@@ -2128,7 +2147,7 @@ const analyzeCommandImpl = async (
         manualHeap ? (process.env[HEAP_LIMIT_SOURCE_ENV] as HeapLimitSource | undefined) : 'auto',
         'Analysis exceeded its resource budget.',
         process.env.NODE_OPTIONS ?? '',
-        {},
+        { limitMallocArenas },
       );
       return;
     }
