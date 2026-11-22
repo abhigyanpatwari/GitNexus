@@ -366,7 +366,7 @@ function compareDottedVersions(a: string, b: string): number {
  * via dynamic import from the CLI lazy actions, and this file is the
  * dependency-light startup gate that must not pull it in.
  */
-function hostGlibcVersion(): string | null {
+export function hostGlibcVersion(): string | null {
   try {
     const report = process.report?.getReport() as
       | { header?: { glibcVersionRuntime?: unknown } }
