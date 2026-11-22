@@ -1070,6 +1070,7 @@ export class WikiGenerator {
     // now running on main). Fall back to full generation.
     if (changedFiles === null) {
       this.onProgress('incremental', 10, 'Branch diverged, running full generation...');
+      await this.removeFailedPages(existingMeta);
       const fullResult = await this.fullGeneration(currentCommit);
       return { ...fullResult, mode: 'incremental' };
     }
@@ -1098,11 +1099,14 @@ export class WikiGenerator {
 
     for (const fp of changedFiles) {
       let found = false;
+      // Every module that lists the file, not only the first: a sub-module's
+      // files are also listed under its parent, parent first (extractModuleFiles).
+      // The sub-module page documents the file, and the parent page is written
+      // from the sub-module pages, so both are regenerated, leaves first.
       for (const [mod, files] of Object.entries(existingMeta.moduleFiles)) {
         if (files.includes(fp)) {
           affectedModules.add(mod);
           found = true;
-          break;
         }
       }
       if (!found && added.has(fp) && indexed.has(fp) && !shouldIgnorePath(fp)) {
@@ -1112,6 +1116,7 @@ export class WikiGenerator {
 
     // If significant new files exist, re-run full grouping
     if (newFiles.length > 5) {
+      await this.removeFailedPages(existingMeta);
       this.onProgress(
         'incremental',
         15,
@@ -1140,14 +1145,16 @@ export class WikiGenerator {
 
     this.onProgress('incremental', 20, `Regenerating ${affectedArray.length} module(s)...`);
 
+    const removePage = (node: ModuleTreeNode): Promise<void> =>
+      fs.rm(path.join(this.wikiDir, `${node.slug}.md`), { force: true });
     const affectedNodes: ModuleTreeNode[] = [];
     for (const mod of affectedArray) {
       const modSlug = this.slugify(mod);
       const node = this.findNodeBySlug(moduleTree, modSlug);
       if (node) {
-        try {
-          await fs.unlink(path.join(this.wikiDir, `${node.slug}.md`));
-        } catch {}
+        // A parent page is removed just before it is regenerated, below, so a
+        // parent held back by a failed sub-module keeps its last page.
+        if (!node.children?.length) await removePage(node);
         affectedNodes.push(node);
       }
     }
@@ -1183,6 +1190,7 @@ export class WikiGenerator {
         this.failedModules.push(node.name);
         continue;
       }
+      await removePage(node);
       pagesGenerated += await regenerateNode(node);
     }
 
@@ -1206,6 +1214,19 @@ export class WikiGenerator {
 
     this.onProgress('done', 100, 'Incremental update complete');
     return { pagesGenerated, mode: 'incremental', failedModules: [...this.failedModules] };
+  }
+
+  /**
+   * Before a full generation, which keeps the pages it finds, remove the pages
+   * of the modules the last run could not write. A parent held back by a
+   * failed sub-module still has its previous page, and a full generation
+   * would leave that page as it is and drop the retry.
+   */
+  private async removeFailedPages(meta: WikiMeta): Promise<void> {
+    for (const name of meta.failedModules ?? []) {
+      const node = this.findNodeBySlug(meta.moduleTree, this.slugify(name));
+      if (node) await fs.rm(path.join(this.wikiDir, `${node.slug}.md`), { force: true });
+    }
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────
