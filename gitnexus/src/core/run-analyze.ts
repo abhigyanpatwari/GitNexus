@@ -1695,6 +1695,7 @@ export async function continuePreparedAnalysis(
         callbacks,
         nodeLimit: options.embeddingsNodeLimit,
         expectedGeneration: handoff.publicationId,
+        dropEmbeddings: options.dropEmbeddings,
         signal,
       });
       metadata = await finalize(metadata);
@@ -1954,6 +1955,7 @@ export async function runFullAnalysis(
             callbacks,
             nodeLimit: options.embeddingsNodeLimit,
             expectedGeneration: published.graphGeneration?.id,
+            dropEmbeddings: options.dropEmbeddings,
             signal: callbacks.signal,
           });
           // A matching completed artifact performs no writes. Preserve the
@@ -5571,6 +5573,17 @@ async function runFullAnalysisInner(
     // meta as `embeddingIdentity` so FUTURE sibling runs can reuse this
     // slot's rows. `undefined` ≡ the inline pipeline never ran.
     let runEmbeddingIdentities: { vectorIdentity: string; inputIdentity: string } | undefined;
+    // Whether Phase 5 may stamp `runEmbeddingIdentities` (#3631 review):
+    // the stamp certifies the rows this slot RETAINS, so it is withheld
+    // when retained rows exist whose producing run is unknown (no prior
+    // stamp). A prior stamp with a different vectorIdentity instead
+    // forces a re-embed of the retained rows in Phase 4 (see below), after
+    // which every retained row IS this run's work and the stamp is honest.
+    let runEmbeddingStampEligible = false;
+    // Phase 4's force-re-embed set when a vector-identity change makes the
+    // retained rows foreign (see `runEmbeddingStampEligible`); falls back
+    // to the resume decision's `pendingEmbeddingNodeIds` otherwise.
+    let embeddingForceReembedNodeIds: ReadonlySet<string> | undefined;
     // What Phase 5 stamps as `embeddingCheckpoint`. `undefined` ≡ clear it
     // (the clean-run contract). Built inside Phase 4 so it carries the identity
     // of the run that actually wrote it — see the assignment below (#2790).
@@ -5651,14 +5664,15 @@ async function runFullAnalysisInner(
         embeddingIdentityForRun = resolveEmbeddingIdentity();
       }
       const embeddingIdentity = embeddingIdentityForRun;
-      // ── Cross-branch embedding reuse (#3631, Phase 1) ─────────────────
-      // Harvest sibling branch indexes of this repository whose persisted
-      // identity digests match this run, keyed by content hash; the
-      // pipeline copies rows for hash hits instead of calling the embedder.
-      // Best-effort: any failure leaves the cache undefined and the run
-      // embeds exactly as before. The run's own digests are computed first
-      // and kept even when no sibling qualifies — Phase 5 stamps them into
-      // this slot's meta for future sibling runs.
+      // ── Cross-branch embedding reuse (#3631) ──────────────────────────
+      // Offer the pipeline a demand-driven cache over sibling branch
+      // indexes of this repository whose persisted identity digests match
+      // this run, keyed by content hash; the pipeline copies rows for
+      // hash hits instead of calling the embedder. Best-effort: any
+      // failure leaves the cache undefined and the run embeds exactly as
+      // before. The run's own digests are computed first and kept even
+      // when no sibling qualifies — Phase 5 stamps them into this slot's
+      // meta for future sibling runs.
       let siblingEmbeddingCache: SiblingEmbeddingCache | undefined;
       try {
         const { embeddingVectorIdentity, embeddingInputIdentity } =
@@ -5673,20 +5687,51 @@ async function runFullAnalysisInner(
             contentRetention,
           ),
         };
-        const { findSiblingSlotDirs, loadSiblingEmbeddingCache } =
-          await import('./embeddings/sibling-embedding-cache.js');
-        const siblingSlotDirs = await findSiblingSlotDirs({
-          targetMetaDir: metaDir,
-          storagePath: writeTarget.storagePath,
-          sharedStore: writeTarget.sharedStore,
-        });
-        if (siblingSlotDirs.length > 0) {
-          siblingEmbeddingCache = await loadSiblingEmbeddingCache({
-            slotDirs: siblingSlotDirs,
-            identities: runEmbeddingIdentities,
-            dimensions: embeddingIdentity.dimensions,
-            excludeDbPaths: [lbugPath, resolveGraphPath(metaDir)],
+        // Stamp honesty (#3631 review): the Phase 5 stamp certifies the
+        // rows this slot retains. Retained rows under a DIFFERENT vector
+        // identity — e.g. a same-width model switch, which the content
+        // hash cannot see in HTTP mode — would be certified as this run's
+        // model by an unconditional stamp, and a sibling would then copy
+        // foreign vectors. Force a re-embed of the retained rows instead:
+        // afterwards every retained row is this run's own work. Rows with
+        // NO prior stamp have unknown provenance and no identity to
+        // compare against, so the stamp is withheld for them below.
+        const priorEmbeddingIdentity = existingMeta?.embeddingIdentity;
+        if (
+          priorEmbeddingIdentity &&
+          priorEmbeddingIdentity.vectorIdentity !== runEmbeddingIdentities.vectorIdentity &&
+          cachedSnapshot.embeddingNodeIds.size > 0
+        ) {
+          embeddingForceReembedNodeIds = new Set([
+            ...pendingEmbeddingNodeIds,
+            ...cachedSnapshot.embeddingNodeIds,
+          ]);
+          log(
+            'Embedding vector identity changed since the retained rows were produced; ' +
+              `re-embedding ${cachedSnapshot.embeddingNodeIds.size} retained node(s) so the identity stamp stays truthful.`,
+          );
+        }
+        runEmbeddingStampEligible =
+          priorEmbeddingIdentity !== undefined || cachedSnapshot.embeddingNodeIds.size === 0;
+        // A drop regenerates every row: sibling reuse is suppressed for
+        // the run, exactly like the own cache (shouldLoadCache).
+        if (!options.dropEmbeddings) {
+          const { findSiblingSlotDirs, createSiblingEmbeddingCache } =
+            await import('./embeddings/sibling-embedding-cache.js');
+          const siblingSlotDirs = await findSiblingSlotDirs({
+            targetMetaDir: metaDir,
+            storagePath: writeTarget.storagePath,
+            sharedStore: writeTarget.sharedStore,
           });
+          if (siblingSlotDirs.length > 0) {
+            siblingEmbeddingCache = await createSiblingEmbeddingCache({
+              slotDirs: siblingSlotDirs,
+              identities: runEmbeddingIdentities,
+              dimensions: embeddingIdentity.dimensions,
+              excludeDbPaths: [lbugPath, resolveGraphPath(metaDir)],
+              signal: callbacks.signal,
+            });
+          }
         }
       } catch (err) {
         log(
@@ -5820,7 +5865,7 @@ async function runFullAnalysisInner(
         existingEmbeddings,
         {
           source: { repoPath, fileHashes: newFileHashes, contentRetention },
-          forceReembedNodeIds: pendingEmbeddingNodeIds,
+          forceReembedNodeIds: embeddingForceReembedNodeIds ?? pendingEmbeddingNodeIds,
           siblingCache: siblingEmbeddingCache,
           onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
             const handoff = stagedRecoveryEnabled && !recoveryGenerationDurable;
@@ -5873,15 +5918,14 @@ async function runFullAnalysisInner(
         },
       );
       // #3631: report the split the issue asks for — rows copied from
-      // sibling branch indexes vs rows the embedder produced — then release
-      // the harvested snapshots (any spill files are also covered by the
-      // run's spill scope if the pipeline above threw).
+      // sibling branch indexes vs rows the embedder produced — then close
+      // the sibling handles the demand-driven lookups opened.
       if (siblingEmbeddingCache) {
         log(
           `Reused ${embeddingResult.reusedNodes ?? 0} node embeddings (${embeddingResult.reusedChunks ?? 0} chunks) ` +
             `from sibling branch indexes; embedded ${embeddingResult.nodesProcessed} nodes fresh.`,
         );
-        siblingEmbeddingCache.dispose();
+        await siblingEmbeddingCache.dispose();
         siblingEmbeddingCache = undefined;
       }
       // ── A partial run must NOT clear the checkpoint (#2790) ───────────
@@ -5952,7 +5996,11 @@ async function runFullAnalysisInner(
     const attemptedEmbedding =
       !embeddingSkipped &&
       embeddingResult !== undefined &&
-      (embeddingResult.nodesProcessed > 0 || embeddingResult.failedNodeIds.length > 0);
+      (embeddingResult.nodesProcessed > 0 ||
+        embeddingResult.failedNodeIds.length > 0 ||
+        // A copy-only run (#3631) persisted rows without walking the
+        // embedder; it attempted embedding work all the same.
+        (embeddingResult.reusedNodes ?? 0) > 0);
 
     if (attemptedEmbedding && stats.nodes > 0 && embeddingCount === 0) {
       throw new Error(
@@ -6258,11 +6306,20 @@ async function runFullAnalysisInner(
       // when its own digests match both. Stamped only on the inline path —
       // publication runs record the same digests in `vectorGeneration` —
       // carried forward when this run produced no embeddings, and cleared
-      // by `--drop-embeddings`. This meta is a fresh literal, so omission
-      // is what clears a stale stamp.
+      // by `--drop-embeddings`. The stamp is also WITHHELD (cleared) when
+      // this run retained rows whose producing run is unknown — no prior
+      // stamp to compare against — because the stamp certifies the
+      // retained rows, not just this run's config; a vector-identity
+      // change against a known prior stamp instead forces a re-embed of
+      // the retained rows in Phase 4, keeping the stamp truthful. This
+      // meta is a fresh literal, so omission is what clears a stale stamp.
       embeddingIdentity:
         !options.graphPublication && !options.dropEmbeddings
-          ? (runEmbeddingIdentities ?? existingMeta?.embeddingIdentity)
+          ? runEmbeddingIdentities
+            ? runEmbeddingStampEligible
+              ? runEmbeddingIdentities
+              : undefined
+            : existingMeta?.embeddingIdentity
           : undefined,
       // Embedding sync also needs snapshot identity for non-git checkouts.
       // Incremental DB eligibility still independently requires repoHasGit.

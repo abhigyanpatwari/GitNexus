@@ -158,6 +158,8 @@ export interface AnalysisEmbeddingPhaseOptions {
   signal?: AbortSignal;
   /** Reject a superseded handoff before any model or paid provider request. */
   expectedGeneration?: string;
+  /** A drop regenerates every row: suppress sibling-artifact reuse too. */
+  dropEmbeddings?: boolean;
 }
 
 export async function runAnalysisEmbeddingPhase(
@@ -230,6 +232,7 @@ export async function runAnalysisEmbeddingPhase(
       graphPath,
       resources: resources.embedding,
       signal,
+      dropEmbeddings: options.dropEmbeddings,
       config: { threads: resources.embedding.nativeThreads },
       log: callbacks.onLog,
       metadata: {
