@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -129,6 +130,17 @@ describe('analyzeCommand --self-commit bridge (#2639)', () => {
     expect(selfCommitContextFilesMock).toHaveBeenCalledWith(
       '/repo',
       ['AGENTS.md', 'CLAUDE.md'],
+      expect.any(Map),
+    );
+  });
+
+  it('limits a self-commit to the selected instruction file', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { selfCommit: true, instructionFile: 'CLAUDE.md' });
+    expect(selfCommitContextFilesMock).toHaveBeenCalledTimes(1);
+    expect(selfCommitContextFilesMock).toHaveBeenCalledWith(
+      '/repo',
+      ['CLAUDE.md'],
       expect.any(Map),
     );
   });

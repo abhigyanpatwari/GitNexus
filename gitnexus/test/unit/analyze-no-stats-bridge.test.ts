@@ -1,23 +1,38 @@
+import '../helpers/mock-analysis-host.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock, cliErrorMock } =
-  vi.hoisted(() => {
-    const runFullAnalysisMock = vi.fn();
-    const generateAIContextFilesMock = vi.fn<
-      typeof import('../../src/cli/ai-context.js').generateAIContextFiles
-    >(async () => ({ files: [] as string[] }));
-    const generateSkillFilesMock = vi.fn(async () => ({
-      skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
-      outputPath: '/repo/.claude/skills',
-    }));
-    const cliErrorMock = vi.fn();
-    return {
-      runFullAnalysisMock,
-      generateAIContextFilesMock,
-      generateSkillFilesMock,
-      cliErrorMock,
-    };
-  });
+const {
+  runFullAnalysisMock,
+  generateAIContextFilesMock,
+  generateSkillFilesMock,
+  refreshBaseRefLineMock,
+  refreshStatsLineMock,
+  cliErrorMock,
+} = vi.hoisted(() => {
+  const runFullAnalysisMock = vi.fn();
+  const generateAIContextFilesMock = vi.fn<
+    typeof import('../../src/cli/ai-context.js').generateAIContextFiles
+  >(async () => ({ files: [] as string[] }));
+  const generateSkillFilesMock = vi.fn(async () => ({
+    skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
+    outputPath: '/repo/.claude/skills',
+  }));
+  const refreshBaseRefLineMock = vi.fn(async () => ({ files: [] as string[] }));
+  const refreshStatsLineMock = vi.fn(
+    async (_repoPath: string, _stats: unknown, _options?: { noStats?: boolean }) => ({
+      files: [] as string[],
+    }),
+  );
+  const cliErrorMock = vi.fn();
+  return {
+    runFullAnalysisMock,
+    generateAIContextFilesMock,
+    generateSkillFilesMock,
+    refreshBaseRefLineMock,
+    refreshStatsLineMock,
+    cliErrorMock,
+  };
+});
 
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
@@ -25,6 +40,8 @@ vi.mock('../../src/core/run-analyze.js', () => ({
 
 vi.mock('../../src/cli/ai-context.js', () => ({
   generateAIContextFiles: generateAIContextFilesMock,
+  refreshBaseRefLine: refreshBaseRefLineMock,
+  refreshStatsLine: refreshStatsLineMock,
 }));
 
 vi.mock('../../src/cli/skill-gen.js', () => ({
@@ -83,6 +100,8 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
       outputPath: '/repo/.claude/skills',
     });
+    refreshBaseRefLineMock.mockClear();
+    refreshStatsLineMock.mockClear();
     cliErrorMock.mockReset();
     process.exitCode = undefined;
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
@@ -196,42 +215,123 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
   });
 
-  it('passes stats:false as noStats to generateAIContextFiles on the --skills regeneration path (#1477)', async () => {
+  it.each([{ skills: [] }, { skills: [{ name: 'a', label: 'A', symbolCount: 10, fileCount: 2 }] }])(
+    'passes the regenerated inventory and --no-stats to the instruction writer ($skills)',
+    async ({ skills }) => {
+      generateSkillFilesMock.mockResolvedValueOnce({ skills, outputPath: '/repo/.claude/skills' });
+      runFullAnalysisMock.mockResolvedValueOnce({
+        repoName: 'repo',
+        repoPath: '/repo',
+        stats: {
+          files: 1,
+          nodes: 10,
+          edges: 20,
+          communities: 0,
+          processes: 5,
+        },
+        alreadyUpToDate: false,
+        pipelineResult: { communityResult: undefined },
+      });
+
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      try {
+        const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+        await analyzeCommand(undefined, { skills: true, stats: false });
+
+        expect(generateSkillFilesMock).toHaveBeenCalledTimes(1);
+        expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
+        const call = generateAIContextFilesMock.mock.calls[0];
+        expect(call?.[4]).toEqual(skills);
+        const aiCtxOpts = call?.[5];
+        expect(aiCtxOpts).toEqual({
+          refreshCounts: true,
+          skipAgentsMd: undefined,
+          skipSkills: undefined,
+          // #243: resolved default branch threaded into the --skills regen path.
+          defaultBranch: 'main',
+          noStats: true,
+          // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
+          hasPdg: false,
+          hasSpringActuator: false,
+        });
+      } finally {
+        exitSpy.mockRestore();
+      }
+    },
+  );
+
+  it('applies --no-stats to an already up-to-date index (#3618)', async () => {
+    // The fast path returns before generateAIContextFiles, so the flag only
+    // takes effect through the in-place stats refresh — otherwise it stays a
+    // no-op on every repo that was already indexed.
+    const stats = { nodes: 10, edges: 20, processes: 3 };
     runFullAnalysisMock.mockResolvedValueOnce({
       repoName: 'repo',
       repoPath: '/repo',
-      stats: {
-        files: 1,
-        nodes: 10,
-        edges: 20,
-        communities: 0,
-        processes: 5,
-      },
-      alreadyUpToDate: false,
-      pipelineResult: { communityResult: undefined },
+      stats,
+      alreadyUpToDate: true,
     });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-    try {
+    await analyzeCommand(undefined, { stats: false });
+
+    expect(refreshStatsLineMock).toHaveBeenCalledTimes(1);
+    expect(refreshStatsLineMock).toHaveBeenCalledWith('/repo', stats, {
+      refreshCounts: true,
+      noStats: true,
+      skipAgentsMd: undefined,
+    });
+  });
+
+  it('restores stats by default on an already up-to-date index', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(refreshStatsLineMock).toHaveBeenCalledWith(
+      '/repo',
+      {},
+      {
+        refreshCounts: true,
+        noStats: false,
+        skipAgentsMd: undefined,
+      },
+    );
+  });
+
+  it.each([{ skipAgentsMd: true }, { indexOnly: true }])(
+    'forwards context suppression to the fast-path refresh with %j',
+    async (options) => {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-      await analyzeCommand(undefined, { skills: true, stats: false });
+      await analyzeCommand(undefined, { ...options, stats: false });
 
-      expect(generateSkillFilesMock).toHaveBeenCalledTimes(1);
-      expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
-      const aiCtxOpts = generateAIContextFilesMock.mock.calls[0]![5];
-      expect(aiCtxOpts).toEqual({
-        skipAgentsMd: undefined,
-        skipSkills: undefined,
-        // #243: resolved default branch threaded into the --skills regen path.
-        defaultBranch: 'main',
-        noStats: true,
-        // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
-        hasPdg: false,
-        hasSpringActuator: false,
-      });
-    } finally {
-      exitSpy.mockRestore();
-    }
+      expect(refreshStatsLineMock).toHaveBeenCalledWith(
+        '/repo',
+        {},
+        {
+          refreshCounts: true,
+          noStats: true,
+          skipAgentsMd: true,
+        },
+      );
+    },
+  );
+
+  it('does not refresh root context files for an up-to-date pinned branch index', async () => {
+    runFullAnalysisMock.mockResolvedValueOnce({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: { nodes: 10, edges: 20, processes: 3 },
+      alreadyUpToDate: true,
+      isPrimaryBranch: false,
+    });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { stats: false });
+
+    expect(refreshStatsLineMock).not.toHaveBeenCalled();
+    expect(refreshBaseRefLineMock).not.toHaveBeenCalled();
   });
 });

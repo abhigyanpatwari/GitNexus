@@ -28,7 +28,8 @@
   ],
   "type": "module",
   "bin": {
-    "gitnexus": "dist/cli/index.js"
+    "gitnexus": "dist/cli/index.js",
+    "gitnexus-hook": "hooks/claude/gitnexus-hook.cjs"
   },
   "files": [
     "dist",
@@ -62,6 +63,7 @@
     "test:coverage": "vitest run --coverage",
     "test:cross-platform": "tsx scripts/run-cross-platform.ts",
     "test:benchmarks": "node --import tsx scripts/run-benchmarks.ts",
+    "bench:java-ingestion": "node bench/java-ingestion/measure.mjs --check",
     "test:dupes": "node --import tsx tools/test-dupes/test-dupes.ts",
     "test:mutation:prepare": "node --import tsx tools/mutation/prepare/prepare.ts",
     "test:mutation:run": "node --import tsx tools/mutation/driver/run-scope.ts",
@@ -81,6 +83,7 @@
     "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
+    "@eagleoutice/tree-sitter-r": "1.1.2",
     "@ladybugdb/core": "0.22.0",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@scarf/scarf": "^1.4.0",
@@ -122,6 +125,9 @@
     "tree-sitter-typescript": "0.23.2",
     "uuid": "^14.0.0"
   },
+  "optionalDependencies": {
+    "chokidar-v6": "npm:chokidar@^6.0.0"
+  },
   "gitnexusEmbeddingStack": {
     "@huggingface/transformers": "^4.1.0",
     "onnxruntime-node": "^1.24.0"
@@ -148,7 +154,7 @@
     "@types/proxy-addr": "^2.0.3",
     "@vitest/coverage-v8": "^5.0.0",
     "gitnexus-shared": "file:../gitnexus-shared",
-    "jscpd": "5.4.2",
+    "jscpd": "5.4.3",
     "jsdom": "30.1.3",
     "tsx": "^4.0.0",
     "typescript": "^7.0.2",
@@ -167,6 +173,7 @@
     "node": "^22.18.0 || >=24.11.0"
   },
   "bundleDependencies": [
+    "@eagleoutice/tree-sitter-r",
     "tree-sitter",
     "tree-sitter-c-sharp",
     "tree-sitter-cpp",

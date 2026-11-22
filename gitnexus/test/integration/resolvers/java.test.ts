@@ -667,7 +667,8 @@ describe('Java variadic call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Wildcard import: `import com.example.models.*` resolves every package file
+// Wildcard import: `import com.example.models.*` makes every package file
+// visible, and is a dependency on the ones the importer names (#3695)
 // ---------------------------------------------------------------------------
 
 describe('Java wildcard import resolution', () => {
@@ -677,12 +678,13 @@ describe('Java wildcard import resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'java-wildcard-import'), () => {});
   }, 60000);
 
-  it('emits IMPORTS edges to every file declaring the wildcard package', () => {
+  it('emits an IMPORTS edge only to the package file whose type the importer names', () => {
+    // Main names `User` and never `Order`. Order.java is still resolvable
+    // through the wildcard; it is just not something Main depends on.
     const imports = getRelationships(result, 'IMPORTS').filter(
       (edge) => edge.sourceFilePath === 'com/example/app/Main.java',
     );
     expect(imports.map((edge) => edge.targetFilePath).sort()).toEqual([
-      'com/example/models/Order.java',
       'com/example/models/User.java',
     ]);
   });
@@ -692,6 +694,43 @@ describe('Java wildcard import resolution', () => {
     const saveCall = calls.find((c) => c.target === 'save' && c.source === 'run');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toBe('com/example/models/User.java');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// On-demand imports: an IMPORTS edge per package file the importer names, not
+// per package file (#3695 — importers × package size exhausted the heap)
+// ---------------------------------------------------------------------------
+
+describe('Java on-demand import edges', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-wildcard-on-demand'), () => {});
+  }, 60000);
+
+  const importsOf = (file: string): string[] =>
+    getRelationships(result, 'IMPORTS')
+      .filter((edge) => edge.sourceFilePath === `com/example/app/${file}`)
+      .map((edge) => edge.targetFilePath.replace('com/example/models/', ''))
+      .sort();
+
+  it('keeps the files a type-only use names — the edge is their only trace', () => {
+    // An annotation, a `throws` clause and `instanceof` produce no CALLS,
+    // ACCESSES or EXTENDS edge, so dropping these would hide the dependency.
+    expect(importsOf('TypeOnly.java')).toEqual(['Audited.java', 'BizException.java', 'User.java']);
+  });
+
+  it('emits no edge for a wildcard import the file never uses', () => {
+    expect(importsOf('Unused.java')).toEqual([]);
+  });
+
+  it('keeps the type a static wildcard import names', () => {
+    expect(importsOf('StaticUser.java')).toEqual(['Utils.java']);
+  });
+
+  it('keeps an explicit import whether or not its type is used', () => {
+    expect(importsOf('Explicit.java')).toEqual(['Order.java']);
   });
 });
 

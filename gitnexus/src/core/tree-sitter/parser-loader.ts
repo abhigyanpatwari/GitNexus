@@ -172,6 +172,16 @@ export const isGrammarRuntimeSkipped = (
   return source !== undefined && isRuntimeSkippedGrammar(key, source);
 };
 
+// Grammars published under a name other than `tree-sitter-<language>`; every other language
+// keeps that default in the `npm rebuild` hint.
+const REBUILD_PACKAGES: ReadonlyMap<string, string> = new Map([
+  [SupportedLanguages.R, '@eagleoutice/tree-sitter-r'],
+]);
+
+/** The npm package to name in the `npm rebuild` hint for `language`'s unavailable grammar. */
+export const grammarRebuildPackage = (language: string): string =>
+  REBUILD_PACKAGES.get(language) ?? `tree-sitter-${language}`;
+
 export const getLanguageGrammar = (
   language: SupportedLanguages,
   filePath?: string,

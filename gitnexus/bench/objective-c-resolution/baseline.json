@@ -1,5 +1,5 @@
 {
-  "_comment": "Correctness counts are exact. Both arms are linear file-count gates. protocol implementer USES live on one shared node per (protocol, selector): N objc-protocol-candidate edges, not N². Measured after the shared-set hoist: spread 0.62→2.37 ms (linear_factor 0.956); protocol 0.69→2.14 ms (linear_factor 0.775) with candidate uses 40→160.",
+  "_comment": "Counts are exact. Protocol sends share one implementer set per (protocol, selector), with one candidate edge per implementer. Absolute budgets use the fastest resolver pass on a freshly seeded graph. Both scaling gates use the median of paired large/small resolver times divided by the class-count ratio.",
   "spread": {
     "small": {
       "classes": 40,

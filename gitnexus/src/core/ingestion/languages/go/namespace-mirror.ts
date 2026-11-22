@@ -25,7 +25,7 @@ export function mirrorGoNamespaceTypeBindings(
     const importerModule = moduleScopeByFile.get(parsed.filePath);
     if (importerModule === undefined) continue;
 
-    const moduleEdges = indexes.imports.get(importerModule.id);
+    const moduleEdges = indexes.imports.edgesAt(importerModule.id);
     if (moduleEdges === undefined) continue;
 
     const nsTargets = new Map<string, string[]>();

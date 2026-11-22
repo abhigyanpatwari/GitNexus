@@ -1,0 +1,4 @@
+export(`%+%`)
+export(`odd name`)
+export(plain_op)
+exportPattern("^pat_")

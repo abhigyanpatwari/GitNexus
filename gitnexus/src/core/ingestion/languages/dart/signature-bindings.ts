@@ -9,6 +9,10 @@
  *     declaration node and carries the function name → return type; the
  *     `bindingScopeFor` hook hoists it to the Module scope so callers (and
  *     `propagateImportedReturnTypes`) see `var u = getUser(); u.m()` resolve.
+ *     A LOCAL function's return type stays in the scope that declares the
+ *     function, the only place its name is visible.
+ *     An awaitable return (`Future<T>` / `FutureOr<T>`) is carried WHOLE —
+ *     see `awaitableReturnSpelling`.
  *
  * Reuses `dartMethodConfig.extractParameters/extractName/extractReturnType`,
  * which descend the `method_signature`/`declaration` wrapper internally.
@@ -16,7 +20,48 @@
 
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import type { CaptureMatch } from 'gitnexus-shared';
-import { dartMethodConfig } from '../../method-extractors/configs/dart.js';
+import { dartUsesWildcardVariables } from './language-version.js';
+import type { ParameterInfo } from '../../method-types.js';
+import {
+  dartMethodConfig,
+  extractDartFormalParameterList,
+} from '../../method-extractors/configs/dart.js';
+
+const AWAITABLE_BASES: ReadonlySet<string> = new Set(['Future', 'FutureOr']);
+
+const INNER_SIGNATURE_TYPES: ReadonlySet<string> = new Set([
+  'function_signature',
+  'getter_signature',
+  'operator_signature',
+]);
+
+/**
+ * `Future<User>` as written. tree-sitter-dart splits a generic return into a
+ * `type_identifier` and a SIBLING `type_arguments`, and `extractReturnType`
+ * reads only the former, so every generic return arrived bare and
+ * `interpretDartTypeBinding` suppressed it as a container name. Only an
+ * awaitable return is re-joined: the fold's await step unwraps it to what the
+ * await yields (DART-04), while `List<User>` and the other containers keep
+ * today's bare spelling — unwrapping those to the element would let a container
+ * and its element share a method name and mint a wrong edge, and the binding
+ * is for the FUNCTION's name, which a caller reads with or without an await.
+ */
+function awaitableReturnSpelling(declNode: SyntaxNode, bare: string): string | undefined {
+  if (!AWAITABLE_BASES.has(bare)) return undefined;
+  let inner: SyntaxNode | null = INNER_SIGNATURE_TYPES.has(declNode.type) ? declNode : null;
+  for (let i = 0; inner === null && i < declNode.namedChildCount; i++) {
+    const child = declNode.namedChild(i);
+    if (child !== null && INNER_SIGNATURE_TYPES.has(child.type)) inner = child;
+  }
+  if (inner === null) return undefined;
+  for (let i = 0; i < inner.namedChildCount; i++) {
+    const child = inner.namedChild(i);
+    if (child === null || child.type !== 'type_identifier' || child.text !== bare) continue;
+    const args = child.nextNamedSibling;
+    return args !== null && args.type === 'type_arguments' ? `${bare}${args.text}` : undefined;
+  }
+  return undefined;
+}
 
 function buildBindingMatch(
   anchor: SyntaxNode,
@@ -45,7 +90,15 @@ export function synthesizeDartSignatureBindings(
   if (bodyNode !== null) {
     const params = dartMethodConfig.extractParameters?.(declNode) ?? [];
     for (const p of params) {
-      if (p.type === null || p.name === '') continue;
+      // `_` declares nothing (Dart 3.7 wildcard variables), the same rule as
+      // `synthesizeDartParameterBindings` below, so this parameter types no
+      // `_` read. A field named `_` remains visible in wildcard language versions.
+      if (
+        p.type === null ||
+        p.name === '' ||
+        (p.name === '_' && dartUsesWildcardVariables(declNode))
+      )
+        continue;
       out.push(buildBindingMatch(bodyNode, '@type-binding.parameter', p.name, p.type));
     }
   }
@@ -55,13 +108,74 @@ export function synthesizeDartSignatureBindings(
   if (
     funcName !== undefined &&
     funcName !== '' &&
+    // A callable named `_` publishes no return binding. Hoisted to the Module
+    // scope under `_`, it would answer every `_` receiver in the file whose
+    // own parameter or local binds no type (above, and in `captures.ts`):
+    // `Address _() => …; void f(Other _) { _.save(); }` reached `Address.save`.
+    funcName !== '_' &&
     returnType !== undefined &&
     returnType !== '' &&
     returnType !== 'void' &&
     returnType !== 'dynamic'
   ) {
-    out.push(buildBindingMatch(declNode, '@type-binding.return', funcName, returnType));
+    out.push(
+      buildBindingMatch(
+        declNode,
+        '@type-binding.return',
+        funcName,
+        awaitableReturnSpelling(declNode, returnType) ?? returnType,
+      ),
+    );
   }
 
+  return out;
+}
+
+/**
+ * Parameter-type bindings ONLY, for a closure or a local function (DART-11).
+ *
+ * Anchored on `bodyNode` like the member bindings above, so each lands on the
+ * closure's or local function's OWN Function scope and types only the sites
+ * inside it: `(Other cs) { cs.save(); }` reads `Other` even when the
+ * enclosing function declares `Address cs`.
+ *
+ * `paramOwner` is the `function_expression` for a closure, whose
+ * `formal_parameter_list` is a direct child, or the `function_signature` of a
+ * local function. No return binding: a closure declares no return type, and a
+ * local function's is published with its declaration
+ * (`synthesizeDartSignatureBindings`), which `dartBindingScopeFor` keeps in the
+ * declaring scope instead of hoisting it file-wide.
+ */
+export function synthesizeDartParameterBindings(
+  paramOwner: SyntaxNode,
+  bodyNode: SyntaxNode,
+): CaptureMatch[] {
+  let params: readonly ParameterInfo[] = [];
+  if (paramOwner.type === 'function_expression') {
+    for (let i = 0; i < paramOwner.namedChildCount; i++) {
+      const child = paramOwner.namedChild(i);
+      if (child?.type === 'formal_parameter_list') {
+        params = extractDartFormalParameterList(child);
+        break;
+      }
+    }
+  } else {
+    params = dartMethodConfig.extractParameters?.(paramOwner) ?? [];
+  }
+  const out: CaptureMatch[] = [];
+  for (const p of params) {
+    // An untyped closure parameter has no `name` field, so the extractor
+    // reports `<unknown>` with no type; both guards skip it. A parameter named
+    // `_` declares nothing (Dart 3.7 wildcard variables), so `_` inside the
+    // body is whatever an enclosing scope calls `_`, never this parameter.
+    if (
+      p.type === null ||
+      p.name === '' ||
+      p.name === '<unknown>' ||
+      (p.name === '_' && dartUsesWildcardVariables(paramOwner))
+    )
+      continue;
+    out.push(buildBindingMatch(bodyNode, '@type-binding.parameter', p.name, p.type));
+  }
   return out;
 }

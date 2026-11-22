@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Rename a free function that shares its name with an inherited R6 method called through self; self$greet() is a call of the method, not of the function, so only the definition changes.",
+  "categories": ["r6", "positive", "same-file"],
+  "target": { "name": "greet", "kind": "Function", "file": "greet.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "success", "edits": 1 },
+  "edges": []
+}

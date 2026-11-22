@@ -13,7 +13,14 @@
 
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
-import { NODE_TABLES, REL_TYPES, scoreImpactRisk, unusedAxesForImpactWalk } from 'gitnexus-shared';
+import {
+  NODE_TABLES,
+  REL_TYPES,
+  impactEdgePredicate,
+  GLOBAL_NAME_FALLBACK_REASON,
+  scoreImpactRisk,
+  unusedAxesForImpactWalk,
+} from 'gitnexus-shared';
 import type {
   EnrichedSearchResult,
   GrepOptions,
@@ -868,11 +875,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
           p.includes('.test.') ||
           p.includes('.spec.') ||
           p.includes('__tests__') ||
-          p.includes('__mocks__') ||
-          p.endsWith('.test.ts') ||
-          p.endsWith('.test.tsx') ||
-          p.endsWith('.spec.ts') ||
-          p.endsWith('.spec.tsx')
+          p.includes('__mocks__')
         );
       };
 
@@ -997,7 +1000,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       // Query each depth level separately (LadybugDB doesn't support list comprehensions on paths)
       // For depth 1: direct connections only
       // For depth 2+: chain multiple single-hop queries
+      // Fetch one extra raw row so an exactly full page remains a complete result.
+      const depthRowLimits = [300, 200, 100];
       const depthQueries: Promise<any[]>[] = [];
+      const edgeConfidence = (edge: string) =>
+        `(${edge}.confidence IS NULL OR ${edge}.confidence >= ${minConf})`;
+      const edgeEvidence = (edge: 'r1' | 'r2') =>
+        `${impactEdgePredicate(edge)} AND ${edgeConfidence(edge)}`;
 
       // Depth 1 query - direct connections with edge metadata
       // For File targets: find callers of any code element with matching filePath
@@ -1009,7 +1018,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE callee.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
               AND r.type IN [${relTypeFilter}]
               AND affected.filePath <> callee.filePath
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1020,13 +1029,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
             MATCH (affected)-[r:CodeRelation]->(target)
             WHERE r.type IN [${relTypeFilter}]
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1037,7 +1046,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `
           : isFileTarget
             ? `
@@ -1045,7 +1054,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             WHERE caller.filePath = '${(targetFilePath || target).replace(/'/g, "''")}'
               AND r.type IN [${relTypeFilter}]
               AND caller.filePath <> affected.filePath
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1056,13 +1065,13 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
             MATCH (target)-[r:CodeRelation]->(affected)
             WHERE r.type IN [${relTypeFilter}]
-              AND (r.confidence IS NULL OR r.confidence >= ${minConf})
+              AND ${edgeConfidence('r')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1073,27 +1082,12 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.type AS edgeType,
               r.confidence AS confidence,
               r.reason AS reason
-            LIMIT 300
+            LIMIT ${depthRowLimits[0] + 1}
           `;
       if (import.meta.env.DEV) {
         console.log(`🔍 Impact d=1 query:\n${d1Query}`);
       }
-      depthQueries.push(
-        executeQuery(d1Query)
-          .then((results) => {
-            if (import.meta.env.DEV) {
-              console.log(`📊 Impact d=1 results: ${results.length} rows`);
-              if (results.length > 0) {
-                console.log('   Sample:', results.slice(0, 3));
-              }
-            }
-            return results;
-          })
-          .catch((err) => {
-            if (import.meta.env.DEV) console.warn('Impact d=1 query failed:', err);
-            return [];
-          }),
-      );
+      depthQueries.push(executeQuery(d1Query));
 
       // Depth 2 query - 2 hops
       if (depth >= 2) {
@@ -1105,8 +1099,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (affected)-[r2:CodeRelation]->(a)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
               AND affected.id <> target.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeConfidence('r2')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1117,7 +1111,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r2.type AS edgeType,
               r2.confidence AS confidence,
               r2.reason AS reason
-            LIMIT 200
+            LIMIT ${depthRowLimits[1] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
@@ -1125,8 +1119,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (a)-[r2:CodeRelation]->(affected)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}]
               AND affected.id <> target.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeConfidence('r2')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1137,14 +1131,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r2.type AS edgeType,
               r2.confidence AS confidence,
               r2.reason AS reason
-            LIMIT 200
+            LIMIT ${depthRowLimits[1] + 1}
           `;
-        depthQueries.push(
-          executeQuery(d2Query).catch((err) => {
-            if (import.meta.env.DEV) console.warn('Impact d=2 query failed:', err);
-            return [];
-          }),
-        );
+        depthQueries.push(executeQuery(d2Query));
       }
 
       // Depth 3 query - 3 hops
@@ -1158,9 +1147,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (affected)-[r3:CodeRelation]->(b)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}] AND r3.type IN [${relTypeFilter}]
               AND affected.id <> target.id AND affected.id <> a.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
-              AND (r3.confidence IS NULL OR r3.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeEvidence('r2')}
+              AND ${edgeConfidence('r3')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1171,7 +1160,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r3.type AS edgeType,
               r3.confidence AS confidence,
               r3.reason AS reason
-            LIMIT 100
+            LIMIT ${depthRowLimits[2] + 1}
           `
             : `
             MATCH (target {id: '${targetId.replace(/'/g, "''")}'})
@@ -1180,9 +1169,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
             MATCH (b)-[r3:CodeRelation]->(affected)
             WHERE r1.type IN [${relTypeFilter}] AND r2.type IN [${relTypeFilter}] AND r3.type IN [${relTypeFilter}]
               AND affected.id <> target.id AND affected.id <> a.id
-              AND (r1.confidence IS NULL OR r1.confidence >= ${minConf})
-              AND (r2.confidence IS NULL OR r2.confidence >= ${minConf})
-              AND (r3.confidence IS NULL OR r3.confidence >= ${minConf})
+              AND ${edgeEvidence('r1')}
+              AND ${edgeEvidence('r2')}
+              AND ${edgeConfidence('r3')}
             RETURN DISTINCT 
               affected.id AS id, 
               affected.name AS name, 
@@ -1193,18 +1182,16 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r3.type AS edgeType,
               r3.confidence AS confidence,
               r3.reason AS reason
-            LIMIT 100
+            LIMIT ${depthRowLimits[2] + 1}
           `;
-        depthQueries.push(
-          executeQuery(d3Query).catch((err) => {
-            if (import.meta.env.DEV) console.warn('Impact d=3 query failed:', err);
-            return [];
-          }),
-        );
+        depthQueries.push(executeQuery(d3Query));
       }
 
       // Wait for all depth queries
-      const depthResults = await Promise.all(depthQueries);
+      const depthResults = await Promise.allSettled(depthQueries);
+      const failedDepths: number[] = [];
+      const cappedDepths: number[] = [];
+      let omittedNameOnlyCalls = 0;
 
       // Combine results by depth
       interface NodeInfo {
@@ -1221,14 +1208,31 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const allNodeIds: string[] = [];
       const seenIds = new Set<string>();
 
-      depthResults.forEach((results, idx) => {
+      depthResults.forEach((result, idx) => {
         const d = idx + 1;
-        results.forEach((row: any) => {
+        if (result.status === 'rejected') {
+          failedDepths.push(d);
+          if (import.meta.env.DEV) console.warn(`Impact d=${d} query failed:`, result.reason);
+          return;
+        }
+        let rows = result.value;
+        const limit = depthRowLimits[idx];
+        if (rows.length > limit) {
+          cappedDepths.push(d);
+          rows = rows.slice(0, limit);
+        }
+        rows.forEach((row: any) => {
           const nodeId = Array.isArray(row) ? row[0] : row.id;
           const filePath = Array.isArray(row) ? row[3] : row.filePath;
 
           // Skip test files if includeTests is false
           if (!showTests && isTestFile(filePath)) return;
+          const edgeType = Array.isArray(row) ? row[6] : row.edgeType;
+          const reason = Array.isArray(row) ? row[8] : row.reason;
+          if (edgeType === 'CALLS' && reason === GLOBAL_NAME_FALLBACK_REASON) {
+            omittedNameOnlyCalls++;
+            return;
+          }
 
           // Avoid duplicates (a node might appear at multiple depths)
           if (nodeId && !seenIds.has(nodeId)) {
@@ -1241,9 +1245,9 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               nodeType: Array.isArray(row) ? row[2] : row.nodeType,
               filePath: filePath,
               startLine: Array.isArray(row) ? row[4] : row.startLine,
-              edgeType: Array.isArray(row) ? row[5] : row.edgeType || 'CALLS',
-              confidence: Array.isArray(row) ? row[6] : (row.confidence ?? 1.0),
-              reason: Array.isArray(row) ? row[7] : row.reason || '',
+              edgeType: edgeType || 'CALLS',
+              confidence: (Array.isArray(row) ? row[7] : row.confidence) ?? 1.0,
+              reason: reason || '',
             };
             byDepth.get(d)!.push(info);
             allNodeIds.push(nodeId);
@@ -1253,7 +1257,23 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
 
       const totalAffected = allNodeIds.length;
 
+      const traversalNotes: string[] = [];
+      if (omittedNameOnlyCalls)
+        traversalNotes.push(
+          `Calls omitted because only the name matched: ${omittedNameOnlyCalls}. Counts are lower bounds.`,
+        );
+      if (failedDepths.length)
+        traversalNotes.push(
+          `Failed depth queries: ${failedDepths.join(', ')}. Retry before editing.`,
+        );
+      if (cappedDepths.length)
+        traversalNotes.push(
+          `Row limit exceeded at ${cappedDepths.map((d) => 'd=' + d).join(', ')}. Counts are lower bounds.`,
+        );
+      const incompleteWalk = traversalNotes.length > 0;
+      const traversalNote = `Incomplete traversal. ${traversalNotes.join(' ')}`;
       if (totalAffected === 0) {
+        if (incompleteWalk) return `RISK: UNKNOWN\n${traversalNote}`;
         if (isFileTarget) {
           const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
           const targetFileName = (targetFilePath || target).split('/').pop() || target;
@@ -1390,6 +1410,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       }
 
       const directCount = depth1.length;
+      const observedDirect = cappedDepths.includes(1) ? 'at least ' + directCount : directCount;
       const processCount = affectedProcesses.length;
       const clusterCount = affectedClusters.length;
       const enrichmentCapped = allNodeIds.length > maxIdsForContext;
@@ -1402,19 +1423,19 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         impactedCount: totalAffected,
         enrichmentTruncated: enrichmentCapped,
       });
-      const scored = scoreImpactRisk({
+      const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
         direction,
         directCount,
         processCount,
         moduleCount: clusterCount,
         impactedCount: totalAffected,
+        incompleteWalk,
         unusedAxes,
       });
-      const { risk, riskSharedAxes, riskScale } = scored;
 
       // ===== COMPACT TABULAR OUTPUT =====
       const lines: string[] = [
-        `🔴 IMPACT: ${target} | ${direction} | ${totalAffected} affected`,
+        `🔴 IMPACT: ${target} | ${direction} | ${incompleteWalk ? 'at least ' : ''}${totalAffected} affected`,
         `Confidence: High ${confidenceBuckets.high} | Medium ${confidenceBuckets.medium} | Low ${confidenceBuckets.low}`,
         ``,
         `AFFECTED PROCESSES:`,
@@ -1451,7 +1472,8 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         ...(clusterClassificationFailed
           ? ['Note: direct/indirect cluster classification is unavailable.']
           : []),
-        `- Direct callers: ${directCount}`,
+        ...(incompleteWalk ? [traversalNote] : []),
+        `- Direct callers: ${failedDepths.includes(1) ? 'unavailable' : observedDirect}`,
         `- Processes affected: ${processQueryFailed ? 'unavailable' : processCount}`,
         `- Clusters affected: ${clusterQueryFailed ? 'unavailable' : clusterCount}`,
         ``,
@@ -1524,7 +1546,15 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       }
 
       // Compact footer
-      lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
+      if (
+        !incompleteWalk &&
+        !enrichmentCapped &&
+        !processQueryFailed &&
+        !clusterQueryFailed &&
+        !clusterClassificationFailed
+      ) {
+        lines.push(`✅ GRAPH ANALYSIS COMPLETE (trusted)`);
+      }
       lines.push(`⚠️ Optional: grep("${target}") for dynamic patterns`);
       if (multipleMatchWarning) {
         lines.push(multipleMatchWarning);

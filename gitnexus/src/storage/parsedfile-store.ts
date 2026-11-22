@@ -536,7 +536,8 @@ function isValidCallResultAssignmentSite(value: unknown): value is CallResultAss
     isRecord(value) &&
     isValidRange(value.callSite) &&
     isBoundedString(value.inScope) &&
-    isBoundedString(value.lhs)
+    isBoundedString(value.lhs) &&
+    isOptionalBoundedString(value.element)
   );
 }
 

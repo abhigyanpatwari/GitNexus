@@ -39,8 +39,8 @@
  *
  * Three signals, because no one of them covers the others. All three ride the
  * EDGE — this function reads properties and never walks the scope tree for
- * them, for the reason spelled out under "Why nothing here is derived from the
- * scope tree" below:
+ * them, for the reason spelled out under "Why runtime presence is not derived
+ * from the scope tree" below:
  *
  *  - `ImportEdge.kind === 'dynamic-resolved'` — TS/JS `import()`.
  *  - `ImportEdge.runsOnlyWhenCalled` — the import sits inside a function body
@@ -59,10 +59,9 @@
  *    the `type` keyword says it, so it is carried from the syntax down —
  *    `typescript/import-decomposer.ts` → `interpret.ts` → `finalize-algorithm.ts`.
  *
- * ## Why nothing here is derived from the scope tree
+ * ## Why runtime presence is not derived from the scope tree
  *
- * `scopeTree` is used for exactly one thing: turning the map's key into the
- * source `filePath`. It is NOT a place to ask where an import was written.
+ * `scopeTree` supplies the source `filePath`. It is NOT a place to ask where an import was written.
  * The finalizer publishes binding-scope buckets consecutively per file. Some
  * providers bind imports in the module scope, others in lexical scopes; neither
  * choice alone establishes whether an import executes during initialization.
@@ -104,6 +103,25 @@
  * `Y` carries the pair. A statement is type-only exactly when every specifier
  * it decomposes to is.
  *
+ * ## On-demand wildcard imports name no file (#3695)
+ *
+ * `import pkg.*;` resolves to EVERY file declaring `pkg`, because any of them
+ * may supply a name. Emitting a pair for each of them is importers × package
+ * size: 1,000 files importing a 1,000-file package is a million edges, of which
+ * each importer uses a handful. One reported 24,736-file repository produced
+ * 3,742,494 IMPORTS edges this way — 81% of its graph — and ran out of heap
+ * writing them.
+ *
+ * A provider can resolve AST reference sites against finalized scope bindings
+ * and supply the target files used through on-demand imports. This bridge tests
+ * target-file membership; it neither scans source text nor guesses by spelling.
+ * Type-only uses must be included. Missing capture/binding evidence returns
+ * undefined and keeps every wildcard edge. Explicit imports are always kept.
+ *
+ * Finalized imports remain complete for name resolution. These persisted edges
+ * describe direct import dependencies, not every inherited or chained type
+ * dependency; incremental invalidation must account for those separately.
+ *
  * All scopes of a source file are collected before that file's pairs are
  * emitted. The finalizer groups scopes by file, so this preserves first-seen
  * pair order while retaining only one file's pairs. Interleaved source files
@@ -111,38 +129,18 @@
  * pair-key delimiter: partitioning those keys could change collision behavior.
  */
 
-import type { ImportEdge, ScopeId } from 'gitnexus-shared';
+import type { ImportEdge, ImportVisibility, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { generateId } from '../../../../lib/utils.js';
 import { isDebugHeapEnabled, logHeapProbe } from '../../utils/heap-probe.js';
 
-/**
- * Reason suffix for a pair reachable only through imports that run later —
- * `import()` and function-local imports.
- *
- * `check --cycles` matches this EXACTLY, so a provider that overrides the base
- * reason keeps its deferred edges filterable — the suffix travels with it.
- */
-export const DEFERRED_IMPORT_REASON_SUFFIX = ' (deferred)';
+import {
+  DEFERRED_IMPORT_REASON_SUFFIX,
+  TYPE_ONLY_IMPORT_REASON_SUFFIX,
+} from '../../../graph/edge-reasons.js';
 
-/**
- * Reason suffix for a pair reachable only through imports the compiler erases —
- * TypeScript `import type` / `import { type X }`.
- *
- * A second suffix rather than a reuse of {@link DEFERRED_IMPORT_REASON_SUFFIX}:
- * both are excluded from the cycle query, but "runs later" and "never runs" are
- * opposite answers about the emitted program, and the reason string is the only
- * place the graph records which one this pair is.
- */
-export const TYPE_ONLY_IMPORT_REASON_SUFFIX = ' (type-only)';
-
-/**
- * Dart pubspec identity edges are incremental metadata, not initialization
- * edges. Kept here so the cycle query can name the reason without importing
- * a language provider into MCP startup.
- */
-export const DART_PACKAGE_IDENTITY_REASON = 'dart-scope: package identity dependency';
+export { DEFERRED_IMPORT_REASON_SUFFIX, TYPE_ONLY_IMPORT_REASON_SUFFIX };
 
 /**
  * How much of an import survives to run time. Lower is stronger; a pair takes
@@ -176,24 +174,47 @@ const REASON_SUFFIX_BY_PRESENCE: Readonly<Record<ImportPresence, string>> = {
   [PRESENCE_ERASED]: TYPE_ONLY_IMPORT_REASON_SUFFIX,
 };
 
+/** Resolved on-demand target files. Undefined means incomplete evidence. */
+export type OnDemandImportTargetsOf = (sourceFile: string) => ReadonlySet<string> | undefined;
+
 export function emitImportEdges(
   graph: KnowledgeGraph,
-  imports: ReadonlyMap<ScopeId, readonly ImportEdge[]>,
+  imports: ImportVisibility,
   scopeTree: ScopeResolutionIndexes['scopeTree'],
   reason = 'scope-resolution: import',
+  onDemandTargetsOf?: OnDemandImportTargetsOf,
 ): number {
   const debug = isDebugHeapEnabled();
   const started = debug ? Date.now() : 0;
   let scanned = 0;
   let emitted = 0;
+  let unused = 0;
+  const incompleteFiles = debug ? new Set<string>() : undefined;
   const probe = (stage: string, detail = ''): void => {
     if (debug)
       logHeapProbe(
         `sr-emit-imports-${stage}`,
-        `elapsed_ms=${Date.now() - started} scanned=${scanned} emitted=${emitted} ${detail}`,
+        `elapsed_ms=${Date.now() - started} scanned=${scanned} emitted=${emitted} unused=${unused} incomplete_files=${incompleteFiles?.size ?? 0} ${detail}`,
       );
   };
-  probe('start', `scopes=${imports.size}`);
+
+  // Resolve once per source, including interleaved buckets. A missing entry is
+  // different from a cached undefined (incomplete AST/binding evidence).
+  const targetsBySource = new Map<string, ReadonlySet<string> | undefined>();
+  const isUnusedWildcard = (sourceFile: string, targetFile: string, edge: ImportEdge): boolean => {
+    if (onDemandTargetsOf === undefined || edge.kind !== 'wildcard-expanded') return false;
+    if (!targetsBySource.has(sourceFile))
+      targetsBySource.set(sourceFile, onDemandTargetsOf(sourceFile));
+    const targets = targetsBySource.get(sourceFile);
+    if (targets === undefined) {
+      incompleteFiles?.add(sourceFile);
+      return false;
+    }
+    if (targets.has(targetFile)) return false;
+    unused++;
+    return true;
+  };
+  probe('start', debug ? `scopes=${[...imports.scopes()].length}` : '');
 
   // Read each scope once, retaining only its path. This also avoids decoding
   // disk-backed scope shards again during emission. Check grouping BEFORE any
@@ -203,7 +224,7 @@ export function emitImportEdges(
   let previousFile: string | undefined;
   let grouped = true;
   let scopesScanned = 0;
-  for (const scopeId of imports.keys()) {
+  for (const scopeId of imports.scopes()) {
     const scope = scopeTree.getScope(scopeId);
     if (scope !== undefined) {
       const sourceFile = scope.filePath;
@@ -241,20 +262,21 @@ export function emitImportEdges(
       for (const [targetFile, presence] of pairs) emitPair(sourceFile, targetFile, presence);
       pairs.clear();
     };
-    for (const [scopeId, edges] of imports) {
+    for (const scopeId of imports.scopes()) {
       const nextFile = sourceByScope.get(scopeId);
       if (nextFile === undefined) continue;
       if (nextFile !== sourceFile) {
         flush();
         sourceFile = nextFile;
       }
-      for (const edge of edges) {
+      imports.forEachTarget(scopeId, (targetFile, edge) => {
         if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
-        if (edge.targetFile === null || edge.targetFile === sourceFile) continue;
+        if (targetFile === nextFile) return;
+        if (isUnusedWildcard(nextFile, targetFile, edge)) return;
         const presence = importPresence(edge);
-        const existing = pairs.get(edge.targetFile);
-        if (existing === undefined || presence < existing) pairs.set(edge.targetFile, presence);
-      }
+        const existing = pairs.get(targetFile);
+        if (existing === undefined || presence < existing) pairs.set(targetFile, presence);
+      });
     }
     flush();
     probe('complete');
@@ -268,24 +290,24 @@ export function emitImportEdges(
     { readonly sourceFile: string; readonly targetFile: string; presence: ImportPresence }
   >();
 
-  for (const [scopeId, edges] of imports) {
+  for (const scopeId of imports.scopes()) {
     const sourceFile = sourceByScope.get(scopeId);
     if (sourceFile === undefined) continue;
 
-    for (const edge of edges) {
+    imports.forEachTarget(scopeId, (targetFile, edge) => {
       if (debug && ++scanned % 65536 === 0) probe('collect-progress', `pairs=${pairs.size}`);
-      if (edge.targetFile === null) continue;
-      if (edge.targetFile === sourceFile) continue;
+      if (targetFile === sourceFile) return;
+      if (isUnusedWildcard(sourceFile, targetFile, edge)) return;
 
       const presence = importPresence(edge);
-      const dedupKey = `${sourceFile}->${edge.targetFile}`;
+      const dedupKey = `${sourceFile}->${targetFile}`;
       const existing = pairs.get(dedupKey);
       if (existing === undefined) {
-        pairs.set(dedupKey, { sourceFile, targetFile: edge.targetFile, presence });
+        pairs.set(dedupKey, { sourceFile, targetFile, presence });
       } else if (presence < existing.presence) {
         existing.presence = presence;
       }
-    }
+    });
   }
 
   probe('collected', `pairs=${pairs.size}`);

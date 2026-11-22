@@ -115,6 +115,13 @@ export type ParsedImport = ParsedImportSyntax & {
   readonly atRange?: Range;
   /** Per-import lexical binding override; useful when a provider also has file-wide dependencies. */
   readonly bindsAtLexicalScope?: boolean;
+  /** An export dependency publishes names without importing them locally. */
+  readonly exportsOnly?: boolean;
+  /** Ordered namespace filters retained from the source declaration. */
+  readonly nameFilters?: readonly {
+    readonly kind: 'show' | 'hide';
+    readonly names: readonly string[];
+  }[];
 };
 
 type ParsedImportSyntax =
@@ -377,6 +384,9 @@ type ParsedImportSyntax =
   | {
       readonly kind: 'wildcard';
       readonly targetRaw: string;
+      /** False when this statement imports names without publishing them from
+       * its file. Absent preserves the historical re-exporting wildcard. */
+      readonly reexportsName?: boolean;
       /** See the same field on the `named` variant. Present here although
        *  `typeOnly` is not: erasure is a syntactic fact this spelling cannot
        *  express, but POSITION is not — Ruby's `def f; require './m'; end` is
@@ -529,6 +539,7 @@ export interface Callsite {
  * bounded-fixpoint linking (RFC §3.2).
  */
 export interface ImportEdge {
+  readonly nameFilters?: ParsedImport['nameFilters'];
   readonly atRange?: Range;
   /** How this scope sees the imported name (after alias). */
   readonly localName: string;
@@ -659,6 +670,16 @@ export interface TypeRef {
    * evidence" and decline, never as "not a container".
    */
   readonly declaredSpelling?: string;
+  /**
+   * The binding holds the AWAITED result of the callee `rawName` names
+   * (`final x = await fetch()`), not the callee's return value itself. Set by
+   * the scope extractor from a `@type-binding.awaited` capture; read by the
+   * chain follow, which asks the language what the followed return type
+   * yields under `await` (`ScopeResolver.elementTypeOf`, route `await`) and
+   * clears the flag once that first step has been taken. Absent (never
+   * `false`) for every other binding, so an older ParsedFile reads the same.
+   */
+  readonly awaited?: true;
   /** Anchor for resolving `rawName` — the scope where the annotation/inference was written. */
   readonly declaredAtScope: ScopeId;
   readonly source:
@@ -694,11 +715,25 @@ export interface NameClaim {
   readonly hoisted?: boolean;
   readonly purpose?: LookupPurpose | 'both';
   readonly availableFrom?: SourcePosition;
+  /** Where the declaration is visible when evaluation order differs from
+   * source order: alternating start (inclusive) and end (exclusive) positions
+   * in source order; a last start without an end stays open. Takes the place
+   * of `availableFrom` for lookups that carry a position. */
+  readonly availableSpans?: readonly SourcePosition[];
+  /** Evaluation rank among this scope's claims of the name. Two claims that
+   * both carry a rank are ordered by it; every other pair by `range`. */
+  readonly order?: number;
+  /** The declaration can never be what a call expression of this name
+   * invokes: the language resolves callees in a namespace it is not part of.
+   * A lookup made for a callee (`NameLookupOptions.callee`) does not see it. */
+  readonly neverCallee?: boolean;
   readonly inactive?: 'blocked' | 'outer' | 'module';
   readonly redirect?: 'module' | 'enclosing-function';
 }
 
 export interface ScopeLookupPolicy {
+  /** False when bare names cannot refer to members of an implicit receiver. */
+  readonly allowImplicitReceiver?: boolean;
   /** All lexical declarations have claims; inferred assignments alone do not declare names. */
   readonly nameClaimsComplete?: boolean;
   /** Reference scopes already identify the evaluating environment; do not infer
@@ -719,6 +754,8 @@ export interface NameLookupOptions {
   /** Keep source order across deferred scopes when locating the binding before a write. */
   readonly preservePosition?: boolean;
   readonly purpose?: LookupPurpose;
+  /** The name is the callee of a call expression written without a receiver. */
+  readonly callee?: boolean;
 }
 
 /**

@@ -151,11 +151,23 @@ def test_locked_litellm_translates_messages_to_offline_responses(monkeypatch, tm
         worker.join(timeout=5)
 
 
-@pytest.mark.parametrize("termination", ["terminate", "kill"])
-@pytest.mark.parametrize("phase", ["ready", "startup"])
-def test_gateway_lifetime_ends_with_its_parent(tmp_path, termination, phase):
+@pytest.mark.parametrize(
+    ("phase", "termination", "startup_delay_s"),
+    [
+        pytest.param("ready", "terminate", 0, id="ready-terminate"),
+        pytest.param("ready", "kill", 0, id="ready-kill"),
+        pytest.param("startup", "terminate", 0, id="startup-terminate"),
+        pytest.param("startup", "kill", 0, id="startup-kill"),
+        # A cold Windows interpreter can outlive the old 12s fixture deadline.
+        pytest.param("ready", "terminate", 15, id="slow-startup"),
+    ],
+)
+def test_gateway_lifetime_ends_with_its_parent(tmp_path, termination, phase, startup_delay_s):
+    startup_timeout_s = 60
     ready = tmp_path / "ready.json"
     proxy_pid = tmp_path / "proxy-pid"
+    parent_log = tmp_path / "parent.log"
+    gateway_log = tmp_path / "gateway" / "litellm.log"
     proxy = tmp_path / "proxy.py"
     proxy.write_text(f"""import os,sys
 from pathlib import Path
@@ -163,38 +175,55 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response({200 if phase == "ready" else 503}); self.end_headers()
-Path(sys.argv[2]).write_text(str(os.getpid()))
-HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler).serve_forever()
+server = HTTPServer(('127.0.0.1', int(sys.argv[1])), Handler)
+pid_file = Path(sys.argv[2])
+pid_file.with_suffix('.tmp').write_text(str(os.getpid()))
+pid_file.with_suffix('.tmp').replace(pid_file)
+server.serve_forever()
 """)
     parent_code = f"""
 import json,os,sys,time,subprocess
+time.sleep({startup_delay_s})
 from pathlib import Path
 from workflow_bench import model_gateway
 model_gateway.litellm_proxy_argv=lambda **kwargs: [sys.executable, {str(proxy)!r}, str(kwargs['port']), {str(proxy_pid)!r}]
-gateway=model_gateway.OpenAIGateway(openai_api_key='offline-secret', model_names=['gpt-4.1'], work_dir=Path({str(tmp_path / "gateway")!r}), ready_timeout_s=10)
+gateway=model_gateway.OpenAIGateway(openai_api_key='offline-secret', model_names=['gpt-4.1'], work_dir=Path({str(tmp_path / "gateway")!r}), ready_timeout_s={startup_timeout_s})
+def publish_ready():
+    ready = Path({str(ready)!r})
+    ready.with_suffix('.tmp').write_text(json.dumps({{'port': gateway.port}}))
+    ready.with_suffix('.tmp').replace(ready)
 if {phase == "startup"!r}:
-    Path({str(ready)!r}).write_text(json.dumps({{'port':gateway.port}}))
+    publish_ready()
 gateway.__enter__()
 if gateway._process.stdin is not None:
     assert not os.get_inheritable(gateway._process.stdin.fileno())
-Path({str(ready)!r}).write_text(json.dumps({{'port':gateway.port}}))
+publish_ready()
 time.sleep(60)
 """
-    parent = subprocess.Popen(
-        [sys.executable, "-c", parent_code],
-        cwd=Path(__file__).resolve().parents[1],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-    )
+    # File capture remains readable while the parent is alive or cleaning up;
+    # communicate(timeout=1) hid startup failures behind a second timeout.
+    with parent_log.open("wb") as output:
+        parent = subprocess.Popen(
+            [sys.executable, "-u", "-c", parent_code],
+            cwd=Path(__file__).resolve().parents[1],
+            stdout=output,
+            stderr=subprocess.STDOUT,
+        )
     try:
-        deadline = time.monotonic() + 12
+        # Include cold parent startup and the gateway's 15s cleanup budget.
+        deadline = time.monotonic() + startup_timeout_s + 30
         while (not ready.exists() or not proxy_pid.exists()) and parent.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
-        if not ready.exists():
-            _, stderr = parent.communicate(timeout=1)
-            pytest.fail(stderr)
+        if not ready.exists() or not proxy_pid.exists() or parent.poll() is not None:
+            logs = "\n".join(
+                f"{path.name}:\n{path.read_text(errors='replace') if path.exists() else '(not created)'}"
+                for path in (parent_log, gateway_log)
+            )
+            pytest.fail(f"Gateway parent did not reach {phase!r}; exit={parent.poll()}\n{logs}")
         port = json.loads(ready.read_text())["port"]
+        # A closed port only proves cleanup if the proxy was listening first.
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            pass
         getattr(parent, termination)()
         parent.wait(timeout=5)
         deadline = time.monotonic() + 15

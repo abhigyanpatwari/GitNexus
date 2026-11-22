@@ -24,6 +24,11 @@ describe('Python attribute read/write contexts', () => {
     { source: 'p.method()', reads: [], writes: [] },
     { source: 'p.child.method()', reads: ['p.child'], writes: [] },
     { source: 'callback = p.method', reads: ['p.method'], writes: [] },
+    { source: '(p.method)()', reads: [], writes: [] },
+    { source: '((p.value, [q.value])) = items', reads: [], writes: ['p.value', 'q.value'] },
+    { source: 'del (p.value), [q.value]', reads: [], writes: ['p.value', 'q.value'] },
+    { source: 'found = [i for p.value in q.items]', reads: ['q.items'], writes: ['p.value'] },
+    { source: 'x: [i for p.value in items] = q.value', reads: ['q.value'], writes: [] },
   ])('$source', ({ source, reads, writes }) => {
     const matches = emitPythonScopeCaptures(`def use(p, q):\n    ${source}\n`, 'accesses.py');
     const accesses = (kind: 'read' | 'write') =>

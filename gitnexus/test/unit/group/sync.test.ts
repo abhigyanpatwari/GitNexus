@@ -1232,6 +1232,115 @@ service OrderService {
     }
   });
 
+  it('a manifest link does not spread to another repo exposing the same route (#1188)', async () => {
+    const importRoute = (repo: string, name: string): StoredContract => ({
+      contractId: 'http::POST::/import',
+      type: 'http',
+      role: 'provider',
+      symbolUid: `uid-${name}`,
+      symbolRef: { filePath: `src/${name}.ts`, name },
+      symbolName: name,
+      confidence: 0.9,
+      meta: { method: 'POST', path: '/import' },
+      repo,
+    });
+    const config: GroupConfig = {
+      ...makeConfig({
+        'backend/gen-question': 'gen-question',
+        'backend/learning': 'learning',
+        'backend/user-service': 'user-service',
+      }),
+      links: [
+        {
+          from: 'backend/gen-question',
+          to: 'backend/learning',
+          type: 'http',
+          contract: 'POST::/import',
+          role: 'consumer',
+        },
+      ],
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [
+        importRoute('backend/learning', 'importLessons'),
+        importRoute('backend/user-service', 'importUsers'),
+      ],
+      skipWrite: true,
+    });
+
+    expect(
+      result.crossLinks.map((l) => [l.matchType, l.from.repo, l.to.repo, l.to.symbolRef.name]),
+    ).toEqual([
+      ['manifest', 'backend/gen-question', 'backend/learning', 'POST::/import'],
+      ['exact', 'backend/gen-question', 'backend/learning', 'importLessons'],
+    ]);
+    // The declared provider only steers matching; the registry keeps its shape.
+    const consumer = result.contracts.find((c) => c.role === 'consumer');
+    expect(consumer?.meta).toEqual({ source: 'manifest' });
+  });
+
+  it('a service-wildcard manifest link matches only the repo it names (#1188)', async () => {
+    // The wildcard pass runs on what the exact pass left over, so the declared
+    // repo has to survive from one pass to the next.
+    const login = (repo: string): StoredContract => ({
+      contractId: 'grpc::auth.AuthService/Login',
+      type: 'grpc',
+      role: 'provider',
+      symbolUid: `uid-login-${repo}`,
+      symbolRef: { filePath: 'src/auth.ts', name: 'Login' },
+      symbolName: 'Login',
+      confidence: 0.9,
+      meta: {},
+      repo,
+    });
+    const config: GroupConfig = {
+      ...makeConfig({ orders: 'orders', auth: 'auth', 'legacy-auth': 'legacy-auth' }),
+      links: [
+        {
+          from: 'orders',
+          to: 'auth',
+          type: 'grpc',
+          contract: 'auth.AuthService/*',
+          role: 'consumer',
+        },
+      ],
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [login('auth'), login('legacy-auth')],
+      skipWrite: true,
+    });
+
+    expect(
+      result.crossLinks.filter((l) => l.matchType === 'wildcard').map((l) => l.to.repo),
+    ).toEqual(['auth']);
+  });
+
+  it('an unmatched manifest consumer is reported without the declared provider repo (#1188)', async () => {
+    const config: GroupConfig = {
+      ...makeConfig({ orders: 'orders', auth: 'auth' }),
+      links: [
+        {
+          from: 'orders',
+          to: 'auth',
+          type: 'grpc',
+          contract: 'auth.AuthService/*',
+          role: 'consumer',
+        },
+      ],
+    };
+
+    const result = await syncGroup(config, {
+      extractorOverride: async () => [],
+      skipWrite: true,
+    });
+
+    expect(result.unmatched.filter((c) => c.role === 'consumer').map((c) => c.meta)).toEqual([
+      { source: 'manifest' },
+    ]);
+  });
+
   it('extractorOverride no-DB path still produces synthetic manifest UIDs', async () => {
     const links: GroupManifestLink[] = [
       {

@@ -129,6 +129,20 @@ it.each([128, 1024])(
   120_000,
 );
 
+it('includes file text, symbol text and descriptions in the bulk writer estimate', async () => {
+  const description = 'Recorded input and expected result. '.repeat(80).trim();
+  const source = `def transform(value):\n    """${description}"""\n    return value\n`;
+  await fs.writeFile(path.join(repo, 'transform.py'), source);
+  const config = await import('../../src/core/lbug/lbug-config.js');
+  const estimate = vi.spyOn(config, 'estimateWriteBufferPool');
+  await runFullAnalysis(repo, options, callbacks);
+  const [[, textBytes, buildFts]] = estimate.mock.calls;
+  expect(textBytes).toBeGreaterThanOrEqual(
+    2 * Buffer.byteLength(source) + Buffer.byteLength(description),
+  );
+  expect(buildFts).toBe(false);
+}, 120_000);
+
 it('requests an exit supervisor before parsing or opening a graph writer', async () => {
   const phases: string[] = [];
   await expect(

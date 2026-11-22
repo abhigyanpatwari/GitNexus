@@ -29,6 +29,8 @@ import type {
 import type { LanguageTypeConfig } from './type-extractors/types.js';
 import type { NotebookLineSegment } from './ipynb-extractor.js';
 import type { CallRouter } from './call-routing.js';
+import { getQueryProvider, type QueryLanguageHooks } from './languages/query-providers.js';
+import type { CallCompatibilityProvider } from './call-compatibility.js';
 import type { CallExtractor } from './call-types.js';
 import type { ClassExtractor } from './class-types.js';
 import type { ExportChecker } from './export-detection.js';
@@ -40,6 +42,8 @@ import type { CfgVisitor } from './cfg/types.js';
 import type { CollectedCfgs } from './cfg/collect.js';
 import type { RenameProvider } from './rename-provider.js';
 import type { GraphNode, NodeLabel, ParameterTypeClass, RelationshipType } from 'gitnexus-shared';
+import type { KnowledgeGraph } from '../graph/types.js';
+import type { MutableSemanticModel } from './model/semantic-model.js';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type {
@@ -54,6 +58,7 @@ import type {
   FetchWrapperReexport,
 } from './route-extractors/fetch-wrapper.js';
 import type { ExtractedDecoratorRoute, ExtractedToolDef } from './workers/parse-worker.js';
+import type { ElementAccessRoute } from './scope-resolution/contract/scope-resolver.js';
 import type { SemanticModel } from './model/semantic-model.js';
 
 /**
@@ -260,16 +265,52 @@ export function shouldHarvestModuleConstants(
   return !provider.moduleConstantHeuristic || provider.moduleConstantHeuristic(content);
 }
 
+/**
+ * Everything a {@link LanguageProviderConfig.postParse} hook may read or mutate: the merged graph, the
+ * populated semantic model, and the repository root. Hooks mutate `graph`/`model` in place.
+ */
+export interface PostParseContext {
+  readonly graph: KnowledgeGraph;
+  readonly model: MutableSemanticModel;
+  readonly repoPath: string;
+}
+
+/** Attribute a file-to-file IMPORTS edge to a particular type using verified source. */
+export interface TypeImportAttribution {
+  readonly supportsFile: (filePath: string) => boolean;
+  /** Conservative text prefilter for an import that can omit the type's name. */
+  readonly implicitImportSyntax?: { readonly marker: string; readonly pattern: string };
+  readonly createClassifier: (target: {
+    ownerPath: string;
+    name: string;
+    readOwner: () => Promise<string | undefined>;
+  }) => Promise<
+    (
+      filePath: string,
+      source: string,
+      resolvedImports: ReadonlySet<string>,
+    ) => boolean | undefined | Promise<boolean | undefined>
+  >;
+}
+
 interface LanguageProviderConfig {
+  readonly callCompatibility?: CallCompatibilityProvider;
   // ── Identity ──────────────────────────────────────────────────────
   readonly id: SupportedLanguages;
   /** File extensions that map to this language (e.g., ['.ts', '.tsx']) */
   readonly extensions: readonly string[];
+  /** Related inputs that produce graph facts in a standalone phase without using this grammar. */
+  readonly additionalIndexedExtensions?: ReadonlySet<string>;
+  /** Persisted file-to-file IMPORTS reasons that do not imply initialization order. */
+  readonly nonInitializingImportReasons?: readonly string[];
 
   /**
-   * Files with the same provider-local key must be rewritten together when
-   * any member changes, is added, or is deleted. Resolution can change edges
+   * Files with the same provider-local key are re-examined together when any
+   * member changes, is added, or is deleted. Resolution can change edges
    * between untouched members even without an import or current graph edge.
+   * A member (or a file importing one) is rewritten when its graph rows differ
+   * from the rows recorded at its last write, so a key may be as wide as the
+   * whole language without turning every edit into a full database write.
    * Derive the key from the path alone: deleted files have no current source.
    * This only widens incremental invalidation, not semantic resolution scope.
    */
@@ -309,15 +350,14 @@ interface LanguageProviderConfig {
    *
    *   - tree-sitter's reported `startPosition.row`/`startPosition.column`
    *     match the original file exactly (line/column come from newline counts)
-   *   - `startIndex`/`endIndex` byte offsets match the original file exactly
-   *     **when the elided range is pure ASCII** (UTF-16 `.length` equals UTF-8
-   *     byte length only for ASCII).
+   *   - `startIndex`/`endIndex` match the original file exactly, whatever the
+   *     elided text contains. The Node binding parses a JavaScript string as
+   *     UTF-16 (`TSInputEncodingUTF16LE`) and reports indices and columns in
+   *     UTF-16 code units (the native byte offset divided by 2), so they are
+   *     JavaScript string offsets and an equal `.length` keeps them aligned.
    *
-   * Implementations targeting languages where elided ranges may contain
-   * non-ASCII content must therefore preserve byte length, not just `.length`,
-   * if downstream code uses `startIndex` to slice the original UTF-8 bytes.
-   * The current C++ UE-macro preprocessor relies on the practical fact that
-   * UE reflection macros and module-export tokens are ASCII-only.
+   * Code that slices source with these indices must therefore slice the
+   * JavaScript string, never its UTF-8 bytes.
    *
    * Must be a pure function — same input always yields the same output, and
    * re-applying it to its own output changes nothing.
@@ -410,7 +450,12 @@ interface LanguageProviderConfig {
    *
    * Default: undefined, read as `false`.
    */
-  readonly notExportedIsFilePrivate?: boolean | ((filePath: string, content: string) => boolean);
+  readonly notExportedIsFilePrivate?:
+    | boolean
+    | ((filePath: string, content: string) => boolean | Promise<boolean>);
+
+  /** Limit upstream type importers to proven uses. Omit to traverse the owning file. */
+  readonly typeImportAttribution?: TypeImportAttribution;
 
   // ── Calls & Imports (optional) ────────────────────────────────────
   /** Call routing for languages that express imports/heritage as calls (e.g., Ruby).
@@ -454,6 +499,16 @@ interface LanguageProviderConfig {
     root: SyntaxNode,
     filePath: string,
   ) => { readonly name: string; readonly label: NodeLabel } | null;
+
+  /**
+   * For languages whose member owner is not a syntactic ancestor container
+   * (members declared by a call or assignment expression): return the node the
+   * method/field extractors read members from, or `null`.
+   *
+   * Consulted by the enclosing-owner slot after the container walk and
+   * `resolveFileTypeOwner` (the same slot as the file-owner hook).
+   * Default: undefined. */
+  readonly resolveMemberOwnerNode?: (definitionNode: SyntaxNode) => SyntaxNode | null;
 
   /**
    * The type a CONTAINER node declares, when the language names it from its
@@ -854,6 +909,24 @@ interface LanguageProviderConfig {
    * Default: undefined (the harvested constants are already fold-ready).
    */
   readonly prepareRouteConstants?: (repo: RepoConstants) => void;
+
+  /**
+   * Whole-graph work that can only run once every chunk is merged and before scope resolution
+   * (deferred owner resolution, package-manifest-driven export refinement). "Post-parse" means after
+   * all chunks are merged but still inside the parse phase — not the later `crossFile` phase.
+   *
+   * Called once per analyze, only if this language has parsed files, awaited, on the main thread.
+   * Mutates `ctx.graph` / `ctx.model` in place. A throw aborts the parse phase (it is not isolated,
+   * because the hook mutates shared state and a swallowed mid-mutation throw could leave the graph
+   * half-updated).
+   *
+   * Incremental analyse writes back only changed files, so a mutation of an unchanged file's nodes is
+   * not persisted; a hook whose result depends on manifests that are not parsed sources needs
+   * `--force` after such an edit.
+   *
+   * Default: undefined (nothing to do after the merge).
+   */
+  readonly postParse?: (ctx: PostParseContext) => void | Promise<void>;
 
   /**
    * Spring async messaging facts captured for one file — the listener
@@ -1290,6 +1363,17 @@ interface LanguageProviderConfig {
   ) => readonly string[];
 
   /**
+   * Element or yield type of a container spelling, by access route — the same
+   * contract as `ScopeResolver.elementTypeOf`, and a provider that answers
+   * both should hand the SAME function to both. Read on the parse side by the
+   * scope extractor's chain follow for the `await` route only: a binding
+   * marked `@type-binding.awaited` takes what the followed return type yields
+   * under `await` (`Future<C>` → `C`). A provider without it, or one that
+   * answers `undefined`, leaves the follow exactly as it was.
+   */
+  readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
+
+  /**
    * Decide the scope to which a `ParsedImport` attaches. Most languages
    * attach imports to the nearest enclosing `Module`/`Namespace` scope
    * (the default); some languages allow local imports (Python function-local
@@ -1409,16 +1493,35 @@ export function prepareRouteConstantsByProvider(
   }
 }
 
+/**
+ * Run each present language's {@link LanguageProviderConfig.postParse} hook, sequentially and in
+ * language-id order (independent of scan order), awaiting each before the next: the hooks share one
+ * mutable graph/model. The provider lookup is a callback so this file needs no registry import.
+ * A rejection propagates and later hooks do not run.
+ */
+export async function runPostParseHooks(
+  presentLanguages: ReadonlySet<SupportedLanguages>,
+  providerFor: (language: SupportedLanguages) => Pick<LanguageProvider, 'postParse'> | undefined,
+  ctx: PostParseContext,
+): Promise<void> {
+  for (const language of [...presentLanguages].sort()) {
+    await providerFor(language)?.postParse?.(ctx);
+  }
+}
+
 const DEFAULTS: Pick<LanguageProvider, 'mroStrategy'> = {
   mroStrategy: 'first-wins',
 };
 
 /** Define a language provider — required fields must be supplied, optional fields get sensible defaults. */
-export function defineLanguage(config: LanguageProviderConfig): LanguageProvider {
+export function defineLanguage(
+  config: Omit<LanguageProviderConfig, keyof QueryLanguageHooks>,
+): LanguageProvider {
   const builtIns = config.builtInNames;
   return {
     ...DEFAULTS,
     ...config,
+    ...getQueryProvider(config.id),
     isBuiltInName: builtIns ? (name: string) => builtIns.has(name) : () => false,
   };
 }

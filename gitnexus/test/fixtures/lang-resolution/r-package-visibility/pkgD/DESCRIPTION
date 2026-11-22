@@ -1,0 +1,3 @@
+Package: pkgD
+Version: 1
+Depends: pkgB

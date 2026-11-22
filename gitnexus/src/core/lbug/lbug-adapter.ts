@@ -10,7 +10,7 @@ import { closeQueryResults } from './query-result-utils.js';
 import { chunk } from '../../lib/utils.js';
 import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { escapeCypherString } from './cypher-escape.js';
-import { MODULE_MEMBERSHIP_REASON } from '../graph/edge-reasons.js';
+import { GLOBAL_NAME_FALLBACK_REASON, MODULE_MEMBERSHIP_REASON } from '../graph/edge-reasons.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -1168,10 +1168,22 @@ const throwIfBufferPoolExhausted = (error: unknown, context?: string): void => {
   if (remedy) throw new Error(`${context ?? message} ${remedy}`, { cause: error });
 };
 
+const FTS_INCONSISTENCY_SIGNATURE = /^Runtime exception: FTS index '[^']+' is inconsistent:/;
+
+const throwIfFtsIndexInconsistent = (error: unknown, context?: string): void => {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!FTS_INCONSISTENCY_SIGNATURE.test(message)) return;
+  throw new Error(
+    `${context ?? message} Run \`gitnexus analyze --force\` to rebuild the graph and FTS indexes. ` +
+      'FTS-only repair cannot restore rows from an interrupted graph write.',
+    { cause: error },
+  );
+};
+
 /**
  * Run a COPY, retrying once with IGNORE_ERRORS=true (which skips row-level
- * errors) on a non-resource first failure. Buffer exhaustion is fatal, including
- * retained retry warnings, and bypasses the recoverable-error callback. Log the
+ * errors) on a recoverable first failure. Buffer exhaustion and FTS inconsistency
+ * are fatal, including retained retry warnings, and bypass the row-error callback. Log the
  * original failure and native COPY/warning receipts even when the retry succeeds.
  * Node COPY requires every row; a skipped-node receipt is a failure. Call sites
  * retain their own message limits and relationship fallback policy.
@@ -1186,6 +1198,9 @@ const copyCsvWithRetry = async (
     await queryAndDrain(targetConn, copyQuery);
   } catch (firstError) {
     throwIfBufferPoolExhausted(firstError);
+    // FTS consistency failures describe the index, not a malformed CSV row.
+    // Skipping rows cannot repair it and can mask the native cause (#3958).
+    throwIfFtsIndexInconsistent(firstError);
     logger.warn(
       { err: firstError, copyQuery },
       'First COPY failure; retrying with IGNORE_ERRORS=true',
@@ -1235,6 +1250,10 @@ const copyCsvWithRetry = async (
           bufferPoolExhaustionRemedy(String(warning.message ?? '')),
         );
         if (resourceWarning) throw new Error(String(resourceWarning.message));
+        const ftsWarning = warnings.find((warning) =>
+          FTS_INCONSISTENCY_SIGNATURE.test(String(warning.message)),
+        );
+        if (ftsWarning) throw new Error(String(ftsWarning.message));
         if (expectedRows !== undefined && (copiedRows !== expectedRows || warnings.length > 0)) {
           throw new Error(
             `COPY retry skipped rows or could not verify a complete node load ` +
@@ -1248,6 +1267,7 @@ const copyCsvWithRetry = async (
       const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
       const message = `COPY retry failed: ${retryMessage}; first failure: ${firstMessage}`;
       throwIfBufferPoolExhausted(retryErr, message);
+      throwIfFtsIndexInconsistent(retryErr, message);
       onError(
         new Error(message, {
           cause: retryErr,
@@ -3379,20 +3399,31 @@ const deleteAllRelationshipsOfType = async (
   duplicateNoun: string,
   exactReasons?: readonly string[],
 ): Promise<{ edgesDeleted: number }> => {
+  const reasonFilter =
+    exactReasons === undefined || exactReasons.length === 0
+      ? ''
+      : ` AND (${exactReasons
+          .map((reason) => `r.reason = '${escapeCypherString(reason)}'`)
+          .join(' OR ')})`;
+  return deleteRelationshipsWhere(
+    `r.type = '${escapeCypherString(relType)}'${reasonFilter}`,
+    relType,
+    logTag,
+    duplicateNoun,
+  );
+};
+
+const deleteRelationshipsWhere = async (
+  predicate: string,
+  edgeDescription: string,
+  logTag: string,
+  duplicateNoun: string,
+): Promise<{ edgesDeleted: number }> => {
   const c = conn;
-  if (!c) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
+  if (!c) throw new Error('LadybugDB not initialized. Call initLbug first.');
   return withConnLock(async () => {
     let edgesDeleted = 0;
     let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-    const reasonFilter =
-      exactReasons === undefined || exactReasons.length === 0
-        ? ''
-        : ` AND (${exactReasons
-            .map((reason) => `r.reason = '${escapeCypherString(reason)}'`)
-            .join(' OR ')})`;
-    const predicate = `r.type = '${escapeCypherString(relType)}'${reasonFilter}`;
     try {
       countResult = await c.query(
         `MATCH ()-[r:CodeRelation]->() WHERE ${predicate} RETURN count(r) AS cnt`,
@@ -3423,7 +3454,7 @@ const deleteAllRelationshipsOfType = async (
       }
       if (countResult) await closeQueryResults(countResult);
       throw new Error(
-        `[${logTag}] failed to clear existing ${relType} edges before incremental ` +
+        `[${logTag}] failed to clear existing ${edgeDescription} edges before incremental ` +
           `re-write (${msg}) — aborting to avoid ${duplicateNoun}; ` +
           `the next run will full-rebuild`,
       );
@@ -3602,6 +3633,15 @@ export const deleteSpringAutoConfigurationDeclarations = async (): Promise<{
     'spring-auto-configuration',
     'duplicate auto-configuration declarations',
     SPRING_AUTO_CONFIGURATION_REASONS,
+  );
+
+/** These edge sets are always recomputed together. Scan CodeRelation once. */
+export const deleteGlobalResolutionEdges = () =>
+  deleteRelationshipsWhere(
+    `r.type IN ['INJECTS', 'ADVISED_BY'] OR (r.type = 'CALLS' AND r.reason = '${GLOBAL_NAME_FALLBACK_REASON}')`,
+    'global resolution',
+    'incremental',
+    'duplicate resolution edges',
   );
 
 /**

@@ -1,0 +1,4 @@
+Package: pkgA
+Title: Test Package A
+Version: 0.1.0
+Imports: pkgB

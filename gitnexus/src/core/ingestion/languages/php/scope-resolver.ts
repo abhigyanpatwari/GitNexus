@@ -24,6 +24,8 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import {
   findReceiverTypeBinding,
+  findUntypedReceiverBinder,
+  isReceiverOwnedButUnbound,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
@@ -255,9 +257,11 @@ function collectTransitiveTraits(
  * name lookup: when exactly one def in the workspace matches the called
  * method name, emit the CALLS edge.
  *
- * Only fires for sites that are NOT already in `handledSites` and whose
- * receiver has no type binding in the scope chain. Unique-name-match
- * constraint avoids false positives for common method names.
+ * Only fires for sites that are NOT already in `handledSites`, whose
+ * receiver is not owned-but-unbound (`isReceiverOwnedButUnbound`), has no
+ * type binding in the scope chain, and whose walk did not stop at an untyped
+ * binder (`findUntypedReceiverBinder`). Unique-name-match constraint avoids
+ * false positives for common method names.
  */
 function phpEmitUnresolvedReceiverEdges(
   graph: KnowledgeGraph,
@@ -278,10 +282,30 @@ function phpEmitUnresolvedReceiverEdges(
       const siteKey = `${parsed.filePath}:${site.atRange.startLine}:${site.atRange.startCol}`;
       if (handledSites.has(siteKey)) continue;
 
+      // A scope that owns the receiver but has no type for it has said "no
+      // type here" (a declined PHPDoc `@param`, see `phpScopeOwnsReceivers`):
+      // a definitive negative, not a missing binding. The receiver pass
+      // suppresses such a site and marks it handled; check it here too, so
+      // this fallback does not depend on that pass having run first.
+      const receiverBase = site.explicitReceiver.name.split('.', 1)[0]!;
+      if (isReceiverOwnedButUnbound(site.inScope, receiverBase, scopes)) continue;
+
       // Only proceed when the receiver has NO type binding — it's unresolvable
       // by the generic pass. This is the `mixed` / unannotated case.
       const typeRef = findReceiverTypeBinding(site.inScope, site.explicitReceiver.name, scopes);
       if (typeRef !== undefined) continue;
+      // No type is not the same as an unknown receiver. When a nearer scope
+      // binds the name WITHOUT a type, the walk stopped there on purpose
+      // (DART-11): that binder owns the receiver, so a workspace-unique method
+      // name says nothing about what it holds. The receiver pass only records
+      // that decline; it does not claim the site, so the stop is read here.
+      if (
+        findUntypedReceiverBinder(site.inScope, site.explicitReceiver.name, scopes, {
+          position: site.atRange,
+        }) !== undefined
+      ) {
+        continue;
+      }
 
       // Workspace-wide lookup: collect all methods matching the called name.
       // Filter out defs with no qualifiedName (legacy parse stubs without full

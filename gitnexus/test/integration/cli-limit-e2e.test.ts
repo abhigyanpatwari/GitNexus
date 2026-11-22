@@ -344,6 +344,20 @@ describe('CLI --limit flag E2E', () => {
   // ─── cypher ───────────────────────────────────────────────────────────────
 
   describe('cypher --limit', () => {
+    it.each([{ options: [] }, { options: ['--limit', '2'] }])(
+      'keeps the zero-row result object with options $options (#3952)',
+      ({ options }) => {
+        const result = runJson<CypherTabular>([
+          'cypher',
+          "MATCH (n:Function) WHERE n.name = '__missing__' RETURN n.name AS name",
+          ...options,
+          '--repo',
+          'mini-repo',
+        ]);
+        expect(result).toMatchObject({ markdown: '', row_count: 0 });
+      },
+    );
+
     it('truncates tabular result rows to --limit and keeps row_count honest', () => {
       const limited = runJson<CypherTabular>([
         'cypher',
@@ -384,6 +398,70 @@ describe('CLI --limit flag E2E', () => {
       ]);
       expect(base.row_count).toBeGreaterThan(2);
     });
+  });
+
+  // ─── piped stdout (#3947) ─────────────────────────────────────────────────
+
+  describe('piped stdout (#3947)', () => {
+    // A real pipe(2), whose buffer is a fixed 64 KiB. On POSIX the CLI's fd 1 is
+    // non-blocking when it is a pipe, so one write of a larger payload stops
+    // short. spawnSync's own 'pipe' stdio is a socketpair with a larger,
+    // host-dependent buffer, which is why the suites above never hit this.
+    const ROWS = 5000;
+    const query = `UNWIND range(1, ${ROWS}) AS i RETURN i AS n, '${'x'.repeat(60)}' AS pad ORDER BY n`;
+    const args = [...CLI_SPAWN_PREFIX, 'cypher', query, '--repo', 'mini-repo'];
+    // "$0" "$@" hands the argv to the CLI untouched by shell quoting. A pipeline
+    // reports the reader's status, so the CLI's own status goes to stderr.
+    const pipeTo = (reader: string) =>
+      spawnSync(
+        'sh',
+        ['-c', `{ "$0" "$@"; echo "cli-exit=$?" >&2; } | ${reader}`, process.execPath, ...args],
+        { cwd: MINI_REPO, encoding: 'utf8', env: cliEnv(), timeout: 60_000 },
+      );
+
+    it.skipIf(process.platform === 'win32')(
+      'delivers the same >256 KiB result through a pipe as to a file',
+      () => {
+        const outFile = path.join(tmpParent, 'cypher-3947.json');
+        const fd = fs.openSync(outFile, 'w');
+        const toFile = spawnSync(process.execPath, args, {
+          cwd: MINI_REPO,
+          stdio: ['ignore', fd, 'pipe'],
+          env: cliEnv(),
+          timeout: 60_000,
+        });
+        fs.closeSync(fd);
+        const piped = pipeTo('cat');
+
+        expect(toFile.status, `stderr: ${toFile.stderr}`).toBe(0);
+        expect(piped.stderr).toContain('cli-exit=0');
+        const fileText = fs.readFileSync(outFile, 'utf8');
+        expect(Buffer.byteLength(fileText)).toBeGreaterThan(256 * 1024);
+        expect(Buffer.byteLength(piped.stdout), `stderr: ${piped.stderr}`).toBeGreaterThan(
+          256 * 1024,
+        );
+        // Compare the result, not raw bytes: each run probes its own staleness
+        // envelope, so those fields may legitimately differ between the runs.
+        const fromFile = JSON.parse(fileText) as CypherTabular;
+        const fromPipe = JSON.parse(piped.stdout) as CypherTabular;
+        expect(fromFile.row_count).toBe(ROWS);
+        expect(fromPipe.row_count).toBe(ROWS);
+        expect(fromPipe.markdown).toBe(fromFile.markdown);
+      },
+    );
+
+    it.skipIf(process.platform === 'win32')(
+      'exits 0 without a stderr copy when the reader closes early (EPIPE)',
+      () => {
+        // The result is far larger than the pipe buffer, so the CLI is still
+        // writing when `head` exits: the next write fails with EPIPE.
+        const early = pipeTo('head -c 1');
+
+        expect(early.stdout).toHaveLength(1);
+        expect(early.stderr).toContain('cli-exit=0');
+        expect(early.stderr).not.toContain('row_count');
+      },
+    );
   });
 
   // ─── detect-changes ───────────────────────────────────────────────────────

@@ -10,6 +10,7 @@
  */
 
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
+import { eraseJavaTypeArguments } from './type-spelling.js';
 
 // ─── interpretImport ──────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
       return {
         kind: 'wildcard',
         targetRaw: sourceCap.text + '.*',
+        reexportsName: false,
       };
     }
     case 'static': {
@@ -62,6 +64,7 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
       return {
         kind: 'wildcard',
         targetRaw: sourceCap.text,
+        reexportsName: false,
       };
     }
     default:
@@ -76,14 +79,25 @@ export function interpretJavaTypeBinding(captures: CaptureMatch): ParsedTypeBind
   const typeCap = captures['@type-binding.type'];
   if (nameCap === undefined || typeCap === undefined) return null;
 
+  // Selected-call assignment facts carry the exact producer; a bare method
+  // name cannot prove which overload/owner produced a `var` initializer.
+  if (captures['@type-binding.call-result'] !== undefined) return null;
+  if (captures['@type-binding.alias'] !== undefined) {
+    return {
+      boundName: nameCap.text,
+      rawTypeName: typeCap.text.trim(),
+      source: 'assignment-inferred',
+    };
+  }
+
   // Strip generics BEFORE the qualifier (F41 #1928). Stripping the qualifier
   // first uses `lastIndexOf('.')`, which for a qualified *type argument*
   // (`Map<String, com.example.User>`) cuts inside the generic and yields a
-  // corrupted `User>`. Unwrapping generics first reduces the string to a single
-  // (possibly qualified) class name, then the qualifier strip leaves the bare
-  // simple name. `stripGeneric`'s erasure fallback is qualifier-tolerant so a
+  // corrupted `User>`. Erasing generics first retains the (possibly qualified)
+  // container/class name, then the qualifier strip leaves the simple name.
+  // Erasure is qualifier-tolerant so a
   // qualified generic base (`com.example.BaseModel<T>`) still reduces correctly.
-  const rawType = stripQualifier(stripGeneric(typeCap.text.trim()));
+  const rawType = stripQualifier(eraseJavaTypeArguments(typeCap.text.trim()));
 
   // Skip `var` — tree-sitter-java parses `var` as type_identifier with
   // text "var". When used without a constructor initializer, there's no
@@ -91,55 +105,14 @@ export function interpretJavaTypeBinding(captures: CaptureMatch): ParsedTypeBind
   if (rawType === 'var') return null;
 
   let source: TypeRef['source'] = 'parameter-annotation';
-  if (captures['@type-binding.self'] !== undefined) source = 'self';
+  if (captures['@type-binding.contextual-qualified'] !== undefined) source = 'receiver-propagated';
+  else if (captures['@type-binding.self'] !== undefined) source = 'self';
   else if (captures['@type-binding.constructor'] !== undefined) source = 'constructor-inferred';
   else if (captures['@type-binding.pattern'] !== undefined) source = 'annotation';
-  else if (captures['@type-binding.call-result'] !== undefined) source = 'annotation';
-  else if (captures['@type-binding.alias'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.annotation'] !== undefined) source = 'annotation';
   else if (captures['@type-binding.return'] !== undefined) source = 'return-annotation';
 
   return { boundName: nameCap.text, rawTypeName: rawType, source };
-}
-
-/**
- * Unwrap generic type parameters from Java types.
- *
- * Three tiers, checked in order:
- *   1. Known single-arg collection wrappers → extract the element type
- *      (`List<User>` → `User`, `Optional<User>` → `User`).
- *   2. Known two-arg map/container types → extract the value type
- *      (`Map<String, User>` → `User`).
- *   3. **Fallback (JVM type erasure):** any other generic type →
- *      strip the generic parameters and keep the raw class name
- *      (`BaseModel<T>` → `BaseModel`, `CustomList<Foo>` → `CustomList`).
- *      This ensures receiver bindings (`this`/`super`) on classes with
- *      generic superclasses resolve to the correct class file.
- */
-function stripGeneric(text: string): string {
-  // Single-type-argument containers — extract the element type.
-  const single = text.match(
-    /^(?:[A-Za-z_][A-Za-z0-9_.]*\.)?(?:List|ArrayList|LinkedList|Set|HashSet|TreeSet|SortedSet|LinkedHashSet|Collection|Iterable|Iterator|Optional|Stream|CompletableFuture|Future|Queue|Deque|ArrayDeque|PriorityQueue|Vector|Stack|Supplier|Consumer|Predicate|Function)<([^,<>]+)>$/,
-  );
-  if (single !== null) return single[1].trim();
-
-  // Two-type-argument map/container types — extract the value type (second arg).
-  const twoArg = text.match(
-    /^(?:[A-Za-z_][A-Za-z0-9_.]*\.)?(?:Map|HashMap|TreeMap|LinkedHashMap|ConcurrentHashMap|ConcurrentMap|SortedMap|NavigableMap|Hashtable|EnumMap|WeakHashMap|IdentityHashMap|BiFunction|BiConsumer|BiPredicate|Pair|Entry)<[^,<>]+,\s*([^,<>]+)>$/,
-  );
-  if (twoArg !== null) return twoArg[1].trim();
-
-  // Fallback: strip generic parameters from any unrecognized generic type.
-  // `BaseModel<T>` → `BaseModel`, `Builder<Self>` → `Builder`.
-  // This mirrors JVM type erasure — the raw class name is the resolvable symbol.
-  // The pattern matches up to the first `<` to handle nested generics safely
-  // (e.g. `BaseModel<List<String>>` → `BaseModel`). The base is allowed to be
-  // qualified (`com.example.BaseModel<T>` → `com.example.BaseModel`) since the
-  // caller strips the qualifier afterwards (F41 #1928).
-  const fallback = text.match(/^((?:[A-Za-z_$][A-Za-z0-9_$]*\.)*[A-Za-z_$][A-Za-z0-9_$]*)<.+>$/s);
-  if (fallback !== null) return fallback[1].trim();
-
-  return text;
 }
 
 /** `com.example.User` → `User`. */

@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a reserved word as the new function name.",
+  "categories": ["identifier-rules", "negative", "unchanged-on-error"],
+  "target": { "name": "tick", "kind": "Function", "file": "lib.R", "startLine": 0 },
+  "newName": "repeat",
+  "expect": { "status": "error", "code": "invalid_name", "planningStatus": "blocked" },
+  "edges": []
+}

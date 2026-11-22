@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import v8 from 'node:v8';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -49,6 +50,34 @@ const interning = () => ({
 });
 
 describe('cache interning performance gate', () => {
+  it('measures hydration CPU separately from interning CPU', async () => {
+    const sample = new URL('../../bench/v8-sidecar/intern-sample.mjs', import.meta.url);
+    const { measure } = await import(sample.href);
+    let cpu = 0;
+    vi.stubGlobal('gc', () => {});
+    vi.spyOn(process, 'cpuUsage').mockImplementation((previous) => ({
+      user: cpu - (previous?.user ?? 0),
+      system: 0,
+    }));
+    vi.spyOn(v8, 'deserialize').mockImplementation(() => {
+      cpu += 2000;
+      return {};
+    });
+    try {
+      const result = measure(
+        [Buffer.alloc(0), Buffer.alloc(0)],
+        () => {
+          cpu += 7000;
+        },
+        0,
+      );
+      expect(result.hydrateCpuMs).toBe(4);
+      expect(result.cpuMs).toBe(14);
+    } finally {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
+  });
   it.each([0.7, 1, 1.05, 1.051, 1.2])('enforces the paired 5%% budget (%s)', (ratio) => {
     const pairs = Array.from({ length: 8 }, () => ({ baseline: 100, candidate: 100 * ratio }));
     expect(assessPairs(pairs).verdict).toBe(ratio > 1.05 ? 'regression' : 'within-budget');

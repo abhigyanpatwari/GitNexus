@@ -132,15 +132,22 @@ function ancestorPathsThrough(cwd, stopAt) {
   return paths;
 }
 
-function currentGitBranch(cwd) {
+// Git starts in `spawnCwd` and reads `cwd` through -C when the two differ. A
+// caller that only read `cwd` in a command must not start git there: Windows
+// looks for `git.exe` in the working directory of the child before PATH.
+function gitFor(cwd, spawnCwd, args) {
+  return spawnSync('git', cwd === spawnCwd ? args : ['-C', cwd, ...args], {
+    encoding: 'utf-8',
+    timeout: 2000,
+    cwd: spawnCwd,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+}
+
+function currentGitBranch(cwd, spawnCwd) {
   try {
-    const result = spawnSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], {
-      encoding: 'utf-8',
-      timeout: 2000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    const result = gitFor(cwd, spawnCwd, ['symbolic-ref', '--quiet', '--short', 'HEAD']);
     if (result.error || result.status !== 0) return null;
     const branch = String(result.stdout || '').trim();
     return branch || null;
@@ -149,21 +156,16 @@ function currentGitBranch(cwd) {
   }
 }
 
-function registryPathsForCwd(cwd) {
+function registryPathsForCwd(cwd, spawnCwd) {
   const fallbackPaths = ancestorPaths(cwd);
   if (fallbackPaths.length === 0) return { repoPaths: [], branch: null };
   try {
-    const result = spawnSync(
-      'git',
-      ['rev-parse', '--path-format=absolute', '--show-toplevel', '--git-common-dir'],
-      {
-        encoding: 'utf-8',
-        timeout: 2000,
-        cwd,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-      },
-    );
+    const result = gitFor(cwd, spawnCwd, [
+      'rev-parse',
+      '--path-format=absolute',
+      '--show-toplevel',
+      '--git-common-dir',
+    ]);
     if (result.error || result.status !== 0) return { repoPaths: fallbackPaths, branch: null };
 
     const [worktreeRoot, commonDir] = String(result.stdout || '')
@@ -200,7 +202,7 @@ function registryPathsForCwd(cwd) {
     }
     return {
       repoPaths,
-      branch: currentGitBranch(cwd),
+      branch: currentGitBranch(cwd, spawnCwd),
     };
   } catch {
     return { repoPaths: fallbackPaths, branch: null };
@@ -349,11 +351,11 @@ function hasLocalIndexSignal(storagePath) {
   }
 }
 
-function findLocalOwnedRepo(cwd) {
+function findLocalOwnedRepo(cwd, spawnCwd = cwd) {
   // Environment storage overrides win; a leftover repo-local .gitnexus must
   // not skip the registry scan that applies STORAGE_PATH / STORAGE_ROOT.
   if (envOverridesStorage()) return null;
-  const { repoPaths, branch } = registryPathsForCwd(cwd);
+  const { repoPaths, branch } = registryPathsForCwd(cwd, spawnCwd);
   let current = canonicalize(cwd);
   for (let hops = 0; hops <= LOCAL_OWNED_PARENT_HOPS && current; hops++) {
     const storagePath = path.join(current, GITNEXUS_DIR);
@@ -387,8 +389,8 @@ function findLocalOwnedRepo(cwd) {
   return null;
 }
 
-function findRegisteredRepo(cwd) {
-  const { repoPaths, branch } = registryPathsForCwd(cwd);
+function findRegisteredRepo(cwd, spawnCwd = cwd) {
+  const { repoPaths, branch } = registryPathsForCwd(cwd, spawnCwd);
   if (repoPaths.length === 0) return null;
 
   const home = process.env.GITNEXUS_HOME || path.join(os.homedir(), '.gitnexus');
@@ -401,15 +403,15 @@ function findRegisteredRepo(cwd) {
   if (!Array.isArray(entries)) return null;
 
   let best = null;
-  let bestLen = -1;
+  let bestRank = Infinity;
   for (const entry of entries) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (typeof entry.path !== 'string') continue;
     if (entry.path.includes('\0') || !path.isAbsolute(entry.path)) continue;
     const registeredPath = canonicalize(entry.path);
-    if (!registeredPath || !repoPaths.some((repoPath) => samePath(repoPath, registeredPath))) {
-      continue;
-    }
+    if (!registeredPath) continue;
+    const rank = repoPaths.findIndex((repoPath) => samePath(repoPath, registeredPath));
+    if (rank === -1) continue;
     const storagePath = resolveEntryStoragePath(entry);
     if (!storagePath) continue;
     const repositoryLocal = samePath(
@@ -427,8 +429,8 @@ function findRegisteredRepo(cwd) {
       : storagePath;
     const indexMetadata = branchIsIndexed ? readIndexMetadata(indexDir) : ownershipMetadata;
     const lbugPath = resolveGraphPath(indexDir, indexMetadata);
-    if (registeredPath.length > bestLen) {
-      bestLen = registeredPath.length;
+    if (rank < bestRank) {
+      bestRank = rank;
       best = {
         path: entry.path,
         storagePath,
@@ -440,9 +442,12 @@ function findRegisteredRepo(cwd) {
   return best;
 }
 
-/** Registry row wins (including persisted external storagePath); local owned is fallback. */
-function resolveHookRepo(cwd) {
-  const repo = findRegisteredRepo(cwd) || findLocalOwnedRepo(cwd);
+/**
+ * Registry row wins (including persisted external storagePath); local owned is fallback.
+ * `spawnCwd` is where git is started from, when that must not be `cwd` itself.
+ */
+function resolveHookRepo(cwd, spawnCwd = cwd) {
+  const repo = findRegisteredRepo(cwd, spawnCwd) || findLocalOwnedRepo(cwd, spawnCwd);
   // A matching owned registry row blocks fallback even when its graph is invalid.
   return repo && repo.lbugPath ? repo : null;
 }

@@ -131,6 +131,14 @@ export interface SymbolDefinition {
    * wildcard provider or bound through a barrel's `export *` closure.
    */
   isExported?: boolean;
+  /**
+   * The producing language saw this declaration published as the module's
+   * DEFAULT export (ECMAScript `export default function f`, `export default f`,
+   * `export { f as default }`). Set only when true; absence means "not known to
+   * be the default". The language's `moduleExports` surface reads it to publish
+   * the declaration under its default-export key.
+   */
+  isDefaultExport?: boolean;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)

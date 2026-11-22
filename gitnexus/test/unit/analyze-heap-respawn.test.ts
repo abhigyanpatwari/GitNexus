@@ -1,6 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
+const allocatorCases = [
+  { limited: true, libc: '2.41', arena: undefined, tunables: undefined, expected: '2' },
+  { limited: false, libc: '2.41', arena: undefined, tunables: undefined, expected: undefined },
+  { limited: true, libc: null, arena: undefined, tunables: undefined, expected: undefined },
+  { limited: true, libc: '2.41', arena: '0', tunables: undefined, expected: '0' },
+  {
+    limited: true,
+    libc: '2.41',
+    arena: undefined,
+    tunables: 'glibc.malloc.arena_max=3',
+    expected: undefined,
+  },
+  {
+    limited: true,
+    libc: '2.41',
+    arena: undefined,
+    tunables: 'glibc.malloc.trim_threshold=65536',
+    expected: '2',
+  },
+];
+
 const spawnMock = vi.fn();
 const getHeapStatisticsMock = vi.fn();
 const npmWarningMock = vi.hoisted(() => vi.fn());
@@ -794,6 +815,28 @@ describe('ensureHeap --memory-budget (#3137)', () => {
       source: 'auto',
     });
   });
+
+  it.each(allocatorCases)(
+    'selects the child allocator without changing the parent: %j',
+    async function checkAllocatorInheritance({ limited, libc, arena, tunables, expected }) {
+      const native = await import('../../src/core/lbug/native-check.js');
+      const host = vi.spyOn(native, 'hostGlibcVersion').mockReturnValue(libc);
+      vi.stubEnv('MALLOC_ARENA_MAX', arena);
+      vi.stubEnv('GLIBC_TUNABLES', tunables);
+      try {
+        mockSpawnExit();
+        const { ensureHeap } = await import('../../src/cli/analyze.js');
+        await ensureHeap({ admittedHeapMb: 2000, limitMallocArenas: limited });
+        const child = spawnMock.mock.calls[0][2].env;
+        expect(child.MALLOC_ARENA_MAX).toBe(process.platform === 'linux' ? expected : arena);
+        expect(child.GLIBC_TUNABLES).toBe(tunables);
+        expect(process.env.MALLOC_ARENA_MAX).toBe(arena);
+      } finally {
+        host.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it('the admitted automatic-heap OOM message names both heap and family overrides', async () => {
     mockSpawnExit({ status: null, signal: 'SIGABRT' });

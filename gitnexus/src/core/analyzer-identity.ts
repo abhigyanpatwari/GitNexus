@@ -50,6 +50,8 @@ const IDENTITY_CACHE_SCHEMA_VERSION = 6 as const;
 const MAX_CACHE_ENTRIES = 100_000;
 const MAX_CACHE_FILE_BYTES = 64 * 1024 * 1024;
 const HASH_BUFFER_BYTES = 256 * 1024;
+// Hashing is synchronous. Each worker can reuse its own buffer across files.
+let hashReadBuffer: Buffer | undefined;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
 export interface AnalyzerIdentityTraversalLimits {
@@ -441,9 +443,10 @@ function snapshotReadableFile(candidate: string): ReadableFileState {
   const link = lstatSync(candidate, { bigint: true });
   const target = link.isFile() ? link : statSync(candidate, { bigint: true });
   if (!target.isFile()) throw new Error(`Analyzer identity input is not a file: ${candidate}`);
+  const linkState = statState(link);
   return {
-    link: statState(link),
-    target: statState(target),
+    link: linkState,
+    target: target === link ? { ...linkState } : statState(target),
     ...(link.isSymbolicLink() ? { symlinkTarget: readlinkSync(candidate) } : {}),
   };
 }
@@ -544,7 +547,7 @@ function readStableFileWithinBudget(
   return stable;
 }
 
-/** Hash a stable file through a fixed-size buffer instead of materializing it. */
+/** Hash a stable file in bounded chunks. */
 function hashStableFile(candidate: string): {
   digest: string;
   state: ReadableFileState;
@@ -557,13 +560,21 @@ function hashStableFile(candidate: string): {
     try {
       descriptor = openSync(candidate, fsConstants.O_RDONLY);
       const openedBefore = statState(fstatSync(descriptor, { bigint: true }));
-      if (!isDeepStrictEqual(openedBefore, before.target)) continue;
+      // Windows path stats can report dev=0 while fstat reports the volume serial.
+      // Preserve openedBefore for the descriptor's before/after stability check.
+      const comparableOpened =
+        process.platform === 'win32' && before.target.dev === '0'
+          ? { ...openedBefore, dev: before.target.dev }
+          : openedBefore;
+      if (!isDeepStrictEqual(comparableOpened, before.target)) continue;
 
       const hash = createHash('sha256');
-      const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
+      const buffer = (hashReadBuffer ??= Buffer.allocUnsafe(HASH_BUFFER_BYTES));
+      // Read up to one extra byte to detect growth, including for an initially empty file.
+      const readSize = Math.min(buffer.length, expectedBytes + 1);
       let bytes = 0;
       while (true) {
-        const read = readSync(descriptor, buffer, 0, buffer.length, null);
+        const read = readSync(descriptor, buffer, 0, readSize, null);
         if (read === 0) break;
         hash.update(buffer.subarray(0, read));
         bytes += read;

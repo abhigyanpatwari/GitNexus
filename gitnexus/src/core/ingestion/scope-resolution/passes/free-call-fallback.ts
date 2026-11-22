@@ -19,6 +19,7 @@
 
 import type {
   DefId,
+  NameClaimResult,
   ParameterTypeClass,
   ParsedFile,
   Reference,
@@ -95,6 +96,10 @@ export function emitFreeCallFallback(
     /** When true, a constructor-form site's edge gets ` (constructor)`
      *  appended to its reason. See `ScopeResolver.markConstructionSites`. */
     readonly markConstructionSites?: boolean;
+    /** When true, a free call whose name binds exactly one class constructs
+     *  it (`Plain(1)`) and links like a constructor-form site. From
+     *  `ScopeResolver.constructionSyntax.bare`. */
+    readonly bareCallConstructs?: boolean;
     readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
     readonly isCallableVisibleFromCaller?: ScopeResolver['isCallableVisibleFromCaller'];
     /** Whether a type named through a written qualifier (`ns.Type{}`) is
@@ -118,6 +123,8 @@ export function emitFreeCallFallback(
     /** Module-qualified free-call resolver (#2730) — see
      *  `ScopeResolver.resolveQualifiedFreeCall`. */
     readonly resolveQualifiedFreeCall?: ScopeResolver['resolveQualifiedFreeCall'];
+    /** Mirrors `ScopeResolver.qualifiedFreeCallOutranksNameClaim`. */
+    readonly qualifiedFreeCallOutranksNameClaim?: boolean;
     readonly resolveUnqualifiedCall?: ScopeResolver['resolveUnqualifiedCall'];
     readonly selectedCalls?: Map<string, SymbolDefinition | null>;
     readonly onSelectedCall?: (key: string, definition: SymbolDefinition | null) => void;
@@ -269,6 +276,7 @@ export function emitFreeCallFallback(
       const lookupOptions = {
         position: site.atRange,
         purpose: 'value' as const,
+        callee: true,
       };
       const nameClaim = lookupNameClaim(site.inScope, site.name, scopes, lookupOptions);
       const strictClaim = hasExplicitNameClaim(nameClaim, site.name);
@@ -285,7 +293,17 @@ export function emitFreeCallFallback(
                 b.def.type === 'Struct' ||
                 b.def.type === 'Record',
             )));
-      if (blocksCall) {
+      // Opt-in (`qualifiedFreeCallOutranksNameClaim`): a module-qualified free call
+      // (`mod::fn()`) names its module explicitly, so the path is evidence the lexical name
+      // claim is not. The hook then runs before the block, and a defined hit bypasses it.
+      // Without the opt-in the hook runs later, exactly where it always has.
+      const qualifiedFnDef =
+        options.qualifiedFreeCallOutranksNameClaim === true &&
+        options.resolveQualifiedFreeCall !== undefined &&
+        site.rawQualifiedName !== undefined
+          ? options.resolveQualifiedFreeCall(site, parsed, scopes, workspaceIndex, allFilePaths())
+          : undefined;
+      if (blocksCall && qualifiedFnDef === undefined) {
         options.recordSourceBinding?.(site, {
           status: 'blocked',
           targetDefIds: [],
@@ -421,19 +439,24 @@ export function emitFreeCallFallback(
       // the caller's own file and emits a self-loop instead of the real
       // cross-module edge (#2730). Only fires when the language populated
       // `rawQualifiedName` AND provides the hook; `undefined` falls through to
-      // the unchanged chain, so this tier is strictly additive.
-      if (
-        fnDef === undefined &&
-        options.resolveQualifiedFreeCall !== undefined &&
-        site.rawQualifiedName !== undefined
-      ) {
-        fnDef = options.resolveQualifiedFreeCall(
-          site,
-          parsed,
-          scopes,
-          workspaceIndex,
-          allFilePaths(),
-        );
+      // the unchanged chain, so this tier is strictly additive. With the
+      // `qualifiedFreeCallOutranksNameClaim` opt-in the hook was resolved above, before the
+      // name-claim block, so that a hit also outranks a lexical name claim.
+      if (fnDef === undefined) {
+        if (options.qualifiedFreeCallOutranksNameClaim === true) {
+          fnDef = qualifiedFnDef;
+        } else if (
+          options.resolveQualifiedFreeCall !== undefined &&
+          site.rawQualifiedName !== undefined
+        ) {
+          fnDef = options.resolveQualifiedFreeCall(
+            site,
+            parsed,
+            scopes,
+            workspaceIndex,
+            allFilePaths(),
+          );
+        }
       }
       // Implicit-this overload narrowing: an unqualified call inside
       // a method body might be calling a sibling overload on the
@@ -751,6 +774,26 @@ export function emitFreeCallFallback(
           }
         }
       }
+      // Bare-call construction (`Plain(1)`): no callable answers the name, and
+      // every binding of it is one class, so the call constructs it. A value
+      // sharing the name (`Plain = 1` from another star import) leaves it open.
+      if (fnDef === undefined && options.bareCallConstructs === true) {
+        const [cls, ...others] = classBindingsOf(nameClaim.bindings);
+        if (
+          cls !== undefined &&
+          others.length === 0 &&
+          nameClaim.bindings.every((binding) => binding.def.nodeId === cls.nodeId)
+        ) {
+          writtenDefinition = cls;
+          // Drop the callable lookup's empty list, which would otherwise record
+          // the site as an incompatible free call.
+          sourceCandidates = undefined;
+          fnDef =
+            options.constructorCallTargetsClass === true
+              ? writtenDefinition
+              : pickConstructorOrClass(writtenDefinition, workspaceIndex, scopes, site.arity);
+        }
+      }
       // Name-guess tier: pickUniqueGlobalCallable consults no import context —
       // it resolves to any globally-unique callable. Same-package calls are
       // usually caught by nearest-scope lookup before reaching here, so what
@@ -839,18 +882,7 @@ export function emitFreeCallFallback(
         // A class called with ordinary call syntax still names its type, even
         // when no constructor method exists for a runtime CALLS edge.
         if (options.recordSourceBinding !== undefined) {
-          const classes = [
-            ...new Map(
-              nameClaim.bindings
-                .filter(
-                  (binding) =>
-                    binding.def.type === 'Class' ||
-                    binding.def.type === 'Struct' ||
-                    binding.def.type === 'Record',
-                )
-                .map((binding) => [binding.def.nodeId, binding.def]),
-            ).values(),
-          ];
+          const classes = classBindingsOf(nameClaim.bindings);
           if (classes.length === 1)
             options.recordSourceBinding(
               site,
@@ -1076,6 +1108,22 @@ export function constructionSiteReason(
   return markConstructionSites === true && site.callForm === 'constructor'
     ? `${base} (constructor)`
     : base;
+}
+
+/** The distinct class-like definitions among a name claim's bindings. */
+function classBindingsOf(bindings: NameClaimResult['bindings']): SymbolDefinition[] {
+  return [
+    ...new Map(
+      bindings
+        .filter(
+          (binding) =>
+            binding.def.type === 'Class' ||
+            binding.def.type === 'Struct' ||
+            binding.def.type === 'Record',
+        )
+        .map((binding) => [binding.def.nodeId, binding.def]),
+    ).values(),
+  ];
 }
 
 function siteKey(

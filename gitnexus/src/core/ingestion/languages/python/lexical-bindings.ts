@@ -10,6 +10,7 @@ import {
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { interpretPythonImport } from './interpret.js';
+import { reconcilePythonImportClaims, type PythonImportClaim } from './import-claims.js';
 
 const COMPREHENSIONS = new Set([
   'list_comprehension',
@@ -30,7 +31,7 @@ interface Environment {
   parent?: Environment;
   claims: NameClaim[];
   directives: Map<string, 'module' | 'enclosing-function'>;
-  imports: Map<string, Array<{ identity: string; packageRoot?: string; claim: NameClaim }>>;
+  imports: Map<string, PythonImportClaim[]>;
 }
 interface Event {
   env: Environment;
@@ -89,49 +90,57 @@ export function applyPythonLexicalBindings(
     mark(node, env);
     return env;
   };
+  // Every walk below uses an explicit stack: syntax depth is input-controlled,
+  // and a 2,000-term `a + b + ...` chain overflowed the recursive version.
+  // Children are pushed in reverse, so nodes are handled in the same pre-order.
+  const pushReversed = <T>(stack: T[], items: readonly T[]): void => {
+    for (let i = items.length - 1; i >= 0; i--) stack.push(items[i]!);
+  };
   const bind = (
     env: Environment,
-    node: SyntaxNode | null,
+    target: SyntaxNode | null,
     kind: NameClaim['kind'] = 'binding',
     hoisted = false,
     conditional = false,
     anchor?: SyntaxNode,
   ): void => {
-    if (node === null) return;
-    if (node.type === 'identifier') {
-      events.push({ env, node: anchor ?? node, name: node.text, kind, hoisted, conditional });
-      return;
+    if (target === null) return;
+    const pending = [target];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if (node.type === 'identifier') {
+        events.push({ env, node: anchor ?? node, name: node.text, kind, hoisted, conditional });
+      } else if (!['attribute', 'subscript', 'type'].includes(node.type)) {
+        pushReversed(pending, node.namedChildren);
+      }
     }
-    if (['attribute', 'subscript', 'type'].includes(node.type)) return;
-    for (const child of node.namedChildren) bind(env, child, kind, hoisted, conditional, anchor);
   };
-  const pattern = (env: Environment, node: SyntaxNode): void => {
-    if (node.type === 'dotted_name') {
-      if (node.namedChildCount === 1 && node.text !== '_') bind(env, node.firstNamedChild);
-      return;
+  const pattern = (env: Environment, root: SyntaxNode): void => {
+    const pending = [root];
+    while (pending.length > 0) {
+      const node = pending.pop()!;
+      if (node.type === 'dotted_name') {
+        if (node.namedChildCount === 1 && node.text !== '_') bind(env, node.firstNamedChild);
+      } else if (node.type === 'identifier') {
+        if (node.text !== '_') bind(env, node);
+      } else if (node.type === 'class_pattern' || node.type === 'keyword_pattern') {
+        pushReversed(pending, node.namedChildren.slice(1));
+      } else if (node.type === 'dict_pattern') {
+        pushReversed(pending, [
+          ...node.childrenForFieldName('value'),
+          ...node.namedChildren.filter((child) => child.type === 'splat_pattern'),
+        ]);
+      } else if (!['string', 'concatenated_string', 'attribute'].includes(node.type)) {
+        pushReversed(pending, node.namedChildren);
+      }
     }
-    if (node.type === 'identifier') {
-      if (node.text !== '_') bind(env, node);
-      return;
-    }
-    if (node.type === 'class_pattern') {
-      for (const child of node.namedChildren.slice(1)) pattern(env, child);
-      return;
-    }
-    if (node.type === 'keyword_pattern') {
-      for (const child of node.namedChildren.slice(1)) pattern(env, child);
-      return;
-    }
-    if (node.type === 'dict_pattern') {
-      for (const child of node.childrenForFieldName('value')) pattern(env, child);
-      for (const child of node.namedChildren)
-        if (child.type === 'splat_pattern') pattern(env, child);
-      return;
-    }
-    if (['string', 'concatenated_string', 'attribute'].includes(node.type)) return;
-    for (const child of node.namedChildren) pattern(env, child);
   };
-  const visit = (node: SyntaxNode, env: Environment, conditional = false): void => {
+  // A task visits a node, or runs a step that the recursive walk interleaved
+  // between child visits (parameter and comprehension-target binding).
+  type Task = (() => void) | { node: SyntaxNode; env: Environment; conditional: boolean };
+  const tasks: Task[] = [];
+  const visit = (node: SyntaxNode, env: Environment, conditional: boolean): void => {
+    const next: Task[] = [];
     mark(node, env);
     if (
       node.type === 'function_definition' ||
@@ -156,28 +165,31 @@ export function applyPythonLexicalBindings(
       if (parameters) {
         mark(parameters, childEnv);
         for (const parameter of parameters.namedChildren) {
-          mark(parameter, childEnv);
-          const target =
-            parameter.childForFieldName('name') ??
-            (parameter.type === 'identifier' ? parameter : parameter.firstNamedChild);
-          if (target && !['positional_separator', 'keyword_separator'].includes(parameter.type))
-            bind(childEnv, target, 'binding', true);
+          next.push(() => {
+            mark(parameter, childEnv);
+            const target =
+              parameter.childForFieldName('name') ??
+              (parameter.type === 'identifier' ? parameter : parameter.firstNamedChild);
+            if (target && !['positional_separator', 'keyword_separator'].includes(parameter.type))
+              bind(childEnv, target, 'binding', true);
+          });
           const defaultValue = parameter.childForFieldName('value');
-          if (defaultValue) visit(defaultValue, env, conditional);
+          if (defaultValue) next.push({ node: defaultValue, env, conditional });
           const annotation = parameter.childForFieldName('type');
-          if (annotation) visit(annotation, env, conditional);
+          if (annotation) next.push({ node: annotation, env, conditional });
         }
       }
       const body = node.childForFieldName('body');
       for (const child of node.namedChildren) {
         if (child.id === parameters?.id || child.id === node.childForFieldName('name')?.id)
           continue;
-        visit(
-          child,
-          child.id === body?.id ? childEnv : env,
-          child.id === body?.id ? false : conditional,
+        next.push(
+          child.id === body?.id
+            ? { node: child, env: childEnv, conditional: false }
+            : { node: child, env, conditional },
         );
       }
+      pushReversed(tasks, next);
       return;
     }
     if (COMPREHENSIONS.has(node.type)) {
@@ -186,12 +198,19 @@ export function applyPythonLexicalBindings(
       const firstIterable = firstFor?.childForFieldName('right');
       for (const child of node.namedChildren) {
         if (child.type === 'for_in_clause') {
-          mark(child, childEnv);
-          bind(childEnv, child.childForFieldName('left'), 'binding', true);
+          next.push(() => {
+            mark(child, childEnv);
+            bind(childEnv, child.childForFieldName('left'), 'binding', true);
+          });
           for (const part of child.namedChildren)
-            visit(part, part.id === firstIterable?.id ? env : childEnv, conditional);
-        } else visit(child, childEnv, conditional);
+            next.push({
+              node: part,
+              env: part.id === firstIterable?.id ? env : childEnv,
+              conditional,
+            });
+        } else next.push({ node: child, env: childEnv, conditional });
       }
+      pushReversed(tasks, next);
       return;
     }
     if (node.type === 'global_statement' || node.type === 'nonlocal_statement') {
@@ -257,10 +276,20 @@ export function applyPythonLexicalBindings(
       if (target?.type === 'identifier') bind(env, target, 'blocked');
     }
     const childConditional = conditional || CONDITIONAL.has(node.type);
-    for (const child of node.namedChildren) visit(child, env, childConditional);
+    for (const child of node.namedChildren)
+      next.push({ node: child, env, conditional: childConditional });
+    pushReversed(tasks, next);
   };
   const module = create(root, 'Module');
-  for (const child of root.namedChildren) visit(child, module);
+  pushReversed(
+    tasks,
+    root.namedChildren.map((node) => ({ node, env: module, conditional: false })),
+  );
+  while (tasks.length > 0) {
+    const task = tasks.pop()!;
+    if (typeof task === 'function') task();
+    else visit(task.node, task.env, task.conditional);
+  }
 
   const localNames = new Map<Environment, Set<string>>();
   const storedNames = new Map<Environment, Set<string>>();
@@ -334,29 +363,7 @@ export function applyPythonLexicalBindings(
     }
   }
   for (const env of environments) {
-    for (const [name, imports] of env.imports) {
-      const first = imports[0]!;
-      const compatible = imports.every(
-        (imp) =>
-          imp.identity === first.identity ||
-          (first.packageRoot !== undefined && imp.packageRoot === first.packageRoot),
-      );
-      const mixed = env.claims.some(
-        (claim) =>
-          claim.name === name &&
-          claim.redirect === undefined &&
-          !imports.some((imp) => imp.claim === claim),
-      );
-      // Conflicting imports remain uncertain, but a definite def/class store
-      // still supplies its own local target after the declaration executes.
-      env.claims = env.claims.map((claim) =>
-        claim.name !== name || claim.redirect !== undefined || definiteDeclarations.has(claim)
-          ? claim
-          : !compatible || mixed
-            ? { ...claim, kind: 'blocked' }
-            : { ...claim, merge: true },
-      );
-    }
+    env.claims = reconcilePythonImportClaims(env.claims, env.imports, definiteDeclarations);
   }
   const environmentAt = (node: SyntaxNode): Environment => {
     for (let current: SyntaxNode | null = node; current; current = current.parent) {
@@ -366,6 +373,7 @@ export function applyPythonLexicalBindings(
     return module;
   };
   const policyFor = (env: Environment) => ({
+    allowImplicitReceiver: false,
     callerScopeIsAuthoritative: true,
     ...(env.kind === 'Class' ? { skipFromChildren: true } : {}),
     ...(env.kind === 'Function' || env.node.type === 'generator_expression'

@@ -48,6 +48,8 @@ import {
   buildModuleScopeIndex,
   buildQualifiedNameIndex,
   buildScopeTree,
+  createEagerImportVisibility,
+  createGroupedImportVisibility,
   finalize,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
@@ -63,6 +65,8 @@ import { TransitionalScopeTree } from '../../storage/scope-index-store.js';
  * #922 will populate `hooks.resolveImportTarget` + friends per language.
  */
 export interface FinalizeOrchestratorOptions {
+  /** Prepare a resident tree that can release its bindings to disk before emission. */
+  readonly spillableScopeTree?: boolean;
   /**
    * Hooks forwarded to shared `finalize()`. Any omitted field gets a
    * no-op default: unresolved targets, empty wildcard expansion, append
@@ -125,13 +129,10 @@ export function finalizeScopeModel(
     moduleEntries.push({ filePath: file.filePath, moduleScopeId: file.moduleScope });
   }
 
-  // Out-of-core scope index: when enabled, build a TransitionalScopeTree
-  // (validated + fully resident now; sealed to disk by run.ts just before emit so
-  // the heavy Scope.bindings payload is reclaimed). Default off → the in-heap
-  // buildScopeTree result exactly, byte-identical.
-  const scopeTree = parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX)
-    ? new TransitionalScopeTree(allScopes)
-    : buildScopeTree(allScopes);
+  const scopeTree =
+    (options.spillableScopeTree ?? parseTruthyEnv(process.env.GITNEXUS_DISK_SCOPE_INDEX))
+      ? new TransitionalScopeTree(allScopes)
+      : buildScopeTree(allScopes);
   onProgress?.('scopeTree-end');
   const defs = buildDefIndex(allDefs);
   onProgress?.('defs-end');
@@ -158,7 +159,12 @@ export function finalizeScopeModel(
     qualifiedNames,
     moduleScopes,
     methodDispatch,
-    imports: finalizeOut.imports,
+    // Finalize reports `importEntries` only when it stored an import as a
+    // group; every other run keeps one edge per imported file.
+    imports:
+      finalizeOut.importEntries === undefined
+        ? createEagerImportVisibility(finalizeOut.imports)
+        : createGroupedImportVisibility(finalizeOut.importEntries, finalizeOut.imports),
     bindings: finalizeOut.bindings,
     // Empty post-finalize augmentation channel. Populated (if at all)
     // by language hooks like `populateCsharpNamespaceSiblings` running
@@ -233,12 +239,15 @@ function withDefaultHooks(partial: Partial<FinalizeHooks>): FinalizeHooks {
   return {
     ownedMembersBindAtModuleScope: partial.ownedMembersBindAtModuleScope,
     importsBindAtLexicalScope: partial.importsBindAtLexicalScope === true,
+    groupsWildcardTargets: partial.groupsWildcardTargets === true,
     resolveImportTarget: partial.resolveImportTarget ?? (() => null),
     isNamespaceImport: partial.isNamespaceImport,
     wildcardCollisionIsAmbiguous: partial.wildcardCollisionIsAmbiguous === true,
     namedImportsBindTopLevelOnly: partial.namedImportsBindTopLevelOnly === true,
+    wildcardReexportExcludedNames: partial.wildcardReexportExcludedNames,
     expandsWildcardTo: partial.expandsWildcardTo ?? (() => []),
     filterWildcardNames: partial.filterWildcardNames,
+    mergeBindingsAreAssociative: partial.mergeBindingsAreAssociative,
     mergeBindings:
       partial.mergeBindings ??
       ((

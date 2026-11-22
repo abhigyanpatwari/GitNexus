@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import PHP from 'tree-sitter-php';
@@ -348,5 +349,26 @@ $request = new Request('GET', $host . $resourcePath);
     const found = consumers(src);
     expect(found).toHaveLength(1);
     expect(found[0].path).toBe('/payments/pay');
+  });
+
+  it('resolves the same script after Tree-sitter node wrappers are garbage collected', () => {
+    const script = `
+      import Parser from 'tree-sitter';
+      import PHP from 'tree-sitter-php';
+      import { PHP_HTTP_PLUGIN } from './src/core/group/extractors/http-patterns/php.ts';
+
+      const parser = new Parser().setLanguage(PHP.php_only);
+      const tree = parser.parse("<?php $path = '/payments/pay'; new Request('GET', $host . $path);");
+      const scan = () => PHP_HTTP_PLUGIN.scan(tree).map(({ path }) => path);
+      const before = scan();
+      global.gc();
+      console.log(JSON.stringify([before, scan()]));
+    `;
+    const output = execFileSync(
+      process.execPath,
+      ['--expose-gc', '--import', 'tsx', '--input-type=module', '--eval', script],
+      { cwd: new URL('../../../', import.meta.url), encoding: 'utf8' },
+    );
+    expect(JSON.parse(output)).toEqual([['/payments/pay'], ['/payments/pay']]);
   });
 });

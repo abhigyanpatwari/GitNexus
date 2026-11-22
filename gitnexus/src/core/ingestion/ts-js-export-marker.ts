@@ -42,6 +42,9 @@ export interface EsmExportEvidence {
   /** The file exports through a CommonJS assignment: a plain "not under
    *  `export`" is no verdict there. */
   readonly commonJs: boolean;
+  /** Local published as the default export by `export default <id>` or
+   *  `export { <id> as default }`. */
+  readonly defaultLocal: string | undefined;
 }
 
 /** Read binding patterns, never initializer expressions or property keys. */
@@ -256,6 +259,8 @@ export function collectEsmExportEvidence(
 ): EsmExportEvidence | undefined {
   if (filePath.endsWith('.d.ts')) return undefined;
   const namedLocals = new Set<string>();
+  // Every local named as the default; two different ones (invalid input) name none.
+  const defaultLocals = new Set<string>();
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
   // = …`, an alias (`const m = module.exports; m.x = …`), an `exports.x` — means
   // "not under `export`" says nothing.
@@ -271,18 +276,47 @@ export function collectEsmExportEvidence(
           for (const spec of child.namedChildren) {
             if (spec.type !== 'export_specifier') continue;
             const name = spec.childForFieldName('name')?.text;
-            if (name !== undefined && name !== '') namedLocals.add(name);
+            if (name === undefined || name === '') continue;
+            namedLocals.add(name);
+            // `export { f as default }`: TS parses the alias as an identifier,
+            // JS as an anonymous `default` token, so compare text, not type.
+            if (spec.childForFieldName('alias')?.text === 'default') defaultLocals.add(name);
           }
         } else if (child.type === 'identifier') {
-          // `export default f;` and TS `export = f;`.
+          // `export default f;` and TS `export = f;`. Only the former names a
+          // default: `export =` binds `import X from` only under esModuleInterop.
           namedLocals.add(child.text);
+          if (isDefaultExportStatement(stmt)) defaultLocals.add(child.text);
         }
       }
     } else if (hasTopLevelThisExportAssignment(stmt)) {
       commonJs = true;
     }
   }
-  return { namedLocals, commonJs };
+  const [defaultLocal] = defaultLocals.size === 1 ? defaultLocals : [];
+  return { namedLocals, commonJs, defaultLocal };
+}
+
+function isDefaultExportStatement(stmt: SyntaxNode): boolean {
+  return stmt.children.some((child) => child.type === 'default');
+}
+
+/**
+ * Is the declaration named by `nameNode` the module's default export — either
+ * written as `export default function f` / `export default class C`, or named
+ * by `export default f` / `export { f as default }`? Call it only for
+ * declarations whose export verdict is `true`, which keeps class members and
+ * nested functions of the same name out.
+ */
+export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvidence): boolean {
+  if (evidence.defaultLocal === nameNode.text) return true;
+  const declaration = nameNode.parent;
+  const statement = declaration?.parent;
+  return (
+    statement?.type === 'export_statement' &&
+    statement.childForFieldName('declaration')?.id === declaration?.id &&
+    isDefaultExportStatement(statement)
+  );
 }
 
 /** Is `object` the value of a top-level `module.exports = { … }` assignment? */

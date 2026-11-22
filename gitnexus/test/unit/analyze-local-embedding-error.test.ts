@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 /**
  * Tests for the local-embedding-runtime blocker error path in the
  * `analyzeCommand` CLI (#1515 / #1987 review follow-up).

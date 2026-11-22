@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse an infix function: its a %+% b uses are operator tokens that a rename would leave calling a missing function.",
+  "categories": ["operator", "infix", "negative", "unchanged-on-error"],
+  "target": { "name": "`%+%`", "kind": "Function", "file": "ops.R", "startLine": 0 },
+  "newName": "plus",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

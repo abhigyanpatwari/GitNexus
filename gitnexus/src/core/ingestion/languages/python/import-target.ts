@@ -123,25 +123,27 @@ export function resolvePythonImportTarget(
   if (internal !== null) return internal;
 
   // PEP-328: unresolved relative imports must NOT fall through to suffix
-  // matching. Mirrors `pythonImportStrategy` in `configs/python.ts`.
+  // matching.
   if (parsedImport.targetRaw.startsWith('.')) return null;
 
   // External dotted imports like `django.apps` must not fall through to
   // generic suffix matching when the repo has unrelated local files such
-  // as `accounts/apps.py`. Mirrors `pythonImportStrategy`'s
-  // `hasRepoCandidate` check: only suffix-match if the leading segment
-  // looks like a local package/module somewhere in-repo.
+  // as `accounts/apps.py` (#898). `hasRepoCandidate` only lets the suffix
+  // tier run if the leading segment looks like a local package/module the
+  // importer can reach. A rejected target can still be an exact file under a
+  // src-layout root (#3949), which is never a suffix guess.
   const pathLike = parsedImport.targetRaw.replace(/\./g, '/');
   if (pathLike.includes('/')) {
     const [leadingSegment] = pathLike.split('/').filter(Boolean);
     if (!leadingSegment || !hasRepoCandidate(leadingSegment, ctx.allFilePaths, ctx.fromFile)) {
-      return null;
+      return resolveFromSrcRoots(pathLike, ctx.allFilePaths, ctx.fromFile);
     }
   }
 
   // Multi-segment absolute resolve: try exact paths first, then ancestor
   // walk (mirrors the single-segment ancestor walk in
-  // `resolvePythonImportInternal`), then a suffix match in nested repos.
+  // `resolvePythonImportInternal`), then src-layout roots, then a suffix
+  // match in nested repos.
   // Using direct `Set.has` + `endsWith` instead of `suffixResolve`'s shared
   // helper because that helper requires a pre-built `SuffixIndex` to
   // disambiguate ties — without one it falls back to an O(files) scan that
@@ -187,32 +189,46 @@ function pythonFileExportsName(
   parsedFiles: readonly ParsedFile[] | undefined,
 ): boolean {
   if (parsedFiles === undefined) return false;
-  const parsed = parsedFileByPath(parsedFiles).get(targetFile);
-  if (parsed === undefined) return false;
-  return parsed.localDefs.some((def) => {
+  const entry = parsedFileByPath(parsedFiles).get(targetFile);
+  if (entry === undefined) return false;
+  const exports = (entry.exports ??= { names: new Set<string>(), nextDefinition: 0 });
+  if (exports.names.has(importedName)) return true;
+  // Continue the original short-circuit scan, remembering the prefix already
+  // visited. Across this pass, D definitions and I imports cost O(D + I).
+  while (exports.nextDefinition < entry.file.localDefs.length) {
+    const def = entry.file.localDefs[exports.nextDefinition]!;
     const qualifiedName = def.qualifiedName;
-    if (qualifiedName === undefined || qualifiedName.length === 0) return false;
+    exports.nextDefinition++;
+    if (qualifiedName === undefined || qualifiedName.length === 0) continue;
     const dot = qualifiedName.lastIndexOf('.');
-    return (dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1)) === importedName;
-  });
+    const name = dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
+    exports.names.add(name);
+    if (name === importedName) return true;
+  }
+  return false;
+}
+
+interface ParsedFileExports {
+  file: ParsedFile;
+  exports?: { names: Set<string>; nextDefinition: number };
 }
 
 /**
- * `filePath -> ParsedFile`, memoized on the identity of the pass's
+ * `filePath -> ParsedFileExports`, memoized on the identity of the pass's
  * `parsedFiles` array — the second stable object the orchestrator threads
  * through `resolveImportTarget`, beside the path Set.
  *
  * FIRST WINS on a duplicated path, which is what `Array.prototype.find`
  * returned, so the answer is unchanged for a workspace that somehow parsed one
- * path twice. Values are references to the array's own elements: the Map costs
- * one pointer per parsed file and, living in a `WeakMap` keyed on the array,
- * is reclaimed with the pass rather than accumulating across runs (#2649).
+ * path twice. Export-name indexes are allocated only for files queried by an
+ * import. They live with this pass, even if a later pass reuses ParsedFiles or
+ * definition arrays; the WeakMap releases the whole index with the pass (#2649).
  */
 const parsedFileByPath = perFileSet(
-  (parsedFiles: readonly ParsedFile[]): Map<string, ParsedFile> => {
-    const byPath = new Map<string, ParsedFile>();
+  (parsedFiles: readonly ParsedFile[]): Map<string, ParsedFileExports> => {
+    const byPath = new Map<string, ParsedFileExports>();
     for (const file of parsedFiles) {
-      if (!byPath.has(file.filePath)) byPath.set(file.filePath, file);
+      if (!byPath.has(file.filePath)) byPath.set(file.filePath, { file });
     }
     return byPath;
   },
@@ -228,7 +244,8 @@ const parsedFileByPath = perFileSet(
  * Precedence order:
  *  1. Workspace-root direct hit (`<pathLike>.py`, `<pathLike>/__init__.py`).
  *  2. Closest-ancestor match walking up from the importer's directory.
- *  3. Suffix fallback (deterministic: fewest path segments, then
+ *  3. Closest src-layout root (`resolveFromSrcRoots`, dotted targets only).
+ *  4. Suffix fallback (deterministic: fewest path segments, then
  *     lexicographic on the normalized path).
  *
  * Root wins over ancestor by construction — if both `services/sync.py` and
@@ -295,6 +312,10 @@ function resolveAbsoluteFromFiles(
     }
   }
 
+  // Before the suffix fallback, so the closest src root beats its tie-break.
+  const viaSrc = resolveFromSrcRoots(pathLike, allFilePaths, fromFile);
+  if (viaSrc !== null) return viaSrc;
+
   // Suffix-match fallback (preserved for monorepo/nested-repo layouts
   // that don't share a directory ancestor with the importer).
   //
@@ -344,6 +365,52 @@ function resolveAbsoluteFromFiles(
 }
 
 /**
+ * src layout (#3949): resolve a DOTTED `pathLike` to `<root>src/<pathLike>.py`
+ * or `<root>src/<pathLike>/__init__.py`, where `<root>` is each importer
+ * ancestor, closest first, then the workspace root. PyPA's src layout and
+ * setuptools' automatic discovery put `src/` on the import path, so `tests/`
+ * and `scripts/` import `src/mypkg` as `mypkg`. No `src/<seg>/__init__.py` is
+ * required, as discovery is namespace-aware. Exact matches only: a miss here
+ * never widens into a suffix guess, so external imports stay unresolved.
+ *
+ * Cost is O(depth) with no file scan: `srcDirRoots` retires every target whose
+ * leading segment names no directory under any `src/`, and each step looks up
+ * a memoized ancestor string rather than hashing a fresh path key.
+ */
+function resolveFromSrcRoots(
+  pathLike: string,
+  allFilePaths: ReadonlySet<string>,
+  fromFile: string,
+): string | null {
+  const slash = pathLike.indexOf('/');
+  if (slash <= 0) return null;
+  const index = getPythonFileIndex(allFilePaths);
+  const roots = index.srcDirRoots.get(pathLike.slice(0, slash));
+  if (roots === undefined) return null;
+
+  // Same bucket guards as `resolveAbsoluteFromFiles`.
+  const lastSeg = pathLike.slice(pathLike.lastIndexOf('/') + 1);
+  const mayBeModule = index.byBasename.has(`${lastSeg}.py`);
+  const mayBePackage = index.byInitParent.has(`${lastSeg}/__init__.py`) || lastSeg === '';
+  if (!mayBeModule && !mayBePackage) return null;
+
+  const ancestors = importerAncestors(index, importerDirOf(fromFile));
+  for (let i = 0; i <= ancestors.length; i++) {
+    const dir = i < ancestors.length ? ancestors[i] : '';
+    if (!roots.has(dir)) continue;
+    const root = dir === '' ? 'src/' : `${dir}/src/`;
+    // A src/ that is itself a package is imported as `src.x`, not a sys.path
+    // root, so `email.utils` must not bind to its `src/email/utils.py`.
+    if (index.normSet.has(`${root}__init__.py`)) continue;
+    const candidateFile = `${root}${pathLike}.py`;
+    if (mayBeModule && allFilePaths.has(candidateFile)) return candidateFile;
+    const candidatePkg = `${root}${pathLike}/__init__.py`;
+    if (mayBePackage && allFilePaths.has(candidatePkg)) return candidatePkg;
+  }
+  return null;
+}
+
+/**
  * Does the repo contain a module/package named `leadingSegment` somewhere
  * the importer can plausibly reach?
  *
@@ -385,17 +452,19 @@ function hasRepoCandidate(
   // (3) used to MATERIALIZE one `${ancestor}/${seg}/` string per component of
   // the importer's directory, eagerly, before checks (1) and (2) had even run —
   // O(depth^2) characters on every import, and the other half of #2913. Two
-  // things replace that: `nestedDirNames` answers "is `seg` the name of any
+  // things replace that: `nestedDirParents` answers "is `seg` the name of any
   // directory sitting under a non-empty parent?" in O(1), which is `false` for
   // every external import (`os`, `django`, an unknown distribution) and skips
   // the walk outright; and what remains walks the per-directory ancestor chain,
-  // built once per pass, closest first, so the common in-repo hit exits after a
-  // step or two. `nestedDirNames` is exact, not a filter: `${A}/${seg}/` can
-  // only be a directory prefix if `seg` names a directory under the non-empty
-  // parent `A`, so a miss here means the old loop would have missed too.
-  if (!index.nestedDirNames.has(leadingSegment)) return false;
+  // built once per pass, closest first. `${A}/${seg}/` is a directory prefix
+  // exactly when `A` is one of `seg`'s recorded parents, so each step looks up
+  // the memoized ancestor string itself: its hash is cached, where a fresh
+  // `${A}/${seg}/` key cost O(depth) to hash and made a non-matching walk
+  // O(depth^2) again.
+  const parents = index.nestedDirParents.get(leadingSegment);
+  if (parents === undefined) return false;
   for (const ancestor of importerAncestors(index, importerDirOf(fromFile))) {
-    if (index.dirPrefixes.has(`${ancestor}/${prefix}`)) return true;
+    if (parents.has(ancestor)) return true;
   }
   return false;
 }

@@ -29,12 +29,25 @@ const {
   resolveUnixGuardTimeout,
 } = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
+const {
+  gitMutationDirectories,
+  readHead,
+  canSkipMarkdownReindex,
+} = require('./git-mutation-command.cjs');
+const { searchCommandPatterns } = require('./search-command-pattern.cjs');
 const { resolveHookRepo } = (() => {
   // Installed copies get helpers next to this adapter. The in-tree source
   // tree only ships the adapter, so fall back to the Claude helper copies.
   const local = path.join(__dirname, 'registry-query.cjs');
   return fs.existsSync(local) ? require(local) : require('../claude/registry-query.cjs');
 })();
+
+// run_shell_command goes through `powershell.exe -NoProfile -Command` on
+// Windows and `bash -c` everywhere else.
+const SHELL = process.platform === 'win32' ? 'powershell' : 'bash';
+
+// Index metadata is a file in the repository: only a commit id is echoed.
+const COMMIT_ID = /^[0-9a-f]{4,64}$/i;
 
 function readInput() {
   try {
@@ -77,67 +90,31 @@ function extractAugmentContext(stderr) {
 }
 
 /**
- * Extract a usable search token from a tool invocation.
+ * Extract the search patterns from a tool invocation.
  *   - search_file_content / glob: top-level `pattern` (sometimes `query`).
- *   - run_shell_command: parse rg/grep argv, returning the first non-flag
- *     positional ≥ 3 chars.
- * Returns null when the tool is not a recognized search or the pattern is
- * too short.
+ *   - run_shell_command: up to three literal patterns from a leading rg,
+ *     grep or git grep search, including supported wrappers such as npx and
+ *     sudo. The shared helper reads the command using this platform's shell rules.
+ * Returns an empty list when the tool is not a recognized search or the
+ * pattern is too short.
  */
-function extractPattern(toolName, toolInput) {
+function extractPatterns(toolName, toolInput) {
   if (toolName === 'search_file_content') {
     const q = toolInput.pattern || toolInput.query || '';
-    return typeof q === 'string' && q.length >= 3 ? q : null;
+    return typeof q === 'string' && q.length >= 3 ? [q] : [];
   }
 
   if (toolName === 'glob') {
     const raw = toolInput.pattern || '';
     const match = raw.match(/[*\/]([a-zA-Z][a-zA-Z0-9_-]{2,})/);
-    return match ? match[1] : null;
+    return match ? [match[1]] : [];
   }
 
   if (toolName === 'run_shell_command') {
-    const cmd = toolInput.command || '';
-    if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
-
-    const tokens = cmd.split(/\s+/);
-    let foundCmd = false;
-    let skipNext = false;
-    const flagsWithValues = new Set([
-      '-e',
-      '-f',
-      '-m',
-      '-A',
-      '-B',
-      '-C',
-      '-g',
-      '--glob',
-      '-t',
-      '--type',
-      '--include',
-      '--exclude',
-    ]);
-
-    for (const token of tokens) {
-      if (skipNext) {
-        skipNext = false;
-        continue;
-      }
-      if (!foundCmd) {
-        if (/\brg$|\bgrep$/.test(token)) foundCmd = true;
-        continue;
-      }
-      if (token.startsWith('-')) {
-        if (flagsWithValues.has(token)) skipNext = true;
-        continue;
-      }
-      const cleaned = token.replace(/['"]/g, '');
-      return cleaned.length >= 3 ? cleaned : null;
-    }
-    return null;
+    return searchCommandPatterns(toolInput.command, SHELL);
   }
 
-  return null;
+  return [];
 }
 
 function resolveCliPath() {
@@ -293,27 +270,31 @@ function buildAfterToolContext(input) {
   const toolInput = input.tool_input || {};
   const toolResponse = input.tool_response || {};
   const succeeded = toolSucceeded(toolResponse);
-  const pattern = succeeded ? extractPattern(toolName, toolInput) : null;
+  const patterns = succeeded ? extractPatterns(toolName, toolInput) : [];
+  const pattern = patterns[0] ?? null;
   const command = toolName === 'run_shell_command' ? toolInput.command || '' : '';
-  const gitMutation =
-    succeeded && /\bgit\s+(commit|merge|rebase|cherry-pick|pull)(\s|$)/.test(command);
+  // Where each git mutation ran: the directory of the command, or the one
+  // `git -C` names. `dir_path` is relative to the workspace root.
+  const shellCwd =
+    typeof toolInput.dir_path === 'string' ? path.resolve(cwd, toolInput.dir_path) : cwd;
+  const gitCwds = succeeded ? gitMutationDirectories(command, shellCwd, SHELL) : [];
   // Cheap tool-result guards first. Registry I/O is only for search augment
   // or a git mutation that might need a stale-index hint.
-  if (!pattern && !gitMutation) return null;
+  if (!pattern && gitCwds.length === 0) return null;
 
-  const repo = resolveHookRepo(cwd);
-  if (!repo) return null;
-  const storagePath = repo.storagePath;
+  const repo = pattern || gitCwds.includes(cwd) ? resolveHookRepo(cwd) : null;
   const parts = [];
 
-  if (pattern) {
-    const augmentText = runAugment(storagePath, repo.lbugPath, cwd, pattern);
+  if (pattern && repo) {
+    const augmentText = runAugment(repo.storagePath, repo.lbugPath, cwd, patterns);
     if (augmentText) parts.push(augmentText);
   }
 
-  if (gitMutation) {
-    const hint = buildStaleIndexHint(repo.metadata, cwd);
-    if (hint) {
+  for (const gitCwd of gitCwds) {
+    // The index to check belongs to the repository git ran in.
+    const gitRepo = gitCwd === cwd ? repo : resolveHookRepo(gitCwd, cwd);
+    const hint = gitRepo ? buildStaleIndexHint(gitRepo, gitCwd, cwd) : '';
+    if (hint && !parts.includes(hint)) {
       // The hint always reaches the agent via additionalContext (parts). Mirror
       // it to stderr (for terminal users) only under GITNEXUS_DEBUG, so strict
       // hook runners see no unexpected output on this normal path (#1913). The
@@ -333,15 +314,17 @@ function buildAfterToolContext(input) {
  * lbug DB write lock the CLI `augment` can't run, so point the agent at the MCP
  * `query` tool instead. Phrased conditionally ("if the MCP tools are live") so it
  * stays truthful on every owner path — a confirmed MCP owner, a `serve` owner, or
- * a fail-closed probe where no server is actually confirmed. `pattern` is embedded
- * verbatim; the caller (writeAdditionalContext) JSON-escapes it structurally.
+ * a fail-closed probe where no server is actually confirmed. Every search pattern
+ * is embedded verbatim; the caller (writeAdditionalContext) JSON-escapes them
+ * structurally.
  */
-function buildMcpQueryHint(pattern) {
+function buildMcpQueryHint(patterns) {
+  const queries = patterns.map((pattern) => `search_query "${pattern}"`).join(', then ');
   return (
-    `[GitNexus] Local augment is unavailable (the graph DB is held by another ` +
-    `GitNexus process). If the GitNexus MCP tools are live in this session, call ` +
+    `[GitNexus] Local augment was skipped because the graph DB may be held by ` +
+    `another GitNexus process. If the GitNexus MCP tools are live in this session, call ` +
     `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
-    `search_query "${pattern}".`
+    `${queries}.`
   );
 }
 
@@ -371,11 +354,11 @@ function shouldEmitMcpHint(storagePath) {
   return true;
 }
 
-function runAugment(storagePath, lbugPath, cwd, pattern) {
+function runAugment(storagePath, lbugPath, cwd, patterns) {
   // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
   // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
   // as the augment, or concurrent sessions fan out unbounded probe
-  // subprocesses. The cheap guards (extractPattern, registry lookup) run in
+  // subprocesses. The cheap guards (extractPatterns, registry lookup) run in
   // buildAfterToolContext before this — moving the acquire any earlier would
   // churn slot files on tool calls that never probe.
   const release = acquireHookSlot(storagePath);
@@ -399,10 +382,10 @@ function runAugment(storagePath, lbugPath, cwd, pattern) {
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return shouldEmitMcpHint(storagePath) ? buildMcpQueryHint(pattern) : '';
+      return shouldEmitMcpHint(storagePath) ? buildMcpQueryHint(patterns) : '';
     }
     const cliPath = resolveCliPath();
-    const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);
+    const child = runGitNexusCli(cliPath, ['augment', '--', ...patterns], cwd, 7000);
     if (!child.error && child.status === 0) {
       return extractAugmentContext(child.stderr || '');
     }
@@ -414,35 +397,35 @@ function runAugment(storagePath, lbugPath, cwd, pattern) {
   return '';
 }
 
-function buildStaleIndexHint(meta, cwd) {
-  let currentHead = '';
-  try {
-    const headResult = spawnSync('git', ['rev-parse', 'HEAD'], {
-      encoding: 'utf-8',
-      timeout: 3000,
-      cwd,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    currentHead = (headResult.stdout || '').trim();
-  } catch {
-    return '';
-  }
+function buildStaleIndexHint(repo, gitCwd, cwd) {
+  const meta = repo.metadata;
+  const { head: currentHead, checkout } = readHead(gitCwd, cwd);
   if (!currentHead) return '';
 
   let lastCommit = '';
   let hadEmbeddings = false;
   if (meta) {
-    lastCommit = meta.lastCommit || '';
+    lastCommit = typeof meta.lastCommit === 'string' ? meta.lastCommit : '';
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;
   }
 
-  if (currentHead === lastCommit) return '';
+  if (
+    currentHead === lastCommit ||
+    canSkipMarkdownReindex(gitCwd, cwd, lastCommit, currentHead, resolveCliPath)
+  )
+    return '';
 
   const analyzeCmd = formatAnalyzeCommand({ embeddings: hadEmbeddings, indexOnly: true });
+  const indexed = !lastCommit
+    ? 'never'
+    : COMMIT_ID.test(lastCommit)
+      ? lastCommit.slice(0, 7)
+      : 'unknown';
+  // Name the checkout git ran in when the agent works in another one.
+  const where = checkout ? ` in ${checkout}` : '';
   return (
-    `[GitNexus] index is stale (last indexed: ${lastCommit ? lastCommit.slice(0, 7) : 'never'}). ` +
-    `Run \`${analyzeCmd}\` to refresh the knowledge graph.`
+    `[GitNexus] index is stale (last indexed: ${indexed}). ` +
+    `Run \`${analyzeCmd}\`${where} to refresh the knowledge graph.`
   );
 }
 

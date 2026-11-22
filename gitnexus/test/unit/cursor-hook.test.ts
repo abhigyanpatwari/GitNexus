@@ -949,12 +949,12 @@ describe('Cursor hook guard timeout resolution', () => {
     'only ever adopts a guard that runs the command AND propagates its exit status',
     () => {
       // Independent re-derivation of the contract: whatever the resolver
-      // returns must be a real coreutils timeout/gtimeout AND must actually
+      // returns must be a known timeout executable AND must actually
       // propagate a non-zero exit. null is also a valid answer (no wrapper
       // installed here), but never a silently-dead substitute.
       const resolved = withTimeoutPath(undefined, () => freshHook().resolveUnixGuardTimeout());
       if (resolved === null) return; // nothing installed to validate
-      expect(path.basename(resolved)).toMatch(/^g?timeout$/);
+      expect(['timeout', 'gtimeout', 'gnutimeout']).toContain(path.basename(resolved));
       const probe = spawnSync(resolved, ['-k', '1', '1', '/bin/sh', '-c', 'exit 42'], {
         encoding: 'utf-8',
         timeout: 5000,
@@ -1124,6 +1124,29 @@ describe('Cursor hook concurrency guard (integration)', () => {
 
 // ─── Shell pattern parsing ──────────────────────────────────────────
 
+// A POSIX shell runs `NAME=value rg x` as `rg x`. On Windows the shell may be
+// PowerShell, which runs `NAME=value` itself, so the line runs no search there.
+describe.each([
+  ['linux', 'UserService'],
+  ['win32', null],
+] as const)('Shell pattern parser with a leading assignment on %s', (platform, expected) => {
+  const original = process.platform;
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: platform });
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: original });
+  });
+
+  it.each([
+    'NO_COLOR=1 rg UserService src/',
+    'NO_COLOR=1 npx rg UserService src/',
+    '\nNO_COLOR=1 rg UserService src/',
+  ])('reads %j', (command) => {
+    expect(parseRgGrepPattern(command)).toBe(expected);
+  });
+});
+
 describe('Shell quoted-pattern parser', () => {
   it.each([
     ['rg "User Service" src/', 'User Service'],
@@ -1141,12 +1164,16 @@ describe('Shell quoted-pattern parser', () => {
     [String.raw`C:\Users\me\bin\rg.exe UserService src/`, 'UserService'],
     ['rg.exe "validateUser" src/', 'validateUser'],
     ['grep.cmd -e LongPattern src/', 'LongPattern'],
-    ['cd grep && rg LongPattern src/', 'LongPattern'],
     ['npx rg "User Service" src/', 'User Service'],
     ['npx --yes rg UserService src/', 'UserService'],
     ['npx --package rg grep LongPattern src/', 'LongPattern'],
     ['rg UserService; echo done', 'UserService'],
     ['rg UserService&& echo done', 'UserService'],
+    // After a wrapper such as `env`, NAME=value is an assignment it reads.
+    ["env 'A=1' rg UserService src/", 'UserService'],
+    // A blank line before the command ends nothing.
+    ['\nrg UserService src/', 'UserService'],
+    ['\nNO_COLOR=1 \nrg UserService src/', null],
     ['rg --max-count 100 UserService src/', 'UserService'],
     ['grep -r UserService src/', 'UserService'],
     ['rg --replace x UserService src/', 'UserService'],
@@ -1163,6 +1190,27 @@ describe('Shell quoted-pattern parser', () => {
     ['rg --file=patterns.txt src/'],
     ['rg -eab src/'],
     ['sudo echo rg UserService src/'],
+    // #3899: only a search that starts the line is read; one after an operator
+    // may read a file, a pipe, or another directory after `cd`.
+    ['cd grep && rg LongPattern src/'],
+    ["sed -i '' 's/old text/new text/' notes.md && grep -c 'direct tool' notes.md"],
+    ['git log --oneline | grep UserService'],
+    ['cat notes.md; grep UserService src'],
+    ['ls src || rg UserService src'],
+    // The search ends at the first operator, also when its own pattern comes
+    // from a file or a short -e and a later command has one.
+    ['rg -f patterns.txt src | grep -e UserService'],
+    ['rg -e ab src | grep -e UserService'],
+    ['grep -m && grep UserService x'],
+    ['git --version\ngrep UserService src'],
+    // An assignment value the shell computes leaves no reliable query.
+    ['A=$(true rg UserService src)'],
+    ['env A=$(true rg UserService src)'],
+    // After a wrapper the shell splits a `$NAME` value on blanks.
+    ['env A=$ARGS rg UserService src/'],
+    ['ARGS=( rg UserService src )'],
+    // A quoted `'A=foo'` is a command name, not an assignment.
+    ["'A=foo' rg UserService src"],
   ])('extracts no pattern from %j', (command) => {
     expect(parseRgGrepPattern(command)).toBeNull();
   });

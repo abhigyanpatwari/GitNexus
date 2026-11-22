@@ -42,6 +42,15 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
+  'test/unit/claude-hook-launcher.test.ts',
+  'test/unit/claude-hook-runtime.test.ts',
+  // Runs search commands through the real shells (Git Bash, Windows PowerShell,
+  // pwsh, bash) and checks the hook's reading against what rg receives.
+  'test/integration/search-command-real-shells.test.ts',
+  // The shared search-term reader; its PowerShell and `either` readings are
+  // string tests, the real-shell file above checks them against real shells.
+  'test/unit/search-command-pattern.test.ts',
+  'test/unit/claude-hook-build.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/opencode-plugin.test.ts',
   'test/integration/opencode-plugin.test.ts',
@@ -82,6 +91,8 @@ const PLATFORM_LOGIC = [
   // tests compare identity fields against raw temp-dir paths and fail on macOS,
   // where /var/... realpaths to /private/var/....
   'test/unit/analyzer-identity-path-normalization.test.ts',
+  // Windows stat/fstat device IDs differ; also exercise real host filesystem hashing.
+  'test/unit/analyzer-identity-hash-stable-file.test.ts',
   // `isInside` containment guard vs Windows cross-drive paths: path.relative
   // returns the absolute target across drives, so the guard needs isAbsolute.
   // Fixture-free and pathApi-injectable, so it is portable to every runner.
@@ -121,6 +132,9 @@ const PLATFORM_LOGIC = [
   'test/unit/repo-manager-finalize-invariant.test.ts',
   'test/unit/git-utils.test.ts',
   'test/unit/hooks.test.ts',
+  // A `git -C` path is resolved with the platform's path rules, and a network
+  // path is refused on Windows only; Ubuntu alone would never read that half.
+  'test/unit/git-mutation-command.test.ts',
   'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',
   'test/unit/factory-plugin.test.ts',
@@ -128,6 +142,7 @@ const PLATFORM_LOGIC = [
   'test/unit/pool-wal-recovery.test.ts',
   'test/unit/lbug-adapter-wal-schema.test.ts',
   'test/unit/detect-changes-worktree.test.ts',
+  'test/unit/python-signature-changes.test.ts',
   'test/unit/detect-changes-stderr.test.ts',
   'test/unit/eval-server-bind-restriction.test.ts',
   'test/unit/ignore-service.test.ts',
@@ -211,6 +226,11 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-objective-c.test.ts',
   'test/integration/rename-provider-php.test.ts',
   'test/integration/rename-provider-python.test.ts',
+  // Only R part 1 is listed; parts 2-5 run on the Linux coverage shards only. Each part is a
+  // real indexing run per fixture, and this list is already long. (Historical: the parts were
+  // first left off because the shard command went through cmd.exe, whose 8191-char limit left
+  // no room. run-cross-platform.ts no longer uses a shell, so that limit no longer applies.)
+  'test/integration/rename-provider-r.test.ts',
   'test/integration/rename-provider-ruby.test.ts',
   'test/integration/rename-provider-rust.test.ts',
   'test/integration/rename-provider-swift.test.ts',
@@ -258,6 +278,8 @@ const LBUG_NATIVE = [
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
+  // Runs the route extractor's two symbol queries against a real engine.
+  'test/integration/http-route-symbol-batch.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
@@ -399,6 +421,9 @@ const WORKER_THREADS = [
   'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
   'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
+  // Lombok accessor, constructor-DI and workspace-proof facts through a real
+  // parse worker (cold) and the warm cache replay.
+  'test/integration/java-lombok-worker-cache.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
@@ -424,6 +449,8 @@ const FILESYSTEM = [
   'test/unit/dart-package-imports.test.ts',
   // Verify the same capture is reused by native parsing and scope resolution.
   'test/integration/resolvers/dart.test.ts',
+  // Exercise non-ASCII Java package paths and file names on each platform.
+  'test/integration/java-non-ascii-names.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',

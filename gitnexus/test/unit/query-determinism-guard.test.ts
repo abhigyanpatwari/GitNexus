@@ -43,8 +43,7 @@
  * literals, and `+`-concatenated queries (the concatenation is one unit, so an
  * `ORDER BY` in an earlier fragment still counts).
  *
- * Prior art for this source-scanning shape: `local-backend-maxbuffer.test.ts`
- * and `detect-changes-local-id-stability.test.ts`.
+ * Prior art for this source-scanning shape: `local-backend-maxbuffer.test.ts`.
  */
 import { describe, expect, it } from 'vitest';
 import * as t from '@babel/types';

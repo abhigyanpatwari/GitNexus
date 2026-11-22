@@ -192,7 +192,7 @@ describe('Python scope captures — golden parity', () => {
         '@scope.name-claims': { name: '@scope.name-claims', text: '[]', range },
         '@scope.lookup-policy': {
           name: '@scope.lookup-policy',
-          text: '{"callerScopeIsAuthoritative":true}',
+          text: '{"allowImplicitReceiver":false,"callerScopeIsAuthoritative":true}',
           range,
         },
       },

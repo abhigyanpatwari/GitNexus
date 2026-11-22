@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when another script outside every package defines the name at top level: which definition a caller reaches depends on how the scripts are sourced.",
+  "categories": ["duplicate-definition", "scripts", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

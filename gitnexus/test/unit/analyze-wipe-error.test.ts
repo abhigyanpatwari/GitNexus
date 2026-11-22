@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 /**
  * Tests for the LadybugDB wipe-failure path in the `analyzeCommand` CLI
  * (#2409, tri-review 4669518496 P2-4).

@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { AnalyzeResult } from '../../src/core/run-analyze.js';
@@ -7,6 +8,7 @@ type SendCallback = (error: Error | null) => void;
 
 const mocks = vi.hoisted(() => ({
   run: vi.fn(),
+  continuation: vi.fn(),
   spawn: vi.fn(),
   skills: vi.fn(async () => ({
     skills: [{ name: 'community' }],
@@ -36,12 +38,16 @@ vi.mock('../../src/cli/analyze-phase-ipc.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/cli/analyze-phase-ipc.js')>();
   return {
     ...actual,
+    receiveCliAnalysisContinuation: mocks.continuation,
     requireCliAnalysisSupervisor: () => actual.requireCliAnalysisSupervisor(mocks.channel),
     sendCliPreparedAnalysis: (message: CliPreparedAnalysisMessage) =>
       actual.sendCliPreparedAnalysis(message, mocks.channel),
   };
 });
-vi.mock('../../src/core/run-analyze.js', () => ({ runFullAnalysis: mocks.run }));
+vi.mock('../../src/core/run-analyze.js', () => ({
+  runFullAnalysis: mocks.run,
+  continuePreparedAnalysis: vi.fn(async () => ({ stats: {} })),
+}));
 vi.mock('../../src/cli/ai-context.js', () => ({ generateAIContextFiles: mocks.context }));
 vi.mock('../../src/cli/skill-gen.js', () => ({ generateSkillFiles: mocks.skills }));
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
@@ -247,6 +253,22 @@ describe('CLI graph phase handoff', () => {
     expect(process.exitCode).toBe(0);
   });
 
+  it('skips self-commit when the continuation has no pre-analysis safety snapshot', async () => {
+    vi.stubEnv('GITNEXUS_ANALYSIS_CONTINUATION', '1');
+    const { projectCliPreparedAnalysis } = await import('../../src/cli/analyze-phase-ipc.js');
+    mocks.continuation.mockResolvedValueOnce({
+      type: 'continue-analysis',
+      writerPid: 1234,
+      prepared: projectCliPreparedAnalysis(result, '/repo', Date.now()),
+    });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { selfCommit: true, instructionFile: 'CLAUDE.md' });
+    expect(mocks.continuation).toHaveBeenCalledTimes(1);
+    expect(mocks.finalized).toHaveBeenCalled();
+    expect(mocks.snapshot).not.toHaveBeenCalled();
+    expect(mocks.commit).not.toHaveBeenCalled();
+  });
+
   it('waits for IPC delivery before the native-handle exit, including channel backpressure', async () => {
     let delivered!: SendCallback;
     let received!: () => void;
@@ -348,12 +370,18 @@ describe('CLI graph phase handoff', () => {
     result.ftsSkipped = true;
     result.ftsSkipReason = 'disabled-by-flag';
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    await analyzeCommand(undefined, { selfCommit: true });
+    await analyzeCommand(undefined, { selfCommit: true, instructionFile: 'CLAUDE.md' });
+    expect(mocks.snapshot).toHaveBeenCalledWith('/repo', ['CLAUDE.md']);
     expect(send.mock.calls[0][0]).toMatchObject({
       selfCommitSafety: { agentsMd: false, claudeMd: true },
       result: { ftsSkipped: true, ftsSkipReason: 'disabled-by-flag' },
     });
     expect(JSON.stringify(send.mock.calls[0][0])).not.toMatch(/perFile|sourceMaps|unrelated-file/);
+    const { parseCliPreparedAnalysis } = await import('../../src/cli/analyze-phase-ipc.js');
+    expect(parseCliPreparedAnalysis(send.mock.calls[0][0]).selfCommitSafety).toEqual({
+      agentsMd: false,
+      claudeMd: true,
+    });
     expect(process.exitCode).toBe(0);
   });
 

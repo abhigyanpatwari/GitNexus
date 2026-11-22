@@ -237,6 +237,42 @@ describe('solveInterprocTaint — one-hop source→callee-sink', () => {
   });
 });
 
+// #2977: the join key is the callee's declared name, which is not an identity.
+describe('solveInterprocTaint — call-arg edges join CALLS edges by callee name', () => {
+  const sinkingCallee = (fnId: string) =>
+    summary(fnId, { paramCount: 1, paramToSink: [{ param: 0, sinkKind: 'command-injection' }] });
+
+  it('reports a flow into every distinct callee that shares the name', () => {
+    const A = summary('Function:a.ts:A', {
+      paramCount: 0,
+      sourceToCallArg: [
+        { sourceKind: 'remote-input', callLine: 5, argIndex: 0, calleeName: 'process' },
+      ],
+    });
+    const first = sinkingCallee('Method:queue.ts:Queue.process');
+    const second = sinkingCallee('Method:image.ts:Image.process');
+    const r = solveInterprocTaint(map(A, first, second), [
+      { callerId: A.fnId, calleeId: first.fnId, calleeName: 'process' },
+      { callerId: A.fnId, calleeId: second.fnId, calleeName: 'process' },
+    ]);
+    expect(r.findings.map((f) => f.sinkFnId).sort()).toEqual([second.fnId, first.fnId].sort());
+  });
+
+  it('matches every outgoing call when the call-arg edge has no callee name', () => {
+    const A = summary('Function:a.ts:A', {
+      paramCount: 0,
+      sourceToCallArg: [{ sourceKind: 'remote-input', callLine: 5, argIndex: 0 }],
+    });
+    const first = sinkingCallee('Function:b.ts:B');
+    const second = sinkingCallee('Function:c.ts:C');
+    const r = solveInterprocTaint(map(A, first, second), [
+      { callerId: A.fnId, calleeId: first.fnId, calleeName: 'B' },
+      { callerId: A.fnId, calleeId: second.fnId, calleeName: 'C' },
+    ]);
+    expect(r.findings.map((f) => f.sinkFnId).sort()).toEqual([first.fnId, second.fnId].sort());
+  });
+});
+
 describe('solveInterprocTaint — multi-hop TITO', () => {
   it('propagates through a chain a → b → c(sink)', () => {
     const A = summary('Function:a.ts:A', {

@@ -114,6 +114,71 @@ describe('setupClaudeCode', () => {
     await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
   });
 
+  describe('with CLAUDE_CONFIG_DIR set', () => {
+    let configDir: string;
+
+    beforeEach(async () => {
+      // Claude Code reads only the relocated root, so the HOME defaults must
+      // not exist for these cases: anything written there would be invisible.
+      await fs.rm(path.join(tempHome, '.claude'), { recursive: true, force: true });
+      configDir = path.join(tempHome, 'relocated', 'claude');
+      await fs.mkdir(configDir, { recursive: true });
+      process.env.CLAUDE_CONFIG_DIR = configDir;
+    });
+
+    afterEach(() => {
+      // vitest.config.ts pins it to '' so a developer shell's value never leaks in.
+      process.env.CLAUDE_CONFIG_DIR = '';
+    });
+
+    it('writes the MCP entry to $CLAUDE_CONFIG_DIR/.claude.json, not ~/.claude.json', async () => {
+      setPlatform('linux');
+
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+
+      const config = JSON.parse(await fs.readFile(path.join(configDir, '.claude.json'), 'utf-8'));
+      expect(config.mcpServers.gitnexus).toEqual({
+        command: 'npx',
+        args: ['-y', MCP_PINNED_REF, 'mcp'],
+      });
+      await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
+      await expect(fs.access(path.join(tempHome, '.claude'))).rejects.toThrow();
+    });
+
+    it('installs skills and hooks under $CLAUDE_CONFIG_DIR', async () => {
+      setPlatform('linux');
+
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+
+      const skills = await fs.readdir(path.join(configDir, 'skills'));
+      expect(skills.length).toBeGreaterThan(0);
+      await expect(
+        fs.access(path.join(configDir, 'hooks', 'gitnexus', 'gitnexus-hook.cjs')),
+      ).resolves.toBeUndefined();
+      const settings = JSON.parse(
+        await fs.readFile(path.join(configDir, 'settings.json'), 'utf-8'),
+      );
+      expect(JSON.stringify(settings.hooks.PreToolUse)).toContain(
+        path.join(configDir, 'hooks', 'gitnexus').replace(/\\/g, '/'),
+      );
+      expect(logLines()).toContain(path.join(configDir, 'skills'));
+    });
+
+    it('skips Claude Code when $CLAUDE_CONFIG_DIR does not exist, even if ~/.claude does', async () => {
+      await fs.rm(configDir, { recursive: true, force: true });
+      await fs.mkdir(path.join(tempHome, '.claude'), { recursive: true });
+
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
+
+      await expect(fs.access(path.join(configDir, '.claude.json'))).rejects.toThrow();
+      await expect(fs.access(path.join(tempHome, '.claude.json'))).rejects.toThrow();
+      expect(await fs.readdir(path.join(tempHome, '.claude'))).toEqual([]);
+    });
+  });
+
   it('preserves existing keys in ~/.claude.json', async () => {
     setPlatform('linux');
 
@@ -305,26 +370,66 @@ describe('setupClaudeCode', () => {
     });
   });
 
-  it('copies shared hook helpers to ~/.claude/hooks/gitnexus/', async () => {
+  it('installs only a package-entrypoint launcher and removes obsolete helper copies', async () => {
     setPlatform('linux');
+    const destHooksDir = path.join(tempHome, '.claude', 'hooks', 'gitnexus');
+    await fs.mkdir(destHooksDir, { recursive: true });
+    for (const file of [
+      'hook-lock.cjs',
+      'hook-db-lock-probe.cjs',
+      'win-rm-list-json.ps1',
+      'resolve-analyze-cmd.cjs',
+      'registry-query.cjs',
+    ]) {
+      await fs.writeFile(path.join(destHooksDir, file), 'obsolete copy');
+    }
+    await fs.writeFile(path.join(destHooksDir, 'user-note.txt'), 'keep me');
+    await fs.writeFile(path.join(destHooksDir, 'claude-hook-runtime.cjs'), 'user-owned runtime');
 
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    const destHooksDir = path.join(tempHome, '.claude', 'hooks', 'gitnexus');
-    await expect(fs.access(path.join(destHooksDir, 'hook-lock.cjs'))).resolves.toBeUndefined();
-    await expect(
-      fs.access(path.join(destHooksDir, 'hook-db-lock-probe.cjs')),
-    ).resolves.toBeUndefined();
-    await expect(
-      fs.access(path.join(destHooksDir, 'win-rm-list-json.ps1')),
-    ).resolves.toBeUndefined();
-    // The Claude adapter top-level require()s this; without it the installed
-    // hook would crash with MODULE_NOT_FOUND (the antigravity-side bug class).
-    await expect(
-      fs.access(path.join(destHooksDir, 'resolve-analyze-cmd.cjs')),
-    ).resolves.toBeUndefined();
-    await expect(fs.access(path.join(destHooksDir, 'registry-query.cjs'))).resolves.toBeUndefined();
+    expect((await fs.readdir(destHooksDir)).sort()).toEqual([
+      'claude-hook-runtime.cjs',
+      'gitnexus-hook.cjs',
+      'gitnexus-hook.json',
+      'user-note.txt',
+    ]);
+    expect(await fs.readFile(path.join(destHooksDir, 'user-note.txt'), 'utf8')).toBe('keep me');
+    expect(await fs.readFile(path.join(destHooksDir, 'claude-hook-runtime.cjs'), 'utf8')).toBe(
+      'user-owned runtime',
+    );
+    const authoredLauncher = await fs.readFile(
+      path.resolve(__dirname, '../../../gitnexus-claude-plugin/hooks/gitnexus-hook.js'),
+      'utf8',
+    );
+    expect(
+      await fs.readFile(path.resolve(__dirname, '../../dist/cli/claude-hook-launcher.cjs'), 'utf8'),
+      'Run npm run build after editing the authored Claude launcher',
+    ).toBe(authoredLauncher);
+    expect(await fs.readFile(path.join(destHooksDir, 'gitnexus-hook.cjs'), 'utf8')).toBe(
+      authoredLauncher,
+    );
+    expect(
+      JSON.parse(await fs.readFile(path.join(destHooksDir, 'gitnexus-hook.json'), 'utf8')),
+    ).toEqual({
+      version: PKG_VERSION,
+      cliPath: path.resolve(__dirname, '../../dist/cli/index.js'),
+    });
+
+    // Execute the installed launcher with no copied dependencies beside it.
+    const { spawnSync } =
+      await vi.importActual<typeof import('node:child_process')>('node:child_process');
+    const child = spawnSync(process.execPath, [path.join(destHooksDir, 'gitnexus-hook.cjs')], {
+      input: JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Read', cwd: tempHome }),
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { ...process.env, GITNEXUS_DEBUG: 'true' },
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr).toBe(0);
+    expect(child.stdout).toBe('');
+    expect(child.stderr).toBe('');
   });
 
   it('records errors and returns the failed REQUIRED helpers when copies fail', async () => {
@@ -339,16 +444,18 @@ describe('setupClaudeCode', () => {
         'Claude Code hooks',
         result,
       );
-      expect(result.errors.length).toBe(5);
+      expect(result.errors.length).toBe(7);
       expect(result.errors.some((e) => e.includes('resolve-analyze-cmd.cjs'))).toBe(true);
       expect(result.errors.some((e) => e.includes('registry-query.cjs'))).toBe(true);
       expect(result.errors.every((e) => e.startsWith('Claude Code hooks:'))).toBe(true);
       // Only the hard-required .cjs helpers gate registration; win-rm is best-effort.
       expect([...failedRequired].sort()).toEqual([
+        'git-mutation-command.cjs',
         'hook-db-lock-probe.cjs',
         'hook-lock.cjs',
         'registry-query.cjs',
         'resolve-analyze-cmd.cjs',
+        'search-command-pattern.cjs',
       ]);
       expect(failedRequired).not.toContain('win-rm-list-json.ps1');
     } finally {
@@ -368,6 +475,8 @@ describe('setupClaudeCode', () => {
         'hook-db-lock-probe.cjs',
         'resolve-analyze-cmd.cjs',
         'registry-query.cjs',
+        'git-mutation-command.cjs',
+        'search-command-pattern.cjs',
       ]) {
         await fs.writeFile(path.join(srcDir, h), '// stub\n', 'utf-8');
       }
@@ -381,29 +490,40 @@ describe('setupClaudeCode', () => {
     }
   });
 
-  it('does not register the Claude hook when a required helper fails to copy (fail closed)', async () => {
-    setPlatform('linux');
-    const realCopyFile = fs.copyFile.bind(fs);
-    vi.spyOn(fs, 'copyFile').mockImplementation(((src: any, dest: any, ...rest: any[]) => {
-      if (String(src).endsWith('resolve-analyze-cmd.cjs')) {
-        return Promise.reject(new Error('simulated copy failure'));
+  it.each(['entrypoint', 'launcher'])(
+    'does not register the Claude hook when its %s is unavailable',
+    async (unavailable) => {
+      setPlatform('linux');
+      const entrypoint = path.resolve(__dirname, '../../hooks/claude/gitnexus-hook.cjs');
+      const launcher = path.join(tempHome, '.claude', 'hooks', 'gitnexus', 'gitnexus-hook.cjs');
+      if (unavailable === 'entrypoint') {
+        const realAccess = fs.access.bind(fs);
+        vi.spyOn(fs, 'access').mockImplementation(async (file, ...rest) => {
+          if (String(file) === entrypoint) throw new Error('missing entrypoint');
+          return realAccess(file, ...rest);
+        });
+      } else {
+        const realOpen = fs.open.bind(fs);
+        vi.spyOn(fs, 'open').mockImplementation(async (file, ...rest) => {
+          if (String(file).startsWith(`${launcher}.tmp.`)) throw new Error('cannot stage launcher');
+          return realOpen(file, ...rest);
+        });
       }
-      return realCopyFile(src, dest, ...rest);
-    }) as typeof fs.copyFile);
 
-    const { setupCommand } = await import('../../src/cli/setup.js');
-    await setupCommand();
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand();
 
-    // Registration must have been skipped — settings.json must not reference the hook.
-    const settingsPath = path.join(tempHome, '.claude', 'settings.json');
-    let registered = false;
-    try {
-      registered = (await fs.readFile(settingsPath, 'utf-8')).includes('gitnexus-hook.cjs');
-    } catch {
-      registered = false;
-    }
-    expect(registered).toBe(false);
-  });
+      // Registration must have been skipped — settings.json must not reference the hook.
+      const settingsPath = path.join(tempHome, '.claude', 'settings.json');
+      let registered = false;
+      try {
+        registered = (await fs.readFile(settingsPath, 'utf-8')).includes('gitnexus-hook.cjs');
+      } catch {
+        registered = false;
+      }
+      expect(registered).toBe(false);
+    },
+  );
 
   it('falls back to npx on Windows when no .cmd/.bat wrapper is found', async () => {
     setPlatform('win32');
@@ -956,6 +1076,141 @@ describe('Codex hooks (installClaudeSchemaHooks)', () => {
     expect(await fs.readFile(hooksJsonPath(), 'utf-8')).toBe(corrupt);
     expect(logLines()).toContain('Codex hooks: hooks.json is corrupt');
   });
+});
+
+describe.each([
+  { id: 'claude', directory: '.claude', settings: 'settings.json', label: 'Claude Code' },
+  { id: 'codex', directory: '.codex', settings: 'hooks.json', label: 'Codex' },
+] as const)('$label hook installation safety', ({ id, directory, settings, label }) => {
+  let tempHome: string;
+  let settingsPath: string;
+  let hooksDir: string;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-hook-install-'));
+    vi.stubEnv('HOME', tempHome);
+    vi.stubEnv('USERPROFILE', tempHome);
+    vi.stubEnv('CODEX_HOME', undefined);
+    await fs.mkdir(path.join(tempHome, directory));
+    settingsPath = path.join(tempHome, directory, settings);
+    hooksDir = path.join(tempHome, directory, 'hooks', 'gitnexus');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('sets the fresh PreToolUse and PostToolUse timeouts to 150 seconds', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand({ codingAgent: id });
+
+    const config = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+    expect(config.hooks.PreToolUse[0].hooks[0].timeout).toBe(150);
+    expect(config.hooks.PostToolUse[0].hooks[0].timeout).toBe(150);
+    expect(logLines()).not.toContain('migrated timeout');
+  });
+
+  it('reports the 10-second migration and preserves other budgets and JSONC comments', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand({ codingAgent: id });
+    const config = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+    config.hooks.PreToolUse[0].hooks[0].timeout = 10;
+    config.hooks.PostToolUse[0].hooks[0].timeout = 10;
+    config.hooks.PreToolUse[0].hooks.push({ type: 'command', command: 'mine', timeout: 10 });
+    config.hooks.PostToolUse[0].hooks.push({
+      ...config.hooks.PostToolUse[0].hooks[0],
+      timeout: 75,
+    });
+    const original = '// keep this comment\n' + JSON.stringify(config, null, 2);
+    await fs.writeFile(settingsPath, original);
+    vi.mocked(console.log).mockClear();
+
+    await setupCommand({ codingAgent: id });
+
+    const raw = await fs.readFile(settingsPath, 'utf8');
+    expect(raw).toContain('// keep this comment');
+    const { parse, applyEdits, modify } = await import('jsonc-parser');
+    const updated = parse(raw);
+    expect(updated.hooks.PreToolUse[0].hooks[0].timeout).toBe(150);
+    expect(updated.hooks.PostToolUse[0].hooks[0].timeout).toBe(150);
+    expect(updated.hooks.PreToolUse[0].hooks[1].timeout).toBe(10);
+    expect(updated.hooks.PostToolUse[0].hooks[1].timeout).toBe(75);
+    // Only the two timeout spans may change, including their surrounding whitespace.
+    let restored = raw;
+    for (const event of ['PreToolUse', 'PostToolUse']) {
+      restored = applyEdits(
+        restored,
+        modify(restored, ['hooks', event, 0, 'hooks', 0, 'timeout'], 10, {}),
+      );
+    }
+    expect(restored).toBe(original);
+    expect(logLines()).toContain('migrated timeout 10s → 150s (including customized 10s values)');
+  });
+
+  it('does not migrate malformed JSONC even when the parser recovers both registered hooks', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand({ codingAgent: id });
+    const config = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+    config.hooks.PreToolUse[0].hooks[0].timeout = 10;
+    config.hooks.PostToolUse[0].hooks[0].timeout = 10;
+    const malformed = '// preserve me\n' + JSON.stringify(config, null, 2) + '\ninvalid';
+    await fs.writeFile(settingsPath, malformed);
+    vi.mocked(console.log).mockClear();
+
+    await setupCommand({ codingAgent: id });
+
+    expect(await fs.readFile(settingsPath, 'utf8')).toBe(malformed);
+    expect(logLines()).toContain(`${label} hooks: ${settings} is corrupt`);
+    expect(logLines()).not.toContain('migrated timeout');
+    expect(logLines()).not.toContain(`${label} hooks (already configured)`);
+  });
+
+  it.each(['gitnexus-hook.json', 'gitnexus-hook.cjs'])(
+    'preserves a working install when staging %s fails partway through writing',
+    async (failedFile) => {
+      const { setupCommand } = await import('../../src/cli/setup.js');
+      await setupCommand({ codingAgent: id });
+      const launcherPath = path.join(hooksDir, 'gitnexus-hook.cjs');
+      const configPath = path.join(hooksDir, 'gitnexus-hook.json');
+      const launcherBefore = await fs.readFile(launcherPath, 'utf8');
+      const configBefore = await fs.readFile(configPath, 'utf8');
+      const settingsBefore = await fs.readFile(settingsPath, 'utf8');
+      const userFile = path.join(hooksDir, `${failedFile}.tmp.user-owned`);
+      await fs.writeFile(userFile, 'keep me');
+      const realOpen = fs.open.bind(fs);
+      let interrupted = false;
+      vi.spyOn(fs, 'open').mockImplementation(async (file, ...rest) => {
+        const handle = await realOpen(file, ...rest);
+        if (String(file).startsWith(path.join(hooksDir, `${failedFile}.tmp.`))) {
+          const realWrite = handle.writeFile.bind(handle);
+          vi.spyOn(handle, 'writeFile').mockImplementation(async () => {
+            await realWrite('partial bytes');
+            interrupted = true;
+            throw new Error('interrupted staging write');
+          });
+        }
+        return handle;
+      });
+      vi.mocked(console.log).mockClear();
+
+      await setupCommand({ codingAgent: id });
+
+      expect(interrupted).toBe(true);
+      expect(await fs.readFile(launcherPath, 'utf8')).toBe(launcherBefore);
+      expect(await fs.readFile(configPath, 'utf8')).toBe(configBefore);
+      expect(await fs.readFile(settingsPath, 'utf8')).toBe(settingsBefore);
+      expect(await fs.readFile(userFile, 'utf8')).toBe('keep me');
+      expect((await fs.readdir(hooksDir)).sort()).toEqual(
+        ['gitnexus-hook.cjs', 'gitnexus-hook.json', path.basename(userFile)].sort(),
+      );
+      expect(logLines()).toContain('skipping hook registration');
+    },
+  );
 });
 
 describe('setup — non-ENOENT read/stat failures are surfaced, not masked', () => {

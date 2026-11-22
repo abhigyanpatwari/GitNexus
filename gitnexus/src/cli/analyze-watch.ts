@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import { getHeapStatistics } from 'node:v8';
 import { watchFile, unwatchFile } from 'node:fs';
-import { watch, type FSWatcher } from 'chokidar';
+import { loadWatch, type FSWatcher } from './watch-backend.js';
 import { createWatchIgnorePredicate } from '../config/ignore-service.js';
 import {
   analyzeFailureMayHaveMutatedLiveIndex,
@@ -24,7 +24,7 @@ import {
 } from './analyze-config.js';
 import { logger } from '../core/logger.js';
 import type { AnalyzeOptions } from './analyze-options.js';
-import { ensureHeap, usesManualAnalysisHeap } from './analyze.js';
+import { ensureHeap, manualHeapAdmission, usesManualAnalysisHeap } from './analyze.js';
 import { cliError, cliInfo, cliWarn } from './cli-message.js';
 import { parseIntegerOption } from './int-option.js';
 import {
@@ -132,6 +132,7 @@ export async function resolveWatchOptions(
     ['--skills', cli.skills],
     ['--default-branch', cli.defaultBranch],
     ['--skip-agents-md', cli.skipAgentsMd],
+    ['--instruction-file', cli.instructionFile],
     ['--skip-skills', cli.skipSkills],
     ['--no-stats', cli.stats === false],
     ['--self-commit', cli.selfCommit],
@@ -164,6 +165,7 @@ export async function resolveWatchOptions(
       ['dropEmbeddings', config.dropEmbeddings],
       ['defaultBranch', config.defaultBranch],
       ['skipAgentsMd', config.skipAgentsMd !== undefined],
+      ['instructionFile', config.instructionFile !== undefined],
       ['skipSkills', config.skipSkills !== undefined],
       ['stats', config.stats !== undefined],
       ['springActuator', config.springActuator],
@@ -317,6 +319,7 @@ export async function startWatchFileLoop(
   /** Absolute `GITNEXUS_RC` path; its edits, replacements and removal reload config. */
   externalConfigPath?: string,
 ): Promise<WatchFileLoop> {
+  const watch = await loadWatch();
   let ignorePath = await createWatchIgnorePredicate(repoPath);
   let ignoreControlValid = true;
   let rearmPending = false;
@@ -504,12 +507,14 @@ export async function watchCommandWithRunnerIdentity(
     const repoPath = await fs.realpath(requestedRepoPath);
     try {
       const manualHeap = usesManualAnalysisHeap(cliOptions.memoryBudget);
+      const manual = manualHeap ? manualHeapAdmission() : {};
       const admission = resolveHostAnalysisResources({
         totalMb: positiveInteger(cliOptions.resourceBudget, '--resource-budget'),
         mainHeapMb: manualHeap
-          ? Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2)
+          ? manual.mainHeapMb
           : (positiveInteger(cliOptions.memoryBudget, '--memory-budget') ??
             positiveInteger(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB, 'admitted main heap')),
+        mainHeapLimitMb: manual.mainHeapLimitMb,
         workers: positiveInteger(cliOptions.workers, '--workers'),
         includeEmbeddings: await analysisMayEmbed(repoPath, { branch: cliOptions.branch }),
         supervisorBytes:

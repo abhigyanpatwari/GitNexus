@@ -49,7 +49,7 @@ import {
   validateBranchName,
   GitNexusRcError,
 } from './analyze-config.js';
-import type { AnalyzeOptions } from './analyze-options.js';
+import { selectedInstructionFiles, type AnalyzeOptions } from './analyze-options.js';
 import {
   parseCliPreparedAnalysis,
   receiveCliAnalysisContinuation,
@@ -62,7 +62,11 @@ import {
   analysisSupervisorReservation,
   resolveHostAnalysisResources,
 } from '../core/analysis-host-resources.js';
-import type { AnalysisResourceBudget } from '../core/analysis-resource-budget.js';
+import {
+  isConstrainedPdgBuild,
+  type AnalysisResourceBudget,
+} from '../core/analysis-resource-budget.js';
+import { hostGlibcVersion } from '../core/lbug/native-check.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import {
@@ -618,6 +622,20 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
 }
 
 /**
+ * How an analyze that will not re-exec itself states its main heap for
+ * admission. A pinned `--max-old-space-size` is the operator's reservation and
+ * must fit. V8's own default limit (the autopilot declined, nothing pinned) is
+ * only a ceiling: reserving it in full refuses every host below about 15.8 GiB.
+ */
+export function manualHeapAdmission(): { mainHeapMb?: number; mainHeapLimitMb?: number } {
+  const limitMb = Math.ceil(v8.getHeapStatistics().heap_size_limit / 1024 ** 2);
+  const pinned =
+    parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
+    parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') !== null;
+  return pinned ? { mainHeapMb: limitMb } : { mainHeapLimitMb: limitMb };
+}
+
+/**
  * Last `--max-old-space-size` value (MB) in a NODE_OPTIONS string, or `null`
  * when absent/unparseable. Last occurrence wins, matching V8's own
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
@@ -758,6 +776,7 @@ export async function ensureHeap(
     cleanForwardedTermination?: boolean;
     memoryBudget?: string;
     admittedHeapMb?: number;
+    limitMallocArenas?: boolean;
   } = {},
 ): Promise<boolean> {
   const nodeOpts = process.env.NODE_OPTIONS || '';
@@ -877,7 +896,7 @@ async function respawnWithHeap(
   source: HeapLimitSource | undefined,
   oomGuidance: string,
   nodeOpts: string,
-  options: { cleanForwardedTermination?: boolean },
+  options: { cleanForwardedTermination?: boolean; limitMallocArenas?: boolean },
 ): Promise<boolean> {
   // --stack-size is a V8 flag not allowed in NODE_OPTIONS on Node 24+, so pass it
   // only as a direct CLI argument. --max-semi-space-size IS allowed in NODE_OPTIONS.
@@ -893,7 +912,7 @@ async function respawnWithHeap(
   // the child fight the parent for the debug port and die with EADDRINUSE.
   const preservedExecArgv = process.execArgv.filter((a) => !a.startsWith('--inspect'));
   const childArgs = [...preservedExecArgv, ...cliFlags, ...process.argv.slice(1)];
-  const childEnv = {
+  const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     NODE_OPTIONS: [nodeOpts, heapFlag, semiFlag].filter(Boolean).join(' ').trim(),
     [HEAP_LIMIT_SOURCE_ENV]: source,
@@ -902,8 +921,19 @@ async function respawnWithHeap(
     GITNEXUS_ANALYSIS_SUPERVISOR_BYTES:
       process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES ?? String(analysisSupervisorReservation()),
   };
+  // glibc reads its arena limit at startup. Apply the default to the graph
+  // writer. The publication/embedding child inherits the caller's policy.
+  const limitWriterArenas =
+    options.limitMallocArenas &&
+    process.platform === 'linux' &&
+    childEnv.MALLOC_ARENA_MAX === undefined &&
+    !/(?:^|:)glibc\.malloc\.arena_max=/.test(childEnv.GLIBC_TUNABLES ?? '') &&
+    hostGlibcVersion() !== null;
   if (shouldBridgeRespawnProgressTty()) childEnv[RESPAWN_PROGRESS_ENV] = '1';
-  let childExit = await runRespawnedAnalyze(childArgs, childEnv);
+  let childExit = await runRespawnedAnalyze(
+    childArgs,
+    limitWriterArenas ? { ...childEnv, MALLOC_ARENA_MAX: '2' } : childEnv,
+  );
   if (
     childExit.status === 0 &&
     !childExit.signal &&
@@ -1405,12 +1435,19 @@ const analyzeCommandImpl = async (
 
   let resources: AnalysisResourceBudget;
   let manualHeap = false;
+  let limitMallocArenas = false;
   try {
     const supervisorBytes =
       process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES === undefined
         ? analysisSupervisorReservation()
         : Number(process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES);
     manualHeap = usesManualAnalysisHeap(options.memoryBudget);
+    const supervisedHeapMb =
+      process.env.GITNEXUS_ANALYSIS_SUPERVISED === '1' &&
+      process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB !== undefined
+        ? Number(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB)
+        : undefined;
+    const manual = manualHeap && supervisedHeapMb === undefined ? manualHeapAdmission() : {};
     resources = resolveHostAnalysisResources({
       totalMb:
         options.resourceBudget === undefined
@@ -1419,12 +1456,8 @@ const analyzeCommandImpl = async (
       mainHeapMb:
         options.memoryBudget !== undefined
           ? parseMemoryBudgetMb(options.memoryBudget)
-          : process.env.GITNEXUS_ANALYSIS_SUPERVISED === '1' &&
-              process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB !== undefined
-            ? Number(process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB)
-            : manualHeap
-              ? Math.ceil(v8.getHeapStatistics().heap_size_limit / 1024 ** 2)
-              : undefined,
+          : (supervisedHeapMb ?? manual.mainHeapMb),
+      mainHeapLimitMb: manual.mainHeapLimitMb,
       workers: workerPoolSize,
       includeEmbeddings: await analysisMayEmbed(repoPath, {
         embeddings: embeddingsEnabled,
@@ -1439,11 +1472,13 @@ const analyzeCommandImpl = async (
     // a nested heap respawn with a slightly different allocation.
     process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB = String(resources.mainHeapMb);
     process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES = String(supervisorBytes);
+    limitMallocArenas = isConstrainedPdgBuild(options.pdg, resources);
     if (
       !manualHeap &&
       (await ensureHeap({
         memoryBudget: options.memoryBudget,
         admittedHeapMb: resources.mainHeapMb,
+        limitMallocArenas,
       }))
     )
       return;
@@ -1746,6 +1781,8 @@ const analyzeCommandImpl = async (
       verbose: options.verbose,
       skipGit: options.skipGit,
       skipAgentsMd,
+      instructionFile: options.instructionFile,
+      refreshCounts: true,
       skipSkills,
       // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
       pdg: options.pdg === true,
@@ -1813,13 +1850,14 @@ const analyzeCommandImpl = async (
     // further down) writes to them, so selfCommitContextFiles can tell a
     // pre-existing unstaged user edit apart from this run's stats refresh
     // and refuse to sweep the former into the latter's commit.
+    const contextFiles = selectedInstructionFiles(options.instructionFile);
     const selfCommitSafety = continuation?.prepared.selfCommitSafety
       ? new Map([
           ['AGENTS.md', continuation.prepared.selfCommitSafety.agentsMd],
           ['CLAUDE.md', continuation.prepared.selfCommitSafety.claudeMd],
         ])
-      : options.selfCommit === true
-        ? snapshotSelfCommitSafety(repoPath, ['AGENTS.md', 'CLAUDE.md'])
+      : !continuation && options.selfCommit === true
+        ? snapshotSelfCommitSafety(repoPath, contextFiles)
         : undefined;
     const result = continuation
       ? {
@@ -1860,22 +1898,34 @@ const analyzeCommandImpl = async (
       // on the next invocation unless we check the registry here too.
       await assertAnalysisFinalized(repoPath, result.storagePath);
       // The fast path skips context regeneration, but a changed `.gitnexusrc`
-      // defaultBranch / `--default-branch` must still take effect. Surgically
-      // refresh just the `base_ref` line in AGENTS.md/CLAUDE.md in place,
+      // defaultBranch / `--default-branch` must still take effect, and so must
+      // `--no-stats` on an index that is already up to date (#3618). Surgically
+      // refresh the `base_ref` and counts lines in AGENTS.md/CLAUDE.md in place,
       // preserving the rest of the block (incl. --skills community rows). No-op
-      // when the value already matches, so a routine up-to-date run is silent
+      // when the values already match, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
-      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the flat
-      // WORKSPACE index (#2106 R2, #2354). A pinned --branch sub-index's
-      // up-to-date analyze must not churn the committed AGENTS.md — this
-      // mirrors the in-pipeline `if (!placement.branch)` gate around
-      // generateAIContextFiles.
+      // Only refresh the repo-root AGENTS.md/CLAUDE.md for the flat WORKSPACE
+      // index (#2106 R2, #2354). A pinned --branch sub-index's up-to-date
+      // analyze must not churn the committed AGENTS.md — this mirrors the
+      // in-pipeline `if (!placement.branch)` gate around generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
+      let statsRefreshed: string[] = [];
       if (result.isPrimaryBranch !== false) {
         try {
-          const { refreshBaseRefLine } = await import('./ai-context.js');
+          const { refreshBaseRefLine, refreshStatsLine } = await import('./ai-context.js');
           baseRefRefreshed = (
-            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, { skipAgentsMd })
+            await refreshBaseRefLine(repoPath, resolvedDefaultBranch, {
+              skipAgentsMd,
+              instructionFile: options.instructionFile,
+            })
+          ).files;
+          statsRefreshed = (
+            await refreshStatsLine(repoPath, result.stats, {
+              noStats: options.stats === false,
+              skipAgentsMd,
+              instructionFile: options.instructionFile,
+              refreshCounts: true,
+            })
           ).files;
         } catch {
           /* best-effort — never fail the fast path over a context refresh */
@@ -1901,10 +1951,15 @@ const analyzeCommandImpl = async (
           `  Updated regression-review target to "${resolvedDefaultBranch}" in ${baseRefRefreshed.join(', ')}\n`,
         );
       }
+      if (statsRefreshed.length > 0) {
+        console.log(
+          `  ${options.stats === false ? 'Omitted' : 'Updated'} volatile counts in ${statsRefreshed.join(', ')}\n`,
+        );
+      }
       // #2639: opt-in self-commit of any AGENTS.md/CLAUDE.md churn from this
       // fast path (e.g. a base_ref refresh above). Best-effort — never throws.
       if (options.selfCommit === true && selfCommitSafety) {
-        selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+        selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
       }
       // Safe to return without process.exit(0) — the early-return path in
       // runFullAnalysis never opens LadybugDB, so no native handles prevent exit.
@@ -1948,48 +2003,30 @@ const analyzeCommandImpl = async (
         );
         if (skillResult.skills.length > 0) {
           barLog(`  Generated ${skillResult.skills.length} skill files`);
-          // Re-generate AI context files now that we have skill info
-          const s = result.stats;
-          const communityResult = result.pipelineResult?.communityResult;
-          let aggregatedClusterCount = 0;
-          if (communityResult?.communities) {
-            const groups = new Map<string, number>();
-            for (const c of communityResult.communities) {
-              const label = c.heuristicLabel || c.label || 'Unknown';
-              groups.set(label, (groups.get(label) || 0) + c.symbolCount);
-            }
-            aggregatedClusterCount = Array.from(groups.values()).filter(
-              (count: number) => count >= 5,
-            ).length;
-          }
-          await generateAIContextFiles(
-            repoPath,
-            result.storagePath,
-            result.repoName,
-            {
-              files: s.files ?? 0,
-              nodes: s.nodes ?? 0,
-              edges: s.edges ?? 0,
-              communities: s.communities,
-              clusters: aggregatedClusterCount,
-              processes: s.processes,
-            },
-            skillResult.skills,
-            {
-              skipAgentsMd,
-              skipSkills,
-              // Same resolved branch as the main run (#243) so the --skills
-              // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
-              // to "main".
-              defaultBranch: resolvedDefaultBranch,
-              // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
-              // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
-              noStats: options.stats === false,
-              hasPdg: options.pdg === true,
-              hasSpringActuator: options.springActuator !== undefined,
-            },
-          );
         }
+        // An empty inventory clears links to previously generated community skills.
+        await generateAIContextFiles(
+          repoPath,
+          result.storagePath,
+          result.repoName,
+          result.stats,
+          skillResult.skills,
+          {
+            skipAgentsMd,
+            instructionFile: options.instructionFile,
+            refreshCounts: true,
+            skipSkills,
+            // Same resolved branch as the main run (#243) so the --skills
+            // re-generation of AGENTS.md/CLAUDE.md does not revert base_ref
+            // to "main".
+            defaultBranch: resolvedDefaultBranch,
+            // Mirror runFullAnalysis `noStats` bridge (#1477) — same expression;
+            // exercised on the `--skills` path by analyze-no-stats-bridge.test.ts.
+            noStats: options.stats === false,
+            hasPdg: options.pdg === true,
+            hasSpringActuator: options.springActuator !== undefined,
+          },
+        );
       } catch {
         /* best-effort */
       }
@@ -2018,7 +2055,7 @@ const analyzeCommandImpl = async (
     // runFullAnalysis, and/or the --skills regeneration above). Best-effort
     // — never throws, so a missing git identity etc. can't fail `analyze`.
     if (options.selfCommit === true && selfCommitSafety) {
-      selfCommitContextFiles(repoPath, ['AGENTS.md', 'CLAUDE.md'], selfCommitSafety);
+      selfCommitContextFiles(repoPath, contextFiles, selfCommitSafety);
     }
 
     const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
@@ -2110,7 +2147,7 @@ const analyzeCommandImpl = async (
         manualHeap ? (process.env[HEAP_LIMIT_SOURCE_ENV] as HeapLimitSource | undefined) : 'auto',
         'Analysis exceeded its resource budget.',
         process.env.NODE_OPTIONS ?? '',
-        {},
+        { limitMallocArenas },
       );
       return;
     }

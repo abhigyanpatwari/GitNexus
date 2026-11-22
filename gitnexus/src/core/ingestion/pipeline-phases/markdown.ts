@@ -11,6 +11,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import { processMarkdown } from '../markdown-processor.js';
+import { isIndexedDocumentationPath } from '../utils/documentation-path.js';
 import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
 import { isDev } from '../utils/env.js';
@@ -33,7 +34,7 @@ export const markdownPhase: PipelinePhase<MarkdownOutput> = {
   ): Promise<MarkdownOutput> {
     const { scannedFiles, allPathSet } = getPhaseOutput<StructureOutput>(deps, 'structure');
 
-    const mdScanned = scannedFiles.filter((f) => f.path.endsWith('.md') || f.path.endsWith('.mdx'));
+    const mdScanned = scannedFiles.filter((f) => isIndexedDocumentationPath(f.path));
 
     if (mdScanned.length === 0) {
       return { sections: 0, links: 0 };

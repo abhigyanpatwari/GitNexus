@@ -1,0 +1,5 @@
+Package: pkgF
+Version: 1
+Depends:
+    R (>= 4.0),
+    pkgD

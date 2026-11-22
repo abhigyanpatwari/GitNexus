@@ -13,6 +13,29 @@ entries. The count arm remains 138 call drops and 168 total drops.
 Earlier entries below retain their original measurement contracts and source pins;
 member-name-only RESOLVES claims in those entries are historical.
 
+## Java receiver and generated dependency ownership (#3955)
+
+Java `indexElement` (`repos[0].save()` with a `User[] repos` parameter) moves
+VISIBLE-GAP -> RESOLVES with the exact `User.save` target, because the Java
+provider now implements `elementTypeOf` for arrays. Every other shape state is
+unchanged.
+
+The count arm moves from 140 to 153 call drops (`.java` 50 -> 63) and from 174
+to 187 drops of all kinds; reads stay at 34 and writes at zero. All 13 new
+drops are Java call sites that `receiver-bound-calls` records without a
+receiver shape or origin, so `<<unclassified>>` moves 13 -> 26 by shape and
+2 -> 15 by origin.
+
+- Nine are calls on JDK receivers that had no edge before either:
+  `data.values()`, `opt.get()`, `out.put(...)` and six `inputs.stream()` calls
+  in `java-method-reference`. They now leave a drop record instead of nothing.
+- Four are for-each `save` calls in `java-foreach` and `java-foreach-call-expr`.
+  The count arm runs every fixture as one repository, where `models.User` is
+  declared in 20 fixture directories and `models.Repo` in 10, so the element
+  owner is not unique and the call is refused. Run alone, each fixture keeps
+  both edges; these four drops come from the duplicate declarations in the
+  merged corpus.
+
 ## api_impact indirect-consumers fixture (#3644)
 
 The new `api-impact-indirect-consumers` fixture adds three `receiver-unresolved`
@@ -56,10 +79,13 @@ other language's cells are unchanged.
   chain walker reads `element_reference`, so it is VISIBLE-GAP there; Ruby
   still has no `elementTypeOf`.
 - Each Ruby function names its parameter after its cell (`plain_svc`,
-  `deep_svc`, ...). YARD `@param` bindings land on the Module scope, so with a
-  shared `svc` an untyped function resolves through a sibling's tag. A probe
-  showed exactly that, in either order. This is an existing product limit,
-  not fixed here and not yet filed separately.
+  `deep_svc`, ...). When this entry was measured, YARD `@param` bindings landed
+  on the Module scope, so with a shared `svc` an untyped function resolved
+  through a sibling's tag; a probe showed exactly that, in either order. Fixed
+  by #3871 (RUBY-01): the binding-target guard keeps the tag on the declaring
+  method and types only a formal parameter the body never rebinds. No bench
+  cell shares a parameter name with a sibling, so no cell measured the leak
+  and the Ruby rows are unchanged by the fix.
 - **One untyped control per language.** JavaScript and Ruby gain an extra id,
   `untypedChain`: the old untyped `plainChain` body, which reads VISIBLE-GAP.
   `save` exists on both `User` and `Address`, so an edge there would be a
@@ -1518,3 +1544,9 @@ Main `c30449394` is merged normally. The regenerated baseline is byte-identical 
 ### Typed shape bodies on the #3667 stack parent
 
 The validated #3667 head `fb6316b90` is merged normally. Outside the three receiver-resolution bench files the source is byte-identical to that parent. The regenerated baseline is byte-identical to the textual merge. Against the parent, only this branch's cells move: JavaScript `plainChain`, `plainDeepChain`, `optionalChain` and `awaitParen`, Ruby `plainChain` and `optionalChain`, and PHP `plainDeepChain` and `optionalChain` go to RESOLVES; the JavaScript and Ruby `untypedChain` controls read VISIBLE-GAP; the three C dispatch cells go to N/A. Ruby `plainDeepChain`, PHP `arrowCallChain` and every `indexElement` cell keep the parent's states. Ruby `indexElement` is VISIBLE-GAP from the parent's walker change. Its `idx_repos` now carries a YARD element type, but Ruby has no `elementTypeOf`. The count arm equals the parent: 138 call drops, 168 across all kinds, 30 reads and zero writes, with 57 in-program, 49 unknown, 30 external and 2 unclassified origins. Fresh package build, both pinned TypeScript configurations and the receiver benchmark update and check pass on the combined source.
+
+### R receiver typing and rename-guard fixtures (#3513)
+
+The R audit fixes add R fixtures whose untyped receivers end as `receiver-unresolved` drops: a constructor that types a name only when every binding of it agrees, typed private members, dotted class names and `with()` limits. The count arm moves from 141 to 161 call drops and from 175 to 195 across all kinds; reads (34) and writes (0) are unchanged. All 21 added drops are `.R` files (`callDropsByExtension..R` goes from absent to 21), and no other extension moves from the R change (the net is 20 because the merged Dart awaited-call fix, #3876, removed one `.dart` drop: no-chain and unknown each lose one). By shape: chain-field 57 to 64, no-chain 39 to 41, chain-call 31 to 34 and unclassified 13 to 21. By origin: in-program 53 to 60, unknown 64 to 69 and unclassified 2 to 10; external stays 22. The bench counts only `suppressed` outcomes with the reason `receiver-unresolved`, so the movement is that reason alone. No R arm is added to the shape corpora; only the count-arm numbers change. The baseline was refreshed with `--update-baseline` and `--check` passes.
+
+After merging upstream `40c69665e`, the combined fixture tree records 174 unresolved receiver calls and 34 unresolved reads. R accounts for 21 calls. The additional 13 calls come from upstream Java fixtures.

@@ -129,16 +129,23 @@ export const zhCN = {
     'diff 触及 {{files}} 个文件，但没有索引符号与这些 hunk 重叠 — 并非干净工作区。',
   'tool.detectChanges.partial':
     '结果不完整：变更符号或流程映射不完整。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.partialCheck': '结果不完整：变更分析未完成。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.keywordCoverage': '调用兼容性检查不完整：{{examples}}',
   'tool.detectChanges.unmappedSource':
     '变更源码文件未映射到符号：{{files}}。请重建索引并检查 diff；仅重试可能无法解决符号缺失或源码范围不匹配。',
   'tool.detectChanges.truncated':
-    '列表已截断：已变更符号列表被截断，未列出全部变更符号。计数与风险等级仍涵盖全部符号。',
+    '列表已截断：一个或多个结果列表未完整显示。计数涵盖全部已观测结果。',
   'tool.detectChanges.truncatedDegraded':
-    '列表已截断：已变更符号列表被截断。本次运行同时不完整，因此计数为下限而非总数。',
+    '列表已截断：一个或多个结果列表未完整显示。本次运行不完整，因此计数为下限。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',
   'tool.detectChanges.unknownRisk': '未知',
+  'tool.detectChanges.docSections': '更改的文档章节：{{count}}',
+  'tool.detectChanges.indexedHeadings':
+    '本次审查使用索引中的 Markdown 标题。如果在索引后添加或移动了标题，请运行 gitnexus analyze --index-only 后重新审查。',
+  'tool.detectChanges.incompatibleCalls': '不兼容的调用：',
+  'tool.detectChanges.removedKeyword': '  {{file}}:{{line}} — {{name}} 不再接受关键字 {{keyword}}',
   'tool.detectChanges.changedSymbols': '已变更符号：',
   'tool.detectChanges.overflowMore': '... 以及另外 {{count}} 个',
   'tool.detectChanges.affectedExecutionFlows': '受影响执行流程：',
@@ -259,6 +266,7 @@ export const zhCN = {
     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
   'help.option.analyze.skills':
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
+  'help.option.analyze.instructionFile': '仅更新指定的说明文件（AGENTS.md 或 CLAUDE.md）',
   'help.option.analyze.skipAgentsMd':
     '跳过更新 AGENTS.md 和 CLAUDE.md 中的 gitnexus 区块。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
   'help.option.analyze.noStats': '从 AGENTS.md 和 CLAUDE.md 中省略易变的文件/符号计数',

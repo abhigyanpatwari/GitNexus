@@ -134,7 +134,12 @@ export function interningMetrics(report) {
   }
   return ['ms', 'cpuMs', 'hydrateCpuMs'].map((key) => ({
     name: key === 'hydrateCpuMs' ? 'deserialize+intern/cpuMs' : 'intern/' + key,
-    ...assessPairs(pairs.map((p) => ({ baseline: p.baseline[key], candidate: p.candidate[key] }))),
+    ...assessPairs(
+      pairs.map((p) => ({
+        baseline: p.baseline[key] + (key === 'hydrateCpuMs' ? p.baseline.cpuMs : 0),
+        candidate: p.candidate[key] + (key === 'hydrateCpuMs' ? p.candidate.cpuMs : 0),
+      })),
+    ),
   }));
 }
 
@@ -159,7 +164,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const lines = [
     '## Cache interning and indexing performance',
     '',
-    'Warm-up samples excluded; execution order alternates. Times in ms.',
+    'Warm-up samples excluded; execution order alternates. Times in ms. Interning process IDs, GC flags and local warmups are recorded per sample when available.',
     '',
     '| Measurement | Base median | Candidate median | Median change | Median paired change | Result |',
     '| --- | ---: | ---: | ---: | ---: | --- |',
@@ -178,7 +183,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     ),
     '',
     'A slowdown above 5% in either the overall median or median paired ratio of any timed metric fails. This is a regression budget, not a statistical confidence claim. Persistent pairs share processes. CPU includes GC threads active during the timed work; forced GC between rounds is excluded. Peak RSS is cumulative and descriptive. Shard graph/byte/pool equality and persisted edit targets must match. Incomplete or invalid measurements fail.',
-    "Raw hydrateCpuMs measures deserialization plus interning. Raw analysisPeakRssKiB is the process-lifetime RSS high-water mark captured before the current sample's graph verification; earlier samples can set it. Persistent RSS can include earlier snapshot serialization and is excluded from performance comparisons. It is not an interval peak.",
+    "Raw hydrateCpuMs measures deserialization only; deserialize+intern/cpuMs adds cpuMs. Raw analysisPeakRssKiB is the process-lifetime RSS high-water mark captured before the current sample's graph verification; earlier samples can set it. Persistent RSS can include earlier snapshot serialization and is excluded from performance comparisons. It is not an interval peak.",
     '',
   ];
   const markdown = lines.join('\n');

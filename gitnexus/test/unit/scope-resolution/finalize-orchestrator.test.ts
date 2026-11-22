@@ -67,7 +67,7 @@ describe('finalizeScopeModel: empty input', () => {
     expect(out.qualifiedNames.size).toBe(0);
     expect(out.moduleScopes.size).toBe(0);
     expect(out.methodDispatch.mroByOwnerDefId.size).toBe(0);
-    expect(out.imports.size).toBe(0);
+    expect([...out.imports.scopes()]).toEqual([]);
     expect(out.bindings.size).toBe(0);
     expect(out.referenceSites).toEqual([]);
     expect(out.sccs).toEqual([]);
@@ -79,6 +79,25 @@ describe('finalizeScopeModel: empty input', () => {
 // ─── Single file ───────────────────────────────────────────────────────────
 
 describe('finalizeScopeModel: single file', () => {
+  it('forwards the associative merge opt-in to crowded module binding materialization', () => {
+    const defs = Array.from({ length: 64 }, (_, i) => ({
+      ...mkDef(`def:C${i}.run`, 'app.dart', `C${i}.run`),
+      ownerId: `class:${i}`,
+    }));
+    const file = mkFile('app.dart', { localDefs: defs });
+    const sizes: number[] = [];
+    const out = finalizeScopeModel([file], {
+      hooks: {
+        mergeBindingsAreAssociative: true,
+        mergeBindings: (existing, incoming) => {
+          sizes.push(existing.length + incoming.length);
+          return [...existing, ...incoming];
+        },
+      },
+    });
+    expect(out.bindings.get(file.moduleScope)?.get('run')).toHaveLength(64);
+    expect(sizes).toEqual([64]);
+  });
   it('builds all per-file indexes from a single ParsedFile', () => {
     const userClass = mkDef('def:User', 'models.ts', 'models.User');
     const file = mkFile('models.ts', {
@@ -153,7 +172,7 @@ describe('finalizeScopeModel: cross-file imports', () => {
       },
     });
 
-    const appImports = out.imports.get(appFile.moduleScope) ?? [];
+    const appImports = out.imports.edgesAt(appFile.moduleScope) ?? [];
     expect(appImports).toHaveLength(1);
     expect(appImports[0]!.linkStatus).toBeUndefined();
     expect(appImports[0]!.targetFile).toBe('models.ts');
@@ -182,7 +201,7 @@ describe('finalizeScopeModel: cross-file imports', () => {
       },
     });
 
-    const edge = out.imports.get(appFile.moduleScope)?.[0];
+    const edge = out.imports.edgesAt(appFile.moduleScope)?.[0];
     expect(edge?.kind).toBe('namespace');
     expect(edge?.linkStatus).toBeUndefined();
     expect(edge?.targetModuleScope).toBe(modelsFile.moduleScope);
@@ -201,7 +220,7 @@ describe('finalizeScopeModel: cross-file imports', () => {
     const appFile = mkFile('app.ts', { parsedImports: [importOfUser] });
 
     const out = finalizeScopeModel([appFile]);
-    const appImports = out.imports.get(appFile.moduleScope) ?? [];
+    const appImports = out.imports.edgesAt(appFile.moduleScope) ?? [];
     expect(appImports).toHaveLength(1);
     expect(appImports[0]!.linkStatus).toBe('unresolved');
   });

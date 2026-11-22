@@ -62,6 +62,8 @@ import {
   LIST_STORAGE_REQUIREMENTS,
   requireDeletableStoragePath,
   StorageDeletionError,
+  type DiscoveryMetadataCache,
+  type DiscoveryStorage,
   type StorageInspection,
   validateConfiguredStoragePath,
 } from './storage-resolver.js';
@@ -197,6 +199,9 @@ export interface RegistryEntry {
    */
   shareOptOut?: true;
 }
+
+/** A listing row carries evidence from this validation pass only. */
+export type DiscoveredRegistryEntry = RegistryEntry & { discovery?: DiscoveryStorage };
 
 /** Path-only registry lookup. Canonicalizes `repoPath` once. Does not throw. */
 export const findRegistryEntryByRepoPath = (
@@ -1729,16 +1734,24 @@ export const findRegistryEntryByName = (
  * I/O storm cannot make the registry disappear; it remains unconfirmed until a
  * later validating read succeeds.
  */
-export const listRegisteredRepos = async (opts?: {
+export function listRegisteredRepos(opts: {
+  validate: true;
+  discovery: DiscoveryMetadataCache;
+}): Promise<DiscoveredRegistryEntry[]>;
+export function listRegisteredRepos(opts?: { validate?: boolean }): Promise<RegistryEntry[]>;
+export async function listRegisteredRepos(opts?: {
   validate?: boolean;
-}): Promise<RegistryEntry[]> => {
+  discovery?: DiscoveryMetadataCache;
+}): Promise<DiscoveredRegistryEntry[]> {
   const entries = await readRegistry();
   if (!opts?.validate) return entries;
+  const discovery = opts.discovery;
+  discovery?.retainSlots(entries);
 
   // Validate each entry through the shared storage resolver. The registry's
   // storagePath is intentional here: GITNEXUS_STORAGE_PATH must not redirect
   // validation of an explicitly registered repository to another slot.
-  const valid: RegistryEntry[] = [];
+  const valid: DiscoveredRegistryEntry[] = [];
   // Keep the exact inspected registry slot, not just the repository path.
   // A concurrent analyze may re-register the same checkout into another
   // external slot while this read-only validation walk is in flight.
@@ -1751,24 +1764,33 @@ export const listRegisteredRepos = async (opts?: {
       inspection.state === 'empty' ||
       (inspection.state === 'unowned' &&
         inspection.reason === 'Storage directory contains data but no valid ownership metadata.'));
-  const inspections = await mapPool(entries, inspectRegisteredStorage, 8);
+  const inspections = await mapPool(
+    entries,
+    (entry) => inspectRegisteredStorage(entry, discovery),
+    8,
+  );
   for (const [entry, inspection] of entries.map(
     (entry, i) => [entry, inspections[i]] as [RegistryEntry, (typeof inspections)[number]],
   )) {
     const meetsRequirements =
       LIST_STORAGE_REQUIREMENTS.allowedStates.includes(inspection.state) &&
       (!LIST_STORAGE_REQUIREMENTS.requireCodeIndexDB || inspection.hasCodeIndexDB);
-    if (meetsRequirements) {
-      valid.push(entry);
+    if (meetsRequirements || isTransientStorageInspection(inspection)) {
+      // A transient filesystem failure keeps the row visible, without evidence
+      // of usable storage. Only this inspection can supply that evidence.
+      if (discovery) {
+        const row: DiscoveredRegistryEntry = { ...entry };
+        if (meetsRequirements && inspection.discovery) row.discovery = inspection.discovery;
+        else delete row.discovery;
+        valid.push(row);
+      } else {
+        valid.push(entry);
+      }
     } else if (isSafelyPrunable(inspection)) {
       // A missing/empty directory or a registry slot with no ownership
       // metadata is not a usable index. Removing only the registry row is
       // safe; the storage directory itself is never deleted here.
       prunedSlots.add(registrySlotKey(entry));
-    } else if (isTransientStorageInspection(inspection)) {
-      // Not provably absent or invalid. Keep the old safety behavior for
-      // EIO/EAGAIN/EBUSY/EACCES-style filesystem failures.
-      valid.push(entry);
     } else {
       logger.warn(
         {
@@ -1819,7 +1841,7 @@ export const listRegisteredRepos = async (opts?: {
   }
 
   return valid;
-};
+}
 
 // ─── Global CLI Config (~/.gitnexus/config.json) ─────────────────────────
 

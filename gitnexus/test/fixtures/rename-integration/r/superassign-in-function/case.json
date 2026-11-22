@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse to rename a function that another function re-assigns globally with <<-, as the top-level <<- form is refused.",
+  "categories": ["superassignment", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "install.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "ambiguous_reference", "planningStatus": "blocked" },
+  "edges": []
+}

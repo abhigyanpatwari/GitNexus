@@ -199,6 +199,15 @@ function extractDartParameters(node: SyntaxNode): ParameterInfo[] {
 }
 
 /**
+ * Parameters of a bare `formal_parameter_list` — a closure's
+ * (`function_expression`), which carries the list as a direct child rather
+ * than inside a signature node, so `extractParameters` cannot reach it.
+ */
+export function extractDartFormalParameterList(listNode: SyntaxNode): ParameterInfo[] {
+  return extractParamsFromList(listNode, false);
+}
+
+/**
  * Extract ParameterInfo entries from a formal_parameter_list or optional_formal_parameters node.
  */
 function extractParamsFromList(listNode: SyntaxNode, isOptionalBlock: boolean): ParameterInfo[] {
@@ -235,6 +244,17 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
     if (child && TYPE_NODE_TYPES.has(child.type)) {
       rawTypeName = child.text?.trim() ?? null;
       typeName = extractSimpleTypeName(child) ?? rawTypeName;
+      // The grammar represents `prefix.Type` as two type_identifier siblings.
+      // Keeping only the first would bind the parameter to the prefix itself.
+      const member = param.namedChild(i + 1);
+      if (
+        child.type === 'type_identifier' &&
+        member?.type === 'type_identifier' &&
+        child.nextSibling?.type === '.'
+      ) {
+        typeName = `${child.text}.${member.text}`;
+        rawTypeName = typeName;
+      }
       break;
     }
     // Also check type_identifier
@@ -257,7 +277,7 @@ function extractSingleParam(param: SyntaxNode, isOptionalBlock: boolean): Parame
   }
   // 2. In tree-sitter-dart, `required` may be an anonymous sibling token
   //    immediately preceding the formal_parameter inside optional_formal_parameters.
-  if (!hasRequired) {
+  if (isOptionalBlock && !hasRequired) {
     let prev = param.previousSibling;
     // Skip comma separators
     while (prev && !prev.isNamed && prev.text.trim() === ',') {

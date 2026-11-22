@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -40,13 +40,12 @@ function fixture(artifacts: Artifact[]) {
       actions: {
         listWorkflowRunArtifacts,
         downloadArtifact,
-        listWorkflowRuns: vi.fn(async () => ({ data: { workflow_runs: [{ id: 123 }] } })),
       },
     },
     // Octokit's paginate returns the flattened artifact array, unlike the REST response.
     paginate: vi.fn(async () => artifacts),
   };
-  const core = { warning: vi.fn(), info: vi.fn(), setOutput: vi.fn() };
+  const core = { warning: vi.fn() };
   const context = {
     repo: { owner: 'owner', repo: 'repo' },
     payload: { workflow_run: { id: 456 } },
@@ -89,13 +88,39 @@ describe('CI report artifact discovery', () => {
     expect(api.core.warning).not.toHaveBeenCalled();
   });
 
-  it.each([0, 130])('finds base coverage after %i unrelated artifacts', async (count) => {
-    const api = fixture([...precedingArtifacts(count), { id: 1000, name: 'test-reports' }]);
-
-    await api.run('Fetch base branch coverage');
-
-    expect(readFileSync(path.join(temp, 'base-coverage', 'base.zip'), 'utf8')).toBe('archive-1000');
-    expect(api.core.setOutput).toHaveBeenCalledWith('found', 'true');
+  it.skipIf(process.platform === 'win32')('renders test results without coverage artifacts', () => {
+    const dir = path.join(temp, 'artifacts', 'test-reports');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      path.join(dir, 'test-results.json'),
+      JSON.stringify({
+        numTotalTests: 2,
+        numPassedTests: 2,
+        numFailedTests: 0,
+        numPendingTests: 0,
+        numTotalTestSuites: 1,
+        startTime: 1000,
+        testResults: [{ endTime: 2000 }],
+      }),
+    );
+    const script = steps.find((step) => step.name === 'Build report')?.run;
+    if (!script) throw new Error('Missing Build report step');
+    const output = path.join(temp, 'outputs');
+    execFileSync('bash', ['-e', '-o', 'pipefail', '-c', script], {
+      env: {
+        ...process.env,
+        RUNNER_TEMP: temp,
+        GITHUB_OUTPUT: output,
+        TESTS: 'success',
+        QUALITY: 'success',
+        E2E: 'skipped',
+      },
+    });
+    const report = readFileSync(output, 'utf8');
+    expect(report).toContain('Quality, tests and applicable E2E checks passed');
+    expect(report).toContain('All **2** tests passed');
+    expect(report).not.toContain('All checks passed');
+    expect(report).not.toMatch(/coverage/i);
   });
 
   it.skipIf(process.platform === 'win32')(

@@ -62,7 +62,10 @@ import { canonicalTypeScriptName } from '../typescript/identifiers.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { vueProvider } from '../vue.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
-import { typescriptModuleExports } from '../typescript/module-exports.js';
+import {
+  ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
+  typescriptModuleExports,
+} from '../typescript/module-exports.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { typescriptArityCompatibility, typescriptMergeBindings } from '../typescript/index.js';
 import { makeVueResolveImportTarget } from './import-target.js';
@@ -133,6 +136,7 @@ const vueScopeResolver: ScopeResolver = {
   // Vue SFC scripts are TypeScript/JavaScript: a named import binds a module-level
   // declaration, never a class member (see the TS resolver).
   namedImportsBindTopLevelOnly: true,
+  wildcardReexportExcludedNames: ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
 
   /**
    * Expand the scope-resolution file universe for Vue by performing a
@@ -240,7 +244,8 @@ const vueScopeResolver: ScopeResolver = {
 
       // Build localName → resolved targetFile from finalized import edges.
       const importTargetByName = new Map<string, string>();
-      for (const [scopeId, edges] of indexes.imports) {
+      for (const scopeId of indexes.imports.scopes()) {
+        const edges = indexes.imports.edgesAt(scopeId) ?? [];
         const scope = indexes.scopeTree.getScope(scopeId);
         if (scope?.filePath !== parsedFile.filePath) continue;
         for (const edge of edges) {

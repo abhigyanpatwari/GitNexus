@@ -64,6 +64,7 @@ def test_graph_environment_is_offline_deterministic_and_ignores_target_gitignore
         sanitized_graph.GRAPH_WORKER_READY_TIMEOUT_MS
     )
     assert int(env["GITNEXUS_WORKER_READY_TIMEOUT_MS"]) >= 60_000
+    assert int(env["GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS"]) == 120_000
     assert "ANTHROPIC_API_KEY" not in env
 
 

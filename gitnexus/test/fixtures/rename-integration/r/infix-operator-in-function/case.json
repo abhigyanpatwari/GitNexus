@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse an infix function used inside another function.",
+  "categories": ["operator", "infix", "negative", "unchanged-on-error"],
+  "target": { "name": "`%||%`", "kind": "Function", "file": "or.R", "startLine": 0 },
+  "newName": "or_else",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

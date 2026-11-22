@@ -11,7 +11,6 @@ on:
 
 permissions:
   actions: read # needed to list/download workflow run artifacts
-  contents: read # needed for sparse checkout of vitest.config.ts
   pull-requests: write # needed to post sticky PR comment
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
@@ -128,91 +127,6 @@ jobs:
             echo "e2e=$(validate_result "$DIR/e2e_result")"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Checkout (for vitest config)
-        if: steps.meta.outputs.skip != 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          sparse-checkout: gitnexus/vitest.config.ts
-          sparse-checkout-cone-mode: false
-
-      # ── Fetch base branch coverage for delta reporting ───────────
-      - name: Fetch base branch coverage
-        if: steps.meta.outputs.skip != 'true'
-        id: base-coverage
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v7
-        with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-
-            // Find recent successful CI runs on main (check several in case
-            // the most recent artifact has expired).
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'ci.yml',
-              branch: 'main',
-              status: 'success',
-              per_page: 5,
-            });
-
-            if (runs.data.workflow_runs.length === 0) {
-              core.setOutput('found', 'false');
-              core.info('No successful main branch CI runs found');
-              return;
-            }
-
-            // Try each run until we find a downloadable test-reports artifact
-            for (const run of runs.data.workflow_runs) {
-              const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                run_id: run.id,
-                per_page: 100,
-              });
-
-              const testReports = artifacts.find(a => a.name === 'test-reports');
-              if (!testReports) {
-                core.info(`Run ${run.id}: no test-reports artifact, trying next`);
-                continue;
-              }
-
-              try {
-                const zip = await github.rest.actions.downloadArtifact({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  artifact_id: testReports.id,
-                  archive_format: 'zip',
-                });
-
-                const dest = path.join(process.env.RUNNER_TEMP, 'base-coverage');
-                fs.mkdirSync(dest, { recursive: true });
-                fs.writeFileSync(path.join(dest, 'base.zip'), Buffer.from(zip.data));
-                core.setOutput('found', 'true');
-                core.setOutput('dir', dest);
-                return;
-              } catch (err) {
-                // 410 Gone means the artifact expired; try the next run
-                if (err.status === 410 || err.response?.status === 410) {
-                  core.info(`Run ${run.id}: artifact expired, trying next`);
-                  continue;
-                }
-                throw err;
-              }
-            }
-
-            // All attempts exhausted — no usable base coverage
-            core.setOutput('found', 'false');
-            core.info('No downloadable test-reports artifact found on main (all expired or missing)');
-
-      - name: Extract base coverage
-        if: steps.meta.outputs.skip != 'true' && steps.base-coverage.outputs.found == 'true'
-        shell: bash
-        run: |
-          cd "${{ steps.base-coverage.outputs.dir }}"
-          mkdir -p base
-          unzip -o base.zip -d base
-
       - name: Build report
         if: steps.meta.outputs.skip != 'true'
         id: report
@@ -221,74 +135,16 @@ jobs:
           QUALITY: ${{ steps.meta.outputs.quality }}
           TESTS: ${{ steps.meta.outputs.tests }}
           E2E: ${{ steps.meta.outputs.e2e }}
-          BASE_FOUND: ${{ steps.base-coverage.outputs.found }}
-          BASE_DIR: ${{ steps.base-coverage.outputs.dir }}
           RUN_URL: ${{ github.event.workflow_run.html_url }}
         run: |
           DIR="$RUNNER_TEMP/artifacts"
 
-          # ── Helper: read coverage summary into prefixed vars ──
-          read_cov() {
-            local prefix=$1 file=$2
-            if [ -n "$file" ] && [ -f "$file" ]; then
-              local val
-              val=$(jq -r '.total.statements.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
-              printf -v "${prefix}_STMTS" '%s' "$val"
-              val=$(jq -r '.total.branches.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
-              printf -v "${prefix}_BRANCH" '%s' "$val"
-              val=$(jq -r '.total.functions.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
-              printf -v "${prefix}_FUNCS" '%s' "$val"
-              val=$(jq -r '.total.lines.pct // "N/A"' "$file" 2>/dev/null) || val="N/A"
-              printf -v "${prefix}_LINES" '%s' "$val"
-              val=$(jq -r '"\(.total.statements.covered)/\(.total.statements.total)"' "$file" 2>/dev/null) || val=""
-              printf -v "${prefix}_STMTS_COV" '%s' "$val"
-              val=$(jq -r '"\(.total.branches.covered)/\(.total.branches.total)"' "$file" 2>/dev/null) || val=""
-              printf -v "${prefix}_BRANCH_COV" '%s' "$val"
-              val=$(jq -r '"\(.total.functions.covered)/\(.total.functions.total)"' "$file" 2>/dev/null) || val=""
-              printf -v "${prefix}_FUNCS_COV" '%s' "$val"
-              val=$(jq -r '"\(.total.lines.covered)/\(.total.lines.total)"' "$file" 2>/dev/null) || val=""
-              printf -v "${prefix}_LINES_COV" '%s' "$val"
-              return 0
-            else
-              printf -v "${prefix}_STMTS" '%s' "N/A"
-              printf -v "${prefix}_BRANCH" '%s' "N/A"
-              printf -v "${prefix}_FUNCS" '%s' "N/A"
-              printf -v "${prefix}_LINES" '%s' "N/A"
-              printf -v "${prefix}_STMTS_COV" '%s' ""
-              printf -v "${prefix}_BRANCH_COV" '%s' ""
-              printf -v "${prefix}_FUNCS_COV" '%s' ""
-              printf -v "${prefix}_LINES_COV" '%s' ""
-              return 0
-            fi
-          }
-
-          # ── Helper: first matching file, tolerating an absent root ──
-          # `coverage-merge` (ci-tests.yml) is `needs: tests` with no
-          # `if: always()`, so a failing shard skips it and the `test-reports`
-          # artifact is never uploaded.  A bare `find` on the missing directory
-          # exits 1; `-o pipefail` carries that through `| head -1` and `-e`
-          # then killed this step — silently, because stderr is discarded and
-          # stdout is redirected to $GITHUB_OUTPUT.  That skipped "Comment on
-          # PR" and failed the run precisely when a PR had failing tests, which
-          # is when the report matters most.  Degrade to "" instead so the
-          # coverage-unavailable fallback below can do its job.
+          # Failed shards can leave the run without a test-reports artifact.
           find_first() {
             local root=$1 name=$2
             [ -d "$root" ] || return 0
             find "$root" -name "$name" -type f 2>/dev/null | head -1 || true
           }
-
-          # ── Read coverage reports ──
-          UNIT_SUMMARY=$(find_first "$DIR/test-reports" "coverage-summary.json")
-
-          read_cov "U" "$UNIT_SUMMARY"
-
-          # ── Read base branch coverage (main) ──
-          BASE_SUMMARY=""
-          if [ "$BASE_FOUND" = "true" ] && [ -n "$BASE_DIR" ]; then
-            BASE_SUMMARY=$(find_first "$BASE_DIR/base" "coverage-summary.json")
-          fi
-          read_cov "B" "$BASE_SUMMARY"
 
           # ── Locate test results ──
           RESULTS_FILE=$(find_first "$DIR/test-reports" "test-results.json")
@@ -336,50 +192,11 @@ jobs:
             esac
           }
 
-          # Validate a value looks like a number (integer or decimal, optional
-          # leading minus).  Returns 1 for anything else — guards against awk
-          # injection when artifact values come from untrusted fork code.
-          is_numeric() { [[ "$1" =~ ^-?[0-9]+(\.[0-9]+)?$ ]]; }
-
-          cov_delta() {
-            local pct=$1 base=$2
-            if [ "$pct" = "N/A" ] || [ "$base" = "N/A" ]; then echo "—"; return; fi
-            if ! is_numeric "$pct" || ! is_numeric "$base"; then echo "—"; return; fi
-            local diff
-            diff=$(awk -v p="$pct" -v b="$base" 'BEGIN { printf "%.1f", p - b }')
-            if [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p > b) ? 1 : 0 }')" = "1" ]; then
-              echo "📈 +${diff}"
-            elif [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p < b) ? 1 : 0 }')" = "1" ]; then
-              echo "📉 ${diff}"
-            else
-              echo "＝ ${diff}"
-            fi
-          }
-
-          cov_bar() {
-            local pct=$1 base=$2
-            if [ "$pct" = "N/A" ] || ! is_numeric "$pct"; then echo "—"; return; fi
-            local filled
-            filled=$(awk -v p="$pct" 'BEGIN { printf "%d", p / 5 }')
-            (( filled < 0 )) && filled=0
-            (( filled > 20 )) && filled=20
-            local empty=$((20 - filled))
-            local bar=""
-            for ((i=0; i<filled; i++)); do bar+="█"; done
-            for ((i=0; i<empty; i++)); do bar+="░"; done
-            # Green if >= base (or base unavailable), red if dropped
-            if [ "$base" = "N/A" ] || ! is_numeric "$base" || [ "$(awk -v p="$pct" -v b="$base" 'BEGIN { print (p >= b) ? 1 : 0 }')" = "1" ]; then
-              echo "🟢 ${bar}"
-            else
-              echo "🔴 ${bar}"
-            fi
-          }
-
           # ── Overall status ──
           if [[ "$QUALITY" == "success" && "$TESTS" == "success" && ("$E2E" == "success" || "$E2E" == "skipped") ]]; then
-            OVERALL="✅ **All checks passed**"
+            OVERALL="✅ **Quality, tests and applicable E2E checks passed**"
           else
-            OVERALL="❌ **Some checks failed**"
+            OVERALL="❌ **Quality, tests or E2E checks failed or did not finish**"
           fi
 
           # ── Build markdown ──
@@ -429,36 +246,6 @@ jobs:
                 echo ""
                 echo "</details>"
               fi
-              echo ""
-            fi
-
-            # ── Coverage table helper ──
-            cov_table() {
-              local label=$1 s=$2 b=$3 f=$4 l=$5 sc=$6 bc=$7 fc=$8 lc=$9
-              shift 9
-              local bs=$1 bb=$2 bf=$3 bl=$4
-              echo "#### ${label}"
-              echo ""
-              echo "| Metric | Coverage | Covered | Base | Delta | Status |"
-              echo "|--------|----------|---------|------|-------|--------|"
-              echo "| Statements | **${s}%** | ${sc} | ${bs}% | $(cov_delta "$s" "$bs") | $(cov_bar "$s" "$bs") |"
-              echo "| Branches | **${b}%** | ${bc} | ${bb}% | $(cov_delta "$b" "$bb") | $(cov_bar "$b" "$bb") |"
-              echo "| Functions | **${f}%** | ${fc} | ${bf}% | $(cov_delta "$f" "$bf") | $(cov_bar "$f" "$bf") |"
-              echo "| Lines | **${l}%** | ${lc} | ${bl}% | $(cov_delta "$l" "$bl") | $(cov_bar "$l" "$bl") |"
-              echo ""
-            }
-
-            if [ "$U_STMTS" != "N/A" ]; then
-              echo "### Code Coverage"
-              echo ""
-              cov_table "Tests" \
-                "$U_STMTS" "$U_BRANCH" "$U_FUNCS" "$U_LINES" \
-                "$U_STMTS_COV" "$U_BRANCH_COV" "$U_FUNCS_COV" "$U_LINES_COV" \
-                "$B_STMTS" "$B_BRANCH" "$B_FUNCS" "$B_LINES"
-            else
-              echo "### Code Coverage"
-              echo ""
-              echo "⚠️ Coverage data unavailable - check the [unit test job](${RUN_URL}) for details."
               echo ""
             fi
 

@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a plain function called twice in one expression; a comment mentioning the name is untouched.",
+  "categories": ["call-graph", "same-file", "comments"],
+  "target": { "name": "helper", "kind": "Function", "file": "chain.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "success", "edits": 3 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "step", "kind": "Function", "file": "chain.R", "startLine": 2 },
+      "to": { "name": "helper", "kind": "Function", "file": "chain.R", "startLine": 0 }
+    }
+  ]
+}

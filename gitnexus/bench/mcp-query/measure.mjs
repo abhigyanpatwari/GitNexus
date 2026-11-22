@@ -61,6 +61,8 @@ const runtimes = Object.fromEntries(
   }),
 );
 const repo = path.join(out, 'repo');
+/** Main heap (MiB) for building each 64-file fixture index. */
+const INDEX_HEAP_MB = '1024';
 const env = {
   PATH: process.env.PATH,
   HOME: process.env.HOME,
@@ -312,11 +314,15 @@ try {
     for (const variant of ['baseline', 'candidate']) {
       const runtimeEnv = runtimeEnvs[variant];
       fs.writeSync(log, `\n${variant} index (${runtimes[variant].sha})\n`);
-      execFileSync(process.execPath, [runtimes[variant].cli, 'analyze', repo, '--index-only'], {
-        cwd: repo,
-        env: runtimeEnv,
-        stdio: ['ignore', log, log],
-      });
+      // Indexing is setup, outside the timing window. Give it an explicit heap
+      // so admission does not depend on the runner's RAM or on the runtime's
+      // default heap policy: with GITNEXUS_MEMORY=off, a runtime that reserves
+      // V8's default limit refuses hosts reporting under about 15.8 GiB.
+      execFileSync(
+        process.execPath,
+        [runtimes[variant].cli, 'analyze', repo, '--index-only', '--memory-budget', INDEX_HEAP_MB],
+        { cwd: repo, env: runtimeEnv, stdio: ['ignore', log, log] },
+      );
       const metadata = JSON.parse(
         fs.readFileSync(path.join(runtimeEnv.GITNEXUS_STORAGE_PATH, 'gitnexus.json'), 'utf8'),
       );

@@ -7,12 +7,16 @@
  */
 
 import { resolveGraphPath } from '../../storage/shared-store.js';
+import { BRANCHES_DIR, branchSlug } from '../../storage/branch-index.js';
+import { mapPool } from '../../storage/map-pool.js';
+import { DiscoveryMetadataCache } from '../../storage/storage-resolver.js';
 import { relationshipIntegrityForCaller } from '../../core/graph/relationship-integrity.js';
 import fs from 'fs/promises';
 import path from 'path';
 import { createHash } from 'crypto';
 import {
   scoreImpactRisk,
+  GLOBAL_NAME_FALLBACK_REASON,
   unusedAxesForImpactWalk,
   getLanguageFromFilename,
   blockedRenameResult,
@@ -59,10 +63,13 @@ import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug
 import type { BM25SearchResult } from '../../core/search/bm25-index.js';
 import { chunk, mapConcurrent } from '../../lib/utils.js';
 import { pathSuffixOf } from './path-predicate.js';
-import { isCobolFile, isJclFile } from '../../core/ingestion/cobol/file-types.js';
+import type {
+  CallCompatibilityProvider,
+  CallCompatibilityTarget,
+} from '../../core/ingestion/call-compatibility.js';
 import { toOneBasedLine } from '../../core/ingestion/utils/line-base.js';
+import { isIndexedDocumentationPath } from '../../core/ingestion/utils/documentation-path.js';
 import { isTestFilePath } from '../../core/ingestion/utils/test-file-path.js';
-import { isTemplateRouteCandidate } from '../../core/ingestion/utils/template-file.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -86,6 +93,7 @@ import {
   loadMeta,
   RegistryAmbiguousTargetError,
   type RegistryEntry,
+  type DiscoveredRegistryEntry,
   type BranchSummary,
 } from '../../storage/repo-manager.js';
 import {
@@ -189,11 +197,6 @@ import { scopeExtractionFailureTotal } from '../../core/ingestion/scope-resoluti
 import { lookupCount } from '../../core/ingestion/scope-resolution/summary-maps.js';
 import { VALUE_REF_EDGE_REASON } from '../../core/ingestion/scope-resolution/value-ref-edges.js';
 import {
-  DART_PACKAGE_IDENTITY_REASON,
-  DEFERRED_IMPORT_REASON_SUFFIX,
-  TYPE_ONLY_IMPORT_REASON_SUFFIX,
-} from '../../core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
-import {
   fnLineOf,
   isPdgDegradedLayerStatus,
   makePdgImpactErrorResult,
@@ -215,6 +218,8 @@ import {
   type PdgBridgeEvidenceInfo,
   type PdgLayerStatus,
 } from './pdg-impact.js';
+
+const loadQueryProviders = () => import('../../core/ingestion/languages/query-providers.js');
 
 /**
  * Candidate `type`s that label enrichment newly populates (#2687). Before that,
@@ -730,6 +735,19 @@ function compareImpactFrontierEdges(a: ImpactFrontierEdge, b: ImpactFrontierEdge
  * `detect_changes` safety gate) MUST set that result-level signal — `warn`
  * alone is not a substitute for an honest result.
  */
+/**
+ * `assertSymbolIdentity` as a predicate, for scans that degrade on a corrupt
+ * identity instead of failing the whole call. Same rule, one definition.
+ */
+function hasSymbolIdentity(id: unknown): id is string {
+  try {
+    assertSymbolIdentity(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
   if (isBenignMissingTableError(err)) {
@@ -1196,45 +1214,12 @@ async function callableValueReferenceBoundaries(
   const referrers = rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
   if (!Number.isFinite(referrers) || referrers <= 0) return { notes: [], referrers: 0 };
 
-  // Registrations whose invocation side the analyzer ALREADY synthesized are
-  // not a gap. `emitPropertyDispatchCalls` sweep 2 connects `x.<key>()` member
-  // calls to every function registered under `<key>` and stamps those edges
-  // `property-dispatch`; where that happened, the walk did not "provably miss"
-  // the caller and `lower-bound` would be noise sprayed over an answer the
-  // analyzer actually computed. Zig — the case this was built for — never sets
-  // a property key (no object-literal key to dispatch through), so it is never
-  // excluded here; the exclusion exists to keep TypeScript/JavaScript hook
-  // tables that ARE followed from being downgraded.
-  //
-  // SYMBOL-LEVEL, NOT PER-EDGE, and that is only sound because of an invariant
-  // that lives nowhere near this line. The graph does not record which
-  // registration produced which synthesized call, so if one symbol could carry
-  // both a followed and an unfollowed registration, this would zero the note
-  // over a gap the analyzer provably did not close — #3399 returning through a
-  // side door. Today no symbol can:
-  //
-  //   - sweep 2 synthesizes CALLS only for a registration whose site carried a
-  //     `propertyKey` (sweep 1 skips the index when it is undefined);
-  //   - every JS/TS `@reference.value-ref` rule also captures
-  //     `@reference.property-key` — both are object-literal shapes;
-  //   - no Zig `@reference.value-ref` rule captures one.
-  //
-  // So a dispatchable registration is always a JS/TS one, an undispatchable
-  // registration is always a Zig one, and the two never meet on one symbol.
-  // `test/unit/scope-resolution/value-ref-dispatchability.test.ts` FAILS the day
-  // that stops holding — a JS/TS rule for a bare callback argument
-  // (`register(handler)`), a Zig rule that grows a key. When it does, the
-  // choice to make here is between (a) splitting the edge `reason` into
-  // dispatchable / undispatchable so this probe can count them apart, and
-  // (b) hedging any symbol with an undispatchable registration regardless of
-  // dispatch. (a) is precise and costs a graph-content change; (b) is cheap and
-  // over-hedges. What is NOT acceptable is leaving this as-is, because a signal
-  // that quietly stops firing is the defect this whole feature removes.
-  //
-  // Given the invariant, the residual today is only the coarseness of the
-  // exclusion within JS/TS, and hedging every property-value registration in
-  // every JS/TS codebase is worse: a signal that fires on everything stops
-  // carrying information, and the fan-out cap warning still sits behind it.
+  // A property-dispatch CALLS edge proves the walk followed a registration.
+  // The exclusion is symbol-wide because the graph does not link a synthesized
+  // call to its individual registration. This relies on each provider capturing
+  // all of a symbol's value references with property keys, or all without.
+  // value-ref-dispatchability.test.ts guards that invariant. Mixed registrations
+  // would require per-edge evidence or a conservative lower bound.
   const dispatched = await executeParameterized(
     lbugPath,
     `MATCH (other)-[r:CodeRelation]->(sym)
@@ -1420,7 +1405,7 @@ interface ProcessRow {
 export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): string[] | null {
   // The prefix flags pin the `a/` + `b/` forms `parseDiffHunks` matches on.
   // Without them git honours the user's config: `diff.noprefix` emits
-  // `+++ f.py` and `diff.mnemonicPrefix` emits `+++ w/f.py`, either of which
+  // `+++ file` and `diff.mnemonicPrefix` emits `+++ w/file`, either of which
   // parses to ZERO files — the user's git config silently turning the
   // pre-commit gate into "No changes detected." (#2915). Use the src/dst pair,
   // not `--default-prefix`, which needs git >= 2.42. `--no-ext-diff` stops a
@@ -1447,7 +1432,9 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
     case 'all':
       return [...args, 'HEAD', '-U0'];
     case 'compare':
-      return baseRef ? [...args, baseRef, '-U0'] : null;
+      return typeof baseRef === 'string' && baseRef.length > 0 && !baseRef.startsWith('-')
+        ? [...args, '-U0', '--end-of-options', baseRef, '--']
+        : null;
     case 'unstaged':
     default:
       return [...args, '-U0'];
@@ -1663,6 +1650,8 @@ export interface RepoListing {
   contentRetention?: 'full' | 'symbol' | 'none';
   sourceAvailable?: boolean;
 }
+
+type DiscoveryHandle = RepoHandle & Pick<RepoListing, 'contentRetention'>;
 
 /** Continuation metadata for the paginated `list_repos` MCP tool (#2119). */
 export interface ListReposPagination {
@@ -1888,6 +1877,9 @@ export class LocalBackend {
 
   private static readonly TOOL_STALENESS_TTL_MS = 5000;
   private repos: Map<string, RepoHandle> = new Map();
+  private readonly discoveryMetadata = new DiscoveryMetadataCache();
+  private registryRefreshSequence = 0;
+  private publishedRegistryRefresh = 0;
   private contextCache: Map<string, CodebaseContext> = new Map();
   private initializedRepos: Set<string> = new Set();
   private reinitPromises: Map<string, Promise<void>> = new Map();
@@ -2161,17 +2153,28 @@ export class LocalBackend {
   /**
    * Re-read the global registry and update the in-memory repo map.
    * New repos are added, existing repos are updated, removed repos are pruned.
-   * LadybugDB connections for removed repos are NOT closed (they idle-timeout naturally).
+   * Return this request's snapshot even if a later refresh has already published.
    */
-  private async refreshRepos(): Promise<void> {
-    const entries = await listRegisteredRepos({ validate: true });
+  private async refreshRepos(
+    discovery?: DiscoveryMetadataCache,
+  ): Promise<Map<string, DiscoveryHandle>> {
+    const sequence = ++this.registryRefreshSequence;
+    const entries: DiscoveredRegistryEntry[] = discovery
+      ? await listRegisteredRepos({ validate: true, discovery })
+      : await listRegisteredRepos({ validate: true });
+    // Transient inspection failures establish neither a graph replacement nor
+    // source availability. A clone's name-derived id can move on refresh.
+    const priorByCheckout =
+      discovery && entries.some((entry) => !entry.discovery)
+        ? new Map(Array.from(this.repos.values(), (handle) => [handle.repoPath, handle]))
+        : undefined;
 
     // Build the next map from scratch and swap it in atomically. Mutating the
     // live map in place let stale entries influence fresh id assignment: a
     // bare-name id, once handed to the first registry entry, stuck to it across
     // refreshes and reorders, and colliding path suffixes silently overwrote
     // each other so sibling clones disappeared from `list_repos` (#2054).
-    const nextRepos = new Map<string, RepoHandle>();
+    const nextRepos = new Map<string, DiscoveryHandle>();
     const nextContext = new Map<string, CodebaseContext>();
     const assigned = new Map<string, string>(); // id -> resolved repo path
 
@@ -2196,9 +2199,13 @@ export class LocalBackend {
       const id = this.assignRepoId(entry.name, entry.path, resolved, assigned);
 
       const storagePath = entry.storagePath;
-      const lbugPath = resolveGraphPath(storagePath);
+      const prior = priorByCheckout?.get(entry.path);
+      const inspectedGraph = discovery && entry.discovery?.graphPath;
+      const lbugPath =
+        inspectedGraph ??
+        (prior?.storagePath === storagePath ? prior.lbugPath : resolveGraphPath(storagePath));
 
-      const handle: RepoHandle = {
+      const handle: DiscoveryHandle = {
         id,
         name: entry.name,
         repoPath: entry.path,
@@ -2210,6 +2217,7 @@ export class LocalBackend {
         stats: entry.stats,
         branch: entry.branch,
         branches: entry.branches,
+        ...(discovery && { contentRetention: entry.discovery?.contentRetention ?? 'none' }),
       };
 
       nextRepos.set(id, handle);
@@ -2227,6 +2235,11 @@ export class LocalBackend {
       });
     }
 
+    // A slow, earlier validation may finish after another request published a
+    // newer snapshot. It may still render its own page, but cannot evict a
+    // pool or restore a handle from the superseded registry.
+    if (sequence < this.publishedRegistryRefresh) return nextRepos;
+
     // Prune per-clone pool state for databases that are no longer registered.
     // The LadybugDB pool and the init/staleness/reinit maps are keyed by the
     // immutable lbugPath (see ensureInitialized), so a repo id that merely
@@ -2235,13 +2248,15 @@ export class LocalBackend {
     // the resolve→query wrong-clone window for good (#2067). Only a path that
     // dropped out of the registry must release its pooled connection + state.
     const liveLbugPaths = new Set([...nextRepos.values()].map((h) => h.lbugPath));
-    // Branch pools (opened on demand by applyBranchScope) are NOT in this.repos
-    // — branch handles are minted fresh and discarded — so add every registered
-    // branch's lbugPath to the live set. Pure string work over the already-in-
-    // memory registry snapshot; no disk I/O on this hot path (#2106 R3).
-    for (const entry of entries) {
-      for (const b of entry.branches ?? []) {
-        liveLbugPaths.add(getStoragePaths(entry.path, b.branch, entry.storagePath).lbugPath);
+    // Branch pools live in the pin's own slot, including private generations.
+    // Only an opened slot needs its current graph pointer resolved for eviction.
+    if (this.initializedRepos.size > 0) {
+      const openSlots = new Set(Array.from(this.initializedRepos, (key) => path.dirname(key)));
+      for (const entry of entries) {
+        for (const b of entry.branches ?? []) {
+          const slot = path.join(entry.storagePath, BRANCHES_DIR, branchSlug(b.branch));
+          if (openSlots.has(slot)) liveLbugPaths.add(resolveGraphPath(slot));
+        }
       }
     }
     // initializedRepos is the authoritative set of OPENED pool keys (flat AND
@@ -2263,6 +2278,8 @@ export class LocalBackend {
 
     this.repos = nextRepos;
     this.contextCache = nextContext;
+    this.publishedRegistryRefresh = sequence;
+    return nextRepos;
   }
 
   /**
@@ -2864,99 +2881,82 @@ export class LocalBackend {
   }
 
   /**
-   * List all registered repos with their metadata.
-   * Re-reads the global registry so newly indexed repos are discovered
-   * without restarting the MCP server.
-   *
-   * Each entry includes:
-   *   - `staleness`: if the indexed clone's own HEAD has moved past
-   *     the recorded `lastCommit` (option D in the issue's fix list).
-   *   - `siblings`: other registered entries sharing the same
-   *     `remoteUrl` (option B's payoff: callers can see at a glance
-   *     that another clone of the same logical repo is registered).
-   *   - `remoteUrl`: the canonical origin URL recorded at index time.
+   * Full repository listing for resources and startup messages. Preserve its
+   * path order while the paginated tool sorts by name and path.
    */
-  async listRepos(): Promise<RepoListing[]> {
-    await this.refreshRepos();
-    const handles = [...this.repos.values()];
+  async listRepos(visible?: (repoPath: string) => boolean): Promise<RepoListing[]> {
+    return (await this.discoverRepos(visible)).repositories;
+  }
 
-    // Pre-group registered handles by `remoteUrl` so the sibling
-    // lookup is O(1) per handle. We reuse the in-memory `this.repos`
-    // (already populated by `refreshRepos`) instead of doing a fresh
-    // `readRegistry()` per entry — that would be N file reads for N
-    // registered repos.
-    const isWin = process.platform === 'win32';
-    const norm = (p: string) => (isWin ? path.resolve(p).toLowerCase() : path.resolve(p));
-    const byRemote = new Map<string, RepoHandle[]>();
-    for (const h of handles) {
+  private async discoverRepos(
+    visible?: (repoPath: string) => boolean,
+    page?: { limit: number; offset: number },
+  ): Promise<{ repositories: RepoListing[]; total: number }> {
+    const snapshot = await this.refreshRepos(this.discoveryMetadata);
+    const handles = [...snapshot.values()];
+    const allowed = visible ? handles.filter((h) => visible(h.repoPath)) : handles;
+
+    // Keep every visible clone available for sibling references, including
+    // those on other pages. Preserve the current path order within each group.
+    const byRemote = new Map<string, DiscoveryHandle[]>();
+    for (const h of allowed) {
       if (!h.remoteUrl) continue;
-      const list = byRemote.get(h.remoteUrl) ?? [];
-      list.push(h);
-      byRemote.set(h.remoteUrl, list);
+      const group = byRemote.get(h.remoteUrl);
+      if (group) group.push(h);
+      else byRemote.set(h.remoteUrl, [h]);
     }
 
-    // Check staleness for all repos in parallel instead of sequentially.
-    // Each check spawns an async `git rev-list` — with 200 repos the sync
-    // variant took ~50 s; parallel async brings it under a second (#1363).
-    const listing = await Promise.all(
-      handles.map(async (h) => {
-        const [stale, meta] = await Promise.all([
-          checkStalenessAsync(h.repoPath, h.lastCommit),
-          loadMeta(h.storagePath).catch(() => null),
-        ]);
-        const contentRetention = contentRetentionFromMeta(meta);
-        const sourceAvailable = isFullSourceAvailable(
-          contentRetention,
-          contentRetention === 'full' ? await checkoutIsDirectory(h.repoPath) : false,
-        );
-        return { h, stale, source: { contentRetention, sourceAvailable } };
-      }),
-    );
+    let selected = allowed;
+    if (page) {
+      allowed.sort(
+        (a, b) =>
+          compareCodeUnits(a.name.toLowerCase(), b.name.toLowerCase()) ||
+          compareCodeUnits(a.repoPath, b.repoPath),
+      );
+      selected = allowed.slice(page.offset, page.offset + page.limit);
+    }
 
-    return listing.map(({ h, stale, source }) => {
-      const selfNorm = norm(h.repoPath);
-      const siblings = h.remoteUrl
-        ? (byRemote.get(h.remoteUrl) ?? []).filter((e) => norm(e.repoPath) !== selfNorm)
-        : [];
-      return {
-        name: h.name,
-        path: h.repoPath,
-        indexedAt: h.indexedAt,
-        lastCommit: h.lastCommit,
-        remoteUrl: h.remoteUrl,
-        stats: h.stats,
-        staleness: stalenessPayload(stale, { includeUnknown: true }),
-        siblings:
-          siblings.length > 0
-            ? siblings.map((s) => ({
-                name: s.name,
-                path: s.repoPath,
-                lastCommit: s.lastCommit,
+    const repositories = await mapPool<DiscoveryHandle, RepoListing>(
+      selected,
+      async (h) => {
+        const contentRetention = h.contentRetention ?? 'none';
+        const siblings = h.remoteUrl
+          ? byRemote.get(h.remoteUrl)?.filter((s) => path.relative(s.repoPath, h.repoPath) !== '')
+          : undefined;
+        const checkoutIsDir =
+          contentRetention === 'full' ? await checkoutIsDirectory(h.repoPath) : false;
+        return {
+          name: h.name,
+          path: h.repoPath,
+          indexedAt: h.indexedAt,
+          lastCommit: h.lastCommit,
+          remoteUrl: h.remoteUrl,
+          stats: h.stats,
+          staleness: { status: 'unknown' },
+          siblings: siblings?.length
+            ? siblings.map((s) => ({ name: s.name, path: s.repoPath, lastCommit: s.lastCommit }))
+            : undefined,
+          branch: h.branch,
+          branches: h.branches?.length
+            ? h.branches.map(({ branch, indexedAt, lastCommit }) => ({
+                branch,
+                indexedAt,
+                lastCommit,
               }))
             : undefined,
-        branch: h.branch,
-        branches:
-          h.branches && h.branches.length > 0
-            ? h.branches.map((b) => ({
-                branch: b.branch,
-                indexedAt: b.indexedAt,
-                lastCommit: b.lastCommit,
-              }))
-            : undefined,
-        storagePath: h.storagePath,
-        contentRetention: source.contentRetention,
-        sourceAvailable: source.sourceAvailable,
-      };
-    });
+          storagePath: h.storagePath,
+          contentRetention,
+          sourceAvailable: isFullSourceAvailable(contentRetention, checkoutIsDir),
+        };
+      },
+      8,
+    );
+    return { repositories, total: allowed.length };
   }
 
   /**
-   * Lightweight registry count for schema-introspection callers that only
-   * need to know "one repo or many?" without paying the full staleness fan-out
-   * cost that listRepos() incurs. Uses the same validated registry
-   * `refreshRepos` / `selectToolRepository` see (`validate: true` prunes
-   * entries whose metadata is provably gone) so tools/list cannot advertise a
-   * multi-repo schema for ENOENT ghosts. No git processes are spawned.
+   * Read validated registry cardinality for schema introspection without
+   * refreshing routing or formatting a repository listing.
    */
   async countRepos(): Promise<number> {
     const entries = await listRegisteredRepos({ validate: true });
@@ -2989,7 +2989,10 @@ export class LocalBackend {
    * Codepoint comparison (not `localeCompare`) keeps page boundaries stable
    * across machines/locales, matching the existing `refreshRepos` ordering.
    */
-  async listReposPage(params?: { limit?: unknown; offset?: unknown } | null): Promise<{
+  async listReposPage(
+    params?: { limit?: unknown; offset?: unknown } | null,
+    visible?: (repoPath: string) => boolean,
+  ): Promise<{
     repositories: RepoListing[];
     pagination: ListReposPagination;
   }> {
@@ -2998,17 +3001,7 @@ export class LocalBackend {
       maxLimit: LIST_REPOS_MAX_LIMIT,
     });
 
-    // One consistent snapshot per call (listRepos refreshes the registry once),
-    // sorted into a stable total order before slicing.
-    const all = await this.listRepos();
-    all.sort(
-      (a, b) =>
-        compareCodeUnits(a.name.toLowerCase(), b.name.toLowerCase()) ||
-        compareCodeUnits(a.path, b.path),
-    );
-
-    const total = all.length;
-    const repositories = all.slice(offset, offset + limit);
+    const { repositories, total } = await this.discoverRepos(visible, { limit, offset });
     const returned = repositories.length;
     const hasMore = offset + returned < total;
 
@@ -3486,37 +3479,8 @@ export class LocalBackend {
     }
     await this.ensureInitialized(repo);
     const rowLimit = 100_001;
-    // determinism: probe — overflow guard, not a window. The one-past cap is compared for exact equality below
-    // and the whole result is REPLACED by an error, so a truncated page never reaches a caller.
-    const rows = await executeParameterized(
-      repo.lbugPath,
-      // A cycle here means "these modules cannot be initialized in any order".
-      // Only edges that force initialization count, so five kinds are excluded:
-      // Swift implicit module visibility and markdown links (never code
-      // dependencies at all); Dart package-identity edges, which point at
-      // pubspec.yaml so a manifest edit invalidates importers and cannot
-      // form an init cycle; imports reachable only through `import()` or a
-      // function body, which are deferred by construction — deferring is the
-      // standard idiom for BREAKING an init cycle, so counting it reports the
-      // fix as the bug; and imports reachable only through TypeScript
-      // `import type`, which `tsc` erases outright, so no module load exists
-      // to order. `imports-to-edges.ts` tags the last two with
-      // DEFERRED_IMPORT_REASON_SUFFIX / TYPE_ONLY_IMPORT_REASON_SUFFIX.
-      // The Dart exclusion has to sit in this filter, before LIMIT, or the
-      // identity edges consume the 100000-row admission cap on a cycle-free graph.
-      `MATCH (source:File)-[r:CodeRelation]->(target:File)
-       WHERE r.type = 'IMPORTS'
-         AND (r.reason IS NULL OR (
-           r.reason <> 'swift-scope: implicit module visibility'
-           AND r.reason <> 'markdown-link'
-           AND r.reason <> '${DART_PACKAGE_IDENTITY_REASON}'
-           AND NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'
-           AND NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'
-         ))
-       RETURN source.filePath AS source, target.filePath AS target
-       LIMIT ${rowLimit}`,
-      {},
-    );
+    const { readInitializationImports } = await import('../../core/lbug/initialization-imports.js');
+    const rows = await readInitializationImports(repo.lbugPath, rowLimit);
     if (rows.length === rowLimit) {
       return {
         error: `Import graph exceeds the ${rowLimit - 1} edge safety limit.`,
@@ -4976,7 +4940,8 @@ export class LocalBackend {
    * Falls back to raw result if rows aren't tabular objects.
    */
   private formatCypherAsMarkdown(result: any): any {
-    if (!Array.isArray(result) || result.length === 0) return result;
+    if (!Array.isArray(result)) return result;
+    if (result.length === 0) return { markdown: '', row_count: 0 };
 
     const firstRow = result[0];
     if (typeof firstRow !== 'object' || firstRow === null) return result;
@@ -7030,9 +6995,15 @@ export class LocalBackend {
     // Ignore CR-only EOL differences, while preserving meaningful whitespace changes.
     // execFileSync receives an argv array, so refs never pass through a shell.
     const diffArgs = buildDetectChangesDiffArgs(scope, params.base_ref);
-    if (!diffArgs) return { error: 'base_ref is required for "compare" scope' };
+    if (!diffArgs)
+      return {
+        error: params.base_ref
+          ? 'base_ref must be a Git revision for "compare" scope'
+          : 'base_ref is required for "compare" scope',
+      };
 
     let diffOutput: string;
+    let diffCwd: string;
     try {
       // Resolve the cwd for git diff.
       //
@@ -7051,7 +7022,7 @@ export class LocalBackend {
       //
       // Start with the auto-detected value; override with the validated
       // explicit param when provided. This avoids a dead initial assignment.
-      let diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
+      diffCwd = resolveWorktreeCwd(repo.repoPath, process.cwd());
       if (params.worktree) {
         if (!path.isAbsolute(params.worktree)) {
           return {
@@ -7081,6 +7052,7 @@ export class LocalBackend {
         cwd: diffCwd,
         encoding: 'utf-8',
         maxBuffer: 256 * 1024 * 1024,
+        timeout: 120_000,
         windowsHide: true,
         // Keep Git warnings out of CLI/MCP stderr; failures retain stderr in err.message.
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -7133,6 +7105,21 @@ export class LocalBackend {
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).
     const hunksByPath = coalesceHunksByPath(fileDiffs);
+    // The graph may still use the pre-rename path, while the caller check
+    // needs the destination in the selected post-image.
+    const { getQueryProviderForFile, isIndexedSourceFile } = await loadQueryProviders();
+    const checkersByPath = new Map<string, CallCompatibilityProvider>();
+    const renamedSourcePaths = new Map<string, string>();
+    for (const { filePath, oldFilePath } of fileDiffs) {
+      const provider = getQueryProviderForFile(filePath);
+      if (provider?.callCompatibility) checkersByPath.set(filePath, provider.callCompatibility);
+      const hunks = hunksByPath.get(filePath);
+      if (hunks && oldFilePath) {
+        if (!provider || provider !== getQueryProviderForFile(oldFilePath)) continue;
+        renamedSourcePaths.set(oldFilePath, filePath);
+        if (!hunksByPath.has(oldFilePath)) hunksByPath.set(oldFilePath, hunks);
+      }
+    }
 
     // One row per changed file: the anchored forms of its path, and the [lo, hi]
     // span of its whole touched region (coalesced ranges are sorted and
@@ -7186,15 +7173,17 @@ export class LocalBackend {
     // `labels(n)`, not `labels(n)[0]`: it returns the label as a scalar STRING,
     // and subscripting a string is 1-based over its characters, so `[0]` was
     // always "" and `changed_symbols[].type` never carried a type at all.
-    const symbolQuery = `
+    const declarationRowLimit = 16384;
+    const symbolQuery = (includeDeclarations: boolean) => `
         UNWIND $bounds AS b
         MATCH (n) WHERE (n.filePath IN $paths OR ANY(s IN $suffixes WHERE n.filePath ENDS WITH s))
           AND (n.filePath = b.path OR n.filePath ENDS WITH b.suffix)
           AND NOT n.id STARTS WITH 'BasicBlock:'
           AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
-          AND n.startLine <= b.hi AND n.endLine >= b.lo
+          AND (${includeDeclarations ? 'b.path IN $declarationPaths OR ' : ''}(n.startLine <= b.hi AND n.endLine >= b.lo))
         RETURN b.path AS diffPath, n.id AS id, n.name AS name, labels(n) AS type,
                n.filePath AS filePath, n.startLine AS startLine, n.endLine AS endLine
+        ${includeDeclarations ? `ORDER BY b.path, (n.filePath = b.path) DESC, n.id LIMIT ${declarationRowLimit + 1}` : ''}
       `;
 
     // Batches run concurrently: each `executeParameterized` holds one connection
@@ -7202,16 +7191,34 @@ export class LocalBackend {
     // the safety rule documented on `mapConcurrent` itself (`lib/utils.ts`; why
     // the list needs a ceiling at all is in core/lbug/query-batch.ts) — not the
     // single-query sequential rule the arm64 macOS module loop below follows.
+    let declarationScanIncomplete = false;
     const batchResults = await mapConcurrent(
       chunk(bounds, LBUG_QUERY_BATCH_SIZE),
-      (batch) =>
-        executeParameterized(repo.lbugPath, symbolQuery, {
-          bounds: batch,
-          // Both halves of the redundant conjunct, derived from the batch in
-          // hand so the prefilter sees exactly the files this query asks about.
-          paths: batch.map((bound) => bound.path),
-          suffixes: batch.map((bound) => bound.suffix),
-        }),
+      async (batch) => {
+        // Hunk coordinates belong to the post-image. A declaration can move beyond
+        // its indexed span, so the provider compares declarations across both images.
+        const declarationPaths = batch
+          .map(({ path }) => path)
+          .filter((p) => checkersByPath.has(renamedSourcePaths.get(p) ?? p));
+        const rows = await executeParameterized(
+          repo.lbugPath,
+          symbolQuery(declarationPaths.length > 0),
+          {
+            bounds: batch,
+            ...(declarationPaths.length && { declarationPaths }),
+            // Both halves of the redundant conjunct, derived from the batch in
+            // hand so the prefilter sees exactly the files this query asks about.
+            paths: batch.map((bound) => bound.path),
+            suffixes: batch.map((bound) => bound.suffix),
+          },
+        );
+        if (declarationPaths.length && rows.length > declarationRowLimit) {
+          queryDegraded = true;
+          declarationScanIncomplete = true;
+          return rows.slice(0, declarationRowLimit);
+        }
+        return rows;
+      },
       { onError: (error) => logQueryError('detect-changes:file-symbols', error) },
     );
     // A batch whose query failed comes back `undefined`: those symbols are
@@ -7256,19 +7263,55 @@ export class LocalBackend {
     // rows 71.3ms → 26.6ms).
     const exactlyMatchedPaths = new Set<string>();
     const mappedPaths = new Set<string>();
+    // A row whose id is not a usable identity cannot be named in any downstream
+    // graph lookup: passing '' to the process query joins it to every corrupt
+    // STEP_IN_PROCESS endpoint whose id is also empty, turning one edit into a
+    // repo-wide critical-risk fan-out (#3931). Treat it like a failed graph
+    // read: omit the row and withhold a ranked verdict.
+    //
+    // Decided HERE and not in the query, on purpose. A predicate in Cypher
+    // drops the row before anything can count it, so a file with one valid
+    // symbol beside a corrupt one came back ranked `low` with no `partial` —
+    // the gate silently lost the edited symbol.
+    //
+    // The row still records its exact-path match first: a corrupt row for
+    // an exact path is proof the index knows that file, so it must keep the
+    // suffix fallback closed (below) even for an unusable identity. It does
+    // not reach `mappedPaths`, so a file with no usable row stays unmapped.
+    const unusableRows = new Set<ChangedSymbolRow>();
     for (const row of symbolRows) {
       if (row.filePath === row.diffPath) exactlyMatchedPaths.add(row.diffPath);
+      if (!hasSymbolIdentity(row.id)) unusableRows.add(row);
+    }
+    if (unusableRows.size > 0) {
+      queryDegraded = true;
+      // Logged once per run, with the rebuild hint the other tools raise for
+      // the same condition; this scan degrades instead of failing.
+      logQueryError('detect-changes:symbol-identity', new SymbolIdentityError());
     }
 
+    const targetsByChecker = new Map<CallCompatibilityProvider, CallCompatibilityTarget[]>();
+    for (const checker of checkersByPath.values()) targetsByChecker.set(checker, []);
+    const indexedTargets = new Map<string, CallCompatibilityTarget>();
     for (const sym of symbolRows) {
+      if (unusableRows.has(sym)) continue;
       const diffPath = sym.diffPath;
       if (sym.filePath !== sym.diffPath && exactlyMatchedPaths.has(diffPath)) continue;
-      const hunks = hunksByPath.get(diffPath) ?? [];
-      if (!hunksOverlapRange(hunks, sym.startLine, sym.endLine)) continue;
       // A suffix fallback is a hint, not proof that this is the changed file.
-      if (sym.filePath === diffPath) mappedPaths.add(diffPath);
+      const renamedTo = renamedSourcePaths.get(diffPath);
+      if (renamedTo && exactlyMatchedPaths.has(renamedTo)) continue;
+      const filePath = renamedTo ?? sym.filePath;
+      const checker = checkersByPath.get(filePath);
+      if (checker && !indexedTargets.has(sym.id)) {
+        const target = { id: sym.id, name: sym.name, type: sym.type, filePath };
+        if (checker.acceptsTarget(target)) {
+          targetsByChecker.get(checker)!.push(target);
+          indexedTargets.set(sym.id, target);
+        }
+      }
+      if (!hunksOverlapRange(hunksByPath.get(diffPath) ?? [], sym.startLine, sym.endLine)) continue;
+      if (sym.filePath === diffPath) mappedPaths.add(renamedTo ?? diffPath);
       if (changedSymbols.has(sym.id)) continue;
-
       changedSymbols.set(sym.id, {
         id: sym.id,
         name: sym.name,
@@ -7278,26 +7321,78 @@ export class LocalBackend {
       });
     }
 
+    let keywordCheck:
+      | import('../../core/analysis/call-compatibility.js').CallCompatibilityReport
+      | undefined;
+    if (targetsByChecker.size) {
+      try {
+        const unavailable = await this.fullSourceUnavailable(repo);
+        const { checkCallCompatibility } =
+          await import('../../core/analysis/call-compatibility.js');
+        keywordCheck = await checkCallCompatibility(
+          repo.lbugPath,
+          { directory: diffCwd, scope, base: params.base_ref, files: fileDiffs },
+          targetsByChecker,
+          logQueryError,
+          unavailable?.reason,
+        );
+        if (declarationScanIncomplete || batchResults.includes(undefined)) {
+          keywordCheck.complete = false;
+          keywordCheck.skipped.push({ reason: 'incomplete-declaration-scan' });
+        }
+      } catch (error) {
+        logQueryError('detect-changes:call-compatibility', error);
+        keywordCheck = {
+          findings: [],
+          complete: false,
+          skipped: [{ reason: 'signature-check-failed' }],
+        };
+      }
+    }
+    const brokenCalls = keywordCheck?.findings ?? [];
+    // A declaration comparison identifies the edited symbol even when the diff
+    // and the index use different lines. Include it in process lookup and counts.
+    for (const call of brokenCalls) {
+      const target = indexedTargets.get(call.target);
+      if (target && !changedSymbols.has(target.id)) {
+        mappedPaths.add(target.filePath);
+        changedSymbols.set(target.id, { ...target, change_type: 'touched' });
+      }
+    }
+
     // An empty successful query cannot prove a source diff is safe: its rows
     // may be missing, outside indexed spans, or not yet indexed. Keep ordinary
     // docs/config diffs measurable, but withhold a ranked source-risk verdict.
-    const isSourceFile = (file: string): boolean =>
-      getLanguageFromFilename(file) !== null ||
-      isCobolFile(file) ||
-      isJclFile(file) ||
-      isTemplateRouteCandidate(file);
     const unmappedFiles = [
       ...new Set(
         fileDiffs
           .filter(
             ({ filePath, oldFilePath }) =>
               !mappedPaths.has(filePath) &&
-              (isSourceFile(filePath) || (oldFilePath !== undefined && isSourceFile(oldFilePath))),
+              (isIndexedSourceFile(filePath) ||
+                (oldFilePath !== undefined && isIndexedSourceFile(oldFilePath))),
           )
           .map(({ filePath }) => filePath),
       ),
     ];
     if (unmappedFiles.length > 0) queryDegraded = true;
+
+    // Keep docs-only reviews useful. In mixed diffs report their volume once;
+    // section headings should not displace changed code or inflate its count.
+    let documentationSections = 0;
+    const docsOnly = fileDiffs.every(
+      ({ filePath, oldFilePath }) =>
+        isIndexedDocumentationPath(filePath) &&
+        (!oldFilePath || isIndexedDocumentationPath(oldFilePath)),
+    );
+    if (!docsOnly) {
+      for (const [id, symbol] of changedSymbols) {
+        if (symbol.type === 'Section' && isIndexedDocumentationPath(symbol.filePath)) {
+          changedSymbols.delete(id);
+          documentationSections++;
+        }
+      }
+    }
 
     // Find affected processes -- batched queries instead of N+1
     const affectedProcesses = new Map<string, any>();
@@ -7353,21 +7448,22 @@ export class LocalBackend {
     }
 
     const processCount = affectedProcesses.size;
-    // A degraded run cannot rank risk. The ladder below reads `processCount` and
-    // nothing else, and a swallowed failure leaves that count short — usually
-    // zero — so a broken run scored `low` next to its own `partial:true`: a
-    // false all-clear from a pre-commit gate. `unknown` is what the CLI
-    // formatter already prints when a run has no risk level at all
-    // (`tool.detectChanges.unknownRisk`), so no consumer needs a new value.
-    const risk = queryDegraded
-      ? 'unknown'
-      : processCount === 0
-        ? 'low'
-        : processCount <= 5
-          ? 'medium'
-          : processCount <= 15
-            ? 'high'
-            : 'critical';
+    const processRisk =
+      processCount > 15
+        ? 'critical'
+        : processCount > 5
+          ? 'high'
+          : processCount > 0
+            ? 'medium'
+            : 'low';
+    let risk = processRisk;
+    if (brokenCalls.length) {
+      // An observed incompatible call proves at least high risk even when
+      // a new caller was discovered in an as-yet unindexed file.
+      if (processRisk !== 'critical') risk = 'high';
+    } else if (queryDegraded || (keywordCheck?.complete === false && processCount <= 5)) {
+      risk = 'unknown';
+    }
 
     // A repo-wide diff can touch thousands of symbols, and the whole array goes
     // into one MCP payload (the CLI slices with --limit; an MCP client has no
@@ -7396,14 +7492,28 @@ export class LocalBackend {
         // path. A repo that tracks `.patch` fixtures hits this.
         changed_files: new Set(fileDiffs.map((fileDiff) => fileDiff.filePath)).size,
         risk_level: risk,
+        ...(docsOnly && { documentation_basis: 'indexed_headings' }),
+        ...(documentationSections > 0 && { documentation_sections: documentationSections }),
+        ...(brokenCalls.length > 0 && { incompatible_call_count: brokenCalls.length }),
+        ...(keywordCheck && { incompatible_calls_checked: keywordCheck.complete }),
       },
       changed_symbols: listedSymbols,
+      ...(keywordCheck?.skipped.length && {
+        incompatible_call_skips: keywordCheck.skipped.slice(0, DETECT_CHANGES_MAX_LISTED_SYMBOLS),
+      }),
+      ...(brokenCalls.length > 0 && {
+        incompatible_calls: brokenCalls.slice(0, DETECT_CHANGES_MAX_LISTED_SYMBOLS),
+      }),
       affected_processes: Array.from(affectedProcesses.values()),
       ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
       // Failed queries or unmapped source files leave counts/risk incomplete;
       // the safety gate must not treat that as a clean result (#2283).
-      ...(queryDegraded && { partial: true }),
-      ...(listedSymbols.length < changedSymbols.size && { truncated: true }),
+      ...((queryDegraded || keywordCheck?.complete === false) && { partial: true }),
+      ...((listedSymbols.length < changedSymbols.size ||
+        brokenCalls.length > DETECT_CHANGES_MAX_LISTED_SYMBOLS ||
+        (keywordCheck?.skipped.length ?? 0) > DETECT_CHANGES_MAX_LISTED_SYMBOLS) && {
+        truncated: true,
+      }),
     };
   }
 
@@ -7460,7 +7570,8 @@ export class LocalBackend {
       `MATCH (n) WHERE n.filePath IS NOT NULL AND n.filePath <> ''
          AND labels(n) <> 'BasicBlock'
        RETURN n.id AS id, n.name AS name, n.filePath AS filePath,
-              n.startLine AS startLine, n.endLine AS endLine`,
+              n.startLine AS startLine, n.endLine AS endLine,
+              n.isExported AS isExported`,
     );
     const graphNodes: GraphNode[] = rows.map((row: any) => ({
       id: row.id,
@@ -7471,6 +7582,9 @@ export class LocalBackend {
         filePath: row.filePath,
         startLine: row.startLine ?? undefined,
         endLine: row.endLine ?? undefined,
+        // The indexed export verdict, read by providers whose refinement lives outside the
+        // indexed sources (R rename's second privacy check). Absent on tables without the column.
+        ...(typeof row.isExported === 'boolean' ? { isExported: row.isExported } : {}),
       },
     }));
     const referenceRows = await executeParameterized(
@@ -8865,6 +8979,8 @@ export class LocalBackend {
     const visited = new Set<string>([symId]);
     const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
     let frontier = [symId];
+    const typeImportEdges: ImpactFrontierEdge[] = [];
+    let typeImportsIncomplete = false;
     const objectCallableFrontier: string[] = [];
     let traversalComplete = true;
     let traversalCappedAtDepth: number | undefined;
@@ -8873,28 +8989,14 @@ export class LocalBackend {
     // degrade visibly instead of allocating an unbounded seed frontier.
     const OBJECT_CALLABLE_MEMBER_CAP = 5000;
 
-    // Fix #480: For Java (and other JVM) Class/Interface nodes, CALLS edges
-    // point to Constructor nodes and IMPORTS edges point to File nodes — not
-    // the Class/Interface itself. Seed the frontier with the Constructor(s)
-    // and owning File so the BFS traversal finds those edges naturally.
-    // The owning File is kept only as an internal seed (frontier/visited) and
-    // is NOT added to impacted — it is the definition container, not an
-    // upstream dependent. The BFS will discover IMPORTS edges on it naturally.
+    // #480: Some graphs target the Constructor with CALLS and the owning
+    // File with IMPORTS. Seed both so the traversal can reach those edges.
+    // The owning File serves only as a seed and is excluded from dependants.
     //
-    // #3602: the file's importers stand in for the type's importers, which
-    // only holds when the type can leave the file. Where the index recorded
-    // `isExported = false` AND the language's provider confirms that verdict
-    // is file-private (checking indexed source where needed), no
-    // importer can name the type, so seeding its file would report every
-    // importer of the file as a direct dependant. The seed is skipped for it;
-    // its real dependants still arrive through USES/EXTENDS/IMPLEMENTS edges
-    // inside the file. Everything else keeps the seed: a missing verdict
-    // (NULL) proves nothing; JS/TS also need to exclude indirect exports,
-    // CommonJS and ambient files even when the stored flag is false. Where
-    // `false` means package-, assembly- or module-private (Java, C#, Kotlin,
-    // Go, …) a sibling file can still name the type, so the over-approximation
-    // is the safe side. Downstream still needs the file's imports: a private
-    // type can depend on other files even though they cannot import its name.
+    // #3602: On upstream walks, skip the file seed when its provider confirms
+    // a type is private to that file. Otherwise use the provider's attributed
+    // importers when available, or all file importers when visibility is uncertain.
+    // Downstream walks still need the file's dependencies for private types.
     if (symType === 'Class' || symType === 'Interface') {
       try {
         // Run both seed queries in parallel — they are independent.
@@ -8934,22 +9036,53 @@ export class LocalBackend {
             frontier.push(rid);
           }
         }
+        const queryProviders =
+          direction === 'upstream' && fileRows.length > 0 ? await loadQueryProviders() : undefined;
         for (const r of fileRows) {
           assertSymbolRowIdentity(r);
           const exported = r.isExported ?? r[4];
-          if (direction === 'upstream' && exported === false) {
-            // Lazy like the other provider lookups on this backend: the
-            // registry pulls every language module, and this branch is the
-            // only reader on the impact path.
-            const { getProviderForFile } = await import('../../core/ingestion/languages/index.js');
-            const filePath = String(r.filePath ?? r[3] ?? '');
-            const filePrivate = getProviderForFile(filePath)?.notExportedIsFilePrivate;
+          const ownerPath = String(r.filePath ?? r[3]);
+          if (queryProviders) {
+            const provider = queryProviders.getQueryProviderForFile(ownerPath);
+            const filePrivate = provider?.notExportedIsFilePrivate;
             if (
-              filePrivate === true ||
-              (typeof filePrivate === 'function' &&
-                filePrivate(filePath, String(r.content ?? r[5] ?? '')))
+              exported === false &&
+              (filePrivate === true ||
+                (typeof filePrivate === 'function' &&
+                  (await filePrivate(ownerPath, String(r.content ?? r[5] ?? '')))))
             )
               continue;
+            const attribution = provider?.typeImportAttribution;
+            if (attribution?.supportsFile(ownerPath)) {
+              if (relationTypes.includes('IMPORTS')) {
+                const { findTypeImporters } = await import('../../core/analysis/type-importers.js');
+                const { matches, complete } = await findTypeImporters(
+                  repo,
+                  attribution,
+                  r.id ?? r[0],
+                  ownerPath,
+                  sym.name ?? sym[1],
+                  includeTests,
+                  safeMinConfidence,
+                );
+                for (const row of matches) {
+                  typeImportEdges.push({
+                    id: row.id,
+                    name: row.name,
+                    filePath: row.filePath,
+                    type: 'File',
+                    sourceId: symId,
+                    relType: 'IMPORTS',
+                    confidence: row.confidence,
+                  });
+                }
+                if (!complete) {
+                  typeImportsIncomplete = true;
+                  traversalComplete = false;
+                }
+              }
+              continue;
+            }
           }
           const rid = r.id || r[0];
           if (rid && !visited.has(rid)) {
@@ -9049,6 +9182,7 @@ export class LocalBackend {
       }
     }
 
+    let omittedNameOnlyCalls = 0;
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
       if (checkOverloads) {
@@ -9099,9 +9233,9 @@ export class LocalBackend {
       const query =
         direction === 'upstream'
           ? // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
-            `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`
+            `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated, r.reason AS reason LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`
           : // determinism: probe — safety ceiling, not a page; rows vary only past the cap, which marks the walk partial.
-            `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
+            `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.staticGated AS staticGated, r.reason AS reason LIMIT ${IMPACT_FRONTIER_ROW_CAP + 1}`;
 
       try {
         const queryParams = {
@@ -9147,18 +9281,31 @@ export class LocalBackend {
           assertSymbolIdentity(queryRowValue(row, 'relType', 5));
         }
 
-        const edges: ImpactFrontierEdge[] = related.map((rel) => ({
-          id: rel.id || rel[1],
-          name: rel.name || rel[2],
-          type: rel.type || rel[3],
-          filePath: rel.filePath || rel[4] || '',
-          relType: rel.relType || rel[5],
-          confidence: rel.confidence ?? rel[6],
-          sourceId: String(rel.sourceId ?? rel[0] ?? ''),
-          // Set only by languages that compute static gating (Zig); null/undefined
-          // from older indexes or other languages reads as live.
-          ...((rel.staticGated ?? rel[7]) === true ? { staticGated: true } : {}),
-        }));
+        const edges: ImpactFrontierEdge[] = [];
+        for (const rel of related) {
+          if (
+            (rel.relType ?? rel[5]) === 'CALLS' &&
+            (rel.reason ?? rel[8]) === GLOBAL_NAME_FALLBACK_REASON
+          ) {
+            if (includeTests || !isTestFilePath(rel.filePath ?? rel[4] ?? ''))
+              omittedNameOnlyCalls++;
+            continue;
+          }
+          edges.push({
+            id: rel.id || rel[1],
+            name: rel.name || rel[2],
+            type: rel.type || rel[3],
+            filePath: rel.filePath || rel[4] || '',
+            relType: rel.relType || rel[5],
+            confidence: rel.confidence ?? rel[6],
+            sourceId: String(rel.sourceId ?? rel[0] ?? ''),
+            // Set only by languages that compute static gating (Zig); null/undefined
+            // from older indexes or other languages reads as live.
+            ...((rel.staticGated ?? rel[7]) === true ? { staticGated: true } : {}),
+          });
+        }
+
+        if (depth === 1) edges.push(...typeImportEdges);
 
         // The pdg bridge is the ONE consumer here that accumulates sequentially
         // rather than per-node: at depth ≥ 2 an edge inherits
@@ -9260,6 +9407,7 @@ export class LocalBackend {
           ? [...new Set([...nextFrontier, ...objectCallableFrontier])]
           : nextFrontier;
     }
+    const incompleteWalk = !traversalComplete || omittedNameOnlyCalls > 0;
 
     // Stamp the finalized, order-independent bridge evidence (strongest across
     // all parents) onto each impacted item. Deferred from the BFS loop so a
@@ -9485,10 +9633,8 @@ export class LocalBackend {
         }
       }
 
-      // If we capped chunks, mark traversal incomplete so caller knows results are partial
-      if (chunksProcessed * CHUNK_SIZE < impacted.length) {
-        traversalComplete = false;
-      }
+      // The walk can finish even when the enrichment budget covers only part of it.
+      if (chunksProcessed * CHUNK_SIZE < impacted.length) enrichmentDegraded = true;
 
       // (total_hits, filePath, name) is NOT unique across distinct entry points —
       // two of them collide on all three in this repo alone (`step`, same file,
@@ -9699,24 +9845,16 @@ export class LocalBackend {
       enrichmentTruncated:
         !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
     });
-    const {
-      risk: scoredRisk,
-      riskSharedAxes: scoredSharedAxes,
-      riskScale,
-    } = scoreImpactRisk({
+    const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
       direction,
       directCount,
       processCount,
       moduleCount,
       impactedCount: impacted.length,
+      incompleteWalk,
       unusedAxes,
     });
-    // Capped counts are lower bounds: keep a proven HIGH/CRITICAL, never a LOW/MEDIUM (#3442).
     const traversalCapped = traversalCappedAtDepth !== undefined;
-    const riskAfterCap = (score: typeof scoredRisk) =>
-      traversalCapped && (score === 'LOW' || score === 'MEDIUM') ? 'UNKNOWN' : score;
-    const risk = riskAfterCap(scoredRisk);
-    const riskSharedAxes = riskAfterCap(scoredSharedAxes);
 
     // Build per-depth counts (always included, even in summaryOnly mode)
     const byDepthCounts: Record<number, number> = {};
@@ -9760,29 +9898,50 @@ export class LocalBackend {
       risk,
       riskSharedAxes,
       riskScale,
-      ...(risk === 'UNKNOWN'
+      ...(omittedNameOnlyCalls > 0
         ? {
-            riskNote: traversalCapped
-              ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
-                `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
-                'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
-                'before treating the change as safe.'
-              : processQueryFailed || moduleQueryFailed
-                ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
-                  'are lower bounds; retry impact before treating the change as safe.'
-                : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
-                  ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
-                    'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
-                    'treating the change as safe.'
-                  : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
-                    'a caller reaching it through a reference class this index does not record — ' +
-                    'plain-object property access, a bare-identifier read of a module-scope const — ' +
-                    'produces no edge to find. Confirm with a text search before treating the ' +
-                    'change as safe.',
+            riskNote:
+              'Calls resolved by name alone were omitted. The observed impact is a lower bound.',
           }
-        : {}),
+        : risk === 'UNKNOWN'
+          ? {
+              riskNote: typeImportsIncomplete
+                ? 'Some module imports could not be attributed to the target type from indexed source within the inspection limits. The observed callers are a lower bound.'
+                : traversalCapped
+                  ? `Risk is unresolved because depth ${traversalCappedAtDepth} returned more than ` +
+                    `${IMPACT_FRONTIER_ROW_CAP} relationships and the walk stopped there. Observed ` +
+                    'counts are lower bounds; narrow the walk (relationTypes, maxDepth, minConfidence) ' +
+                    'before treating the change as safe.'
+                  : incompleteWalk
+                    ? 'Impact traversal was incomplete. The observed caller count is a lower bound. Retry impact before treating the change as safe.'
+                    : processQueryFailed || moduleQueryFailed
+                      ? 'Risk is unresolved because process/module enrichment failed. Observed counts ' +
+                        'are lower bounds; retry impact before treating the change as safe.'
+                      : unusedAxes.some((axis) => axis.reason === 'enrichment-truncated')
+                        ? 'Risk is unresolved because process/module enrichment was truncated. Observed ' +
+                          'counts are lower bounds; retry with a higher IMPACT_MAX_CHUNKS before ' +
+                          'treating the change as safe.'
+                        : 'No callers resolved. Absence of edges is not evidence the symbol is unused: ' +
+                          'a caller reaching it through a reference class this index does not record — ' +
+                          'plain-object property access, a bare-identifier read of a module-scope const — ' +
+                          'produces no edge to find. Confirm with a text search before treating the ' +
+                          'change as safe.',
+            }
+          : {}),
       ...epistemic,
-      ...((!traversalComplete || enrichmentDegraded) && { partial: true }),
+      ...((typeImportsIncomplete || omittedNameOnlyCalls > 0) &&
+        !opts.skipEpistemic && {
+          epistemic: 'lower-bound',
+          boundaries: [
+            ...(epistemic.boundaries ?? []),
+            ...(typeImportsIncomplete
+              ? ['Indexed module imports could not all be attributed to the target type.']
+              : []),
+            ...(omittedNameOnlyCalls ? ['Calls resolved by name alone were omitted.'] : []),
+          ],
+        }),
+      ...(omittedNameOnlyCalls > 0 && { omittedNameOnlyCalls }),
+      ...((incompleteWalk || enrichmentDegraded) && { partial: true }),
       summary: {
         direct: directCount,
         processes_affected: processCount,

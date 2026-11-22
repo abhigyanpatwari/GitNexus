@@ -46,6 +46,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2 # The PR merge commit and its base parent are sufficient for the architecture check.
       # tsc --noEmit reads source + gitnexus-shared/dist. Skip prepare/postinstall
       # so a cold shared install cannot eat the 10-minute budget on a second tsc.
       - uses: ./.github/actions/setup-gitnexus
@@ -55,6 +56,11 @@ jobs:
         working-directory: gitnexus
       - name: Typecheck tests
         run: npm run typecheck:tests
+        working-directory: gitnexus
+      - name: Check shared language boundaries against the merge base
+        env:
+          GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
+        run: npx vitest run test/unit/shared-tool-language-boundary.test.ts
         working-directory: gitnexus
 
   typecheck-web:

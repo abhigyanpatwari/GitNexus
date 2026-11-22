@@ -80,16 +80,13 @@ export interface IndexedRef {
 }
 
 /**
- * The wire shape for staleness on every surface: MCP `list_repos`, the hot read
- * tools, and the `serve` repo routes. One builder so one fact has one shape
- * (#3232 review: "same sentinel as MCP").
+ * The wire shape for staleness on MCP tools and the `serve` repo routes.
  *
  * Two forms, chosen by whether the caller supplies a {@link IndexedRef}:
  *
- * - **Without a ref** — absent for `current`, as before. That is what
- *   `list_repos` and the `serve` routes emit; they already report the ref
- *   through their own top-level `branch` / `lastCommit` / `indexedAt` fields
- *   (#3226), so repeating it inside the payload would duplicate it.
+ * - **Without a ref** — absent for measured `current`. The `serve` routes
+ *   already report the ref in their top-level `branch`, `lastCommit` and
+ *   `indexedAt` fields (#3226).
  * - **With a ref** — emitted for EVERY status, naming the index it describes.
  *   The hot read tools have nowhere else to put it: `attachToolStaleness` may
  *   add exactly one key to an arbitrary tool result. Without it `current` is
@@ -134,9 +131,6 @@ export const stalenessPayload = (
   const status = stalenessStatus(info);
   const hint = info.hint ? { hint: info.hint } : {};
 
-  // No ref: bit-identical to the pre-#3291 output for every status. This is
-  // what keeps `list_repos` and both `serve` routes byte-stable, and their
-  // exact-match tests passing unmodified.
   if (!opts.ref) {
     if (status === 'current') return undefined;
     if (status === 'unknown') return opts.includeUnknown ? { status } : undefined;

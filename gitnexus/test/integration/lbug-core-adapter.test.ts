@@ -270,6 +270,44 @@ withTestLbugDB(
         expect(Number((queriesLeft[0] as { cnt: number }).cnt)).toBe(1);
       });
 
+      it('refreshes global resolution edges together and keeps bound calls at the same confidence', async () => {
+        const { executeQuery, deleteGlobalResolutionEdges } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+        const { impactEdgePredicate } = await import('gitnexus-shared');
+        const [a, b] = (await executeQuery('MATCH (n:Function) RETURN n.id AS id ORDER BY id')) as {
+          id: string;
+        }[];
+        const calls = "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALLS'";
+        const reasons =
+          ' RETURN r.reason AS reason, r.confidence AS confidence ORDER BY reason, confidence';
+        const baseline = await executeQuery(calls + reasons);
+        try {
+          for (const [type, reason] of [
+            ['CALLS', 'global-name-fallback'],
+            ['CALLS', 'test-bound-call'],
+            ['INJECTS', 'test-binding'],
+            ['ADVISED_BY', 'test-binding'],
+          ]) {
+            await executeQuery(
+              `MATCH (a:Function {id: '${a.id}'}), (b:Function {id: '${b.id}'}) ` +
+                `CREATE (a)-[:CodeRelation {type: '${type}', confidence: 0.5, reason: '${reason}'}]->(b)`,
+            );
+          }
+          const before = await executeQuery(calls + ' AND ' + impactEdgePredicate('r') + reasons);
+          expect(before).toContainEqual({ reason: 'test-bound-call', confidence: 0.5 });
+          expect(before).not.toContainEqual(
+            expect.objectContaining({ reason: 'global-name-fallback' }),
+          );
+          await expect(deleteGlobalResolutionEdges()).resolves.toEqual({ edgesDeleted: 3 });
+          expect(await executeQuery(calls + reasons)).toEqual(before);
+        } finally {
+          await executeQuery(
+            "MATCH ()-[r:CodeRelation]->() WHERE r.reason IN ['global-name-fallback', 'test-bound-call', 'test-binding'] DELETE r",
+          );
+        }
+        expect(await executeQuery(calls + reasons)).toEqual(baseline);
+      });
+
       it('deleteAllAdvisedBy: removes only ADVISED_BY edges and is benign when none exist (#2416)', async () => {
         const { executeQuery: coreExecuteQuery, deleteAllAdvisedBy } =
           await import('../../src/core/lbug/lbug-adapter.js');

@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a name starting with a digit as the new function name.",
+  "categories": ["identifier-rules", "negative", "unchanged-on-error"],
+  "target": { "name": "tick", "kind": "Function", "file": "lib.R", "startLine": 0 },
+  "newName": "2fast",
+  "expect": { "status": "error", "code": "invalid_name", "planningStatus": "blocked" },
+  "edges": []
+}

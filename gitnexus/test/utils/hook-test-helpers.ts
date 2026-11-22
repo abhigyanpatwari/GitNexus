@@ -100,6 +100,8 @@ function writeImmediateShellExecutable(filePath: string, stdout: string, markerP
 export function createHookToolDir(options: {
   gitnexusStderr?: string;
   gitnexusMarkerPath?: string;
+  /** Fake gitnexus CLI writes the arguments it received here, as a JSON array. */
+  gitnexusArgsPath?: string;
   /** Fake gitnexus CLI writes its own PID here as its FIRST statement, minimizing detection latency for augment orphan-reaping tests (#2163 follow-up). */
   gitnexusPidFile?: string;
   /** Fake gitnexus CLI sleeps this long instead of exiting — models a hung augment child. */
@@ -132,6 +134,9 @@ export function createHookToolDir(options: {
       : '') +
     (options.gitnexusIgnoreSigterm ? `process.on('SIGTERM', () => {});\n` : '') +
     `const marker = ${markerPath};\nif (marker) fs.writeFileSync(marker, 'called');\n` +
+    (options.gitnexusArgsPath != null
+      ? `fs.writeFileSync(${JSON.stringify(options.gitnexusArgsPath)}, JSON.stringify(process.argv.slice(2)));\n`
+      : '') +
     (options.gitnexusSleepMs != null
       ? `setTimeout(() => {}, ${Number(options.gitnexusSleepMs)});\n`
       : `process.stderr.write(${gitnexusStderr});\n`);

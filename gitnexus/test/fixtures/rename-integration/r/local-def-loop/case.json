@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when the call comes before the local function literal inside a loop: the first iteration reaches the function being renamed.",
+  "categories": ["assignment-shadowing", "call-order", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

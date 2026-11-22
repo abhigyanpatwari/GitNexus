@@ -52,7 +52,7 @@ For Claude Code, Cursor, and Codex, setup keeps an existing URL-based `gitnexus`
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                          | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
 
-> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query. Of the three, only **Antigravity** also carries the stale-index hint.
 
 ### Community Integrations
 
@@ -288,6 +288,7 @@ gitnexus analyze --no-parse-cache # Re-parse every source file, then rebuild gra
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
 gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
+gitnexus analyze --instruction-file CLAUDE.md  # Refresh only CLAUDE.md (or choose AGENTS.md)
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits (does not skip standard skills; use --skip-skills; community --skills files are unaffected)
 gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
@@ -310,7 +311,7 @@ gitnexus status                  # Show index status for current repo
 gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
-gitnexus wiki --model <model>    # Wiki with custom LLM model (default: minimax/minimax-m2.5)
+gitnexus wiki --model <model>    # Wiki with custom LLM model (default: MiniMax-M3)
 ATLASCLOUD_API_KEY=<key> gitnexus wiki --provider atlascloud  # Atlas Cloud preset
 gitnexus wiki --provider grok    # Local Grok Build CLI (uses `grok login`, no API key)
 gitnexus wiki --provider anthropic  # Anthropic Messages API (ANTHROPIC_API_KEY; default model claude-opus-5-5)
@@ -354,7 +355,7 @@ Watch mode accepts `--debounce`, `--workers`, `--worker-timeout`,
 `--max-file-size`, `--max-processes`, `--max-process-branching`,
 `--max-process-trace-depth`, `--max-entry-point-candidates`, `--branch`, `--pdg`, `--name`, `--allow-duplicate-name`, and
 `--verbose`. Explicit one-shot options such as `--force`, `--repair-fts`,
-embedding flags, `--skills`, `--default-branch`, `--skip-agents-md`,
+embedding flags, `--skills`, `--default-branch`, `--instruction-file`, `--skip-agents-md`,
 `--skip-skills`, `--no-stats`, `--self-commit`, `--index-only`, and `--skip-git`
 are rejected. Unsupported defaults from `.gitnexusrc` are ignored with a warning.
 
@@ -521,13 +522,27 @@ entirely (logged as `skipping package with N files`) and every file in them is
 marked visibility-incomplete. `GITNEXUS_MAX_INJECTED_SIBLINGS` does not lift
 that skip — including at `0`.
 
+## Wildcard Import Storage
+
+For Java, an on-demand import (`import pkg.*;`) is stored once per statement
+and once per package, not once per importing file and package file. This
+changes memory use only; the graph is the same. Set
+`GITNEXUS_DISABLE_IMPORT_GROUPS=1` to store one import edge per imported file
+again, for example to compare memory or to rule the grouped form out while
+investigating a result.
+
+```bash
+export GITNEXUS_DISABLE_IMPORT_GROUPS=1
+gitnexus analyze . --force
+```
+
 ## Multi-Repo Support
 
 GitNexus supports indexing multiple repositories. Each `gitnexus analyze` registers the repo in a global registry (`~/.gitnexus/registry.json`). The MCP server serves all indexed repos automatically.
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart, Zig, R
 
 ### Language Feature Matrix
 
@@ -548,8 +563,11 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 | Zig        | ✓       | —              | ✓       | —        | ✓                | ✓                     | ✓      | —          | ✓            |
+| R (experimental) | ✓  | ✓              | ✓       | ✓        | —                | ✓                     | ✓      | —          | —            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
+
+**R (experimental)** — `.r` / `.R` files, parsed with `@eagleoutice/tree-sitter-r`. Extracts functions, S4 classes, R6 classes and RefClass (`setRefClass`) classes with their methods and fields, and resolves `library()` / `require()` / `source()` imports to local packages and files, `obj$method()` and `pkg::fn()` calls, R6 `inherit=` / S4 `contains=` heritage and NAMESPACE-driven export status. Calls through function values, `do.call()`, infix operators and S3 dispatch are not linked, and `.Rmd` files, `box::use()` and external (CRAN) packages are not supported. With `--pdg` it also builds a control-flow graph (control dependence only; R has no reaching definitions), and `rename` handles plain functions while refusing classes, members, S3 methods, exported package functions and names spelled as strings. See [docs/languages/r-provider.md](../docs/languages/r-provider.md) for the full coverage and limits.
 
 ## Agent Skills
 
@@ -1070,24 +1088,39 @@ npx gitnexus analyze --force
 
 ### Hook augmentation and skip diagnostics
 
-The Claude Code / Antigravity hooks keep their **stderr** silent on normal skip
-paths so strict hook runners (e.g. Codex `PreToolUse`) never see unexpected
-diagnostic output.
+Claude Code and Codex hooks installed by `gitnexus setup`, and the Claude plugin,
+load the package's `gitnexus-hook` entrypoint. After upgrading an existing setup
+installation, run `gitnexus setup` again to replace the old runtime copies with
+the launcher. The launcher also supports installed `gitnexus-hook` shims, such
+as those created by pnpm.
 
-When a GitNexus process holds the repo DB write lock (the common case — the MCP
-server is running, or the DB-lock probe timed out and failed closed), the local
-CLI `augment` can't run (LadybugDB is single-writer). Rather than drop the
-augmentation, the hook hands the agent a short, conditional MCP-query hint on
+If no installation is available, recovery requires npm/npx and may need registry
+access. It fetches the exact version recorded by setup or the plugin manifest.
+The first call can wait up to 135 seconds for installation and cleanup; later
+calls load the recovered package directly from its cached location. That
+location is recorded under `~/.gitnexus/hook-launcher/`; deleting the package's
+npm cache causes recovery on the next call. Failed recovery has a five-minute
+retry cooldown. An available installation is used at its installed version;
+the exact version pin applies to recovery.
+
+The Claude Code, Codex, Claude plugin, and Antigravity hooks keep their **stderr**
+silent on normal skip paths so strict hook runners (e.g. Codex `PreToolUse`)
+never see unexpected diagnostic output.
+
+When a GitNexus process holds the repo DB write lock, or the ownership probe
+cannot rule that out, the hook skips local CLI access. It gives the agent a
+conditional MCP-query hint on
 stdout (the sanctioned `additionalContext` channel) — _"if the GitNexus MCP tools
 are live in this session, call `query` …"_ — so an agent that has the tools can
 still fetch graph-ranked context. The hint is throttled to at most once per repo
 per window (`GITNEXUS_MCP_HINT_THROTTLE_MS`, default 10 min; `0` disables), so an
-owner-locked session isn't nudged on every search. A stale-index reminder, or an
-already-current index, stays silent.
+owner-locked session isn't nudged on every search. An already-current index
+produces no reminder.
 
 To see why a hook skipped the CLI augment, set `GITNEXUS_DEBUG=1` and re-run the
-action — the hook writes the reason (e.g. `[GitNexus] augment skipped: MCP server
-owns DB`) and the stale-index hint to its stderr:
+action. This also enables launcher diagnostics for package discovery, recovery
+failures, and the retry cooldown. The stale-index reminder uses structured
+stdout; diagnostic reasons go to stderr:
 
 ```bash
 GITNEXUS_DEBUG=1 <your command>   # surfaces hook skip/diagnostic reasons on stderr

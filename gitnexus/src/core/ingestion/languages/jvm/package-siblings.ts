@@ -32,6 +32,14 @@ function getMaxInjectedSiblings(): number {
 export interface JvmPackageSiblingOptions {
   readonly languageLabel: string;
   readonly getPackageFact: (filePath: string) => JvmPackageFact | undefined;
+  /**
+   * Copy every sibling's module and non-self class type bindings into each
+   * file's module scope (default `true`). That copy costs files x siblings x
+   * bindings per package. A language that types inherited members through the
+   * superclass chain instead sets `false`; sibling class bindings are injected
+   * either way.
+   */
+  readonly mergeSiblingTypeBindings?: boolean;
 }
 
 export interface JvmPackageSiblingVisibility {
@@ -43,6 +51,14 @@ export interface JvmPackageSiblingVisibility {
     },
   ) => void;
   readonly isVisibilityIncomplete: (filePath: string) => boolean;
+  /**
+   * Whether a top-level type named `simpleName` is declared anywhere in this
+   * file's package, this file included. Built from every package member, so
+   * the injection cap and the large-package skip above do not hide a name.
+   * `undefined` when a workspace file has no reliable package, because such a
+   * file may declare that name in any package.
+   */
+  readonly hasSamePackageType: (filePath: string, simpleName: string) => boolean | undefined;
   /** `ScopeResolver.resolveImplicitInheritanceBase`: an unqualified base bound
    *  by the same-package rule, which the sibling bindings above only provide
    *  after the inheritance pre-pass has run. */
@@ -59,10 +75,45 @@ interface PackageBucket {
   readonly moduleScopes: { filePath: string; scope: ParsedFile['scopes'][number] }[];
 }
 
+interface SiblingCandidate {
+  readonly def: BindingRef['def'];
+  readonly filePath: string;
+}
+
+interface DirectoryRanking {
+  /** Every package candidate, nearest-first for a file in this directory. Own
+   *  file entries are included; the caller skips them. */
+  readonly ordered: readonly SiblingCandidate[];
+  /** Candidates that share the whole directory and continue past it, keyed by
+   *  the segment right after the directory. */
+  readonly pathsByNextSegment: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+interface SiblingTypeBinding {
+  readonly name: string;
+  readonly ref: TypeRef;
+}
+
+interface SiblingTypeBindingIndex {
+  /** The untruncated merge: every other sibling's module bindings, then every
+   *  other sibling's non-self class bindings, in path order; a name keeps the
+   *  first binding it meets. */
+  readonly mergeAll: (filePath: string, typeBindings: Map<string, TypeRef>) => void;
+  /** Record bindings a merge outside the index appended past `sizeBefore`. */
+  readonly recordAppended: (
+    filePath: string,
+    typeBindings: ReadonlyMap<string, TypeRef>,
+    sizeBefore: number,
+  ) => void;
+}
+
 export function createJvmPackageSiblingVisibility(
   options: JvmPackageSiblingOptions,
 ): JvmPackageSiblingVisibility {
   const incompleteFiles = new Set<string>();
+  const packageOfFile = new Map<string, string>();
+  const typeNamesByPackage = new Map<string, Set<string>>();
+  let packageFactsUnknown = false;
 
   function populateNamespaceSiblings(
     parsedFiles: readonly ParsedFile[],
@@ -72,6 +123,8 @@ export function createJvmPackageSiblingVisibility(
     },
   ): void {
     incompleteFiles.clear();
+    packageOfFile.clear();
+    typeNamesByPackage.clear();
     const buckets = new Map<string, PackageBucket>();
     const unknownPackageFiles = new Set<string>();
     const parsedPaths = new Set(parsedFiles.map((parsed) => parsed.filePath));
@@ -98,7 +151,22 @@ export function createJvmPackageSiblingVisibility(
       if (moduleScope !== undefined) {
         bucket.moduleScopes.push({ filePath: parsed.filePath, scope: moduleScope });
       }
+      packageOfFile.set(parsed.filePath, packageName);
+      let names = typeNamesByPackage.get(packageName);
+      if (names === undefined) typeNamesByPackage.set(packageName, (names = new Set()));
+      for (const scope of parsed.scopes) {
+        if (scope.kind !== 'Class' || scope.parent !== moduleScope?.id) continue;
+        const def = scope.ownedDefs.find(
+          (candidate) => isClassLike(candidate.type) || candidate.type === 'Annotation',
+        );
+        const spelling = def === undefined ? undefined : (def.qualifiedName ?? def.nodeId);
+        if (spelling !== undefined)
+          names.add(
+            spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1),
+          );
+      }
     }
+    packageFactsUnknown = unknownPackageFiles.size > 0;
 
     // A file whose package cannot be proven may shadow a wildcard-imported
     // type in any package. Conservatively disable wildcard attribution for the
@@ -112,6 +180,7 @@ export function createJvmPackageSiblingVisibility(
 
     const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
     const maxInjectedSiblings = getMaxInjectedSiblings();
+    const mergeTypeBindings = options.mergeSiblingTypeBindings !== false;
     let truncatedFiles = 0;
 
     for (const bucket of buckets.values()) {
@@ -124,7 +193,7 @@ export function createJvmPackageSiblingVisibility(
         continue;
       }
 
-      const classDefs: { def: BindingRef['def']; filePath: string }[] = [];
+      const classDefs: SiblingCandidate[] = [];
       for (const parsed of bucket.parsed) {
         const moduleScopeId = parsed.scopes.find((scope) => scope.kind === 'Module')?.id;
         for (const scope of parsed.scopes) {
@@ -150,6 +219,18 @@ export function createJvmPackageSiblingVisibility(
       }
       for (const sibling of bucket.moduleScopes) moduleScopeByPath.set(sibling.filePath, sibling);
       const allSiblingPaths = [...parsedByPath.keys()];
+      // The index addresses siblings by path and records appends per module
+      // map, so it needs one file per path and one map per module scope.
+      const bindingIndex =
+        mergeTypeBindings &&
+        allSiblingPaths.length === bucket.parsed.length &&
+        new Set(bucket.moduleScopes.map((sibling) => sibling.scope.typeBindings)).size ===
+          bucket.moduleScopes.length
+          ? createSiblingTypeBindingIndex(allSiblingPaths, moduleScopeByPath, parsedByPath)
+          : undefined;
+      // Proximity depends only on the two paths, so files sharing a directory
+      // share one ranking; rank once per directory instead of once per file.
+      const rankingByDirectory = new Map<string, DirectoryRanking>();
 
       for (const { filePath, scope } of bucket.moduleScopes) {
         let scopeAug = augmentations.get(scope.id);
@@ -159,29 +240,33 @@ export function createJvmPackageSiblingVisibility(
         }
 
         const ownSegments = segmentsByPath.get(filePath) ?? pathSegments(filePath);
-        const proximityCache = new Map<string, number>();
-        const candidates = classDefs.filter((candidate) => candidate.filePath !== filePath);
-        for (const candidate of candidates) {
-          if (!proximityCache.has(candidate.filePath)) {
-            proximityCache.set(
-              candidate.filePath,
-              sharedSegmentCount(segmentsByPath.get(candidate.filePath) ?? [], ownSegments),
-            );
-          }
+        const dirSegments = ownSegments.slice(0, -1);
+        const dirKey = `${dirSegments.length}:${dirSegments.join('/')}`;
+        let ranking = rankingByDirectory.get(dirKey);
+        if (ranking === undefined) {
+          ranking = rankForDirectory(classDefs, dirSegments, segmentsByPath);
+          rankingByDirectory.set(dirKey, ranking);
         }
         // Nearest-first by shared path prefix. Ties (the common case in a flat
         // package, where every sibling shares the same directory) keep the
         // walker's traversal order, so the retained set is deterministic but
         // arbitrary among equally-near candidates — which is why truncation
         // marks the file incomplete below rather than being treated as exact.
-        candidates.sort(
-          (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
-        );
+        // The directory ranking is exact for this file unless another path
+        // continues past the directory with this file's own name (a directory
+        // named like the file, or a path spelling that normalizes to it): that
+        // candidate shares one more segment, so rank this file on its own.
+        const sameNamePaths = ranking.pathsByNextSegment.get(ownSegments[ownSegments.length - 1]);
+        const candidates =
+          sameNamePaths !== undefined && (sameNamePaths.size > 1 || !sameNamePaths.has(filePath))
+            ? rankByProximity(classDefs, filePath, ownSegments, segmentsByPath)
+            : ranking.ordered;
 
         const injectedIds = new Set<string>();
         const injectedPaths = new Set<string>();
         let truncated = false;
         for (const { def, filePath: defPath } of candidates) {
+          if (defPath === filePath) continue;
           if (injectedIds.has(def.nodeId) || def.qualifiedName === undefined) continue;
           if (maxInjectedSiblings > 0 && injectedIds.size >= maxInjectedSiblings) {
             truncated = true;
@@ -206,6 +291,9 @@ export function createJvmPackageSiblingVisibility(
           truncatedFiles++;
         }
 
+        // The language opted out of the type-binding copy (see the option).
+        if (!mergeTypeBindings) continue;
+
         // Keep the two halves of "what this file can see" in agreement: when
         // the cap truncated the binding set, merge type bindings from the same
         // bounded sibling set only — and iterate that set directly, so the cap
@@ -213,6 +301,11 @@ export function createJvmPackageSiblingVisibility(
         // untruncated scope merges every sibling as before, including ones that
         // contribute no class-like def.
         const typeBindings = scope.typeBindings as Map<string, TypeRef>;
+        if (!truncated && bindingIndex !== undefined) {
+          bindingIndex.mergeAll(filePath, typeBindings);
+          continue;
+        }
+        const sizeBefore = typeBindings.size;
         const mergePaths = truncated ? injectedPaths : allSiblingPaths;
         // Module scopes first, then class scopes: module-level bindings win on
         // a name collision, which the two-pass order (not file order) encodes.
@@ -235,6 +328,7 @@ export function createJvmPackageSiblingVisibility(
             }
           }
         }
+        bindingIndex?.recordAppended(filePath, typeBindings, sizeBefore);
       }
     }
 
@@ -302,13 +396,18 @@ export function createJvmPackageSiblingVisibility(
   return {
     populateNamespaceSiblings,
     isVisibilityIncomplete: (filePath) => incompleteFiles.has(filePath),
+    hasSamePackageType: (filePath, simpleName) => {
+      const packageName = packageOfFile.get(filePath);
+      if (packageFactsUnknown || packageName === undefined) return undefined;
+      return typeNamesByPackage.get(packageName)?.has(simpleName) === true;
+    },
     resolveImplicitInheritanceBase: (baseName, derivingClass, scopes, site) => {
       // An explicit typealias/non-class import can resolve without producing a
       // class binding. Its claim still takes precedence over package siblings.
       const moduleScope = scopes.moduleScopes.get(derivingClass.filePath);
       if (
         moduleScope !== undefined &&
-        scopes.imports.get(moduleScope)?.some((edge) => edge.localName === baseName)
+        scopes.imports.edgesAt(moduleScope)?.some((edge) => edge.localName === baseName)
       )
         return undefined;
       if (site !== undefined && hasInheritedEnclosingClass(site, scopes)) return undefined;
@@ -332,6 +431,167 @@ export function createJvmPackageSiblingVisibility(
 
 function pathSegments(filePath: string): string[] {
   return filePath.replace(/\\/g, '/').split('/');
+}
+
+/**
+ * Rank `candidates` for any file directly inside `dirSegments`. A candidate
+ * that shares the whole directory scores at least the directory depth against
+ * every such file; the rest score below it, and that score does not depend on
+ * the file name. So the full-directory candidates come first in walker order
+ * and the rest follow, stably sorted by shared prefix. The one exception, a
+ * candidate continuing past the directory with the file's own name, is
+ * surfaced through `pathsByNextSegment` for the caller to rank exactly.
+ */
+function rankForDirectory(
+  candidates: readonly SiblingCandidate[],
+  dirSegments: readonly string[],
+  segmentsByPath: ReadonlyMap<string, readonly string[]>,
+): DirectoryRanking {
+  const depth = dirSegments.length;
+  const ordered: SiblingCandidate[] = [];
+  const farther: { candidate: SiblingCandidate; shared: number }[] = [];
+  const pathsByNextSegment = new Map<string, Set<string>>();
+  for (const candidate of candidates) {
+    const segments = segmentsByPath.get(candidate.filePath) ?? [];
+    const shared = sharedSegmentCount(segments, dirSegments);
+    if (shared < depth) {
+      farther.push({ candidate, shared });
+      continue;
+    }
+    ordered.push(candidate);
+    if (segments.length > depth) {
+      const next = segments[depth];
+      let paths = pathsByNextSegment.get(next);
+      if (paths === undefined) pathsByNextSegment.set(next, (paths = new Set()));
+      paths.add(candidate.filePath);
+    }
+  }
+  farther.sort((a, b) => b.shared - a.shared);
+  for (const { candidate } of farther) ordered.push(candidate);
+  return { ordered, pathsByNextSegment };
+}
+
+/** Exact per-file nearest-first ranking, for the rare file a directory
+ *  ranking cannot serve. */
+function rankByProximity(
+  classDefs: readonly SiblingCandidate[],
+  filePath: string,
+  ownSegments: readonly string[],
+  segmentsByPath: ReadonlyMap<string, readonly string[]>,
+): SiblingCandidate[] {
+  const proximityCache = new Map<string, number>();
+  const candidates = classDefs.filter((candidate) => candidate.filePath !== filePath);
+  for (const candidate of candidates) {
+    if (!proximityCache.has(candidate.filePath)) {
+      proximityCache.set(
+        candidate.filePath,
+        sharedSegmentCount(segmentsByPath.get(candidate.filePath) ?? [], ownSegments),
+      );
+    }
+  }
+  candidates.sort(
+    (a, b) => (proximityCache.get(b.filePath) ?? 0) - (proximityCache.get(a.filePath) ?? 0),
+  );
+  return candidates;
+}
+
+/**
+ * The untruncated merge gives each name the binding of the first other sibling
+ * that has it, so a merge only needs those first holders, in walk order: it
+ * then costs the package's distinct names instead of every sibling's bindings.
+ *
+ * A class binding needs its first two holders, for a file that holds it
+ * itself. A module binding needs only its first: the merge writes into the
+ * file's own module map, so a file that holds a name already has it.
+ *
+ * Module maps are read live: each merge appends to its own file's map, and
+ * later merges walk those appends. So every append is recorded here, after the
+ * map's earlier entries. Maps only grow, so a sibling that a lower one has
+ * overtaken for a name never supplies it again; its entry is dropped on the
+ * next walk. Class bindings are never written, so their index is built once.
+ */
+function createSiblingTypeBindingIndex(
+  siblingPaths: readonly string[],
+  moduleScopeByPath: ReadonlyMap<string, PackageBucket['moduleScopes'][number]>,
+  parsedByPath: ReadonlyMap<string, ParsedFile>,
+): SiblingTypeBindingIndex {
+  const indexByPath = new Map<string, number>();
+  const firstModuleHolder = new Map<string, number>();
+  const moduleBindings: SiblingTypeBinding[][] = [];
+  const classBindings: SiblingTypeBinding[][] = [];
+  const classHolderCount = new Map<string, number>();
+
+  const holdModuleBinding = (index: number, name: string, ref: TypeRef): void => {
+    const first = firstModuleHolder.get(name);
+    if (first !== undefined && first < index) return;
+    firstModuleHolder.set(name, index);
+    moduleBindings[index].push({ name, ref });
+  };
+
+  siblingPaths.forEach((path, index) => {
+    indexByPath.set(path, index);
+    moduleBindings.push([]);
+    for (const [name, ref] of moduleScopeByPath.get(path)?.scope.typeBindings ?? []) {
+      holdModuleBinding(index, name, ref);
+    }
+    const ownClassBindings: SiblingTypeBinding[] = [];
+    const seen = new Set<string>();
+    for (const scope of parsedByPath.get(path)?.scopes ?? []) {
+      if (scope.kind !== 'Class') continue;
+      for (const [name, ref] of scope.typeBindings) {
+        if (ref.source === 'self' || seen.has(name)) continue;
+        seen.add(name);
+        const count = classHolderCount.get(name) ?? 0;
+        if (count === 2) continue;
+        classHolderCount.set(name, count + 1);
+        ownClassBindings.push({ name, ref });
+      }
+    }
+    classBindings.push(ownClassBindings);
+  });
+
+  const recordAppends = (filePath: string, appended: readonly SiblingTypeBinding[]): void => {
+    const own = indexByPath.get(filePath);
+    if (own === undefined) return;
+    for (const { name, ref } of appended) holdModuleBinding(own, name, ref);
+  };
+
+  return {
+    mergeAll: (filePath, typeBindings) => {
+      const own = indexByPath.get(filePath);
+      const appended: SiblingTypeBinding[] = [];
+      for (let index = 0; index < moduleBindings.length; index++) {
+        if (index === own) continue;
+        const bindings = moduleBindings[index];
+        let kept = 0;
+        for (const binding of bindings) {
+          if (firstModuleHolder.get(binding.name) !== index) continue;
+          bindings[kept++] = binding;
+          if (typeBindings.has(binding.name)) continue;
+          typeBindings.set(binding.name, binding.ref);
+          appended.push(binding);
+        }
+        bindings.length = kept;
+      }
+      for (let index = 0; index < classBindings.length; index++) {
+        if (index === own) continue;
+        for (const binding of classBindings[index]) {
+          if (typeBindings.has(binding.name)) continue;
+          typeBindings.set(binding.name, binding.ref);
+          appended.push(binding);
+        }
+      }
+      recordAppends(filePath, appended);
+    },
+    recordAppended: (filePath, typeBindings, sizeBefore) => {
+      const appended: SiblingTypeBinding[] = [];
+      let position = 0;
+      for (const [name, ref] of typeBindings) {
+        if (position++ >= sizeBefore) appended.push({ name, ref });
+      }
+      recordAppends(filePath, appended);
+    },
+  };
 }
 
 function sharedSegmentCount(aSegments: readonly string[], bSegments: readonly string[]): number {

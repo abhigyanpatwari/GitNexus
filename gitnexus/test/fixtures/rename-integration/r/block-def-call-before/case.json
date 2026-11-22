@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a test_that() block calls the name before its block-local function literal is assigned: that call reaches the function being renamed, but the index binds every call in the block to the block-local definition.",
+  "categories": ["block-scope", "call-order", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "foo.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

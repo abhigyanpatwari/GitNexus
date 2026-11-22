@@ -26,6 +26,11 @@ function response(content: string, finishReason = 'stop'): Response {
   });
 }
 
+/** The grouping answer a forced run asks for first, before any page. */
+function sameGrouping(): Response {
+  return response(JSON.stringify({ Billing: ['billing.ts'], Shipping: ['shipping.ts'] }));
+}
+
 describe('wiki generation after a completion-token limit', () => {
   let repoPath: string;
   let storagePath: string;
@@ -228,7 +233,9 @@ describe('wiki generation after a completion-token limit', () => {
   it('retries failed forced generation even when an older wiki covers the same commit', async () => {
     await generator().run();
     fetchMock.mockClear();
-    fetchMock.mockResolvedValueOnce(response('cut off', 'length'));
+    fetchMock
+      .mockResolvedValueOnce(sameGrouping())
+      .mockResolvedValueOnce(response('cut off', 'length'));
 
     expect((await generator({ force: true }).run()).failedModules).toEqual(['Billing']);
     expect((await generator().run()).mode).toBe('incremental');
@@ -277,6 +284,7 @@ describe('wiki generation after a completion-token limit', () => {
     await generator().run();
     fetchMock.mockClear();
     fetchMock
+      .mockResolvedValueOnce(sameGrouping())
       .mockResolvedValueOnce(response('Billing complete'))
       .mockResolvedValueOnce(response('Shipping complete'))
       .mockResolvedValueOnce(response('overview cut off', 'length'));
@@ -290,7 +298,10 @@ describe('wiki generation after a completion-token limit', () => {
       mode: 'full',
       failedModules: [],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(await fs.readFile(path.join(wikiPath, 'billing.md'), 'utf8')).toContain(
+      'Billing complete',
+    );
     expect(await fs.readFile(path.join(wikiPath, 'overview.md'), 'utf8')).toContain(
       'Complete documentation.',
     );

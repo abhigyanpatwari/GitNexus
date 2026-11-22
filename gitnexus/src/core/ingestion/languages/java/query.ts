@@ -127,6 +127,15 @@ const JAVA_SCOPE_QUERY = `
   type: (scoped_type_identifier) @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.parameter
 
+(formal_parameter
+  type: [(array_type) (annotated_type)] @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+(spread_parameter
+  [(type_identifier) (generic_type) (scoped_type_identifier) (annotated_type) (array_type) (integral_type) (floating_point_type) (boolean_type)] @type-binding.type
+  (variable_declarator
+    name: (identifier) @type-binding.name)) @type-binding.parameter
+
 ;; Primitive parameters own their lexical name even though they have no class target.
 (formal_parameter
   type: [(integral_type) (floating_point_type) (boolean_type)] @type-binding.type
@@ -140,6 +149,11 @@ const JAVA_SCOPE_QUERY = `
 
 (local_variable_declaration
   type: (generic_type) @type-binding.type
+  declarator: (variable_declarator
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+(local_variable_declaration
+  type: [(array_type) (scoped_type_identifier) (annotated_type)] @type-binding.type
   declarator: (variable_declarator
     name: (identifier) @type-binding.name)) @type-binding.annotation
 
@@ -166,23 +180,7 @@ const JAVA_SCOPE_QUERY = `
   (#eq? @_var_type "var")
   declarator: (variable_declarator
     name: (identifier) @type-binding.name
-    value: (field_access
-      field: (identifier) @type-binding.type))) @type-binding.alias
-
-;; Type bindings — enhanced-for with var: for (var user : users)
-(enhanced_for_statement
-  (type_identifier) @_var_type
-  (#eq? @_var_type "var")
-  (identifier) @type-binding.name
-  (identifier) @type-binding.type) @type-binding.alias
-
-;; Enhanced-for with var + method iterable: for (var user : data.values())
-(enhanced_for_statement
-  (type_identifier) @_var_type
-  (#eq? @_var_type "var")
-  (identifier) @type-binding.name
-  (method_invocation
-    object: (identifier) @type-binding.type)) @type-binding.alias
+    value: (field_access) @type-binding.type)) @type-binding.alias
 
 ;; Type bindings — var u = new User(); (Java 10+ local variable type inference)
 ;; tree-sitter-java parses \`var\` as a \`type_identifier\` with text "var".
@@ -194,7 +192,7 @@ const JAVA_SCOPE_QUERY = `
   declarator: (variable_declarator
     name: (identifier) @type-binding.name
     value: (object_creation_expression
-      type: (type_identifier) @type-binding.type))) @type-binding.constructor
+      type: [(type_identifier) (generic_type) (scoped_type_identifier) (annotated_type)] @type-binding.type))) @type-binding.constructor
 
 ;; Type bindings — field declarations: private User user;
 (field_declaration
@@ -207,6 +205,18 @@ const JAVA_SCOPE_QUERY = `
   declarator: (variable_declarator
     name: (identifier) @type-binding.name)) @type-binding.annotation
 
+(field_declaration
+  type: [(array_type) (scoped_type_identifier) (annotated_type)] @type-binding.type
+  declarator: (variable_declarator
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
+;; Interface fields are constant_declaration nodes, including implicit
+;; public static final fields. Keep the binding in the declaring interface.
+(constant_declaration
+  type: [(type_identifier) (generic_type) (array_type) (scoped_type_identifier) (annotated_type)] @type-binding.type
+  declarator: (variable_declarator
+    name: (identifier) @type-binding.name)) @type-binding.annotation
+
 ;; Type bindings — method return type: public User getUser() { }
 (method_declaration
   type: (type_identifier) @type-binding.type
@@ -216,23 +226,18 @@ const JAVA_SCOPE_QUERY = `
   type: (generic_type) @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.return
 
-;; Type bindings — enhanced for: for (User u : list)
-(enhanced_for_statement
-  type: (type_identifier) @type-binding.type
-  name: (identifier) @type-binding.name) @type-binding.annotation
-
-(enhanced_for_statement
-  type: (generic_type) @type-binding.type
-  name: (identifier) @type-binding.name) @type-binding.annotation
+(method_declaration
+  type: [(array_type) (scoped_type_identifier) (annotated_type)] @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.return
 
 ;; Type bindings — instanceof pattern (Java 16+): if (obj instanceof User user)
 (instanceof_expression
-  (type_identifier) @type-binding.type
+  [(type_identifier) (scoped_type_identifier) (annotated_type)] @type-binding.type
   (identifier) @type-binding.name) @type-binding.pattern
 
 ;; Type bindings — switch case pattern (Java 21+): case User user ->
 (type_pattern
-  (type_identifier) @type-binding.type
+  [(type_identifier) (scoped_type_identifier) (annotated_type)] @type-binding.type
   (identifier) @type-binding.name) @type-binding.pattern
 
 ;; References — all method calls: foo() and obj.method()

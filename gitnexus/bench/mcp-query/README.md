@@ -32,7 +32,8 @@ at the same build. Do not discard slow samples or rerun until a check turns gree
 Both runtimes index the same fixed generated repository containing 32 short and
 32 oversized TypeScript functions. Each server uses its own index and registry,
 so engine upgrades can compare different native storage formats. Index creation
-is outside the timing window. Both indexes must be complete and their responses
+is outside the timing window and runs with an explicit `--memory-budget` of
+1024 MiB, so it does not depend on the host's RAM. Both indexes must be complete and their responses
 must pass the parity checks below. The report retains both indexes' metadata in
 `indexes`; `index` remains the candidate metadata for existing report consumers.
 Corpus generation and dependency installation use no model.

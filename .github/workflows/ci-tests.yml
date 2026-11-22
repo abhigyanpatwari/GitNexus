@@ -10,7 +10,9 @@ jobs:
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # A noisy runner extends the comparison from 7 to at most 21 pairs. The
+    # real corpus takes about five minutes per pair, plus one warmup pair.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:
@@ -43,9 +45,6 @@ jobs:
       - name: Build baseline runtime
         working-directory: baseline/gitnexus
         run: npm ci
-      - name: Check performance gate decisions
-        working-directory: gitnexus
-        run: npx vitest run test/unit/file-result-reuse-benchmark.test.ts
       - name: Require parse-cache speed and memory improvements
         working-directory: gitnexus
         shell: bash
@@ -56,9 +55,9 @@ jobs:
           if [[ "$CORPUS" == real ]]; then
             corpus_args+=(--corpus "$GITHUB_WORKSPACE/baseline/gitnexus/src")
           fi
-          node bench/file-result-reuse/measure.mjs --check \
+          node bench/file-result-reuse/benchmark.js --check \
             --baseline-dist "$GITHUB_WORKSPACE/baseline/gitnexus/dist" \
-            --pairs 7 --files 1024 --workers 2 \
+            --pairs 7 --max-pairs 21 --files 1024 --workers 2 \
             --output "$RUNNER_TEMP/file-result-reuse/measure.json" \
             "${corpus_args[@]}"
       - name: Publish speed and memory summary
@@ -390,6 +389,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -419,6 +419,7 @@ jobs:
         shell: bash
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
+          GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: >-
           npx vitest run
           --shard="$SHARD"
@@ -444,14 +445,13 @@ jobs:
   # Merge the sharded coverage blobs into one report and enforce the real
   # thresholds on the combined ('new') coverage — `vitest --mergeReports` re-runs
   # nothing, it just reduces the stored blobs. Also emits the merged
-  # test-results.json and runs the (unsharded) web + docker suites, so the
-  # `test-reports` artifact keeps the exact shape ci-report.yml consumes for its
-  # base-branch ('baseline') vs new coverage delta.
+  # test-results.json and runs the (unsharded) web + docker suites.
   coverage-merge:
     name: ubuntu / coverage merge
     needs: tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The optional LCOV upload has its own two-minute timeout after the tests.
+    timeout-minutes: 17
     env:
       GITNEXUS_REQUIRE_FTS: '1'
     steps:
@@ -459,6 +459,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
+        id: setup
         with:
           build: 'true'
       - name: Download coverage blobs
@@ -480,9 +481,7 @@ jobs:
           --reporter=./scripts/shard-timings-reporter.ts
           --outputFile=test-results.json
           --coverage
-          --coverage.reporter=json-summary
-          --coverage.reporter=json
-          --coverage.reporter=text
+          --coverage.reporter=lcovonly
           --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
       - name: Upload learned coverage timings
@@ -493,17 +492,23 @@ jobs:
           include-hidden-files: true
       # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies
+        id: install-web
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: npm ci
         working-directory: gitnexus-web
       - name: Run gitnexus-web unit tests
+        if: ${{ !cancelled() && steps.install-web.outcome == 'success' }}
         run: >-
           npx vitest run
           --reporter=default
           --reporter=../gitnexus/scripts/execution-reporter.ts
           --includeTaskLocation
           --outputFile=web-test-results.json
+          --coverage
+          --coverage.reporter=lcovonly
         working-directory: gitnexus-web
       - name: Run docker-server integration tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: node --test docker-server.test.mjs
       - name: Upload test reports
         if: always()
@@ -511,10 +516,26 @@ jobs:
         with:
           name: coverage-reports
           path: |
-            gitnexus/coverage/coverage-summary.json
-            gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
+          retention-days: 5
+      # Vitest writes LCOV before it reports a threshold failure. Preserve the
+      # original test outcomes and let the scanner report any transfer failure.
+      - name: Upload SonarQube coverage
+        if: >-
+          !cancelled() && ((github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository) ||
+          (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        continue-on-error: true
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sonar-coverage
+          path: |
+            gitnexus/coverage/lcov.info
+            gitnexus-web/coverage/lcov.info
+          if-no-files-found: error
+          overwrite: true
           retention-days: 5
 
   # Single source of truth for the platform-sensitive shard count. TOTAL below
@@ -650,6 +671,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -684,6 +706,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
           GITNEXUS_TEST_REPORT: ${{ matrix.os }}-${{ matrix.shard }}.json
+          GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: npx tsx scripts/run-cross-platform.ts --shard="$SHARD"
         working-directory: gitnexus
       - name: Upload platform execution report
@@ -1090,6 +1113,7 @@ jobs:
           set -euo pipefail
           npm ci
           npm run build
+          node test/compat/watch-backend.mjs chokidar-v6
         working-directory: gitnexus
       # Switch to the engines-floor Node AFTER building — native deps built on
       # 22.x load across the whole 22.x ABI line, and nothing installs after this
@@ -1104,6 +1128,7 @@ jobs:
           set -euo pipefail
           node --version
           node --version | grep -q '^v22\.18\.' || { echo "expected Node 22.18.x" >&2; exit 1; }
+          node test/compat/watch-backend.mjs chokidar
           for m in \
             core/embeddings/runtime-install \
             core/embeddings/onnxruntime-node-resolver \
@@ -1212,8 +1237,10 @@ jobs:
   benchmarks:
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
-    # The callable size matrix runs 63 full analyses and 18 heap probes.
-    timeout-minutes: 30
+    # The serial guards alone can take 27 minutes on a slower runner. Leave
+    # time for the pipeline suites to finish and upload their receipt;
+    # individual benchmark performance budgets remain enforced by --check.
+    timeout-minutes: 45
     steps:
       # persist-credentials: false — this job only runs npm + vitest benchmarks
       # and never pushes; the default-persisted token in .git/config would be at
@@ -1268,6 +1295,17 @@ jobs:
         run: node --import tsx bench/trpc-route-extractor/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ruby bare-read correctness + scaling guards (#3880)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins bare parameter reads in nested blocks and heredoc
+        # bodies (and the opener rule's kept call), and checks capture and
+        # resolution scaling as methods (4x), block depth (16x, 4 -> 64),
+        # heredocs per opener line or reads per heredoc body (4x) grow.
+        # Budgets: see baseline.json.
+        run: node --import tsx bench/ruby-bare-reads/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Go route-fact correctness and linear scaling (#3750)
         if: ${{ !cancelled() }}
         run: node --expose-gc --import tsx bench/go-route-facts/measure.js --check --output go-route-facts.json
@@ -1294,6 +1332,16 @@ jobs:
         # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
         # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
         run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart accessor-scope correctness + scaling guards (#3904)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins getter, setter and redeclared-parameter edges and
+        # checks capture and resolution scaling as classes (one per file),
+        # functions, accessors per class or parameters per function grow 4x.
+        # Budgets: baseline.json (all 1.5).
+        run: node --import tsx bench/dart-accessor-scopes/measure.mjs --check
         working-directory: gitnexus
 
       - name: Rename output construction scaling guard
@@ -1397,14 +1445,10 @@ jobs:
         run: node --import tsx bench/swift-package-imports/measure.mjs --check
         working-directory: gitnexus
 
-      - name: MCP tools/list countRepos vs listRepos guards (#3259, #3184)
+      - name: MCP discovery and tools/list vs Git freshness (#3259, #3979)
         if: ${{ !cancelled() }}
-        # Build-free: exact registry cardinality + tool-roster + schema-flag
-        # floors, then ratio timing only (countRepos/listRepos and
-        # listTools/listRepos). No millisecond ceiling — this repo has
-        # already been bitten by a fixed ms budget. Isolated GITNEXUS_HOME;
-        # fixture is N real git repos so listRepos pays rev-list. See
-        # bench/mcp-tools-list/measure.mjs.
+        # Compare validated counting, listing and tools/list to a full fixture
+        # freshness check. The benchmark also checks the roster and schema.
         run: node --import tsx bench/mcp-tools-list/measure.mjs --check
         working-directory: gitnexus
 
@@ -1415,6 +1459,15 @@ jobs:
         # independent of corpus size. Rationale and history: see the header of
         # bench/cpp-qualified-ns/measure.mjs.
         run: node --import tsx bench/cpp-qualified-ns/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Group manifest-link matching guards (#1188)
+        if: ${{ !cancelled() }}
+        # Build-free: a group.yaml link's consumer may only match providers in
+        # the repo the link names. Fingerprints every cross-link and unmatched
+        # contract of the matching stage and guards that its cost stays linear
+        # in the number of links. See bench/group-link-matching/measure.mjs.
+        run: node --import tsx bench/group-link-matching/measure.mjs --check
         working-directory: gitnexus
 
       - name: Import-target resolution guards (every registered language, #2877–#2909, PR #2911)
@@ -1527,11 +1580,31 @@ jobs:
         run: node --import tsx bench/kotlin-import-target/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Ruby block-parameter stop correctness + scaling guards (#3905)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every method's CALLS edges when blocks rebind a
+        # typed local, side by side or nested, and checks capture and resolution
+        # scaling as methods (4x), blocks per method (16x) or nesting depth (4x)
+        # grow. Budgets: see baseline.json.
+        run: node --import tsx bench/ruby-block-param-stop/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Ruby gem-boundary correctness + scaling guards (#3096)
         if: ${{ !cancelled() }}
         # Includes real manifest loading; checks scoped resolution and scaling
         # as sibling projects or declared gem counts grow independently.
         run: node --import tsx bench/ruby-gem-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart deferred-import correctness + scaling guards (#3882)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins the graph `deferred as p` produces, which must
+        # equal the `as p` control, and checks capture and resolution scaling as
+        # deferred prefixes or uses per prefix grow 4x. Budgets and the measured
+        # pre-existing resolution term: see baseline.json.
+        run: node --import tsx bench/dart-deferred-imports/measure.mjs --check
         working-directory: gitnexus
 
       - name: Receiver-resolution drop guards
@@ -1558,6 +1631,49 @@ jobs:
         # rebaseline path demands the movement be explained. No separate
         # drop-ratchet gate is needed on top of this.
         run: node --import tsx bench/receiver-resolution/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Dart closure-binder correctness + scaling guards (#3903)
+        if: ${{ !cancelled() }}
+        # NOT build-free: parses through the dist parse worker (the setup action
+        # above builds). Pins every function's CALLS edges when closures rebind a
+        # receiver name, side by side or nested, and checks capture and resolution
+        # scaling against input/output growth across geometric 16x function,
+        # closure and depth sweeps. Deterministic AST and Map visit guards
+        # also reject cheap quadratic scans.
+        # Use the full sampling profile: the short profile's maximum-of-pairs
+        # timing statistic is noisy even on the base. Work/timing budgets stay
+        # unchanged; accuracy and RSS cells run in fresh processes.
+        run: node --import tsx bench/dart-closure-binders/measure.mjs --full --check
+        working-directory: gitnexus
+
+      - name: HTTP route symbol time / memory / work scaling (#3929)
+        if: ${{ !cancelled() }}
+        run: node --expose-gc --import tsx bench/http-route-symbols/measure.mjs --check --output http-route-symbols.json
+        working-directory: gitnexus
+
+      - name: Upload HTTP route symbol measurements
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: http-route-symbols-benchmark
+          path: gitnexus/http-route-symbols.json
+          retention-days: 5
+
+      - name: Ownership-reconciliation correctness + scaling guards
+        if: ${{ !cancelled() }}
+        # Build-free: extracts the corpus with the TypeScript scope extractor on
+        # the main thread. Pins what reconcileOwnership registers (exact cells and
+        # fingerprints), including empty ownerless buckets, checks
+        # its time scaling as the file count grows 4x (budget 1.5), and counts the
+        # registry entries the pass reads: they must grow with the defs, not with
+        # defs x shared-bucket size (budget 1.1).
+        run: node --import tsx bench/ownership-reconcile/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Scope capture and binding work guards (#3915)
+        if: ${{ !cancelled() }}
+        run: node --import tsx bench/scope-processing/measure.mjs --check
         working-directory: gitnexus
 
       - name: Scope-emission guards (#2699)
@@ -1696,8 +1812,21 @@ jobs:
           GITNEXUS_DEBUG_HEAP: '1'
         run: node --import tsx bench/scope-resolution/dense-java.mts 300 20 10 --check 2>&1 | tee scope-resolution-dense-java.log
         working-directory: gitnexus
+      - name: Check Java on-demand import storage and its graph baseline
+        shell: bash
+        run: node --expose-gc --import tsx bench/scope-resolution/wildcard-java.mts 700 700 --check 2>&1 | tee scope-resolution-wildcard-java.log
+        working-directory: gitnexus
+      - name: Check Java on-demand import storage while re-export closures are built
+        shell: bash
+        run: node --expose-gc --max-old-space-size=180 --import tsx bench/scope-resolution/wildcard-java.mts 700 700 --closure --check 2>&1 | tee scope-resolution-wildcard-java-closure.log
+        working-directory: gitnexus
       - name: Check Java overload and ingestion scaling
         run: node bench/java-overload-resolution/measure.js --check --output java-overload-resolution-benchmark.json
+        working-directory: gitnexus
+      # Exact-target, capture and graph fingerprints plus normalized growth
+      # budgets (no absolute milliseconds); about one minute locally.
+      - name: Check Java ingestion correctness and scaling baseline
+        run: node bench/java-ingestion/measure.mjs --check --output java-ingestion-benchmark.json
         working-directory: gitnexus
       - name: Upload scope-resolution measurements
         if: always()
@@ -1709,7 +1838,10 @@ jobs:
             gitnexus/scope-resolution-call-signature-memory.json
             gitnexus/import-emission/measure.json
             gitnexus/scope-resolution-dense-java.log
+            gitnexus/scope-resolution-wildcard-java.log
+            gitnexus/scope-resolution-wildcard-java-closure.log
             gitnexus/java-overload-resolution-benchmark.json
+            gitnexus/java-ingestion-benchmark.json
           retention-days: 5
 
   # Locked eval suite. setup-uv and uv itself are immutable so CI exercises
@@ -1724,6 +1856,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        id: uv
         with:
           version: '0.11.23'
           python-version: '3.13'
@@ -1739,16 +1872,19 @@ jobs:
           path: eval/pytest-locked.xml
           retention-days: 5
       - uses: ./.github/actions/setup-gitnexus
+        id: setup
+        if: ${{ !cancelled() && steps.uv.outcome == 'success' }}
         with:
           build: 'true'
       - name: Exercise real workflow evidence preflight
-        if: ${{ !cancelled() }}
+        id: preflight
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: >-
           npx vitest run test/unit/skill-evolution-workflow.test.ts
           --reporter=default --reporter=./scripts/execution-reporter.ts --outputFile=preflight.json
         working-directory: gitnexus
       - name: Upload preflight execution report
-        if: always()
+        if: ${{ !cancelled() && (steps.preflight.outcome == 'success' || steps.preflight.outcome == 'failure') }}
         uses: ./.github/actions/upload-test-artifact
         with:
           name: execution-preflight
@@ -1775,7 +1911,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
-      - name: Download coverage and web reports
+      - name: Download CLI and web execution reports
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
@@ -1802,27 +1938,23 @@ jobs:
         with:
           name: test-reports
           path: |
-            gitnexus/coverage/coverage-summary.json
-            gitnexus/coverage/coverage-final.json
             gitnexus/test-results.json
             gitnexus-web/web-test-results.json
             eval/pytest-results.json
           retention-days: 5
 
-  # Native Linux ownership and Bubblewrap boundary. The environment flag makes
-  # the real namespace test mandatory; a missing/blocked bwrap is a failure.
+  # All three native hosts run the paired proposal evaluator. Jammy also
+  # exercises the historical nested Bash method on a compatible stock kernel.
   eval-containment-linux:
-    name: eval / containment (ubuntu)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    name: eval / containment (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04]
+    timeout-minutes: 40
     env:
-      GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
-      # This job installs bubblewrap, the pinned runtime and a built GitNexus,
-      # so the offline sweep runs here with nothing provisioning-stubbed: real
-      # containment, real mounts, real graph. A missing piece fails the job
-      # rather than silently falling back to the stubbed path.
-      GITNEXUS_REQUIRE_FULL_SWEEP: '1'
-      GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
+      GITNEXUS_REQUIRE_PROPOSAL_CANARY: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1847,10 +1979,6 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends bubblewrap ripgrep socat
-          apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
           canary_runtime="${RUNNER_TEMP}/claude-canary"
           install -d -m 0700 "${canary_runtime}"
           install -m 0600 \
@@ -1869,11 +1997,39 @@ jobs:
             "${canary_runtime}/node_modules/@anthropic-ai/claude-code/package.json"
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
+      - name: Probe the host's native sandbox capabilities
+        working-directory: eval
+        env:
+          IMAGE: ${{ matrix.os }}
+          CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+        run: |
+          uv run --locked --extra dev python - <<'PY'
+          import os
+          from pathlib import Path
+          from workflow_bench.release_preflight import legacy_sandbox_support
+
+          outer, bash = legacy_sandbox_support(Path(os.environ["CLAUDE_CANARY_BIN"]))
+          image = os.environ["IMAGE"]
+          print(f"{image}: Bubblewrap={outer}, nested Claude Bash={bash}", flush=True)
+          if image == "ubuntu-22.04" and not bash:
+              raise SystemExit("the legacy Bash compatibility run is mandatory on Jammy")
+          if image == "ubuntu-26.04" and not outer:
+              raise SystemExit("the native Bubblewrap run is mandatory on Resolute")
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+              print(f"GITNEXUS_REQUIRE_BWRAP_CANARY={int(outer)}", file=env)
+              print(f"GITNEXUS_REQUIRE_FULL_SWEEP={int(outer)}", file=env)
+              print(f"GITNEXUS_REQUIRE_CLAUDE_CANARY={int(bash)}", file=env)
+          PY
       - name: Install and build pinned GitNexus runtime
         run: |
           npm ci
           npm run build
         working-directory: gitnexus
+      - name: Verify hook subprocess cleanup
+        working-directory: gitnexus
+        run: >-
+          npm test -- test/unit/hooks.test.ts test/unit/factory-plugin.test.ts
+          -t 'SIGKILLed hook leaves no .*grandchild'
       # Release evaluation grades tasks with dependencies built at the pinned
       # task commit; prove the hidden oracles against that same toolchain.
       - name: Build the pinned task toolchain that grades release evaluation
@@ -1887,6 +2043,7 @@ jobs:
             --repo "${RUNNER_TEMP}/tasks-base"
       - name: Prove process-tree and sandbox containment
         env:
+          JUNIT_REPORT: pytest-${{ matrix.os }}.xml
           CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
           GITNEXUS_ORACLE_TASK_DEPENDENCIES: ${{ runner.temp }}/tasks-base
         run: >-
@@ -1900,19 +2057,20 @@ jobs:
           tests/test_mock_provider.py
           tests/test_mcp_tool_loading.py
           tests/test_release_evaluation_smoke.py
+          tests/test_proposal_evaluation.py
           tests/test_release_controls.py
           tests/test_evolve.py::test_outer_runner_pid_namespace_kills_setsid_descendant
           tests/test_oracle_assets.py::test_hidden_vitest_config_executes_sibling_oracle_against_candidate_checkout
           tests/test_oracle_assets.py::test_shipped_oracles_reject_task_base_and_accept_reference_fixes
           tests/test_oracle_assets.py::test_in_flight_retry_oracle_rejects_startup_only_repairs
-          -q --junitxml=pytest-ubuntu.xml
+          -q --junitxml="$JUNIT_REPORT"
         working-directory: eval
       - name: Upload pytest execution report
         if: always()
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: execution-pytest-ubuntu
-          path: eval/pytest-ubuntu.xml
+          name: execution-pytest-${{ matrix.os }}
+          path: eval/pytest-${{ matrix.os }}.xml
           retention-days: 5
 
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while

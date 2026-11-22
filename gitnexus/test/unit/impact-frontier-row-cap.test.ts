@@ -55,7 +55,7 @@ function makeBackend() {
  * `distinctCallers` caller ids — duplicate edges, the shape a row-multiplying
  * query produces. Returns the frontier query texts seen.
  */
-function setupFrontier(rowCount: number, distinctCallers: number): string[] {
+function setupFrontier(rowCount: number, distinctCallers: number, failAtDepth?: number): string[] {
   const frontierQueries: string[] = [];
   executeParameterizedMock.mockImplementation(async (...args: any[]) => {
     const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
@@ -65,6 +65,7 @@ function setupFrontier(rowCount: number, distinctCallers: number): string[] {
     if (query.includes('iface')) return [];
     if (query.includes('r.type IN')) {
       frontierQueries.push(query);
+      if (frontierQueries.length === failAtDepth) throw new Error('injected frontier failure');
       const rows: any[] = new Array(rowCount);
       for (let i = 0; i < rowCount; i++) {
         const c = i % distinctCallers;
@@ -124,6 +125,19 @@ describe('impact: per-level frontier row cap (#3696)', () => {
     expect(res.riskSharedAxes).toBe('UNKNOWN');
     expect(res.riskNote).toContain('depth 1');
     expect(res.riskNote).toContain(String(IMPACT_FRONTIER_ROW_CAP));
+  });
+
+  it('withholds a low score after the second frontier query fails', async () => {
+    const { backend, repoHandle } = makeBackend();
+    setupFrontier(1, 1, 2);
+    const res = await impact(backend, repoHandle);
+    expect(res).toMatchObject({
+      impactedCount: 1,
+      partial: true,
+      risk: 'UNKNOWN',
+      riskSharedAxes: 'UNKNOWN',
+    });
+    expect(res.riskNote).toContain('traversal was incomplete');
   });
 
   it('a capped level keeps a CRITICAL its counts already prove', async () => {

@@ -18,15 +18,6 @@ const HOOK_COPIES = [
     '..',
     '..',
     '..',
-    'gitnexus-claude-plugin',
-    'hooks',
-    'registry-query.cjs',
-  ),
-  path.resolve(
-    __dirname,
-    '..',
-    '..',
-    '..',
     'gitnexus-cursor-integration',
     'hooks',
     'registry-query.cjs',
@@ -98,7 +89,7 @@ describe('registry-query shared store graph (#3352)', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('keeps the four hook copies byte-identical', () => {
+  it('keeps the package, Cursor, and Factory helpers byte-identical', () => {
     const [primary, ...copies] = HOOK_COPIES.map((f) => fs.readFileSync(f, 'utf-8'));
     for (const copy of copies) expect(copy).toBe(primary);
   });

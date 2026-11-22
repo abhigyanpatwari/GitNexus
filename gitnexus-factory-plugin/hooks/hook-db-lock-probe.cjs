@@ -187,6 +187,9 @@ function resolveUnixGuardTimeout() {
   const override = trimmed ? path.resolve(trimmed) : '';
   if (override && fs.existsSync(override)) candidates.push(override);
   for (const builtin of [
+    // Ubuntu 26.04 ships GNU timeout separately. Its process-group signals
+    // also reach the CLI grandchild when npx launches it.
+    '/usr/bin/gnutimeout',
     '/usr/bin/timeout',
     '/bin/timeout',
     '/opt/homebrew/bin/gtimeout',

@@ -28,6 +28,16 @@ export async function readSafeBounded(
   rel: string,
   maxBytes: number,
 ): Promise<string | null> {
+  const bytes = await readSafeBoundedBytes(repoPath, rel, maxBytes);
+  return bytes?.toString('utf8') ?? null;
+}
+
+/** Preserve the original bytes for callers verifying a content digest. */
+export async function readSafeBoundedBytes(
+  repoPath: string,
+  rel: string,
+  maxBytes: number,
+): Promise<Buffer | null> {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) return null;
   const abs = path.resolve(repoPath, rel);
   const base = path.resolve(repoPath);
@@ -41,9 +51,9 @@ export async function readSafeBounded(
     if (canonicalRelative.startsWith('..') || path.isAbsolute(canonicalRelative)) return null;
     const beforeOpen = await fs.promises.lstat(canonicalFile);
     if (!beforeOpen.isFile() || beforeOpen.size > maxBytes) return null;
-    if (maxBytes === 0) return beforeOpen.size === 0 ? '' : null;
+    if (maxBytes === 0) return beforeOpen.size === 0 ? Buffer.alloc(0) : null;
 
-    return await new Promise<string | null>((resolve) => {
+    return await new Promise<Buffer | null>((resolve) => {
       const stream = fs.createReadStream(canonicalFile, {
         flags: 'r',
         start: 0,
@@ -55,7 +65,7 @@ export async function readSafeBounded(
       let validated = false;
       let settled = false;
 
-      const finish = (value: string | null): void => {
+      const finish = (value: Buffer | null): void => {
         if (settled) return;
         settled = true;
         resolve(value);
@@ -103,7 +113,7 @@ export async function readSafeBounded(
         chunks.push(bytes);
       });
       stream.once('end', () => {
-        finish(validated ? Buffer.concat(chunks, totalBytes).toString('utf8') : null);
+        finish(validated ? Buffer.concat(chunks, totalBytes) : null);
       });
       stream.once('error', () => finish(null));
       stream.once('close', () => finish(null));

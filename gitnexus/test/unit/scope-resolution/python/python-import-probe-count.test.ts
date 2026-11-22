@@ -87,12 +87,20 @@ const DEPTHS: readonly number[] = [1, 2, 4, 8, 16];
  * proof passes it through. `vendor/thing.py` makes `vendor/` a root directory
  * prefix, so `hasRepoCandidate('vendor')` passes on its check (2) and the
  * dotted target below reaches `resolveAbsoluteFromFiles` instead of being
- * gated out.
+ * gated out. `src/mypkg/` is a src-layout root (#3949): the rows that do not
+ * target it must cost exactly what they cost without it.
  */
 function corpus(depth: number): { files: readonly string[]; fromFile: string } {
   const fromFile = `${Array.from({ length: depth }, (_, i) => `d${i}`).join('/')}/mod.py`;
   return {
-    files: [fromFile, 'zz/keep.py', 'far/away/probe.py', 'vendor/thing.py'],
+    files: [
+      fromFile,
+      'zz/keep.py',
+      'far/away/probe.py',
+      'vendor/thing.py',
+      'src/mypkg/__init__.py',
+      'src/mypkg/core.py',
+    ],
     fromFile,
   };
 }
@@ -200,6 +208,20 @@ describe('Python import probe count', () => {
     // `4 + 4 x depth` for a miss, i.e. 8 at depth 1 and 68 at depth 16.
     expect(counted.map((c) => c.probes)).toEqual(DEPTHS.map(() => ABSENT_PROBES));
     expect(counted.map((c) => c.result)).toEqual(DEPTHS.map(() => null));
+  });
+
+  it.each([
+    { kind: 'import x (namespace)', mkImport: pythonNamespaceImport },
+    { kind: 'from x import y (named)', mkImport: pythonNamedImport },
+    { kind: 'import x as y (alias)', mkImport: aliasImport },
+  ])('resolves a src-layout dotted target in ONE probe at every depth — $kind', ({ mkImport }) => {
+    // The importer's ancestors hold no `src/mypkg/`, so the src tier skips them
+    // on the directory index and probes only the root `src/mypkg/core.py`.
+    // `named`/`alias` add nothing: their `mypkg.core.Widget` submodule has no
+    // `Widget.py` anywhere, so the tier returns before probing.
+    const counted = DEPTHS.map((depth) => probeCount(mkImport, depth, 'mypkg.core'));
+    expect(counted.map((c) => c.probes)).toEqual(DEPTHS.map(() => 1));
+    expect(counted.map((c) => c.result)).toEqual(DEPTHS.map(() => 'src/mypkg/core.py'));
   });
 
   it('the counter can see depth — the flat line above is the proof, not the instrument', () => {

@@ -37,7 +37,8 @@ tests. No active shape corpus reported GRAMMAR-UNAVAILABLE.
 The visible-gap counts include the three deliberate controls: JavaScript and
 Ruby `untypedChain`, and PHP `arrowCallChain`. They must remain unresolved.
 Zig and Objective-C still lack shape-arm rows; their dedicated suites were run
-separately. C and COBOL's all-N/A rows do not measure their ordinary call paths;
+separately. R has no shape-arm row either; its receiver corpus
+(`r-receiver-corpus.test.ts`) is described in [r-ingestion-gaps.md](r-ingestion-gaps.md). C and COBOL's all-N/A rows do not measure their ordinary call paths;
 their focused integration suites were also run.
 
 The count arm is unchanged: **138 call drops, 168 total drops, 30 reads, no writes**.
@@ -129,3 +130,12 @@ with the baseline before making any intentional update.
 The benchmark preserves known gaps so future fixes cause an explicit baseline
 change. This audit does not implement Dart ownership, indexed receiver typing,
 C++ awaiter typing, Ruby scope isolation or the remaining historical backlog.
+
+## Later baseline moves
+
+The figures above describe the audited source and files. Later changes are
+explained in [BASELINE.md](../../gitnexus/bench/receiver-resolution/BASELINE.md).
+In #3955, Java `indexElement` moved VISIBLE-GAP -> RESOLVES, so the Java row now
+reads 5 exact targets, no gaps, no wrong targets and 5 N/A. The committed count
+arm moved from 140 to 153 call drops (Java 50 -> 63) and from 174 to 187 drops
+of all kinds.

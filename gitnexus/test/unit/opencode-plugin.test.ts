@@ -141,6 +141,63 @@ describe('search augmentation through the public hook', () => {
 
 describe('stale-index hints', () => {
   it.each([
+    ['commit comparison fails', 'diff', []],
+    ['the index was already incomplete', '', ['scope-extraction-failed']],
+  ] as const)('keeps the hint when %s', async (_name, failingCommand, incompleteReasons) => {
+    const base = 'a'.repeat(40);
+    const head = 'b'.repeat(40);
+    const status = {
+      status: 'stale',
+      index: { commit: base, runnerIdentityStatus: 'current', incompleteReasons },
+      current: { commit: head },
+    };
+    execFileMock.mockImplementation(
+      (cmd: string, argv: string[], _options: unknown, callback: Callback) => {
+        if (cmd !== 'git') return callback(null, JSON.stringify(status), '');
+        callback(argv.includes(failingCommand) ? new Error('git failed') : null, '', '');
+      },
+    );
+    const result = await invoke('bash', { command: 'git commit -m docs' });
+    expect(result).toContain('index is stale');
+    expect(execFileMock).toHaveBeenCalledTimes(incompleteReasons.length > 0 ? 1 : 2);
+  });
+
+  it('keeps the hint when the working-tree check exhausts the remaining Git timeout', async () => {
+    const status = {
+      status: 'stale',
+      index: { commit: 'a'.repeat(40), runnerIdentityStatus: 'current', incompleteReasons: [] },
+      current: { commit: 'b'.repeat(40) },
+    };
+    vi.useFakeTimers();
+    try {
+      execFileMock.mockImplementation(
+        (cmd: string, argv: string[], options: { timeout: number }, callback: Callback) => {
+          if (cmd !== 'git') return callback(null, JSON.stringify(status), '');
+          if (argv.includes('diff')) return setTimeout(() => callback(null, '', ''), 1000);
+          const timeout = Object.assign(new Error('git status timed out'), {
+            killed: true,
+            signal: 'SIGTERM',
+            code: null,
+          });
+          return setTimeout(() => callback(timeout, '', ''), options.timeout);
+        },
+      );
+      const result = invoke('bash', { command: 'git commit -m docs' });
+      await vi.runAllTimersAsync();
+      expect(await result).toContain('index is stale');
+      expect(execFileMock).toHaveBeenNthCalledWith(
+        3,
+        'git',
+        expect.arrayContaining(['status', '--porcelain=v1']),
+        expect.objectContaining({ timeout: 2000 }),
+        expect.any(Function),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
     'git commit -m x',
     'git merge main',
     'git rebase main',

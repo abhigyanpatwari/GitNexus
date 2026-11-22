@@ -15,6 +15,8 @@ export interface PipelineResult {
   repoPath: string;
   /** Total files scanned (for stats) */
   totalFileCount: number;
+  /** Source bytes from the filesystem scan, before COPY expands file and symbol text. */
+  scannedFileBytes?: number;
   communityResult?: CommunityDetectionResult;
   processResult?: ProcessDetectionResult;
   /**

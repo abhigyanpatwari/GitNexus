@@ -16,14 +16,14 @@
  *     registration index when it is undefined; sweep 2 reads only that index).
  *   - Every JS/TS `@reference.value-ref` rule also captures
  *     `@reference.property-key` — both are object-literal shapes.
- *   - No Zig `@reference.value-ref` rule captures one: Zig has no
- *     object-literal key to dispatch through.
+ *   - No Zig or Python `@reference.value-ref` rule captures one: their
+ *     argument references have no property key to dispatch through.
  *
  * So a dispatchable registration is always a JS/TS one and an undispatchable
- * registration is always a Zig one, and the two cannot meet on one symbol.
+ * registration is always a Zig or Python one, and the two cannot meet on one symbol.
  *
  * The day that stops being true — a JS/TS rule for a bare callback argument
- * (`register(handler)`), a Zig rule that grows a key — a symbol CAN have both,
+ * (`register(handler)`), a Zig or Python rule that grows a key — a symbol CAN have both,
  * and the exclusion starts publishing `exact` over a registration the analyzer
  * provably did not follow. That is the #3399 defect returning through a side
  * door, and it would not fail a single existing test.
@@ -51,6 +51,7 @@ import {
 } from '../../../src/core/ingestion/languages/typescript/query.js';
 import { JAVASCRIPT_SCOPE_QUERY } from '../../../src/core/ingestion/languages/javascript/query.js';
 import { ZIG_SCOPE_QUERY } from '../../../src/core/ingestion/languages/zig/query.js';
+import { PYTHON_SCOPE_QUERY } from '../../../src/core/ingestion/languages/python/query.js';
 
 const VALUE_REF = '@reference.value-ref';
 const PROPERTY_KEY = '@reference.property-key';
@@ -147,8 +148,14 @@ describe('value-ref dispatchability partition', () => {
     expect(rules.filter((r) => r.includes(PROPERTY_KEY))).toEqual([]);
   });
 
+  it('every Python value-ref rule is UNDISPATCHABLE (carries no property key)', () => {
+    const rules = valueRefRules(PYTHON_SCOPE_QUERY);
+    expect(rules.length).toBeGreaterThan(0);
+    expect(rules.filter((r) => r.includes(PROPERTY_KEY))).toEqual([]);
+  });
+
   it('no OTHER language OWNS a value-ref rule', () => {
-    // The three above are hand-classified. A fourth query declaring
+    // The four above are hand-classified. Another query declaring
     // `value-ref` has not been classified by anyone, so the exclusion's premise
     // is unverified for it — classify it here and in the exclusion's comment.
     // "Owns", not "emits": Vue has no query of its own and borrows TypeScript's
@@ -168,6 +175,6 @@ describe('value-ref dispatchability partition', () => {
       })
       .map((e) => e.name)
       .sort();
-    expect(emitting).toEqual(['javascript', 'typescript', 'zig']);
+    expect(emitting).toEqual(['javascript', 'python', 'typescript', 'zig']);
   });
 });

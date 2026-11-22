@@ -41,6 +41,7 @@ import { constants as fsConstants, existsSync } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { retryRename } from '../storage/fs-atomic.js';
+import { forceGc } from '../storage/parsedfile-store.js';
 import { assertLbugPublicationReady, consolidateLbugForPublication } from './lbug/publication.js';
 import { requireExclusiveIndexLock, sweepStagingArtifacts } from '../storage/index-lock.js';
 import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
@@ -91,8 +92,7 @@ import {
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
-  deleteAllInjects,
-  deleteAllAdvisedBy,
+  deleteGlobalResolutionEdges,
   deleteAllDestinations,
   deleteSpringAopEvidenceNodes,
   deleteSpringAutoConfigurationDeclarations,
@@ -105,6 +105,7 @@ import {
 } from './lbug/lbug-adapter.js';
 import {
   estimateBufferPool,
+  estimateWriteBufferPool,
   setBufferPoolSizeHint,
   resolveNativeSafeStorageDir,
   getEffectiveBufferPoolSize,
@@ -258,6 +259,7 @@ import {
 } from './incremental/spring-config-drift.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
 import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
+import { computeFileRowDigests, nextFileRowDigests } from './incremental/file-row-digests.js';
 import {
   graphCompactionReason,
   incrementalMutationLimit,
@@ -318,7 +320,7 @@ import {
   type CachedEmbeddingsSnapshot,
 } from './embeddings/embedding-restore-spill.js';
 import { assertUniqueEmbeddingKeys, EmbeddingIntegrityError } from './embeddings/embedding-keys.js';
-import { generateAIContextFiles } from '../cli/ai-context.js';
+import { generateAIContextFiles, hasInstructionBlock } from '../cli/ai-context.js';
 import { formatRejectedBranchForLog, sanitizeDetectedBranch } from './git-ref.js';
 import {
   EMBEDDING_TABLE_NAME,
@@ -542,6 +544,8 @@ export interface AnalyzeOptions {
   skipGit?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
+  instructionFile?: 'AGENTS.md' | 'CLAUDE.md';
+  refreshCounts?: boolean;
   /** Omit volatile symbol/relationship counts from AGENTS.md and CLAUDE.md. */
   noStats?: boolean;
   /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
@@ -921,6 +925,7 @@ import {
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from './embedding-mode.js';
 import type { GraphEmitManifest } from './lbug/graph-emit-sink.js';
+import { isConstrainedPdgBuild } from './analysis-resource-budget.js';
 
 /**
  * Relationships RESIDENT in the in-memory graph, excluding the PDG layers —
@@ -2081,14 +2086,18 @@ async function runFullAnalysisInner(
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
   const initAnalysisLbug = (dbPath: string, readOnly = false) => {
-    if (options.resources) {
+    const budget = options.resources;
+    if (budget) {
       const sizedPool = getEffectiveBufferPoolSize();
-      const ceiling = options.resources.parse.graphPoolBytes;
+      const ceiling = budget.parse.graphPoolBytes;
+      // COPY and FTS allocate per-thread workspaces while the PDG is still
+      // resident. Serialize writes in the measured single-worker, 6 GiB case.
+      const serialPdgWrite = !readOnly && isConstrainedPdgBuild(options.pdg, budget);
       return initLbug(dbPath, {
         skipFts: readOnly || !!ftsDisabledReason,
         ...(readOnly ? { readOnly: true } : {}),
         bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
-        threads: options.resources.parse.nativeThreads,
+        threads: serialPdgWrite ? 1 : budget.parse.nativeThreads,
       });
     }
     if (readOnly) return initLbug(dbPath, { readOnly: true, skipFts: true });
@@ -3262,28 +3271,35 @@ async function runFullAnalysisInner(
             branch: placement.branch,
             storagePath,
           });
-          if (!placement.branch) {
-            try {
-              await generateAIContextFiles(
-                repoPath,
-                storagePath,
-                options.registryName,
-                existingMeta.stats ?? {},
-                undefined,
-                {
-                  skipAgentsMd: options.skipAgentsMd,
-                  skipSkills: options.skipSkills,
-                  noStats: options.noStats,
-                  defaultBranch: options.defaultBranch,
-                  // Fast path does not re-run PDG. Using `options.pdg` would
-                  // strip PDG bullets from AGENTS.md on a rename-only analyze.
-                  hasPdg: existingMeta.pdg != null,
-                  hasSpringActuator: existingMeta.springActuator?.enabled === true,
-                },
-              );
-            } catch {
-              /* best-effort — never fail the fast path over a context refresh */
-            }
+        }
+        if (
+          !placement.branch &&
+          (options.registryName ||
+            (options.instructionFile &&
+              !options.skipAgentsMd &&
+              !(await hasInstructionBlock(path.join(repoPath, options.instructionFile)))))
+        ) {
+          try {
+            await generateAIContextFiles(
+              repoPath,
+              storagePath,
+              await preparedAnalysisName(repoPath, options),
+              existingMeta.stats ?? {},
+              undefined,
+              {
+                skipAgentsMd: options.skipAgentsMd,
+                instructionFile: options.instructionFile,
+                refreshCounts: options.refreshCounts,
+                skipSkills: options.skipSkills,
+                noStats: options.noStats || existingMeta.stats?.nodes === undefined,
+                defaultBranch: options.defaultBranch,
+                // The fast path reuses the persisted graph capabilities.
+                hasPdg: existingMeta.pdg != null,
+                hasSpringActuator: existingMeta.springActuator?.enabled === true,
+              },
+            );
+          } catch {
+            /* best-effort — never fail the fast path over a context refresh */
           }
         }
         // ── #2354: restamp the workspace label on a same-commit branch flip ──
@@ -3825,7 +3841,10 @@ async function runFullAnalysisInner(
   // Used both to drive the incremental DB writeback (when eligible) and to
   // populate meta.json.fileHashes for the next run.
   const allFilePaths: string[] = [];
+  let descriptionBytes = 0;
   pipelineResult.graph.forEachNode((n) => {
+    const description = n.properties?.description;
+    if (typeof description === 'string') descriptionBytes += Buffer.byteLength(description);
     if (n.label === 'File') {
       const fp = n.properties?.filePath as string | undefined;
       if (fp) allFilePaths.push(fp);
@@ -4105,22 +4124,25 @@ async function runFullAnalysisInner(
     }
   }
 
-  // Size the buffer pool to the graph just built by the pipeline (a page cache
-  // over the on-disk index, which scales with node/edge count) instead of the
-  // fixed 2 GiB default, whose eager commit dominates large-repo analyze. The
-  // size is clamped to [COPY-safety floor, default], so it only ever shrinks
-  // the pool; env override / no-hint paths are unchanged. See
-  // resolveBufferManagerSize / estimateBufferPool.
+  // COPY needs room for both graph structure and the source text stored in its tables.
+  // Full retention writes file text and symbol snippets. Symbol retention writes
+  // only snippets. Descriptions are a separate column, already retention-filtered.
+  const sourceBytes = pipelineResult.scannedFileBytes ?? 0;
+  const fileBytes = contentRetention === 'full' ? sourceBytes : 0;
+  const snippetBytes = contentRetention === 'none' ? 0 : sourceBytes;
+  const graphElements =
+    pipelineResult.graph.nodeCount +
+    pipelineResult.graph.relationshipCount +
+    (pipelineResult.graphEmitManifest?.totalRows ?? 0);
+  const fullWritePool = estimateWriteBufferPool(
+    graphElements,
+    fileBytes + snippetBytes + descriptionBytes,
+    !ftsDisabledReason,
+  );
+  // FTS re-tokenizes entire affected tables even on a selective write. With
+  // FTS disabled, keep the smaller incremental pool unless the plan escalates.
   setBufferPoolSizeHint(
-    estimateBufferPool(
-      pipelineResult.graph.nodeCount +
-        pipelineResult.graph.relationshipCount +
-        // Streamed edges left the heap but still get COPYed, so they are part of
-        // the real load volume (#2680). The hint only ever SHRINKS the pool, so
-        // omitting them would starve the COPY at exactly the scale streaming
-        // exists to serve.
-        (pipelineResult.graphEmitManifest?.totalRows ?? 0),
-    ),
+    isFullRebuild || !ftsDisabledReason ? fullWritePool : estimateBufferPool(graphElements),
   );
 
   // The checkpoint counters are process-global (`analyze --watch` reruns analyze in
@@ -4207,6 +4229,18 @@ async function runFullAnalysisInner(
       });
     };
     let incrementalFtsRebuildTables: Set<string> | undefined;
+    // Resolution groups (see LanguageProvider.incrementalResolutionGroup) make
+    // every group member a rewrite candidate when one member changes. The row
+    // digests are what let an unchanged member whose rows are identical in the
+    // new graph stay out of the write set. Repositories with no group skip this.
+    const { collectResolutionGroupFiles, hasResolutionGroups } =
+      await import('./incremental/resolution-groups.js');
+    const currentRowDigests = hasResolutionGroups(allFilePaths)
+      ? computeFileRowDigests(pipelineResult.graph)
+      : undefined;
+    // The files whose rows a surgical write replaces; undefined on any run that
+    // writes the whole graph.
+    let surgicalWriteSet: ReadonlySet<string> | undefined;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -4241,20 +4275,16 @@ async function runFullAnalysisInner(
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
       // Resolution groups can change edges between unchanged files without an
-      // import or a new-graph edge touching the changed/deleted member. Expand
-      // before the importer walk so dependents of these siblings refresh too.
-      const { collectResolutionGroupFiles } = await import('./incremental/resolution-groups.js');
+      // import or a new-graph edge touching the changed/deleted member. Group
+      // members, and the files that import them, are therefore CANDIDATES for
+      // a rewrite: the second walk below adds a candidate only when its rows
+      // in the new graph differ from the rows recorded for it.
+      const rewriteCandidates = new Set<string>();
       for (const filePath of collectResolutionGroupFiles(
         [...hashDiff.toWrite, ...hashDiff.deleted],
         allFilePaths,
       )) {
-        writableFiles.add(filePath);
-      }
-      const resolutionGroupExpansion = writableFiles.size - directlyChangedCount;
-      if (resolutionGroupExpansion > 0) {
-        log(
-          `Incremental: +${resolutionGroupExpansion} resolution sibling(s) added to writable set`,
-        );
+        if (!writableFiles.has(filePath)) rewriteCandidates.add(filePath);
       }
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
       // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
@@ -4338,8 +4368,42 @@ async function runFullAnalysisInner(
           frontier = nextFrontier;
         }
       }
-      const importerExpansion =
-        writableFiles.size - directlyChangedCount - resolutionGroupExpansion;
+      const importerExpansion = writableFiles.size - directlyChangedCount;
+      // Candidate walk: same importer BFS, seeded with the resolution-group
+      // members. Discovery ignores digests, so every file the unconditional
+      // expansion would have reached is still examined; only the rewrite is
+      // conditional. A file with no recorded digest counts as changed.
+      let resolutionGroupExpansion = 0;
+      if (rewriteCandidates.size > 0) {
+        let frontier: string[] = [...rewriteCandidates];
+        for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+          const importers = await queryImportersBatch(frontier, {
+            onChunkFailure: () => {
+              droppedImporterChunks += 1;
+            },
+          });
+          const nextFrontier: string[] = [];
+          for (const i of importers) {
+            if (!writableFiles.has(i) && !rewriteCandidates.has(i)) {
+              rewriteCandidates.add(i);
+              nextFrontier.push(i);
+            }
+          }
+          frontier = nextFrontier;
+        }
+        const recordedRowDigests = existingMeta!.fileRowDigests;
+        for (const filePath of rewriteCandidates) {
+          if (writableFiles.has(filePath)) continue;
+          const recorded = recordedRowDigests?.[filePath];
+          if (recorded !== undefined && recorded === currentRowDigests?.get(filePath)) continue;
+          writableFiles.add(filePath);
+          resolutionGroupExpansion += 1;
+        }
+        log(
+          `Incremental: ${resolutionGroupExpansion} of ${rewriteCandidates.size} ` +
+            `resolution-group candidate(s) have changed rows and were added to writable set`,
+        );
+      }
       incrementalStats = {
         changedFiles: hashDiff.changed.length + hashDiff.added.length + hashDiff.deleted.length,
         reparsedFiles: pipelineResult.reparsedFileCount,
@@ -4362,9 +4426,10 @@ async function runFullAnalysisInner(
 
       // 1. Compute the EFFECTIVE write-set (Finding 1). Two layers,
       //    composed:
-      //      (a) `writableFiles` — toWrite ∪ resolution siblings ∪ transitive
-      //          importers of changed/deleted files and their siblings (the
-      //          bounded BFS above, reading IMPORTS from the pre-pipeline DB).
+      //      (a) `writableFiles` — toWrite ∪ transitive importers of
+      //          changed/deleted files (the bounded BFS above, reading IMPORTS
+      //          from the pre-pipeline DB) ∪ the resolution-group candidates
+      //          whose rows changed.
       //      (b) `computeEffectiveWriteSet` — walks the NEW graph's
       //          edges and pulls in any unchanged-side file that sits
       //          on a writable-boundary-crossing edge (catches refined
@@ -4459,6 +4524,7 @@ async function runFullAnalysisInner(
       // would otherwise hand deleteNodesForFiles the same path twice in one
       // batch (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
+      surgicalWriteSet = effectiveWriteSet;
       await saveIncrementalDirtyState('effective-write-set', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
@@ -4799,6 +4865,7 @@ async function runFullAnalysisInner(
         await closeLbug();
         if (buildPath === lbugPath) liveIndexMutationStarted = true;
         await wipeLbugDbFiles(buildPath);
+        setBufferPoolSizeHint(fullWritePool);
         await initAnalysisLbug(buildPath);
         walCheckpointDriver = startWalCheckpointDriver();
         await loadGraphToLbug(
@@ -4909,23 +4976,9 @@ async function runFullAnalysisInner(
           //    "Leiden runs on the FULL graph" correctness invariant.
           await deleteAllCommunitiesAndProcesses();
         }
-        // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
-        //     validity is a whole-program property (a third-file change to the
-        //     interface or an implementer creates/invalidates edges between two
-        //     untouched files), so endpoint-writability extraction can't refresh
-        //     them; extractChangedSubgraph re-includes all of them from the
-        //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
-        //     Communities delete — NOT inside the `options.pdg` block below: the
-        //     di phase runs on every persisting analyze (same !skipGraphPhases
-        //     regime as communities/processes) while the graph-wide re-include
-        //     is unconditional, so a pdg-gated delete would append without
-        //     deleting on every non-pdg incremental run (N runs = N copies of
-        //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
-        await deleteAllInjects();
-        // 2b. Spring AOP pointcuts are matched against the full resolved graph;
-        // a third-file change can invalidate an edge between unchanged files.
-        // Rebuild the complete ADVISED_BY set on every incremental writeback.
-        await deleteAllAdvisedBy();
+        // A third file can change injection bindings, advice targets or unique-name
+        // guesses between unchanged endpoints. The subgraph re-emits all three.
+        await deleteGlobalResolutionEdges();
         await deleteSpringAopEvidenceNodes();
         // 2b-bis. Drop the whole async messaging overlay. A RESOLVED
         //     Destination deliberately stores no filePath (so the per-file
@@ -5124,6 +5177,12 @@ async function runFullAnalysisInner(
       );
       progress('fts', 90, 'Search indexes skipped (previous native abort)');
     } else if (ftsAvailable) {
+      if (!isIncremental && options.pdg && options.resources?.automatic === false) {
+        // COPY is complete. Reclaim spare V8 pages before native tokenization
+        // when they occupy a substantial fraction of the database reservation.
+        const { heapTotal, heapUsed } = process.memoryUsage();
+        if (heapTotal - heapUsed >= options.resources.parse.graphPoolBytes / 2) forceGc();
+      }
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
       // pre-existing row (#2544/#2546) must not discard this run's otherwise-
@@ -6149,6 +6208,16 @@ async function runFullAnalysisInner(
       // Embedding sync also needs snapshot identity for non-git checkouts.
       // Incremental DB eligibility still independently requires repoHasGit.
       fileHashes: newFileHashesRecord,
+      // Recorded only where a resolution group exists. A file's entry moves
+      // to its new digest only when this run wrote that file's rows.
+      fileRowDigests:
+        currentRowDigests === undefined
+          ? undefined
+          : nextFileRowDigests(
+              existingMeta?.fileRowDigests,
+              currentRowDigests,
+              surgicalWriteSet !== undefined && !escalatedFullWrite ? surgicalWriteSet : 'all',
+            ),
       indexCoverage: hasGitDir(repoPath)
         ? {
             maxFileSizeBytes: getMaxFileSizeBytes(),
@@ -6474,6 +6543,8 @@ async function runFullAnalysisInner(
           undefined,
           {
             skipAgentsMd: options.skipAgentsMd,
+            instructionFile: options.instructionFile,
+            refreshCounts: options.refreshCounts,
             skipSkills: options.skipSkills,
             noStats: options.noStats,
             defaultBranch: options.defaultBranch,

@@ -64,7 +64,7 @@ export function nameClaimsFor(scope: Scope, name: string): readonly NameClaim[] 
   return byName.get(name) ?? NO_CLAIMS;
 }
 
-function importsFor(imports: readonly ImportEdge[], name: string): readonly ImportEdge[] {
+export function importsFor(imports: readonly ImportEdge[], name: string): readonly ImportEdge[] {
   if (imports.length === 0) return NO_IMPORTS;
   let byName = importsByName.get(imports);
   if (byName === undefined) {
@@ -82,6 +82,62 @@ function importsFor(imports: readonly ImportEdge[], name: string): readonly Impo
 }
 const compare = (a: SourcePosition, b: SourcePosition): number =>
   a.startLine - b.startLine || a.startCol - b.startCol;
+
+/** What a frozen binding array holds, scanned once: a frozen array never changes. */
+interface FrozenBindingFacts {
+  readonly anyAvailableFrom: boolean;
+  readonly anyTypeOnly: boolean;
+}
+const frozenBindingFacts = new WeakMap<readonly BindingRef[], FrozenBindingFacts>();
+
+/**
+ * Facts for a frozen binding array (finalized buckets are frozen), else
+ * `undefined`. Only a frozen array is returned in place of a filter that would
+ * keep every element: nothing can grow it under a result that aliases it.
+ */
+function frozenFacts(bindings: readonly BindingRef[]): FrozenBindingFacts | undefined {
+  if (!Object.isFrozen(bindings)) return undefined;
+  let facts = frozenBindingFacts.get(bindings);
+  if (facts === undefined) {
+    let anyAvailableFrom = false;
+    let anyTypeOnly = false;
+    for (const binding of bindings) {
+      if (binding.availableFrom !== undefined) anyAvailableFrom = true;
+      if (binding.via?.typeOnly === true) anyTypeOnly = true;
+    }
+    facts = { anyAvailableFrom, anyTypeOnly };
+    frozenBindingFacts.set(bindings, facts);
+  }
+  return facts;
+}
+
+/** The bindings already available at `position`. */
+function availableBindings(
+  all: readonly BindingRef[],
+  position: SourcePosition | undefined,
+): readonly BindingRef[] {
+  if (all.length === 0) return NO_BINDINGS;
+  const facts = frozenFacts(all);
+  if (facts !== undefined && (position === undefined || !facts.anyAvailableFrom)) return all;
+  return all.filter(
+    (b) =>
+      b.availableFrom === undefined ||
+      position === undefined ||
+      compare(b.availableFrom, position) <= 0,
+  );
+}
+
+/** A value lookup cannot use a type-only import. `bindings` is frozen or a private copy. */
+function usableBindings(
+  bindings: readonly BindingRef[],
+  purpose: NameLookupOptions['purpose'],
+): readonly BindingRef[] {
+  if (bindings.length === 0) return NO_BINDINGS;
+  if ((purpose ?? 'value') !== 'value' || frozenFacts(bindings)?.anyTypeOnly === false)
+    return bindings;
+  return bindings.filter((b) => b.via?.typeOnly !== true);
+}
+
 export function rangesOverlap(a: Range, b: Range): boolean {
   return (
     compare(a, { startLine: b.endLine, startCol: b.endCol }) < 0 &&
@@ -89,27 +145,51 @@ export function rangesOverlap(a: Range, b: Range): boolean {
   );
 }
 
+/** The claims a lookup can see: a callee lookup skips declarations that are never callees. */
+function visibleClaims(
+  scope: Scope,
+  name: string,
+  options: NameLookupOptions,
+): readonly NameClaim[] {
+  const claims = nameClaimsFor(scope, name);
+  if (options.callee !== true || !claims.some((c) => c.neverCallee === true)) return claims;
+  return claims.filter((c) => c.neverCallee !== true);
+}
+
+/** Is the declaration visible at `position`? Spans replace the single activation point. */
+function isAvailableAt(claim: NameClaim, position: SourcePosition | undefined): boolean {
+  if (position === undefined) return true;
+  const spans = claim.availableSpans;
+  if (spans === undefined)
+    return claim.availableFrom === undefined || compare(claim.availableFrom, position) <= 0;
+  let visible = false;
+  for (const boundary of spans) {
+    if (compare(boundary, position) > 0) break;
+    visible = !visible;
+  }
+  return visible;
+}
+
+/** Evaluation order of two claims of one name: by rank when both carry one, else by source order. */
+const compareClaims = (a: NameClaim, b: NameClaim): number =>
+  a.order !== undefined && b.order !== undefined ? a.order - b.order : compare(a.range, b.range);
+
 /** Ownership is selected before target availability or target kind is inspected. */
 export function selectClaimsAtScope(
   scope: Scope,
   name: string,
   options: NameLookupOptions = {},
 ): ScopeClaimSelection {
-  const candidates = nameClaimsFor(scope, name);
+  const candidates = visibleClaims(scope, name, options);
   if (candidates.length === 0) return NO_SELECTION;
   const purpose = options.purpose ?? 'value';
   const claims = candidates.filter(
     (c) => c.purpose === undefined || c.purpose === 'both' || c.purpose === purpose,
   );
   if (claims.length === 0) return NO_SELECTION;
-  const active = claims.filter(
-    (c) =>
-      c.availableFrom === undefined ||
-      options.position === undefined ||
-      compare(c.availableFrom, options.position) <= 0,
-  );
+  const active = claims.filter((c) => isAvailableAt(c, options.position));
   if (active.length === 0) {
-    const first = claims.reduce((a, b) => (compare(a.range, b.range) <= 0 ? a : b));
+    const first = claims.reduce((a, b) => (compareClaims(a, b) <= 0 ? a : b));
     return {
       status:
         first.inactive === 'outer' ? 'absent' : first.inactive === 'module' ? 'module' : 'blocked',
@@ -120,7 +200,7 @@ export function selectClaimsAtScope(
   // rebinding explicitly blocked rather than claiming a control-flow winner.
   const ordered = active.filter((c) => c.hoisted !== true);
   const relevant = ordered.length > 0 ? ordered : active;
-  const latest = relevant.reduce((a, b) => (compare(a.range, b.range) >= 0 ? a : b)).range;
+  const latest = relevant.reduce((a, b) => (compareClaims(a, b) >= 0 ? a : b)).range;
   let selected = relevant.filter((c) => compare(c.range, latest) === 0);
   if (selected.some((c) => c.merge === true))
     selected = active.filter((c) => c.merge === true || compare(c.range, latest) === 0);
@@ -251,20 +331,12 @@ export function lookupLexicalName(
     }
     if (selected.status === 'blocked')
       return { ...ABSENT, status: 'blocked', scope, claims: selected.claims };
-    const nameClaims = nameClaimsFor(scope, name);
+    const nameClaims = visibleClaims(scope, name, options);
     const hasClaimsForName = nameClaims.length > 0;
     const allBindings =
       sources.bindingsAt?.(scope, name) ?? scope.bindings.get(name) ?? NO_BINDINGS;
     const allImports = importsFor(sources.importsAt?.(scope) ?? scope.imports ?? NO_IMPORTS, name);
-    let bindings =
-      allBindings.length === 0
-        ? NO_BINDINGS
-        : allBindings.filter(
-            (b) =>
-              b.availableFrom === undefined ||
-              position === undefined ||
-              compare(b.availableFrom, position) <= 0,
-          );
+    let bindings = availableBindings(allBindings, position);
     let imports = allImports;
     if (selected.status === 'selected') {
       if (bindings.length > 0)
@@ -345,12 +417,7 @@ export function lookupLexicalName(
         (typeBinding === undefined || isInferredFact(typeBinding.source))
       )
         typeBinding = carriedConstructor;
-      const usable =
-        bindings.length === 0
-          ? NO_BINDINGS
-          : bindings.filter(
-              (b) => (options.purpose ?? 'value') !== 'value' || b.via?.typeOnly !== true,
-            );
+      const usable = usableBindings(bindings, options.purpose);
       return {
         status:
           usable.length > 0 ||

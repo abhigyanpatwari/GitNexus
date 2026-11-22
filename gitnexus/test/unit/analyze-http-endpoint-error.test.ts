@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 /**
  * Tests for the custom HTTP embedding endpoint failure path in the
  * `analyzeCommand` CLI (#2385).

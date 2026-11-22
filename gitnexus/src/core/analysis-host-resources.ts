@@ -26,6 +26,7 @@ function positiveEnvironment(name: string): number | undefined {
 export interface HostAnalysisResourceOptions {
   totalMb?: number;
   mainHeapMb?: number;
+  mainHeapLimitMb?: number;
   workers?: number;
   includeParsing?: boolean;
   /** Local model capacity is only reserved when this invocation may embed. */
@@ -48,6 +49,7 @@ export function resolveHostAnalysisResources(
     availableCpus: Math.max(1, Math.floor(os.availableParallelism() / concurrency)),
     totalMb: options.totalMb,
     mainHeapMb: options.mainHeapMb,
+    mainHeapLimitMb: options.mainHeapLimitMb,
     workers: options.workers ?? positiveEnvironment('GITNEXUS_WORKER_POOL_SIZE'),
     workerHeapMb: positiveEnvironment('GITNEXUS_WORKER_HEAP_MB'),
     embeddingThreads: options.includeEmbeddings

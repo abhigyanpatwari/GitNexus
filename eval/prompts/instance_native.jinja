@@ -30,9 +30,11 @@ Before editing shared code, check the blast radius:
 
 | Impact | Risk | Action |
 |--------|------|--------|
-| <5 symbols at d=1 | Low | Fix with confidence |
-| 5-15 symbols at d=1 | Medium | Fix carefully, run broader tests |
-| >15 symbols at d=1 | High | Minimal change, run full test suite |
+| 1–4 direct dependants | Low | Run focused tests |
+| 5–14 direct dependants | Medium | Run broader tests |
+| 15–199 direct dependants | High | Keep the change minimal and run the full suite |
+| 200+ direct dependants | Critical | Review the impact with the maintainer |
+| Empty or incomplete upstream evidence for a low or medium rating | Unknown | Verify callers before editing |
 
 ## Important Rules
 

@@ -93,7 +93,7 @@ withTestLbugDB(
       expect(file.riskNote).toBeUndefined();
 
       expect(fn.impactedCount).toBe(2);
-      expect(fn.risk).toBe('HIGH');
+      expect(fn.risk).toBe('LOW');
       expect(fn.riskSharedAxes).toBe('LOW');
       expect(fn.summary.processes_affected).toBe(4);
       expect(fn.riskScale).toEqual({

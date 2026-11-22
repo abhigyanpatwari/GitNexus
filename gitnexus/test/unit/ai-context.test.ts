@@ -6,6 +6,7 @@ import {
   generateAIContextFiles,
   generateGitNexusContent,
   refreshBaseRefLine,
+  refreshStatsLine,
   markdownSafeBranch,
 } from '../../src/cli/ai-context.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -1229,6 +1230,23 @@ Old content here.
     expect(content).not.toContain('.claude/skills/generated/');
   });
 
+  it.each(['AGENTS.md', 'CLAUDE.md'] as const)(
+    'reports only the selected %s as skipped',
+    async (instructionFile) => {
+      const result = await generateAIContextFiles(
+        tmpDir,
+        storagePath,
+        'TestProject',
+        { nodes: 42, edges: 84, processes: 3 },
+        undefined,
+        { instructionFile, skipAgentsMd: true, skipSkills: true },
+      );
+      expect(result.files.filter((file) => file.includes('--skip-agents-md'))).toEqual([
+        instructionFile + ' (skipped via --skip-agents-md)',
+      ]);
+    },
+  );
+
   it('preserves manual AGENTS.md and CLAUDE.md edits when skipAgentsMd is enabled', async () => {
     const stats = { nodes: 42, edges: 84, processes: 3 };
     const agentsPath = path.join(tmpDir, 'AGENTS.md');
@@ -2060,6 +2078,242 @@ describe('count-only reindex does not churn the committed block (#2907)', () => 
   });
 });
 
+// The `alreadyUpToDate` fast path returns before generateAIContextFiles, so
+// `--no-stats` used to be a no-op on any repo that was already indexed (#3618).
+// These cover the surgical in-place refresh that fast path now runs instead.
+describe('refreshStatsLine takes --no-stats on an up-to-date index (#3618)', () => {
+  const STATS = { files: 3, nodes: 493905, edges: 698316, processes: 300 };
+
+  async function seed(files: string[], body: string): Promise<string> {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-statsline-'));
+    for (const f of files) await fs.writeFile(path.join(dir, f), body, 'utf-8');
+    return dir;
+  }
+
+  async function read(dir: string, name: string): Promise<string> {
+    return fs.readFile(path.join(dir, name), 'utf-8');
+  }
+
+  it.each(['AGENTS.md', 'CLAUDE.md'] as const)(
+    'refreshes only the selected %s on explicit analyze',
+    async (instructionFile) => {
+      const original =
+        '# Custom\r\n<!-- gitnexus:start -->\r\nIndexed as **my-repo** (1 symbols, 2 relationships, 3 execution flows).\r\n<!-- gitnexus:end -->\r\n';
+      const dir = await seed(['AGENTS.md', 'CLAUDE.md'], original);
+      try {
+        const options = { instructionFile, refreshCounts: true };
+        expect((await refreshStatsLine(dir, STATS, options)).files).toEqual([instructionFile]);
+        expect(await read(dir, instructionFile)).toBe(
+          original.replace(
+            '1 symbols, 2 relationships, 3 execution flows',
+            '493905 symbols, 698316 relationships, 300 execution flows',
+          ),
+        );
+        const other = instructionFile === 'AGENTS.md' ? 'CLAUDE.md' : 'AGENTS.md';
+        await generateAIContextFiles(
+          dir,
+          path.join(dir, '.gitnexus'),
+          'my-repo',
+          { ...STATS, nodes: 42 },
+          undefined,
+          options,
+        );
+        expect(await read(dir, instructionFile)).toContain('42 symbols');
+        expect(await read(dir, other)).toBe(original);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('drops the counts and per-skill counts, preserving the rest of the block', async () => {
+    const dir = await seed(
+      ['AGENTS.md', 'CLAUDE.md'],
+      `# Project
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **my-repo** (493905 symbols, 698316 relationships, 300 execution flows). MCP tools.
+
+| Task | Read this skill file |
+|------|---------------------|
+| Work in the Auth area (40 symbols) | \`.claude/skills/gitnexus-area-auth/SKILL.md\` |
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      const res = await refreshStatsLine(dir, STATS, { noStats: true });
+      expect(res.files.sort()).toEqual(['AGENTS.md', 'CLAUDE.md']);
+      for (const f of ['AGENTS.md', 'CLAUDE.md']) {
+        const after = await read(dir, f);
+        expect(after).toContain('This project is indexed by GitNexus as **my-repo**. MCP tools.');
+        expect(after).not.toContain('493905 symbols');
+        // Trimmed block shape (#3800) is refreshed too.
+        expect(after).toContain('| Work in the Auth area | `.claude/skills/');
+        // Everything else, incl. community rows and same-line text, survives.
+        expect(after).toContain('.claude/skills/gitnexus-area-auth/SKILL.md');
+        expect(after.startsWith('# Project\n')).toBe(true);
+      }
+
+      // Idempotent: nothing left to omit.
+      expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('restores the counts when --no-stats is dropped again (#1706)', async () => {
+    const dir = await seed(
+      ['AGENTS.md'],
+      `<!-- gitnexus:start -->
+Indexed as **my-repo**. Custom sentence.
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual(['AGENTS.md']);
+      expect(await read(dir, 'AGENTS.md')).toContain(
+        'Indexed as **my-repo** (493905 symbols, 698316 relationships, 300 execution flows). Custom sentence.',
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves stale counts alone so an up-to-date run never churns them (#2907)', async () => {
+    const dir = await seed(
+      ['AGENTS.md'],
+      `<!-- gitnexus:start -->
+This project is indexed by GitNexus as **my-repo** (1 symbols, 2 relationships, 3 execution flows).
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      const before = await read(dir, 'AGENTS.md');
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+      expect(await read(dir, 'AGENTS.md')).toBe(before);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['verbose LF', 'This project is indexed by GitNexus as', '\n', ' '],
+    ['compact CRLF', 'Indexed as', '\r\n', '\r\n'],
+  ])(
+    'handles wrapped counts in a %s block without duplicating them',
+    async (_label, prefix, eol, gap) => {
+      const counts = `${gap}(1 symbols,${eol}2 relationships, 3 execution${eol}flows)`;
+      const before = [
+        '# User instructions',
+        '<!-- gitnexus:start -->',
+        `${prefix} **my-repo**${counts}. Custom sentence.`,
+        '<!-- gitnexus:end -->',
+        '# User footer',
+        '',
+      ].join(eol);
+      const dir = await seed(['AGENTS.md', 'CLAUDE.md'], before);
+      try {
+        expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+        for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+          expect(await read(dir, name)).toBe(before);
+        }
+        expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([
+          'AGENTS.md',
+          'CLAUDE.md',
+        ]);
+        for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+          expect(await read(dir, name)).toBe(before.replace(counts, ''));
+        }
+        expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('leaves an unrecognized parenthetical alone', async () => {
+    const before = `<!-- gitnexus:start -->\nIndexed as **my-repo** (TypeScript monorepo).\n<!-- gitnexus:end -->\n`;
+    const dir = await seed(['AGENTS.md'], before);
+    try {
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+      expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+      expect(await read(dir, 'AGENTS.md')).toBe(before);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('drops skill counts from aligned Markdown rows while preserving padding and links', async () => {
+    const before = `<!-- gitnexus:start -->
+Indexed as **my-repo** (1 symbols, 2 relationships, 3 execution flows).
+| Task                                      | Read this skill file                       |
+| ----------------------------------------- | ------------------------------------------ |
+| Work in the Auth area (40 symbols)         | \`.claude/skills/gitnexus-area-auth/SKILL.md\` |
+| Work in the API area (20 symbols)\t\t| \`.claude/skills/gitnexus-area-api/SKILL.md\` |
+<!-- gitnexus:end -->
+`;
+    const dir = await seed(['AGENTS.md', 'CLAUDE.md'], before);
+    try {
+      expect((await refreshStatsLine(dir, STATS)).files).toEqual([]);
+      await refreshStatsLine(dir, STATS, { noStats: true });
+      const expected = before
+        .replace(' (1 symbols, 2 relationships, 3 execution flows)', '')
+        .replace(' (40 symbols)', '')
+        .replace(' (20 symbols)', '');
+      for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+        expect(await read(dir, name)).toBe(expected);
+      }
+      expect((await refreshStatsLine(dir, STATS, { noStats: true })).files).toEqual([]);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('honors skipAgentsMd for both AGENTS.md and CLAUDE.md', async () => {
+    const before = `<!-- gitnexus:start -->\nIndexed as **my-repo** (1 symbols, 2 relationships, 3 execution flows).\n<!-- gitnexus:end -->\n`;
+    const dir = await seed(['AGENTS.md', 'CLAUDE.md'], before);
+    try {
+      expect(
+        (await refreshStatsLine(dir, STATS, { noStats: true, skipAgentsMd: true })).files,
+      ).toEqual([]);
+      for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+        expect(await read(dir, name)).toBe(before);
+      }
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is a no-op without files, a block, or usable stats', async () => {
+    const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-statsline-none-'));
+    try {
+      expect((await refreshStatsLine(empty, STATS, { noStats: true })).files).toEqual([]);
+      await fs.writeFile(path.join(empty, 'AGENTS.md'), '# no block here\n', 'utf-8');
+      expect((await refreshStatsLine(empty, STATS, { noStats: true })).files).toEqual([]);
+    } finally {
+      await fs.rm(empty, { recursive: true, force: true });
+    }
+
+    // A count-free block with no recorded stats must not be restored to zeros.
+    const dir = await seed(
+      ['AGENTS.md'],
+      `<!-- gitnexus:start -->
+This project is indexed by GitNexus as **my-repo**.
+<!-- gitnexus:end -->
+`,
+    );
+    try {
+      expect((await refreshStatsLine(dir, {})).files).toEqual([]);
+      expect((await refreshStatsLine(dir, STATS, { skipAgentsMd: true })).files).toEqual([]);
+      expect(await read(dir, 'AGENTS.md')).not.toContain('(0 symbols');
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('--no-stats drops the per-cluster symbol counts too (#2907)', () => {
   const stats = { nodes: 10, edges: 20, processes: 3 };
   const skills = [{ label: 'ingestion', name: 'p-ingestion', symbolCount: 120, fileCount: 10 }];
@@ -2118,6 +2372,23 @@ Indexed as **${name}**${counts}. Lean block.
     }
   });
 
+  it('keeps the custom parenthetical when the project name changes', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-note-'));
+    try {
+      await fs.writeFile(path.join(dir, 'CLAUDE.md'), seed('Old', ' (preview)'));
+      await generateAIContextFiles(dir, path.join(dir, '.gitnexus'), 'New', {
+        nodes: 12,
+        edges: 20,
+        processes: 3,
+      });
+      expect(await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf8')).toBe(
+        seed('New', ' (preview)'),
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('preserves the existing stats-line prefix when updating a keep marker', async () => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-keep-prefix-'));
     const storage = path.join(dir, '.gitnexus');
@@ -2145,5 +2416,386 @@ indexed by GitNexus as **OldName** (10 symbols, 20 relationships, 3 execution fl
     } finally {
       await fs.rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('block heading levels follow the file (#2774)', () => {
+  const stats = { nodes: 10, edges: 20, processes: 3 };
+
+  async function withRepo(run: (dir: string, storage: string) => Promise<void>) {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-2774-'));
+    const storage = path.join(dir, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    try {
+      await run(dir, storage);
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  /** ATX heading lines outside fenced code, as `level text`. */
+  const headings = (content: string): string[] => {
+    const out: string[] = [];
+    let inFence = false;
+    for (const line of content.split(/\r?\n/)) {
+      if (/^```/.test(line)) inFence = !inFence;
+      const match = !inFence && /^(#{1,6}) (.*)$/.exec(line);
+      if (match) out.push(`${match[1].length} ${match[2]}`);
+    }
+    return out;
+  };
+  const levelOne = (content: string) => headings(content).filter((h) => h.startsWith('1 '));
+
+  it('keeps the level-1 title in a file GitNexus creates', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(path.join(dir, 'CLAUDE.md'), 'utf-8');
+      expect(content.startsWith('<!-- gitnexus:start -->\n# GitNexus — Code Intelligence\n')).toBe(
+        true,
+      );
+      expect(headings(content)).toContain('2 Always Do');
+    });
+  });
+
+  it('nests the block under a file that already has a title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '# CLAUDE.md\n\n## Project Overview\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual(['1 CLAUDE.md']);
+      expect(headings(content)).toEqual([
+        '1 CLAUDE.md',
+        '2 Project Overview',
+        '2 GitNexus — Code Intelligence',
+        '3 Always Do',
+        '3 Never Do',
+        '3 Resources',
+        '3 CLI',
+      ]);
+    });
+  });
+
+  it('nests a block an earlier version wrote at level 1, once', async () => {
+    await withRepo(async (dir, storage) => {
+      // A block-only file is what earlier versions created; putting a title
+      // above it gives the two-H1 file the issue reports.
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'AGENTS.md');
+      const legacy = '# AGENTS.md\n\n' + (await fs.readFile(file, 'utf-8'));
+      await fs.writeFile(file, legacy, 'utf-8');
+      expect(levelOne(legacy)).toHaveLength(2);
+
+      const first = await generateAIContextFiles(dir, storage, 'P', stats);
+      const migrated = await fs.readFile(file, 'utf-8');
+      expect(first.files).toContain('AGENTS.md (updated)');
+      expect(levelOne(migrated)).toEqual(['1 AGENTS.md']);
+      expect(migrated).toContain('\n## GitNexus — Code Intelligence\n');
+
+      const second = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(second.files).toContain('AGENTS.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(migrated);
+    });
+  });
+
+  it('nests a block when the only title sits below it', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'AGENTS.md');
+      await fs.appendFile(file, '\n# Appendix\n', 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('AGENTS.md (updated)');
+      expect(await fs.readFile(file, 'utf-8')).toContain(
+        '<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n',
+      );
+    });
+  });
+
+  it('leaves a block-only file at level 1 without rewriting it', async () => {
+    await withRepo(async (dir, storage) => {
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const file = path.join(dir, 'CLAUDE.md');
+      const created = await fs.readFile(file, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(created);
+    });
+  });
+
+  it('treats a setext title as the file title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, 'Project Guide\n=============\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual([]);
+      expect(headings(content)).toContain('2 GitNexus — Code Intelligence');
+    });
+  });
+
+  it('does not take a # line inside fenced code for a title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, 'Notes.\n\n```sh\n# install\nnpm ci\n```\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(levelOne(content)).toEqual(['1 GitNexus — Code Intelligence']);
+    });
+  });
+
+  it.each([
+    ['an HTML comment with an ATX heading', '<!--\n# Example\n-->\n'],
+    ['an HTML comment with a setext heading', '<!--\nExample\n=======\n-->\n'],
+    ['YAML front matter', '---\nexample: |\n  # Example\n---\n'],
+    ['a tilde fence', '~~~md\n# Example\n~~~\n'],
+    ['a longer backtick fence', '````md\n```\n# Example\n````\n'],
+    ['a fence with a false closing line', '```md\n``` text\n# Example\n```\n'],
+    ['an ATX subheading followed by equals signs', '## Details\n===\n'],
+    ['a four-space-indented # line', 'Notes.\n\n    # Example\n'],
+    ['equals signs after a blank line', 'Notes.\n\n===\n'],
+    ['an indented fence', 'Notes.\n\n  ```sh\n# Example\n  ```\n'],
+    ['a fence closed by the other fence character', 'Notes.\n\n```\n~~~\n# Example\n```\n'],
+    ['an indented HTML comment', 'Notes.\n\n  <!--\n# Example\n-->\n'],
+    ['equals signs under a thematic break', '---\n===\n'],
+    ['equals signs under a list item', '- item\n===\n'],
+    ['equals signs under a block quote', '> quote\n===\n'],
+    ['a fence opened on a list item line', '- ```sh\n  # Example\n  ```\n- Next.\n'],
+  ])('does not nest under %s', async (_name, original) => {
+    await withRepo(async (dir, storage) => {
+      for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+        await fs.writeFile(path.join(dir, name), original, 'utf-8');
+      }
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      for (const name of ['CLAUDE.md', 'AGENTS.md']) {
+        const content = await fs.readFile(path.join(dir, name), 'utf-8');
+        expect(content.startsWith(original)).toBe(true);
+        expect(content).toContain('<!-- gitnexus:start -->\n# GitNexus — Code Intelligence\n');
+      }
+    });
+  });
+
+  it.each([
+    ['an invalid backtick fence opener', '```example`\n\n# Guide\n'],
+    ['an unclosed front matter delimiter', '---\n# Guide\n...\n'],
+    ['a comment containing fence delimiters', '<!--\n```md\n-->\n\n# Guide\n'],
+    ['a code sample containing a comment opener', '```html\n<!--\n```\n\n# Guide\n'],
+    ['YAML front matter containing fence delimiters', '---\nexample: |\n  ```md\n---\n\n# Guide\n'],
+    ['a UTF-8 byte-order mark', '\uFEFF# Guide\n'],
+    ['a setext title starting with a literal hash', '#Guide\n======\n'],
+    ['a lone hash', '#\n'],
+    ['a tab after the hash', '#\tGuide\n'],
+    ['a fence left open inside a list item', '- ```sh\n  npm ci\n\n# Guide\n'],
+  ])('recognizes a title after %s', async (_name, original) => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, original, 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n');
+      const repeated = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(repeated.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(content);
+    });
+  });
+
+  it('preserves a nested block when only the counts change', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'AGENTS.md');
+      await fs.writeFile(file, '# Guide\n', 'utf-8');
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const original = await fs.readFile(file, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', {
+        nodes: 100,
+        edges: 200,
+        processes: 30,
+      });
+
+      expect(original).toContain('\n## GitNexus — Code Intelligence\n');
+      expect(result.files).toContain('AGENTS.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(original);
+    });
+  });
+
+  it.each([false, true])(
+    'changes only the counts during explicit analysis (keep=%s)',
+    async (keep) => {
+      await withRepo(async (dir, storage) => {
+        const file = path.join(dir, 'CLAUDE.md');
+        const options = { refreshCounts: true, instructionFile: 'CLAUDE.md' as const };
+        await generateAIContextFiles(dir, storage, 'P', stats, undefined, options);
+        const block = (await fs.readFile(file, 'utf8')).trimEnd();
+        const original =
+          '    npm ci\n\n' +
+          (keep
+            ? block.replace(
+                '<!-- gitnexus:start -->',
+                '<!-- gitnexus:start -->\n<!-- gitnexus:keep -->',
+              )
+            : block) +
+          '\n\nNotes.  \n\n';
+        await fs.writeFile(file, original);
+        await generateAIContextFiles(
+          dir,
+          storage,
+          'P',
+          { ...stats, nodes: 91 },
+          undefined,
+          options,
+        );
+        expect(await fs.readFile(file, 'utf8')).toBe(
+          original.replace(stats.nodes + ' symbols', '91 symbols'),
+        );
+      });
+    },
+  );
+
+  it('retains each file’s community skills until a fresh inventory replaces them', async () => {
+    await withRepo(async (dir, storage) => {
+      const options = { skipSkills: true, refreshCounts: true };
+      const skills = [{ name: 'gitnexus-area-auth', label: 'Auth', symbolCount: 40, fileCount: 2 }];
+      await generateAIContextFiles(dir, storage, 'P', stats, skills, {
+        ...options,
+        instructionFile: 'AGENTS.md',
+      });
+      const agents = path.join(dir, 'AGENTS.md');
+      const claude = path.join(dir, 'CLAUDE.md');
+      const original = await fs.readFile(agents, 'utf8');
+      const fresh = { ...stats, nodes: 91 };
+      await generateAIContextFiles(dir, storage, 'P', fresh, undefined, options);
+      expect(await fs.readFile(agents, 'utf8')).toBe(
+        original.replace(stats.nodes + ' symbols', '91 symbols'),
+      );
+      expect(await fs.readFile(claude, 'utf8')).not.toContain('gitnexus-area-auth');
+
+      await generateAIContextFiles(dir, storage, 'P', fresh, undefined, {
+        ...options,
+        noStats: true,
+      });
+      expect(await fs.readFile(agents, 'utf8')).toContain(
+        '| Work in the Auth area | `.claude/skills/gitnexus-area-auth/SKILL.md` |',
+      );
+      await generateAIContextFiles(dir, storage, 'P', fresh, [], options);
+      expect(await fs.readFile(agents, 'utf8')).not.toContain('## CLI');
+    });
+  });
+
+  it('nests the block in a CRLF file with a title and keeps CRLF', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '# Guide\r\n\r\nNotes.\r\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('\r\n## GitNexus — Code Intelligence\r\n');
+      expect(content.replace(/\r\n/g, '').includes('\n')).toBe(false);
+    });
+  });
+
+  it('leaves a keep-marker block as the user wrote it', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      const original = `# Guide
+
+<!-- gitnexus:start -->
+<!-- gitnexus:keep -->
+# Code graph
+indexed by GitNexus as **P** (10 symbols, 20 relationships, 3 execution flows).
+<!-- gitnexus:end -->
+`;
+      await fs.writeFile(file, original, 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(await fs.readFile(file, 'utf-8')).toBe(original);
+    });
+  });
+
+  it('nests under a front-matter title, which MD025 counts as the file title', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '---\ntitle: Guide\n---\n\n## Overview\n\nNotes.\n', 'utf-8');
+
+      await generateAIContextFiles(dir, storage, 'P', stats);
+
+      const content = await fs.readFile(file, 'utf-8');
+      expect(content).toContain('<!-- gitnexus:start -->\n## GitNexus — Code Intelligence\n');
+      expect(levelOne(content)).toEqual([]);
+      const repeated = await generateAIContextFiles(dir, storage, 'P', stats);
+      expect(repeated.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(content);
+    });
+  });
+
+  // The writer trims the file, which can change what its first lines are. The
+  // level is chosen for the text as written, so the next run agrees with it.
+  it.each([
+    ['a blank line before front matter', '\n---\nname: x\n# yaml comment\n---\n\nNotes.\n', '#'],
+    ['an indented first line', '    # install deps\n    npm ci\n\nNotes.\n', '##'],
+  ])('settles the heading level in one write for %s', async (_name, original, level) => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, original, 'utf-8');
+
+      const first = await generateAIContextFiles(dir, storage, 'P', stats);
+      const written = await fs.readFile(file, 'utf-8');
+      const second = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(first.files).toContain('CLAUDE.md (appended)');
+      expect(written).toContain(`<!-- gitnexus:start -->\n${level} GitNexus — Code Intelligence\n`);
+      expect(second.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(written);
+    });
+  });
+
+  it('keeps an existing block when blank lines precede front matter', async () => {
+    await withRepo(async (dir, storage) => {
+      const file = path.join(dir, 'CLAUDE.md');
+      await fs.writeFile(file, '---\nname: x\n# yaml comment\n---\n\nNotes.\n', 'utf-8');
+      await generateAIContextFiles(dir, storage, 'P', stats);
+      const padded = '\n' + (await fs.readFile(file, 'utf-8'));
+      await fs.writeFile(file, padded, 'utf-8');
+
+      const result = await generateAIContextFiles(dir, storage, 'P', stats);
+
+      expect(result.files).toContain('CLAUDE.md (preserved)');
+      expect(await fs.readFile(file, 'utf-8')).toBe(padded);
+    });
+  });
+
+  // Nesting shifts every block line that starts with `#`, so the template must
+  // not gain one that is not a heading (a `# comment` in a fenced example).
+  it('starts no block line with # other than its headings', () => {
+    const block = generateGitNexusContent('P', stats, {
+      generatedSkills: [{ name: 'auth', label: 'Auth', symbolCount: 5, fileCount: 2 }],
+      groupNames: ['platform'],
+      hasPdg: true,
+      hasSpringActuator: true,
+    });
+
+    expect(block.split('\n').filter((line) => line.startsWith('#'))).toEqual([
+      '# GitNexus — Code Intelligence',
+      '## Always Do',
+      '## Never Do',
+      '## Resources',
+      '## Cross-Repo Groups',
+      '## CLI',
+    ]);
   });
 });

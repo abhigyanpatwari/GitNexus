@@ -18,6 +18,8 @@
  *        - elementTypeOf — container element type, by subscript or accessor
  *        - collapseMemberCallsByCallerTarget — one edge per caller/target
  *        - populateNamespaceSiblings — cross-file implicit visibility
+ *        - populateImportNamespaces — a whole-namespace import published once
+ *          per namespace instead of once per importer and name
  *        - hoistTypeBindingsToModule — enable ONLY when method return
  *          types are stored on the enclosing Module scope; most
  *          languages attach them to the class scope and leave this off
@@ -285,6 +287,7 @@ import type { SourceBindingRecorder } from '../source-binding-resolution.js';
 import type {
   NameLookupOptions,
   BindingRef,
+  CallResultAssignmentSite,
   Callsite,
   ConstraintContext,
   ParsedFile,
@@ -336,9 +339,15 @@ export interface ImportResolutionContext {
  *  `RegistryProviders.constraintCompatibility`'s third parameter. */
 export type { ConstraintContext } from 'gitnexus-shared';
 
-/** How a container's element was reached in the source. */
+/** How a container's element was reached in the source. `await` is the
+ *  value an awaitable wrapper yields — name-free, like `index`; it carries
+ *  `name?: undefined` so a provider that reads `via.name` after ruling out
+ *  `index` keeps type-checking. A provider answers `undefined` for any route
+ *  it does not recognize, which is an answer ("not that kind of container"),
+ *  so a language without an await route keeps the fold's identity behaviour. */
 export type ElementAccessRoute =
   | { readonly kind: 'index' }
+  | { readonly kind: 'await'; readonly name?: undefined }
   | { readonly kind: 'accessor'; readonly name: string };
 
 /** One structurally-detected implementor plus the receiver form in which it
@@ -396,6 +405,42 @@ export interface ScopeResolver {
    *  per-language convention so consumers asserting on reason keep
    *  working. */
   readonly importEdgeReason: string;
+
+  /** Name the files that supply what a source file takes through its on-demand
+   * (wildcard) imports. Only languages whose wildcards do not execute their
+   * targets may opt in. The finalizer's imports remain intact for lookup; this
+   * narrows persisted File→File edges only.
+   *
+   * The answer governs EVERY `wildcard-expanded` import edge of the file,
+   * whatever statement produced it: an edge whose target is absent from the
+   * returned set is not persisted, so an empty set drops them all. A provider
+   * that cannot decide one kind of wildcard must put that wildcard's targets
+   * in the set. Return undefined when capture or binding evidence is
+   * incomplete; every edge of the file is then kept.
+   *
+   * Facts must survive ParsedFile hydration. The hook receives no source text,
+   * must never reparse a cached file, and must not read `parsed.scopes`: the
+   * emit phase may already have released them to disk. */
+  readonly onDemandImportTargets?: (
+    parsed: ParsedFile,
+    indexes: ScopeResolutionIndexes,
+  ) => ReadonlySet<string> | undefined;
+
+  /** Store a wildcard import that `resolveImportTarget` answers with a list
+   * of files as ONE group over that list, instead of one import edge per
+   * file. Only when finalize creates no per-name bindings for the wildcard
+   * (`expandsWildcardTo` returns no names). Later resolution can still find
+   * names in the reachable files; readers ask about that reachability through
+   * `ImportVisibility` (`reaches`, `membership`, `forEachTarget`).
+   *
+   * Return the same array for every importer of the same package, so the
+   * package is stored once. Finalize falls back to one edge per file for any
+   * statement where its own results could differ; see
+   * `FinalizeHooks.groupsWildcardTargets`. It cannot see the provider's other
+   * hooks: none of them may read wildcard targets from `edgesAt`, which no
+   * longer lists a grouped import. Compare both forms through the pipeline
+   * before opting in. Default: one edge per file. */
+  readonly groupsWildcardImportTargets?: boolean;
 
   // ─── Pipeline hooks ────────────────────────────────────────────────────────
 
@@ -464,6 +509,10 @@ export interface ScopeResolver {
 
   /** Exact local module bindings, excluding definitions owned by nested scopes. */
   readonly moduleExports?: (file: ParsedFile) => ReadonlyMap<string, SymbolDefinition>;
+  /** Use moduleExports as the authoritative namespace surface as well. */
+  readonly namespaceExportsFromModuleExports?: boolean;
+  /** Names whose failed bare-receiver lookup must produce an explicit outcome. */
+  readonly reportedUnboundReceiverNames?: ReadonlySet<string>;
 
   /** Filter local and transitive export names for wildcard imports. Opting in
    * applies the filter both to re-export closures and imported bindings. */
@@ -528,6 +577,9 @@ export interface ScopeResolver {
     incoming: readonly BindingRef[],
     scopeId: ScopeId,
   ): BindingRef[];
+  /** `mergeBindings` can merge one complete ordered bucket instead of every
+   * growing prefix, with identical precedence, deduplication and ordering. */
+  readonly mergeBindingsAreAssociative?: boolean;
 
   /**
    * Per-language arity compatibility between a callsite and a
@@ -833,12 +885,30 @@ export interface ScopeResolver {
    */
   readonly postExtractSourceTextPolicy?: 'all-files' | 'uncached-files';
 
+  /** Additional cached files whose captures depend on workspace metadata.
+   * Runs before source loading; keep this predicate free of file I/O.
+   *
+   * `preExtracted` is the reused `ParsedFile` the pass already holds for
+   * `filePath`, so a resolver can decide from a capture-time fact it recorded
+   * there (for example on `captureSideChannel`) instead of from the path
+   * alone. It is undefined when the caller cannot supply the record; answer
+   * that case conservatively. */
+  readonly requiresPostExtractSourceText?: (
+    filePath: string,
+    resolutionConfig: unknown,
+    preExtracted: ParsedFile | undefined,
+  ) => boolean;
+
   /**
    * Whether the orchestrator should run `propagateImportedReturnTypes`
    * after finalize. Default `true`. TypeScript with explicit type
    * exports may want a different propagation strategy and opt out.
    */
   readonly propagatesReturnTypesAcrossImports?: boolean;
+
+  /** Follow a simple `receiver.method()` initializer through the receiver's
+   * declared class and unique method, preserving the producer's return scope. */
+  readonly followsInstanceCallResultTypes?: boolean;
 
   /**
    * Whether the compound-receiver resolver should fall back to
@@ -903,6 +973,36 @@ export interface ScopeResolver {
   readonly elementTypeOf?: (containerType: string, via: ElementAccessRoute) => string | undefined;
 
   /**
+   * The type of an element reached from a call's result: a call-result
+   * assignment whose `element` names a route this provider emitted (an
+   * iteration variable over a returned container, say). Called only with the
+   * exactly selected callee and its declared return type, so the answer can
+   * depend on what that return type meant where it was written. `undefined`,
+   * or no hook, leaves the name unbound; such sites are skipped when no exact
+   * callee selection exists.
+   */
+  readonly callResultElementType?: (
+    callee: SymbolDefinition,
+    returned: TypeRef,
+    route: string,
+    scopes: ScopeResolutionIndexes,
+  ) => TypeRef | undefined;
+
+  /**
+   * Whether an extracted call-result assignment takes part in this run. A
+   * provider may extract a site that stands only where its own validation
+   * (`populateNamespaceSiblings`, `populateRangeBindings`) removed another
+   * binding it extracted for the same name. Consulted once per site after
+   * those hooks and before any call-result binding is cleared or applied; a
+   * site it refuses neither clears that binding nor holds back a receiver
+   * read through it. No hook: every site takes part.
+   */
+  readonly callResultAssignmentApplies?: (
+    assignment: CallResultAssignmentSite,
+    scopes: ScopeResolutionIndexes,
+  ) => boolean;
+
+  /**
    * Collapse member-call CALLS edges by `(caller, target)` rather
    * than per-site. Default `false` — scope-resolution's contract
    * invariant is per-site dedup.
@@ -950,6 +1050,13 @@ export interface ScopeResolver {
    * leave it off. Forwarded to `FinalizeHooks.namedImportsBindTopLevelOnly`.
    */
   readonly namedImportsBindTopLevelOnly?: boolean;
+
+  /**
+   * Export names `export * from M` never carries into the re-exporting
+   * module, although `M` publishes them through `moduleExports` — ECMAScript's
+   * `default`. Forwarded to `FinalizeHooks.wildcardReexportExcludedNames`.
+   */
+  readonly wildcardReexportExcludedNames?: ReadonlySet<string>;
 
   /**
    * Veto for a single `allowGlobalFreeCallFallback` guess.
@@ -1208,10 +1315,13 @@ export interface ScopeResolver {
    * per language — the receiver typing here changed nothing for them),
    * so they stay unwired rather than carrying a redundant declaration.
    *
-   * Only affects receiver TYPING. Which node a construction call links
-   * to is a separate question, owned by `constructorCallTargetsClass`.
-   * Path-syntax constructors (Rust `Foo::new(x)`) are not covered — they
-   * are not member calls and never reach this resolver.
+   * `keyword` and `selector` only affect receiver TYPING. `bare` also links
+   * the call itself: a free call whose name binds exactly one class, and no
+   * callable, emits a CALLS edge to that class (#3950). Which node a
+   * construction call links to is a separate question, owned by
+   * `constructorCallTargetsClass`. Path-syntax constructors (Rust
+   * `Foo::new(x)`) are not covered — they are not member calls and never
+   * reach this resolver.
    */
   readonly constructionSyntax?: {
     /** A free call naming a class constructs it: `Service(db)`. */
@@ -1248,7 +1358,7 @@ export interface ScopeResolver {
    * A predicate rather than a flag so the language decides WHICH calls are
    * type applications, for example by its naming convention for types.
    *
-   * Only affects receiver TYPING, like `constructionSyntax`.
+   * Only affects receiver TYPING.
    * Default: undefined (no call is a type application).
    */
   readonly isTypeApplicationCall?: (callee: string) => boolean;
@@ -1461,6 +1571,10 @@ export interface ScopeResolver {
    * hook is strictly additive and never removes an edge the prior tiers
    * would have produced.
    *
+   * By default a lexical NAME CLAIM (`lexicalNames`: a parameter or a local of
+   * the same name) still blocks the call before this hook runs. A provider
+   * opts into the stronger ordering with `qualifiedFreeCallOutranksNameClaim`.
+   *
    * Languages whose qualified calls carry a value/type receiver (`x.foo()`,
    * `Type::foo()`) are served by the receiver-bound-calls pass and leave
    * this undefined.
@@ -1479,6 +1593,18 @@ export interface ScopeResolver {
     workspaceIndex: WorkspaceResolutionIndex,
     allFilePaths: ReadonlySet<string>,
   ) => SymbolDefinition | undefined;
+
+  /**
+   * Opt-in for providers whose `resolveQualifiedFreeCall` reads a path that
+   * cannot be a local binding (a module-qualified path such as `pkg::fn`). When `true`,
+   * `emitFreeCallFallback` runs the hook BEFORE the lexical name-claim block,
+   * and a defined result for a site with `rawQualifiedName` bypasses that
+   * block: the written path names the module, so a local binding of the bare
+   * tail (a parameter, a `let`, a loop variable) cannot be what it means.
+   * Absent or `false`, the hook runs after the block exactly as before, so a
+   * provider that does not set this sees no change in its graph.
+   */
+  readonly qualifiedFreeCallOutranksNameClaim?: boolean;
 
   /**
    * Optional resolver for a qualified CALLEE TEXT whose path syntax only the
@@ -1679,7 +1805,9 @@ export interface ScopeResolver {
   /** Source identity of a call whose result is this site's immediate receiver.
    * Captured from the AST, never inferred by comparing expression strings.
    * Enables typing from the selected compile-time declaration; an unresolved
-   * producer must not fall back to a name-based return-type guess. */
+   * producer must not fall back to a name-based return-type guess. A producer
+   * returned for a receiver chain that ends in index steps (`make()[0].m()`)
+   * is read through `elementTypeOf`, once per trailing index step. */
   readonly receiverCallSite?: (
     callsite: ReferenceSite,
     scopes: ScopeResolutionIndexes,
@@ -1791,6 +1919,25 @@ export interface ScopeResolver {
     candidate: SymbolDefinition,
     context: { readonly callerFilePath: string },
   ) => ArityVerdict;
+
+  /**
+   * Optional hook for a language whose import statement makes a whole
+   * namespace visible. Instead of one binding per importer and name, the
+   * provider publishes each namespace ONCE in `namespaceFqnBindings` and lists
+   * the namespaces an importing scope sees in `accessibleNamespacesByScope`
+   * (with `namespaceLookupTiersByScope` for precedence), so the stored size
+   * does not grow with importers times names.
+   *
+   * Runs immediately after finalize, before the first pass that reads a
+   * binding (inheritance resolution), so every later lookup sees the imported
+   * names. `populateNamespaceSiblings` runs too late for that: heritage edges
+   * and the MRO already exist when it is called. Finalized `indexes.bindings`
+   * stays immutable.
+   */
+  readonly populateImportNamespaces?: (
+    parsedFiles: readonly ParsedFile[],
+    indexes: ScopeResolutionIndexes,
+  ) => void;
 
   /**
    * Optional post-finalize hook to complete provider-owned namespace and type

@@ -183,5 +183,37 @@ export const resolveRubyReceiverMember: NonNullable<ScopeResolver['resolveReceiv
       ? { kind: 'resolved', definition: compatible[0]! }
       : { kind: 'ambiguous', candidateIds: compatible.map((def) => def.nodeId) };
   }
-  return { kind: 'ambiguous', candidateIds: [] };
+  // A top-level `def` is a method of Object, so `self` reaches it once no
+  // ancestor answers. The captures give a receiver-less call a `self`
+  // receiver beside a same-named local or parameter; that call must keep
+  // the top-level target a plain free call resolves to.
+  const topLevel = receiver === 'self' ? rubyTopLevelMethods(site, name, indexes) : [];
+  const compatible = narrowOverloadCandidates(topLevel, site.arity, site.argumentTypes);
+  const [only] = compatible;
+  return only !== undefined && compatible.length === 1
+    ? { kind: 'resolved', definition: only }
+    : { kind: 'ambiguous', candidateIds: compatible.map((def) => def.nodeId) };
 };
+
+/** The ownerless methods named `name` that the call's file declares or requires. */
+function rubyTopLevelMethods(
+  site: Parameters<NonNullable<ScopeResolver['resolveReceiverMember']>>[2],
+  name: string,
+  indexes: Parameters<NonNullable<ScopeResolver['resolveReceiverMember']>>[3],
+): SymbolDefinition[] {
+  let scope = indexes.scopeTree.getScope(site.inScope);
+  while (scope !== undefined && scope.kind !== 'Module')
+    scope = scope.parent === null ? undefined : indexes.scopeTree.getScope(scope.parent);
+  if (scope === undefined) return [];
+  // Looked up from the file scope as a callee: the enclosing method's and
+  // class's own names, and any local of the file, are not in this namespace.
+  const methods = new Map<string, SymbolDefinition>();
+  for (const { def } of lookupNameClaim(scope.id, name, indexes, {
+    purpose: 'value',
+    callee: true,
+  }).bindings) {
+    if ((def.type === 'Function' || def.type === 'Method') && def.ownerId === undefined)
+      methods.set(def.nodeId, def);
+  }
+  return [...methods.values()];
+}

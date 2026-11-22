@@ -138,10 +138,12 @@ export const GITNEXUS_TOOLS: ToolDefinition[] = [
 
 Returns a page of repositories — each with name, path, indexed date, last commit, and stats — plus a "pagination" object: { total, limit, offset, returned, hasMore, nextOffset }.
 
-PAGINATION: Results are paginated so a large registry is not truncated by MCP/LLM token limits. "limit" sets the page size (default ${LIST_REPOS_DEFAULT_LIMIT}, max ${LIST_REPOS_MAX_LIMIT}; values above the max are rejected, not capped). "offset" selects the start. To enumerate EVERY repository: when pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset, and repeat until hasMore is false. Repositories are returned in a stable order, so paging never skips or duplicates an entry while the registry is unchanged.
+Discovery skips Git freshness checks and reports staleness.status as "unknown".
+
+Pagination keeps large registries within client response limits. The default page size is ${LIST_REPOS_DEFAULT_LIMIT}. Limits above ${LIST_REPOS_MAX_LIMIT} are rejected. While pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset. Order is stable while the registry is unchanged.
 
 WHEN TO USE: First step when multiple repos are indexed, or to discover available repos.
-AFTER THIS: READ gitnexus://repo/{name}/context for the repo you want to work with.
+AFTER THIS: READ gitnexus://repo/{name}/context to check the selected index against its checkout.
 
 When multiple repos are indexed, repo-scoped read-only tools use the configured
 MCP default or the registered path containing the GitNexus process cwd, unless
@@ -315,7 +317,7 @@ EXAMPLES:
 • Detect diamond inheritance:
   MATCH (d:Class)-[:CodeRelation {type: 'EXTENDS'}]->(b1), (d)-[:CodeRelation {type: 'EXTENDS'}]->(b2), (b1)-[:CodeRelation {type: 'EXTENDS'}]->(a), (b2)-[:CodeRelation {type: 'EXTENDS'}]->(a) WHERE b1 <> b2 RETURN d.name, b1.name, b2.name, a.name
 
-OUTPUT: Returns { markdown, row_count } — results formatted as a Markdown table for easy reading.
+OUTPUT: { markdown, row_count } with a Markdown table. Empty: { markdown: "", row_count: 0 }.
 
 TIPS:
 - All relationships use single CodeRelation table — filter with {type: 'CALLS'} etc.
@@ -365,7 +367,7 @@ INGESTION: graph_integrity reports repository-wide source-reference identity/spa
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
 - undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
-- callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
+- callableValueReferences: symbols holding the callable as a value via USES, without a modeled later invocation. Follow the registrations/readers. Coverage depends on the provider’s captured references; bare callback arguments can be missing. Synthesized dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or exact coverage. Use impact() before edits; read gitnexus://repo/{name}/process/{processName} for a full flow.
 
@@ -444,17 +446,13 @@ ${HOT_READ_STALENESS_NOTE}`,
   },
   {
     name: 'detect_changes',
-    description: `Analyze uncommitted git changes and find affected execution flows.
-Maps git diff hunks to indexed symbols, then traces which processes are impacted.
+    description: `Map git diff hunks to indexed symbols and affected processes before committing or reviewing a PR. Inspect high-risk symbols with context() and full traces at gitnexus://repo/{name}/process/{name}.
 
-WHEN TO USE: Before committing — to understand what your changes affect. Pre-commit review, PR preparation.
-AFTER THIS: Review affected processes. Use context() on high-risk symbols. READ gitnexus://repo/{name}/process/{name} for full traces.
+GIT WORKTREE SUPPORT: The server automatically detects its linked git worktree. Pass worktree to review changes in a different checkout.
 
-GIT WORKTREE SUPPORT: GitNexus automatically detects when the MCP server was launched from inside a linked git worktree and runs git diff against that worktree — no extra parameters needed in the common case. Pass "worktree" explicitly only when the server was started from a different directory than the worktree you are editing (e.g., the server runs from the canonical root but your changes are in a linked worktree at a different path).
-
-Returns: changed symbols, affected processes, and a risk summary.
-- partial: true — mapping is incomplete, so risk_level is "unknown" instead of a ranked level. A failed symbol query (or an unparseable diff) degrades changed_symbols, both counts, and derived processes; a failed process lookup degrades only affected_processes and risk, leaving changed-symbol counts sound. unmapped_files lists changed supported source files with no mapped symbols, including source renames without hunks: their symbols may be missing, unindexed, or outside indexed ranges even when every query succeeded. Rebuild the index and inspect those diffs; retry alone may not resolve this state. changed_count:0 with partial:true is NOT a clean pre-commit check.
-- truncated: true — the changed_symbols LISTING was capped for this response. summary.changed_count counts every symbol the run observed: the true total normally, a LOWER BOUND when partial:true. Compare it with the array length rather than trusting the array.`,
+Mixed diffs count Markdown sections separately. incompatible_calls lists call sites whose language provider verified a removed keyword. summary.incompatible_call_count includes sites beyond the 1000-row limit. When checked, summary.incompatible_calls_checked records coverage. False means partial: incompatible_call_skips explains why and proven high/critical risk is retained. Providers report unresolved argument expansions as coverage limits.
+- partial: true — symbol mapping, process lookup, or keyword checking was incomplete. Failed symbol queries and unparseable diffs can affect both counts and risk. A failed process lookup alone leaves changed_count intact but can undercount affected processes and affect risk. unmapped_files lists supported source files with no mapped symbols, including source renames without hunks. Rebuild the index and inspect the diff. A zero count with partial:true is inconclusive.
+- truncated: true — a listing was capped. Summary counts include every result observed and may be lower bounds when partial:true.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -555,12 +553,13 @@ For a hub, start with summaryOnly:true, then fetch needed callers with limit/off
 
 CALLGRAPH MODE (default): CALLS/IMPORTS/EXTENDS/IMPLEMENTS. Add HAS_METHOD/HAS_PROPERTY for members or ACCESSES for field usage. Confidence 1.0 is certain; <0.8 is fuzzy. d=1 callers/importers WILL BREAK, d=2 are LIKELY AFFECTED, d=3 MAY NEED TESTING.
 
-RISK: risk is the HIGH/CRITICAL edit-gate field: LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN. Upstream zero callers is UNKNOWN with riskNote, never proof of safety; corroborate by text search. Downstream empty results describe callees, not safety.
-- riskSharedAxes compares direct/total axes; group mode adds the cross-repo crossing overlay. Never substitute it for \`risk\` when deciding whether to warn.
-- File targets lack process/community axes; their risk is not directly comparable with symbols. Web Graph-RAG expands Files to symbols.
+RISK: risk is the HIGH/CRITICAL edit-gate field: LOW/MEDIUM/HIGH/CRITICAL/UNKNOWN. Upstream zero callers is UNKNOWN with riskNote, never proof of safety; corroborate by text search. Upstream direct dependants set the ranked thresholds: 5 for MEDIUM, 15 for HIGH, 200 for CRITICAL. Transitive processes and modules remain visible in the summary. Downstream empty results describe callees, not safety.
+- riskSharedAxes compares the shared reach counts (direct upstream, direct and total downstream); group mode adds the cross-repo crossing overlay. Never substitute it for \`risk\` when deciding whether to warn.
+- File targets lack process/community axes. This limits downstream risk comparisons with symbols. Web Graph-RAG expands Files to symbols.
 - riskScale.{comparableAcrossKinds,unusedAxes} identifies unavailable/skipped/failed axes, including IMPACT_MAX_CHUNKS=0 and enrichment that sampled a subset of impacted symbols. Failed/truncated counts are floors: known HIGH/CRITICAL warnings survive; otherwise risk is UNKNOWN.
 
 RESULTS: target, impactedCount, summary, affected_processes, affected_modules, byDepthCounts, and byDepth. summaryOnly omits byDepth. limit/offset apply PER DEPTH; maxDepth alone cannot bound wide hubs. Read pagination/truncated flags and totals before treating a page as complete. Ambiguous targets return ranked candidates, totalCandidates, and candidatesTruncated.
+- Callgraph impact excludes CALLS inferred solely from a unique name. Raw graph edges carry reason "global-name-fallback".
 - byDepth rows include processes:[{id,label,processType,step}]. With partial:true, processes:[] can mean capped enrichment; cross-check affected_processes.
 - staticGated:true marks a provably compile-time-unreachable edge (currently Zig); absence proves neither reachability nor coverage. Traversal/risk do not filter on it.
 - affected_routes and row routes:[{url,method?}] are callgraph-only HTTP enrichment, not risk inputs.
@@ -573,7 +572,7 @@ INGESTION: graph_integrity is separate from completeness. "unverified" means sou
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
 - undecidedSatisfaction: unjudged interface/type pairs without IMPLEMENTS; check dependencies.
-- callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Zig registrations and JS/TS object properties are captured; bare JS/TS callback arguments are not counted. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
+- callableValueReferences counts symbols registering the callable VALUE via USES without a modeled later invocation. Follow registrations/readers; low risk/counts remain floors. Coverage depends on the provider’s captured references; bare callback arguments can be missing. Synthesized property dispatch excludes the whole symbol, so mixed followed/unfollowed registrations can report 0. Zero means no unfollowed registration was proven, not no escapes; a failed probe also reports 0 with lower-bound.
 Older indexes can lack captures/metadata; re-analyze before trusting zero causes or apparently exact coverage from an older analyzer.
 
 PDG MODE: mode:"pdg" requires analyze --pdg; incompatible with crossDepth/@group. relationTypes/minConfidence filter inter-symbol reach. A statement-anchored slice uses a 1-based line inside the target; omit line for whole-symbol dependence.

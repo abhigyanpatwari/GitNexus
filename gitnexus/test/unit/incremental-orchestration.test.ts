@@ -565,6 +565,83 @@ const JAVA_DI_FIXTURE: ReadonlyArray<readonly [string, string]> = [
 ];
 
 describe('runFullAnalysis — incremental orchestration', () => {
+  it('adds and removes name-only calls between untouched files when a competing definition changes', async () => {
+    const repo = await setupMiniRepo();
+    vi.stubEnv('GITNEXUS_HOME', path.join(repo.dbPath, '.git', 'gitnexus-home'));
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const { LocalBackend } = await import('../../src/mcp/local/local-backend.js');
+      const checkImpact = async () => {
+        const backend = new LocalBackend();
+        try {
+          expect(await backend.init()).toBe(true);
+          const result = await backend.callTool('impact', {
+            repo: repo.dbPath,
+            target: 'dispatchEvent',
+            direction: 'upstream',
+            maxDepth: 1,
+          });
+          expect(result).toMatchObject({
+            summary: { direct: 1 },
+            byDepth: { 1: [{ filePath: 'bound.js' }] },
+          });
+        } finally {
+          await backend.disconnect();
+        }
+      };
+      const competing = path.join(repo.dbPath, 'shadow.js');
+      const definition = 'export function dispatchEvent(x) { return x }';
+      await writeFile(path.join(repo.dbPath, 'core.js'), definition);
+      await writeFile(competing, definition);
+      await writeFile(
+        path.join(repo.dbPath, 'bundle.js'),
+        'export function loose(x) { return dispatchEvent(x) }',
+      );
+      await writeFile(
+        path.join(repo.dbPath, 'bound.js'),
+        'import { dispatchEvent } from "./core.js"; export function bound(x) { return dispatchEvent(x) }',
+      );
+      gitCommitAll(repo.dbPath, 'add competing definitions');
+      const analyze = async (force = false) => {
+        const logs: string[] = [];
+        await runFullAnalysis(
+          repo.dbPath,
+          { force, skipAgentsMd: true, skipFts: true },
+          { onProgress() {}, onLog: (line) => logs.push(line) },
+        );
+        if (!force) {
+          expect(logs.join('\n')).toContain('Incremental: changed=');
+          expect(logs.join('\n')).not.toContain('switching to a full DB write');
+        }
+        await adapter.initLbug(getStoragePaths(repo.dbPath).lbugPath);
+        try {
+          return await adapter.executeQuery(
+            "MATCH (a:Function)-[r:CodeRelation]->(b:Function) WHERE b.filePath = 'core.js' AND r.type = 'CALLS' RETURN a.name AS caller, r.reason AS reason ORDER BY caller",
+          );
+        } finally {
+          await adapter.closeLbug();
+        }
+      };
+      const bound = { caller: 'bound', reason: 'import-resolved' };
+      const baseline = await analyze(true);
+      expect(baseline).toEqual([bound]);
+      await rm(competing);
+      gitCommitAll(repo.dbPath, 'remove competing definition');
+      const unique = await analyze();
+      expect(unique).toEqual([bound, { caller: 'loose', reason: 'global-name-fallback' }]);
+      await checkImpact();
+      expect(await analyze(true)).toEqual(unique);
+      await checkImpact();
+      await writeFile(competing, definition);
+      gitCommitAll(repo.dbPath, 'restore competing definition');
+      expect(await analyze()).toEqual(baseline);
+    } finally {
+      vi.unstubAllEnvs();
+      await repo.cleanup();
+    }
+  }, 120_000);
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });

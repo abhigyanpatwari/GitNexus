@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a private package function that another file of the package calls as pkg::name(); the qualified call is a proven binding, so the rename crosses files.",
+  "categories": ["call-graph", "cross-file", "qualified-call", "namespace"],
+  "target": { "name": "hidden", "kind": "Function", "file": "R/f.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "g", "kind": "Function", "file": "R/g.R", "startLine": 0 },
+      "to": { "name": "hidden", "kind": "Function", "file": "R/f.R", "startLine": 0 }
+    }
+  ]
+}

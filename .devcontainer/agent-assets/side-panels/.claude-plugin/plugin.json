@@ -1,0 +1,6 @@
+{
+  "name": "side-panels",
+  "version": "0.1.0",
+  "description": "Side panels: git worktrees, claude-mem work state, session activity, and an opt-in shared agent board",
+  "types": "./types/index.d.ts"
+}

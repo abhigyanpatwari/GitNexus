@@ -460,19 +460,27 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
  * clones that every language's capture-synthesis walker re-implemented (#1956
  * tri-review U6).
  *
- * Iterates by index with a null guard: `node.namedChild(i)` is typed
- * `SyntaxNode | null`, and most callers already guarded it. The Go and C#
- * callers previously iterated `node.namedChildren`; the Go one had no null
- * guard, so this standardizes them onto the guarded indexed form — a deliberate,
- * strictly-safer behavior addition (the traversal *sequence* is identical, so
- * capture output stays byte-identical on well-formed trees; the guard only
- * matters for a null named child, which the fixture corpus never produces).
+ * Iterative (an explicit stack of frames) so syntax depth cannot overflow the
+ * call stack. It reads `namedChild(i)` with a null guard in the same order as
+ * the old recursion, so both the traversal sequence and the per-node
+ * navigation calls are unchanged and capture output stays byte-identical.
  */
 export function walkNamedTree(node: SyntaxNode, cb: (node: SyntaxNode) => void): void {
+  // Syntax depth is input-controlled, and recursion here overflowed V8's stack
+  // near depth 8,000. Each frame is a node and the index of its next named
+  // child: the same namedChild(i) reads, in the same order, as the recursion.
   cb(node);
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null) walkNamedTree(child, cb);
+  const frames: { node: SyntaxNode; next: number }[] = [{ node, next: 0 }];
+  while (frames.length > 0) {
+    const frame = frames[frames.length - 1];
+    if (frame.next >= frame.node.namedChildCount) {
+      frames.pop();
+      continue;
+    }
+    const child = frame.node.namedChild(frame.next++);
+    if (child === null) continue;
+    cb(child);
+    frames.push({ node: child, next: 0 });
   }
 }
 

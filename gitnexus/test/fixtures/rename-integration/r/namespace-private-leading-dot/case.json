@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a private package function with a leading dot (.helper, the usual internal-function convention); the definition and its call are renamed.",
+  "categories": ["namespace", "package-export", "positive"],
+  "target": { "name": ".helper", "kind": "Function", "file": "R/pub.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "pub", "kind": "Function", "file": "R/pub.R", "startLine": 2 },
+      "to": { "name": ".helper", "kind": "Function", "file": "R/pub.R", "startLine": 0 }
+    }
+  ]
+}

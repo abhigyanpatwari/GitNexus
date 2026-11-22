@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a for variable named like the function is called in the loop body: the loop variable is not a covered binding of the rename, so the occurrences stay uncovered (incomplete_semantics), never a rename that leaves the call behind.",
+  "categories": ["for-variable-shadowing", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "use.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "incomplete_semantics",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

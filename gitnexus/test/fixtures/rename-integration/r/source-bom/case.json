@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "A UTF-8 byte order mark at the start of an R file does not break indexing or rename: the definition on the first line is found and renamed with its call, and the mark is kept.",
+  "categories": ["encoding", "positive"],
+  "target": { "name": "helper", "kind": "Function", "file": "a.R", "startLine": 0 },
+  "newName": "secret",
+  "expect": { "status": "success", "edits": 2 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "run", "kind": "Function", "file": "a.R", "startLine": 2 },
+      "to": { "name": "helper", "kind": "Function", "file": "a.R", "startLine": 0 }
+    }
+  ]
+}

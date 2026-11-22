@@ -258,6 +258,40 @@ A non-empty API key env var takes precedence over stored login credentials for e
 
 VS Code's Ports panel shows forwarded ports once their listener starts.
 
+## Agent setup
+
+`post-create.sh` ends by running `agent-setup.cjs`, which makes the seeded Claude Code and Codex setup work in this Linux container and installs the repository's agent tooling. Every step checks what is already there, so the script is safe to run again at any time:
+
+```bash
+node .devcontainer/agent-setup.cjs
+```
+
+| Step | What it does | Why |
+| --- | --- | --- |
+| Codex config | Removes MCP servers started by a Windows executable, plugin marketplaces at a Windows path and a Windows `notify` program from `~/.codex/config.toml` | A config copied from a Windows host names them by `C:\` paths; they fail on every start here |
+| Codex sandbox | Adds `sandbox_mode = "danger-full-access"` and `approval_policy = "on-request"` when the container cannot create user namespaces and the config chooses no sandbox mode | Codex's bubblewrap sandbox cannot start without user namespaces, so every sandboxed command fails. The container is the boundary |
+| Codex guard | Copies `codex-guard.cjs` to `~/.codex/hooks/guard/` and registers it as a `PreToolUse` hook | With no sandbox, and no prompts under `codex exec`, it refuses the common destructive commands: recursive deletes of protected roots, force pushes, pushes to `main`, `git clean -x`, `npm publish` and similar. It is a best-effort check on the command text, not a boundary: a target or command built from a variable or a substitution is not seen |
+| Claude MCP | Removes MCP servers started by a Windows executable from `~/.claude.json` | Same reason as the Codex config |
+| Side panels | Installs the `side-panels` mod to `~/.claude/mods/` and adds it to `CLAUDE_CODE_PLUGIN_DIRS` in `~/.claude/settings.json` | `/panels` shows worktrees, claude-mem work state, agents with their message bus, and review-run lanes |
+| Codex plugins | Fetches the marketplaces the seeded config names, then installs `compound-engineering` and `claude-mem` for Codex when you have them enabled in Claude Code | Codex gets the same plugins; claude-mem is taken from Claude's own checkout, so both CLIs share one version, worker and store |
+| Codex skill entry | Writes `.agents/skills/pr-tri-review/SKILL.md`, pointing at `.claude/skills/pr-tri-review/SKILL.md` | `pr-tri-review` runs from either CLI, with the other one as the second engine |
+
+The first original of each config file it changes is kept beside it as `<file>.before-agent-setup`. Set `GITNEXUS_AGENT_SETUP=off` to skip the whole step.
+
+Two things stay yours to do, once, inside the container:
+
+- **Trust the Codex hooks.** Codex runs a new hook only after you approve it: start `codex`, run `/hooks`, and trust the destructive-command guard (and claude-mem's hooks, if installed). Until then the guard is installed but inactive.
+- **Personal preferences** are not provisioned: default models and effort, the status line, which plugins are enabled, and Claude Code's auto-mode description.
+
+Start Codex with `CODEX_GUARD=off` to run one session without the guard.
+
+The mod's own tests need the Claude Code CLI and are not part of `node --test .devcontainer/*.test.cjs`:
+
+```bash
+claude plugin validate .devcontainer/agent-assets/side-panels
+claude plugin test .devcontainer/agent-assets/side-panels
+```
+
 ## Known gotchas
 
 - **Warm installs reuse the npm cache.** Lifecycle installs prefer cached packages and skip audit requests and funding notices; cache misses still download normally, and native addon/prepare scripts still run. Run `npm audit` in each package when checking vulnerabilities. Volume ownership repair changes only entries whose owner or group differs from `node`.

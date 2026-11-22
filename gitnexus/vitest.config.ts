@@ -44,11 +44,16 @@ export default defineConfig({
     // turn off every staging test. Empty is neither '0' nor '1', i.e. unset;
     // a test that needs a value stubs it.
     // Config tests supply their own files; never read a developer's GITNEXUS_RC.
+    // CLAUDE_CONFIG_DIR relocates Claude Code's config root, and setup/uninstall
+    // honour it: inheriting a developer's value would point setup tests that
+    // sandbox HOME at that developer's real config. Empty means unset; cases
+    // that exercise the relocation set it themselves.
     env: {
       GITNEXUS_MEMORY: 'off',
       GITNEXUS_LANG: 'en',
       GITNEXUS_ATOMIC_INCREMENTAL: '',
       GITNEXUS_RC: '',
+      CLAUDE_CONFIG_DIR: '',
     },
     // N-API destructors can crash worker forks on macOS during process exit.
     // This is independent of the QueryResult lifetime fix in @ladybugdb/core 0.15.2 —
@@ -63,7 +68,6 @@ export default defineConfig({
       include: ['src/**/*.ts'],
       exclude: [
         'src/cli/index.ts', // CLI entry point (commander wiring)
-        'src/server/**', // HTTP server (requires network)
         'src/core/wiki/**', // Wiki generation (requires LLM)
       ],
       // Auto-ratchet: vitest bumps thresholds when coverage exceeds them.
@@ -111,6 +115,9 @@ export default defineConfig({
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
             'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/java-incremental-on-demand.test.ts',
+            'test/integration/r-namespace-edit-incremental.test.ts',
+            'test/integration/r-virtual-placeholder-incremental.test.ts',
             'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
@@ -173,6 +180,7 @@ export default defineConfig({
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
+            'test/integration/http-route-symbol-batch.test.ts',
             'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
             'test/integration/lbug-multiwriter-deadlock.test.ts',
@@ -233,6 +241,9 @@ export default defineConfig({
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
             'test/integration/go-incremental-method-owners.test.ts',
+            'test/integration/java-incremental-on-demand.test.ts',
+            'test/integration/r-namespace-edit-incremental.test.ts',
+            'test/integration/r-virtual-placeholder-incremental.test.ts',
             'test/integration/server-route-hook-config.test.ts',
             'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
@@ -283,6 +294,7 @@ export default defineConfig({
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
+            'test/integration/http-route-symbol-batch.test.ts',
             'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/skills-e2e.test.ts',
             'test/integration/fts-extension-e2e.test.ts',

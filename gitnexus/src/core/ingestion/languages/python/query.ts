@@ -8,7 +8,7 @@
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
 
-const PYTHON_SCOPE_QUERY = `
+export const PYTHON_SCOPE_QUERY = `
 ;; Scopes
 (module) @scope.module
 (class_definition) @scope.class
@@ -296,16 +296,75 @@ const PYTHON_SCOPE_QUERY = `
 (call
   function: (identifier) @reference.name) @reference.call.free
 
-(call
-  function: (attribute
-    object: (_) @reference.receiver
-    attribute: (identifier) @reference.name)) @reference.call.member
+;; A match stays open from its first node to its last, and tree-sitter
+;; revisits every open match at every node it enters or leaves. A pattern
+;; rooted at a node whose LATER child it needs is therefore open across the
+;; earlier children: one open match per level of \`a.f().g()\`, \`a.b.c\` or
+;; \`a + b + c\`, and a query quadratic in the depth of the chain. The patterns
+;; below are anchored at the node they END on instead. A \`(_ child)\` pattern
+;; starts at the child (tree-sitter skips a wildcard root and hands back the
+;; parent), so it finishes at the same node, in the same order, as the
+;; parent-rooted pattern it replaces. expandPythonScopeMatches() checks what
+;; the wildcard could not and yields the captures of the replaced patterns.
 
-;; Attribute reads and targets. The provider classifies the AST context,
-;; including annotation-only targets and augmented assignments.
-(attribute
-  object: (_) @reference.receiver
-  attribute: (identifier) @reference.name) @reference.read.member
+;; Member call, first half: remember which call an attribute is the callee of.
+;; Ends at the callee, before its receiver is walked.
+(call
+  function: (attribute) @_member-callee) @_member-call
+
+;; Attribute reads and targets, and the second half of a member call. Yields
+;; @reference.call.member (callee only) then @reference.read.member, each with
+;; @reference.receiver and @reference.name. The provider classifies the AST
+;; context, including annotation-only targets and augmented assignments.
+(_
+  attribute: (identifier) @reference.name) @_attribute
+
+(binary_operator
+  left: (identifier) @reference.name @reference.read.identifier)
+
+;; The right operand of a binary_operator or boolean_operator.
+(_
+  right: (identifier) @reference.name @reference.read.identifier) @_right-operand-of
+
+(comparison_operator
+  (identifier) @reference.name @reference.read.identifier)
+
+(boolean_operator
+  left: (identifier) @reference.name @reference.read.identifier)
+
+(return_statement
+  (identifier) @reference.name @reference.read.identifier)
+
+(assignment
+  right: (identifier) @reference.name @reference.read.identifier)
+
+(default_parameter
+  value: (identifier) @reference.name @reference.read.identifier)
+
+(typed_default_parameter
+  value: (identifier) @reference.name @reference.read.identifier)
+
+;; Anchor arguments under a call: class base lists use argument_list too.
+;; Only a call has an \`arguments\` field, so \`(_ arguments: ...)\` is
+;; \`(call arguments: ...)\` started at the argument list instead of the call:
+;; it is not open while the callee (the rest of a call chain) is walked.
+(_
+  arguments: (argument_list
+    (identifier) @reference.name @reference.read.identifier))
+
+(_
+  arguments: (argument_list
+    (keyword_argument
+      value: (identifier) @reference.name @reference.read.identifier)))
+
+(_
+  arguments: (argument_list
+    (identifier) @reference.name @reference.value-ref))
+
+(_
+  arguments: (argument_list
+    (keyword_argument
+      value: (identifier) @reference.name @reference.value-ref)))
 `;
 
 let _parser: Parser | null = null;
@@ -319,9 +378,91 @@ export function getPythonParser(): Parser {
   return _parser;
 }
 
+/**
+ * Deepest node a scope-query match may start at. tree-sitter's query cursor
+ * keeps that depth in 16 bits: a match started deeper gets a wrapped depth,
+ * never finishes, is revisited at every later node, and can then match an
+ * unrelated node at the wrapped depth. With this limit the cursor starts no
+ * match below it and does not walk below it for nothing, so a deeper tree
+ * loses the matches under the limit and nothing else.
+ *
+ * The 16-bit field is `uint16_t start_depth` in tree-sitter's QueryState
+ * (query.c). node-tree-sitter applies cursor options on every call
+ * (ts_query_cursor_set_max_start_depth in query.cc), so this limit is not
+ * carried over to other queries.
+ */
+export const PYTHON_QUERY_MAX_START_DEPTH = 0xffff;
+
 export function getPythonScopeQuery(): Parser.Query {
   if (_query === null) {
     _query = new Parser.Query(Python as Parameters<Parser['setLanguage']>[0], PYTHON_SCOPE_QUERY);
   }
   return _query;
+}
+
+/**
+ * The raw matches of the scope query under `root`: see expandPythonScopeMatches().
+ * Its name must not end in `ScopeQuery`: the grammar-literal gate calls every
+ * such export with no arguments to compile the query.
+ */
+export function pythonScopeQueryMatches(root: Parser.SyntaxNode): Parser.QueryMatch[] {
+  return getPythonScopeQuery().matches(root, { maxStartDepth: PYTHON_QUERY_MAX_START_DEPTH });
+}
+
+const RIGHT_OPERAND_PARENTS: ReadonlySet<string> = new Set(['binary_operator', 'boolean_operator']);
+
+/**
+ * The captures of each scope-query match, in match order, with the end-anchored
+ * patterns (see PYTHON_SCOPE_QUERY) turned back into the matches of the
+ * parent-rooted patterns they replace:
+ *
+ *   (call function: (attribute object: (_) @reference.receiver
+ *     attribute: (identifier) @reference.name)) @reference.call.member
+ *   (attribute object: (_) @reference.receiver
+ *     attribute: (identifier) @reference.name) @reference.read.member
+ *   (binary_operator (identifier) @reference.name @reference.read.identifier)
+ *   (boolean_operator (identifier) @reference.name @reference.read.identifier)
+ *
+ * Every other match passes through untouched.
+ */
+export function* expandPythonScopeMatches(
+  matches: readonly Parser.QueryMatch[],
+): Generator<readonly Parser.QueryCapture[]> {
+  /** Callee `attribute` node id -> its call. Set when the query enters the
+   * callee, read when it reaches the callee's name: always later. */
+  const callByCallee = new Map<number, Parser.SyntaxNode>();
+  for (const { captures } of matches) {
+    const anchor = captures[0];
+    switch (anchor?.name) {
+      case '_member-call':
+        callByCallee.set(captures[1].node.id, anchor.node);
+        break;
+      case '_attribute': {
+        const attribute = anchor.node;
+        // `object: (_)`: a named node that is not an ERROR.
+        const receiver = attribute.childForFieldName('object');
+        if (
+          attribute.type !== 'attribute' ||
+          receiver === null ||
+          !receiver.isNamed ||
+          receiver.isError
+        ) {
+          break;
+        }
+        const receiverCapture = { name: 'reference.receiver', node: receiver };
+        const call = callByCallee.get(attribute.id);
+        if (call !== undefined) {
+          callByCallee.delete(attribute.id);
+          yield [{ name: 'reference.call.member', node: call }, receiverCapture, captures[1]];
+        }
+        yield [{ name: 'reference.read.member', node: attribute }, receiverCapture, captures[1]];
+        break;
+      }
+      case '_right-operand-of':
+        if (RIGHT_OPERAND_PARENTS.has(anchor.node.type)) yield captures.slice(1);
+        break;
+      default:
+        yield captures;
+    }
+  }
 }

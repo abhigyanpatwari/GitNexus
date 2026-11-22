@@ -713,10 +713,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       console.log('\n  Continuing with wiki generation...\n');
       bar.start(100, 30, { phase: 'Generating pages...' });
 
-      // Re-run generator without reviewOnly flag
+      // Re-run generator without reviewOnly flag, from the tree the user approved
       const continueOptions: WikiOptions = {
         ...wikiOptions,
         reviewOnly: false,
+        useSavedTree: true,
       };
 
       const continueGenerator = new WikiGenerator(

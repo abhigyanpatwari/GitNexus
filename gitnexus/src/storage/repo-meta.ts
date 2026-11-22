@@ -447,6 +447,14 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
+   * Digest of the graph rows the index holds for each file, recorded only for
+   * repositories with an incremental resolution group. A group member whose
+   * new rows match its digest is not rewritten when a sibling changes. An
+   * entry is refreshed only when that file's rows are written; a missing entry
+   * means "unknown" and forces a rewrite.
+   */
+  fileRowDigests?: Record<string, string>;
+  /**
    * Coverage policy used when `fileHashes` was recorded. `status` replays it
    * so analyze-time `--max-file-size` / `GITNEXUS_MAX_FILE_SIZE` cannot make
    * a later default-cap walk drop a file the index actually covers.

@@ -225,6 +225,67 @@ describe('loadGraphToLbug overlap error paths (#2226 F1)', () => {
 });
 
 describe('loadGraphToLbug overlap error paths (#2226 F2)', () => {
+  it.each(['first-copy', 'retry', 'warning'])(
+    'reports FTS inconsistency during %s with a graph rebuild remedy and the original cause',
+    async (phase) => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const { default: lbug } = await import('@ladybugdb/core');
+      const originalQuery = lbug.Connection.prototype.query;
+      const nativeError = new Error(
+        "Runtime exception: FTS index 'file_fts' is inconsistent: document for node offset 969 " +
+          'is missing during delete. Drop and recreate the FTS index.',
+      );
+      const firstError = new Error('Runtime exception: duplicate primary key in File COPY');
+      const copies: string[] = [];
+      vi.spyOn(lbug.Connection.prototype, 'query').mockImplementation(function (
+        this: unknown,
+        sql: string,
+        ...rest: unknown[]
+      ) {
+        if (/^COPY File\(/.test(sql)) {
+          copies.push(sql);
+          if (phase === 'first-copy') return Promise.reject(nativeError);
+          if (copies.length === 1) return Promise.reject(firstError);
+          if (phase === 'retry') return Promise.reject(nativeError);
+        }
+        if (phase === 'warning' && sql.startsWith('CALL SHOW_WARNINGS()')) {
+          // Put it beyond the five logged samples to cover the full receipt.
+          const warning = nativeError.message.replaceAll("'", "\\'");
+          sql =
+            `UNWIND ['row one', 'row two', 'row three', 'row four', 'row five', '${warning}'] ` +
+            "AS message RETURN message, '' AS file_path, 1 AS line_number";
+        }
+        return originalQuery.call(this, sql, ...rest);
+      });
+      emitMock.mockImplementation(
+        async (_g: unknown, _r: unknown, dir: string, onNodes?: (n: NodeFiles) => void) => {
+          await fs.mkdir(dir, { recursive: true });
+          const csvPath = path.join(dir, 'file.csv');
+          await fs.writeFile(
+            csvPath,
+            'id,name,filePath,content\n"File:fts.ts","fts.ts","fts.ts","text"\n',
+          );
+          const nodeFiles = new Map([['File', { csvPath, rows: 1 }]]) as NodeFiles;
+          onNodes?.(nodeFiles);
+          return { ...emptyResult(), nodeFiles };
+        },
+      );
+
+      const error = await adapter
+        .loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath)
+        .catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).toMatchObject({ cause: { message: nativeError.message } });
+      if (phase !== 'warning') expect((error as Error).cause).toBe(nativeError);
+      expect((error as Error).message).toContain(nativeError.message);
+      expect((error as Error).message).toContain('gitnexus analyze --force');
+      expect((error as Error).message.match(/gitnexus analyze --force/g)).toHaveLength(1);
+      expect((error as Error).message).not.toContain('gitnexus clean');
+      if (phase !== 'first-copy') expect((error as Error).message).toContain(firstError.message);
+      expect(copies).toHaveLength(phase === 'first-copy' ? 1 : 2);
+    },
+  );
+
   it('a node-COPY hard failure is rethrown at the FK barrier', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
     const graph = buildTestGraph(
@@ -401,6 +462,33 @@ describe('graph write buffer exhaustion (#3526)', () => {
     expect(error).toMatchObject({ cause: original });
     expect((error as Error).message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
     expect(seen.filter(isFallbackInsert)).toHaveLength(1);
+  });
+
+  it('does not classify FTS text embedded in a row warning as index corruption', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const prefix = emitGraphCSVs();
+    const seen = await injectQueries((sql) => {
+      if (isRelationshipCopy(sql) && !sql.includes('IGNORE_ERRORS')) {
+        return new Error('ordinary COPY failure');
+      }
+      if (sql.startsWith('CALL SHOW_WARNINGS()')) {
+        return (
+          'RETURN "Conversion exception: cannot parse Runtime exception: FTS index ' +
+          "'file_fts' is inconsistent: as a number" +
+          '" AS message, "" AS file_path, 1 AS line_number'
+        );
+      }
+    });
+
+    await expect(
+      adapter.loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath),
+    ).resolves.toMatchObject({ success: true });
+    expect(seen.filter(isRelationshipCopy)).toHaveLength(2);
+    expect(seen.some(isFallbackInsert)).toBe(false);
+    const rows = await adapter.executeQuery(
+      `MATCH (a:File)-[r:CodeRelation]->(b) WHERE a.id STARTS WITH 'File:${prefix}-' RETURN count(r) AS count`,
+    );
+    expect(Number(rows[0].count)).toBe(2);
   });
 
   it('still skips an ordinary fallback row error and inserts subsequent relationships', async () => {

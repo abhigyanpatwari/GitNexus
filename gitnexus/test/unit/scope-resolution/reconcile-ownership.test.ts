@@ -345,6 +345,176 @@ describe('reconcileOwnership', () => {
     expect(overloads).toHaveLength(2);
     expect(overloads.map((d) => d.nodeId).sort()).toEqual(['def:Logger.log#1', 'def:Logger.log#2']);
   });
+
+  // Module-level values and top-level types carry no owner, so every file's
+  // `logger` (or `Options`) shares one registry bucket per name.
+  const NO_OWNER = undefined as unknown as string;
+  const mkModuleValue = (filePath: string, name: string): SymbolDefinition => ({
+    nodeId: `def:${filePath}#${name}`,
+    filePath,
+    type: 'Variable',
+    qualifiedName: name,
+  });
+  const mkTopLevelType = (filePath: string, name: string): SymbolDefinition => ({
+    nodeId: `def:${filePath}#${name}`,
+    filePath,
+    type: 'Interface',
+    qualifiedName: name,
+  });
+  const nodeIds = (defs: readonly SymbolDefinition[]): string[] => defs.map((d) => d.nodeId);
+
+  it('does not add ownerless values or types, including repeated declarations and passes', () => {
+    const model = createSemanticModel();
+    const earlier = mkModuleValue('src/earlier.ts', 'logger');
+    const loggerA = mkModuleValue('src/a.ts', 'logger');
+    const loggerB = mkModuleValue('src/b.ts', 'logger');
+    const optionsA = mkTopLevelType('src/a.ts', 'Options');
+    const optionsB = mkTopLevelType('src/b.ts', 'Options');
+    const earlierFile = mkFile('src/earlier.ts', [earlier]);
+    const a = mkFile('src/a.ts', [loggerA, optionsA]);
+    const b = mkFile('src/b.ts', [loggerB, optionsB]);
+    // Registered before the pass, as an earlier language pass over the same
+    // model would have.
+    model.fields.register(NO_OWNER, 'logger', earlier);
+
+    const first = reconcileOwnership([earlierFile, a, b, a], model);
+
+    expect(first).toEqual({
+      methodsRegistered: 0,
+      fieldsRegistered: 0,
+      nestedTypesRegistered: 0,
+      skippedAlreadyPresent: 0,
+    });
+    expect(nodeIds(model.fields.lookupAllByOwner(NO_OWNER, 'logger'))).toEqual(nodeIds([earlier]));
+    expect(nodeIds(model.types.lookupAllByOwner(NO_OWNER, 'Options'))).toEqual([]);
+
+    const second = reconcileOwnership([earlierFile, a, b], model);
+
+    expect(second).toEqual({
+      methodsRegistered: 0,
+      fieldsRegistered: 0,
+      nestedTypesRegistered: 0,
+      skippedAlreadyPresent: 0,
+    });
+    expect(nodeIds(model.fields.lookupAllByOwner(NO_OWNER, 'logger'))).toEqual(nodeIds([earlier]));
+    expect(nodeIds(model.types.lookupAllByOwner(NO_OWNER, 'Options'))).toEqual([]);
+  });
+
+  it('keeps same-named fields apart by owner across passes', () => {
+    // One field name under two real owners, an empty owner id, the literal
+    // owner id 'undefined': four registry buckets. Each holds
+    // more defs than the pass scans, so both passes answer from node-id sets:
+    // a set shared between two of these owners, or one not kept current as the
+    // pass registers, would register a def again.
+    const owners = ['def:A', 'def:B', '', 'undefined'];
+    const perOwner = 12;
+    const defs = owners.map((ownerId, o) =>
+      Array.from(
+        { length: perOwner },
+        (_, i): SymbolDefinition => ({
+          nodeId: `def:src/a.ts#level${o}.${i}`,
+          filePath: 'src/a.ts',
+          type: 'Property',
+          qualifiedName: 'level',
+          ownerId,
+        }),
+      ),
+    );
+    const file = mkFile('src/a.ts', defs.flat());
+    const model = createSemanticModel();
+
+    // The file twice in the first pass: every def is seen again after it was
+    // registered.
+    const first = reconcileOwnership([file, file], model);
+    const second = reconcileOwnership([file], model);
+
+    expect(first).toEqual({
+      methodsRegistered: 0,
+      fieldsRegistered: owners.length * perOwner,
+      nestedTypesRegistered: 0,
+      skippedAlreadyPresent: owners.length * perOwner,
+    });
+    expect(second).toEqual({
+      methodsRegistered: 0,
+      fieldsRegistered: 0,
+      nestedTypesRegistered: 0,
+      skippedAlreadyPresent: owners.length * perOwner,
+    });
+    expect(owners.map((owner) => nodeIds(model.fields.lookupAllByOwner(owner, 'level')))).toEqual(
+      defs.map(nodeIds),
+    );
+  });
+
+  it('does no owner-keyed registry work for ownerless definitions at any file count', () => {
+    const readsFor = (fileCount: number) => {
+      const model = createSemanticModel();
+      const files = Array.from({ length: fileCount }, (_, i) => {
+        const filePath = `src/mod${i}.ts`;
+        return mkFile(filePath, [
+          mkModuleValue(filePath, 'logger'),
+          mkTopLevelType(filePath, 'Options'),
+        ]);
+      });
+      // The registries hand back their live bucket, so count its length at the
+      // moment of each read: the entries handed to the pass, which is an upper
+      // bound on the entries it compares through the registry.
+      const countReads = (registry: {
+        lookupAllByOwner: (owner: string, name: string) => readonly SymbolDefinition[];
+      }) => {
+        const original = registry.lookupAllByOwner;
+        const reads = { calls: 0, entries: 0 };
+        registry.lookupAllByOwner = (owner, name) => {
+          const bucket = original(owner, name);
+          reads.calls++;
+          reads.entries += bucket.length;
+          return bucket;
+        };
+        return reads;
+      };
+      const fieldReads = countReads(model.fields);
+      const typeReads = countReads(model.types);
+      const first = reconcileOwnership(files, model);
+      const firstPass = { fields: { ...fieldReads }, types: { ...typeReads } };
+      const second = reconcileOwnership(files, model);
+      return {
+        first,
+        second,
+        firstPass,
+        secondPass: {
+          fields: {
+            calls: fieldReads.calls - firstPass.fields.calls,
+            entries: fieldReads.entries - firstPass.fields.entries,
+          },
+          types: {
+            calls: typeReads.calls - firstPass.types.calls,
+            entries: typeReads.entries - firstPass.types.entries,
+          },
+        },
+      };
+    };
+
+    const small = readsFor(50);
+    const large = readsFor(200);
+
+    expect([small.first.fieldsRegistered, small.first.nestedTypesRegistered]).toEqual([0, 0]);
+    expect([large.first.fieldsRegistered, large.first.nestedTypesRegistered]).toEqual([0, 0]);
+    expect([small.second.skippedAlreadyPresent, large.second.skippedAlreadyPresent]).toEqual([
+      0, 0,
+    ]);
+    expect(large.firstPass).toEqual(small.firstPass);
+    expect(small.firstPass).toEqual({
+      fields: { calls: 0, entries: 0 },
+      types: { calls: 0, entries: 0 },
+    });
+    expect(small.secondPass).toEqual({
+      fields: { calls: 0, entries: 0 },
+      types: { calls: 0, entries: 0 },
+    });
+    expect(large.secondPass).toEqual({
+      fields: { calls: 0, entries: 0 },
+      types: { calls: 0, entries: 0 },
+    });
+  });
 });
 
 // ─── validateOwnershipParity ───────────────────────────────────────────────
