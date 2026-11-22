@@ -1,5 +1,7 @@
 # Cold PDG indexing on a 6 GiB budget
 
+Two subsequent Linux cold builds met both targets with a 384 MiB database pool and two glibc allocator arenas. [Measurements and reproduction command](#incremental-pdg-and-the-6-gib-release-workload)
+
 Across two paired cold runs, parsing scope shards before restoring their objects and collecting unused JavaScript heap before full-text indexing reduced median elapsed time from 550.66 s to 461.62 s (16.2%). Median peak RSS fell from 3,768.05 to 3,692.46 MiB (2.0%). Memory rose by 49.82 MiB in one pair and fell by 200.99 MiB in the other. Only elapsed time cleared the 3% improvement threshold. Both medians exceeded the targets of 365 s and 3,316 MiB.
 
 | Candidate | Control (s) | Candidate (s) | Control RSS (MiB) | Candidate RSS (MiB) |
@@ -50,3 +52,42 @@ The pushed implementation remains the reference and final implementation for thi
 The traces locate much of the RSS variation before database publication. During JavaScript scope resolution the two lower-memory controls shed 501 and 575 MiB of RSS between successive probes. Live heap fell by only 14 and 58 MiB over those intervals. The high-memory control kept its resident pages through that phase. The allocation responsible is still unknown.
 
 The follow-up completed its two-variant budget in 51 minutes, with no additional API spend. The local receipts are in `.context/compound-engineering/ce-optimize/pdg-spill-time-memory-followup/`.
+
+## Incremental PDG and the 6 GiB release workload
+
+The ordinary cold PDG build met both targets in 2 of 2 local cold runs with a 384 MiB LadybugDB pool and two glibc allocator arenas. The observed pairs were 297.51 s / 2,633.34 MiB and 303.43 s / 2,665.74 MiB. The ordinary one-file incremental update exhausted its V8 heap. All successful candidate comparisons used the same indexed source inputs as their corresponding control.
+
+The targets were 365 seconds elapsed and 3,316 MiB peak process RSS. The local probes used the sanitized release input at `7b1af8b` with the rc.247 runtime and PR #4028 modules built at `4496f481f`. Each cold build started with an empty graph and parser cache. All runs used one worker, a 512 KiB file cap, full content retention and a 6,144 MiB resource budget. GNU time measured the complete CLI command, including subprocesses. For sequential commands the table gives total elapsed time and the larger of the two process peaks. Fingerprinting and search verification ran outside the timed interval.
+
+| Workload | Seconds | Peak RSS (MiB) | Result |
+| --- | ---: | ---: | --- |
+| Original snapshot, ordinary cold build | 308.91 | 3,673.69 | Over the RSS target |
+| One edited file, ordinary incremental analyze | 129.23 | 2,135.12 at failure | Heap exhausted before publication |
+| Edited snapshot, cold rebuild | 298.06 | 3,763.38 | Over the RSS target |
+| Edited snapshot, forced rebuild with parser cache | 163.31 | 3,738.23 | Over the RSS target |
+| Original snapshot, graph and FTS in two commands | 303.84 | 3,386.96 | Over the RSS target |
+| Original snapshot, ordinary cold build with a 384 MiB pool | 295.64 | 3,493.53 | Over the RSS target |
+| Original snapshot, graph and FTS in two commands, 384 MiB pool | 285.91 | 3,336.84 | Over the RSS target |
+| Original snapshot, ordinary cold build, 384 MiB pool and two allocator arenas | 297.51 | 2,633.34 | Both targets met |
+| Intervening ordinary cold build, 384 MiB pool and system allocator defaults | 288.07 | 3,459.90 | Over the RSS target |
+| Repeated ordinary cold build, 384 MiB pool and two allocator arenas | 303.43 | 2,665.74 | Both targets met |
+
+### What changed on the incremental run
+
+A new negative-duration branch in `formatElapsed` changed exactly one source hash. The default incremental command exhausted its JavaScript heap during TypeScript scope analysis, after scope spilling and before completing local PDG emission. The last V8 collection left roughly 1,677 MiB live. The previously published graph still matched the original fingerprint. A clean rebuild added two basic blocks and six relationships, including changes to control flow, control dependence and reaching definitions.
+
+The forced rebuild reused cached parser output for 2,320 files. The resulting graph matched the clean edited graph, including every node property and relationship endpoint. It saved 134.75 seconds compared with the cold build of that edit. This is one comparison on the release corpus. The ordinary incremental path reruns the semantic pipeline, selectively writes changed-file rows, and refreshes whole-program summaries. Structural graph streaming currently requires a forced rebuild. The release evaluator prepares a fresh index for each unique sanitized input per runtime and shares the prepared result among paired arms. It also repeats preparation between preflight and the measured runner. [Incremental writeback](https://github.com/abhigyanpatwari/GitNexus/blob/4496f481f686e208bc2423a53781b6353c238f22/gitnexus/src/core/run-analyze.ts#L4999-L5022) · [Graph preparation](https://github.com/abhigyanpatwari/GitNexus/blob/4496f481f686e208bc2423a53781b6353c238f22/eval/workflow_bench/sanitized_graph.py#L382-L445) · [Release preflight](https://github.com/abhigyanpatwari/GitNexus/blob/4496f481f686e208bc2423a53781b6353c238f22/eval/workflow_bench/release_preflight.py#L84-L110)
+
+### Output checks
+
+The original release fingerprint was `91b684ce60c1a52122b49609970afabfbf814d053bfc3adf829063fffb63c986` across 373,373 nodes and 835,148 relationships. The edited fingerprint was `5f7c9be85514435454a923fc0651f59c90eab2d9e2f984bc1a18711683aaed2a`. The two-process cold probes built the graph with `--force --pdg --skip-fts`, then ran `--pdg --repair-fts` in a fresh process. The first command published an intermediate graph with FTS disabled. The resulting graph, all ten FTS catalog entries and the ranked results of two search queries matched the original one-command control. The 384 MiB pool used `GITNEXUS_LBUG_BUFFER_POOL_SIZE=402653184`. The allocator probe used `MALLOC_ARENA_MAX=2` on glibc 2.41. Source, runner defaults and the release workflow were unchanged by this investigation.
+
+### Reproducing the cold setting
+
+Use the tested PR build on Linux with glibc and begin with an empty index and parser cache. The benchmark also sets `GITNEXUS_SHARED_STORE=off` to isolate its checkout. These environment variables apply to the analyzer process and its children. The release sandbox builds its own environment, so a hosted run with these settings requires explicit configuration there. This local study did not dispatch a hosted release evaluation. [Sandbox environment](https://github.com/abhigyanpatwari/GitNexus/blob/4496f481f686e208bc2423a53781b6353c238f22/eval/workflow_bench/sanitized_graph.py#L249-L285) · [glibc allocator settings](https://sourceware.org/glibc/manual/latest/html_node/Memory-Allocation-Tunables.html)
+
+```sh
+GITNEXUS_LBUG_BUFFER_POOL_SIZE=402653184 MALLOC_ARENA_MAX=2 \
+  gitnexus analyze . --force --pdg --index-only --no-stats \
+    --workers 1 --resource-budget 6144 --max-file-size 512
+```
