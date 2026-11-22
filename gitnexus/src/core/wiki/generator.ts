@@ -1149,8 +1149,7 @@ export class WikiGenerator {
       fs.rm(path.join(this.wikiDir, `${node.slug}.md`), { force: true });
     const affectedNodes: ModuleTreeNode[] = [];
     for (const mod of affectedArray) {
-      const modSlug = this.slugify(mod);
-      const node = this.findNodeBySlug(moduleTree, modSlug);
+      const node = this.findModule(moduleTree, mod);
       if (node) {
         // A parent page is removed just before it is regenerated, below, so a
         // parent held back by a failed sub-module keeps its last page.
@@ -1224,7 +1223,7 @@ export class WikiGenerator {
    */
   private async removeFailedPages(meta: WikiMeta): Promise<void> {
     for (const name of meta.failedModules ?? []) {
-      const node = this.findNodeBySlug(meta.moduleTree, this.slugify(name));
+      const node = this.findModule(meta.moduleTree, name);
       if (node) await fs.rm(path.join(this.wikiDir, `${node.slug}.md`), { force: true });
     }
   }
@@ -1487,6 +1486,23 @@ export class WikiGenerator {
         next();
       }
     });
+  }
+
+  /**
+   * The node of a module that meta.json names: the node of that name, else the
+   * node whose page the name gives. A tree edited on --review can give a
+   * module a page name that does not come from its name.
+   */
+  private findModule(tree: ModuleTreeNode[], name: string): ModuleTreeNode | null {
+    const byName = (nodes: ModuleTreeNode[]): ModuleTreeNode | null => {
+      for (const node of nodes) {
+        if (node.name === name) return node;
+        const found = byName(node.children ?? []);
+        if (found) return found;
+      }
+      return null;
+    };
+    return byName(tree) ?? this.findNodeBySlug(tree, this.slugify(name));
   }
 
   private findNodeBySlug(tree: ModuleTreeNode[], slug: string): ModuleTreeNode | null {

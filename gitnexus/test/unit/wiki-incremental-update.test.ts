@@ -3,7 +3,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { WikiGenerator } from '../../src/core/wiki/generator.js';
+import { getAllFiles } from '../../src/core/wiki/graph-queries.js';
+import {
+  WikiGenerator,
+  type ModuleTreeNode,
+  type WikiOptions,
+} from '../../src/core/wiki/generator.js';
 
 vi.mock('../../src/core/wiki/graph-queries.js', () => ({
   initWikiDb: vi.fn().mockResolvedValue(undefined),
@@ -11,7 +16,7 @@ vi.mock('../../src/core/wiki/graph-queries.js', () => ({
   touchWikiDb: vi.fn(),
   pinWikiDb: vi.fn(() => vi.fn()),
   getFilesWithExports: vi.fn().mockResolvedValue([]),
-  getAllFiles: vi.fn().mockResolvedValue(['billing.ts', 'shipping.ts', 'notes.ts']),
+  getAllFiles: vi.fn(),
   getIntraModuleCallEdges: vi.fn().mockResolvedValue([]),
   getInterModuleCallEdges: vi.fn().mockResolvedValue({ incoming: [], outgoing: [] }),
   getProcessesForFiles: vi.fn().mockResolvedValue([]),
@@ -54,7 +59,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
     git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'edit');
   }
 
-  function run() {
+  function run(options: WikiOptions = {}) {
     return new WikiGenerator(
       repoPath,
       path.join(repoPath, '.gitnexus'),
@@ -67,7 +72,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
         temperature: 0,
         provider: 'custom',
       },
-      { concurrency: 1 },
+      { concurrency: 1, ...options },
     ).run();
   }
 
@@ -83,6 +88,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
     git('init', '-q');
     git('config', 'commit.gpgsign', 'false');
     git('add', 'billing.ts', 'shipping.ts', 'notes.ts');
+    vi.mocked(getAllFiles).mockResolvedValue(['billing.ts', 'shipping.ts', 'notes.ts']);
     git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'init');
     // A large module split into sub-modules, next to a module without any.
     await fs.writeFile(
@@ -256,6 +262,8 @@ describe('incremental wiki update of a module with sub-modules', () => {
     for (const file of added) {
       await fs.writeFile(path.join(repoPath, file), `export const ${file.slice(0, -3)} = 1;\n`);
     }
+    // The graph indexes the new files, as it does once analyze has run.
+    vi.mocked(getAllFiles).mockResolvedValue(['billing.ts', 'shipping.ts', 'notes.ts', ...added]);
     git('add', ...added);
     git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'add');
 
@@ -264,5 +272,84 @@ describe('incremental wiki update of a module with sub-modules', () => {
     // The full generation this falls back to keeps existing pages: the page
     // from before the failure must be written again, not kept.
     expect(await pageOrNothing('commerce')).not.toContain('revision 1.');
+  });
+
+  /** Generates the wiki again from module_tree.json as `edit` changes it, as --review allows. */
+  async function regenerateWith(edit: (tree: ModuleTreeNode[]) => void): Promise<void> {
+    const treePath = path.join(wikiPath, 'module_tree.json');
+    const tree = JSON.parse(await fs.readFile(treePath, 'utf8'));
+    edit(tree);
+    await fs.writeFile(treePath, JSON.stringify(tree));
+    expect(await run({ force: true })).toMatchObject({ mode: 'full', failedModules: [] });
+    requests = [];
+    revision = 3;
+  }
+
+  it('regenerates the pages of modules whose page names do not come from their names', async () => {
+    await regenerateWith((tree) => {
+      tree[0] = {
+        name: 'Commerce',
+        slug: 'shop',
+        files: [],
+        children: [
+          { name: 'Billing', slug: 'payments', files: ['billing.ts'] },
+          { name: 'Shipping', slug: 'shipping', files: ['shipping.ts'] },
+        ],
+      };
+    });
+    await commitChange('billing.ts');
+
+    expect(await run()).toEqual({ pagesGenerated: 3, mode: 'incremental', failedModules: [] });
+
+    expect(requests.map((r) => r.page)).toEqual(['Billing', 'Commerce', 'overview']);
+    expect(await page('payments')).toContain('Billing page, revision 3.');
+    expect(await page('shop')).toContain('Commerce page, revision 3.');
+  });
+
+  it("finds a module by its name before the page another module's name gives", async () => {
+    // Shipping renamed Notes, and Notes renamed Journal: both keep their pages.
+    await regenerateWith((tree) => {
+      tree[0].children = [
+        { name: 'Billing', slug: 'billing', files: ['billing.ts'] },
+        { name: 'Notes', slug: 'shipping', files: ['shipping.ts'] },
+      ];
+      tree[1] = { name: 'Journal', slug: 'notes', files: ['notes.ts'] };
+    });
+    await commitChange('shipping.ts');
+
+    await run();
+
+    expect(requests.map((r) => r.page)).toEqual(['Notes', 'Commerce', 'overview']);
+    expect(await page('shipping')).toContain('Notes page, revision 3.');
+  });
+
+  it('retries a held-back parent whose page name does not come from its module name', async () => {
+    await regenerateWith((tree) => {
+      tree[0].slug = 'shop';
+    });
+    await failBilling();
+    expect(await page('shop')).toContain('Commerce page, revision 2.');
+    git('reset', '-q', '--hard', 'HEAD~1');
+    await commitChange('notes.ts');
+
+    expect(await run()).toMatchObject({ mode: 'incremental', failedModules: [] });
+
+    expect(requests.map((r) => r.page)).toEqual(['Billing', 'Commerce', 'overview']);
+    expect(await page('shop')).toContain('Commerce page, revision 3.');
+  });
+
+  it('still finds a renamed module by the page name it kept', async () => {
+    // The catch-all module renamed on --review: new files are still listed as Other.
+    await regenerateWith((tree) => {
+      tree[1] = { name: 'Misc', slug: 'other', files: ['notes.ts'] };
+    });
+    await fs.writeFile(path.join(repoPath, 'todo.ts'), 'export const todo = 1;\n');
+    vi.mocked(getAllFiles).mockResolvedValue(['billing.ts', 'shipping.ts', 'notes.ts', 'todo.ts']);
+    git('add', 'todo.ts');
+    git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'add');
+
+    expect(await run()).toEqual({ pagesGenerated: 2, mode: 'incremental', failedModules: [] });
+
+    expect(requests.map((r) => r.page)).toEqual(['Misc', 'overview']);
   });
 });
