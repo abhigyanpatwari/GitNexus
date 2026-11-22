@@ -88,6 +88,7 @@ The wiki generator reads the indexed graph structure, groups files into modules 
 
 A module whose source does not fit one page (30,000 tokens) is split by directory, below the
 directory its files share, so a Gradle or Maven module is split at its packages
-(`src — main/entity`). Files sitting directly in a directory stay on one page, and small
-neighbouring directories share a page up to the same size. IntelliJ project files (`.iml`,
-`.ipr`, `.iws`) and Gradle lockfiles are not indexed, so they get no page.
+(`src — main/entity`). Small neighbouring directories share a page up to the same size, and so
+do the files sitting directly in a directory (`top-level files (1 of 2)`), so only a single file
+larger than a page is cut. A module of three files or fewer stays on one page. IntelliJ project
+files (`.iml`, `.ipr`, `.iws`) and Gradle lockfiles are not indexed, so they get no page.

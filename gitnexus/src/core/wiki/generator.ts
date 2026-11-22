@@ -118,6 +118,9 @@ const WIKI_DIR = 'wiki';
 const sourceSection = (filePath: string, content: string): string =>
   `\n--- ${filePath} ---\n${content}`;
 
+/** What a module page prompt quotes for a file it cannot read. */
+const UNREADABLE_FILE = '(file not readable)';
+
 // ─── Generator Class ──────────────────────────────────────────────────
 
 export class WikiGenerator {
@@ -539,8 +542,13 @@ export class WikiGenerator {
 
     // Convert to tree nodes
     const tree: ModuleTreeNode[] = [];
-    // Pages of a split module get names whose slugs no other page uses.
-    const takenSlugs = new Set(Object.keys(grouping).map((name) => this.slugify(name)));
+    // Pages of a split module get names whose slugs no other page uses, the
+    // overview's included. A page's slug is empty only when its module's is,
+    // and the module's slug is in the set.
+    const takenSlugs = new Set([
+      'overview',
+      ...Object.keys(grouping).map((name) => this.slugify(name)),
+    ]);
     for (const [moduleName, modulePaths] of Object.entries(grouping)) {
       const slug = this.slugify(moduleName);
       const node: ModuleTreeNode = { name: moduleName, slug, files: modulePaths };
@@ -549,7 +557,7 @@ export class WikiGenerator {
       const fileTokens = await this.estimateFileTokens(modulePaths);
       let totalTokens = 0;
       for (const tokens of fileTokens.values()) totalTokens += tokens;
-      if (totalTokens > this.maxTokensPerModule && modulePaths.length > 3) {
+      if (totalTokens > this.maxTokensPerModule) {
         const parts = splitModuleByDirectory(
           modulePaths,
           (file) => fileTokens.get(file) ?? 0,
@@ -559,7 +567,7 @@ export class WikiGenerator {
         // If splitting results in 1 child, keep files flat (avoid redundant nesting)
         if (parts.length > 1) {
           node.children = parts.map((part) => {
-            const name = this.uniqueModuleName(`${moduleName} — ${part.label}`, takenSlugs);
+            const name = this.uniqueModuleName(moduleName, part.label, takenSlugs);
             return { name, slug: this.slugify(name), files: part.files };
           });
           node.files = []; // Parent doesn't own files directly when split
@@ -1197,7 +1205,7 @@ export class WikiGenerator {
         const content = await fs.readFile(fullPath, 'utf-8');
         parts.push(sourceSection(fp, content));
       } catch {
-        parts.push(sourceSection(fp, '(file not readable)'));
+        parts.push(sourceSection(fp, UNREADABLE_FILE));
       }
     }
     return parts.join('\n');
@@ -1211,19 +1219,20 @@ export class WikiGenerator {
   }
 
   /**
-   * Estimated tokens each readable file takes in a module page prompt: its
-   * section from readSourceFiles and the newline joining it to the next one.
-   * Unreadable files are left out.
+   * Estimated tokens each file takes in a module page prompt: its section
+   * from readSourceFiles, the placeholder for a file it cannot read, and the
+   * newline joining it to the next one.
    */
   private async estimateFileTokens(filePaths: string[]): Promise<Map<string, number>> {
     const tokens = new Map<string, number>();
     for (const fp of filePaths) {
+      let content: string;
       try {
-        const content = await fs.readFile(path.join(this.repoPath, fp), 'utf-8');
-        tokens.set(fp, estimateTokens(`${sourceSection(fp, content)}\n`));
+        content = await fs.readFile(path.join(this.repoPath, fp), 'utf-8');
       } catch {
-        // File not readable, skip
+        content = UNREADABLE_FILE;
       }
+      tokens.set(fp, estimateTokens(`${sourceSection(fp, content)}\n`));
     }
     return tokens;
   }
@@ -1401,23 +1410,36 @@ export class WikiGenerator {
   }
 
   /**
-   * `name`, or `name` followed by a number when its slug is taken: slugs fold
-   * case and punctuation and keep MAX_SLUG_LENGTH characters, so two
-   * directory labels can meet on one page file. The name is shortened until
-   * the number survives that cut. The slug used is added to `taken`.
+   * `${moduleName} — ${label}`, followed by a number when its slug is taken:
+   * slugs fold case and punctuation and keep MAX_SLUG_LENGTH characters, so
+   * two pages can meet on one page file. The number must survive that cut,
+   * so the module name loses words first and the label keeps the directory
+   * it names. The slug used is added to `taken`.
    */
-  private uniqueModuleName(name: string, taken: Set<string>): string {
-    let unique = name;
-    for (let n = 2; taken.has(this.slugify(unique)); n++) {
-      const suffix = ` ${n}`;
-      let head = name;
-      while (head && this.slugify(head + suffix).length >= MAX_SLUG_LENGTH) {
-        head = head.slice(0, -1);
-      }
-      unique = head + suffix;
+  private uniqueModuleName(moduleName: string, label: string, taken: Set<string>): string {
+    let name = `${moduleName} — ${label}`;
+    for (let n = 2; taken.has(this.slugify(name)); n++) {
+      name = this.numberedPageName(moduleName, label, n);
     }
-    taken.add(this.slugify(unique));
-    return unique;
+    taken.add(this.slugify(name));
+    return name;
+  }
+
+  private numberedPageName(moduleName: string, label: string, n: number): string {
+    const fits = (name: string): boolean => this.slugify(name).length < MAX_SLUG_LENGTH;
+    const words = moduleName.split(/\s+/).filter(Boolean);
+    for (let count = words.length; count > 0; count--) {
+      const head = words
+        .slice(0, count)
+        .join(' ')
+        .replace(/[\s,;:.—–-]+$/, '');
+      if (head && fits(`${head} — ${label} ${n}`)) return `${head} — ${label} ${n}`;
+    }
+    if (fits(`${label} ${n}`)) return `${label} ${n}`;
+    // The label alone is too long: keep its end, where the directory it names is.
+    let tail = label;
+    while (tail.length > 1 && !fits(`…${tail} ${n}`)) tail = tail.slice(1);
+    return `…${tail} ${n}`;
   }
 
   private async fileExists(fp: string): Promise<boolean> {

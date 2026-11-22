@@ -20,7 +20,7 @@ import type { ModuleTreeNode } from '../../src/core/wiki/generator.js';
 interface GeneratorInternals {
   slugify(name: string): string;
   findNodeBySlug(tree: ModuleTreeNode[], slug: string): ModuleTreeNode | null;
-  uniqueModuleName(name: string, taken: Set<string>): string;
+  uniqueModuleName(moduleName: string, label: string, taken: Set<string>): string;
 }
 
 const range = (count: number) => Array.from({ length: count }, (_, i) => i);
@@ -51,17 +51,21 @@ describe('splitModuleByDirectory', () => {
     expect(sorted(parts.flatMap((part) => part.files))).toEqual(sorted(files));
   });
 
-  it('keeps files at the repository root on one page instead of one page each', () => {
+  it('packs files at the repository root into pages up to the budget, not one page each', () => {
+    // Six files, 2.3 times the budget: three complete pages.
     const files = [
-      'README.md',
-      'build.gradle',
-      'gma-create-all.sql',
-      'gma-drop-all.sql',
       'settings.gradle',
+      'README.md',
+      'gma-drop-all.sql',
+      'build.gradle',
+      'gradle.properties',
+      'gma-create-all.sql',
     ];
 
-    expect(splitModuleByDirectory(files, () => 1000, 1000)).toEqual([
-      { label: TOP_LEVEL_LABEL, files },
+    expect(splitModuleByDirectory(files, () => 380, 1000)).toEqual([
+      { label: `${TOP_LEVEL_LABEL} (1 of 3)`, files: ['README.md', 'build.gradle'] },
+      { label: `${TOP_LEVEL_LABEL} (2 of 3)`, files: ['gma-create-all.sql', 'gma-drop-all.sql'] },
+      { label: `${TOP_LEVEL_LABEL} (3 of 3)`, files: ['gradle.properties', 'settings.gradle'] },
     ]);
   });
 
@@ -110,26 +114,65 @@ describe('splitModuleByDirectory', () => {
     expect(labels(parts)).toEqual(['a, b', 'c']);
   });
 
-  it('returns a directory it cannot divide whole, even over budget', () => {
-    const oneDirectory = range(10).map((i) => `src/big/F${i}.java`);
-    expect(splitModuleByDirectory(oneDirectory, () => 500, 1000)).toEqual([
-      { label: TOP_LEVEL_LABEL, files: oneDirectory },
-    ]);
+  it('packs files it cannot divide by directory into pages up to the budget, in name order', () => {
+    const oneDirectory = range(6).map((i) => `src/big/F${i}.java`);
 
-    // Fewer than four files are never divided, even across directories.
+    expect(splitModuleByDirectory([...oneDirectory].reverse(), () => 500, 1000)).toEqual([
+      { label: `${TOP_LEVEL_LABEL} (1 of 3)`, files: oneDirectory.slice(0, 2) },
+      { label: `${TOP_LEVEL_LABEL} (2 of 3)`, files: oneDirectory.slice(2, 4) },
+      { label: `${TOP_LEVEL_LABEL} (3 of 3)`, files: oneDirectory.slice(4) },
+    ]);
+  });
+
+  it('divides a directory of fewer than four files when it is over the budget', () => {
+    const files = ['client/rest/schema.ts', 'client/rpc/schema.ts', 'shared/x.ts', 'shared/y.ts'];
+
+    const parts = splitModuleByDirectory(
+      files,
+      (file) => (file.endsWith('schema.ts') ? 600 : 100),
+      800,
+    );
+
+    expect(parts).toEqual([
+      { label: 'client/rest', files: ['client/rest/schema.ts'] },
+      { label: 'client/rpc', files: ['client/rpc/schema.ts'] },
+      { label: 'shared', files: ['shared/x.ts', 'shared/y.ts'] },
+    ]);
+  });
+
+  it('leaves a page over the budget only to a single file larger than the budget', () => {
     const files = [
       'src/a/x/Huge1.java',
       'src/a/y/Huge2.java',
+      'src/a/y/Small.java',
       ...range(4).map((i) => `src/b/Small${i}.java`),
     ];
+
     const parts = splitModuleByDirectory(
       files,
       (file) => (file.includes('Huge') ? 2000 : 100),
       1000,
     );
+
     expect(parts).toEqual([
-      { label: 'a', files: ['src/a/x/Huge1.java', 'src/a/y/Huge2.java'] },
-      { label: 'b', files: files.slice(2) },
+      { label: 'a/x', files: ['src/a/x/Huge1.java'] },
+      { label: 'a/y (1 of 2)', files: ['src/a/y/Huge2.java'] },
+      { label: 'a/y (2 of 2)', files: ['src/a/y/Small.java'] },
+      { label: 'b', files: files.slice(3) },
+    ]);
+  });
+
+  it('never divides a module of fewer than four files, and divides one of four', () => {
+    const files = range(4).map((i) => `src/d${i}/F.java`);
+
+    expect(splitModuleByDirectory(files.slice(1), () => 2000, 1000)).toEqual([
+      { label: TOP_LEVEL_LABEL, files: files.slice(1) },
+    ]);
+    expect(labels(splitModuleByDirectory(files, () => 2000, 1000))).toEqual([
+      'd0',
+      'd1',
+      'd2',
+      'd3',
     ]);
   });
 
@@ -158,8 +201,9 @@ describe('splitModuleByDirectory', () => {
   });
 
   // Random trees, checked against what any split must hold: every file on
-  // exactly one page, unique labels, pages within budget unless they cannot
-  // be divided, and the same pages whatever order the files come in.
+  // exactly one page, unique labels, no page over the budget unless it holds
+  // one file or the module is too small to divide, and the same pages
+  // whatever order the files come in.
   it('holds its invariants on random directory trees', () => {
     // mulberry32, seeded so that a failure reproduces
     let seed = 1060;
@@ -170,7 +214,6 @@ describe('splitModuleByDirectory', () => {
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
     const pick = <T>(items: readonly T[]) => items[Math.floor(random() * items.length)];
-    const directoryOf = (file: string) => file.split('/').slice(0, -1).join('/');
 
     for (let run = 0; run < 300; run++) {
       const fileCount = 1 + Math.floor(random() * 60);
@@ -189,11 +232,12 @@ describe('splitModuleByDirectory', () => {
 
       expect(sorted(parts.flatMap((part) => part.files))).toEqual(sorted(list));
       expect(new Set(labels(parts)).size).toBe(parts.length);
-      for (const part of parts) {
-        const tokens = part.files.reduce((sum, file) => sum + tokensOf(file), 0);
-        const undividable =
-          part.files.length < 4 || new Set(part.files.map(directoryOf)).size === 1;
-        expect(tokens <= budget || undividable).toBe(true);
+      if (list.length < 4) expect(parts).toHaveLength(1);
+      else {
+        for (const part of parts) {
+          const tokens = part.files.reduce((sum, file) => sum + tokensOf(file), 0);
+          expect(tokens <= budget || part.files.length === 1).toBe(true);
+        }
       }
 
       const reversed = splitModuleByDirectory([...list].reverse(), tokensOf, budget);
@@ -220,17 +264,20 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
   });
 
   /**
-   * Write `files` (path → characters) under a repository, index them as the
-   * graph lists them, answer grouping with something that is not JSON so the
-   * directory fallback groups the modules, and return the reviewed tree.
+   * Write `files` (path → characters, or null for a file the graph lists but
+   * the disk no longer has) under a repository, index them as the graph lists
+   * them, answer grouping with something that is not JSON so the directory
+   * fallback groups the modules, and return the reviewed tree.
    */
   async function buildTree(
-    files: Record<string, number>,
+    files: Record<string, number | null>,
     maxTokensPerModule: number,
     reviewOnly = true,
   ) {
     const repoPath = path.join(tmpDir, 'repo');
+    await fs.mkdir(repoPath, { recursive: true });
     for (const [file, chars] of Object.entries(files)) {
+      if (chars === null) continue;
       await fs.mkdir(path.dirname(path.join(repoPath, file)), { recursive: true });
       await fs.writeFile(path.join(repoPath, file), 'x'.repeat(chars));
     }
@@ -308,7 +355,7 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
       'src/testFixtures/java/com/linkedin/metadata/F1.java': 400,
     };
     for (const i of range(4)) {
-      // Over budget, but all in one directory: one page, as on main.
+      // Over budget, all in one directory: pages packed up to the budget.
       files[`docs/guide${i}.md`] = 800;
       for (const dir of ['entity', 'graph', 'search', 'timeline']) {
         files[`${pkg}/${dir}/C${i}.java`] = 400;
@@ -331,9 +378,10 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
     const root = moduleNamed(tree, 'Root');
     expect(root.children).toBeUndefined();
     expect(root.files).toEqual(['README.md', 'build.gradle']);
-    const docs = moduleNamed(tree, 'docs');
-    expect(docs.children).toBeUndefined();
-    expect(docs.files).toHaveLength(4);
+    expect(childNames(tree, 'docs')).toEqual([
+      'docs — top-level files (1 of 2)',
+      'docs — top-level files (2 of 2)',
+    ]);
     expect(childNames(tree, 'metadata-io-api')).toEqual([
       'metadata-io-api — top-level files',
       'metadata-io-api — src/api',
@@ -372,6 +420,39 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
     for (const prompt of pagePrompts) expect(prompt).not.toContain('source truncated');
   });
 
+  it('counts a file it cannot read as the placeholder its page quotes, so the page is not truncated', async () => {
+    // Counted at 0 tokens, the ten missing files let `a` and `b` stay on one
+    // page whose prompt the placeholders push over the budget.
+    const files: Record<string, number | null> = { 'lib/a/A.ts': 1400, 'lib/b/B.ts': 400 };
+    for (const i of range(10)) files[`lib/a/M${i}.ts`] = null;
+
+    const { tree, prompts } = await buildTree(files, 500, false);
+
+    expect(childNames(tree, 'lib')).toEqual(['lib — a', 'lib — b']);
+    // Two leaf pages and their parent.
+    const pagePrompts = prompts.filter((prompt) => prompt.startsWith('Write documentation for'));
+    expect(pagePrompts).toHaveLength(3);
+    for (const prompt of pagePrompts) expect(prompt).not.toContain('source truncated');
+  });
+
+  it('gives no split page the slug of the overview or the empty slug', async () => {
+    // `資料` has no ASCII letter or digit, so its pages' slugs come from their
+    // directories alone.
+    const files: Record<string, number> = {};
+    for (const i of range(4)) {
+      files[`資料/overview/O${i}.md`] = 400;
+      files[`資料/資料/D${i}.md`] = 400;
+    }
+
+    const { tree } = await buildTree(files, 500);
+
+    const children = moduleNamed(tree, '資料').children ?? [];
+    expect(children.map((child) => [child.name, child.slug])).toEqual([
+      ['資料 — overview 2', 'overview-2'],
+      ['資料 — 資料 2', '2'],
+    ]);
+  });
+
   it('numbers a page whose slug another page already has', async () => {
     // `api-v1` and `api_v1` share a slug, and `svc — core` would take the
     // page of the `svc-core` module.
@@ -398,9 +479,9 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
 });
 
 describe('WikiGenerator.uniqueModuleName', () => {
-  it('keeps the number inside the 60-character slug and stops at a free one', async () => {
+  async function generator(): Promise<GeneratorInternals> {
     const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
-    const gen = new WikiGenerator('/repo', '/storage', '/lbug', {
+    return new WikiGenerator('/repo', '/storage', '/lbug', {
       apiKey: '',
       baseUrl: '',
       model: 'test',
@@ -408,20 +489,64 @@ describe('WikiGenerator.uniqueModuleName', () => {
       temperature: 0,
       provider: 'openai',
     }) as unknown as GeneratorInternals;
+  }
 
+  it('keeps the number inside the 60-character slug and stops at a free one', async () => {
+    const gen = await generator();
     const taken = new Set<string>();
-    const name = `${'Very Long Module Name '.repeat(4)}— main/entity`;
-    const slugs = range(12).map(() => gen.slugify(gen.uniqueModuleName(name, taken)));
+    const moduleName = 'Very Long Module Name '.repeat(4).trim();
+    const names = range(12).map(() => gen.uniqueModuleName(moduleName, 'main/entity', taken));
+    const slugs = names.map((name) => gen.slugify(name));
 
     expect(new Set(slugs).size).toBe(12);
-    expect(slugs[0]).toBe(gen.slugify(name));
-    expect(slugs.slice(1).map((slug) => slug.split('-').pop())).toEqual(
-      range(11).map((i) => String(i + 2)),
+    expect(names[0]).toBe(`${moduleName} — main/entity`);
+    expect(names.slice(1).map((name) => name.split(' — ').pop())).toEqual(
+      range(11).map((i) => `main/entity ${i + 2}`),
     );
-    for (const slug of slugs) expect(slug.length).toBeLessThanOrEqual(60);
+    // The first name keeps its slug cut at 60 characters; a numbered one fits.
+    expect(slugs[0].length).toBe(60);
+    for (const slug of slugs.slice(1)) expect(slug.length).toBeLessThan(60);
     expect([...taken].sort()).toEqual([...slugs].sort());
+  });
 
-    const punctuation = new Set<string>(['']);
-    expect(gen.slugify(gen.uniqueModuleName('—', punctuation))).toBe('2');
+  it('shortens the module name, not the directory, to fit the number', async () => {
+    const gen = await generator();
+    const taken = new Set<string>();
+    // The module name alone fills the 60-character slug, so every page of the
+    // module meets the first one.
+    const moduleName = 'Metadata Graph Storage, Search Indexing and Timeline Services Layer';
+    const labels = [
+      'main/entity',
+      'main/graph',
+      'main/search/elasticsearch/indexbuilder',
+      'main/search/elasticsearch/update',
+    ];
+
+    const names = labels.map((label) => gen.uniqueModuleName(moduleName, label, taken));
+
+    expect(names).toEqual([
+      `${moduleName} — main/entity`,
+      'Metadata Graph Storage, Search Indexing and — main/graph 2',
+      'Metadata Graph — main/search/elasticsearch/indexbuilder 2',
+      'Metadata Graph Storage — main/search/elasticsearch/update 2',
+    ]);
+    for (const name of names.slice(1)) expect(gen.slugify(name).length).toBeLessThan(60);
+  });
+
+  it('keeps the end of a label too long to fit beside any of the module name', async () => {
+    const gen = await generator();
+    const label = `${'deep/'.repeat(12)}leaf`;
+    const taken = new Set([gen.slugify(`Module — ${label}`)]);
+
+    const name = gen.uniqueModuleName('Module', label, taken);
+
+    expect(name).toMatch(/^….*\/leaf 2$/);
+    expect(gen.slugify(name).length).toBeLessThan(60);
+  });
+
+  it('numbers a name whose slug is empty', async () => {
+    const gen = await generator();
+
+    expect(gen.slugify(gen.uniqueModuleName('資料', '—', new Set(['', 'overview'])))).toBe('2');
   });
 });
