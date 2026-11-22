@@ -11,10 +11,11 @@ import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync 
 import os from 'node:os';
 import path from 'node:path';
 import { buildScopeTree } from 'gitnexus-shared';
-import type { Scope, ScopeId, SymbolDefinition, BindingRef } from 'gitnexus-shared';
+import type { Scope, ScopeId, SymbolDefinition, BindingRef, TypeRef } from 'gitnexus-shared';
 import {
   persistScopeShards,
   DiskBackedScopeTree,
+  ScopeShardReadError,
   TransitionalScopeTree,
   clearScopeIndexStore,
   getScopeIndexStoreDir,
@@ -85,6 +86,22 @@ describe('DiskBackedScopeTree — value-faithful stand-in for buildScopeTree', (
     expect(disk.getScope(ALL[0].id)).toEqual(resident.getScope(ALL[0].id));
   });
 
+  it.each(['invalid JSON', '{}', '[]'])(
+    'reports unreadable or missing scope records for %s',
+    (raw) => {
+      const root = mkdtempSync(path.join(tmp, 'corrupt-'));
+      const skeleton = persistScopeShards(root, ALL);
+      const tree = new DiskBackedScopeTree(root, skeleton);
+      const id = ALL[0].id;
+      const entry = skeleton.get(id);
+      if (!entry) throw new Error('Missing fixture scope');
+      writeFileSync(path.join(getScopeIndexStoreDir(root), entry.shard), raw);
+      expect(() => tree.getScope(id)).toThrow(ScopeShardReadError);
+      expect(() => [...tree.byId.values()]).toThrow(ScopeShardReadError);
+      expect(() => tree.getFileScopes(id)).toThrow(ScopeShardReadError);
+    },
+  );
+
   it('collapses the shared def to ONE object on load (localDefs === binding.def)', () => {
     const m = disk.getScope('scope:a.ts#0:0-100:0:Module' as ScopeId)!;
     const fromOwned = m.ownedDefs[0];
@@ -108,8 +125,41 @@ describe('DiskBackedScopeTree — value-faithful stand-in for buildScopeTree', (
     expect(disk.getScope('scope:nope#0:0-1:0:Module' as ScopeId)).toBeUndefined();
   });
 
-  it('byId throws (debug-only path, incompatible with disk mode)', () => {
-    expect(() => disk.byId).toThrow(/byId is unsupported/);
+  it('enumerates scopes in insertion order, including interleaved files', () => {
+    const scopes = [ALL[0], ALL[2], ALL[1], ALL[3]];
+    const root = mkdtempSync(path.join(tmp, 'order-'));
+    const view = new DiskBackedScopeTree(root, persistScopeShards(root, scopes), 1).byId;
+    const expected = buildScopeTree(scopes).byId;
+    expect([...view]).toEqual([...expected]);
+    expect([...view.values()]).toEqual(scopes);
+    expect([...view.keys()]).toEqual([...expected.keys()]);
+    const visited: ScopeId[] = [];
+    view.forEach((scope, key, map) => {
+      expect(map.get(key)).toBe(scope);
+      visited.push(key);
+    });
+    expect(visited).toEqual([...expected.keys()]);
+  });
+
+  it('shares inferred types across point and file reads after eviction', () => {
+    const [module, child] = fileScopes('updated.ts');
+    const [other] = fileScopes('other.ts');
+    const root = mkdtempSync(path.join(tmp, 'replay-'));
+    const tree = new DiskBackedScopeTree(root, persistScopeShards(root, [module, child, other]), 1);
+    tree.retainTypeBindings(child);
+    const bindings = tree.getScope(child.id)!.typeBindings as Map<string, TypeRef>;
+    const inferred: TypeRef = {
+      rawName: 'Counter',
+      declaredAtScope: child.id,
+      source: 'assignment-inferred',
+    };
+    bindings.set('result', inferred);
+    tree.getFileScopes(other.id);
+    expect(tree.getFileScopes(module.id).map((s) => s.id)).toEqual([module.id, child.id]);
+    expect(tree.getFileScopes(module.id)[1].typeBindings.get('result')).toBe(inferred);
+    bindings.delete('result');
+    tree.getScope(other.id);
+    expect(tree.byId.get(child.id)!.typeBindings.has('result')).toBe(false);
   });
 });
 
@@ -128,7 +178,7 @@ describe('TransitionalScopeTree — resident → sealed(disk) transition', () =>
     expect(t.byId.size).toBe(reference.byId.size);
   });
 
-  it('serves value-identically AFTER seal (disk phase) + drops resident byId', () => {
+  it('serves value-identically AFTER seal (disk phase)', () => {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'transitional-seal-'));
     try {
       const t = new TransitionalScopeTree(ALL);
@@ -139,8 +189,7 @@ describe('TransitionalScopeTree — resident → sealed(disk) transition', () =>
         expect(t.getScope(s.id)).toEqual(reference.getScope(s.id));
         expect(t.getChildren(s.id)).toEqual(reference.getChildren(s.id));
       }
-      // Disk mode: byId is unsupported (the debug emit path is incompatible).
-      expect(() => t.byId).toThrow(/byId is unsupported/);
+      expect([...t.byId]).toEqual([...reference.byId]);
       // Seal is idempotent.
       t.seal(dir);
       expect(t.getScope(ALL[0].id)).toEqual(reference.getScope(ALL[0].id));

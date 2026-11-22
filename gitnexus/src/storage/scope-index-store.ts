@@ -7,12 +7,8 @@
  * The scope-resolution resident floor is dominated by the per-`Scope` binding
  * payload (`Scope.bindings` / `typeBindings` / `ownedDefs`) — ~17-20 GB for one
  * language on the Linux kernel — held in `preExtractedByPath` AND aliased by the
- * finalize `scopeTree` through the whole emit phase. The emit passes never read
- * `parsed.scopes` directly; they reach scopes EXCLUSIVELY through
- * `scopeTree.getScope(id)` (a point lookup) and `getChildren(id)`. So the heavy
- * scope payload can move to disk behind that point lookup without changing what
- * any consumer observes: every consumer reads a `Scope` BY VALUE (its `bindings`
- * / `ownedDefs` contents, `parent`, `range`), never by object identity.
+ * finalize `scopeTree` through the whole emit phase. Emitters look up individual
+ * scopes, traverse the tree and enumerate scopes by file or across the project.
  *
  * {@link persistScopeShards} writes the scopes to per-file JSON shards (one file
  * = one shard, so a file's whole parent-chain — which never crosses filePath —
@@ -21,16 +17,14 @@
  * serves `getScope` from a bounded LRU of decoded shards plus a small resident
  * skeleton (`scopeId -> {shard, childIds, parent}`), so only the working set of
  * scopes is resident, not all of them.
- *
- * Default-off: only constructed when `GITNEXUS_DISK_SCOPE_INDEX` is set. The
- * resident `buildScopeTree` path is untouched otherwise.
  */
 
-import { mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import type { Scope, ScopeId, ScopeTree, SymbolDefinition } from 'gitnexus-shared';
 import { buildScopeTree } from 'gitnexus-shared';
 import { mapReplacer } from './parse-cache.js';
+import { logger } from '../core/logger.js';
 import { makeInterningReviver } from './parsedfile-store.js';
 
 const STORE_DIRNAME = 'scope-index-store';
@@ -99,37 +93,62 @@ export const persistScopeShards = (
     }
   }
 
-  const skeleton = new Map<ScopeId, ScopeSkeletonEntry>();
+  const shardByFile = new Map<string, string>();
   let shardIndex = 0;
-  for (const [, fileScopes] of byFile) {
+  for (const [filePath, fileScopes] of byFile) {
     const shard = `s${shardIndex++}.json`;
     writeFileSync(path.join(dir, shard), JSON.stringify(fileScopes, mapReplacer), 'utf-8');
-    for (const s of fileScopes) {
-      skeleton.set(s.id, {
-        shard,
-        parent: s.parent,
-        childIds: childIds.get(s.id) ?? [],
-      });
-    }
+    shardByFile.set(filePath, shard);
+  }
+  // ScopeTree.byId follows input order, even when different files interleave.
+  const skeleton = new Map<ScopeId, ScopeSkeletonEntry>();
+  for (const s of scopes) {
+    skeleton.set(s.id, {
+      shard: shardByFile.get(s.filePath)!,
+      parent: s.parent,
+      childIds: childIds.get(s.id) ?? [],
+    });
   }
   return skeleton;
 };
 
-/**
- * A `ScopeTree` that serves `getScope` from disk shards via a bounded LRU,
- * holding only `maxResidentShards` decoded shards + the resident skeleton. Drop-in
- * for the in-heap `buildScopeTree` result for the methods scope-resolution
- * actually calls — `getScope` (the hot one), `getChildren`, `getParent`,
- * `getAncestors`, `has`, `size`. `byId` (a full materialization) is only used by
- * the `INGESTION_EMIT_SCOPES=1` debug path and is unsupported here — the two flags
- * are mutually exclusive.
- */
-export class DiskBackedScopeTree implements ScopeTree {
+interface ScopeShard {
+  scopes: Scope[];
+  byId: Map<ScopeId, Scope>;
+}
+
+/** Revive children before their containers so map entries and shared definitions
+ * are canonical before the enclosing scope is constructed. Keeping this walk
+ * outside JSON.parse lets V8 use its fast parser on every shard cache miss. */
+function decodeScopeShard(raw: string): Scope[] {
+  const revive = makeInterningReviver(
+    new Map<string, string>(),
+    new Map<string, SymbolDefinition>(),
+  );
+  function visit(value: unknown): unknown {
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) value[i] = visit(value[i]);
+      return value;
+    }
+    if (value !== null && typeof value === 'object') {
+      const record = value as Record<string, unknown>;
+      for (const key of Object.keys(record)) record[key] = visit(record[key]);
+    }
+    return revive('', value);
+  }
+  const scopes: unknown = JSON.parse(raw);
+  if (!Array.isArray(scopes)) throw new Error('Expected an array of scopes');
+  return visit(scopes) as Scope[];
+}
+
+/** Point lookups, file views and ordered map iteration share one bounded shard cache. */
+export class DiskBackedScopeTree implements ScopeTree, ReadonlyMap<ScopeId, Scope> {
   private readonly dir: string;
   private readonly skeleton: ReadonlyMap<ScopeId, ScopeSkeletonEntry>;
   private readonly maxResidentShards: number;
   /** Decoded shards, most-recently-used last (Map preserves insertion order). */
-  private readonly lru = new Map<string, Map<ScopeId, Scope>>();
+  private readonly lru = new Map<string, ScopeShard>();
+  private readonly liveTypeBindings = new Map<ScopeId, Scope['typeBindings']>();
 
   constructor(
     storagePath: string,
@@ -146,9 +165,48 @@ export class DiskBackedScopeTree implements ScopeTree {
   }
 
   get byId(): ReadonlyMap<ScopeId, Scope> {
-    throw new Error(
-      'DiskBackedScopeTree.byId is unsupported (INGESTION_EMIT_SCOPES is incompatible with GITNEXUS_DISK_SCOPE_INDEX).',
-    );
+    return this;
+  }
+
+  keys() {
+    return this.skeleton.keys();
+  }
+
+  *values() {
+    for (const [id, meta] of this.skeleton) yield this.readScope(id, meta.shard);
+  }
+
+  *entries(): Generator<[ScopeId, Scope]> {
+    for (const scope of this.values()) yield [scope.id, scope];
+  }
+
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+
+  forEach(
+    callback: (value: Scope, key: ScopeId, map: ReadonlyMap<ScopeId, Scope>) => void,
+    thisArg?: unknown,
+  ): void {
+    for (const scope of this.values()) callback.call(thisArg, scope, scope.id, this);
+  }
+
+  get(id: ScopeId): Scope | undefined {
+    return this.getScope(id);
+  }
+
+  getFileScopes(moduleScope: ScopeId): readonly Scope[] {
+    const meta = this.skeleton.get(moduleScope);
+    if (!meta) return [];
+    const shard = this.loadShard(meta.shard);
+    if (!shard.byId.has(moduleScope))
+      throw new ScopeShardReadError(`Missing module scope ${moduleScope} in shard ${meta.shard}`);
+    return shard.scopes;
+  }
+
+  /** Register before the first read so later inference is visible across shard evictions. */
+  retainTypeBindings(scope: Scope): void {
+    this.liveTypeBindings.set(scope.id, scope.typeBindings);
   }
 
   has(id: ScopeId): boolean {
@@ -162,7 +220,13 @@ export class DiskBackedScopeTree implements ScopeTree {
   getScope(id: ScopeId): Scope | undefined {
     const meta = this.skeleton.get(id);
     if (meta === undefined) return undefined;
-    return this.loadShard(meta.shard).get(id);
+    return this.readScope(id, meta.shard);
+  }
+
+  private readScope(id: ScopeId, shard: string): Scope {
+    const scope = this.loadShard(shard).byId.get(id);
+    if (!scope) throw new ScopeShardReadError(`Missing scope ${id} in shard ${shard}`);
+    return scope;
   }
 
   getParent(id: ScopeId): Scope | undefined {
@@ -183,7 +247,7 @@ export class DiskBackedScopeTree implements ScopeTree {
   }
 
   /** Load + decode a shard, touch it as MRU, evict the LRU tail past the cap. */
-  private loadShard(shard: string): Map<ScopeId, Scope> {
+  private loadShard(shard: string): ScopeShard {
     const cached = this.lru.get(shard);
     if (cached !== undefined) {
       // Touch: move to MRU end.
@@ -191,12 +255,21 @@ export class DiskBackedScopeTree implements ScopeTree {
       this.lru.set(shard, cached);
       return cached;
     }
-    const pool = new Map<string, string>();
-    const defPool = new Map<string, SymbolDefinition>();
-    const raw = readFileSync(path.join(this.dir, shard), 'utf-8');
-    const fileScopes = JSON.parse(raw, makeInterningReviver(pool, defPool)) as Scope[];
-    const decoded = new Map<ScopeId, Scope>();
-    for (const s of fileScopes) decoded.set(s.id, s);
+    let decoded: ScopeShard;
+    try {
+      const raw = readFileSync(path.join(this.dir, shard), 'utf-8');
+      const fileScopes = decodeScopeShard(raw);
+      const byId = new Map<ScopeId, Scope>();
+      for (let i = 0; i < fileScopes.length; i++) {
+        const scope = fileScopes[i];
+        const typeBindings = this.liveTypeBindings.get(scope.id);
+        if (typeBindings !== undefined) fileScopes[i] = { ...scope, typeBindings };
+        byId.set(scope.id, fileScopes[i]);
+      }
+      decoded = { scopes: fileScopes, byId };
+    } catch (cause) {
+      throw new ScopeShardReadError(`Failed to read scope shard ${shard}`, { cause });
+    }
     this.lru.set(shard, decoded);
     if (this.lru.size > this.maxResidentShards) {
       const oldest = this.lru.keys().next().value as string | undefined;
@@ -221,6 +294,8 @@ export class DiskBackedScopeTree implements ScopeTree {
  * fully-resident behavior byte-identical.
  */
 export class TransitionalScopeTree implements ScopeTree {
+  // Stays resident until the explicit disk override or an eligible provider's
+  // pre-emit heap-pressure check requests a seal.
   private resident: ScopeTree | null;
   private disk: DiskBackedScopeTree | null = null;
 
@@ -241,6 +316,10 @@ export class TransitionalScopeTree implements ScopeTree {
     return this.disk !== null;
   }
 
+  get sealedTree(): DiskBackedScopeTree | null {
+    return this.disk;
+  }
+
   private get active(): ScopeTree {
     const t: ScopeTree | null = this.disk ?? this.resident;
     if (t === null)
@@ -254,7 +333,7 @@ export class TransitionalScopeTree implements ScopeTree {
     return this.active.size;
   }
   get byId(): ReadonlyMap<ScopeId, Scope> {
-    return this.active.byId; // throws in disk mode (DiskBackedScopeTree.byId)
+    return this.active.byId;
   }
   has(id: ScopeId): boolean {
     return this.active.has(id);
@@ -271,4 +350,39 @@ export class TransitionalScopeTree implements ScopeTree {
   getAncestors(id: ScopeId): readonly ScopeId[] {
     return this.active.getAncestors(id);
   }
+}
+
+/** A persisted scope can no longer be served. Emission must propagate this
+ * error even if a per-file CFG or taint failure would normally be isolated. */
+export class ScopeShardReadError extends Error {}
+
+/** A pressure-triggered seal owns its directory until the last emit reader.
+ * Explicitly selected stores can belong to callers retaining a scope tree. */
+export function trySealTemporaryScopeTree(
+  tree: TransitionalScopeTree,
+  storagePath: string,
+): Disposable | undefined {
+  let directory: string | undefined;
+  const cleanup = () => {
+    if (directory === undefined) return;
+    try {
+      rmSync(directory, { recursive: true, force: true });
+    } catch (err) {
+      logger.warn({ err }, 'Could not remove temporary scope shards');
+    }
+  };
+  try {
+    mkdirSync(storagePath, { recursive: true });
+    directory = mkdtempSync(path.join(storagePath, 'scope-spill-'));
+    tree.seal(directory);
+  } catch (err) {
+    cleanup();
+    logger.warn(
+      { err },
+      'Could not spill scopes to disk under heap pressure; continuing with resident scopes',
+    );
+    return undefined;
+  }
+  logger.info('Spilled scope bindings to disk under heap pressure');
+  return { [Symbol.dispose]: cleanup };
 }

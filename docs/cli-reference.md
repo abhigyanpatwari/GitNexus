@@ -225,6 +225,10 @@ Notes:
 
 ## Environment variables
 
+| Scope index variable | Default | Effect | When to tune |
+| --- | --- | --- | --- |
+| `GITNEXUS_DISK_SCOPE_INDEX` | Unset or blank (automatic) | Any language that builds a PDG can spill lexical scopes to a backing store at 70% or more of the V8 heap limit. Full-scope debug output and resolved-file callbacks keep scopes resident in automatic mode. `1`, `true`, or `yes` forces disk storage. Other nonblank values, including `0`, keep scopes resident. | Use `0` to avoid shard I/O or `1` to explicitly select disk-backed resolution. |
+
 | HTTP embedding variable | Default | Effect | When to tune |
 | --- | --- | --- | --- |
 | `GITNEXUS_EMBEDDING_CONCURRENCY` | `4` | Concurrent provider requests, integer `1`–`64`. HTTP providers only; local models and injected providers stay at `1`. A window holds at most 256 rows, so with the default sub-batch size of 8, values above 32 cannot increase concurrency. Byte limits may reduce the window further. | Set `1` for strictly serial or rate-limited endpoints, or set `GITNEXUS_EMBEDDING_MIN_INTERVAL_MS` to pace request starts. Concurrent retries can exhaust their attempt budget on an endpoint returning `429` even when serial requests succeed. |

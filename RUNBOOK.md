@@ -294,6 +294,8 @@ on a partial result.
 
 ## Memory / analyze crashes
 
+PDG indexing can spill lexical scopes to temporary storage for any language that builds a PDG when V8 heap usage reaches 70%. If the automatic spill cannot write its shards, indexing continues in memory and logs a warning. Check free space in the index storage directory if you see that warning. See [scope index environment settings](docs/cli-reference.md#environment-variables) for explicit disk and resident overrides.
+
 Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`). If you still OOM on huge repos, close other processes, avoid `--embeddings` for a first pass, or analyze a smaller path if supported by your workflow.
 
 `--resource-budget <MiB>` admits the analyzer process family within one memory
