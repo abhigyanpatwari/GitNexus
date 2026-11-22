@@ -28,6 +28,7 @@ const API = ['api/orders.ts', 'api/users.ts'];
 const CORE = ['core/cache.ts', 'core/db.ts'];
 const JOBS = Array.from({ length: 6 }, (_, i) => `jobs/job${i + 1}.ts`);
 
+// dupe-ok: the same streamed answer as wiki-truncation-recovery.test.ts, which this PR leaves alone
 function streamed(content: string, finishReason = 'stop'): Response {
   const chunk = { choices: [{ delta: { content }, finish_reason: finishReason }] };
   return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
@@ -107,6 +108,7 @@ describe('wiki runs that group the files again', () => {
     wikiPath = path.join(repoPath, '.gitnexus', 'wiki');
     await fs.mkdir(wikiPath, { recursive: true });
     git('init', '-q');
+    git('config', 'commit.gpgsign', 'false');
     files = [];
     requests = [];
     prompts = new Map();
