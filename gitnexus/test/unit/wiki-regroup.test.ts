@@ -310,12 +310,18 @@ describe('wiki runs that group the files again', () => {
   describe('more than five new files, with sub-modules', () => {
     const V1 = ['api/v1/orders.ts', 'api/v1/users.ts'];
     const V2 = ['api/v2/orders.ts', 'api/v2/users.ts'];
-    // A tiny page budget splits Api into one sub-module per version.
-    const options = { maxTokensPerModule: 5 };
+    // About 60 tokens a file: a page holds one version, not both, so Api is
+    // split into one sub-module per version, whatever the split counts a file
+    // with or without the line naming it in the prompt.
+    const options = { maxTokensPerModule: 200 };
 
-    beforeEach(() =>
-      generate([...V1, ...V2, ...CORE], { Api: [...V1, ...V2], Core: CORE }, options),
-    );
+    beforeEach(async () => {
+      for (const file of [...V1, ...V2]) {
+        await fs.mkdir(path.dirname(path.join(repoPath, file)), { recursive: true });
+        await fs.writeFile(path.join(repoPath, file), `// ${'x'.repeat(220)}\n`);
+      }
+      await generate([...V1, ...V2, ...CORE], { Api: [...V1, ...V2], Core: CORE }, options);
+    });
 
     it('keeps a parent page whose sub-module pages are all kept', async () => {
       const [api] = await savedTree();
