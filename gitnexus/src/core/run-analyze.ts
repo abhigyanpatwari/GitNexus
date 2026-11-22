@@ -925,6 +925,7 @@ import {
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from './embedding-mode.js';
 import type { GraphEmitManifest } from './lbug/graph-emit-sink.js';
+import { isConstrainedPdgBuild } from './analysis-resource-budget.js';
 
 /**
  * Relationships RESIDENT in the in-memory graph, excluding the PDG layers —
@@ -2085,14 +2086,18 @@ async function runFullAnalysisInner(
 ): Promise<AnalyzeResult> {
   const ftsDisabledReason = resolveFtsDisableReason(options.skipFts);
   const initAnalysisLbug = (dbPath: string, readOnly = false) => {
-    if (options.resources) {
+    const budget = options.resources;
+    if (budget) {
       const sizedPool = getEffectiveBufferPoolSize();
-      const ceiling = options.resources.parse.graphPoolBytes;
+      const ceiling = budget.parse.graphPoolBytes;
+      // COPY and FTS allocate per-thread workspaces while the PDG is still
+      // resident. Serialize writes in the measured single-worker, 6 GiB case.
+      const serialPdgWrite = !readOnly && isConstrainedPdgBuild(options.pdg, budget);
       return initLbug(dbPath, {
         skipFts: readOnly || !!ftsDisabledReason,
         ...(readOnly ? { readOnly: true } : {}),
         bufferPoolBytes: Math.min(sizedPool || ceiling, ceiling),
-        threads: options.resources.parse.nativeThreads,
+        threads: serialPdgWrite ? 1 : budget.parse.nativeThreads,
       });
     }
     if (readOnly) return initLbug(dbPath, { readOnly: true, skipFts: true });

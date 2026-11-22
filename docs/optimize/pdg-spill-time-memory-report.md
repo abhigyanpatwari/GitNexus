@@ -1,5 +1,7 @@
 # Cold PDG indexing on a 6 GiB budget
 
+The analyzer now selects a single native database writer for PDG builds with one parser worker and an explicit budget of 6 GiB or less. [Cold builds with the automatic settings](#cold-builds-with-the-automatic-settings)
+
 Two subsequent Linux cold builds met both targets with a 384 MiB database pool and two glibc allocator arenas. [Measurements and reproduction command](#incremental-pdg-and-the-6-gib-release-workload)
 
 Across two paired cold runs, parsing scope shards before restoring their objects and collecting unused JavaScript heap before full-text indexing reduced median elapsed time from 550.66 s to 461.62 s (16.2%). Median peak RSS fell from 3,768.05 to 3,692.46 MiB (2.0%). Memory rose by 49.82 MiB in one pair and fell by 200.99 MiB in the other. Only elapsed time cleared the 3% improvement threshold. Both medians exceeded the targets of 365 s and 3,316 MiB.
@@ -91,3 +93,21 @@ GITNEXUS_LBUG_BUFFER_POOL_SIZE=402653184 MALLOC_ARENA_MAX=2 \
   gitnexus analyze . --force --pdg --index-only --no-stats \
     --workers 1 --resource-budget 6144 --max-file-size 512
 ```
+
+## Cold builds with the automatic settings
+
+The graph writer uses one native database thread for COPY and full-text indexing under this budget. On Linux with glibc, the CLI also starts its graph writer with two allocator arenas unless the operator has set `MALLOC_ARENA_MAX` or `glibc.malloc.arena_max`. The database buffer pool continues to use its normal sizing policy. The writer selection is shared across languages.
+
+These cold runs used the same sanitized source, release runtime and 24-CPU Linux host. Each run started with an empty graph and parser cache, using `--force --pdg --workers 1 --resource-budget 6144` without allocator or pool overrides in the invoking environment. The unchanged PR control was `88488bbd0`. The target was 365 seconds and 3,316 MiB peak process RSS.
+
+| Build | Elapsed (s) | Peak RSS (MiB) |
+| --- | ---: | ---: |
+| Unchanged PR control | 356.58 | 3,659.36 |
+| Single database writer, system allocator defaults | 355.10 | 3,273.99 |
+| Repeated single database writer, system allocator defaults | 357.03 | 3,318.06 |
+| Single database writer, CLI-selected arenas | 332.96 | 2,803.61 |
+| Final build, CLI-selected arenas confined to the graph writer | 330.52 | 2,805.36 |
+
+The final build finished 26.06 seconds sooner and used 854.01 MiB less peak RSS than the control. Both combined runs reproduced the reference graph of 373,373 nodes and 835,148 relationships, all ten full-text indexes, and the ranked results of both search queries. The final build confines the allocator default to the writer child. The separate publication and embedding child inherits the operator's environment.
+
+The combined fixture for all 19 PDG languages produced the same 1,615 nodes and 2,963 relationships, including 1,308 basic blocks. Repeating the one-file incremental edit on the final build still exhausted the JavaScript heap during scope analysis. After the failure the published graph retained its original fingerprint.

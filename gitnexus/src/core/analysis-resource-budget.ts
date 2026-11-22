@@ -63,6 +63,19 @@ export interface AnalysisResourceBudget {
   };
 }
 
+/** The release corpus was measured with one parser worker and a 6 GiB ceiling. */
+export function isConstrainedPdgBuild(
+  pdg: boolean | undefined,
+  budget: AnalysisResourceBudget,
+): boolean {
+  return (
+    pdg === true &&
+    !budget.automatic &&
+    budget.totalBytes <= 6144 * MIB &&
+    budget.parse.workers === 1
+  );
+}
+
 function integer(value: number, label: string, minimum = 1): number {
   if (!Number.isSafeInteger(value) || value < minimum) {
     throw new Error(`${label} must be a safe integer of at least ${minimum}`);
