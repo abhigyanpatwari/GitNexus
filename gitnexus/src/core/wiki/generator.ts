@@ -111,6 +111,14 @@ interface PreviousGrouping {
   changedFiles: string[];
 }
 
+/** `value` as JSON with every object's keys in name order; arrays keep theirs. */
+const keyOrderFreeJson = (value: unknown): string =>
+  JSON.stringify(value, (_key, item: unknown) =>
+    item && typeof item === 'object' && !Array.isArray(item)
+      ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : item,
+  );
+
 // ─── Constants ────────────────────────────────────────────────────────
 
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
@@ -1466,7 +1474,8 @@ export class WikiGenerator {
     const treePath = path.join(this.wikiDir, 'module_tree.json');
     try {
       const saved = JSON.parse(await fs.readFile(treePath, 'utf-8'));
-      if (JSON.stringify(saved) === JSON.stringify(meta.moduleTree)) {
+      // A tool that only reorders keys or reindents the file has not edited it.
+      if (keyOrderFreeJson(saved) === keyOrderFreeJson(meta.moduleTree)) {
         await fs.rm(treePath, { force: true });
       }
     } catch {

@@ -154,6 +154,17 @@ describe('wiki runs that group the files again', () => {
       expect(await pages()).toEqual(['overview.md', 'services.md']);
     });
 
+    it('groups the files again when a tool only reordered the keys of the saved tree', async () => {
+      const reordered = (await savedTree()).map(({ files, slug, name }) => ({ files, slug, name }));
+      await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(reordered));
+      grouping = { Services: [...API, ...CORE] };
+
+      await run({ force: true });
+
+      expect(requests).toEqual(['grouping', 'Services', 'overview']);
+      expect(names(await savedTree())).toEqual(['Services']);
+    });
+
     it('keeps a module tree edited since the last generation', async () => {
       const tree = await savedTree();
       tree[1] = { ...tree[1], name: 'Storage', slug: 'storage' };
