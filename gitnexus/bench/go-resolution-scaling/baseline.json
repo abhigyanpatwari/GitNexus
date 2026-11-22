@@ -1,0 +1,12 @@
+{
+  "expectedFiles": [1024, 2048, 4096, 8192],
+  "maxWorkPerFile": {
+    "lookups": 1,
+    "entriesReturned": 1,
+    "iterations": 3
+  },
+  "maxTimePerFileGrowth": {
+    "ownership": 1.75,
+    "callableFlow": 1.75
+  }
+}

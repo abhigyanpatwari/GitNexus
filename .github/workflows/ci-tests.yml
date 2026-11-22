@@ -1302,24 +1302,14 @@ jobs:
       - name: Go ownership and deferred callable-flow scaling (#4027)
         if: ${{ !cancelled() }}
         working-directory: gitnexus
-        shell: bash
-        run: |
-          evidence="$RUNNER_TEMP/go-resolution-scaling"
-          mkdir -p "$evidence"
-          npm test -- --config bench/go-resolution-scaling/vitest.config.ts 2>&1 | tee "$evidence/run.log"
-          sed -n 's/^GO_RESOLUTION_SCALING //p' "$evidence/run.log" > "$evidence/measure.json"
-          jq -es '
-            length == 1 and (.[0].rows | length >= 2 and all(.[];
-              ([.files, .lookups, .entriesReturned, .iterations] | all(type == "number")) and
-              .lookups <= .files and .entriesReturned <= .files and .iterations <= 3 * .files))
-          ' "$evidence/measure.json" || { echo '::error::Go resolution scaling report failed its work-count checks'; exit 1; }
+        run: node --experimental-test-module-mocks bench/go-resolution-scaling/measure.cjs --check --output go-resolution-scaling.json
 
       - name: Upload Go resolution measurements
         if: ${{ !cancelled() }}
         uses: ./.github/actions/upload-test-artifact
         with:
           name: go-resolution-scaling
-          path: ${{ runner.temp }}/go-resolution-scaling/
+          path: gitnexus/go-resolution-scaling.json
           retention-days: 5
 
       - name: Cross-language scope-capture fingerprint + scaling guards

@@ -1,43 +1,21 @@
 # Go ownership and callable-flow scaling
 
-This benchmark measures two parts of Go ingestion from [issue #4027](https://github.com/abhigyanpatwari/GitNexus/issues/4027). It times `reconcileOwnership` and `emitCallableValueFlow` inside a normal ingestion run. Each repetition starts with a fresh graph and semantic model. The timers cover only the calls to those two functions.
-
-Run from `gitnexus/` with dependencies installed:
+Run the CI check from `gitnexus/` after installing dependencies.
 
 ```sh
 npm run build
-npm test -- --config bench/go-resolution-scaling/vitest.config.ts
+node --experimental-test-module-mocks bench/go-resolution-scaling/measure.cjs --check
 ```
 
-To compare source revisions, copy this benchmark directory into each checkout's `gitnexus/bench/`, build that checkout, and run the same package counts and repetition count. Run one checkout at a time.
+The fixture doubles from 1,024 to 8,192 Go files over four sizes. Each pair of files adds an independent package with the same declaration names. One file defines `Client.ID`, `Client.Run`, and `Step`. The other defines `Apply`, which calls the function passed by `Run`. Every ingestion must register one method and one field per package and resolve each indirect call from `Apply` to its own package's `Step`.
 
-The default sweep uses 64, 128, 256, 512 and 1,024 packages. Each package has two Go files. To run a larger sweep:
+The runner times the built `reconcileOwnership` and `emitCallableValueFlow` functions inside the ingestion pipeline. Each run starts with a fresh graph and semantic model. One warmup per size counts ownership lookups and entries returned. Five timed rounds rotate the order of the sizes and use the original lookup methods.
 
-```sh
-GO_BENCH_PACKAGES=512,1024,2048,4096 GO_BENCH_REPS=5 \
-  npm test -- --config bench/go-resolution-scaling/vitest.config.ts
-```
+`--check` applies the limits in [baseline.json](baseline.json).
 
-Each package defines its own `Client` struct, field and method. The method passes `Step` to `Apply` in the other file. `Apply` calls that function parameter. Every package reuses the same declaration names, with one possible callback target per invocation. The benchmark verifies the caller and target file of every indirect edge on every run. Larger inputs add independent packages while keeping the body size, fan-out and number of calls per file constant.
+- At every size, ownership may perform at most one lookup and return at most one bucket entry per Go file. The callable-flow solver may take at most three iterations per file.
+- For each pass, the runner divides median milliseconds by file count and compares every pair of sizes. Linear growth gives a ratio near 1. The limit of 1.75 allows for timing variation. A quadratic pass would give ratios near 2 at each doubling and 8 over the full range.
 
-The first round records ownership-registry lookups and the total length of the buckets they return. Subsequent rounds use the original registry methods and rotate the order of the sizes. The `GO_RESOLUTION_SCALING` JSON line reports the individual wall times in milliseconds, their medians, the number of definitions, deferred sites and solver iterations, and the fitted time exponent for each pass. An exponent of 1 corresponds to a doubling of time when file count doubles. Inspect the per-size times alongside the fit, especially when the smallest samples take less than a millisecond.
+A failed budget produces a nonzero exit status and identifies the pass or counter and file count. Add `--output path.json` to save all samples, medians, work counts, ratios, and failures. CI uploads that report as the `go-resolution-scaling` artifact.
 
-The [CI benchmarks job](../../../.github/workflows/ci-tests.yml) runs the default sweep on the revision under test. At each size it allows up to one ownership lookup, one returned bucket entry, and three callable-flow iterations per Go file, summed over the fixture. The `go-resolution-scaling` artifact retains `measure.json` and the run log for five days. Use the recorded wall times and fitted exponents to compare runs.
-
-## Measured results
-
-Median milliseconds on Linux x64, Node 22.23.3, with five measured samples per size. Both source revisions used the same Vitest 5.1.0 runner, tree-sitter 0.25.1 runtime and tree-sitter-go 0.25.0 grammar. The release figures therefore describe the tagged resolver source on this harness. The reporter's container and corpus were unavailable.
-
-| Go files | v1.6.12 ownership | main ownership | v1.6.12 callable flow | main callable flow |
-| ---: | ---: | ---: | ---: | ---: |
-| 1,024 | 3.88 | 3.14 | 94.51 | 87.82 |
-| 2,048 | 29.14 | 6.98 | 214.99 | 205.50 |
-| 4,096 | 113.36 | 14.51 | 449.90 | 462.84 |
-| 8,192 | 459.33 | 22.73 | 938.09 | 1,008.21 |
-| Fitted time exponent | 2.26 | 0.96 | 1.10 | 1.17 |
-
-At `v1.6.12`, the total length of the ownership buckets returned was exactly `P × (P − 1) / 2` for `P` packages. The final doubling increased ownership time from 113 to 459 ms. On `main`, ownership made two registry lookups per package, each returning an empty bucket. Its wall time was consistent with linear growth over the larger sweep.
-
-Both revisions resolved one callback and performed six solver iterations per package at every size. Callable-flow wall time grew faster than the iteration count over the larger sweep. On `main`, eight times as many files took 11.5 times as long. The timer includes building the solver's indexes, propagating targets and emitting edges. These measurements do not attribute the additional time to any one of those operations.
-
-The [raw samples and counters](results.json) include both sweeps and the source commit IDs.
+The workload reproduces the repeated names and cross-file callbacks from the investigation into [issue #4027](https://github.com/abhigyanpatwari/GitNexus/issues/4027). Its scaling limits apply to this fixed-fan-out fixture. The 48,853-file repository in the issue is private.
