@@ -27,6 +27,8 @@ vi.mock('../../src/core/wiki/graph-queries.js', () => ({
 const API = ['api/orders.ts', 'api/users.ts'];
 const CORE = ['core/cache.ts', 'core/db.ts'];
 const JOBS = Array.from({ length: 6 }, (_, i) => `jobs/job${i + 1}.ts`);
+/** The committer of the fixture's commits, whatever the global git config says. */
+const AUTHOR = ['-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test'];
 
 // dupe-ok: the same streamed answer as wiki-truncation-recovery.test.ts, which this PR leaves alone
 function streamed(content: string, finishReason = 'stop'): Response {
@@ -49,20 +51,26 @@ describe('wiki runs that group the files again', () => {
   /** Part of every page, so a page shows which run wrote it. */
   let revision: number;
   let cutOffOverview: boolean;
+  let cutOffGrouping: boolean;
 
   function git(...args: string[]): void {
     execFileSync('git', args, { cwd: repoPath });
   }
 
-  /** Writes or edits the files, commits them, and lets the mocked graph list them. */
-  async function commit(...paths: string[]): Promise<void> {
+  /** Writes or edits the files and commits them, without the mocked graph listing them. */
+  async function commitUnindexed(...paths: string[]): Promise<void> {
     for (const file of paths) {
       const fullPath = path.join(repoPath, file);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.appendFile(fullPath, `export const ${path.basename(file, '.ts')}${revision} = 1;\n`);
     }
     git('add', ...paths);
-    git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'edit');
+    git(...AUTHOR, 'commit', '-qm', 'edit');
+  }
+
+  /** Writes or edits the files, commits them, and lets the mocked graph list them. */
+  async function commit(...paths: string[]): Promise<void> {
+    await commitUnindexed(...paths);
     files = [...new Set([...files, ...paths])].sort();
     vi.mocked(getAllFiles).mockResolvedValue(files);
   }
@@ -90,6 +98,7 @@ describe('wiki runs that group the files again', () => {
 
   const names = (tree: ModuleTreeNode[]) => tree.map((node) => node.name);
   const page = (slug: string) => fs.readFile(path.join(wikiPath, `${slug}.md`), 'utf8');
+  const meta = async () => JSON.parse(await fs.readFile(path.join(wikiPath, 'meta.json'), 'utf8'));
   const pages = async () =>
     (await fs.readdir(wikiPath)).filter((file) => file.endsWith('.md')).sort();
 
@@ -114,6 +123,7 @@ describe('wiki runs that group the files again', () => {
     prompts = new Map();
     revision = 1;
     cutOffOverview = false;
+    cutOffGrouping = false;
     vi.stubGlobal(
       'fetch',
       vi.fn(async (_url: string, init: RequestInit) => {
@@ -122,7 +132,7 @@ describe('wiki runs that group the files again', () => {
         if (prompt.startsWith('Group these source files')) {
           requests.push('grouping');
           prompts.set('grouping', prompt);
-          return streamed(JSON.stringify(grouping));
+          return streamed(JSON.stringify(grouping), cutOffGrouping ? 'length' : 'stop');
         }
         const module = prompt.match(/^Write documentation for the \*\*(.+?)\*\* module/)?.[1];
         requests.push(module ?? 'overview');
@@ -187,13 +197,13 @@ describe('wiki runs that group the files again', () => {
       expect(requests).toEqual(['grouping']);
 
       // The user renames the module while reviewing. The CLI then runs again
-      // with the same options and reviewOnly off.
+      // with the same options, reviewOnly off and useSavedTree on.
       const tree = await savedTree();
       tree[0] = { ...tree[0], name: 'Back end', slug: 'back-end' };
       await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(tree, null, 2));
       requests = [];
 
-      await run({ force: true });
+      await run({ force: true, useSavedTree: true });
 
       expect(requests).toEqual(['Back end', 'overview']);
       expect(names(await savedTree())).toEqual(['Back end']);
@@ -245,7 +255,7 @@ describe('wiki runs that group the files again', () => {
       expect(await page('core')).toContain('Core page, revision 1.');
     });
 
-    it('keeps the previous overview page when the run fails', async () => {
+    it('keeps the previous overview page when the run fails, then completes the run', async () => {
       await commit(...JOBS);
       grouping = { Api: API, Core: CORE, Jobs: JOBS };
       cutOffOverview = true;
@@ -254,6 +264,121 @@ describe('wiki runs that group the files again', () => {
 
       expect(await page('overview')).toContain('Overview page, revision 1.');
       expect(await page('jobs')).toContain('Jobs page, revision 2.');
+      expect((await meta()).regrouping).toMatchObject({ staleRemoved: true });
+
+      // The rerun at the same commit keeps the grouping and the pages of the
+      // failed run, whatever the model would answer now.
+      grouping = { Services: [...API, ...CORE, ...JOBS] };
+      requests = [];
+      revision = 3;
+      cutOffOverview = false;
+      expect(await run()).toEqual({ pagesGenerated: 1, mode: 'incremental', failedModules: [] });
+
+      expect(requests).toEqual(['overview']);
+      expect(names(await savedTree())).toEqual(['Api', 'Core', 'Jobs']);
+      expect(await page('jobs')).toContain('Jobs page, revision 2.');
+      expect(await page('overview')).toContain('Overview page, revision 3.');
+      expect((await meta()).regrouping).toBeUndefined();
+    });
+
+    /**
+     * A run that groups Api with three job files and the other three as Jobs,
+     * writes api.md and jobs.md, then fails at the overview.
+     */
+    async function failAfterRewritingApi(): Promise<void> {
+      await commit(...JOBS);
+      grouping = { Api: [...API, ...JOBS.slice(0, 3)], Core: CORE, Jobs: JOBS.slice(3) };
+      cutOffOverview = true;
+      await expect(run()).rejects.toThrow('completion token limit');
+      expect(requests).toEqual(['grouping', 'Api', 'Jobs', 'overview']);
+      expect(prompts.get('Api')).toContain('--- jobs/job1.ts ---');
+      expect(await page('api')).toContain('Api page, revision 2.');
+      requests = [];
+      revision = 3;
+      cutOffOverview = false;
+    }
+
+    it('takes back a failed run when HEAD returns to the commit the wiki documents', async () => {
+      await failAfterRewritingApi();
+      git('checkout', '-q', 'HEAD~1');
+
+      expect(await run()).toEqual({ pagesGenerated: 2, mode: 'incremental', failedModules: [] });
+
+      // api.md documented the job files; it is written again from the old module.
+      expect(requests).toEqual(['Api', 'overview']);
+      expect(prompts.get('Api')).not.toContain('jobs/');
+      expect(await page('api')).toContain('Api page, revision 3.');
+      expect(await page('core')).toContain('Core page, revision 1.');
+      expect(await pages()).toEqual(['api.md', 'core.md', 'overview.md']);
+      expect(names(await savedTree())).toEqual(['Api', 'Core']);
+      expect((await meta()).regrouping).toBeUndefined();
+    });
+
+    it('takes back a run that stopped while it deleted pages', async () => {
+      await commit(...JOBS);
+      grouping = { Api: [...API, ...JOBS], Core: CORE };
+      const rm = fs.rm.bind(fs);
+      const spy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+        if (String(target).endsWith('api.md')) throw new Error('disk unplugged');
+        return rm(target, options);
+      });
+      try {
+        await expect(run()).rejects.toThrow('disk unplugged');
+      } finally {
+        spy.mockRestore();
+      }
+      requests = [];
+      revision = 3;
+      git('checkout', '-q', 'HEAD~1');
+
+      await run();
+
+      expect(requests).toEqual(['Api', 'overview']);
+      expect(await page('api')).toContain('Api page, revision 3.');
+    });
+
+    it('generates the tree approved on --review after a failed run', async () => {
+      await failAfterRewritingApi();
+      const review = await run({ reviewOnly: true });
+      // The review shows the tree of the run to complete.
+      expect(requests).toEqual([]);
+      expect(names(review.moduleTree ?? [])).toEqual(['Api', 'Core', 'Jobs']);
+      const tree = await savedTree();
+      tree[1] = { ...tree[1], name: 'Storage', slug: 'storage' };
+      await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(tree, null, 2));
+
+      await run({ useSavedTree: true });
+
+      expect(requests).toEqual(['Api', 'Storage', 'Jobs', 'overview']);
+      expect(await pages()).toEqual(['api.md', 'jobs.md', 'overview.md', 'storage.md']);
+      expect(await page('jobs')).toContain('Jobs page, revision 3.');
+    });
+
+    it('groups again at a later commit and writes again the pages a failed run wrote', async () => {
+      await failAfterRewritingApi();
+      await commit('core/db.ts');
+      grouping = { Api: API, Core: CORE, Jobs: JOBS };
+
+      await run();
+
+      expect(requests).toEqual(['grouping', 'Api', 'Core', 'Jobs', 'overview']);
+      expect(prompts.get('Api')).not.toContain('jobs/');
+      expect(await page('api')).toContain('Api page, revision 3.');
+    });
+
+    it('keeps the saved tree and every page when the grouping request fails', async () => {
+      const viewer = await fs.readFile(path.join(wikiPath, 'index.html'), 'utf8');
+      await commit(...JOBS);
+      grouping = { Services: [...API, ...CORE, ...JOBS] };
+      cutOffGrouping = true;
+
+      await expect(run()).rejects.toThrow('completion token limit');
+
+      expect(names(await savedTree())).toEqual(['Api', 'Core']);
+      expect(await pages()).toEqual(['api.md', 'core.md', 'overview.md']);
+      git('checkout', '-q', 'HEAD~1');
+      expect((await run()).mode).toBe('up-to-date');
+      expect(await fs.readFile(path.join(wikiPath, 'index.html'), 'utf8')).toBe(viewer);
     });
 
     it('rewrites the page of a module whose file changed in the same commits', async () => {
@@ -279,6 +404,85 @@ describe('wiki runs that group the files again', () => {
       expect(await pages()).toEqual(['api.md', 'overview.md', 'storage.md']);
     });
 
+    it('rewrites two modules of unchanged sizes that swapped files', async () => {
+      await commit(...JOBS);
+      grouping = { Api: [API[0], CORE[0]], Core: [API[1], CORE[1]], Jobs: JOBS };
+
+      await run();
+
+      expect(requests).toEqual(['grouping', 'Api', 'Core', 'Jobs', 'overview']);
+    });
+
+    it('accepts any module name, Object members included', async () => {
+      await commit(...JOBS);
+      grouping = { Api: API, Core: CORE, constructor: JOBS };
+
+      await run();
+
+      expect(requests).toEqual(['grouping', 'constructor', 'overview']);
+    });
+
+    it('groups again when the saved tree is not JSON', async () => {
+      await fs.writeFile(path.join(wikiPath, 'module_tree.json'), '{');
+      await commit(...JOBS);
+      grouping = { Api: API, Core: CORE, Jobs: JOBS };
+
+      await run();
+
+      expect(requests).toEqual(['grouping', 'Jobs', 'overview']);
+      expect(names(await savedTree())).toEqual(['Api', 'Core', 'Jobs']);
+    });
+
+    it('writes again a page an older wiki left under the name of a new module', async () => {
+      await fs.writeFile(path.join(wikiPath, 'jobs.md'), '# Jobs of an older wiki\n');
+      await commit(...JOBS);
+      grouping = { Api: API, Core: CORE, Jobs: JOBS };
+
+      await run();
+
+      expect(requests).toEqual(['grouping', 'Jobs', 'overview']);
+      expect(await page('jobs')).toContain('Jobs page, revision 2.');
+    });
+
+    it('groups again for files moved to new paths', async () => {
+      await commit(...JOBS);
+      grouping = { Api: API, Core: CORE, Jobs: JOBS };
+      await run();
+      requests = [];
+      revision = 3;
+      git('mv', 'jobs', 'tasks');
+      git(...AUTHOR, 'commit', '-qm', 'move');
+      const tasks = JOBS.map((job) => job.replace('jobs/', 'tasks/'));
+      files = [...API, ...CORE, ...tasks].sort();
+      vi.mocked(getAllFiles).mockResolvedValue(files);
+      grouping = { Api: API, Core: CORE, Tasks: tasks };
+
+      await run();
+
+      expect(requests).toEqual(['grouping', 'Tasks', 'overview']);
+      expect(await pages()).toEqual(['api.md', 'core.md', 'overview.md', 'tasks.md']);
+    });
+
+    it('leaves pages it did not write in the wiki folder', async () => {
+      await fs.writeFile(path.join(wikiPath, 'runbook.md'), '# Runbook\n');
+      await commit(...JOBS);
+      grouping = { Services: [...API, ...CORE, ...JOBS] };
+
+      await run();
+
+      expect(await pages()).toEqual(['overview.md', 'runbook.md', 'services.md']);
+    });
+
+    it('does not group again for new paths the graph does not index', async () => {
+      await commitUnindexed(...Array.from({ length: 6 }, (_, i) => `.changeset/change${i + 1}.md`));
+      grouping = { Services: [...API, ...CORE] };
+
+      expect(await run()).toEqual({ pagesGenerated: 0, mode: 'incremental', failedModules: [] });
+
+      expect(requests).toEqual([]);
+      expect(names(await savedTree())).toEqual(['Api', 'Core']);
+    });
+
     it('rewrites a module that lost files to another module', async () => {
       await commit(...JOBS);
       grouping = { Api: ['api/orders.ts'], Users: ['api/users.ts'], Core: CORE, Jobs: JOBS };
@@ -290,13 +494,31 @@ describe('wiki runs that group the files again', () => {
       expect(await page('core')).toContain('Core page, revision 1.');
     });
 
-    it('leaves the existing pages alone while --review waits for the user', async () => {
+    it('leaves the existing pages and the viewer alone while --review waits for the user', async () => {
+      const viewer = await fs.readFile(path.join(wikiPath, 'index.html'), 'utf8');
       await commit(...JOBS);
       grouping = { Services: [...API, ...CORE, ...JOBS] };
 
       await run({ reviewOnly: true });
 
       expect(requests).toEqual(['grouping']);
+      expect(await pages()).toEqual(['api.md', 'core.md', 'overview.md']);
+      expect(await fs.readFile(path.join(wikiPath, 'index.html'), 'utf8')).toBe(viewer);
+    });
+
+    it('generates the tree approved on --review even when it is the previous tree', async () => {
+      await commit(...JOBS);
+      grouping = { Api: API, Core: CORE, Jobs: JOBS };
+      await run({ reviewOnly: true });
+      // The user removes the Jobs module, which gives back the previous tree.
+      const tree = await savedTree();
+      await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(tree.slice(0, 2)));
+      requests = [];
+
+      await run({ useSavedTree: true });
+
+      expect(requests).toEqual(['overview']);
+      expect(names(await savedTree())).toEqual(['Api', 'Core']);
       expect(await pages()).toEqual(['api.md', 'core.md', 'overview.md']);
     });
 
@@ -313,11 +535,59 @@ describe('wiki runs that group the files again', () => {
       await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(tree, null, 2));
       requests = [];
 
-      await run();
+      await run({ useSavedTree: true });
 
       expect(requests).toEqual(['Background jobs', 'overview']);
       expect(await pages()).toEqual(['api.md', 'background-jobs.md', 'core.md', 'overview.md']);
     });
+  });
+
+  it('does not group again for edits to files a reviewed tree left out', async () => {
+    const tests = Array.from({ length: 6 }, (_, i) => `test/case${i + 1}.ts`);
+    await commit(...API, ...CORE, ...tests);
+    const tree = [
+      { name: 'Api', slug: 'api', files: API },
+      { name: 'Storage', slug: 'storage', files: CORE },
+    ];
+    await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(tree));
+    await run();
+    requests = [];
+    revision = 2;
+    // Six edits outside the tree and one new file: only the new file counts.
+    await commit(...tests, 'api/health.ts');
+    grouping = { Api: API, Core: CORE, Tests: tests };
+
+    expect(await run()).toEqual({ pagesGenerated: 0, mode: 'incremental', failedModules: [] });
+
+    expect(requests).toEqual([]);
+    expect(await pages()).toEqual(['api.md', 'overview.md', 'storage.md']);
+  });
+
+  it('rewrites the Other page on a regrouping after files were added to it', async () => {
+    await generate([...API, ...CORE, 'misc.ts'], { Api: API, Core: CORE, Other: ['misc.ts'] });
+    await commit('a.ts', 'b.ts', 'c.ts');
+    await run();
+    expect(requests).toEqual(['Other', 'overview']);
+    requests = [];
+    revision = 3;
+    await commit(...JOBS);
+    grouping = { Api: API, Core: CORE, Other: ['a.ts', 'b.ts', 'c.ts', 'misc.ts'], Jobs: JOBS };
+
+    await run();
+
+    expect(requests).toEqual(['grouping', 'Other', 'Jobs', 'overview']);
+    expect(prompts.get('Other')).toContain('--- a.ts ---');
+  });
+
+  it('rewrites the page of a module whose file has a non-ASCII name', async () => {
+    const settings = 'core/設定.ts';
+    await generate([...API, ...CORE, settings], { Api: API, Core: [...CORE, settings] });
+    await commit(settings);
+
+    await run();
+
+    expect(requests).toEqual(['Core', 'overview']);
+    expect(await page('core')).toContain('Core page, revision 2.');
   });
 
   describe('more than five new files, with sub-modules', () => {
@@ -361,6 +631,66 @@ describe('wiki runs that group the files again', () => {
       expect(await page(v2.slug)).toContain(`${v2.name} page, revision 1.`);
     });
 
+    /** Proposes the same tree on --review, lets `edit` change it, and generates it. */
+    async function reviewAndGenerate(edit: (tree: ModuleTreeNode[]) => void): Promise<void> {
+      await commit(...JOBS);
+      grouping = { Api: [...V1, ...V2], Core: CORE, Jobs: JOBS };
+      await run({ ...options, reviewOnly: true });
+      const tree = await savedTree();
+      edit(tree);
+      await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(tree, null, 2));
+      requests = [];
+      await run({ ...options, useSavedTree: true });
+    }
+
+    it('rewrites a parent page whose sub-module the user only gave another page name', async () => {
+      const [api] = await savedTree();
+      const [v1, v2] = api.children ?? [];
+
+      await reviewAndGenerate((tree) => {
+        tree[0].children = [v1, { ...v2, slug: 'api-current' }];
+      });
+
+      expect(requests).toEqual([v2.name, 'Jobs', 'Api', 'overview']);
+      expect(await pages()).toContain('api-current.md');
+      expect(await pages()).not.toContain(`${v2.slug}.md`);
+    });
+
+    it('rewrites a parent page whose sub-module the user removed', async () => {
+      const [api] = await savedTree();
+      const [v1, v2] = api.children ?? [];
+
+      await reviewAndGenerate((tree) => {
+        tree[0].children = [v1];
+      });
+
+      expect(requests).toEqual(['Jobs', 'Api', 'overview']);
+      expect(await pages()).not.toContain(`${v2.slug}.md`);
+    });
+
+    it('rewrites the page of a module the user renamed without changing its page name', async () => {
+      await reviewAndGenerate((tree) => {
+        tree[1] = { ...tree[1], name: 'Storage' };
+      });
+
+      expect(requests).toEqual(['Storage', 'Jobs', 'overview']);
+      expect(await page('core')).toContain('Storage page, revision 2.');
+    });
+
+    it('rewrites a parent page the user turned into a module without sub-modules', async () => {
+      const [api] = await savedTree();
+      const [v1, v2] = api.children ?? [];
+
+      await reviewAndGenerate((tree) => {
+        tree[0] = { name: 'Api', slug: api.slug, files: [...V1, ...V2] };
+      });
+
+      expect(requests).toEqual(['Api', 'Jobs', 'overview']);
+      expect(await pages()).not.toContain(`${v1.slug}.md`);
+      expect(await pages()).not.toContain(`${v2.slug}.md`);
+      expect(await page(api.slug)).toContain('Api page, revision 2.');
+    });
+
     it('rewrites a parent page whose sub-module the user renamed on --review', async () => {
       await commit(...JOBS);
       grouping = { Api: [...V1, ...V2], Core: CORE, Jobs: JOBS };
@@ -371,7 +701,7 @@ describe('wiki runs that group the files again', () => {
       await fs.writeFile(path.join(wikiPath, 'module_tree.json'), JSON.stringify(tree, null, 2));
       requests = [];
 
-      await run(options);
+      await run({ ...options, useSavedTree: true });
 
       expect(requests).toEqual(['Api — current', 'Jobs', 'Api', 'overview']);
       expect(prompts.get('Api')).toContain('Api — current page, revision 2.');

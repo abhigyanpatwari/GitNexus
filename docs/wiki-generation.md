@@ -72,10 +72,13 @@ open the file in `$EDITOR` (or `$VISUAL`, else `vi`) and generate pages from the
 or `n` to stop. In a non-interactive shell, generation continues without asking.
 
 `--force` groups the files into modules again before regenerating every page, unless
-`module_tree.json` was edited since the last generation: an edited tree is kept. A run that
-finds more than five new files since the last generation also groups the files again, then
-rewrites only the pages of modules whose files changed and deletes the pages of modules that
-are gone.
+`module_tree.json` was edited since the last generation; an edit is used for the next
+generation only. A run that finds more than five new source files since the last generation
+(files the knowledge graph indexes, at paths that did not exist then) also groups the files
+again, or uses an edited tree the same way. It then rewrites only the pages of modules whose
+files changed and deletes the pages of modules that are gone; other `.md` files in the wiki
+folder are left alone. If such a run stops before the end, the next run at the same commit
+completes it, and a run at another commit writes again the pages it changed.
 
 The completion limit must be a positive integer supported by your model. It applies to
 OpenAI-compatible HTTP providers; local agent CLI providers manage their own limits.
