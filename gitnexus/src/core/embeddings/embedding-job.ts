@@ -13,7 +13,9 @@ import {
 import {
   adoptEmbeddingArtifact,
   readEmbeddingArtifactSpace,
+  readEmbeddingArtifactSpaceReadOnly,
   type EmbeddingArtifactOwner,
+  type EmbeddingArtifactSpace,
 } from '../../storage/embedding-artifact.js';
 import {
   EmbeddingJobJournal,
@@ -42,7 +44,9 @@ import {
   loadEmbeddingWorkManifest,
   type EmbeddingManifestSource,
 } from './embedding-work-manifest.js';
-import { runEmbeddingJob } from './embedding-job-runner.js';
+import { runEmbeddingJob, type EmbeddingReuseSource } from './embedding-job-runner.js';
+import { CompositeEmbeddingReuseSource } from './embedding-reuse-composite.js';
+import { findSiblingSlotDirsForSlot } from './sibling-embedding-cache.js';
 import { publishVectorGeneration, type VectorPublicationActions } from './vector-publication.js';
 import type { EmbeddingConfig, ModelProgressCallback } from './types.js';
 import type { embedBatch } from './embedder.js';
@@ -56,6 +60,8 @@ export interface PublishedEmbeddingJobOptions {
   resources: AnalysisResourceBudget['embedding'];
   config?: Partial<EmbeddingConfig>;
   signal?: AbortSignal;
+  /** A drop regenerates every row: sibling-artifact reuse is suppressed. */
+  dropEmbeddings?: boolean;
   onProgress?: (state: EmbeddingJobState, peakQueueBytes: number) => void;
   onModelProgress?: ModelProgressCallback;
   log?: (message: string) => void;
@@ -96,6 +102,51 @@ async function existsOwnedFile(file: string): Promise<boolean> {
 async function jobDirectory(root: string, identity: string): Promise<string> {
   const directory = await embeddingJobDirectory(root);
   return createEmbeddingJobDirectories(directory, ['embeddings', identity]);
+}
+
+/** Cap on sibling donors opened as reuse readers for one job (#3631). */
+const MAX_SIBLING_REUSE_SOURCES = 4;
+
+interface SiblingEmbeddingDonor {
+  artifactIdentity: string;
+  /** Directory holding the sibling's sealed `vectors` file. */
+  directory: string;
+}
+
+/**
+ * Sibling branch slots whose SEALED artifact can donate rows to this job
+ * (#3631): the staged counterpart of the inline sibling cache. A donor
+ * qualifies only for this job's exact space (vector + input identity,
+ * dimensions, schema — the space key IS the identity gate), only in the
+ * sealed phase, and only when its owner validates against the sibling's
+ * own work manifest and its vectors file passes the owned-generation
+ * check. Discovery is read-only and best-effort: a sibling that cannot be
+ * verified is simply not a donor, and no sibling state is ever mutated.
+ */
+async function findSiblingEmbeddingDonors(
+  root: string,
+  space: EmbeddingArtifactSpace,
+): Promise<SiblingEmbeddingDonor[]> {
+  const donors: SiblingEmbeddingDonor[] = [];
+  for (const slotDir of await findSiblingSlotDirsForSlot(root)) {
+    try {
+      const siblingRoot = await embeddingJobDirectory(slotDir);
+      if (siblingRoot === root) continue;
+      const record = await readEmbeddingArtifactSpaceReadOnly(siblingRoot, space);
+      const owner = record?.owner;
+      if (!owner || owner.phase !== 'sealed') continue;
+      const directory = await embeddingJobDirectory(
+        path.join(siblingRoot, 'embeddings', owner.jobIdentity),
+      );
+      const manifest = await loadEmbeddingWorkManifest(directory, owner.sourceIdentity);
+      if (manifest.digest !== owner.manifestDigest) continue;
+      const file = await assertOwnedVectorGeneration(siblingRoot, owner.artifactIdentity);
+      donors.push({ artifactIdentity: owner.artifactIdentity, directory: path.dirname(file) });
+    } catch {
+      // Best-effort: an unverifiable sibling is not a donor.
+    }
+  }
+  return donors;
 }
 
 /** A preflight interrupted before any native/job artifact owns no paid work.
@@ -253,6 +304,13 @@ export async function runPublishedEmbeddingJob(
       throw new Error('Owned embedding artifact manifest changed; paid artifacts retained');
   };
   let artifact = await readEmbeddingArtifactSpace(root, space, validateOwner);
+  // #3631: sibling branch artifacts of this job's exact space can donate
+  // rows through the job's reuse sources. A drop regenerates every row,
+  // so sibling reuse is suppressed for the run, like the own fallbacks
+  // the reclaim already removed.
+  let siblingDonors: SiblingEmbeddingDonor[] = options.dropEmbeddings
+    ? []
+    : await findSiblingEmbeddingDonors(root, space);
   // A direct legacy receipt survives graph-bound journal replacement. Prefer
   // the newer complete artifact when one exists; never open two reuse readers.
   // A sealed owner has cleared its fallback before metadata publication. Recover
@@ -290,7 +348,8 @@ export async function runPublishedEmbeddingJob(
       'Prior pending job has no verified vector/input ownership receipt; retaining its files without assuming compatibility.',
     );
   const needsFallback = () =>
-    artifact
+    siblingDonors.length > 0 ||
+    (artifact
       ? artifact.owner.phase === 'sealed'
         ? artifact.owner.jobIdentity !== identities.identity
         : Boolean(artifact.owner.fallbackArtifact || artifact.owner.fallbackLegacy)
@@ -298,12 +357,13 @@ export async function runPublishedEmbeddingJob(
           legacy ||
           (previousCompatible &&
             (previous.artifactIdentity ?? previous.identity) !== identities.identity),
-        );
+        ));
   limits(needsFallback());
   const directory = await jobDirectory(root, identities.identity);
   let source: GraphSource | undefined;
   let store: VectorStore | undefined;
   let reuse: VectorStore | LegacyVectorSource | undefined;
+  const siblingReuseStores: VectorStore[] = [];
   let runtime: EmbeddingSidecarReservation | undefined;
   try {
     if (usesLocalRuntime) {
@@ -421,7 +481,27 @@ export async function runPublishedEmbeddingJob(
         owner.phase = 'sealed';
     }
     artifact = await adoptEmbeddingArtifact(root, space, artifact, owner, validateOwner);
-    const storeResources = limits(Boolean(owner.fallbackArtifact || owner.fallbackLegacy));
+    const storeResources = limits(
+      Boolean(owner.fallbackArtifact || owner.fallbackLegacy) || siblingDonors.length > 0,
+    );
+    // Every open reuse reader shares the reader half of the reservation
+    // (see limits): subdivide it across the own fallback and the sibling
+    // stores, each keeping the 8 MiB floor VectorStore.open requires;
+    // donors beyond the floor are not opened. With no siblings this is
+    // exactly the pre-#3631 accounting.
+    const ownReaderCount = owner.fallbackArtifact || owner.fallbackLegacy ? 1 : 0;
+    let readerPoolBytes = storeResources.bufferPoolBytes;
+    if (siblingDonors.length > 0) {
+      let readerCount = ownReaderCount + Math.min(siblingDonors.length, MAX_SIBLING_REUSE_SOURCES);
+      while (
+        readerCount > ownReaderCount &&
+        Math.floor(storeResources.bufferPoolBytes / readerCount) < 8 * 1024 * 1024
+      )
+        readerCount -= 1;
+      siblingDonors = siblingDonors.slice(0, readerCount - ownReaderCount);
+      readerPoolBytes = Math.floor(storeResources.bufferPoolBytes / Math.max(1, readerCount));
+    }
+    const readerResources = { ...storeResources, bufferPoolBytes: readerPoolBytes };
     if (
       metadata.embeddingJob?.identity !== identities.identity ||
       metadata.embeddingJob.artifactIdentity !== owner.artifactIdentity ||
@@ -486,7 +566,7 @@ export async function runPublishedEmbeddingJob(
         identity: owner.fallbackArtifact,
         dimensions: vector.dimensions,
         mode: 'read',
-        ...storeResources,
+        ...readerResources,
       });
     } else if (owner.fallbackLegacy && !store.isSealed) {
       if (!legacy || legacy.identity !== owner.fallbackLegacy)
@@ -502,11 +582,47 @@ export async function runPublishedEmbeddingJob(
           config,
           signal,
           log: options.log,
-          ...storeResources,
+          ...readerResources,
         },
         store,
         legacy.excludedIds,
       );
+    }
+    // #3631: open the sibling donors as additional reuse readers. The own
+    // fallback keeps priority — the composite asks it first — and each
+    // sibling keeps the job's provenance rules (its receipts are verified
+    // against the current inputs by the same VectorStore checks).
+    for (const donor of siblingDonors) {
+      try {
+        siblingReuseStores.push(
+          await VectorStore.open({
+            directory: donor.directory,
+            identity: donor.artifactIdentity,
+            dimensions: vector.dimensions,
+            mode: 'read',
+            ...readerResources,
+          }),
+        );
+      } catch {
+        // A sibling that fails to open is skipped, never fatal.
+      }
+    }
+    let effectiveReuse: EmbeddingReuseSource | undefined = reuse;
+    let siblingReuseStats: (() => { nodes: number; chunks: number }) | undefined;
+    if (siblingReuseStores.length > 0) {
+      const composite = new CompositeEmbeddingReuseSource([
+        ...(reuse ? [reuse] : []),
+        ...siblingReuseStores,
+      ]);
+      effectiveReuse = composite;
+      siblingReuseStats = () =>
+        siblingReuseStores.reduce(
+          (total, siblingStore) => {
+            const stats = composite.statsFor(siblingStore);
+            return { nodes: total.nodes + stats.nodes, chunks: total.chunks + stats.chunks };
+          },
+          { nodes: 0, chunks: 0 },
+        );
     }
     const provider: typeof embedBatch =
       dependencies.provider ??
@@ -527,7 +643,7 @@ export async function runPublishedEmbeddingJob(
       manifest,
       journal,
       store,
-      reuse,
+      reuse: effectiveReuse,
       // A sealed artifact still belongs to this exact job/manifest; rebuilding
       // a damaged cursor can use its complete groups without source reads.
       revalidateStoredInputs: owner.revalidateInputs && !store.isSealed,
@@ -553,14 +669,24 @@ export async function runPublishedEmbeddingJob(
       signal,
       onProgress: options.onProgress,
     });
+    // Capture the sibling attribution BEFORE the stores are closed and
+    // the array is drained for the finally block.
+    const siblingStats = siblingReuseStats?.();
     const sealed = store.isSealed;
     await store.close();
     store = undefined;
     await reuse?.close();
     reuse = undefined;
+    for (const siblingStore of siblingReuseStores) await siblingStore.close();
+    siblingReuseStores.length = 0;
     await source?.close();
     source = undefined;
     signal?.throwIfAborted();
+    if (siblingStats && siblingStats.nodes > 0)
+      options.log?.(
+        `Reused ${siblingStats.nodes} node embeddings (${siblingStats.chunks} chunks) ` +
+          `from sibling branch indexes; embedded ${result.state.completedNodes} nodes fresh.`,
+      );
     if (!result.indexKind)
       return { metadata, alreadyComplete: false, phase: 'embedding', ...result };
     if (sealed && artifact.owner.phase !== 'sealed') {
@@ -624,9 +750,19 @@ export async function runPublishedEmbeddingJob(
         await reuse?.close();
       } finally {
         try {
-          await source?.close();
+          for (const siblingStore of siblingReuseStores) {
+            try {
+              await siblingStore.close();
+            } catch {
+              // Keep closing the remaining siblings.
+            }
+          }
         } finally {
-          runtime?.release();
+          try {
+            await source?.close();
+          } finally {
+            runtime?.release();
+          }
         }
       }
     }

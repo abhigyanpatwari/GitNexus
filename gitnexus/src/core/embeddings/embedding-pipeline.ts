@@ -69,7 +69,7 @@ import type { VectorSearchSnapshot } from './vector-generation-search.js';
 import {
   materializeSiblingRows,
   type SiblingEmbeddingCache,
-  type SiblingEmbeddingRowRef,
+  type SiblingEmbeddingClaim,
 } from './sibling-embedding-cache.js';
 
 const isDev = process.env.NODE_ENV === 'development';
@@ -191,8 +191,7 @@ export const isInputRejection = (error: unknown): boolean =>
   (error.status === 400 || error.status === 413 || error.status === 422);
 
 type EmbeddedRange = { start: number; end: number } & (
-  | { embeddings: Float32Array[] }
-  | { error: unknown }
+  { embeddings: Float32Array[] } | { error: unknown }
 );
 
 /** Bisect only input rejections, with at most 2n-1 requests per sub-batch.
@@ -798,10 +797,9 @@ export const runEmbeddingPipeline = async (
     const siblingCache = pipelineOptions.siblingCache;
     const siblingReusePlan: Array<{
       nodeId: string;
-      contentHash: string;
-      refs: SiblingEmbeddingRowRef[];
+      claim: SiblingEmbeddingClaim;
     }> = [];
-    const siblingReuseStaleNodeIds: string[] = [];
+    const siblingReuseStaleNodeIds = new Set<string>();
     let reusedNodes = 0;
     let reusedChunks = 0;
     if (
@@ -810,7 +808,10 @@ export const runEmbeddingPipeline = async (
       siblingCache
     ) {
       const beforeCount = nodes.length;
-      nodes = nodes.filter((n) => {
+      // The sibling lookup is async (demand-driven scans/fetches), so this
+      // is a loop, not Array.filter — the decisions are unchanged.
+      const keptNodes: typeof nodes = [];
+      for (const n of nodes) {
         const existingHash = existingEmbeddings?.get(n.id);
         if (existingHash === undefined) {
           // New node — needs embedding, unless a sibling index already holds
@@ -818,15 +819,16 @@ export const runEmbeddingPipeline = async (
           // re-embed always wins over the copy.
           if (siblingCache && !forceReembedNodeIds?.has(n.id)) {
             const currentHash = contentHashForNode(n, finalConfig, pipelineOptions.source);
-            const refs = siblingCache.byContentHash.get(currentHash);
-            if (refs) {
-              siblingReusePlan.push({ nodeId: n.id, contentHash: currentHash, refs });
-              return false;
+            const claim = await siblingCache.lookup(currentHash);
+            if (claim) {
+              siblingReusePlan.push({ nodeId: n.id, claim });
+              continue;
             }
             // No hit — cache the hash so the embed loop does not compute it twice.
             computedStaleHashes.set(n.id, currentHash);
           }
-          return true;
+          keptNodes.push(n);
+          continue;
         }
         const currentHash = contentHashForNode(n, finalConfig, pipelineOptions.source);
         const matchesSnapshot =
@@ -838,21 +840,22 @@ export const runEmbeddingPipeline = async (
           // the node without the embedder (#3631); its stale own rows are
           // deleted when the copy is applied below.
           if (siblingCache && !forceReembedNodeIds?.has(n.id)) {
-            const refs = siblingCache.byContentHash.get(currentHash);
-            if (refs) {
-              siblingReusePlan.push({ nodeId: n.id, contentHash: currentHash, refs });
-              siblingReuseStaleNodeIds.push(n.id);
-              return false;
+            const claim = await siblingCache.lookup(currentHash);
+            if (claim) {
+              siblingReusePlan.push({ nodeId: n.id, claim });
+              siblingReuseStaleNodeIds.add(n.id);
+              continue;
             }
           }
           // Cache hash for reuse during insert, mark for DELETE + re-embed
           computedStaleHashes.set(n.id, currentHash);
           staleNodeIds.add(n.id);
-          return true;
+          keptNodes.push(n);
+          continue;
         }
         // Hash matches — skip (fresh); no need to cache hash for skipped nodes
-        return false;
-      });
+      }
+      nodes = keptNodes;
 
       if (isDev) {
         logger.info(
@@ -869,15 +872,20 @@ export const runEmbeddingPipeline = async (
       throwIfCancelled();
     }
 
-    // #3631: apply the sibling copies. Stale own rows are deleted first
-    // (DELETE-then-INSERT, as everywhere else in this pipeline), and
+    // #3631: apply the sibling copies. A copied row carries the sibling's
+    // STORED content hash (for source-aware nodes the full
+    // `hash:inputsDigest` form), so the next run's freshness filter reads
+    // the copy exactly like a row this pipeline wrote itself.
     // batchInsertEmbeddings deletes each copied row's id before creating
     // it, so a copy can never abort on a duplicate key (#3474). A planned
     // node was filtered out of `nodes`, so the embed loop below never
     // inserts it a second time.
+    //
+    // Stale own rows are deleted per copy batch, immediately before that
+    // batch's inserts — the same bounded window the embed loop keeps
+    // (U6 / KTD7): an interruption mid-copy strands at most one batch of
+    // reused nodes row-less, never every reused node.
     if (siblingCache && siblingReusePlan.length > 0) {
-      await deleteStaleEmbeddingRows(executeWithReusedStatement, siblingReuseStaleNodeIds);
-      throwIfCancelled();
       let pendingCopies: Array<{
         nodeId: string;
         chunkIndex: number;
@@ -886,13 +894,16 @@ export const runEmbeddingPipeline = async (
         embedding: number[];
         contentHash: string;
       }> = [];
+      let pendingStaleNodeIds: string[] = [];
       const flushCopies = async (): Promise<void> => {
         if (pendingCopies.length === 0) return;
+        await deleteStaleEmbeddingRows(executeWithReusedStatement, pendingStaleNodeIds);
+        pendingStaleNodeIds = [];
         await batchInsertEmbeddings(executeWithReusedStatement, pendingCopies);
         pendingCopies = [];
       };
       for (const plan of siblingReusePlan) {
-        const rows = materializeSiblingRows(plan.refs, plan.nodeId);
+        const rows = materializeSiblingRows(plan.claim.rows, plan.nodeId);
         for (const row of rows) {
           pendingCopies.push({
             nodeId: plan.nodeId,
@@ -900,9 +911,10 @@ export const runEmbeddingPipeline = async (
             startLine: row.startLine,
             endLine: row.endLine,
             embedding: row.embedding,
-            contentHash: plan.contentHash,
+            contentHash: row.contentHash ?? plan.claim.storedHash,
           });
         }
+        if (siblingReuseStaleNodeIds.has(plan.nodeId)) pendingStaleNodeIds.push(plan.nodeId);
         reusedNodes += 1;
         reusedChunks += rows.length;
         if (pendingCopies.length >= 200) await flushCopies();
