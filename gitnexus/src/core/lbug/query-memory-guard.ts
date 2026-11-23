@@ -32,6 +32,12 @@ const SAMPLE_INTERVAL_MS = 200;
 export const FOOTPRINT_INTERVAL_MS = 1000;
 const FOOTPRINT_TIMEOUT_MS = 2000;
 const LABEL_MAX_CHARS = 200;
+/**
+ * When the oldest running query started with at least this share of the
+ * breaching memory already in use, the breach message says so instead of
+ * blaming the queries: the memory was allocated outside them.
+ */
+const PREEXISTING_MEMORY_SHARE = 0.5;
 
 /** Memory budget in bytes, or `null` when disabled. Invalid values use the default. */
 export function resolveQueryRssBudgetBytes(
@@ -75,7 +81,8 @@ interface ActiveQuery {
 export interface QueryMemoryBreach {
   rssBytes: number;
   budgetBytes: number;
-  activeLabels: string[];
+  /** Queries in flight at the breach, oldest first. */
+  activeQueries: Array<{ label: string; startBytes: number; runningMs: number }>;
 }
 
 export interface QueryMemoryGuardDeps {
@@ -102,10 +109,30 @@ export interface QueryMemoryGuard {
 
 export function formatBreachMessage(breach: QueryMemoryBreach): string {
   const gb = (n: number) => (n / (1024 * MIB)).toFixed(1);
-  const queries = breach.activeLabels.map((l) => `  - ${l}`).join('\n');
-  return (
+  const queries = breach.activeQueries
+    .map(
+      (q) =>
+        `  - ${q.label} (started at ${gb(q.startBytes)} GB, ` +
+        `+${gb(Math.max(0, breach.rssBytes - q.startBytes))} GB since start, ` +
+        `running ${(q.runningMs / 1000).toFixed(1)} s)`,
+    )
+    .join('\n');
+  // On macOS the breach value can be the physical footprint while `startBytes`
+  // is RSS. The footprint is never below RSS, so the mismatch understates the
+  // pre-existing share: it can keep the query-blaming headline, but it never
+  // wrongly clears a query.
+  const preexistingBytes = breach.activeQueries[0]?.startBytes ?? 0;
+  const reached =
     `GitNexus stopped: process memory reached ${gb(breach.rssBytes)} GB, over the ` +
-    `${gb(breach.budgetBytes)} GB limit, while running a graph query. The database ` +
+    `${gb(breach.budgetBytes)} GB limit`;
+  const headline =
+    preexistingBytes >= breach.rssBytes * PREEXISTING_MEMORY_SHARE
+      ? `${reached}. ${gb(preexistingBytes)} GB of it was already in use before the oldest ` +
+        `running query started, so most of the memory was allocated outside the graph ` +
+        `queries listed below (for example by source scanning in the same process).`
+      : `${reached}, while running a graph query.`;
+  return (
+    `${headline} The database ` +
     `cannot cancel a running query, so the process is exiting to protect the host.\n` +
     `Running queries:\n${queries}\n` +
     `Set ${QUERY_MAX_RSS_ENV}=<MiB> to change the limit (0 disables it). ` +
@@ -130,7 +157,11 @@ export function createQueryMemoryGuard(deps: QueryMemoryGuardDeps): QueryMemoryG
       deps.onBreach({
         rssBytes: bytes,
         budgetBytes,
-        activeLabels: [...active].map((q) => q.label),
+        activeQueries: [...active].map((q) => ({
+          label: q.label,
+          startBytes: q.startBytes,
+          runningMs: deps.now() - q.startedAt,
+        })),
       });
     }
   };

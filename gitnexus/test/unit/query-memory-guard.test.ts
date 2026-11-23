@@ -11,6 +11,7 @@ import {
   resolveQueryRssBudgetBytes,
   FOOTPRINT_INTERVAL_MS,
   QUERY_MAX_RSS_ENV,
+  QUERY_MEMORY_LIMIT_EXIT_CODE,
   QUERY_TRACE_ENV,
   type QueryMemoryGuardDeps,
 } from '../../src/core/lbug/query-memory-guard.js';
@@ -137,15 +138,33 @@ describe('createQueryMemoryGuard', () => {
     expect(h.deps.onBreach).toHaveBeenCalledWith({
       rssBytes: 1500 * MIB,
       budgetBytes: 1000 * MIB,
-      activeLabels: [
-        'MATCH (caller)-[r]->(n) RETURN caller',
-        'MATCH (s)-[r]->(p:Process) RETURN p',
+      activeQueries: [
+        { label: 'MATCH (caller)-[r]->(n) RETURN caller', startBytes: 500 * MIB, runningMs: 0 },
+        { label: 'MATCH (s)-[r]->(p:Process) RETURN p', startBytes: 500 * MIB, runningMs: 0 },
       ],
     });
 
     // Only once, even if the exit is slow to take effect.
     h.tick();
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the memory each running query started at and how long it has run', () => {
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
+    // Memory allocated outside any query: the guard does not sample then.
+    h.setRss(900);
+    h.guard.begin('MATCH (n) RETURN n');
+    h.advance(2_500);
+    h.setRss(1100);
+    h.tick();
+    h.tick();
+    expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+    expect(h.deps.onBreach).toHaveBeenCalledWith({
+      rssBytes: 1100 * MIB,
+      budgetBytes: 1000 * MIB,
+      activeQueries: [{ label: 'MATCH (n) RETURN n', startBytes: 900 * MIB, runningMs: 2_500 }],
+    });
+    expect(QUERY_MEMORY_LIMIT_EXIT_CODE).toBe(70);
   });
 
   it('does not sample between queries', () => {
@@ -245,7 +264,13 @@ describe('createQueryMemoryGuard: physical footprint (macOS)', () => {
     expect(h.deps.onBreach).toHaveBeenCalledWith({
       rssBytes: 3 * GIB,
       budgetBytes: 1000 * MIB,
-      activeLabels: ['MATCH (a), (b) RETURN a, b'],
+      activeQueries: [
+        {
+          label: 'MATCH (a), (b) RETURN a, b',
+          startBytes: 500 * MIB,
+          runningMs: FOOTPRINT_INTERVAL_MS,
+        },
+      ],
     });
   });
 
@@ -359,11 +384,33 @@ describe('formatBreachMessage', () => {
     const msg = formatBreachMessage({
       rssBytes: 17 * GIB,
       budgetBytes: 16 * GIB,
-      activeLabels: ['MATCH (a) RETURN a'],
+      activeQueries: [{ label: 'MATCH (a) RETURN a', startBytes: 1 * GIB, runningMs: 3_000 }],
     });
     expect(msg).toContain('17.0 GB');
     expect(msg).toContain('16.0 GB limit');
-    expect(msg).toContain('  - MATCH (a) RETURN a');
+    expect(msg).toContain('while running a graph query');
+    expect(msg).toContain(
+      '  - MATCH (a) RETURN a (started at 1.0 GB, +16.0 GB since start, running 3.0 s)',
+    );
+    expect(msg).toContain(`${QUERY_MAX_RSS_ENV}=<MiB>`);
+    expect(msg).toContain('#3696');
+  });
+
+  it('says when most of the memory was in use before the oldest query started', () => {
+    const msg = formatBreachMessage({
+      rssBytes: 17 * GIB,
+      budgetBytes: 16 * GIB,
+      activeQueries: [
+        { label: 'MATCH (a) RETURN a', startBytes: 15 * GIB, runningMs: 4_000 },
+        { label: 'MATCH (b) RETURN b', startBytes: 16 * GIB, runningMs: 1_000 },
+      ],
+    });
+    expect(msg).toContain('17.0 GB');
+    expect(msg).toContain('16.0 GB limit');
+    expect(msg).toContain('15.0 GB of it was already in use before the oldest running query');
+    expect(msg).not.toContain('while running a graph query');
+    expect(msg).toContain('(started at 15.0 GB, +2.0 GB since start, running 4.0 s)');
+    expect(msg).toContain('(started at 16.0 GB, +1.0 GB since start, running 1.0 s)');
     expect(msg).toContain(`${QUERY_MAX_RSS_ENV}=<MiB>`);
     expect(msg).toContain('#3696');
   });
