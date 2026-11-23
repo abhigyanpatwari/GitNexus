@@ -287,14 +287,17 @@ export function collectEsmExportEvidence(
           for (const spec of child.namedChildren) {
             if (spec.type !== 'export_specifier') continue;
             const nameNode = spec.childForFieldName('name');
-            if (!nameNode || !nameNode.text) continue;
+            if (!nameNode?.text) continue;
             const name = decodeIdentifierEscapes(nameNode.text);
             namedLocals.add(name);
             const publicName = spec.childForFieldName('alias') ?? nameNode;
             const erased = typeOnly || spec.children.some((token) => token.type === 'type');
             localSpecifiers ??= new Map();
             let entries = localSpecifiers.get(name);
-            if (!entries) localSpecifiers.set(name, (entries = []));
+            if (!entries) {
+              entries = [];
+              localSpecifiers.set(name, entries);
+            }
             entries.push({ publicName, typeOnly: erased });
             if (!erased && canonicalModuleExportName(publicName.text) === 'default')
               defaultLocals.add(name);
@@ -341,6 +344,27 @@ export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvid
   );
 }
 
+function hasNamedExportDeclaration(nameNode: SyntaxNode): boolean {
+  for (let declaration = nameNode.parent; declaration !== null; declaration = declaration.parent) {
+    const statement = declaration.parent;
+    if (
+      statement?.type === 'export_statement' &&
+      statement.childForFieldName('declaration')?.id === declaration.id
+    ) {
+      return !isDefaultExportStatement(statement);
+    }
+  }
+  return false;
+}
+
+function removeValueExports(erased: Set<string>, names: ReadonlySet<string>): void {
+  if (erased.size === 0) return;
+  for (const spelling of names) {
+    const canonical = canonicalModuleExportName(spelling);
+    if (canonical !== null) erased.delete(canonical);
+  }
+}
+
 /** Explicit public spellings for an aliased or default binding. */
 export function namedEsmPublications(
   nameNode: SyntaxNode,
@@ -357,23 +381,9 @@ export function namedEsmPublications(
     if (typeOnly) erased.add(canonical);
     else if (canonical !== 'default') names.add(publicName.text);
   }
-  for (let declaration = nameNode.parent; declaration !== null; declaration = declaration.parent) {
-    const statement = declaration.parent;
-    if (
-      statement?.type === 'export_statement' &&
-      statement.childForFieldName('declaration')?.id === declaration.id
-    ) {
-      if (!isDefaultExportStatement(statement)) names.add(nameNode.text);
-      break;
-    }
-  }
+  if (hasNamedExportDeclaration(nameNode)) names.add(nameNode.text);
   if (isDefault) erased.delete('default');
-  if (erased.size > 0) {
-    for (const spelling of names) {
-      const canonical = canonicalModuleExportName(spelling);
-      if (canonical !== null) erased.delete(canonical);
-    }
-  }
+  removeValueExports(erased, names);
   if (!isDefault && erased.size === 0 && names.size === 1 && names.has(nameNode.text))
     return undefined;
   return {

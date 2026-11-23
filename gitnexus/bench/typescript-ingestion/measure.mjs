@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
 import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
-import { compareCodeUnits, fingerprintIds } from '../lib/identity-guard.mjs';
+import { compareCodeUnits, fingerprintIds, rotatingSamples } from '../lib/identity-guard.mjs';
 import { addModuleFixtures, barrelEdit } from './module-fixtures.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -73,6 +73,35 @@ const pipelineOptions = {
   parseChunkConcurrency: 1,
 };
 
+function receiverCases(file, batches, expectTargets) {
+  const declarations = ["import { Key, Value } from './owners.js';"];
+  for (let batch = 0; batch < batches; batch++) {
+    for (const [kind, body, owners] of mapCases) {
+      const caller = `${kind}${batch}`;
+      const iterable = kind === 'otherIterable' ? 'Iterable<[Key, Value]>' : 'Map<Key, Value>';
+      const asyncPrefix = kind === 'asyncElision' ? 'async ' : '';
+      declarations.push(
+        `export ${asyncPrefix}function ${caller}(entries: ${iterable}) { ${body} }`,
+      );
+      expectTargets(
+        `Function:${file}:${caller}`,
+        'map',
+        owners.map((owner) => `Method:owners.ts:${owner}.save#0`),
+      );
+    }
+    for (const [kind, body, members] of guardCases) {
+      const caller = `${kind}${batch}`;
+      declarations.push(`export function ${caller}(repo: Key | Value) { ${body} }`);
+      expectTargets(
+        `Function:${file}:${caller}`,
+        'instanceof',
+        members.map((member) => `Method:owners.ts:${member}#0`),
+      );
+    }
+  }
+  return declarations.join('\n') + '\n';
+}
+
 function makeFixture(shape, parsers) {
   const root = path.join(temporary, shape.name);
   fs.mkdirSync(root);
@@ -92,32 +121,7 @@ function makeFixture(shape, parsers) {
   };
   for (let i = 0; i < shape.modules; i++) {
     const file = `cases${i}.ts`;
-    const declarations = ["import { Key, Value } from './owners.js';"];
-    for (let batch = 0; batch < shape.batches; batch++) {
-      for (const [kind, body, owners] of mapCases) {
-        const caller = `${kind}${batch}`;
-        const iterable = kind === 'otherIterable' ? 'Iterable<[Key, Value]>' : 'Map<Key, Value>';
-        const asyncPrefix = kind === 'asyncElision' ? 'async ' : '';
-        declarations.push(
-          `export ${asyncPrefix}function ${caller}(entries: ${iterable}) { ${body} }`,
-        );
-        expectTargets(
-          `Function:${file}:${caller}`,
-          'map',
-          owners.map((owner) => `Method:owners.ts:${owner}.save#0`),
-        );
-      }
-      for (const [kind, body, members] of guardCases) {
-        const caller = `${kind}${batch}`;
-        declarations.push(`export function ${caller}(repo: Key | Value) { ${body} }`);
-        expectTargets(
-          `Function:${file}:${caller}`,
-          'instanceof',
-          members.map((member) => `Method:owners.ts:${member}#0`),
-        );
-      }
-    }
-    sources.set(file, declarations.join('\n') + '\n');
+    sources.set(file, receiverCases(file, shape.batches, expectTargets));
   }
   addModuleFixtures(sources, expectTargets, shape.modules, shape.batches);
   const inputs = [];
@@ -272,22 +276,21 @@ try {
       }
     }
   }
-  for (let round = 0; round <= pipelineSamples; round++) {
-    for (let offset = 0; offset < fixtures.length; offset++) {
-      const index = (round + offset) % fixtures.length;
-      const { root, inputs, expected, families } = fixtures[index];
-      const started = performance.now();
-      const pipeline = await runPipelineFromRepo(root, () => {}, pipelineOptions);
-      const elapsed = performance.now() - started;
-      assert.equal(pipeline.reparsedFileCount, inputs.length);
-      assert.equal(pipeline.usedWorkerPool, true);
-      const quality = inspectTargets(pipeline, expected, families);
-      if (round > 0) results[index].pipelineMs.push(elapsed);
-      if (round === 0) {
-        results[index].quality = quality;
-        results[index].graphFingerprint = graphFingerprint(pipeline.graph);
-      } else assert.deepEqual(quality, results[index].quality, 'repeated pipeline target drift');
-    }
+  const samples = rotatingSamples(fixtures, pipelineSamples, async ({ root }, index, round) => {
+    const started = performance.now();
+    const pipeline = await runPipelineFromRepo(root, () => {}, pipelineOptions);
+    return { index, round, pipeline, elapsed: performance.now() - started };
+  });
+  for await (const { index, round, pipeline, elapsed } of samples) {
+    const { inputs, expected, families } = fixtures[index];
+    assert.equal(pipeline.reparsedFileCount, inputs.length);
+    assert.equal(pipeline.usedWorkerPool, true);
+    const quality = inspectTargets(pipeline, expected, families);
+    if (round > 0) results[index].pipelineMs.push(elapsed);
+    if (round === 0) {
+      results[index].quality = quality;
+      results[index].graphFingerprint = graphFingerprint(pipeline.graph);
+    } else assert.deepEqual(quality, results[index].quality, 'repeated pipeline target drift');
   }
 
   const storage = path.join(temporary, 'cache');

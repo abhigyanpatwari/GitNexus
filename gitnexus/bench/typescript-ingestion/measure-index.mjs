@@ -93,18 +93,17 @@ try {
     persistedFiles = Number(rows[0].files);
     assert.equal(persistedFiles, result.stats.files);
     // Concrete labels keep the native readback from planning every schema pair.
-    for (const caller of ['Function', 'Method']) {
-      for (const callee of ['Function', 'Method']) {
-        const callRows = await (
-          await connection.query(
-            `MATCH (a:${caller})-[r:CodeRelation {type: 'CALLS'}]->(b:${callee}) RETURN a.id AS source, b.id AS target, r.reason AS reason`,
-          )
-        ).getAll();
-        for (const { source, target, reason } of callRows) {
-          calls.push(JSON.stringify([source, target, reason]));
-        }
+    const labels = ['Function', 'Method'];
+    const pairs = labels.flatMap((caller) => labels.map((callee) => [caller, callee]));
+    // Read each label pair in order on the same native connection.
+    await Array.fromAsync(pairs, async ([caller, callee]) => {
+      const result = await connection.query(
+        `MATCH (a:${caller})-[r:CodeRelation {type: 'CALLS'}]->(b:${callee}) RETURN a.id AS source, b.id AS target, r.reason AS reason`,
+      );
+      for (const { source, target, reason } of await result.getAll()) {
+        calls.push(JSON.stringify([source, target, reason]));
       }
-    }
+    });
     assert.ok(calls.length > 0);
   } finally {
     await connection.close();

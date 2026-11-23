@@ -410,28 +410,7 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
 
   const exportClause = findChild(stmtNode, 'export_clause');
   if (exportClause !== null) {
-    const out: CaptureMatch[] = [];
-    let emptyClause = !exportClause.hasError;
-    for (let i = 0; i < exportClause.namedChildCount; i++) {
-      const spec = exportClause.namedChild(i);
-      if (spec === null || spec.type === 'comment') continue;
-      emptyClause = false;
-      if (spec.type !== 'export_specifier') continue;
-      const decomposed = decomposeReexportSpecifier(
-        spec,
-        source,
-        stmtNode,
-        statementTypeOnly,
-        mayHaveType,
-      );
-      if (decomposed !== null) out.push(decomposed);
-    }
-    if (emptyClause && !statementTypeOnly) {
-      out.push(
-        buildImportMatch(stmtNode, { kind: 'side-effect', source, name: '', atNode: stmtNode }),
-      );
-    }
-    return out;
+    return splitReexportClause(exportClause, stmtNode, source, statementTypeOnly, mayHaveType);
   }
 
   // The published namespace names a module object without declaring a local.
@@ -482,6 +461,37 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
 
 /** Mirror of {@link decomposeNamedSpecifier} for `export { … } from './m'`,
  *  including the per-specifier `export { type X } from './m'` spelling. */
+function splitReexportClause(
+  exportClause: SyntaxNode,
+  stmtNode: SyntaxNode,
+  source: string,
+  statementTypeOnly: boolean,
+  mayHaveType: boolean,
+): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  let emptyClause = !exportClause.hasError;
+  for (let i = 0; i < exportClause.namedChildCount; i++) {
+    const spec = exportClause.namedChild(i);
+    if (spec === null || spec.type === 'comment') continue;
+    emptyClause = false;
+    if (spec.type !== 'export_specifier') continue;
+    const decomposed = decomposeReexportSpecifier(
+      spec,
+      source,
+      stmtNode,
+      statementTypeOnly,
+      mayHaveType,
+    );
+    if (decomposed !== null) out.push(decomposed);
+  }
+  if (emptyClause && !statementTypeOnly) {
+    out.push(
+      buildImportMatch(stmtNode, { kind: 'side-effect', source, name: '', atNode: stmtNode }),
+    );
+  }
+  return out;
+}
+
 function decomposeReexportSpecifier(
   spec: SyntaxNode,
   source: string,

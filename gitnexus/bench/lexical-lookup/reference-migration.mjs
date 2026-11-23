@@ -153,36 +153,44 @@ export function assertGraphParity(before, after, repo, revision) {
     );
   }
   if (expectedReferenceAdditions(revision)) {
-    const remaining = new Set(oldGraph.edges);
-    assert.equal(remaining.size, oldGraph.edges.length, 'Duplicate baseline graph row');
-    const typeOnlyImports = [];
-    const additions = newGraph.edges.filter((row) => {
-      if (remaining.delete(row)) return false;
-      const edge = JSON.parse(row);
-      if (edge.type !== 'IMPORTS' || edge.reason !== 'typescript-scope: import (type-only)')
-        return true;
-      const previous = JSON.stringify({ ...edge, reason: 'typescript-scope: import' });
-      if (!remaining.delete(previous)) return true;
-      typeOnlyImports.push(row);
-      return false;
-    });
-    assert.equal(remaining.size, 0, 'An existing relationship changed or was removed');
-    const receipt = {
-      version: 1,
-      mode: 'added-references',
-      baseline: before.graph,
-      candidate: after.graph,
-      comparison: before.graph,
-      additions: digest(additions),
-      typeOnlyImports: digest(typeOnlyImports),
-    };
-    assertReferenceAdditionReceipt(
-      revision,
-      receipt,
-      after.graph.edges.count - before.graph.edges.count,
-    );
-    return receipt;
+    return verifyReferenceAdditions(before, after, revision, oldGraph, newGraph);
   }
+  return verifySpanMigration(before, after, repo, oldGraph, newGraph);
+}
+
+function verifyReferenceAdditions(before, after, revision, oldGraph, newGraph) {
+  const remaining = new Set(oldGraph.edges);
+  assert.equal(remaining.size, oldGraph.edges.length, 'Duplicate baseline graph row');
+  const typeOnlyImports = [];
+  const additions = newGraph.edges.filter((row) => {
+    if (remaining.delete(row)) return false;
+    const edge = JSON.parse(row);
+    if (edge.type !== 'IMPORTS' || edge.reason !== 'typescript-scope: import (type-only)')
+      return true;
+    const previous = JSON.stringify({ ...edge, reason: 'typescript-scope: import' });
+    if (!remaining.delete(previous)) return true;
+    typeOnlyImports.push(row);
+    return false;
+  });
+  assert.equal(remaining.size, 0, 'An existing relationship changed or was removed');
+  const receipt = {
+    version: 1,
+    mode: 'added-references',
+    baseline: before.graph,
+    candidate: after.graph,
+    comparison: before.graph,
+    additions: digest(additions),
+    typeOnlyImports: digest(typeOnlyImports),
+  };
+  assertReferenceAdditionReceipt(
+    revision,
+    receipt,
+    after.graph.edges.count - before.graph.edges.count,
+  );
+  return receipt;
+}
+
+function verifySpanMigration(before, after, repo, oldGraph, newGraph) {
   const oldEdges = oldGraph.edges.map((row) => JSON.parse(row));
   const newEdges = newGraph.edges.map((row) => JSON.parse(row));
   const oldById = new Map();
@@ -232,57 +240,7 @@ export function assertGraphParity(before, after, repo, revision) {
   assert.equal(groups.size, oldById.size, 'A baseline relationship was dropped');
   const currentSources = new Map();
   for (const [oldId, group] of groups) {
-    assert(
-      group.length === 1 || COLLAPSED_CALLS.has(oldId),
-      `Unexpected expanded identity: ${oldId}`,
-    );
-    if (!group[0].site) {
-      assert(!COLLAPSED_CALLS.has(oldId), `Audited nested call identity did not migrate: ${oldId}`);
-      continue;
-    }
-    const { edge, site } = group[0];
-    const file = nodeById.get(edge.sourceId)?.properties?.filePath;
-    const source = sourceInfo(repo, file, currentSources);
-    for (const item of group) {
-      assert(item.site, `Mixed point and span identities: ${oldId}`);
-      const { line, col, endLine, endCol } = item.site;
-      assert(
-        endLine <= source.lengths.length &&
-          col <= (source.lengths[line - 1] ?? -1) &&
-          endCol <= source.lengths[endLine - 1],
-        `Invalid source bounds: ${item.edge.id}`,
-      );
-    }
-    assert(
-      ['CALLS', 'ACCESSES', 'USES'].includes(edge.type),
-      `Unsupported migrated reference type: ${edge.type}`,
-    );
-    {
-      const expectedTypes =
-        edge.type === 'CALLS'
-          ? ['call_expression']
-          : edge.type === 'ACCESSES'
-            ? site.access === ':write'
-              ? ['assignment_expression', 'augmented_assignment_expression']
-              : ['member_expression', 'identifier']
-            : ['identifier', 'type_identifier', 'shorthand_property_identifier'];
-      const calls = sitesAt(source, file, site.line, site.col).filter((item) =>
-        expectedTypes.includes(item.type),
-      );
-      const actual = group.map(({ site: span }) => `${span.endLine}:${span.endCol}`);
-      assert(
-        actual.every((end) => calls.some((call) => call.end === end)),
-        `Reference span is not an expected AST site: ${oldId}`,
-      );
-      if (COLLAPSED_CALLS.has(oldId)) {
-        // The registry chain ends in .build(), which has the same start but a
-        // different target. Only its .register() calls belong to these IDs.
-        const expected = calls
-          .filter((call) => !file.endsWith('/pipeline.ts') || call.property === 'register')
-          .map((call) => call.end);
-        assert.deepEqual(actual.sort(), expected.sort(), `Incomplete nested call spans: ${oldId}`);
-      }
-    }
+    verifySpanGroup(oldId, group, nodeById, repo, currentSources);
   }
   const comparison = { nodes: before.graph.nodes, edges: digest([...projected]) };
   assert.deepEqual(comparison, before.graph, 'Projected graph digest differs from baseline');
@@ -293,4 +251,62 @@ export function assertGraphParity(before, after, repo, revision) {
     candidate: after.graph,
     comparison,
   };
+}
+
+function expectedSiteTypes(edge, site) {
+  if (edge.type === 'CALLS') return ['call_expression'];
+  if (edge.type !== 'ACCESSES')
+    return ['identifier', 'type_identifier', 'shorthand_property_identifier'];
+  return site.access === ':write'
+    ? ['assignment_expression', 'augmented_assignment_expression']
+    : ['member_expression', 'identifier'];
+}
+
+function verifySpanGroup(oldId, group, nodeById, repo, currentSources) {
+  assert(
+    group.length === 1 || COLLAPSED_CALLS.has(oldId),
+    `Unexpected expanded identity: ${oldId}`,
+  );
+  if (!group[0].site) {
+    assert(!COLLAPSED_CALLS.has(oldId), `Audited nested call identity did not migrate: ${oldId}`);
+    return;
+  }
+  const { edge, site } = group[0];
+  const file = nodeById.get(edge.sourceId)?.properties?.filePath;
+  const source = sourceInfo(repo, file, currentSources);
+  for (const item of group) {
+    assert(item.site, `Mixed point and span identities: ${oldId}`);
+    const { line, col, endLine, endCol } = item.site;
+    assert(
+      endLine <= source.lengths.length &&
+        col <= (source.lengths[line - 1] ?? -1) &&
+        endCol <= source.lengths[endLine - 1],
+      `Invalid source bounds: ${item.edge.id}`,
+    );
+  }
+  assert(
+    ['CALLS', 'ACCESSES', 'USES'].includes(edge.type),
+    `Unsupported migrated reference type: ${edge.type}`,
+  );
+  const expectedTypes = expectedSiteTypes(edge, site);
+  const calls = sitesAt(source, file, site.line, site.col).filter((item) =>
+    expectedTypes.includes(item.type),
+  );
+  const actual = group.map(({ site: span }) => `${span.endLine}:${span.endCol}`);
+  assert(
+    actual.every((end) => calls.some((call) => call.end === end)),
+    `Reference span is not an expected AST site: ${oldId}`,
+  );
+  if (COLLAPSED_CALLS.has(oldId)) {
+    // The registry chain ends in .build(), which has the same start but a
+    // different target. Only its .register() calls belong to these IDs.
+    const expected = calls
+      .filter((call) => !file.endsWith('/pipeline.ts') || call.property === 'register')
+      .map((call) => call.end);
+    assert.deepEqual(
+      actual.toSorted(),
+      expected.toSorted(),
+      `Incomplete nested call spans: ${oldId}`,
+    );
+  }
 }

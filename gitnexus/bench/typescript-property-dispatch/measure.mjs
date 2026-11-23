@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
-import { compareCodeUnits, fingerprintIds } from '../lib/identity-guard.mjs';
+import { compareCodeUnits, fingerprintIds, rotatingSamples } from '../lib/identity-guard.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const { values } = parseArgs({
@@ -61,6 +61,23 @@ function makeFixture(temporary, shape) {
   };
 }
 
+function expectedTargets(shape, cap) {
+  const expectedExact = [];
+  const expectedSpeculative = [];
+  const plugins = Array.from(
+    { length: shape.registrations },
+    (_, i) => `Function:hooks.ts:plugin${i}`,
+  );
+  for (let i = 0; i < shape.sites; i++) {
+    const source = `Function:app.ts:run${i}`;
+    expectedExact.push(`${source}->Method:worker.ts:Worker.execute#0`);
+    if (shape.registrations <= cap) {
+      for (const plugin of plugins) expectedSpeculative.push(`${source}->${plugin}`);
+    }
+  }
+  return { plugins, expectedExact, expectedSpeculative };
+}
+
 function inspect(graph, shape, cap) {
   const exact = [];
   const speculative = [];
@@ -77,34 +94,22 @@ function inspect(graph, shape, cap) {
       else exact.push(pair);
     }
   }
-  const expectedExact = [];
-  const expectedSpeculative = [];
-  const plugins = Array.from(
-    { length: shape.registrations },
-    (_, i) => `Function:hooks.ts:plugin${i}`,
-  );
-  for (let i = 0; i < shape.sites; i++) {
-    const source = `Function:app.ts:run${i}`;
-    expectedExact.push(`${source}->Method:worker.ts:Worker.execute#0`);
-    if (shape.registrations <= cap) {
-      for (const plugin of plugins) expectedSpeculative.push(`${source}->${plugin}`);
-    }
-  }
+  const { plugins, expectedExact, expectedSpeculative } = expectedTargets(shape, cap);
   assert.deepEqual(
-    exact.sort(compareCodeUnits),
-    expectedExact.sort(compareCodeUnits),
+    exact.toSorted(compareCodeUnits),
+    expectedExact.toSorted(compareCodeUnits),
     `${shape.name}: exact receiver targets`,
   );
   assert.deepEqual(
-    speculative.sort(compareCodeUnits),
-    expectedSpeculative.sort(compareCodeUnits),
+    speculative.toSorted(compareCodeUnits),
+    expectedSpeculative.toSorted(compareCodeUnits),
     `${shape.name}: speculative target sets`,
   );
   assert.deepEqual(
-    registrations.sort(compareCodeUnits),
-    [...plugins, 'Function:hooks.ts:ready'].sort(compareCodeUnits),
+    registrations.toSorted(compareCodeUnits),
+    [...plugins, 'Function:hooks.ts:ready'].toSorted(compareCodeUnits),
   );
-  assert.deepEqual(control.sort(compareCodeUnits), [
+  assert.deepEqual(control.toSorted(compareCodeUnits), [
     'Function:hooks.ts:ready',
     'Property:hooks.ts:controls.onReady',
   ]);
@@ -133,25 +138,24 @@ try {
     samplesMs: [],
     graph: undefined,
   }));
-  for (let round = 0; round <= 3; round++) {
-    for (let offset = 0; offset < shapes.length; offset++) {
-      const i = (round + offset) % shapes.length;
-      const started = performance.now();
-      const output = await runPipelineFromRepo(fixtures[i].repo, () => {}, {
-        skipDerivedGraphPhases: true,
-        workerPoolSize: 1,
-        parseChunkConcurrency: 1,
-      });
-      const elapsed = performance.now() - started;
-      assert.deepEqual(output.scopeExtractionFailures ?? [], []);
-      assert.equal(output.usedWorkerPool, true);
-      assert.equal(output.reparsedFileCount, 3);
-      const graph = inspect(output.graph, shapes[i], cap);
-      if (round === 0) reports[i].graph = graph;
-      else {
-        assert.deepEqual(graph, reports[i].graph);
-        reports[i].samplesMs.push(elapsed);
-      }
+  const samples = rotatingSamples(fixtures, 3, async (fixture, index, round) => {
+    const started = performance.now();
+    const output = await runPipelineFromRepo(fixture.repo, () => {}, {
+      skipDerivedGraphPhases: true,
+      workerPoolSize: 1,
+      parseChunkConcurrency: 1,
+    });
+    return { index, round, output, elapsed: performance.now() - started };
+  });
+  for await (const { index, round, output, elapsed } of samples) {
+    assert.deepEqual(output.scopeExtractionFailures ?? [], []);
+    assert.equal(output.usedWorkerPool, true);
+    assert.equal(output.reparsedFileCount, 3);
+    const graph = inspect(output.graph, shapes[index], cap);
+    if (round === 0) reports[index].graph = graph;
+    else {
+      assert.deepEqual(graph, reports[index].graph);
+      reports[index].samplesMs.push(elapsed);
     }
   }
   const contract = {

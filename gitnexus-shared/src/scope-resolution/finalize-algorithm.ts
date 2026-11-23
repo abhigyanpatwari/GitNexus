@@ -419,7 +419,10 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   }
   for (const { filePath, name } of moduleExports?.ambiguities ?? []) {
     let names = ambiguousByFile.get(filePath);
-    if (names === undefined) ambiguousByFile.set(filePath, (names = new Set()));
+    if (names === undefined) {
+      names = new Set();
+      ambiguousByFile.set(filePath, names);
+    }
     names.add(name);
   }
   input.onProgress?.('ambiguity-end');
@@ -1039,6 +1042,57 @@ function extractExportedName(parsed: ParsedImport): string {
 
 // ─── Internal: per-edge finalization (phase 3) ─────────────────────────────
 
+function finalizeExportDependency(
+  draft: ImportEdgeDraft,
+  targetFile: string,
+  targetModule: FinalizeFile,
+  moduleExports: ExclusiveModuleExports,
+): ImportEdge {
+  const named = draft.source.kind === 'reexport';
+  const inherited = named ? moduleExports.get(targetFile, draft.source.importedName) : undefined;
+  return {
+    ...draft.base,
+    kind: 'side-effect',
+    localName: '',
+    targetExportedName: named ? draft.source.importedName : '',
+    targetModuleScope: targetModule.moduleScope,
+    // Rename needs the resolved exported token while lexical lookup does
+    // not bind this dependency to a local name.
+    ...(inherited ? { targetDefId: inherited.def.nodeId } : {}),
+    ...(named && inherited === undefined ? { linkStatus: 'unresolved' as const } : {}),
+    ...(inherited?.typeOnly ? { typeOnly: true } : {}),
+  };
+}
+
+function finalizePublishedImport(
+  draft: ImportEdgeDraft,
+  targetFile: string,
+  targetModule: FinalizeFile,
+  importedName: string,
+  byFilePath: ReadonlyMap<string, FinalizeFile>,
+  moduleExports: ExclusiveModuleExports,
+): ImportEdge | null {
+  const published = moduleExports.get(targetFile, importedName);
+  if (published === undefined) return null;
+  const namespaceTarget = published.namespaceTargetFile;
+  const via =
+    published.via.length > 0 || draft.source.kind === 'reexport'
+      ? extendVia(targetFile, published.via)
+      : undefined;
+  return {
+    ...draft.base,
+    targetModuleScope:
+      (namespaceTarget === undefined ? undefined : byFilePath.get(namespaceTarget)?.moduleScope) ??
+      targetModule.moduleScope,
+    targetDefId: published.def.nodeId,
+    ...(published.typeOnly ? { typeOnly: true } : {}),
+    ...(via === undefined ? {} : { transitiveVia: via }),
+    ...(namespaceTarget === undefined
+      ? {}
+      : { kind: 'namespace', namespaceTargetFile: namespaceTarget }),
+  };
+}
+
 function tryFinalize(
   draft: ImportEdgeDraft,
   byFilePath: Map<string, FinalizeFile>,
@@ -1055,20 +1109,7 @@ function tryFinalize(
   // A published name is not a local binding. Retain the statement's actual
   // file dependency, even when its publication is ambiguous or absent.
   if (draft.source.exportsOnly === true && moduleExports !== undefined) {
-    const named = draft.source.kind === 'reexport';
-    const inherited = named ? moduleExports.get(targetFile, draft.source.importedName) : undefined;
-    return {
-      ...draft.base,
-      kind: 'side-effect',
-      localName: '',
-      targetExportedName: named ? draft.source.importedName : '',
-      targetModuleScope: targetModule.moduleScope,
-      // Rename needs the resolved exported token while lexical lookup does
-      // not bind this dependency to a local name.
-      ...(inherited ? { targetDefId: inherited.def.nodeId } : {}),
-      ...(named && inherited === undefined ? { linkStatus: 'unresolved' as const } : {}),
-      ...(inherited?.typeOnly ? { typeOnly: true } : {}),
-    };
+    return finalizeExportDependency(draft, targetFile, targetModule, moduleExports);
   }
 
   // Wildcards finalize at the file level; their per-name expansion happens
@@ -1104,38 +1145,21 @@ function tryFinalize(
   // resolves once its prior hop is finalized.
   const importedName = extractExportedName(draft.source);
   if (moduleExports !== undefined) {
-    const published = moduleExports.get(targetFile, importedName);
-    if (published === undefined) return null;
-    const namespaceTarget = published.namespaceTargetFile;
-    const via =
-      published.via.length > 0 || draft.source.kind === 'reexport'
-        ? extendVia(targetFile, published.via)
-        : undefined;
-    return {
-      ...draft.base,
-      targetModuleScope:
-        (namespaceTarget === undefined
-          ? undefined
-          : byFilePath.get(namespaceTarget)?.moduleScope) ?? targetModule.moduleScope,
-      targetDefId: published.def.nodeId,
-      ...(published.typeOnly ? { typeOnly: true } : {}),
-      ...(via === undefined ? {} : { transitiveVia: via }),
-      ...(namespaceTarget === undefined
-        ? {}
-        : { kind: 'namespace', namespaceTargetFile: namespaceTarget }),
-    };
+    return finalizePublishedImport(
+      draft,
+      targetFile,
+      targetModule,
+      importedName,
+      byFilePath,
+      moduleExports,
+    );
   }
   const exported = findExportByName(targetModule, importedName, topLevelOnly);
 
   if (exported !== undefined) {
     const transitiveVia =
       draft.source.kind === 'reexport' ? Object.freeze([targetFile]) : undefined;
-    return {
-      ...draft.base,
-      targetModuleScope: targetModule.moduleScope,
-      targetDefId: exported.nodeId,
-      ...(transitiveVia !== undefined ? { transitiveVia } : {}),
-    };
+    return resolvedDefinitionEdge(draft, targetModule, exported, transitiveVia);
   }
 
   // Multi-hop re-export follow. Barrel modules like
@@ -1159,10 +1183,19 @@ function tryFinalize(
   const transitiveVia =
     draft.source.kind === 'reexport' || viaFiles.length > 1 ? viaFiles : undefined;
 
+  return resolvedDefinitionEdge(draft, targetModule, followed.def, transitiveVia);
+}
+
+function resolvedDefinitionEdge(
+  draft: ImportEdgeDraft,
+  targetModule: FinalizeFile,
+  definition: SymbolDefinition,
+  transitiveVia: readonly string[] | undefined,
+): ImportEdge {
   return {
     ...draft.base,
     targetModuleScope: targetModule.moduleScope,
-    targetDefId: followed.def.nodeId,
+    targetDefId: definition.nodeId,
     ...(transitiveVia !== undefined ? { transitiveVia } : {}),
   };
 }

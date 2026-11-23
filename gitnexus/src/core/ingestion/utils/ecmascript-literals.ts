@@ -7,80 +7,76 @@ const SIMPLE_STRING_ESCAPES: Readonly<Record<string, string>> = {
   v: '\v',
 };
 
+interface DecodedEscape {
+  value: string;
+  end: number;
+}
+
+function hexEscape(body: string, start: number, width: number): DecodedEscape | null {
+  const hex = body.slice(start, start + width);
+  if (hex.length !== width || /[^0-9a-f]/i.test(hex)) return null;
+  return { value: String.fromCodePoint(Number.parseInt(hex, 16)), end: start + width };
+}
+
+function unicodeEscape(body: string, start: number): DecodedEscape | null {
+  if (body[start] !== '{') return hexEscape(body, start, 4);
+  const end = body.indexOf('}', start + 1);
+  if (end === -1 || end === start + 1) return null;
+  const hex = body.slice(start + 1, end);
+  if (/[^0-9a-f]/i.test(hex)) return null;
+  const codePoint = Number.parseInt(hex, 16);
+  if (codePoint > 0x10ffff) return null;
+  return { value: String.fromCodePoint(codePoint), end: end + 1 };
+}
+
+function readEscape(body: string, start: number): DecodedEscape | null {
+  const escaped = body[start];
+  const end = start + 1;
+  switch (escaped) {
+    case undefined:
+      return null;
+    case '\r':
+      return { value: '', end: body[end] === '\n' ? end + 1 : end };
+    case '\n':
+    case '\u2028':
+    case '\u2029':
+      return { value: '', end };
+    case 'x':
+      return hexEscape(body, end, 2);
+    case 'u':
+      return unicodeEscape(body, end);
+    case '0':
+      return /\d/.test(body[end] ?? '') ? null : { value: '\0', end };
+    default:
+      if (/[1-9]/.test(escaped)) return null;
+      return { value: SIMPLE_STRING_ESCAPES[escaped] ?? escaped, end };
+  }
+}
+
 export function decodeStringLiteral(raw: string): string | null {
-  if (raw.length < 2) return null;
   const delimiter = raw[0];
-  if (
-    (delimiter !== "'" && delimiter !== '"' && delimiter !== '`') ||
-    raw[raw.length - 1] !== delimiter
-  ) {
+  if (raw.length < 2 || !['"', "'", '`'].includes(delimiter) || !raw.endsWith(delimiter)) {
     return null;
   }
-
   const body = raw.slice(1, -1);
+  const special = /[\\\r\n]/g;
   let decoded = '';
-  for (let index = 0; index < body.length; index++) {
-    const char = body[index];
-    if (char !== '\\') {
-      if (delimiter !== '`' && (char === '\n' || char === '\r')) return null;
-      if (char === '\r') {
-        if (body[index + 1] === '\n') index++;
-        decoded += '\n';
-      } else {
-        decoded += char;
-      }
-      continue;
+  let start = 0;
+  for (let match = special.exec(body); match !== null; match = special.exec(body)) {
+    decoded += body.slice(start, match.index);
+    if (match[0] === '\\') {
+      const escape = readEscape(body, special.lastIndex);
+      if (!escape) return null;
+      decoded += escape.value;
+      special.lastIndex = escape.end;
+    } else {
+      if (delimiter !== '`') return null;
+      decoded += '\n';
+      if (match[0] === '\r' && body[special.lastIndex] === '\n') special.lastIndex++;
     }
-
-    const escaped = body[++index];
-    if (escaped === undefined) return null;
-    if (escaped === '\n' || escaped === '\u2028' || escaped === '\u2029') continue;
-    if (escaped === '\r') {
-      if (body[index + 1] === '\n') index++;
-      continue;
-    }
-
-    const simple = SIMPLE_STRING_ESCAPES[escaped];
-    if (simple !== undefined) {
-      decoded += simple;
-      continue;
-    }
-    if (escaped === '0') {
-      if (/\d/.test(body[index + 1] ?? '')) return null;
-      decoded += '\0';
-      continue;
-    }
-    if (/[1-9]/.test(escaped)) return null;
-    if (escaped === 'x') {
-      const hex = body.slice(index + 1, index + 3);
-      if (!/^[0-9A-Fa-f]{2}$/.test(hex)) return null;
-      decoded += String.fromCharCode(Number.parseInt(hex, 16));
-      index += 2;
-      continue;
-    }
-    if (escaped === 'u') {
-      if (body[index + 1] === '{') {
-        const close = body.indexOf('}', index + 2);
-        if (close === -1) return null;
-        const hex = body.slice(index + 2, close);
-        if (hex.length === 0 || /[^0-9A-Fa-f]/.test(hex)) return null;
-        const codePoint = Number.parseInt(hex, 16);
-        if (codePoint > 0x10ffff) return null;
-        decoded += String.fromCodePoint(codePoint);
-        index = close;
-        continue;
-      }
-      const hex = body.slice(index + 1, index + 5);
-      if (!/^[0-9A-Fa-f]{4}$/.test(hex)) return null;
-      decoded += String.fromCharCode(Number.parseInt(hex, 16));
-      index += 4;
-      continue;
-    }
-
-    // JavaScript treats an escaped non-special character as that character.
-    decoded += escaped;
+    start = special.lastIndex;
   }
-  return decoded;
+  return decoded + body.slice(start);
 }
 
 /** Decode ECMAScript identifier escapes without changing written graph identities. */
@@ -95,7 +91,8 @@ export const decodeIdentifierEscapes = (name: string): string =>
 
 /** Read a written ModuleExportName as its runtime key. */
 export function canonicalModuleExportName(spelling: string): string | null {
-  if (spelling[0] !== '"' && spelling[0] !== "'") return decodeIdentifierEscapes(spelling);
+  if (!spelling.startsWith('"') && !spelling.startsWith("'"))
+    return decodeIdentifierEscapes(spelling);
   const decoded = decodeStringLiteral(spelling);
   return decoded === null || /[\uD800-\uDFFF]/u.test(decoded) ? null : decoded;
 }

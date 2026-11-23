@@ -262,6 +262,71 @@ const digest = /^[a-f0-9]{64}$/;
 const positive = (n) => Number.isFinite(n) && n > 0;
 const integer = (n) => Number.isSafeInteger(n) && n >= 0;
 
+function validateTrial(trial, files) {
+  assert.equal(trial.provenance.phaseIsolation, 'process', 'Phases must use fresh processes');
+  assert.deepEqual(
+    trial.provenance.execArgv,
+    ['--expose-gc', '--predictable-gc-schedule', '--max-old-space-size=' + heapMiB],
+    'Unexpected measurement profile',
+  );
+  assert(
+    ['sourceDigest', 'buildDigest', 'driverDigest'].every((key) =>
+      digest.test(trial.provenance[key]),
+    ),
+    'Invalid digest',
+  );
+  assert(/^[a-f0-9]{40}$/.test(trial.provenance.runtimeHead), 'Missing runtime revision');
+  assert.deepEqual(
+    trial.measurements.map((row) => row.kind),
+    phases,
+    'Missing/duplicate phase',
+  );
+  const format = trial.measurements[0].cacheFormat;
+  assert(['chunk', 'per-file'].includes(format), 'Unknown cache format');
+  for (const row of trial.measurements) {
+    for (const key of [
+      'pipelineMs',
+      'withSaveMs',
+      'peakRssKb',
+      'cacheBytes',
+      'cacheFiles',
+      'nodes',
+      'edges',
+      'parsedNodes',
+      'parsedEdges',
+    ]) {
+      assert(positive(row[key]), `Invalid ${key}`);
+    }
+    assert(row.withSaveMs >= row.pipelineMs, 'Invalid publication timing');
+    assert.equal(row.cacheFormat, format, 'Cache format changed within trial');
+    assert(
+      integer(row.reparsed) && integer(row.hits) && row.reparsed + row.hits === files,
+      'Incomplete parsing',
+    );
+    assert.equal(row.workersStarted, row.reparsed > 0, 'Worker dispatch disagrees with reuse');
+    assert(digest.test(row.digest), 'Missing graph digest');
+    assert(digest.test(row.parsedDigest), 'Missing parsed graph digest');
+  }
+  assert.equal(trial.measurements[0].reparsed, files, 'Cold run must parse every file');
+  assert.equal(trial.measurements[1].reparsed, 0, 'Warm run must reuse every file');
+  assert.equal(trial.measurements[0].digest, trial.measurements[1].digest, 'Warm graph changed');
+  assert.equal(
+    trial.measurements[3].digest,
+    trial.measurements[4].digest,
+    'Repacking changed graph',
+  );
+  assert.notEqual(
+    trial.measurements[1].parsedDigest,
+    trial.measurements[2].parsedDigest,
+    'Edit was not observed',
+  );
+  assert.notEqual(
+    trial.measurements[2].parsedDigest,
+    trial.measurements[3].parsedDigest,
+    'Second edit was not observed',
+  );
+}
+
 export function validatePair(pair) {
   const { baseline, candidate } = pair;
   assert(baseline?.provenance && candidate?.provenance, 'Missing provenance');
@@ -283,70 +348,8 @@ export function validatePair(pair) {
     integer(baseline.provenance.workers) && baseline.provenance.workers > 0,
     'Invalid workers',
   );
-  for (const trial of [baseline, candidate]) {
-    assert.equal(trial.provenance.phaseIsolation, 'process', 'Phases must use fresh processes');
-    assert.deepEqual(
-      trial.provenance.execArgv,
-      ['--expose-gc', '--predictable-gc-schedule', '--max-old-space-size=' + heapMiB],
-      'Unexpected measurement profile',
-    );
-    assert(
-      ['sourceDigest', 'buildDigest', 'driverDigest'].every((key) =>
-        digest.test(trial.provenance[key]),
-      ),
-      'Invalid digest',
-    );
-    assert(/^[a-f0-9]{40}$/.test(trial.provenance.runtimeHead), 'Missing runtime revision');
-    assert.deepEqual(
-      trial.measurements.map((row) => row.kind),
-      phases,
-      'Missing/duplicate phase',
-    );
-    const format = trial.measurements[0].cacheFormat;
-    assert(['chunk', 'per-file'].includes(format), 'Unknown cache format');
-    for (const row of trial.measurements) {
-      for (const key of [
-        'pipelineMs',
-        'withSaveMs',
-        'peakRssKb',
-        'cacheBytes',
-        'cacheFiles',
-        'nodes',
-        'edges',
-        'parsedNodes',
-        'parsedEdges',
-      ]) {
-        assert(positive(row[key]), `Invalid ${key}`);
-      }
-      assert(row.withSaveMs >= row.pipelineMs, 'Invalid publication timing');
-      assert.equal(row.cacheFormat, format, 'Cache format changed within trial');
-      assert(
-        integer(row.reparsed) && integer(row.hits) && row.reparsed + row.hits === files,
-        'Incomplete parsing',
-      );
-      assert.equal(row.workersStarted, row.reparsed > 0, 'Worker dispatch disagrees with reuse');
-      assert(digest.test(row.digest), 'Missing graph digest');
-      assert(digest.test(row.parsedDigest), 'Missing parsed graph digest');
-    }
-    assert.equal(trial.measurements[0].reparsed, files, 'Cold run must parse every file');
-    assert.equal(trial.measurements[1].reparsed, 0, 'Warm run must reuse every file');
-    assert.equal(trial.measurements[0].digest, trial.measurements[1].digest, 'Warm graph changed');
-    assert.equal(
-      trial.measurements[3].digest,
-      trial.measurements[4].digest,
-      'Repacking changed graph',
-    );
-    assert.notEqual(
-      trial.measurements[1].parsedDigest,
-      trial.measurements[2].parsedDigest,
-      'Edit was not observed',
-    );
-    assert.notEqual(
-      trial.measurements[2].parsedDigest,
-      trial.measurements[3].parsedDigest,
-      'Second edit was not observed',
-    );
-  }
+  validateTrial(baseline, files);
+  validateTrial(candidate, files);
   assert.equal(
     candidate.measurements[0].cacheFormat,
     'per-file',

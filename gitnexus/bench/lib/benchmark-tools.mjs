@@ -4,8 +4,11 @@ import { statSync } from 'node:fs';
 const systemTools =
   process.platform === 'win32'
     ? {
-        git: ['C:\\Program Files\\Git\\cmd\\git.exe', 'C:\\Program Files (x86)\\Git\\cmd\\git.exe'],
-        tar: ['C:\\Windows\\System32\\tar.exe'],
+        git: [
+          String.raw`C:\Program Files\Git\cmd\git.exe`,
+          String.raw`C:\Program Files (x86)\Git\cmd\git.exe`,
+        ],
+        tar: [String.raw`C:\Windows\System32\tar.exe`],
       }
     : {
         git: ['/usr/bin/git', '/bin/git', '/run/current-system/sw/bin/git'],

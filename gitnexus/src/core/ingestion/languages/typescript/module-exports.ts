@@ -47,15 +47,17 @@ function publishedNames(definitions: readonly SymbolDefinition[]): Map<string, S
     for (const name of definition.typeOnlyExports ?? []) publish(name, definition);
   }
   for (const name of ambiguous) exports.delete(name);
+  const defaultExport = findDefaultExport(definitions);
+  if (defaultExport) exports.set(DEFAULT_EXPORT_NAME, defaultExport);
+  return exports;
+}
+
+function findDefaultExport(definitions: readonly SymbolDefinition[]): SymbolDefinition | undefined {
   // Indexing only the marked defs picks the same callable winner a named import
   // gets for overloads and `const f = () => …`; two differently named defaults
   // (invalid input) publish none. Most files have no default: skip the index.
   const marked = definitions.filter((definition) => definition.isDefaultExport === true);
-  if (marked.length > 0) {
-    const defaults = indexTopLevelExportsByName(marked);
-    if (defaults.size === 1) {
-      for (const definition of defaults.values()) exports.set(DEFAULT_EXPORT_NAME, definition);
-    }
-  }
-  return exports;
+  if (marked.length === 0) return undefined;
+  const defaults = indexTopLevelExportsByName(marked);
+  return defaults.size === 1 ? defaults.values().next().value : undefined;
 }

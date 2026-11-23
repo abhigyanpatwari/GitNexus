@@ -275,6 +275,25 @@ function narrowingCutoff(guard: InstanceofGuard, writes: readonly SyntaxNode[]):
   return statement.startIndex;
 }
 
+function indexBindingWrites(writes: readonly BindingWrite[]) {
+  const writesByOwner = new Map<LexicalScope, Map<string, BindingWrites>>();
+  for (const { scope, name, node, executionScope } of writes) {
+    let byName = writesByOwner.get(scope);
+    if (!byName) {
+      byName = new Map();
+      writesByOwner.set(scope, byName);
+    }
+    let binding = byName.get(name);
+    if (!binding) {
+      binding = { nodes: [], executionScopes: new Set() };
+      byName.set(name, binding);
+    }
+    binding.nodes.push(node);
+    binding.executionScopes.add(executionScope);
+  }
+  return writesByOwner;
+}
+
 function emitInstanceofNarrowings(
   guards: readonly InstanceofGuard[],
   writes: readonly BindingWrite[],
@@ -283,15 +302,7 @@ function emitInstanceofNarrowings(
   escapedNames: ReadonlyMap<LexicalScope, ReadonlySet<string>>,
 ): void {
   if (guards.length === 0) return;
-  const writesByOwner = new Map<LexicalScope, Map<string, BindingWrites>>();
-  for (const { scope, name, node, executionScope } of writes) {
-    let byName = writesByOwner.get(scope);
-    if (!byName) writesByOwner.set(scope, (byName = new Map()));
-    let binding = byName.get(name);
-    if (!binding) byName.set(name, (binding = { nodes: [], executionScopes: new Set() }));
-    binding.nodes.push(node);
-    binding.executionScopes.add(executionScope);
-  }
+  const writesByOwner = indexBindingWrites(writes);
   for (const guard of guards) {
     if (guard.uses.length === 0) continue;
     const { name, type, scope } = guard;
@@ -341,6 +352,22 @@ function emitInstanceofNarrowings(
   }
 }
 
+function indexEscapedNames(scopes: Iterable<LexicalScope>) {
+  const escapedNames = new Map<LexicalScope, Set<string>>();
+  for (const scope of scopes) {
+    for (const name of scope.names) {
+      if (!name.includes('\\')) continue;
+      let names = escapedNames.get(scope);
+      if (!names) {
+        names = new Set();
+        escapedNames.set(scope, names);
+      }
+      names.add(canonicalTypeScriptName(name));
+    }
+  }
+  return escapedNames;
+}
+
 /** Observe narrowing events during the same tree walk as loader discovery. */
 function createInstanceofNarrowingCollector() {
   const writes: WriteSite[] = [];
@@ -348,23 +375,23 @@ function createInstanceofNarrowingCollector() {
   const pending = new Map<number, InstanceofGuard>();
   const active: Array<{ guard: InstanceofGuard; outer?: InstanceofGuard }> = [];
   const byName = new Map<string, InstanceofGuard>();
+  function updateActiveGuards(node: SyntaxNode): void {
+    while (active.length > 0 && node.startIndex >= active.at(-1)!.guard.consequence.endIndex) {
+      const { guard, outer } = active.pop()!;
+      if (outer) byName.set(guard.name, outer);
+      else byName.delete(guard.name);
+    }
+    const begins = pending.size > 0 ? pending.get(node.id) : undefined;
+    if (begins) {
+      pending.delete(node.id);
+      active.push({ guard: begins, outer: byName.get(begins.name) });
+      byName.set(begins.name, begins);
+    }
+  }
   return {
     writes,
     observe(node: SyntaxNode, scope: LexicalScope): void {
-      while (
-        active.length > 0 &&
-        node.startIndex >= active[active.length - 1].guard.consequence.endIndex
-      ) {
-        const { guard, outer } = active.pop()!;
-        if (outer) byName.set(guard.name, outer);
-        else byName.delete(guard.name);
-      }
-      const begins = pending.size > 0 ? pending.get(node.id) : undefined;
-      if (begins) {
-        pending.delete(node.id);
-        active.push({ guard: begins, outer: byName.get(begins.name) });
-        byName.set(begins.name, begins);
-      }
+      updateActiveGuards(node);
       if (node.type === 'if_statement') {
         const guard = readInstanceofGuard(node, scope);
         if (guard) {
@@ -391,15 +418,7 @@ function createInstanceofNarrowingCollector() {
     },
     emit(scopes: Iterable<LexicalScope>, filePath: string, out: CaptureMatch[]): void {
       if (!guards.some((guard) => guard.uses.length > 0)) return;
-      const escapedNames = new Map<LexicalScope, Set<string>>();
-      for (const scope of scopes) {
-        for (const name of scope.names) {
-          if (!name.includes('\\')) continue;
-          let names = escapedNames.get(scope);
-          if (!names) escapedNames.set(scope, (names = new Set()));
-          names.add(canonicalTypeScriptName(name));
-        }
-      }
+      const escapedNames = indexEscapedNames(scopes);
       const bindingWrites: BindingWrite[] = [];
       for (const { node, scope, names } of writes) {
         const executionScope = functionOwner(scope);

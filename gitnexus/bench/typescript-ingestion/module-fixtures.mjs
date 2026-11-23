@@ -51,8 +51,10 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
           `export function ${wildcardName}() {}`,
         );
         right.push(`export function ${name}() {}`);
-        forward.push(`export { ${name} } ${from('left')}`);
-        forward.push(`export { '${quotedName}' as "${forwardedQuoted}" } ${from('left')}`);
+        forward.push(
+          `export { ${name} } ${from('left')}`,
+          `export { '${quotedName}' as "${forwardedQuoted}" } ${from('left')}`,
+        );
         overrides.push(`export { ${name} } ${from('right')}`);
         imports.push(
           `import { ${name} as conflict${batch} } ${from('ambiguous')}`,

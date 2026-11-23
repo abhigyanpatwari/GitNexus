@@ -43,7 +43,28 @@ interface Forwarding {
 
 const EMPTY_VIA: readonly string[] = Object.freeze([]);
 const EMPTY_EXPORTS: Exports = new Map();
-const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+function compareCodeUnits(a: string, b: string): number {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
+function getOrCreate<K, V>(map: Map<K, V>, key: K, create: () => V): V {
+  const existing = map.get(key);
+  if (existing !== undefined) return existing;
+  const value = create();
+  map.set(key, value);
+  return value;
+}
+
+function isWeakVariable(state: ExportState): state is PublishedExport {
+  return (
+    !('candidates' in state) && state.def.type === 'Variable' && state.def.isExported === undefined
+  );
+}
+
+function witnessesOf(state: ExportState): readonly string[] {
+  return 'candidates' in state ? state.candidates : [state.def.nodeId];
+}
 
 function identity(exported: PublishedExport): string {
   return exported.namespaceTargetFile === undefined
@@ -64,18 +85,17 @@ function merge(previous: ExportState | undefined, next: ExportState): ExportStat
 
   // An unmarked variable (including an ambient declaration) is weaker than a
   // marked export. Equal weak claims use a stable owner across file orders.
-  const weakPrevious =
-    !('candidates' in previous) &&
-    previous.def.type === 'Variable' &&
-    previous.def.isExported === undefined;
-  const weakNext =
-    !('candidates' in next) && next.def.type === 'Variable' && next.def.isExported === undefined;
+  const weakPrevious = isWeakVariable(previous);
+  const weakNext = isWeakVariable(next);
   if (weakPrevious && weakNext)
     return compareCodeUnits(previous.def.nodeId, next.def.nodeId) <= 0 ? previous : next;
   if (weakPrevious || weakNext) return weakPrevious ? next : previous;
 
-  const witnesses = new Set('candidates' in previous ? previous.candidates : [previous.def.nodeId]);
-  for (const id of 'candidates' in next ? next.candidates : [next.def.nodeId]) witnesses.add(id);
+  return mergeAmbiguity(previous, next);
+}
+
+function mergeAmbiguity(previous: ExportState, next: ExportState): ExportState {
+  const witnesses = new Set([...witnessesOf(previous), ...witnessesOf(next)]);
   const [first, second] = [...witnesses].sort(compareCodeUnits);
   if (
     'candidates' in previous &&
@@ -114,8 +134,7 @@ export function buildExclusiveModuleExports(
     return def === undefined ? undefined : { def, via: EMPTY_VIA };
   };
   const publish = (file: string, name: string, next: ExportState) => {
-    let names = states.get(file);
-    if (!names) states.set(file, (names = new Map()));
+    const names = getOrCreate(states, file, () => new Map<string, ExportState>());
     const previous = names.get(name);
     const picked = merge(previous, next);
     if (picked === previous) return;
@@ -124,90 +143,130 @@ export function buildExclusiveModuleExports(
   };
 
   const namespaceSeeds: Array<readonly [string, string, PublishedExport]> = [];
+  function registerDraft(file: string, { source, targetFile, base }: ExportDraft): void {
+    const typeOnly = base.typeOnly === true ? true : undefined;
+    if (source.kind === 'wildcard' && source.reexportsName !== false) {
+      if (targetFile !== null && targetFile !== file && locals.has(targetFile)) {
+        getOrCreate(byStar, targetFile, () => []).push({ file, typeOnly });
+      }
+      return;
+    }
+    const namespace = source.kind === 'namespace' && source.exportsOnly === true;
+    const named =
+      base.kind !== 'namespace' &&
+      (source.kind === 'reexport' ||
+        ((source.kind === 'named' || source.kind === 'alias') && source.reexportsName === true));
+    if (!namespace && !named) return;
+    const exported = source.localName;
+    getOrCreate(explicit, file, () => new Set<string>()).add(exported);
+    if (targetFile === null || !locals.has(targetFile)) return;
+    if (namespace) {
+      const def = locals.get(file)?.get(exported);
+      if (def?.type === 'Namespace') {
+        namespaceSeeds.push([
+          file,
+          exported,
+          { def, via: [targetFile], namespaceTargetFile: targetFile, typeOnly },
+        ]);
+      }
+      return;
+    }
+    const names = getOrCreate(byName, targetFile, () => new Map<string, Forwarding[]>());
+    getOrCreate(names, source.importedName, () => []).push({ file, exported, typeOnly });
+  }
+
   for (const [file, drafts] of draftsByFile) {
-    for (const { source, targetFile, base } of drafts) {
-      const typeOnly = base.typeOnly === true ? true : undefined;
-      if (source.kind === 'wildcard' && source.reexportsName !== false) {
-        if (targetFile === null || !locals.has(targetFile) || targetFile === file) continue;
-        let readers = byStar.get(targetFile);
-        if (!readers) byStar.set(targetFile, (readers = []));
-        readers.push({ file, typeOnly });
-        continue;
+    for (const draft of drafts) registerDraft(file, draft);
+  }
+
+  function seedExplicitExports(): void {
+    // A type-only local reserves its public spelling and propagates the same
+    // erasure evidence as an explicit type-only forward.
+    for (const [file, definitions] of locals) {
+      for (const [name, def] of definitions) {
+        if (!def.typeOnlyExports?.includes(name)) continue;
+        getOrCreate(explicit, file, () => new Set<string>()).add(name);
+        publish(file, name, { def, via: EMPTY_VIA, typeOnly: true });
       }
-      const namespace = source.kind === 'namespace' && source.exportsOnly === true;
-      const named =
-        base.kind !== 'namespace' &&
-        (source.kind === 'reexport' ||
-          ((source.kind === 'named' || source.kind === 'alias') && source.reexportsName === true));
-      if (!namespace && !named) continue;
-      const exported = source.localName;
-      let reserved = explicit.get(file);
-      if (!reserved) explicit.set(file, (reserved = new Set()));
-      reserved.add(exported);
-      if (targetFile === null || !locals.has(targetFile)) continue;
-      if (namespace) {
-        const def = locals.get(file)?.get(exported);
-        if (def?.type === 'Namespace') {
-          namespaceSeeds.push([
-            file,
-            exported,
-            { def, via: [targetFile], namespaceTargetFile: targetFile, typeOnly },
-          ]);
-        }
-        continue;
+    }
+    for (const [file, name, seed] of namespaceSeeds) publish(file, name, seed);
+  }
+
+  function queueLocalExports(): void {
+    for (const file of new Set([...byStar.keys(), ...byName.keys()])) {
+      const namedReads = byName.get(file);
+      for (const name of byStar.has(file)
+        ? (locals.get(file)?.keys() ?? [])
+        : (namedReads?.keys() ?? [])) {
+        if (locals.get(file)?.has(name) && !explicit.get(file)?.has(name))
+          changes.push([file, name]);
       }
-      let names = byName.get(targetFile);
-      if (!names) byName.set(targetFile, (names = new Map()));
-      let readers = names.get(source.importedName);
-      if (!readers) names.set(source.importedName, (readers = []));
-      readers.push({ file, exported, typeOnly });
     }
   }
 
-  // A type-only local reserves its public spelling and propagates the same
-  // erasure evidence as an explicit type-only forward.
-  for (const [file, definitions] of locals) {
-    for (const [name, def] of definitions) {
-      if (!def.typeOnlyExports?.includes(name)) continue;
-      let reserved = explicit.get(file);
-      if (!reserved) explicit.set(file, (reserved = new Set()));
-      reserved.add(name);
-      publish(file, name, { def, via: EMPTY_VIA, typeOnly: true });
-    }
-  }
-  for (const [file, name, seed] of namespaceSeeds) publish(file, name, seed);
-  for (const file of new Set([...byStar.keys(), ...byName.keys()])) {
-    const namedReads = byName.get(file);
-    for (const name of byStar.has(file)
-      ? (locals.get(file)?.keys() ?? [])
-      : (namedReads?.keys() ?? [])) {
-      if (locals.get(file)?.has(name) && !explicit.get(file)?.has(name)) changes.push([file, name]);
-    }
-  }
-  for (let i = 0; i < changes.length; i++) {
-    const [source, name] = changes[i];
+  seedExplicitExports();
+  queueLocalExports();
+  function forwardName(source: string, name: string): void {
     const state = read(source, name);
-    if (state === undefined) continue;
-    // Routes with the same erasure fact all share the same terminal evidence.
-    const via = 'candidates' in state ? undefined : extendVia(source, state.via);
-    const deliver = (reader: Forwarding, exported: string) =>
-      publish(
-        reader.file,
-        exported,
-        'candidates' in state
-          ? reader.typeOnly && !state.typeOnly
-            ? { ...state, typeOnly: true }
-            : state
-          : { ...state, via: via!, typeOnly: reader.typeOnly || state.typeOnly },
-      );
+    if (state === undefined) return;
+    // All readers share the same terminal declaration and provenance.
+    const forwarded =
+      'candidates' in state
+        ? state
+        : { ...state, via: extendVia(source, state.via), typeOnly: state.typeOnly };
+    const deliver = (reader: Forwarding, exported: string) => {
+      const next =
+        reader.typeOnly && !forwarded.typeOnly
+          ? { ...forwarded, typeOnly: true as const }
+          : forwarded;
+      publish(reader.file, exported, next);
+    };
     for (const reader of byName.get(source)?.get(name) ?? []) deliver(reader, reader.exported!);
-    if (excluded?.has(name)) continue;
+    if (excluded?.has(name)) return;
     for (const reader of byStar.get(source) ?? []) {
       if (explicit.get(reader.file)?.has(name) || locals.get(reader.file)?.has(name)) continue;
       deliver(reader, name);
     }
   }
 
+  // Publishing can append more names to the live queue during iteration.
+  for (const [source, name] of changes) forwardName(source, name);
+
+  const values = new Map<string, Exports>();
+  const valuesFor = (file: string): Exports => {
+    const own = locals.get(file) ?? EMPTY_EXPORTS;
+    const forwarded = states.get(file);
+    const reserved = explicit.get(file);
+    if (forwarded === undefined && reserved === undefined) return own;
+    const exports = values.get(file);
+    if (exports !== undefined) return exports;
+    const published = new Map(own);
+    for (const name of reserved ?? []) published.delete(name);
+    for (const [name, state] of forwarded ?? []) {
+      if ('candidates' in state || state.typeOnly) continue;
+      published.set(name, state.def);
+    }
+    values.set(file, published);
+    return published;
+  };
+
+  return {
+    get(file, name) {
+      const state = read(file, name);
+      return state === undefined || 'candidates' in state ? undefined : state;
+    },
+    values: valuesFor,
+    isReexported(file, name) {
+      return explicit.get(file)?.has(name) === true || states.get(file)?.has(name) === true;
+    },
+    ambiguities: collectAmbiguities(states, explicit),
+  };
+}
+
+function collectAmbiguities(
+  states: ReadonlyMap<string, ReadonlyMap<string, ExportState>>,
+  explicit: ReadonlyMap<string, ReadonlySet<string>>,
+): ExclusiveModuleExports['ambiguities'] {
   const ambiguities: ExclusiveModuleExports['ambiguities'][number][] = [];
   for (const [filePath, names] of states) {
     for (const [name, state] of names) {
@@ -224,33 +283,5 @@ export function buildExclusiveModuleExports(
     (a, b) => compareCodeUnits(a.filePath, b.filePath) || compareCodeUnits(a.name, b.name),
   );
 
-  const values = new Map<string, Exports>();
-  const valuesFor = (file: string): Exports => {
-    const own = locals.get(file) ?? EMPTY_EXPORTS;
-    const forwarded = states.get(file);
-    const reserved = explicit.get(file);
-    if (forwarded === undefined && reserved === undefined) return own;
-    let exports = values.get(file);
-    if (exports !== undefined) return exports;
-    const published = new Map(own);
-    for (const name of reserved ?? []) published.delete(name);
-    for (const [name, state] of forwarded ?? []) {
-      if ('candidates' in state || state.typeOnly) continue;
-      published.set(name, state.def);
-    }
-    values.set(file, (exports = published));
-    return exports;
-  };
-
-  return {
-    get(file, name) {
-      const state = read(file, name);
-      return state === undefined || 'candidates' in state ? undefined : state;
-    },
-    values: valuesFor,
-    isReexported(file, name) {
-      return explicit.get(file)?.has(name) === true || states.get(file)?.has(name) === true;
-    },
-    ambiguities,
-  };
+  return ambiguities;
 }
