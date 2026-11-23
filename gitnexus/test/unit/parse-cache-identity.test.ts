@@ -1,7 +1,16 @@
-import { chmodSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync } from 'node:fs';
+import {
+  chmodSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  utimesSync,
+} from 'node:fs';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import { finalizeParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import { createParseIdentityFixture } from '../helpers/parse-cache-identity-fixture.js';
 
@@ -201,6 +210,41 @@ describe('parse cache artifact identity', () => {
     reads = 0;
     f.identity({ onHashedInput: () => reads++ });
     expect(reads).toBe(0);
+  });
+
+  it('reuses verified dependency bytes and rehashes them after a change', () => {
+    const standalone = fixture();
+    const analyzed = fixture();
+    const dependency = 'tree-sitter-javascript';
+    const binary = `node_modules/${dependency}/prebuilds/test/binding.node`;
+    for (const f of [standalone, analyzed]) {
+      f.write(
+        'package.json',
+        JSON.stringify({
+          name: 'gitnexus-fixture',
+          version: '1.0.0',
+          dependencies: { [dependency]: '1.0.0' },
+        }),
+      );
+    }
+    const binaryPath = realpathSync.native(path.join(analyzed.root, binary));
+    const analyzerReads: string[] = [];
+    resolveAnalyzerRunnerIdentity(analyzed.moduleUrl, {
+      onHashedInput: (input) => analyzerReads.push(input.path),
+    });
+    expect(analyzerReads).toContain(binaryPath);
+
+    const parserReads: string[] = [];
+    const options = { onHashedInput: (input: { path: string }) => parserReads.push(input.path) };
+    const original = standalone.identity();
+    expect(analyzed.identity(options)).toEqual(original);
+    expect(parserReads).not.toContain(binaryPath);
+    analyzed.write(binary, 'native fixture BYTES');
+    standalone.write(binary, 'native fixture BYTES');
+    const changed = analyzed.identity(options);
+    expect(parserReads).toContain(binaryPath);
+    expect(changed.base).not.toBe(original.base);
+    expect(changed).toEqual(standalone.identity());
   });
 
   it('fails closed when required inputs or the selected worker are missing', () => {

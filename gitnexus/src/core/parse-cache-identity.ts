@@ -206,7 +206,10 @@ class ParseArtifactInventory {
   private packages = 0;
   private readonly packageLocations = new Map<string, string>();
 
-  constructor(private readonly options: ParseCacheIdentityResolveOptions) {
+  constructor(
+    private readonly options: ParseCacheIdentityResolveOptions,
+    private readonly analyzerDigests: ReadonlyMap<string, { state: FileState; digest: string }>,
+  ) {
     for (const [key, value] of Object.entries(options.traversalLimits ?? {})) {
       if (!(key in this.limits) || !Number.isSafeInteger(value) || value < 1)
         throw new Error(`Invalid parser identity traversal limit: ${key}`);
@@ -254,8 +257,12 @@ class ParseArtifactInventory {
       if (!Number.isSafeInteger(size) || size < 0 || this.bytes + size > this.limits.bytes)
         throw new Error(`Parser identity scan exceeded ${this.limits.bytes} bytes: ${candidate}`);
       this.bytes += size;
-      const cached = digestMemo.get(candidate);
+      const local = digestMemo.get(candidate);
+      const cached = local ?? this.analyzerDigests.get(candidate);
       if (cached && isDeepStrictEqual(cached.state, before)) {
+        // A runner digest can come from a previous process. Check that this
+        // process can open the input before it uses those verified bytes.
+        if (!local) closeSync(openSync(candidate, 'r'));
         digest = cached.digest;
       } else {
         const hashed = artifacts.hashStableFile(candidate);
@@ -541,9 +548,12 @@ export function resolveParseCacheIdentity(
   options: ParseCacheIdentityResolveOptions = {},
 ): ParseCacheIdentityResolution {
   try {
-    const inventory = new ParseArtifactInventory(options);
     const modulePath = realpathSync.native(fileURLToPath(analyzerModuleUrl));
     const build = artifacts.resolveBuildRoot(modulePath);
+    const inventory = new ParseArtifactInventory(
+      options,
+      artifacts.cachedDependencyFileDigests(build.buildRoot),
+    );
     const implUrl = pathToFileURL(
       path.join(
         build.buildRoot,
