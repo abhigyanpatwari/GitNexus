@@ -46,7 +46,8 @@ import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 export const ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION = 4 as const;
 const BUILD_CANONICALIZATION = 'gitnexus-analyzer-build-v2' as const;
 const DEPENDENCY_RUNTIME_CANONICALIZATION = 'gitnexus-analyzer-dependency-runtime-v4' as const;
-const IDENTITY_CACHE_SCHEMA_VERSION = 6 as const;
+// v7 stores the raw content hash for readable dependency files.
+const IDENTITY_CACHE_SCHEMA_VERSION = 7 as const;
 const MAX_CACHE_ENTRIES = 100_000;
 const MAX_CACHE_FILE_BYTES = 64 * 1024 * 1024;
 const HASH_BUFFER_BYTES = 256 * 1024;
@@ -1647,20 +1648,12 @@ function hashRuntimeArtifact(
   }
 
   const stable = hashStableFile(artifact.absolutePath);
-  const digest = hashCanonicalFrames([
-    [
-      'runtime-payload-content-v1',
-      artifact.kind,
-      stable.state.symlinkTarget ?? '',
-      digestBytes(stable.digest),
-    ],
-  ]);
   options.onHashedInput?.({
     kind: 'runtime-artifact',
     path: artifact.absolutePath,
     bytes: stable.bytes,
   });
-  return { ...artifact, state: stable.state, digest };
+  return { ...artifact, state: stable.state, digest: stable.digest };
 }
 
 function compareEdges(a: RuntimeDependencyEdge, b: RuntimeDependencyEdge): number {
@@ -1736,11 +1729,22 @@ function hashDependencyRuntime(
       cachedArtifacts.get(artifactCacheKey(artifact)),
       options,
     );
+    const payloadDigest =
+      hashed.kind === 'unfollowed-symlink'
+        ? hashed.digest
+        : hashCanonicalFrames([
+            [
+              'runtime-payload-content-v1',
+              hashed.kind,
+              hashed.state.symlinkTarget ?? '',
+              digestBytes(hashed.digest),
+            ],
+          ]);
     updateCanonicalFrame(hash, [
       'runtime-artifact',
       artifact.canonicalPath,
       artifact.kind,
-      digestBytes(hashed.digest),
+      digestBytes(payloadDigest),
     ]);
     nextArtifacts.push(hashed);
   }
@@ -2168,6 +2172,19 @@ function identityCacheKey(
 
 const MAX_PROCESS_CACHE_ENTRIES = 12;
 const processIdentityCache = new Map<string, IdentityCachePayload>();
+
+/** Only successful runner validations enter this cache. Consumers must still
+ * match the current file state before reusing a content hash. */
+function cachedDependencyFileDigests(buildRoot: string) {
+  const files = new Map<string, { state: ReadableFileState; digest: string }>();
+  for (const cache of processIdentityCache.values()) {
+    if (cache.buildRoot !== buildRoot) continue;
+    for (const entry of cache.artifactEntries) {
+      if (entry.kind === 'file') files.set(entry.absolutePath, entry);
+    }
+  }
+  return files;
+}
 
 /** @internal Clear process-local reuse between simulated-process unit tests. */
 export function _clearAnalyzerIdentityProcessCacheForTests(): void {
@@ -2918,6 +2935,7 @@ export function finalizeAnalyzerRunnerIdentity(
 /** Narrow, non-loading artifact primitives shared by parser identity.
  * The analyzer receipt and its existing cache retain their separate contract. */
 export const analyzerIdentityArtifacts = {
+  cachedDependencyFileDigests,
   hashCanonicalFrames,
   hashStableFile,
   snapshotReadableFile,

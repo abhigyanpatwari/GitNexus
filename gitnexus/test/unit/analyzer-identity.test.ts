@@ -241,7 +241,7 @@ describe('analyzer runner identity', () => {
         checksum: string;
       };
       expect(envelope.payload).toMatchObject({
-        schemaVersion: 6,
+        schemaVersion: 7,
         runtimeVariant: {
           nodeVersion: process.version,
           platform: process.platform,
