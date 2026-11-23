@@ -358,6 +358,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
 
       for (const [groupPath, regName] of Object.entries(config.repos)) {
         let lbugPath = '';
+        let releaseExtractionLease: (() => void) | undefined;
         // Staged per repo, not appended straight to `autoContracts`. Extractors
         // run in sequence and any one of them can throw; appending as we go left
         // a repo whose HTTP extractor succeeded and whose gRPC extractor failed
@@ -388,12 +389,16 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           const poolId = handle.id;
           lbugPath = resolveGraphPath(handle.storagePath);
           await initLbug(poolId, lbugPath);
-          // No pin here: contract extraction below uses `executor` while this
-          // repo is freshly initialized and live, and completes before the next
-          // iteration's initLbug can trigger eviction (an in-flight query is
-          // also checkedOut > 0 and thus eviction-immune). Deferred manifest
-          // resolution no longer reuses these executors — it re-inits + leases
-          // each repo per window (see windowed resolution below, issue #2189).
+          // Lease the repo for all of its contract extraction. Extractors yield
+          // to the event loop while they parse source files, so a long parse
+          // phase with no graph query lets the pool's idle sweep, or another
+          // caller opening more repos than the pool holds, close this repo
+          // between two of its queries. The extractors swallow the resulting
+          // query errors, so the sync would lose its graph enrichment without
+          // reporting anything. Released in the finally below; deferred manifest
+          // resolution re-inits and leases each repo per window (issue #2189).
+          releaseExtractionLease = pinRepo(poolId);
+          activeReleases.add(releaseExtractionLease);
           // Record the pool identity so windowed resolution can re-init.
           repoHandles.set(groupPath, { poolId, lbugPath, repoPath: handle.repoPath });
 
@@ -527,6 +532,11 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
           // an index the same run says it could not read. Deleting an absent key
           // is a no-op, which is exactly the initLbug-threw case.
           repoHandles.delete(groupPath);
+        } finally {
+          if (releaseExtractionLease) {
+            releaseExtractionLease();
+            activeReleases.delete(releaseExtractionLease);
+          }
         }
       }
     }
