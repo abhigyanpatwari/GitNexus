@@ -250,35 +250,36 @@ class ParseArtifactInventory {
   }
 
   private fileDigest(candidate: string): string {
-    let digest = this.fileDigests.get(candidate);
-    if (!digest) {
-      const before = artifacts.snapshotReadableFile(candidate);
-      const size = Number(before.target.size);
-      if (!Number.isSafeInteger(size) || size < 0 || this.bytes + size > this.limits.bytes)
-        throw new Error(`Parser identity scan exceeded ${this.limits.bytes} bytes: ${candidate}`);
-      this.bytes += size;
-      const local = digestMemo.get(candidate);
-      const cached = local ?? this.analyzerDigests.get(candidate);
-      if (cached && isDeepStrictEqual(cached.state, before)) {
-        // A runner digest can come from a previous process. Check that this
-        // process can open the input before it uses those verified bytes.
-        if (!local) closeSync(openSync(candidate, 'r'));
-        digest = cached.digest;
-      } else {
-        const hashed = artifacts.hashStableFile(candidate);
-        if (!isDeepStrictEqual(before, hashed.state))
-          throw new Error(`Parser artifact changed during identity capture: ${candidate}`);
-        digest = hashed.digest;
-        this.options.onHashedInput?.({ path: candidate, bytes: hashed.bytes });
-        digestMemo.set(candidate, { state: hashed.state, digest });
-        if (digestMemo.size > MAX_MEMO_ENTRIES) digestMemo.delete(digestMemo.keys().next().value!);
-      }
-      this.guards.set(`file:${candidate}`, {
-        snapshot: () => artifacts.snapshotReadableFile(candidate),
-        state: before,
-      });
-      this.fileDigests.set(candidate, digest);
+    const existing = this.fileDigests.get(candidate);
+    if (existing) return existing;
+
+    const before = artifacts.snapshotReadableFile(candidate);
+    const size = Number(before.target.size);
+    if (!Number.isSafeInteger(size) || size < 0 || this.bytes + size > this.limits.bytes)
+      throw new Error(`Parser identity scan exceeded ${this.limits.bytes} bytes: ${candidate}`);
+    this.bytes += size;
+    const local = digestMemo.get(candidate);
+    const cached = local ?? this.analyzerDigests.get(candidate);
+    let digest: string;
+    if (cached && isDeepStrictEqual(cached.state, before)) {
+      // A runner digest can come from a previous process. Check that this
+      // process can open the input before it uses those verified bytes.
+      if (!local) closeSync(openSync(candidate, 'r'));
+      digest = cached.digest;
+    } else {
+      const hashed = artifacts.hashStableFile(candidate);
+      if (!isDeepStrictEqual(before, hashed.state))
+        throw new Error(`Parser artifact changed during identity capture: ${candidate}`);
+      digest = hashed.digest;
+      this.options.onHashedInput?.({ path: candidate, bytes: hashed.bytes });
+      digestMemo.set(candidate, { state: hashed.state, digest });
+      if (digestMemo.size > MAX_MEMO_ENTRIES) digestMemo.delete(digestMemo.keys().next().value!);
     }
+    this.guards.set(`file:${candidate}`, {
+      snapshot: () => artifacts.snapshotReadableFile(candidate),
+      state: before,
+    });
+    this.fileDigests.set(candidate, digest);
     return digest;
   }
 
