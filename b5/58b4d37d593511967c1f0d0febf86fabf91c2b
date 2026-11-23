@@ -1,0 +1,43 @@
+gitnexus/src/core/ingestion/languages/javascript/scope-resolver.ts
+  s_676b35bc218cc9::t_ebfeb50763586e 41,64
+gitnexus/src/core/ingestion/languages/typescript/canonicalize-bindings.ts
+  s_676b35bc218cc9::t_e44635c5220391 1-25
+gitnexus/src/core/ingestion/languages/typescript/identifiers.ts
+  s_676b35bc218cc9::t_812a4d4ec8049c 1-2,12-18
+gitnexus/src/core/ingestion/languages/typescript/import-decomposer.ts
+  s_676b35bc218cc9::t_91d7f58dd1cffc 313,322
+gitnexus/src/core/ingestion/languages/typescript/interpret.ts
+  s_676b35bc218cc9::t_b362ced7472e27 27,97-98,103,126-127,130-131,142-144,147-149
+gitnexus/src/core/ingestion/languages/typescript/module-exports.ts
+  s_676b35bc218cc9::t_0f71923563d76f 3,17,23-30
+gitnexus/src/core/ingestion/languages/typescript/rename.ts
+  s_676b35bc218cc9::t_1d3e016f71f10f 32,867
+gitnexus/src/core/ingestion/languages/typescript/scope-resolver.ts
+  s_676b35bc218cc9::t_c700519730a9f7 21,91
+gitnexus/src/core/ingestion/languages/typescript/string-literals.ts
+  s_676b35bc218cc9::t_efd944ea4f4f77 1-79
+gitnexus/src/core/ingestion/languages/vue/scope-resolver.ts
+  s_676b35bc218cc9::t_d5791f8f006d09 60,94
+gitnexus/src/core/ingestion/route-extractors/data-route-table.ts
+  s_676b35bc218cc9::t_fe6ac179a56d5b 12
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_676b35bc218cc9::t_6722d930ef79fc 37,288-289,291
+gitnexus/test/integration/resolvers/typescript-module-ownership.test.ts
+  s_676b35bc218cc9::t_b1bdaa88985b09 225-264
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b558b4d37d593511967c1f0d0febf86fabf91c2b",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
