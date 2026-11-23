@@ -26,6 +26,15 @@ export function hiddenNamed() { publicCall(); }
 export function hiddenUnique() { uniqueCall(); }
 `,
     'effect.js': 'export const initialized = true;',
+    'star-local.js': `
+export * from './left.js';
+export function starIsNotLocal() { uniqueCall(); }
+`,
+    'default-alias.js': `
+function implementation() {}
+export default implementation;
+export { implementation as exposed };
+`,
     'forward.js': "export { model as api } from './namespace.js';",
     'default-object.js': "export * as default from './left.js';",
     'literal-object.js': "export * as 'other object' from './left.js';",
@@ -42,6 +51,7 @@ import { api } from './forward.js';
 import * as pack from './forward.js';
 import defaultObject from './default-object.js';
 import { publish as wrongLiteral } from './literal-object.js';
+import { exposed } from './default-alias.js';
 export function wrong() { choose(); }
 export function useSame() { same(); }
 export function useExplicit() { explicit(); }
@@ -49,6 +59,7 @@ export function useNamespace() { api.publish(); }
 export function useNestedNamespace() { pack.api.publish(); }
 export function useDefault() { api.default(); }
 export function useDefaultObject() { defaultObject.publish(); }
+export function useDefaultAlias() { exposed(); }
 export function useWrongLiteral() { wrongLiteral(); }
 export function useDefaultAsNamed() { api.main(); }
 export function usePrivate() { api.privateMember(); }
@@ -64,6 +75,7 @@ export function shadowed(api) { api.publish(); }
     ['entry.js:useNestedNamespace', ['Function:left.js:publish']],
     ['entry.js:useDefault', ['Function:left.js:main']],
     ['entry.js:useDefaultObject', ['Function:left.js:publish']],
+    ['entry.js:useDefaultAlias', ['Function:default-alias.js:implementation']],
     ['entry.js:useWrongLiteral', []],
     ['entry.js:useDefaultAsNamed', []],
     ['entry.js:usePrivate', []],
@@ -72,6 +84,7 @@ export function shadowed(api) { api.publish(); }
     ['namespace.js:hiddenNamed', []],
     ['namespace.js:hiddenUnique', []],
     ['real-local.js:boundUnique', ['Function:left.js:uniqueCall']],
+    ['star-local.js:starIsNotLocal', []],
   ] as const)('emits only the exact targets for %s', (caller, expected) => {
     const targets = getRelationships(result(), 'CALLS')
       .filter(({ rel }) => rel.sourceId === `Function:${caller}`)

@@ -39,7 +39,7 @@ import {
   collectEsmExportEvidence,
   esmExportVerdict,
   isEsmDefaultExport,
-  isEsmNamedDefaultBinding,
+  namedExportsOfDefault,
 } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
@@ -620,10 +620,10 @@ export function emitTsScopeCaptures(
           fnNode,
           'true',
         );
-        grouped['@declaration.is-default-export-only'] = syntheticCapture(
-          '@declaration.is-default-export-only',
+        grouped['@declaration.named-exports'] = syntheticCapture(
+          '@declaration.named-exports',
           fnNode,
-          'true',
+          '[]',
         );
       }
     }
@@ -743,13 +743,11 @@ export function emitTsScopeCaptures(
           declNameNode,
           'true',
         );
-        if (!isEsmNamedDefaultBinding(declNameNode, exportEvidence)) {
-          grouped['@declaration.is-default-export-only'] = syntheticCapture(
-            '@declaration.is-default-export-only',
-            declNameNode,
-            'true',
-          );
-        }
+        grouped['@declaration.named-exports'] = syntheticCapture(
+          '@declaration.named-exports',
+          declNameNode,
+          JSON.stringify(namedExportsOfDefault(declNameNode, exportEvidence)),
+        );
       }
     }
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);

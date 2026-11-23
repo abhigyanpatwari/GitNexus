@@ -43,7 +43,7 @@ import {
   collectEsmExportEvidence,
   esmExportVerdict,
   isEsmDefaultExport,
-  isEsmNamedDefaultBinding,
+  namedExportsOfDefault,
 } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from '../typescript/import-decomposer.js';
 import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './query.js';
@@ -1079,10 +1079,10 @@ export function emitJsScopeCaptures(
           fnNode,
           'true',
         );
-        grouped['@declaration.is-default-export-only'] = syntheticCapture(
-          '@declaration.is-default-export-only',
+        grouped['@declaration.named-exports'] = syntheticCapture(
+          '@declaration.named-exports',
           fnNode,
-          'true',
+          '[]',
         );
       }
     }
@@ -1186,13 +1186,11 @@ export function emitJsScopeCaptures(
           declNameNode,
           'true',
         );
-        if (!isEsmNamedDefaultBinding(declNameNode, exportEvidence)) {
-          grouped['@declaration.is-default-export-only'] = syntheticCapture(
-            '@declaration.is-default-export-only',
-            declNameNode,
-            'true',
-          );
-        }
+        grouped['@declaration.named-exports'] = syntheticCapture(
+          '@declaration.named-exports',
+          declNameNode,
+          JSON.stringify(namedExportsOfDefault(declNameNode, exportEvidence)),
+        );
       }
     }
     out.push(grouped);

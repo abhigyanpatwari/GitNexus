@@ -8,23 +8,11 @@ interface SelfBoundCallables {
 }
 
 const indexes = new WeakMap<ParsedFile, SelfBoundCallables>();
-const publicationNames = new WeakMap<ParsedFile, ReadonlySet<string>>();
 
-/** Refuse global guesses for names that cannot be bound by their written declaration. */
+/** Named expressions bind privately; anonymous display names are never bindings. */
 export const isJsSelfBoundCallableFallbackPlausible: NonNullable<
   ScopeResolver['isGlobalNameFallbackPlausible']
 > = ({ callerParsed, candidate, parsedFileOf, site }) => {
-  let published = publicationNames.get(callerParsed);
-  if (published === undefined) {
-    const names = new Set<string>();
-    for (const directive of callerParsed.parsedImports) {
-      if (directive.exportsOnly && 'localName' in directive) names.add(directive.localName);
-    }
-    published = names;
-    publicationNames.set(callerParsed, published);
-  }
-  if (published.has(site.name)) return false;
-
   const parsed = parsedFileOf(candidate.filePath);
   if (parsed === undefined) return true;
   let index = indexes.get(parsed);

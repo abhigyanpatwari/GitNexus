@@ -1054,16 +1054,18 @@ function tryFinalize(
   // A published name is not a local binding. Retain the statement's actual
   // file dependency, even when its publication is ambiguous or absent.
   if (draft.source.exportsOnly === true) {
-    const inherited =
-      draft.source.kind === 'reexport'
-        ? moduleExports?.get(targetFile, draft.source.importedName)
-        : undefined;
+    const named = draft.source.kind === 'reexport';
+    const inherited = named ? moduleExports?.get(targetFile, draft.source.importedName) : undefined;
     return {
       ...draft.base,
       kind: 'side-effect',
       localName: '',
-      targetExportedName: '',
+      targetExportedName: named ? draft.source.importedName : '',
       targetModuleScope: targetModule.moduleScope,
+      // Rename needs the resolved exported token while lexical lookup does
+      // not bind this dependency to a local name.
+      ...(inherited ? { targetDefId: inherited.def.nodeId } : {}),
+      ...(named && inherited === undefined ? { linkStatus: 'unresolved' as const } : {}),
       ...(inherited?.typeOnly ? { typeOnly: true } : {}),
     };
   }
@@ -2183,7 +2185,12 @@ function materializeBindings(
       buckets.set(scopeId, scopeBindings);
     }
     for (const edge of imports) {
-      if (edge.targetDefId === undefined || edge.linkStatus === 'unresolved') continue;
+      if (
+        edge.kind === 'side-effect' ||
+        edge.targetDefId === undefined ||
+        edge.linkStatus === 'unresolved'
+      )
+        continue;
       const def = defById.get(edge.targetDefId);
       if (def === undefined) continue;
 

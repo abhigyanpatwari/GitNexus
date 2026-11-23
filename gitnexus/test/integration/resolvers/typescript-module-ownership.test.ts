@@ -11,6 +11,8 @@ export default function defaultExport() {}
 `,
     'right.ts': 'export function publish() {}\nexport class Entity { save() {} }',
     'dual.ts': 'export default function dual() {}\nexport { dual };',
+    'default-alias.ts':
+      'export default function implementation() {}\nexport { implementation as exposed };',
     'first.ts': "export { publish } from './left.js';",
     'second.ts': "export * from './right.js';",
     'ambiguous.ts': `
@@ -65,6 +67,7 @@ import { types } from './type-namespace.js';
 import { publish as mixed } from './mixed.js';
 import { publish as cycled } from './cycle-b.js';
 import { dual } from './dual-forward.js';
+import * as aliases from './default-alias.js';
 
 export function ambiguousCall() { ambiguous(); }
 export function reversedCall() { reversed(); }
@@ -84,6 +87,11 @@ export function namedDefault() {
   api.defaultExport();
 }
 export function dualDefault() { dual(); }
+export function namedAliasOfDefault() { aliases.exposed(); }
+export function privateAliasImplementation() {
+  // @ts-expect-error The lexical name was not exported.
+  aliases.implementation();
+}
 export function nestedNamespace() { pack.api.publish(); }
 export function diamondNamespace() { diamond.publish(); }
 export function qualifiedType(value: pack.api.Entity) { value.save(); }
@@ -122,6 +130,8 @@ export function privateNamespace() {
     ['entry.ts:forwardedNamespace', ['Function:left.ts:defaultExport']],
     ['entry.ts:namedDefault', []],
     ['entry.ts:dualDefault', ['Function:dual.ts:dual']],
+    ['entry.ts:namedAliasOfDefault', ['Function:default-alias.ts:implementation']],
+    ['entry.ts:privateAliasImplementation', []],
     ['entry.ts:nestedNamespace', [publishLeft]],
     ['entry.ts:diamondNamespace', [publishLeft]],
     ['entry.ts:qualifiedType', ['Method:left.ts:Entity.save#0']],

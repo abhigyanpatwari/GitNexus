@@ -39,8 +39,8 @@ import type { SyntaxNode } from './utils/ast-helpers.js';
 export interface EsmExportEvidence {
   /** Local names published by `export { … }`, `export default <id>`, `export = <id>`. */
   readonly namedLocals: ReadonlySet<string>;
-  /** Bindings explicitly exported under their own name by an export clause. */
-  readonly sameNameLocals?: ReadonlySet<string>;
+  /** Written runtime publications grouped by their local binding names. */
+  readonly namedExports?: ReadonlyMap<string, ReadonlySet<string>>;
   /** The file exports through a CommonJS assignment: a plain "not under
    *  `export`" is no verdict there. */
   readonly commonJs: boolean;
@@ -261,7 +261,7 @@ export function collectEsmExportEvidence(
 ): EsmExportEvidence | undefined {
   if (filePath.endsWith('.d.ts')) return undefined;
   const namedLocals = new Set<string>();
-  let sameNameLocals: Set<string> | undefined;
+  let namedExports: Map<string, Set<string>> | undefined;
   // Every local named as the default; two different ones (invalid input) name none.
   const defaultLocals = new Set<string>();
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
@@ -276,6 +276,7 @@ export function collectEsmExportEvidence(
       if (stmt.childForFieldName('source') !== null) continue;
       for (const child of stmt.namedChildren) {
         if (child.type === 'export_clause') {
+          const typeOnly = stmt.children.some((token) => token.type === 'type');
           for (const spec of child.namedChildren) {
             if (spec.type !== 'export_specifier') continue;
             const name = spec.childForFieldName('name')?.text;
@@ -283,9 +284,16 @@ export function collectEsmExportEvidence(
             namedLocals.add(name);
             // `export { f as default }`: TS parses the alias as an identifier,
             // JS as an anonymous `default` token, so compare text, not type.
-            const alias = spec.childForFieldName('alias')?.text;
-            if (alias === 'default') defaultLocals.add(name);
-            if (alias === undefined || alias === name) (sameNameLocals ??= new Set()).add(name);
+            const alias = spec.childForFieldName('alias');
+            if (typeOnly || spec.children.some((token) => token.type === 'type')) continue;
+            if (alias?.text === 'default') {
+              defaultLocals.add(name);
+            } else if (alias?.type !== 'string') {
+              namedExports ??= new Map();
+              let names = namedExports.get(name);
+              if (!names) namedExports.set(name, (names = new Set()));
+              names.add(alias?.text ?? name);
+            }
           }
         } else if (child.type === 'identifier') {
           // `export default f;` and TS `export = f;`. Only the former names a
@@ -299,7 +307,7 @@ export function collectEsmExportEvidence(
     }
   }
   const [defaultLocal] = defaultLocals.size === 1 ? defaultLocals : [];
-  return { namedLocals, sameNameLocals, commonJs, defaultLocal };
+  return { namedLocals, namedExports, commonJs, defaultLocal };
 }
 
 function isDefaultExportStatement(stmt: SyntaxNode): boolean {
@@ -324,22 +332,20 @@ export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvid
   );
 }
 
-/** Check for an independent publication of a known default binding under its own name. */
-export function isEsmNamedDefaultBinding(
-  nameNode: SyntaxNode,
-  evidence: EsmExportEvidence,
-): boolean {
-  if (evidence.sameNameLocals?.has(nameNode.text)) return true;
+/** Public names of a known default binding, in addition to `default` itself. */
+export function namedExportsOfDefault(nameNode: SyntaxNode, evidence: EsmExportEvidence): string[] {
+  const names = new Set(evidence.namedExports?.get(nameNode.text));
   for (let declaration = nameNode.parent; declaration !== null; declaration = declaration.parent) {
     const statement = declaration.parent;
     if (
       statement?.type === 'export_statement' &&
       statement.childForFieldName('declaration')?.id === declaration.id
     ) {
-      return !isDefaultExportStatement(statement);
+      if (!isDefaultExportStatement(statement)) names.add(nameNode.text);
+      break;
     }
   }
-  return false;
+  return [...names];
 }
 
 /** Is `object` the value of a top-level `module.exports = { … }` assignment? */

@@ -139,8 +139,8 @@ export interface SymbolDefinition {
    * the declaration under its default-export key.
    */
   isDefaultExport?: boolean;
-  /** The default binding has no independent named export under its lexical spelling. */
-  isDefaultExportOnly?: true;
+  /** Additional public names of a default binding. An empty array denotes a default-only export. */
+  namedExports?: readonly string[];
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)

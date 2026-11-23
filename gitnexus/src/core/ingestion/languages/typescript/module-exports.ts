@@ -14,12 +14,15 @@ export const ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES: ReadonlySet<string> = 
 export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string, SymbolDefinition> {
   const exports = new Map<string, SymbolDefinition>();
   const ambiguous = new Set<string>();
-  for (const [spelling, definition] of indexTopLevelExportsByName(parsed.localDefs)) {
-    if (definition.isDefaultExportOnly) continue;
+  const publish = (spelling: string, definition: SymbolDefinition) => {
     const name = canonicalTypeScriptName(spelling);
     const previous = exports.get(name);
     if (previous && previous.nodeId !== definition.nodeId) ambiguous.add(name);
     else exports.set(name, definition);
+  };
+  for (const [spelling, definition] of indexTopLevelExportsByName(parsed.localDefs)) {
+    if (definition.namedExports === undefined) publish(spelling, definition);
+    else for (const name of definition.namedExports) publish(name, definition);
   }
   for (const name of ambiguous) exports.delete(name);
   // Indexing only the marked defs picks the same callable winner a named import

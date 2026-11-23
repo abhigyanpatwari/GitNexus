@@ -17,6 +17,7 @@ type Exports = ReadonlyMap<string, SymbolDefinition>;
 
 export interface ExclusiveModuleExports {
   get(file: string, name: string): PublishedExport | undefined;
+  isReexported(file: string, name: string): boolean;
   values(file: string): Exports;
   readonly ambiguities: ReadonlyArray<{
     readonly filePath: string;
@@ -208,6 +209,9 @@ export function buildExclusiveModuleExports(
       return state === undefined || 'candidates' in state ? undefined : state;
     },
     values: valuesFor,
+    isReexported(file, name) {
+      return explicit.get(file)?.has(name) === true || states.get(file)?.has(name) === true;
+    },
     ambiguities,
   };
 }
