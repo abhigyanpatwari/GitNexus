@@ -10,18 +10,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const probe = vi.hoisted(() => ({ turn: 0, parseTurns: [] as number[] }));
-
 vi.mock('../../../src/core/tree-sitter/safe-parse.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('../../../src/core/tree-sitter/safe-parse.js')>();
-  return {
-    ...actual,
-    parseSourceSafe: (...args: Parameters<typeof actual.parseSourceSafe>) => {
-      probe.parseTurns.push(probe.turn);
-      return actual.parseSourceSafe(...args);
-    },
-  };
+  const { recordParseTurns } = await import('../../helpers/event-loop-turns.js');
+  return recordParseTurns(
+    await importOriginal<typeof import('../../../src/core/tree-sitter/safe-parse.js')>(),
+  );
 });
 
 import { TopicExtractor } from '../../../src/core/group/extractors/topic-extractor.js';
@@ -31,6 +24,7 @@ import { IncludeExtractor } from '../../../src/core/group/extractors/include-ext
 import type { ContractExtractor } from '../../../src/core/group/contract-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 import { PARSES_PER_RELEASE } from '../../../src/core/tree-sitter/native-tree-release.js';
+import { countingTurns, maxParsesPerTurn, turnProbe } from '../../helpers/event-loop-turns.js';
 
 const FILES = 3 * PARSES_PER_RELEASE;
 
@@ -40,30 +34,6 @@ const makeRepo = (repoPath: string): RepoHandle => ({
   repoPath,
   storagePath: path.join(repoPath, '.gitnexus'),
 });
-
-/** Run `fn` while a self-rescheduling `setImmediate` numbers event-loop turns. */
-async function countingTurns<T>(fn: () => Promise<T>): Promise<T> {
-  probe.turn = 0;
-  probe.parseTurns = [];
-  let running = true;
-  const tick = (): void => {
-    if (!running) return;
-    probe.turn += 1;
-    setImmediate(tick);
-  };
-  setImmediate(tick);
-  try {
-    return await fn();
-  } finally {
-    running = false;
-  }
-}
-
-function maxParsesPerTurn(): number {
-  const perTurn = new Map<number, number>();
-  for (const turn of probe.parseTurns) perTurn.set(turn, (perTurn.get(turn) ?? 0) + 1);
-  return Math.max(0, ...perTurn.values());
-}
 
 const CASES: Array<[string, () => ContractExtractor, (i: number) => [string, string]]> = [
   ['topic', () => new TopicExtractor(), (i) => [`src/T${i}.java`, `class T${i} {}\n`]],
@@ -96,7 +66,7 @@ describe('sibling extractors release trees as they parse', () => {
 
     await countingTurns(() => make().extract(null, tmpDir, makeRepo(tmpDir)));
 
-    expect(probe.parseTurns.length).toBe(FILES);
+    expect(turnProbe.parseTurns.length).toBe(FILES);
     expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
   });
 });

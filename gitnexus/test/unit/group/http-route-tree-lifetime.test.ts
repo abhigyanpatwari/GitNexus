@@ -15,26 +15,20 @@ import * as path from 'node:path';
 import v8 from 'node:v8';
 import Parser from 'tree-sitter';
 
-const probe = vi.hoisted(() => ({ turn: 0, parseTurns: [] as number[] }));
-
 // Pass-through spy that records the event-loop turn of every parse. The
 // orchestrator also hands this function to the plugins' `prepareRepo`.
 vi.mock('../../../src/core/tree-sitter/safe-parse.js', async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import('../../../src/core/tree-sitter/safe-parse.js')>();
-  return {
-    ...actual,
-    parseSourceSafe: (...args: Parameters<typeof actual.parseSourceSafe>) => {
-      probe.parseTurns.push(probe.turn);
-      return actual.parseSourceSafe(...args);
-    },
-  };
+  const { recordParseTurns } = await import('../../helpers/event-loop-turns.js');
+  return recordParseTurns(
+    await importOriginal<typeof import('../../../src/core/tree-sitter/safe-parse.js')>(),
+  );
 });
 
 import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
 import { getPluginForFile } from '../../../src/core/group/extractors/http-patterns/index.js';
 import type { HttpLanguagePlugin } from '../../../src/core/group/extractors/http-patterns/types.js';
 import { PARSES_PER_RELEASE } from '../../../src/core/tree-sitter/native-tree-release.js';
+import { countingTurns, maxParsesPerTurn, turnProbe } from '../../helpers/event-loop-turns.js';
 import type { CypherExecutor } from '../../../src/core/group/contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../../../src/core/group/types.js';
 
@@ -141,6 +135,37 @@ public class OrderClient {
     return restTemplate.getForObject("/api/things1/7", String.class);
   }
 }
+`,
+  );
+  // Opens the Java and Python `prepareRepo` parse passes (a constants class and
+  // an `include_router` call), so trees those passes keep would show up here.
+  // Neither file yields a contract.
+  write(
+    root,
+    'legacy/src/main/java/com/example/api/ApiRoutes.java',
+    `package com.example.api;
+
+public final class ApiRoutes {
+  public static final String BASE = "/api/base";
+}
+`,
+  );
+  write(
+    root,
+    'py/app/main.py',
+    `from fastapi import FastAPI
+from app.empty import router
+
+app = FastAPI()
+app.include_router(router, prefix="/v1")
+`,
+  );
+  write(
+    root,
+    'py/app/empty.py',
+    `from fastapi import APIRouter
+
+router = APIRouter()
 `,
   );
   write(
@@ -334,31 +359,6 @@ function unresolvedRouteDb(filePath: string, routePath: string): CypherExecutor 
   };
 }
 
-/** Run `fn` while a self-rescheduling `setImmediate` numbers event-loop turns. */
-async function countingTurns<T>(fn: () => Promise<T>): Promise<T> {
-  probe.turn = 0;
-  probe.parseTurns = [];
-  let running = true;
-  const tick = (): void => {
-    if (!running) return;
-    probe.turn += 1;
-    setImmediate(tick);
-  };
-  setImmediate(tick);
-  try {
-    return await fn();
-  } finally {
-    running = false;
-  }
-}
-
-/** Most parses that ran inside one event-loop turn of the last `countingTurns`. */
-function maxParsesPerTurn(): number {
-  const perTurn = new Map<number, number>();
-  for (const turn of probe.parseTurns) perTurn.set(turn, (perTurn.get(turn) ?? 0) + 1);
-  return Math.max(0, ...perTurn.values());
-}
-
 /** Contracts in a compact, order-independent form for parity checks. */
 function contractKeys(contracts: ExtractedContract[]): string[] {
   return contracts
@@ -516,7 +516,7 @@ describe('HTTP source scan tree lifetime', () => {
 
     expect(contracts.length).toBeGreaterThan(0);
     // Every bulk file is parsed exactly once.
-    expect(probe.parseTurns.length).toBe(4 * BULK);
+    expect(turnProbe.parseTurns.length).toBe(4 * BULK);
     expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
   });
 
@@ -534,13 +534,13 @@ describe('HTTP source scan tree lifetime', () => {
           parser: new Parser(),
           readFile: (rel) => files.get(rel) ?? null,
           parseSource: (parser, src) => {
-            probe.parseTurns.push(probe.turn);
+            turnProbe.parseTurns.push(turnProbe.turn);
             return parser.parse(src);
           },
         }),
       );
 
-      expect(probe.parseTurns.length).toBe(BULK);
+      expect(turnProbe.parseTurns.length).toBe(BULK);
       expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
     },
   );
