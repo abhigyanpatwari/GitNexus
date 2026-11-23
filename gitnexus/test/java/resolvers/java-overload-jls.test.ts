@@ -47,33 +47,6 @@ it('records unresolved receivers once across replay without merging distinct sit
   }
 });
 
-describe('Java protected overloads in enclosing subclasses', () => {
-  let result: PipelineResult;
-  beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-protected-overloads'), () => {});
-  }, 120_000);
-
-  it.each(['nested', 'deeplyNested', 'enclosingSubclass', 'staticNested'])(
-    'permits protected access from %s through the enclosing subclass',
-    (caller) => {
-      expect(targets(result, caller, 'pick')).toEqual(['Method:a/A.java:A.pick#1~String']);
-    },
-  );
-
-  it.each(['baseReceiver', 'siblingReceiver'])(
-    'keeps the protected receiver restriction for %s',
-    (caller) => {
-      expect(targets(result, caller, 'pick')).toEqual(['Method:a/A.java:A.pick#1~Object']);
-    },
-  );
-
-  it('allows a protected static method through the declaring type', () => {
-    expect(targets(result, 'protectedStatic', 'staticPick')).toEqual([
-      'Method:a/A.java:A.staticPick#1~String',
-    ]);
-  });
-});
-
 describe('Java imported overloads and declared dispatch bounds', () => {
   const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-imported-overloads-'));
   let result: PipelineResult;
@@ -183,19 +156,6 @@ describe('Java JLS overload resolution — issue #3789', () => {
         signature,
       ).toBe(count);
     }
-  });
-
-  it('selects collection factories without attributing them to the scalar overload', () => {
-    for (const caller of ['listOrders', 'settle', 'find']) {
-      expect(targets(original, caller, 'find')).toEqual([
-        'Method:src/main/java/demo/LookupService.java:LookupService.find#1~Collection<Long>',
-      ]);
-    }
-    expect(
-      getResolutionOutcomes(original).filter(
-        (outcome) => outcome.kind === 'suppressed' && outcome.reason.startsWith('overload-'),
-      ),
-    ).toEqual([]);
   });
 });
 

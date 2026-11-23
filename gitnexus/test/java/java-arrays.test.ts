@@ -259,30 +259,6 @@ class Qualified {
   });
 });
 
-describe('Java annotated lambda array parameter', () => {
-  const result = useFixture('java-annotated-lambda-array', {
-    'Main.java': `class Element { void save() {} }
-  class Marker { void save() {} }
-  interface ArrayAction { void accept(Element[] values); }
-  class App {
-    void run() {
-      ArrayAction action = (Element @p.Marker [] values) -> values[0].save();
-    }
-  }`,
-    'p/Marker.java': `package p;
-  import java.lang.annotation.Target;
-  import java.lang.annotation.ElementType;
-  @Target(ElementType.TYPE_USE) public @interface Marker {}`,
-  });
-
-  it('resolves the lambda array element owner, never the type-use annotation', () => {
-    const targets = getRelationships(result(), 'CALLS')
-      .filter((edge) => edge.target === 'save')
-      .map((edge) => edge.rel.targetId);
-    expect(targets).toEqual(['Method:Main.java:Element.save#0']);
-  });
-});
-
 /**
  * `values[0].save()` over an array whose element type is written qualified
  * (`Outer.Inner[]`). The element spelling is read where the array was
@@ -420,36 +396,4 @@ class Lone implements Marker {
       expect(saveTargets(caller)).toEqual([]);
     },
   );
-});
-
-describe('Java implicit array receivers inside an anonymous class method', () => {
-  const result = useFixture('java-anonymous-implicit-array', {
-    'app/User.java': 'package app; public class User { public void save() {} }',
-    'app/Other.java': 'package app; public class Other { public void save() {} }',
-    'app/Host.java': `package app;
-public class Host {
-  User[] items() { return null; }
-  Runnable task = new Runnable() {
-    Other[] items() { return null; }
-    public void run() { items()[0].save(); }
-  };
-  void named() { items()[0].save(); }
-}`,
-  });
-  const saveTargets = (caller: string): string[] =>
-    getRelationships(result(), 'CALLS')
-      .filter((edge) => edge.rel.sourceId === caller && edge.target === 'save')
-      .map((edge) => edge.rel.targetId)
-      .sort();
-
-  it.each([
-    [
-      'the anonymous class',
-      'Method:app/Host.java:Host$1.run#0',
-      'Method:app/Other.java:Other.save#0',
-    ],
-    ['the named class', 'Method:app/Host.java:Host.named#0', 'Method:app/User.java:User.save#0'],
-  ])('reads items() of %s for an implicit receiver', (_label, caller, target) => {
-    expect(saveTargets(caller)).toEqual([target]);
-  });
 });

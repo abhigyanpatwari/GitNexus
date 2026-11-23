@@ -76,31 +76,6 @@ class App {
   });
 });
 
-describe('Java qualified type root shadowed by a same-package type', () => {
-  const result = useFixture('java-qualified-type-root-shadow', {
-    'prefix/User.java': 'package prefix; public class User { public void save() {} }',
-    'p/prefix.java': `package p; public class prefix {
-  public static class User { public void save() {} }
-}`,
-    'p/App.java': `package p; public class App {
-  void run(prefix.User value) { value.save(); }
-}`,
-  });
-
-  // `prefix.User` names the member type `p.prefix.User`: the root `prefix` is a
-  // class in scope from the same package, so it is read as a type and never as
-  // the package `prefix` (JLS 6.5.4.1), even though that package has a `User`.
-  it('reads a visible same-package type qualifier as a type, not as an unrelated package', () => {
-    const targets = getRelationships(result(), 'CALLS')
-      .filter(
-        (edge) => edge.rel.sourceId === 'Method:p/App.java:App.run#1' && edge.target === 'save',
-      )
-      .map((edge) => edge.rel.targetId);
-    expect(targets).not.toContain('Method:prefix/User.java:User.save#0');
-    expect(targets).toEqual(['Method:p/prefix.java:User.save#0']);
-  });
-});
-
 describe('Java try-with-resources bindings', () => {
   it('binds resources through the try body without leaking into handlers or later statements', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-java-resource-ownership-'));
@@ -160,95 +135,6 @@ class App {
       fs.rmSync(root, { recursive: true, force: true });
     }
   }, 120000);
-});
-
-describe('Java qualified member-type spellings', () => {
-  const result = useFixture('java-review-followups-nested-fqn', {
-    'models/Outer.java': `package models;
-public class Outer {
-  public static class Inner { public void run() {} }
-  public interface Face { void run(); }
-}`,
-    'models/Other.java': 'package models; public class Other { public void run() {} }',
-    'app/App.java': `package app;
-class App {
-  void parameter(models.Outer.Inner value) { value.run(); }
-  void local() { models.Outer.Inner value = null; value.run(); }
-  void member(models.Outer.Face value) { value.run(); }
-}`,
-    'Same.java': `class Uniq { static class Solo { void run() {} } }
-class Other2 { void run() {} }
-class SameFile { void q4(Uniq.Solo value) { value.run(); } }`,
-  });
-
-  it.each([
-    ['parameter', 'Method:app/App.java:App.parameter#1', 'Method:models/Outer.java:Inner.run#0'],
-    ['local', 'Method:app/App.java:App.local#0', 'Method:models/Outer.java:Inner.run#0'],
-    ['member', 'Method:app/App.java:App.member#1', 'Method:models/Outer.java:Face.run#0'],
-    ['same-file', 'Method:Same.java:SameFile.q4#1', 'Method:Same.java:Solo.run#0'],
-  ])('resolves a %s receiver typed by a nested type FQN', (_label, caller, target) => {
-    expect(callTargets(result(), caller, 'run')).toEqual([target]);
-  });
-
-  it.each([
-    ['Method:app/App.java:App.parameter#1', 'Method:models/Other.java:Other.run#0'],
-    ['Method:Same.java:SameFile.q4#1', 'Method:Same.java:Other2.run#0'],
-  ])('never binds %s to the unrelated owner %s', (caller, wrong) => {
-    expect(callTargets(result(), caller, 'run')).not.toContain(wrong);
-  });
-});
-
-describe('Java qualified spellings are judged per reference', () => {
-  const result = useFixture('java-review-followups-per-reference', {
-    'models/User.java': 'package models; public class User { public void save() {} }',
-    'models/Other.java': 'package models; public class Other { public void save() {} }',
-    'app/App.java': `package app;
-import models.User;
-class App {
-  void good(models.User u) { u.save(); }
-  static class Nested {
-    static class models { static class User { void save() {} } }
-    void unrelated(models.User u) { u.save(); }
-  }
-}`,
-  });
-
-  it('resolves the package-qualified reference outside the shadowing type', () => {
-    expect(callTargets(result(), 'Method:app/App.java:App.good#1', 'save')).toEqual([
-      'Method:models/User.java:User.save#0',
-    ]);
-  });
-
-  it('resolves the shadowed reference to the member type, never to the package type', () => {
-    expect(callTargets(result(), 'Method:app/App.java:Nested.unrelated#1', 'save')).toEqual([
-      'Method:app/App.java:User.save#0',
-    ]);
-  });
-});
-
-describe('Java qualified spellings under an inherited member type', () => {
-  const result = useFixture('java-review-followups-inherited-root', {
-    'models/User.java': 'package models; public class User { public void save() {} }',
-    'models/Other.java': 'package models; public class Other { public void save() {} }',
-    'app/App.java': `package app;
-class Base { static class models { static class User { void save() {} } } }
-class Sub extends Base { void inherited(models.User u) { u.save(); } }
-class Plain { void unrelated(models.User u) { u.save(); } }`,
-  });
-
-  // JLS 6.4.1 / 8.5: `Sub` inherits the accessible member type `Base.models`,
-  // which shadows the package `models` in its body.
-  it('reads a root a subclass inherits as a member type as that member type', () => {
-    expect(callTargets(result(), 'Method:app/App.java:Sub.inherited#1', 'save')).toEqual([
-      'Method:app/App.java:User.save#0',
-    ]);
-  });
-
-  it('keeps the package reading where no enclosing type inherits the member', () => {
-    expect(callTargets(result(), 'Method:app/App.java:Plain.unrelated#1', 'save')).toEqual([
-      'Method:models/User.java:User.save#0',
-    ]);
-  });
 });
 
 describe('Java qualified type roots that name a type from another file', () => {
@@ -376,49 +262,6 @@ class K${index} extends Base {
       expect(targets('shadow', method)).toEqual(Array.from({ length: count }, () => []));
     },
   );
-});
-
-// JLS 6.4.1: an inherited member type shadows a package of the same name, so
-// `models.User` inside `Child` is `Base.models.User`, never `models.User`.
-describe('Java qualified type roots shadowed by an inherited member type', () => {
-  const result = useFixture('java-r3-inherited-member-root', {
-    'models/User.java': `package models;
-public class User { public void save() {} }
-`,
-    'app/Base.java': `package app;
-public class Base {
-  public static class models {
-    public static class User { public void save() {} }
-  }
-}
-`,
-    'app/Child.java': `package app;
-public class Child extends Base {
-  void run(models.User u) { u.save(); }
-  class Nested {
-    void run(models.User u) { u.save(); }
-  }
-}
-`,
-    'app/Plain.java': `package app;
-public class Plain {
-  void run(models.User u) { u.save(); }
-}
-`,
-  });
-
-  it.each([['Method:app/Child.java:Child.run#1'], ['Method:app/Child.java:Nested.run#1']])(
-    'reads the inherited member root as that member type in %s',
-    (caller) => {
-      expect(saveTargets(result(), caller)).toEqual(['Method:app/Base.java:User.save#0']);
-    },
-  );
-
-  it('still reads the root as a package where no member type is inherited', () => {
-    expect(saveTargets(result(), 'Method:app/Plain.java:Plain.run#1')).toEqual([
-      'Method:models/User.java:User.save#0',
-    ]);
-  });
 });
 
 // JLS 7.5.4: `import static lib.Outer.*;` imports every accessible static

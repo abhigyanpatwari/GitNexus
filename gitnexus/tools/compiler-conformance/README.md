@@ -43,7 +43,7 @@ An execution trace of `Greeter().entry()` can record the following call to `gree
 
 - **Source range.** Report the entire call expression using fixture-relative paths with forward slashes. Lines start at 1. Columns count UTF-16 code units from 0. The end is exclusive. Convert byte offsets or tab-expanded columns in the producer.
 - **Outcome.** A resolved record requires a target. Use a record such as `{"file":"main.py","start":"5:11","end":"5:18","status":"ambiguous"}` for an explicit ambiguity. Producers can agree on additional status strings. For multiple observed targets, emit one record per target at the same range.
-- **Declaration identity.** Both producers must use the same string for a declaration. The Java pilot uses the fixture-relative declaration file and start position. A fully qualified symbol and signature also work. Optional `description` text gives a human-readable target in diagnostics.
+- **Declaration identity.** Both producers must use the same string for a declaration. The Java adapter uses the fixture-relative declaration file and start position. A fully qualified symbol and signature also work. Optional `description` text gives a human-readable target in diagnostics.
 - **Graph edges.** Include `edges` in both reports to compare the published caller-to-callee pairs. Use `[]` for an observed empty graph. Omit the field from both reports to compare sites alone.
 
 Site records and edges are sets. Order and repeated identical observations have no effect. The reference needs at least one site. Each producer should enumerate its own results over the same fixture and selection rule so missing and unexpected calls remain visible.
@@ -56,17 +56,27 @@ The GitNexus adapter uses recorded resolution outcomes and call edges with exact
 2. Translate the native source ranges, declarations, and outcomes into reports. A command-line producer can write JSON using its language's standard library.
 3. Run the comparison and verify that changing one selected target produces a mismatch at the correct source range.
 
-To test your own Java analyzer, generate the reference directly with Node.js and JDK 21. Supply a self-contained source fixture and the method names to inspect. The adapter checks source method invocations inside methods and constructors.
+## Java fixtures
+
+To add a call-resolution case, put a self-contained Java project under `gitnexus/test/fixtures/compiler-conformance/java-<case>/`. Write the Java source exactly as it should be analyzed. The runner discovers the directory and sends the same source to JDK 21 and the production GitNexus ingestion pipeline. Each project gets an isolated javac task in one JVM. A single project can exercise several distinct calls on the same line.
+
+Run the command from a built `gitnexus/` checkout.
+
+```sh
+npm run test:conformance:java
+```
+
+For example, a fixture can declare `pick(Object)` and `pick(String)` and call `pick("x")`. Javac supplies the selected declaration and source range. CI detects a missing call, an extra call, a different target, or a disagreement about ambiguity or applicability. It compares direct call edges as well. GitNexus runtime interface implementations have their own graph assertions.
+
+The runner also compares source type identities, ordinary method names and counts per file, and direct inheritance between source types. Selected projects check constructor edges, including `super(...)` and `this(...)`. The graph reports these edges in aggregate. Put explicit constructor overloads on different declaration lines in those projects so each edge has an unambiguous target.
+
+[The fixture manifest](java/fixtures.json) reuses projects outside the discovery directory and pins the number of compiler sites for migrated tests. A fixture can select method families or compare only type declarations when collapsed overloads give GitNexus a different method inventory. The manifest records why eleven shared projects run in Vitest. They exercise incomplete Java, invalid source layouts, or duplicate types across module boundaries. The runner automatically includes new `lang-resolution/java-*` source projects. The [generated matrix](java/conversion-matrix.mjs) independently pins all 100 argument ranges across 20 overload pairs.
+
+Four fixtures record existing disagreements. The overload cases have a `known-differences.txt` alongside the source. Two shared projects point to difference files from the manifest to preserve their benchmark input trees. CI prints the exact differences and fails if one appears, changes, or disappears unexpectedly. To fail on every disagreement, including the recorded ones, run `npm run test:conformance:java -- --strict`.
+
+To compare another analyzer against javac, run the following from this directory. Omit the method names to report all invocations with source declarations.
 
 ```sh
 node java/javac-report.mjs /path/to/fixture find resolve count > compiler.json
 node compare.mjs compiler.json analyzer.json
-```
-
-The [Java compiler check](java/check.mjs) batches five checked-in fixtures and one [generated overload matrix](java/conversion-matrix.mjs) in a single JVM. The cross-file fixtures check static factory imports and calls on the inferred return type, including when the consumer is visited first. The matrix covers all 20 ordered pairs of distinct parameter types from `long`, `Integer`, `Long`, `Number`, and `Object`. Each pair receives an int literal, a long literal, an `Integer` parameter, a `Long` parameter, and `null`. The generator records all 100 source ranges before either tool runs. Of these calls, 98 resolve and two are ambiguous.
-
-The job compares javac's declarations and ambiguities with the [GitNexus call report](gitnexus-report.mjs). Run it from `gitnexus/` with JDK 21 and a built checkout.
-
-```sh
-npm run test:conformance:java
 ```

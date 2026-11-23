@@ -3,7 +3,9 @@ import com.sun.source.util.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
-import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.TypeElement;
+import javax.lang.model.util.Elements;
+import javax.lang.model.util.Types;
 import javax.tools.*;
 
 /** Attribute each fixture in its own javac task, all in the same JVM. */
@@ -12,15 +14,20 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     private final Path root;
     private final Set<String> families;
     private final Trees trees;
-    private final List<Diagnostic<? extends JavaFileObject>> ambiguities;
+    private final Elements elements;
+    private final Types types;
+    private final Set<String> constructorLines = new HashSet<>();
+    private final List<Diagnostic<? extends JavaFileObject>> errors;
 
-    private OverloadOracle(int fixtureIndex, Path root, Set<String> families, Trees trees,
-                           List<Diagnostic<? extends JavaFileObject>> ambiguities) {
+    private OverloadOracle(int fixtureIndex, Path root, Set<String> families, Trees trees, Elements elements, Types types,
+                           List<Diagnostic<? extends JavaFileObject>> errors) {
         this.fixtureIndex = fixtureIndex;
         this.root = root;
         this.families = families;
         this.trees = trees;
-        this.ambiguities = ambiguities;
+        this.elements = elements;
+        this.types = types;
+        this.errors = errors;
     }
 
     public static void main(String[] args) throws Exception {
@@ -33,24 +40,40 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                 var sources = walk.filter(p -> p.toString().endsWith(".java")).sorted().toList();
                 var diagnostics = new DiagnosticCollector<JavaFileObject>();
                 var task = (JavacTask) compiler.getTask(null, files, diagnostics,
-                        List.of("--release", "21", "-proc:none"), null,
+                        List.of("--release", "21", "-proc:none", "-Xdiags:verbose"), null,
                         files.getJavaFileObjectsFromPaths(sources));
                 var units = task.parse();
                 task.analyze();
-                var ambiguities = new ArrayList<Diagnostic<? extends JavaFileObject>>();
+                var errors = new ArrayList<Diagnostic<? extends JavaFileObject>>();
                 for (var error : diagnostics.getDiagnostics()) {
                     if (error.getKind() != Diagnostic.Kind.ERROR) continue;
-                    if (!error.getCode().equals("compiler.err.ref.ambiguous")) {
+                    if (rejection(error) == null) {
                         throw new IllegalStateException(error.toString());
                     }
-                    ambiguities.add(error);
+                    errors.add(error);
                 }
                 var oracle = new OverloadOracle(i / 2, root, Set.of(args[i + 1].split(",")),
-                        Trees.instance(task), ambiguities);
+                        Trees.instance(task), task.getElements(), task.getTypes(), errors);
                 for (var unit : units) oracle.scan(unit, null);
-                if (!ambiguities.isEmpty()) throw new IllegalStateException("Unmatched " + ambiguities);
+                if (!errors.isEmpty()) throw new IllegalStateException("Unmatched " + errors);
             }
         }
+    }
+
+    private static String rejection(Diagnostic<?> error) {
+        return switch (error.getCode()) {
+            case "compiler.err.ref.ambiguous" -> "ambiguous";
+            case "compiler.err.cant.apply.symbol", "compiler.err.cant.apply.symbols",
+                 "compiler.err.non-static.cant.be.ref" -> "inapplicable";
+            default -> null;
+        };
+    }
+
+    private void emit(String kind, String... fields) {
+        var record = new StringJoiner("\0", "", "\0");
+        record.add(Integer.toString(fixtureIndex)).add(kind);
+        for (var field : fields) record.add(field);
+        System.out.print(record);
     }
 
     private String file(CompilationUnitTree unit) {
@@ -63,46 +86,132 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         return line + ":" + (offset - unit.getLineMap().getStartPosition(line));
     }
 
-    private String declaration(CompilationUnitTree unit, MethodTree method) {
+    private String declaration(CompilationUnitTree unit, Tree method) {
         var start = trees.getSourcePositions().getStartPosition(unit, method);
         return file(unit) + "#" + position(unit, start);
     }
 
+    @Override public Void visitClass(ClassTree type, MethodTree enclosing) {
+        var element = (TypeElement) trees.getElement(getCurrentPath());
+        var unit = getCurrentPath().getCompilationUnit();
+        var binary = elements.getBinaryName(element).toString();
+        var kind = switch (type.getKind()) {
+            case CLASS -> "Class";
+            case ENUM -> type.getSimpleName().length() == 0 ? "Class" : "Enum";
+            case RECORD -> "Record";
+            case ANNOTATION_TYPE -> "Annotation";
+            case INTERFACE -> "Interface";
+            default -> throw new IllegalStateException("Unexpected type " + type.getKind());
+        };
+        emit("declaration", file(unit), kind, type.getSimpleName().toString(), binary);
+        for (var component : element.getRecordComponents()) {
+            var accessor = trees.getPath(component.getAccessor());
+            if (accessor == null || trees.getSourcePositions().getEndPosition(unit, accessor.getLeaf()) < 0) {
+                emit("declaration", file(unit), "ImplicitAccessor", component.getSimpleName().toString(), "");
+            }
+        }
+        var bases = new ArrayList<Tree>(type.getImplementsClause());
+        if (type.getExtendsClause() != null) bases.add(type.getExtendsClause());
+        for (var base : bases) {
+            var mirror = trees.getTypeMirror(new TreePath(getCurrentPath(), base));
+            if (!(types.asElement(mirror) instanceof TypeElement parent)) continue;
+            var target = trees.getPath(parent);
+            if (target == null) continue; // Platform and dependency declarations have no fixture source.
+            var from = file(unit) + "#" + binary;
+            var to = file(target.getCompilationUnit()) + "#" + elements.getBinaryName(parent);
+            var relation = parent.getKind().isInterface() ? "IMPLEMENTS" : "EXTENDS";
+            emit("heritage", relation, from, to);
+        }
+        return super.visitClass(type, null);
+    }
+
     @Override public Void visitMethod(MethodTree method, MethodTree enclosing) {
+        var unit = getCurrentPath().getCompilationUnit();
+        if (trees.getSourcePositions().getEndPosition(unit, method) < 0) return super.visitMethod(method, method);
+        if (method.getReturnType() == null && families.contains("<init>")
+                && !constructorLines.add(constructorLine(unit, method))) {
+            throw new IllegalStateException("Constructors share a declaration line: " + constructorLine(unit, method));
+        }
+        if (method.getReturnType() != null
+                && getCurrentPath().getParentPath().getLeaf().getKind() != Tree.Kind.ANNOTATION_TYPE) {
+            emit("declaration", file(unit), "Method", method.getName().toString(), "");
+        }
         return super.visitMethod(method, method);
+    }
+
+    // GitNexus publishes aggregate constructor edges. An explicit constructor has a
+    // declaration line; an implicit default constructor is represented by its type.
+    private void constructorEdge(MethodTree caller) {
+        var call = getCurrentPath();
+        var unit = call.getCompilationUnit();
+        if (!families.contains("<init>") || caller == null
+                || trees.getSourcePositions().getEndPosition(unit, call.getLeaf()) < 0) return;
+        var constructor = trees.getElement(call);
+        var target = constructor == null ? null : trees.getPath(constructor);
+        if (target == null) return;
+        var source = target.getCompilationUnit();
+        var positions = trees.getSourcePositions();
+        var owner = (TypeElement) constructor.getEnclosingElement();
+        var destination = positions.getEndPosition(source, target.getLeaf()) < 0
+                ? file(source) + "#" + elements.getBinaryName(owner)
+                : constructorLine(source, target.getLeaf());
+        var from = caller.getReturnType() == null ? constructorLine(unit, caller) : declaration(unit, caller);
+        emit("constructor", from, destination);
+    }
+
+    private String constructorLine(CompilationUnitTree unit, Tree tree) {
+        var line = unit.getLineMap().getLineNumber(trees.getSourcePositions().getStartPosition(unit, tree));
+        return file(unit) + "#constructor:" + line;
+    }
+
+    @Override public Void visitNewClass(NewClassTree call, MethodTree caller) {
+        constructorEdge(caller);
+        return super.visitNewClass(call, caller);
     }
 
     @Override public Void visitMethodInvocation(MethodInvocationTree call, MethodTree caller) {
         var select = call.getMethodSelect();
         var name = select instanceof MemberSelectTree member
                 ? member.getIdentifier().toString() : select.toString();
-        if (families.contains(name)) {
+        if (name.equals("super") || name.equals("this")) {
+            constructorEdge(caller);
+            return super.visitMethodInvocation(call, caller);
+        }
+        boolean allSource = families.contains("*");
+        if (allSource || families.contains(name)) {
             var unit = getCurrentPath().getCompilationUnit();
             var positions = trees.getSourcePositions();
             var start = positions.getStartPosition(unit, call);
             var end = positions.getEndPosition(unit, call);
-            if (caller == null) {
-                throw new IllegalStateException(file(unit) + ":" + position(unit, start)
-                        + " has no enclosing source method or constructor for " + name);
-            }
-            // On ambiguity, getElement can still return javac's recovery choice.
-            var ambiguous = ambiguities.removeIf(d -> d.getSource().equals(unit.getSourceFile())
+            var diagnostic = errors.stream().filter(d -> d.getSource().equals(unit.getSourceFile())
                     && d.getStartPosition() == positions.getStartPosition(unit, select)
-                    && d.getEndPosition() == positions.getEndPosition(unit, select));
-            var target = "ambiguous";
-            var signature = "ambiguous";
-            if (!ambiguous) {
-                var element = (ExecutableElement) trees.getElement(getCurrentPath());
-                var path = trees.getPath(element);
+                    && (d.getEndPosition() == positions.getEndPosition(unit, select)
+                        || d.getEndPosition() == end)).findFirst();
+            // An invalid call can still have a recovery declaration. Classify its diagnostic first.
+            var status = diagnostic.map(OverloadOracle::rejection).orElse("resolved");
+            diagnostic.ifPresent(errors::remove);
+            var target = "";
+            var signature = "";
+            if (status.equals("resolved")) {
+                var element = trees.getElement(getCurrentPath());
+                var path = element == null ? null : trees.getPath(element);
                 if (path == null || !(path.getLeaf() instanceof MethodTree method)) {
+                    if (allSource) return super.visitMethodInvocation(call, caller);
                     throw new IllegalStateException("Expected source declaration for " + call);
                 }
                 target = declaration(path.getCompilationUnit(), method);
                 signature = element.getEnclosingElement() + "." + element;
             }
-            System.out.print(String.join("\0", Integer.toString(fixtureIndex), file(unit),
-                    position(unit, start), position(unit, end), declaration(unit, caller),
-                    target, signature) + "\0");
+            String owner;
+            if (caller == null) {
+                var parent = getCurrentPath();
+                while (parent != null && !(parent.getLeaf() instanceof ClassTree)) parent = parent.getParentPath();
+                if (parent == null) throw new IllegalStateException("No source owner for " + call);
+                owner = file(unit) + "#" + elements.getBinaryName((TypeElement) trees.getElement(parent));
+            } else {
+                owner = declaration(unit, caller);
+            }
+            emit(status, file(unit), position(unit, start), position(unit, end), owner, target, signature);
         }
         return super.visitMethodInvocation(call, caller);
     }

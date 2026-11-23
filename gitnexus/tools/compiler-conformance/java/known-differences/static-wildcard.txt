@@ -1,0 +1,3 @@
+# The static wildcard import resolves in javac, but the graph omits the call to Utils.format.
+Missing from GitNexus: com/example/app/StaticUser.java:7:15..7:28 resolved com/example/models/Utils.java#4:4 (com.example.models.Utils.format(java.lang.String))
+Missing from GitNexus: edge com/example/app/StaticUser.java#6:4 -> com/example/models/Utils.java#4:4

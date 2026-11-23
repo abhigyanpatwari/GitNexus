@@ -26,7 +26,10 @@ function siteTargetKey({ file, start, end, target }) {
   return JSON.stringify([file, start, end, target]);
 }
 
-export function gitNexusCallReport(result, { names, ambiguousReasons = [] }) {
+export function gitNexusCallReport(
+  result,
+  { names, ambiguousReasons = [], excludeEdgeReasons = [], typeCaller },
+) {
   const selected = new Set(names);
   const declarations = new Map();
   for (const node of result.graph.nodes) {
@@ -54,7 +57,14 @@ export function gitNexusCallReport(result, { names, ambiguousReasons = [] }) {
     } else {
       const record = { ...site, status: outcome.kind };
       if (outcome.targetId !== undefined) {
-        record.target = declarations.get(outcome.targetId) ?? outcome.targetId;
+        // Overloads can have distinct definition positions but share one legacy graph node.
+        // Preserve the resolver's actual selection; the edge comparison verifies publication.
+        const id = outcome.targetId;
+        const suffix = ':Method:' + outcome.name;
+        const position =
+          id.startsWith('def:') && id.endsWith(suffix) ? id.slice(4, -suffix.length) : undefined;
+        record.target =
+          declarations.get(id) ?? (position && /#\d+:\d+$/.test(position) ? position : id);
         classifiedTargets.add(siteTargetKey(record));
       }
       sites.push(record);
@@ -63,11 +73,12 @@ export function gitNexusCallReport(result, { names, ambiguousReasons = [] }) {
 
   const edges = [];
   for (const edge of result.graph.iterRelationshipsByType('CALLS')) {
+    if (excludeEdgeReasons.includes(edge.reason)) continue;
     const target = result.graph.getNode(edge.targetId);
     if (!target || !selected.has(target.properties.name)) continue;
     const caller = result.graph.getNode(edge.sourceId);
     const to = graphDeclaration(target);
-    edges.push({ from: graphDeclaration(caller), to });
+    edges.push({ from: typeCaller?.(caller) ?? graphDeclaration(caller), to });
     const site = edgeSite(edge, caller.properties.filePath, to);
     if (site && !classifiedTargets.has(siteTargetKey(site))) sites.push(site);
   }

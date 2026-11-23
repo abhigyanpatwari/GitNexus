@@ -1,0 +1,179 @@
+{
+  "compiler-conformance/java-annotated-lambda-array": 1,
+  "compiler-conformance/java-anonymous-implicit-array": 4,
+  "compiler-conformance/java-contextual-declaration-identity": 3,
+  "compiler-conformance/java-contextual-local-element-identity": 2,
+  "compiler-conformance/java-invalid-overloads": {
+    "sites": 6,
+    "rejections": {
+      "ambiguous": 3,
+      "inapplicable": 3
+    }
+  },
+  "compiler-conformance/java-overload-access": 5,
+  "compiler-conformance/java-overload-conformance": {
+    "sites": 3,
+    "rejections": {
+      "ambiguous": 1
+    }
+  },
+  "compiler-conformance/java-overload-lexical": 4,
+  "compiler-conformance/java-overload-phases": {
+    "sites": 9,
+    "methods": false
+  },
+  "compiler-conformance/java-qualified-type-root-shadow": 1,
+  "compiler-conformance/java-r3-inherited-member-root": 3,
+  "compiler-conformance/java-r5-non-ascii-spelling": 7,
+  "compiler-conformance/java-r6-annotated-producer-returns": 15,
+  "compiler-conformance/java-receiver-alias": 4,
+  "compiler-conformance/java-review-followups-inherited-root": 2,
+  "compiler-conformance/java-review-followups-nested-fqn": 4,
+  "compiler-conformance/java-review-followups-per-reference": 2,
+  "compiler-conformance/java-review-followups-r5-anonymous-this": 4,
+  "java/java-consumer-before-provider": 2,
+  "java/java-cross-file": 3,
+  "lang-resolution/java-ambiguous": 0,
+  "lang-resolution/java-anon-enum-host": {
+    "sites": 0,
+    "families": []
+  },
+  "lang-resolution/java-anon-extends-base": {
+    "vitestOnly": "Several public top-level classes occupy one file."
+  },
+  "lang-resolution/java-anon-in-anon": {
+    "sites": 0,
+    "families": []
+  },
+  "lang-resolution/java-anon-in-constant-body": {
+    "sites": 0,
+    "families": []
+  },
+  "lang-resolution/java-anon-numbering": {
+    "sites": 0,
+    "families": []
+  },
+  "lang-resolution/java-anonymous-class-scope": {
+    "vitestOnly": "Contains a deliberately unresolved Runnable method."
+  },
+  "lang-resolution/java-assignment-chain": 4,
+  "lang-resolution/java-builtin-name-legit-dispatch": 1,
+  "lang-resolution/java-call-result-binding": 2,
+  "lang-resolution/java-calls": 1,
+  "lang-resolution/java-cast-receiver": {
+    "vitestOnly": "Decompiled casts include inconvertible receiver types."
+  },
+  "lang-resolution/java-chain-call": 2,
+  "lang-resolution/java-child-extends-parent": 1,
+  "lang-resolution/java-constructor-calls": {
+    "sites": 1,
+    "constructors": true
+  },
+  "lang-resolution/java-constructor-type-inference": 2,
+  "lang-resolution/java-deep-field-chain": 2,
+  "lang-resolution/java-duplicate-fqn-modules": {
+    "vitestOnly": "Two modules declare the same fully qualified type."
+  },
+  "lang-resolution/java-duplicate-fqn-source-roots": {
+    "vitestOnly": "Multiple source roots declare the same fully qualified type."
+  },
+  "lang-resolution/java-enum-constant-body": {
+    "vitestOnly": "Contains a deliberately unresolved call on an unrelated type."
+  },
+  "lang-resolution/java-enum-constant-same-name": 2,
+  "lang-resolution/java-enum-static-call": 2,
+  "lang-resolution/java-explicit-constructor": {
+    "sites": 0,
+    "constructors": true
+  },
+  "lang-resolution/java-field-types": 1,
+  "lang-resolution/java-foreach": 2,
+  "lang-resolution/java-foreach-call-expr": 4,
+  "lang-resolution/java-generic-base": 0,
+  "lang-resolution/java-generic-parent-resolution": 1,
+  "lang-resolution/java-grandparent-resolution": 2,
+  "lang-resolution/java-heritage": 3,
+  "lang-resolution/java-iface-extends": 0,
+  "lang-resolution/java-import-package-evidence": 1,
+  "lang-resolution/java-inherited-bare-call": {
+    "vitestOnly": "Several public top-level classes occupy one file."
+  },
+  "lang-resolution/java-instanceof-pattern": 1,
+  "lang-resolution/java-interface-default-method": 1,
+  "lang-resolution/java-interface-dispatch": 2,
+  "lang-resolution/java-local-class-naming": {
+    "sites": 4,
+    "families": ["member", "local", "firstBlock", "secondBlock"]
+  },
+  "lang-resolution/java-local-shadow": 1,
+  "lang-resolution/java-map-keys-values": 2,
+  "lang-resolution/java-member-calls": 1,
+  "lang-resolution/java-method-chain-binding": 3,
+  "lang-resolution/java-method-chain-cross-class": {
+    "vitestOnly": "Uses a private field from an unrelated class."
+  },
+  "lang-resolution/java-method-enrichment": 2,
+  "lang-resolution/java-method-reference": {
+    "sites": 1,
+    "families": ["save"]
+  },
+  "lang-resolution/java-mixed-chain": 4,
+  "lang-resolution/java-named-imports": {
+    "sites": 1,
+    "constructors": true
+  },
+  "lang-resolution/java-nested-enum-constant": {
+    "sites": 0,
+    "families": []
+  },
+  "lang-resolution/java-nested-host-naming": {
+    "sites": 0,
+    "families": []
+  },
+  "lang-resolution/java-new-expr-chain-call": 1,
+  "lang-resolution/java-nullable-receiver": 4,
+  "lang-resolution/java-optional-receiver": 4,
+  "lang-resolution/java-overload-dispatch": 3,
+  "lang-resolution/java-overload-param-types": 2,
+  "lang-resolution/java-overload-typed-args": 4,
+  "lang-resolution/java-overload-types": 9,
+  "lang-resolution/java-parent-resolution": 0,
+  "lang-resolution/java-protected-overloads": 14,
+  "lang-resolution/java-qualified-base": {
+    "vitestOnly": "Refers to an absent base package."
+  },
+  "lang-resolution/java-qualified-constructor": {
+    "sites": 0,
+    "constructors": true
+  },
+  "lang-resolution/java-qualified-types": 0,
+  "lang-resolution/java-receiver-resolution": {
+    "sites": 2,
+    "constructors": true
+  },
+  "lang-resolution/java-record-methods": 1,
+  "lang-resolution/java-return-type-inference": 2,
+  "lang-resolution/java-same-arity-cross-file": 6,
+  "lang-resolution/java-same-package-extends-collision": {
+    "sites": 2,
+    "differences": "./known-differences/qualified-base.txt"
+  },
+  "lang-resolution/java-self-this-resolution": 1,
+  "lang-resolution/java-super-resolution": 1,
+  "lang-resolution/java-switch-pattern": 3,
+  "lang-resolution/java-this-dispatch": 3,
+  "lang-resolution/java-this-field-chain": 7,
+  "lang-resolution/java-unrelated-method-collision": {
+    "vitestOnly": "Several public top-level classes occupy one file."
+  },
+  "lang-resolution/java-variadic-resolution": 4,
+  "lang-resolution/java-virtual-dispatch": {
+    "vitestOnly": "Calls a subtype-only method through a supertype variable."
+  },
+  "lang-resolution/java-wildcard-import": 1,
+  "lang-resolution/java-wildcard-on-demand": {
+    "sites": 1,
+    "differences": "./known-differences/static-wildcard.txt"
+  },
+  "lang-resolution/java-write-access": 0
+}

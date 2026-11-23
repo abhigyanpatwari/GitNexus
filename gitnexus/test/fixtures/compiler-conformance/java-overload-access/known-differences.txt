@@ -1,0 +1,3 @@
+# javac knows the return type of external(). GitNexus suppresses this overload.
+Missing from GitNexus: Oracle.java:11:8..11:43 resolved Oracle.java#3:4 (AccessFilter.accessFiltered(java.lang.Object))
+Unexpected in GitNexus: Oracle.java:11:8..11:43 overload-unknown

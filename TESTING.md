@@ -81,12 +81,12 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 
 - **Unit** — Pure logic, parsers, graph/query helpers; fast; no network.
 - **Integration** — Real combinations (filesystem, MCP wiring, larger pipelines) as already organized under `gitnexus/test/integration`.
-- **Resolver / parity** — Java-backed resolver suites live in `test/java/resolvers/`. Other resolver suites live in `test/integration/resolvers/`.
+- **Resolver / parity** — Java compiler fixtures live in `test/fixtures/compiler-conformance/`. GitNexus-specific resolver assertions live in `test/java/resolvers/`. Other resolver suites live in `test/integration/resolvers/`.
 - **E2E (web)** — Critical user paths only; prefer `data-testid` attributes for stable selectors. Tests run against real backend (`gitnexus serve`) and Vite dev server.
 
 ## Scope-resolution tests
 
-Run `npm run test:conformance:java` from a built `gitnexus/` checkout with JDK 21 to compare Java overload selections with javac. Other compilers and analyzers can use the same standalone comparison command by emitting JSON reports. See the [call-resolution conformance guide](gitnexus/tools/compiler-conformance/README.md).
+Run `npm run test:conformance:java` from a built `gitnexus/` checkout with JDK 21 to compare call targets, ambiguity, source declarations, and inheritance with javac. Add a self-contained `test/fixtures/compiler-conformance/java-<case>/` directory to register a new compiler case. The runner discovers it automatically. Other compilers and analyzers can use the same standalone comparison command by emitting JSON reports. See the [call-resolution conformance guide](gitnexus/tools/compiler-conformance/README.md).
 
 Every language resolves calls and inheritance through the scope-resolution pipeline. The Java CI job runs `test/java/`, including Spring, persistence, rename, and fixtures that exercise Java alongside other languages. Shared source corpora under `test/fixtures/` are also available to the benchmarks. The other Ubuntu shards run `test/unit/` and `test/integration/`. Both groups contribute to the same coverage and test-completeness reports.
 

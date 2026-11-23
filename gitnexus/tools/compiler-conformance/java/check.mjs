@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,75 +8,112 @@ import { compareReports } from '../compare.mjs';
 import { gitNexusCallReport } from '../gitnexus-report.mjs';
 import { writeConversionMatrix } from './conversion-matrix.mjs';
 import { javacReports } from './javac-report.mjs';
+import { compareConstructors, compareJavaStructure, javaTypeIdentity } from './structure.mjs';
 
-const fixtureRoot = fileURLToPath(new URL('../../../test/fixtures/', import.meta.url));
-// Counts guard against silently losing a fixture or a call during compiler traversal.
-const fixtures = [
-  {
-    dir: 'java/java-cross-file',
-    families: ['getUser', 'save', 'getName'],
-    resolved: 3,
-    ambiguous: 0,
-  },
-  {
-    dir: 'java/java-consumer-before-provider',
-    families: ['getUser', 'save'],
-    resolved: 2,
-    ambiguous: 0,
-  },
-  {
-    dir: 'lang-resolution/java-overload-types',
-    families: ['find', 'resolve', 'count'],
-    resolved: 9,
-    ambiguous: 0,
-  },
-  {
-    dir: 'lang-resolution/java-protected-overloads',
-    families: ['pick', 'staticPick'],
-    resolved: 7,
-    ambiguous: 0,
-  },
-  {
-    dir: 'compiler-conformance/java-overload-conformance',
-    families: ['select', 'choose'],
-    resolved: 2,
-    ambiguous: 1,
-  },
-];
-const matrixDir = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-conversion-'));
-try {
-  const batch = fixtures.map((fixture) => ({
-    ...fixture,
-    name: fixture.dir,
-    dir: path.join(fixtureRoot, fixture.dir),
-  }));
-  batch.push({
-    name: 'overload-conversion-matrix',
-    dir: matrixDir,
-    families: ['pick'],
-    resolved: 98,
-    ambiguous: 2,
-    expectedSites: writeConversionMatrix(matrixDir),
+const root = fileURLToPath(new URL('../../../test/fixtures/', import.meta.url));
+const corpus = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url), 'utf8'));
+const projects = globSync(
+  ['compiler-conformance/java-*/**/*.java', 'lang-resolution/java-*/**/*.java'],
+  { cwd: root },
+).map((file) => file.replaceAll('\\', '/').split('/').slice(0, 2).join('/'));
+const fixtures = [];
+for (const name of [...new Set([...Object.keys(corpus), ...projects])].sort()) {
+  const config = corpus[name];
+  if (config?.vitestOnly) continue;
+  fixtures.push({
+    name,
+    dir: path.join(root, name),
+    ...(typeof config === 'number' ? { sites: config } : config),
   });
-  const references = javacReports(batch);
-  for (const [index, fixture] of batch.entries()) {
-    const { name } = fixture;
-    const reference = references[index];
-    if (fixture.expectedSites) {
-      const covered = reference.sites.map(({ file, start, end }) => `${file}:${start}..${end}`);
-      assert.deepEqual(new Set(covered), fixture.expectedSites, `${name} generated call ranges`);
-    }
-    const ambiguous = reference.sites.filter((site) => site.status === 'ambiguous').length;
-    assert.equal(ambiguous, fixture.ambiguous, `${name} ambiguous sites`);
-    assert.equal(reference.sites.length - ambiguous, fixture.resolved, `${name} resolved sites`);
-    const result = await runPipelineFromRepo(fixture.dir, () => {});
-    const observed = gitNexusCallReport(result, {
-      names: fixture.families,
-      ambiguousReasons: ['member-lookup-ambiguous', 'overload-ambiguous'],
-    });
-    compareReports(reference, { ...observed, producer: `GitNexus (${name})` });
-    console.log(`${name}: ${fixture.resolved} resolved, ${ambiguous} ambiguous`);
+}
+
+// Compare exact differences so a new regression and an unexpectedly fixed gap both fail CI.
+function checkDifferences(fixture, differences) {
+  const file = fixture.differences
+    ? new URL(fixture.differences, import.meta.url)
+    : path.join(fixture.dir, 'known-differences.txt');
+  if (!existsSync(file) || process.argv.includes('--strict')) {
+    if (differences.length) throw new Error(differences.join('\n'));
+    return;
   }
+  const expected = readFileSync(file, 'utf8')
+    .split(/\r?\n/)
+    .filter((line) => line && !line.startsWith('#'))
+    .sort();
+  assert.ok(expected.length, 'Empty known-differences file');
+  assert.deepEqual(differences.sort(), expected, 'Recorded compiler differences changed');
+  console.log(fixture.name + ' known differences:\n  ' + differences.join('\n  '));
+}
+
+const generated = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-conversion-'));
+try {
+  const expectedSites = writeConversionMatrix(generated);
+  fixtures.push({ name: 'overload-conversion-matrix', dir: generated, sites: 100 });
+  const references = javacReports(fixtures);
+  let totalSites = 0;
+  const failures = [];
+  for (const [i, fixture] of fixtures.entries()) {
+    try {
+      const ref = references[i];
+      if (fixture.sites !== undefined)
+        assert.equal(ref.sites.length, fixture.sites, 'javac call-site count');
+      for (const [status, count] of Object.entries(fixture.rejections ?? {})) {
+        assert.equal(
+          ref.sites.filter((s) => s.status === status).length,
+          count,
+          'javac ' + status + ' count',
+        );
+      }
+      if (fixture.dir === generated) {
+        assert.deepEqual(
+          new Set(ref.sites.map((s) => `${s.file}:${s.start}..${s.end}`)),
+          expectedSites,
+        );
+        assert.equal(ref.sites.filter((s) => s.status === 'ambiguous').length, 2);
+      }
+      const pipeline = await runPipelineFromRepo(fixture.dir, () => {});
+      const typeIdentity = javaTypeIdentity(ref);
+      const differences = compareJavaStructure(
+        ref,
+        pipeline,
+        typeIdentity,
+        fixture.methods !== false,
+      );
+      if (fixture.constructors) compareConstructors(ref, pipeline.graph, typeIdentity);
+      const actual = gitNexusCallReport(pipeline, {
+        names:
+          fixture.families ??
+          ref.declarations.filter((d) => d.kind === 'Method').map((d) => d.name),
+        ambiguousReasons: ['member-lookup-ambiguous', 'overload-ambiguous'],
+        excludeEdgeReasons: ['interface-dispatch'],
+        typeCaller: typeIdentity,
+      });
+      for (const site of actual.sites) {
+        if (site.status === 'overload-inapplicable') site.status = 'inapplicable';
+      }
+      if (ref.sites.length) {
+        try {
+          compareReports(ref, actual);
+        } catch (error) {
+          if (error.constructor !== Error) throw error;
+          differences.push(...error.message.split('\n'));
+        }
+      } else {
+        assert.deepEqual(actual.sites, [], 'Unexpected call-site outcomes');
+        assert.deepEqual(actual.edges, [], 'Unexpected call edges');
+      }
+      checkDifferences(fixture, differences);
+      totalSites += ref.sites.length;
+      console.log(
+        `${fixture.name}: ${ref.sites.length} call sites, ${ref.heritage.length} source heritage edges`,
+      );
+    } catch (error) {
+      failures.push(new Error(fixture.name, { cause: error }));
+    }
+  }
+  if (failures.length)
+    throw new AggregateError(failures, `${failures.length} Java conformance fixtures failed`);
+  console.log(`${fixtures.length} Java fixtures, ${totalSites} compiler call sites`);
 } finally {
-  rmSync(matrixDir, { recursive: true, force: true });
+  rmSync(generated, { recursive: true, force: true });
 }

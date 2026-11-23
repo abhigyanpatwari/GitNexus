@@ -580,52 +580,6 @@ class Patterns {
   );
 });
 
-describe('Java this inside an anonymous class body', () => {
-  const result = useFixture('java-review-followups-r5-anonymous-this', {
-    'Main.java': `
-class User { void save() {} }
-class Other { void save() {} }
-abstract class Holder { Other[] inherited() { return null; } abstract void run(); }
-abstract class Task { abstract void run(); }
-class Sub {
-  User[] own() { return null; }
-  User[] inherited() { return null; }
-  void viaInherited() {
-    new Holder() {
-      void run() { this.inherited()[0].save(); }
-    };
-  }
-  void viaNested() {
-    new Runnable() {
-      public void run() {
-        new Task() {
-          Other[] own() { return null; }
-          void run() { this.own()[0].save(); }
-        };
-      }
-    };
-  }
-}
-`,
-  });
-
-  const targets = (caller: string, name: string): string[] =>
-    getRelationships(result(), 'CALLS')
-      .filter((edge) => edge.rel.sourceId === `Method:Main.java:${caller}` && edge.target === name)
-      .map((edge) => edge.rel.targetId)
-      .sort();
-
-  it('reaches a member the anonymous class inherits, not the enclosing class member', () => {
-    expect(targets('Sub$1.run#0', 'inherited')).toEqual(['Method:Main.java:Holder.inherited#0']);
-    expect(targets('Sub$1.run#0', 'save')).toEqual(['Method:Main.java:Other.save#0']);
-  });
-
-  it('binds this to the innermost anonymous class', () => {
-    expect(targets('Sub$2$1.run#0', 'own')).toEqual(['Method:Main.java:Sub$2$1.own#0']);
-    expect(targets('Sub$2$1.run#0', 'save')).toEqual(['Method:Main.java:Other.save#0']);
-  });
-});
-
 describe('Java copy of an enclosing local inside an anonymous class method', () => {
   const result = useFixture('java-review-followups-r5-anonymous-alias', {
     'lib/PackageTask.java': 'package lib; public abstract class PackageTask { Object value; }',
