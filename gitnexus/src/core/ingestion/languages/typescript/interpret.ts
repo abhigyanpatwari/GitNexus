@@ -22,6 +22,8 @@ import type {
   ScopeId,
   TypeRef,
 } from 'gitnexus-shared';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import { lookupNameClaim, moduleScopeIdOf } from '../../scope-resolution/scope/walkers.js';
 import { canonicalTypeScriptName } from './identifiers.js';
 
 /** Shared empty result for the non-type-only path — see `typeOnly` below. */
@@ -54,6 +56,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
   // type-only would otherwise each allocate an object to contribute nothing.
   const typeOnly: { typeOnly?: true } =
     captures['@import.type-only'] !== undefined ? { typeOnly: true } : NO_TYPE_ONLY;
+  const publication = captures['@import.exports-only'] === undefined ? {} : { exportsOnly: true };
 
   switch (kind) {
     case 'default': {
@@ -124,6 +127,7 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         importedName: canonicalTypeScriptName(nameCap.text),
         targetRaw: sourceCap.text,
         ...typeOnly,
+        ...publication,
       };
     }
     case 'reexport-alias': {
@@ -138,25 +142,24 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
         alias: canonicalTypeScriptName(aliasCap.text),
         targetRaw: sourceCap.text,
         ...typeOnly,
+        ...publication,
       };
     }
     case 'reexport-wildcard': {
       // `export * from './m'` — no local name, just a blanket passthrough.
       if (sourceCap === undefined) return null;
-      return { kind: 'wildcard', targetRaw: sourceCap.text };
+      return { kind: 'wildcard', targetRaw: sourceCap.text, ...typeOnly, ...publication };
     }
     case 'reexport-namespace': {
-      // `export * as ns from './m'` — creates a local binding `ns`
-      // that exposes the whole module, while also re-exporting it.
-      // Closest ParsedImport fit is `namespace`; the re-export side
-      // of this edge is tracked by the export detector downstream.
+      // `export * as ns from './m'` publishes the target module object.
       if (sourceCap === undefined || aliasCap === undefined) return null;
       return {
         kind: 'namespace',
-        localName: aliasCap.text,
+        localName: canonicalTypeScriptName(aliasCap.text),
         importedName: sourceCap.text,
         targetRaw: sourceCap.text,
         ...typeOnly,
+        ...publication,
       };
     }
     case 'dynamic': {
@@ -215,15 +218,7 @@ export function interpretTsTypeBinding(captures: CaptureMatch): ParsedTypeBindin
   // Readonly/array/nullable wrappers can stack; apply passes until a
   // fixed point (bounded by the text length since every strip monotonically
   // shrinks the string).
-  let prev = '';
-  let rawType = typeCap.text.trim();
-  while (prev !== rawType) {
-    prev = rawType;
-    rawType = stripReadonly(rawType);
-    rawType = stripNullableUnion(rawType);
-    rawType = stripGeneric(rawType);
-    rawType = stripArraySuffix(rawType);
-  }
+  let rawType = normalizeBindingType(typeCap.text);
   // Destructuring / member-alias / map-tuple / dotted-call-alias bindings
   // carry receiver paths or sentinel strings that must survive verbatim.
   // Also preserve dotted member-call callee text (`svc.getUser`) for
@@ -270,6 +265,36 @@ export function interpretTsTypeBinding(captures: CaptureMatch): ParsedTypeBindin
   else if (captures['@type-binding.instanceof-narrow'] !== undefined) source = 'annotation';
 
   return { boundName: nameCap.text, rawTypeName: rawType, source };
+}
+
+function normalizeBindingType(text: string): string {
+  let type = text.trim();
+  for (;;) {
+    const next = stripArraySuffix(stripGeneric(stripNullableUnion(stripReadonly(type))));
+    if (next === type) return type;
+    type = next;
+  }
+}
+
+const QUALIFIED_NAME =
+  /^[\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*(?:\.[\p{ID_Start}$_][\p{ID_Continue}$\u200C\u200D]*)+$/u;
+
+/** Recover an erased qualifier only when it denotes an actual module namespace. */
+export function tsQualifiedTypeLookupSpelling(
+  typeRef: TypeRef,
+  scopes?: ScopeResolutionIndexes,
+): string | undefined {
+  const written = typeRef.declaredSpelling;
+  if (!written?.includes('.') || typeRef.rawName.includes('.') || scopes === undefined) {
+    return undefined;
+  }
+  const spelling = canonicalTypeScriptName(normalizeBindingType(written)).replace(/\s*\.\s*/g, '.');
+  if (!QUALIFIED_NAME.test(spelling) || !spelling.endsWith(`.${typeRef.rawName}`)) return undefined;
+  const module = moduleScopeIdOf(typeRef.declaredAtScope, scopes);
+  if (module === null) return undefined;
+  const root = spelling.slice(0, spelling.indexOf('.'));
+  const claim = lookupNameClaim(module, root, scopes, { purpose: 'type' });
+  return claim.imports.some((edge) => edge.kind === 'namespace') ? spelling : undefined;
 }
 
 /** Types that carry no discriminating information for chain resolution.

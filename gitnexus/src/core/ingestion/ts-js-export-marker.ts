@@ -39,6 +39,8 @@ import type { SyntaxNode } from './utils/ast-helpers.js';
 export interface EsmExportEvidence {
   /** Local names published by `export { … }`, `export default <id>`, `export = <id>`. */
   readonly namedLocals: ReadonlySet<string>;
+  /** Bindings explicitly exported under their own name by an export clause. */
+  readonly sameNameLocals?: ReadonlySet<string>;
   /** The file exports through a CommonJS assignment: a plain "not under
    *  `export`" is no verdict there. */
   readonly commonJs: boolean;
@@ -259,6 +261,7 @@ export function collectEsmExportEvidence(
 ): EsmExportEvidence | undefined {
   if (filePath.endsWith('.d.ts')) return undefined;
   const namedLocals = new Set<string>();
+  let sameNameLocals: Set<string> | undefined;
   // Every local named as the default; two different ones (invalid input) name none.
   const defaultLocals = new Set<string>();
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
@@ -280,7 +283,9 @@ export function collectEsmExportEvidence(
             namedLocals.add(name);
             // `export { f as default }`: TS parses the alias as an identifier,
             // JS as an anonymous `default` token, so compare text, not type.
-            if (spec.childForFieldName('alias')?.text === 'default') defaultLocals.add(name);
+            const alias = spec.childForFieldName('alias')?.text;
+            if (alias === 'default') defaultLocals.add(name);
+            if (alias === undefined || alias === name) (sameNameLocals ??= new Set()).add(name);
           }
         } else if (child.type === 'identifier') {
           // `export default f;` and TS `export = f;`. Only the former names a
@@ -294,7 +299,7 @@ export function collectEsmExportEvidence(
     }
   }
   const [defaultLocal] = defaultLocals.size === 1 ? defaultLocals : [];
-  return { namedLocals, commonJs, defaultLocal };
+  return { namedLocals, sameNameLocals, commonJs, defaultLocal };
 }
 
 function isDefaultExportStatement(stmt: SyntaxNode): boolean {
@@ -317,6 +322,24 @@ export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvid
     statement.childForFieldName('declaration')?.id === declaration?.id &&
     isDefaultExportStatement(statement)
   );
+}
+
+/** Check for an independent publication of a known default binding under its own name. */
+export function isEsmNamedDefaultBinding(
+  nameNode: SyntaxNode,
+  evidence: EsmExportEvidence,
+): boolean {
+  if (evidence.sameNameLocals?.has(nameNode.text)) return true;
+  for (let declaration = nameNode.parent; declaration !== null; declaration = declaration.parent) {
+    const statement = declaration.parent;
+    if (
+      statement?.type === 'export_statement' &&
+      statement.childForFieldName('declaration')?.id === declaration.id
+    ) {
+      return !isDefaultExportStatement(statement);
+    }
+  }
+  return false;
 }
 
 /** Is `object` the value of a top-level `module.exports = { … }` assignment? */

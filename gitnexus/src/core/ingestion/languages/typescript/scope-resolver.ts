@@ -20,6 +20,7 @@ import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { canonicalizeWorkspaceBindings } from '../../scope-resolution/scope/canonicalize-bindings.js';
 import { canonicalTypeScriptName } from './identifiers.js';
+import { tsQualifiedTypeLookupSpelling } from './interpret.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
@@ -95,6 +96,7 @@ const typescriptScopeResolver: ScopeResolver = {
   // accessor route yields nothing here — but it is now the same hook rather
   // than a second one left undefined.
   elementTypeOf: indexOnlyElementType,
+  qualifiedTypeLookupSpelling: tsQualifiedTypeLookupSpelling,
 
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },

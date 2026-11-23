@@ -1262,9 +1262,12 @@ export function runScopeResolution(
   const methodDispatch = buildPopulatedMethodDispatch(mroByClassDefId, extendsOnlyMroByClassDefId);
   const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, finalized.scopeTree, {
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
-    namespaceExports: provider.namespaceExportsFromModuleExports
-      ? provider.moduleExports
-      : undefined,
+    namespaceExports:
+      finalized.moduleExports === undefined
+        ? provider.namespaceExportsFromModuleExports
+          ? provider.moduleExports
+          : undefined
+        : (file) => finalized.moduleExports!.values(file.filePath),
   });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 

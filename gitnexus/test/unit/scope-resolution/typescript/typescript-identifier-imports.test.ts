@@ -72,22 +72,26 @@ export function unique() { return 4; }
 });
 
 describe('default export key (#3956)', () => {
-  it('publishes a default-exported declaration under its name and under `default`', () => {
-    const exports = typescriptModuleExports(parse('export default function Child() {}'));
+  it('publishes a default-exported declaration under `default`', () => {
+    const parsed = parse('export default function Child() {}');
+    const exports = typescriptModuleExports(parsed);
     expect(exports.get('default')?.type).toBe('Function');
-    expect(exports.get('default')).toBe(exports.get('Child'));
+    expect(exports.get('default')).toBe(parsed.localDefs.find((def) => def.type === 'Function'));
+    expect(exports.has('Child')).toBe(false);
   });
 
   it('maps `default` to the callable winner of a `const` arrow default', () => {
-    const exports = typescriptModuleExports(parse('const X = () => 1;\nexport default X;'));
+    const parsed = parse('const X = () => 1;\nexport default X;');
+    const exports = typescriptModuleExports(parsed);
     expect(exports.get('default')?.type).toBe('Function');
-    expect(exports.get('default')).toBe(exports.get('X'));
+    expect(exports.get('default')).toBe(parsed.localDefs.find((def) => def.type === 'Function'));
+    expect(exports.has('X')).toBe(false);
   });
 
-  it('maps `default` to the same def a named lookup of an overloaded default returns', () => {
+  it('maps an overloaded default to the same def as its explicitly published name', () => {
     const exports = typescriptModuleExports(
       parse(
-        'export default function f(a: string): void;\nexport default function f(a: number): void;\nexport default function f(a: unknown) {}',
+        'export default function f(a: string): void;\nexport default function f(a: number): void;\nexport default function f(a: unknown) {}\nexport { f };',
       ),
     );
     expect(exports.get('default')).toBeDefined();

@@ -39,6 +39,7 @@ import {
   collectEsmExportEvidence,
   esmExportVerdict,
   isEsmDefaultExport,
+  isEsmNamedDefaultBinding,
 } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
@@ -619,6 +620,11 @@ export function emitTsScopeCaptures(
           fnNode,
           'true',
         );
+        grouped['@declaration.is-default-export-only'] = syntheticCapture(
+          '@declaration.is-default-export-only',
+          fnNode,
+          'true',
+        );
       }
     }
 
@@ -737,6 +743,13 @@ export function emitTsScopeCaptures(
           declNameNode,
           'true',
         );
+        if (!isEsmNamedDefaultBinding(declNameNode, exportEvidence)) {
+          grouped['@declaration.is-default-export-only'] = syntheticCapture(
+            '@declaration.is-default-export-only',
+            declNameNode,
+            'true',
+          );
+        }
       }
     }
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
@@ -772,7 +785,6 @@ export function emitTsScopeCaptures(
   // destructured local is used as a receiver (e.g. `address.save()`).
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
-  synthesizeInstanceofNarrowings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
 
@@ -780,7 +792,9 @@ export function emitTsScopeCaptures(
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
-  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out, {
+    narrowInstanceof: true,
+  });
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
   return out;
@@ -1015,15 +1029,20 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
  */
 function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
   for (const node of relevantNodesRightFirst(root, ['for_in_statement'])) {
-    if (node.type !== 'for_in_statement') continue;
+    if (node.childForFieldName('operator')?.type !== 'of') continue;
     const left = node.childForFieldName('left');
     const right = node.childForFieldName('right');
     if (left === null || right === null) continue;
     if (left.type !== 'array_pattern' || right.type !== 'identifier') continue;
     const rhs = right.text;
     let slot = 0;
-    for (const child of left.namedChildren) {
-      if (child === null || child.type !== 'identifier') continue;
+    // Top-level separators mark slots even when a slot has no simple binding.
+    for (const child of left.children) {
+      if (child.type === ',') {
+        slot++;
+        continue;
+      }
+      if (child.type !== 'identifier') continue;
       const localName = child.text;
       out.push({
         '@type-binding.name': syntheticCapture('@type-binding.name', child, localName),
@@ -1038,51 +1057,7 @@ function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]):
           String(slot),
         ),
       });
-      slot++;
     }
-  }
-}
-
-/**
- * `if (x instanceof User) { x.save() }` — synthesize a `User` type binding
- * for `x` anchored in the consequence block so scope-chain lookup inside
- * the then-branch sees the narrowed type.
- *
- * **Known limitation:** the LHS must be a bare `identifier` and the RHS
- * an `identifier`/`type_identifier`. Member-expression LHS such as
- * `if (user.address instanceof Address)` is intentionally NOT synthesized
- * — narrowing a property-access target requires a stable storage key
- * the binding layer can hold, which member chains don't supply. Field-
- * type resolution covers the common case for those receivers via
- * declared types instead.
- */
-function synthesizeInstanceofNarrowings(root: SyntaxNode, out: CaptureMatch[]): void {
-  for (const node of relevantNodesRightFirst(root, ['if_statement'])) {
-    if (node.type !== 'if_statement') continue;
-    const cond = node.childForFieldName('condition');
-    if (cond === null) continue;
-    const inner = cond.type === 'parenthesized_expression' ? cond.namedChildren[0] : cond;
-    if (inner === null || inner.type !== 'binary_expression') continue;
-    const op = inner.childForFieldName('operator');
-    const left = inner.childForFieldName('left');
-    const right = inner.childForFieldName('right');
-    if (op === null || left === null || right === null) continue;
-    if (op.type !== 'instanceof') continue;
-    if (left.type !== 'identifier') continue;
-    if (right.type !== 'identifier' && right.type !== 'type_identifier') continue;
-    const varName = left.text;
-    const typeName = right.text;
-    const cons = node.childForFieldName('consequence');
-    if (cons === null) continue;
-    out.push({
-      '@type-binding.name': syntheticCapture('@type-binding.name', cons, varName),
-      '@type-binding.type': syntheticCapture('@type-binding.type', right, typeName),
-      '@type-binding.instanceof-narrow': syntheticCapture(
-        '@type-binding.instanceof-narrow',
-        cons,
-        '1',
-      ),
-    });
   }
 }
 

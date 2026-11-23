@@ -779,6 +779,7 @@ function buildDefFromDeclarationMatch(
   // `SymbolDefinition.isExported`). Absent stays absent.
   const isExported = parseBooleanCapture(match['@declaration.is-exported']);
   const isDefaultExport = parseBooleanCapture(match['@declaration.is-default-export']);
+  const isDefaultExportOnly = parseBooleanCapture(match['@declaration.is-default-export-only']);
   const graphPosition = match['@declaration.graph-position']?.range;
 
   return {
@@ -805,6 +806,7 @@ function buildDefFromDeclarationMatch(
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
     ...(isExported !== undefined ? { isExported } : {}),
     ...(isDefaultExport === true ? { isDefaultExport: true } : {}),
+    ...(isDefaultExportOnly === true ? { isDefaultExportOnly: true } : {}),
   };
 }
 
@@ -2018,6 +2020,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   // its `@declaration.function` anchor; listing it keeps the anchor choice from
   // depending on capture key order.
   '@declaration.is-default-export',
+  '@declaration.is-default-export-only',
 ]);
 
 /**

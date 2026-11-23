@@ -51,12 +51,8 @@
  * so a statement counts as type-only exactly when every specifier it
  * decomposes to is — without this file having to aggregate anything.
  *
- * Known gap: TypeScript 5.0's `export type * from './m'` / `export type *
- * as ns from './m'`. The vendored grammar does not parse them — the bare
- * `type` token lands in an `ERROR` node beside the `*`, not as a statement
- * child — so they emit no marker and are treated as value imports. That is
- * the fail-safe direction (`check --cycles` over-reports rather than
- * hiding a real cycle), and neither form appears in this repository.
+ * Type-only stars retain the erasure fact through the grammar's exact
+ * recovery shape for the keyword.
  *
  * Side-effect imports (`import './polyfill'`) produce a single match
  * with `kind: 'side-effect'`. The shared finalize algorithm resolves
@@ -160,6 +156,23 @@ function hasTypeKeyword(node: SyntaxNode): boolean {
     if (node.child(i)?.type === 'type') return true;
   }
   return false;
+}
+
+/** Recognize only the grammar's isolated error node for a type-only star. */
+function isRecoveredTypeOnlyStar(node: SyntaxNode): boolean {
+  const parts = node.children.filter((child) => child.type !== 'comment');
+  const [keyword, type, star, from, source, terminator] = parts;
+  return (
+    keyword?.type === 'export' &&
+    type?.type === 'ERROR' &&
+    type.text === 'type' &&
+    (star?.type === '*' || star?.type === 'namespace_export') &&
+    !star.hasError &&
+    from?.type === 'from' &&
+    source?.type === 'string' &&
+    !source.hasError &&
+    (parts.length === 5 || (parts.length === 6 && terminator?.type === ';'))
+  );
 }
 
 /**
@@ -346,17 +359,19 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
   const source = extractSource(stmtNode);
   if (source === null) return [];
 
-  // `export type { X } from './m'`. Its `export type *` sibling is NOT
-  // detectable — see the known gap in the module header.
   const mayHaveType = mayHaveTypeKeyword(stmtNode);
-  const statementTypeOnly = mayHaveType && hasTypeKeyword(stmtNode);
+  const statementTypeOnly =
+    mayHaveType && (hasTypeKeyword(stmtNode) || isRecoveredTypeOnlyStar(stmtNode));
 
   const exportClause = findChild(stmtNode, 'export_clause');
   if (exportClause !== null) {
     const out: CaptureMatch[] = [];
+    let emptyClause = !exportClause.hasError;
     for (let i = 0; i < exportClause.namedChildCount; i++) {
       const spec = exportClause.namedChild(i);
-      if (spec === null || spec.type !== 'export_specifier') continue;
+      if (spec === null || spec.type === 'comment') continue;
+      emptyClause = false;
+      if (spec.type !== 'export_specifier') continue;
       const decomposed = decomposeReexportSpecifier(
         spec,
         source,
@@ -366,41 +381,33 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
       );
       if (decomposed !== null) out.push(decomposed);
     }
+    if (emptyClause && !statementTypeOnly) {
+      out.push(
+        buildImportMatch(stmtNode, { kind: 'side-effect', source, name: '', atNode: stmtNode }),
+      );
+    }
     return out;
   }
 
-  // `export * as ns from './m'` — tree-sitter-typescript emits a
-  // `namespace_export` child whose identifier is the local re-export
-  // name. Two facts are emitted:
-  //
-  //   1. An `@import.statement` (kind `reexport-namespace`) so finalize
-  //      knows the barrel imports `./m` as `ns` (binds `ns` locally
-  //      inside the barrel for consumers like `barrel.ts` calling
-  //      `ns.X()`).
-  //   2. A synthetic `@declaration.namespace` so the central
-  //      scope-extractor adds a `Namespace` SymbolDefinition for `ns`
-  //      to the barrel's `localDefs`. Without this, downstream files
-  //      doing `import { ns } from './barrel'` cannot resolve `ns`:
-  //      `findExportByName` and the precomputed re-export closure only
-  //      consult `localDefs` / `reexport` / `wildcard` drafts, never
-  //      `namespace`-kind imports. The synthetic declaration fixes that
-  //      without growing the shared finalizer's surface.
+  // The published namespace names a module object without declaring a local.
   const namespaceExport = findChild(stmtNode, 'namespace_export');
   if (namespaceExport !== null) {
-    const aliasId = findChild(namespaceExport, 'identifier');
-    if (aliasId !== null) {
-      return [
-        buildImportMatch(stmtNode, {
-          kind: 'reexport-namespace',
-          source,
-          name: source,
-          alias: aliasId.text,
-          atNode: namespaceExport,
-          typeOnly: statementTypeOnly,
-        }),
-        buildNamespaceDeclarationMatch(namespaceExport, aliasId),
-      ];
-    }
+    // JavaScript's grammar represents `default` as an anonymous token here.
+    const aliasId =
+      findChild(namespaceExport, 'identifier') ??
+      namespaceExport.children.find((child) => child.type === 'default');
+    if (aliasId === undefined) return [];
+    return [
+      buildImportMatch(stmtNode, {
+        kind: 'reexport-namespace',
+        source,
+        name: source,
+        alias: aliasId.text,
+        atNode: namespaceExport,
+        typeOnly: statementTypeOnly,
+      }),
+      buildNamespaceDeclarationMatch(namespaceExport, aliasId),
+    ];
   }
 
   // `export * from './m'` — no clause, no namespace_export. The bare
@@ -412,6 +419,7 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
       source,
       name: '*',
       atNode: stmtNode,
+      typeOnly: statementTypeOnly,
     }),
   ];
 }
@@ -551,6 +559,9 @@ function buildImportMatch(stmtNode: SyntaxNode, spec: ImportSpec): CaptureMatch 
   if (spec.literalSource === true) {
     m['@import.literal'] = syntheticCapture('@import.literal', spec.atNode, '');
   }
+  if (spec.kind.startsWith('reexport')) {
+    m['@import.exports-only'] = syntheticCapture('@import.exports-only', spec.atNode, '');
+  }
   // Presence-only, like `@import.literal`: absent means "not erased", so the
   // marker is added rather than spelled `'false'`, and every non-TypeScript
   // provider's matches keep the shape they already have.
@@ -571,5 +582,7 @@ function buildNamespaceDeclarationMatch(
   return {
     '@declaration.namespace': nodeToCapture('@declaration.namespace', namespaceExportNode),
     '@declaration.name': nodeToCapture('@declaration.name', aliasId),
+    '@declaration.binding-name': syntheticCapture('@declaration.binding-name', aliasId, ''),
+    '@declaration.is-exported': syntheticCapture('@declaration.is-exported', aliasId, 'true'),
   };
 }

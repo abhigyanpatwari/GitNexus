@@ -35,6 +35,7 @@
 import type { SymbolDefinition } from './symbol-definition.js';
 import type { BindingRef, ImportEdge, ParsedImport, ScopeId, WorkspaceIndex } from './types.js';
 import type { ImportEntry } from './import-groups.js';
+import { buildExclusiveModuleExports, type ExclusiveModuleExports } from './exclusive-reexports.js';
 
 // ─── Public contracts ───────────────────────────────────────────────────────
 
@@ -271,7 +272,7 @@ export interface FinalizeStats {
 export interface AmbiguousWildcardExport {
   readonly filePath: string;
   readonly name: string;
-  /** `nodeId`s of the colliding declarations, in `export *` declaration order. */
+  /** Declaration IDs witnessing the conflict. */
   readonly candidateDefIds: readonly string[];
 }
 
@@ -287,6 +288,8 @@ export interface FinalizeOutput {
   readonly importEntries?: ReadonlyMap<ScopeId, readonly ImportEntry[]>;
   /** Materialized bindings keyed by the same scopes as `imports`. */
   readonly bindings: ReadonlyMap<ScopeId, ReadonlyMap<string, readonly BindingRef[]>>;
+  /** Authoritative public surface for providers with exclusive re-exports. */
+  readonly moduleExports?: ExclusiveModuleExports;
   /** SCCs in reverse-topological order (leaves first). */
   readonly sccs: readonly FinalizedScc[];
   readonly stats: FinalizeStats;
@@ -387,18 +390,37 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       reexportingFiles.add(file.filePath);
     }
   }
-  const ambiguityByFile = collectAmbiguityByFile(
-    input.files,
-    byFilePath,
-    moduleEdgeIndex,
-    hooks.wildcardCollisionIsAmbiguous === true,
-    hooks.namedImportsBindTopLevelOnly === true,
-  );
-  const ambiguousByFile = new Map<string, ReadonlySet<string>>();
+  const topLevelOnly = hooks.namedImportsBindTopLevelOnly === true;
+  const moduleExports =
+    hooks.wildcardCollisionIsAmbiguous === true && hooks.filterWildcardNames === undefined
+      ? buildExclusiveModuleExports(
+          new Map(
+            input.files.map((file) => [file.filePath, localExportsByName(file, topLevelOnly)]),
+          ),
+          moduleEdgeIndex,
+          hooks.wildcardReexportExcludedNames,
+          extendVia,
+        )
+      : undefined;
+  const ambiguityByFile =
+    moduleExports === undefined
+      ? collectAmbiguityByFile(
+          input.files,
+          byFilePath,
+          moduleEdgeIndex,
+          hooks.wildcardCollisionIsAmbiguous === true,
+          topLevelOnly,
+        )
+      : new Map<string, ReadonlyMap<string, ReexportAmbiguity>>();
+  const ambiguousByFile = new Map<string, Set<string>>();
   for (const [filePath, byName] of ambiguityByFile) {
     ambiguousByFile.set(filePath, new Set(byName.keys()));
   }
-  const topLevelOnly = hooks.namedImportsBindTopLevelOnly === true;
+  for (const { filePath, name } of moduleExports?.ambiguities ?? []) {
+    let names = ambiguousByFile.get(filePath);
+    if (names === undefined) ambiguousByFile.set(filePath, (names = new Set()));
+    names.add(name);
+  }
   input.onProgress?.('ambiguity-end');
   // Direct imports and unfiltered wildcards never read these closures. Build
   // them once, on demand, so those workspaces do not allocate transitive tables
@@ -442,7 +464,9 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // no expanded edge, yet its importers were refused through the closure just
   // the same, and that refusal must still be visible. Named-vs-named conflicts
   // remain refused above but are not export-star collisions in this audit.
-  const ambiguousWildcardExports: AmbiguousWildcardExport[] = [];
+  const ambiguousWildcardExports: AmbiguousWildcardExport[] = [
+    ...(moduleExports?.ambiguities ?? []),
+  ];
   for (const [filePath, byName] of ambiguityByFile) {
     for (const [name, ambiguity] of byName) {
       if (ambiguity.kind !== 'wildcard') continue;
@@ -467,7 +491,13 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
         if (drafts === undefined) continue;
         for (const draft of drafts) {
           if (draft.finalized !== null) continue;
-          const finalized = tryFinalize(draft, byFilePath, getReexportClosures, topLevelOnly);
+          const finalized = tryFinalize(
+            draft,
+            byFilePath,
+            getReexportClosures,
+            topLevelOnly,
+            moduleExports,
+          );
           if (finalized !== null) {
             draft.finalized = finalized;
             progressed = true;
@@ -541,7 +571,11 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
       if (edge === null) {
         throw new Error(`Invariant violated: import edge was not finalized for ${file.filePath}`);
       }
-      if (d.source.kind === 'wildcard' && edge.linkStatus !== 'unresolved') {
+      if (
+        d.source.kind === 'wildcard' &&
+        d.source.exportsOnly !== true &&
+        edge.linkStatus !== 'unresolved'
+      ) {
         // Produce one `wildcard-expanded` ImportEdge per exported name.
         const expanded = expandWildcard(
           edge,
@@ -600,6 +634,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     imports: linkedByScope,
     ...(entriesByScope === undefined ? {} : { importEntries: entriesByScope }),
     bindings: bindingsByScope,
+    ...(moduleExports === undefined ? {} : { moduleExports }),
     sccs,
     stats,
   });
@@ -912,9 +947,8 @@ function edgeKindFor(parsed: ParsedImport): ImportEdge['kind'] {
  * erased and the runtime spelling of the same import (`import type D` and
  * `import D` both arrive as `alias`).
  *
- * `'typeOnly' in parsed` rather than a switch over the erasable kinds: only
- * four variants declare the property, so `parsed.typeOnly` does not compile
- * against the whole union, and `in` narrows it without naming them. That is
+ * `'typeOnly' in parsed` rather than a switch over the erasable kinds: `in`
+ * narrows the union to the variants that declare the property. That is
  * also the safer shape — an enumeration has to be updated when a variant gains
  * the property or the fact silently stops reaching the edge, while this form
  * handles a new variant correctly whether or not it declares one.
@@ -1009,12 +1043,30 @@ function tryFinalize(
   byFilePath: Map<string, FinalizeFile>,
   getReexportClosures: (targetFile: string) => ReadonlyMap<string, FileReexportClosure>,
   topLevelOnly: boolean,
+  moduleExports: ExclusiveModuleExports | undefined,
 ): ImportEdge | null {
   const targetFile = draft.targetFile;
   if (targetFile === null) return draft.base; // already terminal
 
   const targetModule = byFilePath.get(targetFile);
   if (targetModule === undefined) return draft.base; // external target — leave as-is
+
+  // A published name is not a local binding. Retain the statement's actual
+  // file dependency, even when its publication is ambiguous or absent.
+  if (draft.source.exportsOnly === true) {
+    const inherited =
+      draft.source.kind === 'reexport'
+        ? moduleExports?.get(targetFile, draft.source.importedName)
+        : undefined;
+    return {
+      ...draft.base,
+      kind: 'side-effect',
+      localName: '',
+      targetExportedName: '',
+      targetModuleScope: targetModule.moduleScope,
+      ...(inherited?.typeOnly ? { typeOnly: true } : {}),
+    };
+  }
 
   // Wildcards finalize at the file level; their per-name expansion happens
   // in phase 4. At this stage we just record the target module scope.
@@ -1048,6 +1100,28 @@ function tryFinalize(
   // local defs. Multi-hop re-export chains settle iteratively — each hop
   // resolves once its prior hop is finalized.
   const importedName = extractExportedName(draft.source);
+  if (moduleExports !== undefined) {
+    const published = moduleExports.get(targetFile, importedName);
+    if (published === undefined) return null;
+    const namespaceTarget = published.namespaceTargetFile;
+    const via =
+      published.via.length > 0 || draft.source.kind === 'reexport'
+        ? extendVia(targetFile, published.via)
+        : undefined;
+    return {
+      ...draft.base,
+      targetModuleScope:
+        (namespaceTarget === undefined
+          ? undefined
+          : byFilePath.get(namespaceTarget)?.moduleScope) ?? targetModule.moduleScope,
+      targetDefId: published.def.nodeId,
+      ...(published.typeOnly ? { typeOnly: true } : {}),
+      ...(via === undefined ? {} : { transitiveVia: via }),
+      ...(namespaceTarget === undefined
+        ? {}
+        : { kind: 'namespace', namespaceTargetFile: namespaceTarget }),
+    };
+  }
   const exported = findExportByName(targetModule, importedName, topLevelOnly);
 
   if (exported !== undefined) {
@@ -2017,14 +2091,8 @@ function expandWildcard(
       // compile-time path alias, so the Rust provider opts out of the position
       // rule (`LanguageProvider.importsExecuteWhereWritten`).
       //
-      // `typeOnly`: unreachable today and deliberately kept. No provider emits
-      // a type-only wildcard — `reexport-wildcard` returns `kind: 'wildcard'`
-      // with no `typeOnly` because `export type *` is unparseable by the
-      // vendored grammar (documented on `ParsedImport`'s `wildcard` variant).
-      // It is propagated so the day that gap closes does not silently
-      // reintroduce this same defect for erasure. Do not delete it as dead
-      // code; `typeOnlyFor` is the gate that decides whether it can ever be
-      // set, and it is where the correspondence is enforced.
+      // Publication-only wildcards skip expansion. Other expansions preserve
+      // the statement's erasure fact with the rest of its presence flags.
       ...carriedPresenceFlags(edge),
     });
   }

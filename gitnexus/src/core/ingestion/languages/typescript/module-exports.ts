@@ -15,6 +15,7 @@ export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string,
   const exports = new Map<string, SymbolDefinition>();
   const ambiguous = new Set<string>();
   for (const [spelling, definition] of indexTopLevelExportsByName(parsed.localDefs)) {
+    if (definition.isDefaultExportOnly) continue;
     const name = canonicalTypeScriptName(spelling);
     const previous = exports.get(name);
     if (previous && previous.nodeId !== definition.nodeId) ambiguous.add(name);

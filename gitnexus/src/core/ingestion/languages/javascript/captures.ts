@@ -43,6 +43,7 @@ import {
   collectEsmExportEvidence,
   esmExportVerdict,
   isEsmDefaultExport,
+  isEsmNamedDefaultBinding,
 } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from '../typescript/import-decomposer.js';
 import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './query.js';
@@ -1078,6 +1079,11 @@ export function emitJsScopeCaptures(
           fnNode,
           'true',
         );
+        grouped['@declaration.is-default-export-only'] = syntheticCapture(
+          '@declaration.is-default-export-only',
+          fnNode,
+          'true',
+        );
       }
     }
 
@@ -1180,6 +1186,13 @@ export function emitJsScopeCaptures(
           declNameNode,
           'true',
         );
+        if (!isEsmNamedDefaultBinding(declNameNode, exportEvidence)) {
+          grouped['@declaration.is-default-export-only'] = syntheticCapture(
+            '@declaration.is-default-export-only',
+            declNameNode,
+            'true',
+          );
+        }
       }
     }
     out.push(grouped);

@@ -91,6 +91,7 @@ export function collectNamespaceTargets(
   const initialScope = options?.inScope ?? parsed.moduleScope;
   const useClaims = scopes.scopeTree?.getScope(initialScope)?.bindings !== undefined;
   const edgeVisible = (edge: ImportEdge): boolean => {
+    if (edge.typeOnly === true) return false;
     if (!useClaims) return true; // compatibility with legacy import-only index views
     let claim = selectionCache.get(edge.localName);
     if (claim === undefined) {
@@ -143,7 +144,7 @@ export function collectNamespaceTargets(
           ? {
               localName: edge.localName,
               importPath: edge.targetExportedName,
-              targetFile: edge.targetFile,
+              targetFile: edge.namespaceTargetFile ?? edge.targetFile,
               explicitAlias: edge.explicitAlias,
             }
           : undefined;
