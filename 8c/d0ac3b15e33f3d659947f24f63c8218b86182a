@@ -1,0 +1,31 @@
+gitnexus/src/core/ingestion/languages/typescript/canonicalize-bindings.ts
+  s_676b35bc218cc9::t_fc08a05f759321 7-14
+gitnexus/src/core/ingestion/languages/typescript/local-loaders.ts
+  s_676b35bc218cc9::t_9064d85b85f214 56,214-240,250-252,260-266,336-408,423,425-431,488,545-546,576-580,631-635,638,785-786,792-794
+gitnexus/src/core/ingestion/scope-resolution/scope/canonicalize-bindings.ts
+  s_676b35bc218cc9::t_ecc1b994789a74 6,12,16-21,111
+gitnexus/src/core/ingestion/utils/ecmascript-literals.ts
+  s_676b35bc218cc9::t_593333859b5e84 61
+gitnexus/test/integration/resolvers/typescript-instanceof-boundaries.test.ts
+  s_676b35bc218cc9::t_e49f72448e863b 40-50,122-124
+gitnexus/test/integration/resolvers/typescript-module-ownership.test.ts
+  s_676b35bc218cc9::t_b9dc403a1c1330 243,248,261
+gitnexus/test/unit/scope-resolution/typescript/local-loader-imports.test.ts
+  s_676b35bc218cc9::t_227d8bf4ab45ec 116-135,334-337,345-351,408-419
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8cd0ac3b15e33f3d659947f24f63c8218b86182a",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
