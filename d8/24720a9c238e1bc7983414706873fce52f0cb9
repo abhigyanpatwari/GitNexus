@@ -1,0 +1,33 @@
+gitnexus/bench/typescript-ingestion/README.md
+  s_3661dd8603713a::t_8f61f8b189f4d1 27-30,70-72,74-76,82,86-89,91
+gitnexus/bench/typescript-ingestion/baseline.json
+  s_3661dd8603713a::t_af5a1bd01d86df 9-13,17-20,27-31,35-38,45-49,53-56
+gitnexus/bench/typescript-ingestion/evaluation.json
+  s_3661dd8603713a::t_a0c1a4f30f2af4 6-8,12,16-17,19,34,36,40,42,50-51,53,68,70,74,76,84-85,87,102,104,108,110,118-121,137-138,142-143,145,160-161,166-167,172,176,178,193-194,199-200,205,209,211,226-227,232-233,238,242-245,260,264-266,285-288,311-314
+gitnexus/bench/typescript-ingestion/module-fixtures.mjs
+  s_676b35bc218cc9::t_be5b14e3ecaa6e 39-40,50,55,61,79-81
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d824720a9c238e1bc7983414706873fce52f0cb9",
+  "prompts": {},
+  "sessions": {
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
