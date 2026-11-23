@@ -369,6 +369,35 @@ describe('analysis resource admission', () => {
     expect(isConstrainedPdgBuild(true, budget)).toBe(true);
   });
 
+  it('keeps the measured --workers 1 PDG envelope constrained', () => {
+    const budget = resolveAnalysisResourceBudget({ ...container(32), totalMb: 6144, workers: 1 });
+    expect(isConstrainedPdgBuild(true, budget)).toBe(true);
+    expect(isConstrainedPdgBuild(false, budget)).toBe(false);
+  });
+
+  it('keys the PDG write guard on the requested worker count, not the admitted one', () => {
+    // --pdg --resource-budget 6144 --memory-budget 2048 on 4 CPUs, no --workers:
+    // admission now fits more than one worker, but the graph write that the
+    // guard protects runs after they exit.
+    const automatic = resolveAnalysisResourceBudget({
+      ...container(32),
+      totalMb: 6144,
+      mainHeapMb: 2048,
+    });
+    expect(automatic.parse.workers).toBeGreaterThan(1);
+    expect(automatic.parse.requestedWorkers).toBe(1);
+    expect(isConstrainedPdgBuild(true, automatic)).toBe(true);
+
+    const explicit = resolveAnalysisResourceBudget({
+      ...container(32),
+      totalMb: 6144,
+      mainHeapMb: 2048,
+      workers: 2,
+    });
+    expect(explicit.parse.requestedWorkers).toBe(2);
+    expect(isConstrainedPdgBuild(true, explicit)).toBe(false);
+  });
+
   it.each([NaN, Infinity, -1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
     'rejects malformed total budget %s',
     (totalMb) => {

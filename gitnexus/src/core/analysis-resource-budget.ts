@@ -40,6 +40,9 @@ export interface AnalysisResourceBudget {
   readonly mainHeapMb: number;
   readonly parse: {
     readonly workers: number;
+    /** Parser workers the operator asked for: the explicit count, or 1 when
+     * automatic sizing chooses it; 0 without parsing. */
+    readonly requestedWorkers: number;
     readonly workerHeapMb: number;
     readonly workerNativeBytes: number;
     readonly graphPoolBytes: number;
@@ -63,7 +66,12 @@ export interface AnalysisResourceBudget {
   };
 }
 
-/** The release corpus was measured with one parser worker and a 6 GiB ceiling. */
+/**
+ * The release corpus was measured with one parser worker and a 6 GiB ceiling.
+ * The guard protects the graph write, which runs after parser workers exit, so
+ * it follows the worker count the operator requested rather than the count
+ * admission fits beside the main heap.
+ */
 export function isConstrainedPdgBuild(
   pdg: boolean | undefined,
   budget: AnalysisResourceBudget,
@@ -72,7 +80,7 @@ export function isConstrainedPdgBuild(
     pdg === true &&
     !budget.automatic &&
     budget.totalBytes <= 6144 * MIB &&
-    budget.parse.workers === 1
+    budget.parse.requestedWorkers === 1
   );
 }
 
@@ -226,6 +234,7 @@ export function resolveAnalysisResourceBudget(
     mainHeapMb,
     parse: Object.freeze({
       workers,
+      requestedWorkers: requiredWorkers,
       workerHeapMb,
       workerNativeBytes: bytes(WORKER_NATIVE_MB, 'worker native reservation'),
       graphPoolBytes,
