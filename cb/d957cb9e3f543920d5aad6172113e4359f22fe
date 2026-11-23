@@ -1,0 +1,19 @@
+ä.js
+  s_3661dd8603713a::t_995a9fd3ab8844 1
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "cbd957cb9e3f543920d5aad6172113e4359f22fe",
+  "prompts": {},
+  "sessions": {
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
