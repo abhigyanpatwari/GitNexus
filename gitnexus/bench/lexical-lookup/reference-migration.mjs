@@ -5,6 +5,10 @@ import { createHash } from 'node:crypto';
 import Parser from 'tree-sitter';
 import tsGrammar from 'tree-sitter-typescript';
 import jsGrammar from 'tree-sitter-javascript';
+import {
+  assertReferenceAdditionReceipt,
+  expectedReferenceAdditions,
+} from '../lib/reference-additions.mjs';
 
 // These four legacy keys collapsed independently verified nested calls in the
 // benchmark corpus. Other multiplicity changes fail closed.
@@ -15,9 +19,6 @@ const COLLAPSED_CALLS = new Set([
   'rel:CALLS:Function:gitnexus/src/core/ingestion/languages/objective-c/import-target.ts:resolveObjectiveCImportTarget->Function:gitnexus/src/core/ingestion/languages/objective-c/import-target.ts:augmentedFilePathsFor:69:8',
 ]);
 const REFERENCE_TYPES = new Set(['CALLS', 'ACCESSES', 'USES', 'EXTENDS', 'IMPLEMENTS', 'INHERITS']);
-const expectedReferences = JSON.parse(
-  fs.readFileSync(new URL('./expected-references.json', import.meta.url), 'utf8'),
-);
 const sources = new Map();
 
 function digest(rows) {
@@ -123,14 +124,17 @@ export function assertGraphParity(before, after, repo, revision) {
   if (
     before.graph.edges.count === after.graph.edges.count &&
     before.graph.edges.sha256 === after.graph.edges.sha256
-  )
-    return {
+  ) {
+    const receipt = {
       version: 1,
       mode: 'exact',
       baseline: before.graph,
       candidate: after.graph,
       comparison: before.graph,
     };
+    assertReferenceAdditionReceipt(revision, receipt, 0);
+    return receipt;
+  }
   const oldGraph = JSON.parse(fs.readFileSync(before.graphRowsPath, 'utf8'));
   const newGraph = JSON.parse(fs.readFileSync(after.graphRowsPath, 'utf8'));
   for (const [name, snapshot, report] of [
@@ -148,21 +152,25 @@ export function assertGraphParity(before, after, repo, revision) {
       `${name} edge snapshot does not match sample`,
     );
   }
-  if (Object.hasOwn(expectedReferences, revision)) {
+  if (expectedReferenceAdditions(revision)) {
     const remaining = new Set(oldGraph.edges);
     assert.equal(remaining.size, oldGraph.edges.length, 'Duplicate baseline graph row');
     const additions = newGraph.edges.filter((edge) => !remaining.delete(edge));
     assert.equal(remaining.size, 0, 'An existing relationship changed or was removed');
-    const recorded = digest(additions);
-    assert.deepEqual(recorded, expectedReferences[revision], 'Unexpected added references');
-    return {
+    const receipt = {
       version: 1,
       mode: 'added-references',
       baseline: before.graph,
       candidate: after.graph,
       comparison: before.graph,
-      additions: recorded,
+      additions: digest(additions),
     };
+    assertReferenceAdditionReceipt(
+      revision,
+      receipt,
+      after.graph.edges.count - before.graph.edges.count,
+    );
+    return receipt;
   }
   const oldEdges = oldGraph.edges.map((row) => JSON.parse(row));
   const newEdges = newGraph.edges.map((row) => JSON.parse(row));

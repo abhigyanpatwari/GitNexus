@@ -22,6 +22,7 @@ function report(pairs = 7, maxPairs = 7, candidateMs = [100]) {
       driverDigest: '2'.repeat(64),
       buildDigest: '3'.repeat(64),
       runtimeHead: '4'.repeat(40),
+      runtimeSourceTrees: ['5'.repeat(40), '6'.repeat(40)],
       node: process.version,
       workers: 2,
       platform: process.platform,
@@ -76,6 +77,7 @@ describe('parse-cache performance acceptance', () => {
     const expected = graphExpectations[0];
     const pair = report().warmup;
     pair.baseline.provenance.runtimeHead = expected.baselineRevision;
+    pair.candidate.provenance.runtimeSourceTrees = expected.candidateSourceTrees;
     for (const variant of ['baseline', 'candidate'] as const) {
       const trial = pair[variant];
       trial.provenance.sourceDigest = expected.sourceDigest;
@@ -87,6 +89,16 @@ describe('parse-cache performance acceptance', () => {
       }
     }
     expect(() => validatePair(pair)).not.toThrow();
+    const unrelated = structuredClone(pair);
+    unrelated.candidate.provenance.runtimeHead = '7'.repeat(40);
+    unrelated.candidate.provenance.runtimeSourceTrees = ['8'.repeat(40), '9'.repeat(40)];
+    unrelated.candidate.measurements = structuredClone(unrelated.baseline.measurements);
+    expect(() => validatePair(unrelated)).not.toThrow();
+
+    const completeRegression = structuredClone(pair);
+    completeRegression.candidate.measurements = structuredClone(pair.baseline.measurements);
+    expect(() => validatePair(completeRegression)).toThrow('Unexpected candidate graph for cold');
+
     const edit = pair.candidate.measurements[2];
     edit.parsedDigest = 'd'.repeat(64);
     expect(() => validatePair(pair)).toThrow('Unexpected candidate graph for edit');

@@ -2,11 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertReferenceAdditionReceipt } from '../lib/reference-additions.mjs';
 import { quantile } from '../mcp-query/statistics.mjs';
-
-const expectedReferences = JSON.parse(
-  fs.readFileSync(new URL('../lexical-lookup/expected-references.json', import.meta.url), 'utf8'),
-);
 
 export function assessPairs(pairs) {
   assert(pairs.length >= 8, 'At least eight complete measured pairs are required');
@@ -58,6 +55,11 @@ export function indexingMetrics(report, lifecycle) {
   const checkGraph = (baseline, candidate) => {
     assert.deepEqual(candidate.graph.nodes, baseline.graph.nodes, 'Semantic nodes differ');
     const receipt = receipts.get(baseline.name);
+    assertReferenceAdditionReceipt(
+      report.head,
+      receipt,
+      candidate.graph.edges.count - baseline.graph.edges.count,
+    );
     if (!receipt) {
       assert.equal(report.graphParity, undefined, 'Missing graph parity receipt');
       assert.deepEqual(
@@ -90,12 +92,6 @@ export function indexingMetrics(report, lifecycle) {
     );
     if (receipt.mode === 'exact')
       assert.deepEqual(candidate.graph, baseline.graph, 'Exact parity requires equal graphs');
-    if (receipt.mode === 'added-references') {
-      assert(Object.hasOwn(expectedReferences, report.head), 'Unknown reference corpus');
-      const expected = expectedReferences[report.head];
-      assert.deepEqual(receipt.additions, expected, 'Unexpected added reference receipt');
-      assert.equal(candidate.graph.edges.count - baseline.graph.edges.count, expected.count);
-    }
   };
   checkGraph(byName.get('baseline-seed'), byName.get('candidate-seed'));
   const pairs = [];

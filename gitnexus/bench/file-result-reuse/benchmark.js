@@ -33,7 +33,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseArgs } from 'node:util';
+import { isDeepStrictEqual, parseArgs } from 'node:util';
 
 const script = fileURLToPath(import.meta.url);
 const baselinePath = new URL('./baseline.json', import.meta.url);
@@ -364,6 +364,11 @@ export function validatePair(pair) {
       ? benchmarkBaseline.graphExpectations?.find(
           (entry) =>
             entry.baselineRevision === baseline.provenance.runtimeHead &&
+            Array.isArray(entry.candidateSourceTrees) &&
+            isDeepStrictEqual(
+              entry.candidateSourceTrees,
+              candidate.provenance.runtimeSourceTrees,
+            ) &&
             entry.sourceDigest === baseline.provenance.sourceDigest &&
             entry.sourceFiles === files,
         )
@@ -733,12 +738,38 @@ async function measure(values) {
     }
     return hash.digest('hex');
   }
+  const runtimeSourceRoots = ['gitnexus/src', 'gitnexus-shared/src'];
+  const runtimeGit = (...args) =>
+    execFileSync('git', ['-C', path.dirname(dist), ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
   const runtimeHead = (() => {
     try {
-      return execFileSync('git', ['-C', path.dirname(dist), 'rev-parse', 'HEAD'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim();
+      return runtimeGit('rev-parse', 'HEAD');
+    } catch {
+      return null;
+    }
+  })();
+  // An exact source identity survives benchmark-only commits and merge commits.
+  // A dirty runtime checkout must use the ordinary graph equality rule.
+  const runtimeSourceTrees = (() => {
+    if (!runtimeHead) return null;
+    try {
+      if (
+        runtimeGit(
+          'status',
+          '--porcelain',
+          '--',
+          ...runtimeSourceRoots.map((root) => `:(top)${root}`),
+        )
+      ) {
+        return null;
+      }
+      return runtimeGit(
+        'rev-parse',
+        ...runtimeSourceRoots.map((root) => `${runtimeHead}:${root}`),
+      ).split('\n');
     } catch {
       return null;
     }
@@ -790,6 +821,7 @@ async function measure(values) {
           .digest('hex'),
         checkoutHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
         runtimeHead,
+        runtimeSourceTrees,
         platform: process.platform,
         arch: process.arch,
       }),

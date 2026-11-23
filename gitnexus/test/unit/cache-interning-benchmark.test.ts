@@ -1,10 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import v8 from 'node:v8';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const checker = new URL('../../bench/v8-sidecar/check.mjs', import.meta.url);
 const { assessPairs, indexingMetrics, interningMetrics } = await import(checker.href);
@@ -188,7 +188,7 @@ describe('cache interning performance gate', () => {
 
     const expectedReferences = JSON.parse(
       readFileSync(
-        new URL('../../bench/lexical-lookup/expected-references.json', import.meta.url),
+        new URL('../../bench/lib/expected-reference-additions.json', import.meta.url),
         'utf8',
       ),
     );
@@ -196,17 +196,17 @@ describe('cache interning performance gate', () => {
       string,
       { count: number; sha256: string },
     ];
-    candidate.graph.edges.count += additions.count;
-    const withAdditions = graphParity.map((receipt, i) =>
-      i === 1
-        ? {
-            ...receipt,
-            mode: 'added-references',
-            candidate: structuredClone(candidate.graph),
-            additions,
-          }
-        : receipt,
-    );
+    const withAdditions = graphParity.map((receipt) => {
+      const sample = report.results.find((entry) => entry.name === receipt.candidateName);
+      if (!sample) throw new Error(`Missing sample ${receipt.candidateName}`);
+      sample.graph.edges.count += additions.count;
+      return {
+        ...receipt,
+        mode: 'added-references',
+        candidate: structuredClone(sample.graph),
+        additions,
+      };
+    });
     expect(() =>
       indexingMetrics({ ...report, head, graphParity: withAdditions }, 'fresh'),
     ).not.toThrow();
@@ -219,6 +219,45 @@ describe('cache interning performance gate', () => {
     expect(() => indexingMetrics({ ...report, head, graphParity: tampered }, 'fresh')).toThrow(
       'Unexpected added reference receipt',
     );
+  });
+
+  it('rejects exact parity when every pinned reference addition is absent', async () => {
+    const manifest = new URL('../../bench/lib/expected-reference-additions.json', import.meta.url);
+    const [head] = Object.keys(JSON.parse(readFileSync(manifest, 'utf8')));
+    const source = new URL('../../bench/lexical-lookup/reference-migration.mjs', import.meta.url);
+    const { assertGraphParity } = await import(source.href);
+    const report = indexing();
+    const { graph } = report.results[0];
+    expect(() => assertGraphParity({ graph }, { graph }, '.', head)).toThrow(
+      'Missing expected added reference receipt',
+    );
+    expect(() => indexingMetrics({ ...report, head }, 'fresh')).toThrow(
+      'Missing expected added reference receipt',
+    );
+  });
+
+  it('loads timing assessment without the reference manifest', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'timing-check-'));
+    try {
+      const bench = new URL('../', checker);
+      for (const file of [
+        'v8-sidecar/check.mjs',
+        'mcp-query/statistics.mjs',
+        'lib/reference-additions.mjs',
+      ]) {
+        const destination = path.join(directory, file);
+        mkdirSync(path.dirname(destination), { recursive: true });
+        copyFileSync(new URL(file, bench), destination);
+      }
+      const isolated = await import(
+        pathToFileURL(path.join(directory, 'v8-sidecar/check.mjs')).href
+      );
+      expect(isolated.assessPairs(Array(8).fill({ baseline: 1, candidate: 1 })).verdict).toBe(
+        'within-budget',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('rejects missing, duplicate, or non-equivalent shard measurements', () => {
