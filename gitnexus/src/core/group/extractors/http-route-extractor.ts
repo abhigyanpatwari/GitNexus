@@ -6,6 +6,7 @@ import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { createTreeReleaser } from '../../tree-sitter/native-tree-release.js';
 import { toZeroBasedLine } from '../../ingestion/utils/line-base.js';
 import { logger } from '../../logger.js';
 import { DATA_ROUTE_TABLE_SOURCE } from '../../ingestion/route-extractors/data-route-table.js';
@@ -13,11 +14,9 @@ import { stripLeadingTemplatePrefix } from '../../ingestion/route-extractors/rou
 import {
   getPluginForFile,
   HTTP_SCAN_GLOB,
-  runProjectScan,
   type HttpDetection,
   type HttpLanguagePlugin,
   type HttpProjectScan,
-  type HttpScanInput,
 } from './http-patterns/index.js';
 
 /**
@@ -485,15 +484,16 @@ export class HttpRouteExtractor implements ContractExtractor {
     _repo: RepoHandle,
   ): Promise<ExtractedContract[]> {
     // Parse each file at most once and reuse the plugin results across
-    // both graph-assisted enrichment and source-scan emission.
+    // both graph-assisted enrichment and source-scan emission. Only results
+    // are kept, never trees: a tree lives while its own file is processed.
     const parser = new Parser();
     const cachedDetections = new Map<string, HttpDetection[]>();
-    const cachedInputs = new Map<
-      string,
-      { plugin: HttpLanguagePlugin; input: HttpScanInput; repoContext: unknown } | null
-    >();
+    // A file's own `scan` detections, keyed by the raw rel the file was read
+    // with. An empty entry also marks a file with no plugin or no parse.
+    const ownDetections = new Map<string, HttpDetection[]>();
     const projectDetections = new Map<string, HttpDetection[]>();
     const completedProjectScans = new Set<HttpProjectScan>();
+    const releaseTrees = createTreeReleaser();
 
     // Per-plugin cross-file context (e.g. Python's FastAPI router →
     // include_router(prefix=...) map). Built lazily on first
@@ -523,36 +523,48 @@ export class HttpRouteExtractor implements ContractExtractor {
       }
     };
 
-    const getScanInput = async (
+    // Parse one file, run its plugin's `scan` and, inside a project-scan pass,
+    // the family's `collect`. Synchronous so that the tree is unreachable as
+    // soon as this returns. The facts go through `structuredClone`: it throws
+    // if a plugin leaks a tree or a syntax node into them, and it copies
+    // strings sliced from the file's source so they do not keep it alive.
+    const parseAndScan = (
+      plugin: HttpLanguagePlugin,
       rel: string,
-    ): Promise<{
-      plugin: HttpLanguagePlugin;
-      input: HttpScanInput;
-      repoContext: unknown;
-    } | null> => {
-      if (cachedInputs.has(rel)) return cachedInputs.get(rel) ?? null;
-      const plugin = getPluginForFile(rel);
-      if (!plugin) {
-        cachedInputs.set(rel, null);
-        return null;
-      }
-      const repoContext = await ensureRepoContext(plugin);
+      repoContext: unknown,
+      projectScan: HttpProjectScan | undefined,
+    ): { facts: unknown } | null => {
       const content = readSafe(repoPath, rel);
-      if (!content) {
-        cachedInputs.set(rel, null);
-        return null;
-      }
+      if (!content) return null;
+      let tree: Parser.Tree;
       try {
         parser.setLanguage(plugin.language);
-        const tree = parseSourceSafe(parser, content);
-        const input = { filePath: rel, tree };
-        const item = { plugin, input, repoContext };
-        cachedInputs.set(rel, item);
-        return item;
+        tree = parseSourceSafe(parser, content);
       } catch {
-        cachedInputs.set(rel, null);
         return null;
       }
+      ownDetections.set(rel, plugin.scan(tree, repoContext, rel));
+      return {
+        facts: projectScan
+          ? structuredClone(projectScan.collect({ filePath: rel, tree }, repoContext))
+          : undefined,
+      };
+    };
+
+    const analyzeFile = async (
+      rel: string,
+      projectScan?: HttpProjectScan,
+    ): Promise<{ facts: unknown; repoContext: unknown } | null> => {
+      const plugin = getPluginForFile(rel);
+      const repoContext = plugin ? await ensureRepoContext(plugin) : undefined;
+      const result = plugin ? parseAndScan(plugin, rel, repoContext, projectScan) : null;
+      if (!result) {
+        ownDetections.set(rel, []);
+        return null;
+      }
+      // Let the dropped trees' native memory go (see native-tree-release.ts).
+      await releaseTrees();
+      return { facts: result.facts, repoContext };
     };
 
     const getDetections = async (rel: string): Promise<HttpDetection[]> => {
@@ -565,11 +577,8 @@ export class HttpRouteExtractor implements ContractExtractor {
       const key = normalizeRepoRelPath(rel);
       const cached = cachedDetections.get(key);
       if (cached) return cached;
-      const scanInput = await getScanInput(rel);
-      const ownDetections = scanInput
-        ? scanInput.plugin.scan(scanInput.input.tree, scanInput.repoContext, rel)
-        : [];
-      const detections = [...ownDetections, ...(projectDetections.get(key) ?? [])];
+      if (!ownDetections.has(rel)) await analyzeFile(rel);
+      const detections = [...(ownDetections.get(rel) ?? []), ...(projectDetections.get(key) ?? [])];
       cachedDetections.set(key, detections);
       return detections;
     };
@@ -583,14 +592,13 @@ export class HttpRouteExtractor implements ContractExtractor {
       return scannedFiles;
     };
 
+    // One pass per project family: each file is parsed, scanned and reduced to
+    // its facts in turn, and only the facts reach the cross-file `resolve`.
     const collectProjectDetections = async (
       files: string[],
       onlyScan?: HttpProjectScan,
     ): Promise<void> => {
-      const byScan = new Map<
-        HttpProjectScan,
-        { plugin: HttpLanguagePlugin; inputs: HttpScanInput[]; repoContext: unknown }
-      >();
+      const byScan = new Map<HttpProjectScan, { facts: unknown[]; repoContext: unknown }>();
       for (const rel of files) {
         const projectScan = getPluginForFile(rel)?.projectScan;
         if (
@@ -599,22 +607,22 @@ export class HttpRouteExtractor implements ContractExtractor {
           (onlyScan && onlyScan !== projectScan)
         )
           continue;
-        const scanInput = await getScanInput(rel);
-        if (!scanInput) continue;
-        const group = byScan.get(projectScan) ?? {
-          plugin: scanInput.plugin,
-          inputs: [],
-          repoContext: scanInput.repoContext,
-        };
-        group.inputs.push(scanInput.input);
-        byScan.set(projectScan, group);
+        const family = byScan.get(projectScan) ?? { facts: [], repoContext: undefined };
+        byScan.set(projectScan, family);
+        if (ownDetections.has(rel)) continue;
+        const analyzed = await analyzeFile(rel, projectScan);
+        if (!analyzed) continue;
+        // The family resolves against its first parsed file's context.
+        if (family.facts.length === 0) family.repoContext = analyzed.repoContext;
+        family.facts.push(analyzed.facts);
       }
 
       // Shared project-scan identity pools grammar variants without teaching
       // the orchestrator which languages belong to the same project family.
-      for (const [projectScan, { plugin, inputs, repoContext }] of byScan) {
+      for (const [projectScan, { facts, repoContext }] of byScan) {
         completedProjectScans.add(projectScan);
-        const results = runProjectScan(plugin, inputs, repoContext);
+        if (facts.length === 0) continue;
+        const results = projectScan.resolve(facts, repoContext);
         for (const result of results) {
           const key = normalizeRepoRelPath(result.filePath);
           const existing = projectDetections.get(key) ?? [];

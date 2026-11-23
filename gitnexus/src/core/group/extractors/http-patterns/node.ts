@@ -440,7 +440,7 @@ async function buildNodeRepoContext(args: {
   // path for one. A repo where the string `axios` appears nowhere can prove no
   // receiver, so every parse below is dead work — and parsing is the expensive
   // half (measured 4.36 s / +258 MB RSS over 827 TypeScript files, on top of
-  // the parse `getScanInput` already does).
+  // the parse the orchestrator's own scan already does).
   // Only the file's identity is carried between the passes, never its text: a
   // large monorepo's whole source tree held in one array at once is the shape
   // that produced the analyzer's scale problems, and the second read is cheap
