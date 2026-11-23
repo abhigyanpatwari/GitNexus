@@ -1,0 +1,59 @@
+gitnexus-shared/src/scope-resolution/exclusive-reexports.ts
+  s_3661dd8603713a::t_57b98ac8e0f648 20,212-214
+gitnexus-shared/src/scope-resolution/finalize-algorithm.ts
+  s_b9690234122db7::t_ea206422c428f1 1057-1058,1063,1065-1068,2188-2193
+gitnexus-shared/src/scope-resolution/symbol-definition.ts
+  s_3661dd8603713a::t_9dde1f6ec40362 142-143
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_a6e61fd131cf35 263
+gitnexus/src/core/ingestion/languages/javascript/callable-visibility.ts
+  s_3661dd8603713a::t_0be125376b5854 12
+gitnexus/src/core/ingestion/languages/javascript/captures.ts
+  s_3661dd8603713a::t_11b5965de5c4c8 46,1082-1083,1085,1189-1193
+gitnexus/src/core/ingestion/languages/typescript/captures.ts
+  s_3661dd8603713a::t_29dae876b35975 42,623-624,626,746-750
+gitnexus/src/core/ingestion/languages/typescript/module-exports.ts
+  s_3661dd8603713a::t_24d1f3521d203d 17,22-25
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_3661dd8603713a::t_9c9ef2ea7748f4 782,809,2023
+gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts
+  s_3661dd8603713a::t_877ee98b9c7612 852-853
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_3661dd8603713a::t_79264339048ea0 42-43,264,279,287-296,310,335-337,344-345,348
+gitnexus/test/integration/resolvers/javascript-module-ownership.test.ts
+  s_3661dd8603713a::t_f715fb92672f50 29-37,54,62,78,87
+gitnexus/test/integration/resolvers/typescript-module-ownership.test.ts
+  s_676b35bc218cc9::t_b20f7eb49ac586 14-15,70,90-94,133-134
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b5c1ad2747a10fbed9f91c82f9c7f2804ba9a686",
+  "prompts": {},
+  "sessions": {
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
