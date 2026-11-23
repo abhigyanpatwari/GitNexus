@@ -273,7 +273,7 @@ export function interpretTsTypeBinding(captures: CaptureMatch): ParsedTypeBindin
   else if (captures['@type-binding.map-tuple-entry'] !== undefined) source = 'assignment-inferred';
   else if (captures['@type-binding.instanceof-narrow'] !== undefined) source = 'annotation';
 
-  return { boundName: nameCap.text, rawTypeName: rawType, source };
+  return { boundName: canonicalTypeScriptName(nameCap.text), rawTypeName: rawType, source };
 }
 
 function normalizeBindingType(text: string): string {

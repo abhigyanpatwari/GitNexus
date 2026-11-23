@@ -58,6 +58,8 @@ export default wrap(function callback() {});
         const entity = new mod.Entity();
         entity.save();
       }`,
+    'direct-type.ts': 'export interface publish { save(): void }',
+    'direct-mixed.ts': "export * from './direct-type.js'; export * from './left.js';",
     'mixed-owners.ts': "export type * from './right.js'; export * from './left.js';",
     'first.ts': "export { publish } from './left.js';",
     'second.ts': "export * from './right.js';",
@@ -119,6 +121,8 @@ export function erasedLocalCalls() {
 import { run as forwarded } from './import-forward.js';
 import * as via from './import-forward.js';
 import { "other object" as quotedNamespace } from './quote-namespace.js';
+import { publish as valueBesideType } from './direct-mixed.js';
+export function useValueBesideType() { valueBesideType(); }
 import { publish as runtimeStar } from './mixed-owners.js';
 export function callForwarded() { forwarded(); }
 export function callForwardedNamespace() { via.run(); }
@@ -228,6 +232,7 @@ export function privateNamespace() {
     ['entry.ts:useForwardedType', ['Method:left.ts:Entity.save#0']],
     ['entry.ts:useQuotedNamespace', [publishLeft]],
     ['entry.ts:useRuntimeStar', [publishLeft]],
+    ['entry.ts:useValueBesideType', [publishLeft]],
     ['spaces.ts:outer', ['Method:left.ts:Entity.save#0']],
     ['spaces.ts:local', []],
     ['entry.ts:dualDefault', ['Function:dual.ts:dual']],

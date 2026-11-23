@@ -126,7 +126,7 @@ export function closureWrite(repo: Key | Value) {
     ['conditionalWrite', [keyBefore]],
     ['loopWrite', [keyBefore]],
     ['wrappedWrite', [keyBefore]],
-    ['escapedWrite', [keyBefore, valueSave]],
+    ['escapedWrite', [keyBefore]],
     ['shadowWrite', [keyBefore, valueSave]],
     ['shadowConstructor', [keySave]],
     ['closureWrite', []],

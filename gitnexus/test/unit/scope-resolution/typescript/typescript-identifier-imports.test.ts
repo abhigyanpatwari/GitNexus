@@ -89,6 +89,25 @@ describe('ECMAScript identifier spellings at module boundaries', () => {
     expect(forwarded[3]).not.toHaveProperty('typeOnly');
   });
 
+  it('marks every public spelling of a type declaration as erased', () => {
+    const exports = typescriptModuleExports(
+      parse(`
+      export interface Shape {}
+      export type Size = number;
+      export { Size as Dimension };
+      export default interface DefaultShape {}
+      export { DefaultShape as Other };
+      export type Dual = number;
+      export function Dual() {}
+    `),
+    );
+    for (const name of ['Shape', 'Size', 'Dimension', 'default', 'Other']) {
+      expect(exports.get(name)?.typeOnlyExports).toContain(name);
+    }
+    expect(exports.get('Dual')).toMatchObject({ type: 'Function' });
+    expect(exports.get('Dual')?.typeOnlyExports).toBeUndefined();
+  });
+
   it('keeps erased aliases out of the value names and preserves a separately exported value', () => {
     const exports = typescriptModuleExports(
       parse(String.raw`

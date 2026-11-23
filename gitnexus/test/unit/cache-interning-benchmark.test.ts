@@ -192,9 +192,10 @@ describe('cache interning performance gate', () => {
         'utf8',
       ),
     );
-    const [head, additions] = Object.entries(expectedReferences)[0] as [
+    type Digest = { count: number; sha256: string };
+    const [head, { additions, typeOnlyImports }] = Object.entries(expectedReferences)[0] as [
       string,
-      { count: number; sha256: string },
+      { additions: Digest; typeOnlyImports: Digest },
     ];
     const withAdditions = graphParity.map((receipt) => {
       const sample = report.results.find((entry) => entry.name === receipt.candidateName);
@@ -205,6 +206,7 @@ describe('cache interning performance gate', () => {
         mode: 'added-references',
         candidate: structuredClone(sample.graph),
         additions,
+        typeOnlyImports,
       };
     });
     expect(() =>
@@ -213,6 +215,12 @@ describe('cache interning performance gate', () => {
     expect(() => indexingMetrics({ ...report, graphParity: withAdditions }, 'fresh')).toThrow(
       'Unknown reference corpus',
     );
+    const missingImports = withAdditions.map(
+      ({ typeOnlyImports: _imports, ...receipt }) => receipt,
+    );
+    expect(() =>
+      indexingMetrics({ ...report, corpusTrees: head, graphParity: missingImports }, 'fresh'),
+    ).toThrow('Unexpected type-only imports');
     const tampered = withAdditions.map((receipt, i) =>
       i === 1 ? { ...receipt, additions: { ...additions, sha256: 'invented' } } : receipt,
     );

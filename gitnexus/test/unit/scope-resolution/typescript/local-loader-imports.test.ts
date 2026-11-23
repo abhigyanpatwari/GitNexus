@@ -206,7 +206,7 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
 
 it('tracks guarded JavaScript member uses in a Vue script', () => {
   const captures = emitVueScopeCaptures(
-    '<script>function use(x) { if (x instanceof A) { x.first(); x = b; x.last(); } }</script>',
+    '<script lang="js">function use(x) { if (x instanceof A) { x.first(); x = b; x.last(); } }</script>',
     'Guard.vue',
   );
   expect(

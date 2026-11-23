@@ -155,7 +155,17 @@ export function assertGraphParity(before, after, repo, revision) {
   if (expectedReferenceAdditions(revision)) {
     const remaining = new Set(oldGraph.edges);
     assert.equal(remaining.size, oldGraph.edges.length, 'Duplicate baseline graph row');
-    const additions = newGraph.edges.filter((edge) => !remaining.delete(edge));
+    const typeOnlyImports = [];
+    const additions = newGraph.edges.filter((row) => {
+      if (remaining.delete(row)) return false;
+      const edge = JSON.parse(row);
+      if (edge.type !== 'IMPORTS' || edge.reason !== 'typescript-scope: import (type-only)')
+        return true;
+      const previous = JSON.stringify({ ...edge, reason: 'typescript-scope: import' });
+      if (!remaining.delete(previous)) return true;
+      typeOnlyImports.push(row);
+      return false;
+    });
     assert.equal(remaining.size, 0, 'An existing relationship changed or was removed');
     const receipt = {
       version: 1,
@@ -164,6 +174,7 @@ export function assertGraphParity(before, after, repo, revision) {
       candidate: after.graph,
       comparison: before.graph,
       additions: digest(additions),
+      typeOnlyImports: digest(typeOnlyImports),
     };
     assertReferenceAdditionReceipt(
       revision,

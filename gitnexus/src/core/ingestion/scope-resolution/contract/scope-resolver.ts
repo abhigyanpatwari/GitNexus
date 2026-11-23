@@ -1038,7 +1038,9 @@ export interface ScopeResolver {
    * language whose wildcard import is `#include`, `require` or a package
    * fan-out, the same name in two files is an overload set or a redeclaration,
    * and refusing it would delete real edges (C++ arity-narrowed overloads
-   * across two headers). With unfiltered wildcards, finalize builds the module's\n   * public export surface and uses it for namespace chains and named imports. Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
+   * across two headers). With unfiltered wildcards, finalize builds the module's
+   * public export surface and uses it for namespace chains and named imports.
+   * Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
    */
   readonly exclusiveWildcardReexports?: boolean;
 

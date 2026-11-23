@@ -18,6 +18,11 @@ export function assertReferenceAdditionReceipt(revision, receipt, edgeDelta) {
     return;
   }
   assert.equal(receipt?.mode, 'added-references', 'Missing expected added reference receipt');
-  assert.deepEqual(receipt.additions, expected, 'Unexpected added reference receipt');
-  assert.equal(edgeDelta, expected.count, 'Unexpected added reference count');
+  assert.deepEqual(receipt.additions, expected.additions, 'Unexpected added reference receipt');
+  assert.deepEqual(
+    receipt.typeOnlyImports,
+    expected.typeOnlyImports,
+    'Unexpected type-only imports',
+  );
+  assert.equal(edgeDelta, expected.additions.count, 'Unexpected added reference count');
 }
