@@ -822,6 +822,7 @@ async function measure(values) {
         buildDigest: await treeDigest(dist),
         driverDigest: createHash('sha256')
           .update(await fs.readFile(new URL(import.meta.url)))
+          .update(await fs.readFile(new URL('../lib/benchmark-tools.mjs', import.meta.url)))
           .update(baselineBytes)
           .digest('hex'),
         checkoutHead: runBenchmarkTool('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
