@@ -6,6 +6,7 @@
  */
 
 import path from 'path';
+import { statSync } from 'fs';
 import readline from 'readline';
 import { execSync, execFileSync } from 'child_process';
 import cliProgress from 'cli-progress';
@@ -142,6 +143,34 @@ export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptio
   }
 };
 
+/**
+ * The index of `repoPath`, or else of the repository that contains it. A
+ * folder inside a repository has an index of its own only when it was
+ * analyzed on its own.
+ */
+const findIndex = async (repoPath: string): Promise<{ repoPath: string; storagePath: string }> => {
+  try {
+    return {
+      repoPath,
+      storagePath: await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS),
+    };
+  } catch (error) {
+    const root = getGitRoot(repoPath);
+    if (
+      !root ||
+      root === repoPath ||
+      !(error instanceof StorageRequirementError) ||
+      !isUnusableIndexInspection(error.inspection)
+    ) {
+      throw error;
+    }
+    return {
+      repoPath: root,
+      storagePath: await requireStoragePath(root, STATUS_STORAGE_REQUIREMENTS),
+    };
+  }
+};
+
 const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions): Promise<void> => {
   // Set verbose mode globally for cursor-client to pick up
   if (options?.verbose) {
@@ -153,7 +182,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   // ── Resolve repo path ───────────────────────────────────────────────
   let repoPath: string;
   if (inputPath) {
-    repoPath = path.resolve(inputPath);
+    const target = path.resolve(inputPath);
+    // A file stands for the folder that holds it.
+    repoPath = statSync(target, { throwIfNoEntry: false })?.isFile()
+      ? path.dirname(target)
+      : target;
   } else {
     const gitRoot = getGitRoot(process.cwd());
     if (!gitRoot) {
@@ -173,7 +206,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
   // ── Check for existing index ────────────────────────────────────────
   let storagePath: string;
   try {
-    storagePath = await requireStoragePath(repoPath, STATUS_STORAGE_REQUIREMENTS);
+    const found = await findIndex(repoPath);
+    if (found.repoPath !== repoPath) console.log(`  Using the index of ${found.repoPath}\n`);
+    ({ repoPath, storagePath } = found);
   } catch (error) {
     if (!(error instanceof StorageRequirementError)) throw error;
     const inspection = error.inspection;
