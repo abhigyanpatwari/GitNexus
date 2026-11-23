@@ -8,9 +8,18 @@ permissions:
 
 jobs:
   java-compiler-conformance:
-    name: Java compiler conformance
+    name: Java fixtures and compiler conformance (${{ matrix.shard }}/${{ strategy.job-total }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    needs: shard-plan
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    env:
+      GITNEXUS_REQUIRE_FTS: '1'
+      GITNEXUS_REQUIRE_VECTOR: '1'
+      GITNEXUS_REQUIRE_ZIG: '1'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -20,9 +29,49 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
       - name: Compare overload targets with javac
+        if: matrix.shard == 1
         working-directory: gitnexus
         run: npm run test:conformance:java
+      - name: Ensure FTS + VECTOR extensions installed
+        working-directory: gitnexus
+        run: npx tsx scripts/ensure-fts.ts
+      - name: Download frozen timing snapshot
+        uses: ./.github/actions/download-test-artifact
+        with:
+          name: shard-timing-input
+          path: gitnexus/.vitest/timings
+      - name: Run Java fixture tests with coverage
+        working-directory: gitnexus
+        env:
+          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          BLOB: .vitest/blob/java-${{ matrix.shard }}.json
+        run: >-
+          npx vitest run test/java/
+          --shard="$SHARD" --reporter=default --reporter=blob --outputFile.blob="$BLOB"
+          --coverage --coverage.thresholds.lines=0 --coverage.thresholds.functions=0
+          --coverage.thresholds.branches=0 --coverage.thresholds.statements=0
+      - name: Upload Java coverage blob
+        if: always()
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: coverage-blob-java-${{ matrix.shard }}
+          path: gitnexus/.vitest/blob/
+          include-hidden-files: true
+      - name: Run Java fixture benchmarks serially
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        working-directory: gitnexus
+        env:
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
+        run: npm run test:benchmarks -- --java
+      - name: Upload Java benchmark execution report
+        if: ${{ always() && matrix.shard == 1 }}
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: execution-java-benchmarks
+          path: gitnexus/java-benchmarks.json
 
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
@@ -438,7 +487,7 @@ jobs:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
           GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: >-
-          npx vitest run
+          npx vitest run test/unit/ test/integration/
           --shard="$SHARD"
           --reporter=default
           --reporter=blob
@@ -465,7 +514,7 @@ jobs:
   # test-results.json and runs the (unsharded) web + docker suites.
   coverage-merge:
     name: ubuntu / coverage merge
-    needs: tests
+    needs: [tests, java-compiler-conformance]
     runs-on: ubuntu-latest
     # The optional LCOV upload has its own two-minute timeout after the tests.
     timeout-minutes: 17
@@ -1787,7 +1836,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-        run: npm run test:benchmarks
+        run: npm run test:benchmarks -- --exclude-java
         working-directory: gitnexus
       - name: Upload benchmark execution report
         if: always()

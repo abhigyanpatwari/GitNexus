@@ -98,18 +98,25 @@ describe('resolveEligibility', () => {
     expect(classifyTests).toHaveBeenCalledWith(repoRoot);
   });
 
-  it('normal mode gives the fingerprint every unit and integration test file, nothing else', () => {
+  it('normal mode gives the fingerprint every unit, integration and Java test file, nothing else', () => {
     const repoRoot = tempRepo({
       [ENVELOPE_FILE]: envelope([A, C]),
       'gitnexus/test/unit/nested/x.test.ts': '',
       'gitnexus/test/integration/y.test.ts': '',
+      'gitnexus/test/java/j.test.ts': '',
       'gitnexus/test/unit/helper.ts': '',
       'gitnexus/test/fixtures/z.test.ts': '',
     });
     const classifyTests = vi.fn((_root: string) => verdicts);
     expect(
       resolveEligibility({ repoRoot, mode: { kind: 'normal' }, classifyTests }).fingerprintFiles,
-    ).toEqual(['test/integration/y.test.ts', A, C, 'test/unit/nested/x.test.ts']);
+    ).toEqual([
+      'test/integration/y.test.ts',
+      'test/java/j.test.ts',
+      A,
+      C,
+      'test/unit/nested/x.test.ts',
+    ]);
   });
 
   it('controls mode enrols the fixture case files and never consults the envelope', () => {

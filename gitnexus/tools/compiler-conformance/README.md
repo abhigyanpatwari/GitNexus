@@ -63,7 +63,7 @@ node java/javac-report.mjs /path/to/fixture find resolve count > compiler.json
 node compare.mjs compiler.json analyzer.json
 ```
 
-The [Java CI job](java/check.mjs) batches three checked-in fixtures and one [generated overload matrix](java/conversion-matrix.mjs) in a single JVM. The matrix covers all 20 ordered pairs of distinct parameter types from `long`, `Integer`, `Long`, `Number`, and `Object`. Each pair receives an int literal, a long literal, an `Integer` parameter, a `Long` parameter, and `null`. The generator records all 100 source ranges before either tool runs. Of these calls, 98 resolve and two are ambiguous.
+The [Java compiler check](java/check.mjs) batches five checked-in fixtures and one [generated overload matrix](java/conversion-matrix.mjs) in a single JVM. The cross-file fixtures check static factory imports and calls on the inferred return type, including when the consumer is visited first. The matrix covers all 20 ordered pairs of distinct parameter types from `long`, `Integer`, `Long`, `Number`, and `Object`. Each pair receives an int literal, a long literal, an `Integer` parameter, a `Long` parameter, and `null`. The generator records all 100 source ranges before either tool runs. Of these calls, 98 resolve and two are ambiguous.
 
 The job compares javac's declarations and ambiguities with the [GitNexus call report](gitnexus-report.mjs). Run it from `gitnexus/` with JDK 21 and a built checkout.
 

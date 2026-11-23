@@ -22,6 +22,7 @@ From `gitnexus/`:
 | `npm run typecheck:tests`     | TypeScript checks for source, tests, and helpers   | Before opening a PR                   |
 | `npm run test:unit`           | Unit tests only (`test/unit/`)                     | Tight development loop                |
 | `npm run test:integration`    | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
+| `npm run test:java`           | javac comparisons and Java-backed fixture suites   | After changing Java support (JDK 21)  |
 | `npm run test:coverage`       | Full suite + v8 coverage with thresholds           | Checking coverage impact              |
 | `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
 | `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
@@ -80,14 +81,14 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 
 - **Unit** — Pure logic, parsers, graph/query helpers; fast; no network.
 - **Integration** — Real combinations (filesystem, MCP wiring, larger pipelines) as already organized under `gitnexus/test/integration`.
-- **Resolver / parity** — Language-specific call-resolution tests in `test/integration/resolvers/`.
+- **Resolver / parity** — Java-backed resolver suites live in `test/java/resolvers/`. Other resolver suites live in `test/integration/resolvers/`.
 - **E2E (web)** — Critical user paths only; prefer `data-testid` attributes for stable selectors. Tests run against real backend (`gitnexus serve`) and Vite dev server.
 
 ## Scope-resolution tests
 
 Run `npm run test:conformance:java` from a built `gitnexus/` checkout with JDK 21 to compare Java overload selections with javac. Other compilers and analyzers can use the same standalone comparison command by emitting JSON reports. See the [call-resolution conformance guide](gitnexus/tools/compiler-conformance/README.md).
 
-Every language resolves calls and inheritance through the scope-resolution pipeline — the legacy call-resolution DAG and the per-language `REGISTRY_PRIMARY_<LANG>` flag were removed in RING4-1 (#942). Each language's resolver test lives at `test/integration/resolvers/<slug>.test.ts` and runs once, on the single scope-resolution path, as part of the normal `tests` job (`vitest test/**/*.test.ts`).
+Every language resolves calls and inheritance through the scope-resolution pipeline. The Java CI job runs `test/java/`, including Spring, persistence, rename, and fixtures that exercise Java alongside other languages. Shared source corpora under `test/fixtures/` are also available to the benchmarks. The other Ubuntu shards run `test/unit/` and `test/integration/`. Both groups contribute to the same coverage and test-completeness reports.
 
 Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/registry.ts` (`SCOPE_RESOLVERS`) and add the resolver test file — no workflow or config edit needed.
 
@@ -190,7 +191,7 @@ The `typecheck` job runs both the production compiler check and
 ### Complete execution, including platform and benchmark tests
 
 The required `every test executed` job reconciles execution receipts from Ubuntu
-coverage, every Windows/macOS shard, the serial benchmark run, and the real Python
+coverage (including the Java fixture shards), every Windows/macOS shard, the serial benchmark runs, and the real Python
 workflow preflight. It requires a recorded pass for every collected test. A skip
 on Linux is satisfied only by a pass of that exact test in another required job.
 Test identities include the file, suite/title and source location; ambiguous

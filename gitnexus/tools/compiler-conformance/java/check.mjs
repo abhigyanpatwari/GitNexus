@@ -13,6 +13,18 @@ const fixtureRoot = fileURLToPath(new URL('../../../test/fixtures/', import.meta
 // Counts guard against silently losing a fixture or a call during compiler traversal.
 const fixtures = [
   {
+    dir: 'java/java-cross-file',
+    families: ['getUser', 'save', 'getName'],
+    resolved: 3,
+    ambiguous: 0,
+  },
+  {
+    dir: 'java/java-consumer-before-provider',
+    families: ['getUser', 'save'],
+    resolved: 2,
+    ambiguous: 0,
+  },
+  {
     dir: 'lang-resolution/java-overload-types',
     families: ['find', 'resolve', 'count'],
     resolved: 9,

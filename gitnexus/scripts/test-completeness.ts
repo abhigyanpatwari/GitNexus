@@ -171,7 +171,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   if (!directory || !output || !Number.isInteger(shards) || shards < 1) {
     throw new Error('Usage: test-completeness.ts <reports-dir> <output.json> <platform-shards>');
   }
-  const names = ['coverage.json', 'benchmarks.json', 'preflight.json'];
+  const names = ['coverage.json', 'benchmarks.json', 'java-benchmarks.json', 'preflight.json'];
   for (const os of ['windows-latest', 'macos-latest']) {
     for (let shard = 1; shard <= shards; shard++) names.push(`${os}-${shard}.json`);
   }

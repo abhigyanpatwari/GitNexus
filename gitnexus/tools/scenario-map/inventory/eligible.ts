@@ -5,7 +5,7 @@
  * (`gitnexus/test/fixtures/mutation-oracle/envelope.json`) that a fresh run of the Phase 0
  * classifier (tools/mutation/classify) still accepts; every other test is Out of scope for
  * mutation. The scenario fingerprint needs no mutation run: it covers every `*.test.ts` under
- * `test/unit` and `test/integration` ({@link FINGERPRINT_ROOTS}; fingerprint plan F8). The
+ * `test/unit`, `test/integration` and `test/java` ({@link FINGERPRINT_ROOTS}; fingerprint plan F8). The
  * delta lists files the classifier accepts that the envelope does not hold (not validated by
  * gate 1) and envelope files it no longer accepts, with its reasons (`not found` for a file it
  * did not see, such as a deleted one).
@@ -31,7 +31,7 @@ import {
 import { byText, isRecord } from '../util.js';
 
 /** Package paths of the directories whose `*.test.ts` files the fingerprint covers. */
-export const FINGERPRINT_ROOTS: readonly string[] = ['test/unit', 'test/integration'];
+export const FINGERPRINT_ROOTS: readonly string[] = ['test/unit', 'test/integration', 'test/java'];
 
 /** Repo path of the gate 1 envelope. */
 export const ENVELOPE_FILE = 'gitnexus/test/fixtures/mutation-oracle/envelope.json';

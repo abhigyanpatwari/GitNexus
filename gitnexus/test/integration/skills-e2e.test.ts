@@ -1,7 +1,7 @@
 /**
  * E2E Integration Tests: --skills Flag
  *
- * Tests `gitnexus analyze --skills` across 11 supported languages plus
+ * Tests `gitnexus analyze --skills` across the non-Java language fixtures plus
  * mixed-language and idempotency scenarios. Each language fixture creates
  * a self-contained git repo with 2 clusters of files containing cross-file
  * function calls, then runs the full CLI pipeline and verifies SKILL.md
@@ -11,161 +11,16 @@
  * Accepts status === null (timeout) as valid on slow CI runners.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
-import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import os from 'os';
 
-// ============================================================================
-// FILE-LOCAL HELPERS
-// ============================================================================
-
-/**
- * Spawn the CLI with `analyze --skills` in the given cwd.
- * Entry point comes from CLI_SPAWN_PREFIX (built dist in CI, tsx-on-source
- * locally); the tsx path uses an absolute loader URL so it resolves from any cwd.
- */
-function runSkillsCli(cwd: string, timeoutMs = 45000) {
-  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skills'], {
-    cwd,
-    encoding: 'utf8',
-    timeout: timeoutMs,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: cliAnalysisEnv(),
-  });
-}
-
-/**
- * Create a fixture repo: write files, git init, git add, git commit.
- * Returns the tmp directory path.
- */
-function createFixtureRepo(prefix: string, files: Record<string, string>): string {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skills-e2e-${prefix}-`));
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(tmpDir, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf-8');
-  }
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['add', '-A'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'initial commit'], {
-    cwd: tmpDir,
-    stdio: 'pipe',
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'test',
-      GIT_AUTHOR_EMAIL: 'test@test',
-      GIT_COMMITTER_NAME: 'test',
-      GIT_COMMITTER_EMAIL: 'test@test',
-    },
-  });
-  return tmpDir;
-}
-
-/**
- * Assert standard skill file properties:
- * 1. CLI exits 0
- * 2. .gitnexus/ exists
- * 3. >= minSkills direct SKILL.md files under .claude/skills/gitnexus-area-<name>/
- * 4. YAML frontmatter valid
- * 5. ## Key Files section present
- * 6. ## How to Explore section present
- * 7. Content > 200 chars
- *
- * Returns false if skill generation was skipped (native parser crash
- * or Leiden non-determinism producing 0 communities). Callers can
- * use this to skip dependent assertions.
- */
-function assertSkillFiles(
-  result: ReturnType<typeof runSkillsCli>,
-  tmpDir: string,
-  minSkills = 1,
-): boolean {
-  /* CI timeout tolerance */
-  if (result.status === null) return false;
-
-  expect(
-    result.status,
-    [
-      `analyze --skills exited with code ${result.status}`,
-      `stdout: ${result.stdout?.slice(0, 500)}`,
-      `stderr: ${result.stderr?.slice(0, 500)}`,
-    ].join('\n'),
-  ).toBe(0);
-
-  expect(fs.existsSync(path.join(tmpDir, '.gitnexus'))).toBe(true);
-
-  const skillsRoot = path.join(tmpDir, '.claude', 'skills');
-  if (!fs.existsSync(skillsRoot)) {
-    // Native parser may have crashed in worker or Leiden produced 0 communities.
-    // The pipeline still succeeds (exit 0) but no skills are generated.
-    // Skip skill assertions gracefully — this is platform-dependent.
-    return false;
-  }
-
-  const skillDirs = fs
-    .readdirSync(skillsRoot)
-    .filter(
-      (d) => d.startsWith('gitnexus-area-') && fs.statSync(path.join(skillsRoot, d)).isDirectory(),
-    );
-  if (skillDirs.length === 0) {
-    // Native parser may have crashed in worker or Leiden produced 0 communities.
-    // Standard skills still create the shared root, so absence is now detected
-    // by the reserved community-skill prefix rather than by the root directory.
-    return false;
-  }
-  const skillFiles: string[] = [];
-  for (const dir of skillDirs) {
-    const skillPath = path.join(skillsRoot, dir, 'SKILL.md');
-    if (fs.existsSync(skillPath)) {
-      skillFiles.push(skillPath);
-    }
-  }
-
-  expect(skillFiles.length).toBeGreaterThanOrEqual(minSkills);
-
-  for (const skillPath of skillFiles) {
-    const content = fs.readFileSync(skillPath, 'utf-8');
-    expect(content.startsWith('---')).toBe(true);
-    expect(content).toContain('name:');
-    expect(content).toContain('description:');
-    expect(content).toContain('## Key Files');
-    expect(content).toContain('## How to Explore');
-    expect(content.length).toBeGreaterThan(200);
-  }
-
-  return true;
-}
-
-/**
- * Assert CLAUDE.md and AGENTS.md contain generated skill references.
- * Automatically detects whether community skills were generated by checking
- * for the reserved direct-child namespace.
- */
-function assertContextFiles(result: ReturnType<typeof runSkillsCli>, tmpDir: string) {
-  if (result.status === null) return;
-
-  const skillsRoot = path.join(tmpDir, '.claude', 'skills');
-  const skillsGenerated =
-    fs.existsSync(skillsRoot) &&
-    fs.readdirSync(skillsRoot).some((entry) => entry.startsWith('gitnexus-area-'));
-
-  const claudePath = path.join(tmpDir, 'CLAUDE.md');
-  expect(fs.existsSync(claudePath)).toBe(true);
-  if (skillsGenerated) {
-    const claudeContent = fs.readFileSync(claudePath, 'utf-8');
-    expect(claudeContent).toContain('.claude/skills/gitnexus-area-');
-  }
-
-  const agentsPath = path.join(tmpDir, 'AGENTS.md');
-  expect(fs.existsSync(agentsPath)).toBe(true);
-  if (skillsGenerated) {
-    const agentsContent = fs.readFileSync(agentsPath, 'utf-8');
-    expect(agentsContent).toContain('.claude/skills/gitnexus-area-');
-  }
-}
+import {
+  assertContextFiles,
+  assertSkillFiles,
+  createFixtureRepo,
+  runSkillsCli,
+} from '../helpers/skills-e2e.js';
 
 // ============================================================================
 // DESCRIBE 1: TypeScript
@@ -735,140 +590,6 @@ func (u *User) Validate() bool {
   /**
    * Verify analyze --skills generates valid SKILL.md files for a
    * Go repo with handler/service/repository clusters.
-   */
-  it('generates skill files', () => {
-    assertSkillFiles(result, tmpDir);
-  }, 50000);
-
-  /**
-   * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
-   */
-  it('context files updated', () => {
-    assertContextFiles(result, tmpDir);
-  }, 50000);
-});
-
-// ============================================================================
-// DESCRIBE 5: Java
-// ============================================================================
-
-describe('Java', () => {
-  let tmpDir: string;
-  let result: ReturnType<typeof runSkillsCli>;
-
-  beforeAll(() => {
-    tmpDir = createFixtureRepo('java', {
-      'src/service/UserService.java': `package service;
-
-import repository.UserRepository;
-import service.Validator;
-
-public class UserService {
-    private UserRepository repository = new UserRepository();
-    private Validator validator = new Validator();
-
-    public Object findUser(String id) {
-        validator.validate(id);
-        return repository.getById(id);
-    }
-
-    public Object createUser(String name) {
-        validator.validate(name);
-        return repository.save(name);
-    }
-}
-`,
-      'src/service/AuthService.java': `package service;
-
-public class AuthService {
-    private UserService userService = new UserService();
-
-    public Object authenticate(String username, String password) {
-        Object user = userService.findUser(username);
-        return hashPassword(password);
-    }
-
-    public String hashPassword(String password) {
-        return "hashed_" + password;
-    }
-}
-`,
-      'src/service/Validator.java': `package service;
-
-public class Validator {
-    public boolean validate(String input) {
-        if (input == null || input.isEmpty()) {
-            throw new IllegalArgumentException("Invalid input");
-        }
-        return true;
-    }
-
-    public String sanitize(String input) {
-        return input.replaceAll("[<>]", "");
-    }
-
-    public boolean checkLength(String input, int max) {
-        return input.length() <= max;
-    }
-}
-`,
-      'src/repository/UserRepository.java': `package repository;
-
-public class UserRepository extends BaseRepository {
-    public Object getById(String id) {
-        return new Object();
-    }
-
-    public Object save(String name) {
-        return new Object();
-    }
-
-    public boolean delete(String id) {
-        return true;
-    }
-}
-`,
-      'src/repository/BaseRepository.java': `package repository;
-
-public abstract class BaseRepository {
-    public Object[] findAll() {
-        return new Object[0];
-    }
-
-    public int count() {
-        return 0;
-    }
-}
-`,
-      'src/model/User.java': `package model;
-
-public class User {
-    private String name;
-
-    public User(String name) {
-        this.name = name;
-    }
-
-    public String getName() {
-        return name;
-    }
-
-    public void setName(String name) {
-        this.name = name;
-    }
-}
-`,
-    });
-    result = runSkillsCli(tmpDir);
-  }, 120000);
-
-  afterAll(() => {
-    cleanupTempDirSync(tmpDir);
-  });
-
-  /**
-   * Verify analyze --skills generates valid SKILL.md files for a
-   * Java repo with service/repository/model clusters.
    */
   it('generates skill files', () => {
     assertSkillFiles(result, tmpDir);

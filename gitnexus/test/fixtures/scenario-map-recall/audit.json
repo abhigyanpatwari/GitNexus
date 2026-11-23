@@ -3,8 +3,8 @@
   "method": "Independently generated callback candidates; source review of setup, helper targets, fixture paths, inputs and assertions. Hand-adjudicated subset, not an exhaustive semantic oracle.",
   "positives": [
     {
-      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Java > detects User class with save and getName methods",
-      "b": "test/integration/resolvers/java.test.ts#Java cross-file binding propagation > detects User class with save and getName methods",
+      "a": "test/java/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Java > detects User class with save and getName methods",
+      "b": "test/java/resolvers/java.test.ts#Java cross-file binding propagation > detects User class with save and getName methods",
       "category": "integration-same-fixture",
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
@@ -117,14 +117,14 @@
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
     {
-      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileByName() emits exactly one CALLS edge to find(String) in DbLookup",
-      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileByName() \u2192 find(String) \u2014 sequential path",
+      "a": "test/java/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileByName() emits exactly one CALLS edge to find(String) in DbLookup",
+      "b": "test/java/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileByName() \u2192 find(String) \u2014 sequential path",
       "category": "integration-same-fixture",
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
     {
-      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > emits METHOD_IMPLEMENTS from DbLookup.find(int) \u2192 ILookup.find(int)",
-      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > METHOD_IMPLEMENTS edges match interface methods \u2014 sequential path",
+      "a": "test/java/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > emits METHOD_IMPLEMENTS from DbLookup.find(int) \u2192 ILookup.find(int)",
+      "b": "test/java/resolvers/java.test.ts#Java same-arity overloads (worker path) > METHOD_IMPLEMENTS edges match interface methods \u2014 sequential path",
       "category": "integration-same-fixture",
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
@@ -195,8 +195,8 @@
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
     {
-      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileById() emits exactly one CALLS edge to find(int) in DbLookup",
-      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileById() \u2192 find(int) \u2014 sequential path",
+      "a": "test/java/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileById() emits exactly one CALLS edge to find(int) in DbLookup",
+      "b": "test/java/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileById() \u2192 find(int) \u2014 sequential path",
       "category": "integration-same-fixture",
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
@@ -213,7 +213,7 @@
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
     {
-      "a": "test/integration/tree-sitter-languages.test.ts#Tree-sitter multi-language parsing > unhappy path > handles empty string file path",
+      "a": "test/java/tree-sitter-languages.test.ts#Tree-sitter multi-language parsing > unhappy path > handles empty string file path",
       "b": "test/unit/ingestion-utils.test.ts#getLanguageFromFilename > unsupported > returns null for empty string",
       "category": "irrelevant-setup",
       "basis": "Both import getLanguageFromFilename from gitnexus-shared, pass empty string and assert toBeNull. Loading a parser in an unrelated beforeAll does not change this pure function."

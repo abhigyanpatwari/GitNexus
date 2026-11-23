@@ -158,6 +158,7 @@ describe('required test execution across CI jobs', () => {
     for (const name of [
       'coverage',
       'benchmarks',
+      'java-benchmarks',
       'preflight',
       'windows-latest-1',
       'windows-latest-2',
