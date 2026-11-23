@@ -4,6 +4,10 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { quantile } from '../mcp-query/statistics.mjs';
 
+const expectedReferences = JSON.parse(
+  fs.readFileSync(new URL('../lexical-lookup/expected-references.json', import.meta.url), 'utf8'),
+);
+
 export function assessPairs(pairs) {
   assert(pairs.length >= 8, 'At least eight complete measured pairs are required');
   for (const pair of pairs) {
@@ -80,9 +84,18 @@ export function indexingMetrics(report, lifecycle) {
       baseline.graph,
       'Graph parity projection differs from baseline',
     );
-    assert(['exact', 'point-to-span'].includes(receipt.mode), 'Invalid graph parity mode');
+    assert(
+      ['exact', 'point-to-span', 'added-references'].includes(receipt.mode),
+      'Invalid graph parity mode',
+    );
     if (receipt.mode === 'exact')
       assert.deepEqual(candidate.graph, baseline.graph, 'Exact parity requires equal graphs');
+    if (receipt.mode === 'added-references') {
+      assert(Object.hasOwn(expectedReferences, report.head), 'Unknown reference corpus');
+      const expected = expectedReferences[report.head];
+      assert.deepEqual(receipt.additions, expected, 'Unexpected added reference receipt');
+      assert.equal(candidate.graph.edges.count - baseline.graph.edges.count, expected.count);
+    }
   };
   checkGraph(byName.get('baseline-seed'), byName.get('candidate-seed'));
   const pairs = [];

@@ -8,11 +8,14 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
       const file = (role) => `${prefix}${unit}-${role}.${extension}`;
       const specifier = (role) => `./${prefix}${unit}-${role}.${prefix === 'ts' ? 'js' : 'mjs'}`;
       const from = (role) => `from '${specifier(role)}';`;
-      const left = ['export default function localDefault() {}'];
+      const left = [
+        'export default function localDefault() {}',
+        'export { localDefault as publicDefault };',
+      ];
       const right = [];
       const forward = [];
       const overrides = [`export * ${from('ambiguous')}`];
-      const namespaces = [`export * as operations ${from('left')}`];
+      const namespaces = [`export * as operations ${from('left')}`, `export * ${from('left')}`];
       const imports = [
         `import { operations } ${from('namespace')}`,
         `import * as pack ${from('namespace')}`,
@@ -31,10 +34,15 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
       for (let batch = 0; batch < batches; batch++) {
         const name = `publish${batch}`;
         const hidden = `hidden${unit}_${batch}`;
+        const wildcardName = `${prefix}Wildcard${unit}_${batch}`;
         const entity = `Entity${batch}`;
         const leftOwner = `Function:${file('left')}:${name}`;
         const rightOwner = `Function:${file('right')}:${name}`;
-        left.push(`export function ${name}() {}`, `function ${hidden}() {}`);
+        left.push(
+          `export function ${name}() {}`,
+          `function ${hidden}() {}`,
+          `export function ${wildcardName}() {}`,
+        );
         right.push(`export function ${name}() {}`);
         forward.push(`export { ${name} } ${from('left')}`);
         overrides.push(`export { ${name} } ${from('right')}`);
@@ -52,6 +60,10 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
           `Function:${file('left')}:localDefault`,
         ]);
         moduleCase(`privateDefault${batch}`, '() { operations.localDefault(); }', []);
+        moduleCase(`aliasDefault${batch}`, '() { operations.publicDefault(); }', [
+          `Function:${file('left')}:localDefault`,
+        ]);
+        moduleCase(`unboundStar${batch}`, `() { ${wildcardName}(); }`, [], 'namespace');
         moduleCase(`hidden${batch}`, `() { operations.${hidden}(); }`, []);
         moduleCase(`unbound${batch}`, `() { operations.${name}(); }`, [], 'namespace');
         if (prefix === 'ts') {

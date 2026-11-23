@@ -3,17 +3,17 @@
   "node": "v26.9.0",
   "platform": "darwin-arm64",
   "workloads": {
-    "small": "36607dac6cdeffe531cde390dfdebc560d5d405d1b1513651f9ce24b86091ec9",
-    "wide": "0d2d7e6e447b9eafdfaec936f281e2e82c7e5083da5c9d46ef36d7430dd2a16b",
-    "dense": "4005c2ccc00a286e81291dee51a889facd871fe6f1ced85d3afeeb29e1a9be09"
+    "small": "e5179d109136b72b12550b7f3f4544c5d3885f43ecbb0134bb8b0a453aa7e89f",
+    "wide": "d57c2dfec00b70b39eaf17d60ee84a158692774a1f8d683b02f52edae00b1c7d",
+    "dense": "7f448416e6043a95aa769bc7f4a8863ac49d1ae354d8154d3cebd66ba0e9e217"
   },
   "original": {
     "parseIdentity": "sha256:a7c277be18b9707bbe6a81b2405c71d29c2653578a0137f4f44eaac0dc3f92bb",
-    "peakRssKiB": 559872,
+    "peakRssKiB": 665808,
     "shapes": {
       "small": {
-        "captureMs": [132.014, 131.03, 128.416, 132.035, 129.407],
-        "coldPipelineMs": [1413.928, 1330.204, 1179.225],
+        "captureMs": [179.732, 148.267, 170.223, 146.072, 178.564],
+        "coldPipelineMs": [1852.0, 1352.153, 1221.6],
         "byFamily": {
           "map": {
             "cases": 96,
@@ -28,23 +28,23 @@
             "unexpectedEdges": 48
           },
           "tsModules": {
-            "cases": 208,
-            "exact": 80,
-            "missingEdges": 80,
+            "cases": 240,
+            "exact": 96,
+            "missingEdges": 96,
             "unexpectedEdges": 48
           },
           "jsModules": {
-            "cases": 144,
+            "cases": 176,
             "exact": 64,
-            "missingEdges": 48,
-            "unexpectedEdges": 32
+            "missingEdges": 64,
+            "unexpectedEdges": 48
           }
         },
-        "targetFingerprint": "7c10e4bfe2e6fc8e18a5bd0541006a7f5b9f3b0f990a2b44f19fe778f704fab7"
+        "targetFingerprint": "532cd7cc4b6ae2ae06a2d1a239bf752b7b452276df2ca27989d0b89c142c5234"
       },
       "wide": {
-        "captureMs": [718.637, 514.241, 517.925, 514.636, 556.795],
-        "coldPipelineMs": [2270.661, 2322.498, 2251.942],
+        "captureMs": [905.091, 660.249, 743.407, 621.961, 747.528],
+        "coldPipelineMs": [2585.849, 2454.021, 2334.366],
         "byFamily": {
           "map": {
             "cases": 384,
@@ -59,23 +59,23 @@
             "unexpectedEdges": 192
           },
           "tsModules": {
-            "cases": 832,
-            "exact": 320,
-            "missingEdges": 320,
+            "cases": 960,
+            "exact": 384,
+            "missingEdges": 384,
             "unexpectedEdges": 192
           },
           "jsModules": {
-            "cases": 576,
+            "cases": 704,
             "exact": 256,
-            "missingEdges": 192,
-            "unexpectedEdges": 128
+            "missingEdges": 256,
+            "unexpectedEdges": 192
           }
         },
-        "targetFingerprint": "54e34041cf807c155a4f990b70684e173c8f40dfe8a086bb3489f0da5cf9aba0"
+        "targetFingerprint": "2051748dc7f5bb8b49f9e311a4734e9bfed1d9309b97ca4ce3bae3e5c21d3a6b"
       },
       "dense": {
-        "captureMs": [2165.877, 1944.79, 1988.573, 1936.927, 1921.401],
-        "coldPipelineMs": [5781.824, 7460.183, 5747.605],
+        "captureMs": [2891.49, 2214.84, 2908.537, 2494.438, 2368.57],
+        "coldPipelineMs": [7678.669, 7171.283, 6107.722],
         "byFamily": {
           "map": {
             "cases": 1536,
@@ -90,26 +90,26 @@
             "unexpectedEdges": 768
           },
           "tsModules": {
-            "cases": 3328,
-            "exact": 1280,
-            "missingEdges": 1280,
+            "cases": 3840,
+            "exact": 1536,
+            "missingEdges": 1536,
             "unexpectedEdges": 768
           },
           "jsModules": {
-            "cases": 2304,
+            "cases": 2816,
             "exact": 1024,
-            "missingEdges": 768,
-            "unexpectedEdges": 512
+            "missingEdges": 1024,
+            "unexpectedEdges": 768
           }
         },
-        "targetFingerprint": "5396bcd60c1ba8b207b6e9e8bf8ed611970eccfaedf3889e6396599141ade9ed"
+        "targetFingerprint": "07046ee4afbfcc8022e08efe5dc4523bf34b301e3a597957c67ad374e44b1c7c"
       }
     },
     "growth": {
-      "breadthCapturePerCase": 0.9881791762095031,
-      "breadthColdPipelinePerCase": 0.42675055679651497,
-      "densityCapturePerCase": 0.9387404805479171,
-      "densityColdPipelinePerCase": 0.6365792713586585
+      "breadthCapturePerCase": 1.091811618062026,
+      "breadthColdPipelinePerCase": 0.4537245950534348,
+      "densityCapturePerCase": 0.8388536721559227,
+      "densityColdPipelinePerCase": 0.7305646797757782
     },
     "replay": {
       "coldParsed": 153,
@@ -125,12 +125,12 @@
     }
   },
   "candidate": {
-    "parseIdentity": "sha256:6ca95a65e0762e450b53352560eaddaf600138124d08f22397067e0854051a15",
-    "peakRssKiB": 587360,
+    "parseIdentity": "sha256:89905b4c8f8bccb1611fbbf3f9e5921b019c4810bb36031cb862968e7155f999",
+    "peakRssKiB": 679552,
     "shapes": {
       "small": {
-        "captureMs": [157.257, 139.949, 196.139, 193.226, 185.463],
-        "coldPipelineMs": [1492.587, 1381.501, 1599.752],
+        "captureMs": [353.385, 235.103, 255.066, 171.204, 236.517],
+        "coldPipelineMs": [2961.008, 1943.719, 1961.172],
         "byFamily": {
           "map": {
             "cases": 96,
@@ -145,23 +145,23 @@
             "unexpectedEdges": 0
           },
           "tsModules": {
-            "cases": 208,
-            "exact": 208,
+            "cases": 240,
+            "exact": 240,
             "missingEdges": 0,
             "unexpectedEdges": 0
           },
           "jsModules": {
-            "cases": 144,
-            "exact": 144,
+            "cases": 176,
+            "exact": 176,
             "missingEdges": 0,
             "unexpectedEdges": 0
           }
         },
-        "targetFingerprint": "cb14d0b3031786cdf83be1894e2b5e9eb1e684b850f28291f554402b44cbe1b5"
+        "targetFingerprint": "8753b4d680a3dd73e04ff05b413716b81d11fedc2038f00ebb30f554f5ffb0d5"
       },
       "wide": {
-        "captureMs": [575.795, 569.724, 643.679, 648.797, 751.957],
-        "coldPipelineMs": [2332.872, 2637.191, 2803.777],
+        "captureMs": [1093.804, 925.988, 911.413, 909.237, 944.71],
+        "coldPipelineMs": [5034.954, 3784.27, 4102.254],
         "byFamily": {
           "map": {
             "cases": 384,
@@ -176,23 +176,23 @@
             "unexpectedEdges": 0
           },
           "tsModules": {
-            "cases": 832,
-            "exact": 832,
+            "cases": 960,
+            "exact": 960,
             "missingEdges": 0,
             "unexpectedEdges": 0
           },
           "jsModules": {
-            "cases": 576,
-            "exact": 576,
+            "cases": 704,
+            "exact": 704,
             "missingEdges": 0,
             "unexpectedEdges": 0
           }
         },
-        "targetFingerprint": "14cee542e43e3888dac5b6947fd6ded6ecf64cd703afa47cf07486575ff9ab3d"
+        "targetFingerprint": "ba1dd504492f34e2961d3e491b3cf17344312badb22e437dbcc3daa5a2518c8e"
       },
       "dense": {
-        "captureMs": [2110.922, 2336.176, 2478.968, 2956.554, 3077.207],
-        "coldPipelineMs": [6127.808, 6217.768, 6531.321],
+        "captureMs": [4122.273, 3957.334, 3247.41, 2989.338, 3225.321],
+        "coldPipelineMs": [11492.358, 13505.785, 11158.532],
         "byFamily": {
           "map": {
             "cases": 1536,
@@ -207,26 +207,26 @@
             "unexpectedEdges": 0
           },
           "tsModules": {
-            "cases": 3328,
-            "exact": 3328,
+            "cases": 3840,
+            "exact": 3840,
             "missingEdges": 0,
             "unexpectedEdges": 0
           },
           "jsModules": {
-            "cases": 2304,
-            "exact": 2304,
+            "cases": 2816,
+            "exact": 2816,
             "missingEdges": 0,
             "unexpectedEdges": 0
           }
         },
-        "targetFingerprint": "383479a456150d4637a304125c3fad0da6c6da8b6ee0489b0a37e5f2280b5de7"
+        "targetFingerprint": "ebd6c4edb97a7152ff2915e66697469c0040beee97359b5c7760c8fdd2badf1d"
       }
     },
     "growth": {
-      "breadthCapturePerCase": 0.8676666774019629,
-      "breadthColdPipelinePerCase": 0.4417147932093882,
-      "densityCapturePerCase": 0.9628116895954011,
-      "densityColdPipelinePerCase": 0.5894309607290871
+      "breadthCapturePerCase": 0.9787739753094559,
+      "breadthColdPipelinePerCase": 0.5229339397648562,
+      "densityCapturePerCase": 0.8767418169064661,
+      "densityColdPipelinePerCase": 0.7003684681528588
     },
     "replay": {
       "coldParsed": 153,
@@ -241,7 +241,7 @@
       "editedCacheHits": 151
     }
   },
-  "candidateSource": "e7c6aa22614b489528e5afee06091b54227dabd6",
+  "candidateSource": "b5c1ad2747a10fbed9f91c82f9c7f2804ba9a686",
   "realIndex": {
     "sampleOrder": ["original", "candidate", "candidate", "original"],
     "original": {
@@ -292,9 +292,9 @@
     "registrationCap": 32
   },
   "baselineCheck": {
-    "breadthCapturePerCase": 0.9302251413911493,
-    "breadthColdPipelinePerCase": 0.47213770377523123,
-    "densityCapturePerCase": 1.0052556425844665,
-    "densityColdPipelinePerCase": 0.6084226435841447
+    "breadthCapturePerCase": 1.02615471789323,
+    "breadthColdPipelinePerCase": 0.44487601576520686,
+    "densityCapturePerCase": 0.9153002130441696,
+    "densityColdPipelinePerCase": 0.5619141635552617
   }
 }

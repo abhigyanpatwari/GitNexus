@@ -116,7 +116,7 @@ const canonical = (value) =>
         )
       : value;
 
-/** Keep full-graph reuse checks, but compare parser output across runtime versions. */
+/** Keep full-graph reuse checks and fingerprint resolved ingestion separately from derived phases. */
 export function graphDigests(graph) {
   const nodes = [...graph.nodes];
   const derivedIds = new Set(
@@ -356,12 +356,36 @@ export function validatePair(pair) {
     [files, 0, 1, 2, 0],
     'Per-file reuse regressed',
   );
+  // An ingestion fix can deliberately change resolved edges. The frozen
+  // real corpus then needs exact expected graphs for both versions. Other
+  // inputs continue to require equality across versions.
+  const expected =
+    candidate.provenance.runtimeHead !== baseline.provenance.runtimeHead
+      ? benchmarkBaseline.graphExpectations?.find(
+          (entry) =>
+            entry.baselineRevision === baseline.provenance.runtimeHead &&
+            entry.sourceDigest === baseline.provenance.sourceDigest &&
+            entry.sourceFiles === files,
+        )
+      : undefined;
   for (let i = 0; i < phases.length; i++) {
+    const phase = phases[i];
+    if (expected) {
+      for (const variant of ['baseline', 'candidate']) {
+        const { parsedDigest, parsedNodes, parsedEdges } = pair[variant].measurements[i];
+        assert.deepEqual(
+          [parsedDigest, parsedNodes, parsedEdges],
+          expected[variant][phase],
+          `Unexpected ${variant} graph for ${phase} on the pinned corpus`,
+        );
+      }
+      continue;
+    }
     for (const key of ['parsedDigest', 'parsedNodes', 'parsedEdges']) {
       assert.equal(
         candidate.measurements[i][key],
         baseline.measurements[i][key],
-        `Graph ${key} differs for ${phases[i]}`,
+        `Graph ${key} differs for ${phase}`,
       );
     }
   }
@@ -671,7 +695,7 @@ export async function compareRuntimes(options) {
             `| ${m.name} | ${m.unit} | ${m.baselineMedianMs.toFixed(1)} | ${m.candidateMedianMs.toFixed(1)} | ${m.pairedInterval.map((r) => r.toFixed(3)).join(' – ')} | ${m.limit} | ${m.passed} |`,
         )
         .join('\n') +
-      `\n\nRepeated analyses sum warm, one edit, two edits, and repacking (including cache save). RSS is the maximum phase-process high-water mark, including parser worker threads; cache bytes are reported separately. Inconclusive evidence adds ${report.design.stagePairs} pairs per look up to ${report.design.maxPairs}; looks share the 5% error equally, and intervals still crossing a budget at the last look fail. Graph equality and exact per-file reuse are required.\n${report.error ? '\nError: ' + report.error + '\n' : ''}`;
+      `\n\nRepeated analyses sum warm, one edit, two edits, and repacking (including cache save). RSS is the maximum phase-process high-water mark, including parser worker threads; cache bytes are reported separately. Inconclusive evidence adds ${report.design.stagePairs} pairs per look up to ${report.design.maxPairs}; looks share the 5% error equally, and intervals still crossing a budget at the last look fail. Exact graph fingerprints and per-file reuse are required.\n${report.error ? '\nError: ' + report.error + '\n' : ''}`;
     await fs.writeFile(output.replace(/\.json$/, '') + '.md', summary);
     console.log(summary);
   }

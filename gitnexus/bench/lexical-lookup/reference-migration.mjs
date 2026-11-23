@@ -15,6 +15,9 @@ const COLLAPSED_CALLS = new Set([
   'rel:CALLS:Function:gitnexus/src/core/ingestion/languages/objective-c/import-target.ts:resolveObjectiveCImportTarget->Function:gitnexus/src/core/ingestion/languages/objective-c/import-target.ts:augmentedFilePathsFor:69:8',
 ]);
 const REFERENCE_TYPES = new Set(['CALLS', 'ACCESSES', 'USES', 'EXTENDS', 'IMPLEMENTS', 'INHERITS']);
+const expectedReferences = JSON.parse(
+  fs.readFileSync(new URL('./expected-references.json', import.meta.url), 'utf8'),
+);
 const sources = new Map();
 
 function digest(rows) {
@@ -114,8 +117,8 @@ function sitesAt(source, file, line, col) {
   return source.sites.get(`${line}:${col}`) ?? [];
 }
 
-/** Strict graph comparison with a narrowly scoped point-to-span migration. */
-export function assertGraphParity(before, after, repo) {
+/** Compare exact graphs with independently checked reference changes on pinned corpora. */
+export function assertGraphParity(before, after, repo, revision) {
   assert.deepEqual(after.graph.nodes, before.graph.nodes, 'Semantic nodes differ');
   if (
     before.graph.edges.count === after.graph.edges.count &&
@@ -144,6 +147,22 @@ export function assertGraphParity(before, after, repo) {
       report.graph.edges,
       `${name} edge snapshot does not match sample`,
     );
+  }
+  if (Object.hasOwn(expectedReferences, revision)) {
+    const remaining = new Set(oldGraph.edges);
+    assert.equal(remaining.size, oldGraph.edges.length, 'Duplicate baseline graph row');
+    const additions = newGraph.edges.filter((edge) => !remaining.delete(edge));
+    assert.equal(remaining.size, 0, 'An existing relationship changed or was removed');
+    const recorded = digest(additions);
+    assert.deepEqual(recorded, expectedReferences[revision], 'Unexpected added references');
+    return {
+      version: 1,
+      mode: 'added-references',
+      baseline: before.graph,
+      candidate: after.graph,
+      comparison: before.graph,
+      additions: recorded,
+    };
   }
   const oldEdges = oldGraph.edges.map((row) => JSON.parse(row));
   const newEdges = newGraph.edges.map((row) => JSON.parse(row));

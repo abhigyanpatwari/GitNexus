@@ -106,7 +106,7 @@ function saveResults(repo) {
   );
 }
 function verifyPair(before, after, repo) {
-  const receipt = assertGraphParity(before, after, repo);
+  const receipt = assertGraphParity(before, after, repo, head(repo));
   graphParity.push({ baselineName: before.name, candidateName: after.name, ...receipt });
   saveResults(repo);
 }

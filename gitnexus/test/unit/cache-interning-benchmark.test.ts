@@ -185,6 +185,40 @@ describe('cache interning performance gate', () => {
     expect(() => indexingMetrics({ ...report, graphParity: misbound }, 'fresh')).toThrow(
       /candidate does not match/,
     );
+
+    const expectedReferences = JSON.parse(
+      readFileSync(
+        new URL('../../bench/lexical-lookup/expected-references.json', import.meta.url),
+        'utf8',
+      ),
+    );
+    const [head, additions] = Object.entries(expectedReferences)[0] as [
+      string,
+      { count: number; sha256: string },
+    ];
+    candidate.graph.edges.count += additions.count;
+    const withAdditions = graphParity.map((receipt, i) =>
+      i === 1
+        ? {
+            ...receipt,
+            mode: 'added-references',
+            candidate: structuredClone(candidate.graph),
+            additions,
+          }
+        : receipt,
+    );
+    expect(() =>
+      indexingMetrics({ ...report, head, graphParity: withAdditions }, 'fresh'),
+    ).not.toThrow();
+    expect(() => indexingMetrics({ ...report, graphParity: withAdditions }, 'fresh')).toThrow(
+      'Unknown reference corpus',
+    );
+    const tampered = withAdditions.map((receipt, i) =>
+      i === 1 ? { ...receipt, additions: { ...additions, sha256: 'invented' } } : receipt,
+    );
+    expect(() => indexingMetrics({ ...report, head, graphParity: tampered }, 'fresh')).toThrow(
+      'Unexpected added reference receipt',
+    );
   });
 
   it('rejects missing, duplicate, or non-equivalent shard measurements', () => {
