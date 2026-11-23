@@ -7,7 +7,7 @@ Generate LLM-powered documentation from your knowledge graph:
 ```bash
 # Requires an LLM API key (MINIMAX_API_KEY, ANTHROPIC_API_KEY, GITNEXUS_API_KEY or OPENAI_API_KEY)
 gitnexus wiki
-gitnexus wiki src/features     # a folder or file inside the repository documents the whole repository
+gitnexus wiki src/features     # a file uses its folder; a folder without an index of its own uses the repository's index
 gitnexus wiki --api-key <key>  # or pass the key on the command line
 
 # Use a custom model or provider (default model: MiniMax-M3)
