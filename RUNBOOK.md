@@ -306,8 +306,8 @@ embedding model, bounded input queue, and headroom. For example:
 npx gitnexus analyze --embeddings --resource-budget 8192 --memory-budget 1024 --workers 2
 ```
 
-Node propagates the main V8 heap flag to parser workers, so each worker reserves
-at least the `--memory-budget` allocation. Explicit settings that do not fit
+Each parser worker reserves its own enforced heap cap plus 128 MiB of native
+memory, independent of `--memory-budget`. Explicit settings that do not fit
 the family budget fail before work starts. Without a family override,
 GitNexus fixes the family ceiling at 75% of effective process/container RAM,
 divided among concurrent auto-sync analyses. Automatic heap, worker and native

@@ -870,7 +870,8 @@ If analyze says the repository doesn't fit, do what the message says:
 To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
 the auto-sizer and any `--max-old-space-size` pin. Parser workers keep their
-own heap caps: the pool clears this process-wide flag while it starts each one.
+own heap caps: the pool clears the process-wide `--max-old-space-size` and
+`--max-semi-space-size` flags while it starts each one.
 
 Use `--resource-budget <MiB>` to admit the complete analyzer process family,
 including the frontend, main heap, workers, native pools, embedding model, input
@@ -960,6 +961,8 @@ npx gitnexus analyze
 ```
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
+
+Parser workers run at their admitted heap cap, which is 512 MiB on common hosts. Files above roughly 2 MB, or large explicit sub-batches (`GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES`), can exceed it: the worker stops with `worker hit its <N>MB heap cap` and the file is quarantined, so it is missing from the graph. Raise the cap with `GITNEXUS_WORKER_HEAP_MB` when you raise `--max-file-size`.
 
 ### Code under a dot directory is missing
 

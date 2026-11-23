@@ -96,6 +96,10 @@ Parser workers keep their own heap caps, even under a process heap flag, and
 admission charges each worker that cap plus native memory. The main heap is
 sized first; automatic worker count fills what remains and may rise compared
 with earlier versions. Explicit worker counts must fit beside the main heap.
+Earlier versions ran parser workers with the main heap limit by accident; they
+now run at their admitted cap (512 MiB on common hosts). Files above roughly
+2 MB, or large explicit sub-batches, can exceed it and are quarantined; raise
+`GITNEXUS_WORKER_HEAP_MB` together with `--max-file-size`.
 
 If a superseded or unverifiable `analysis-publication.json` blocks recovery,
 stop every reader and writer and back up the complete storage slot first.
