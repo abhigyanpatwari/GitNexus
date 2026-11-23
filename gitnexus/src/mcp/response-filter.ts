@@ -1,3 +1,5 @@
+import { clientError } from '../core/fault-class.js';
+
 /** Opt-in views of MCP results. Never changes graph queries or default output. */
 export const QUERY_RESPONSE_SECTIONS = ['processes', 'process_symbols', 'definitions'] as const;
 export const CONTEXT_RESPONSE_SECTIONS = [
@@ -39,7 +41,7 @@ function selection(value: unknown, allowed: readonly string[], name: string): st
     value.length > allowed.length ||
     value.some((item) => typeof item !== 'string' || !allowed.includes(item))
   ) {
-    throw new Error(`${name} must be a non-empty array containing only: ${allowed.join(', ')}.`);
+    throw clientError(`${name} must be a non-empty array containing only: ${allowed.join(', ')}.`);
   }
   return [...new Set(value)];
 }
@@ -61,7 +63,7 @@ export function resolveMcpResponseFilter(
       : undefined;
   if (!sections && !relationTypes) return undefined;
   if (typeof args?.repo === 'string' && args.repo.trim().startsWith('@')) {
-    throw new Error(
+    throw clientError(
       'Response filters require a single indexed repository name or path, not @group routing.',
     );
   }
@@ -70,7 +72,7 @@ export function resolveMcpResponseFilter(
     relationTypes &&
     !sections.some((section) => section === 'incoming' || section === 'outgoing')
   ) {
-    throw new Error('relationTypes requires incoming or outgoing in response_sections.');
+    throw clientError('relationTypes requires incoming or outgoing in response_sections.');
   }
   return { tool, sections, relationTypes };
 }

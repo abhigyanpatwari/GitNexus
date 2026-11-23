@@ -41,6 +41,7 @@ import {
   getLbugDbIdentity,
   pinRepo,
 } from '../../core/lbug/pool-adapter.js';
+import { clientError, markFault } from '../../core/fault-class.js';
 import {
   parseQueryRepositories,
   mergeRepositoryQueries,
@@ -1702,7 +1703,7 @@ export function parseListReposPagination(
       (max === undefined || value <= max);
     if (!valid) {
       const bound = max === undefined ? `>= ${min}` : `between ${min} and ${max}`;
-      throw new Error(
+      throw clientError(
         `list_repos: "${field}" must be an integer ${bound} (received ${JSON.stringify(value)})`,
       );
     }
@@ -2466,9 +2467,9 @@ export class LocalBackend {
     );
 
     if (repoParam) {
-      throw new Error(`Repository "${repoParam}" not found. Available: ${labels.join(', ')}`);
+      throw clientError(`Repository "${repoParam}" not found. Available: ${labels.join(', ')}`);
     }
-    throw new Error(
+    throw clientError(
       `Multiple repositories indexed. Specify which one with the "repo" parameter. Available: ${labels.join(', ')}`,
     );
   }
@@ -2603,7 +2604,7 @@ export class LocalBackend {
     const available = indexed.length > 0 ? indexed.join(', ') : '(workspace only)';
     // Post-#2354 a bare `analyze --branch <X>` refuses to run unless X is
     // checked out, so the guidance must lead with the checkout (#2364 F6).
-    throw new Error(
+    throw clientError(
       `Branch "${branch}" is not indexed for "${handle.name}". ` +
         `Indexed branches: ${available}. The workspace index follows the ` +
         `checked-out branch — check out "${branch}" and re-run: gitnexus analyze ` +
@@ -2654,9 +2655,12 @@ export class LocalBackend {
         // containment is reserved for an omitted read-only repo (#3073).
         const cwdPick = this.pickRepoHandleForCwd(nameMatches);
         if (cwdPick) return cwdPick;
-        throw new RegistryAmbiguousTargetError(
-          repoParam,
-          nameMatches.map((h) => this.handleToRegistryEntry(h)),
+        throw markFault(
+          new RegistryAmbiguousTargetError(
+            repoParam,
+            nameMatches.map((h) => this.handleToRegistryEntry(h)),
+          ),
+          'client',
         );
       }
 
@@ -3327,7 +3331,7 @@ export class LocalBackend {
       case MCP_REFRESH_TOOL:
         return this.refreshIndex(repo, p, context);
       default:
-        throw new Error(`Unknown tool: ${method}`);
+        throw clientError(`Unknown tool: ${method}`);
     }
   }
 
@@ -10184,7 +10188,7 @@ export class LocalBackend {
       case 'group_sync':
         return this.groupSync(params);
       default:
-        throw new Error(
+        throw clientError(
           `Unknown group tool: ${method}. Removed tools: use repo "@<groupName>" on impact, query, or context (optional "/<memberPath>"), or MCP resources.`,
         );
     }

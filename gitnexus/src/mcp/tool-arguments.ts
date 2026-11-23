@@ -10,6 +10,7 @@
  */
 
 import { findToolDefinition } from './tools.js';
+import { clientError } from '../core/fault-class.js';
 
 /** Legacy MCP names that reuse another tool's advertised schema. */
 export const LEGACY_TOOL_SCHEMA_SOURCE: Readonly<Record<string, string>> = {
@@ -123,7 +124,7 @@ export function assertKnownMcpToolArguments(
   const allowed = new Set([...propertyNames, ...unpublished]);
   const unknownKeys = Object.keys(args).filter((key) => !allowed.has(key));
   if (unknownKeys.length === 0) return;
-  throw new Error(formatUnknownArgumentError(toolName, unknownKeys, propertyNames));
+  throw clientError(formatUnknownArgumentError(toolName, unknownKeys, propertyNames));
 }
 
 /**

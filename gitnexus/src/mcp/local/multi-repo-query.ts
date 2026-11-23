@@ -1,16 +1,17 @@
 import { QUERY_CONTENT_MAX_CHARS, QUERY_MAX_REPOSITORIES } from '../tools.js';
 import { SYMBOL_IDENTITY_RECOVERY_SUGGESTION } from './query-result-integrity.js';
+import { clientError } from '../../core/fault-class.js';
 
 /** Validate the complete selection before resolution or search. */
 export function parseQueryRepositories(value: unknown): string[] {
   if (!Array.isArray(value) || value.length === 0 || value.length > QUERY_MAX_REPOSITORIES) {
-    throw new Error(
+    throw clientError(
       `query.repo must contain between 1 and ${QUERY_MAX_REPOSITORIES} repositories.`,
     );
   }
   return value.map((repo) => {
     if (typeof repo !== 'string' || !repo.trim() || repo.trim().startsWith('@')) {
-      throw new Error(
+      throw clientError(
         'query.repo entries must be non-empty indexed repository names or paths; group entries are not supported.',
       );
     }
