@@ -21,7 +21,7 @@ import {
 } from '../../src/core/ingestion/route-extractors/spring.js';
 import { resolveInheritedSpringRoutes } from '../../src/core/ingestion/route-extractors/spring-shared.js';
 import { JAVA_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/java.js';
-import { runProjectScan } from '../../src/core/group/extractors/http-patterns/index.js';
+import { runProjectScan } from '../helpers/run-project-scan.js';
 
 function parse(src: string): Parser.Tree {
   const p = new Parser();

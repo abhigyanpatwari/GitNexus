@@ -15,7 +15,7 @@ import {
 } from '../../src/core/ingestion/route-extractors/kotlin-const-resolver.js';
 import { joinPath } from '../../src/core/ingestion/route-extractors/spring-shared.js';
 import { KOTLIN_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/kotlin.js';
-import { runProjectScan } from '../../src/core/group/extractors/http-patterns/index.js';
+import { runProjectScan } from '../helpers/run-project-scan.js';
 
 let Kotlin: Parser.Language | null = null;
 try {

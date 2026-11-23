@@ -6,7 +6,7 @@ import {
   TYPESCRIPT_HTTP_PLUGIN,
   JAVASCRIPT_HTTP_PLUGIN,
 } from '../../../src/core/group/extractors/http-patterns/node.js';
-import { runProjectScan } from '../../../src/core/group/extractors/http-patterns/index.js';
+import { runProjectScan } from '../../helpers/run-project-scan.js';
 import { resolveJsImport } from '../../../src/core/ingestion/route-extractors/js-const-resolver.js';
 import { normalizeRepoRelPath } from '../../../src/core/group/extractors/http-route-extractor.js';
 import type { HttpDetection } from '../../../src/core/group/extractors/http-patterns/types.js';

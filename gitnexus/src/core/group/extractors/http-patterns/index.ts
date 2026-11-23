@@ -1,11 +1,6 @@
 import * as path from 'node:path';
 import { isBladeTemplateFilename } from 'gitnexus-shared';
-import type {
-  HttpFileDetections,
-  HttpLanguagePlugin,
-  HttpScanInput,
-  RepoContext,
-} from './types.js';
+import type { HttpLanguagePlugin } from './types.js';
 import { JAVA_HTTP_PLUGIN } from './java.js';
 import { KOTLIN_HTTP_PLUGIN } from './kotlin.js';
 import { GO_HTTP_PLUGIN } from './go.js';
@@ -77,21 +72,4 @@ export function getPluginForFile(rel: string): HttpLanguagePlugin | undefined {
   if (isBladeTemplateFilename(rel)) return undefined;
   const ext = path.extname(rel).toLowerCase();
   return REGISTRY[ext];
-}
-
-/**
- * One-shot form of a plugin's project scan, for callers that already hold
- * every input tree: each file through `collect`, then one `resolve`.
- */
-export function runProjectScan(
-  plugin: HttpLanguagePlugin,
-  inputs: readonly HttpScanInput[],
-  repoContext?: RepoContext,
-): HttpFileDetections[] {
-  const scan = plugin.projectScan;
-  if (!scan) return [];
-  return scan.resolve(
-    inputs.map((input) => scan.collect(input, repoContext)),
-    repoContext,
-  );
 }
