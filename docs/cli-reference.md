@@ -396,8 +396,9 @@ flowchart TD
 
 ### Analysis resource admission and resumable status
 
-Automatic analysis retains the RAM-aware main heap and independent parser-worker
-ceilings. These are virtual limits and may sum above physical RAM. Use
+Automatic analysis admits every phase within a fixed ceiling of 75% of effective
+process/container RAM. The main heap is sized first; each parser worker is
+capped and charged its own heap plus native memory. Use
 `--resource-budget <MiB>` for a strict phase reservation covering the supervisor,
 main heap, workers, native pools, queues and embedding model. The two phases do
 not overlap. `--memory-budget` alone changes the main heap without removing parser

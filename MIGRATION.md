@@ -92,10 +92,10 @@ worker and pool overrides that do not fit now fail before work starts. Reduce
 those overrides, reduce concurrent analyses, use an HTTP embedding provider, or
 increase available RAM. `--memory-budget` remains a main-heap limit;
 `--resource-budget` sets the process-family ceiling and cannot exceed RAM.
-Node's process heap flag also overrides parser-worker limits. Admission now
-reserves at least the main-heap allocation for each worker, even when
-`GITNEXUS_WORKER_HEAP_MB` requests less. Automatic concurrency can decrease;
-explicit worker counts must fit those inherited limits.
+Parser workers keep their own heap caps, even under a process heap flag, and
+admission charges each worker that cap plus native memory. The main heap is
+sized first; automatic worker count fills what remains and may rise compared
+with earlier versions. Explicit worker counts must fit beside the main heap.
 
 If a superseded or unverifiable `analysis-publication.json` blocks recovery,
 stop every reader and writer and back up the complete storage slot first.

@@ -70,6 +70,9 @@ it.each(['execArgv', 'NODE_OPTIONS'] as const)(
       expect(measured.workerMb * 1024 ** 2).toBeLessThanOrEqual(
         resources.parse.workerHeapMb * 1024 ** 2 + resources.parse.workerNativeBytes,
       );
+      // Admission charges each worker its own cap, not the main heap.
+      expect(resources.parse.workerHeapMb).toBeLessThan(resources.mainHeapMb);
+      expect(measured.workerMb).toBeLessThan(measured.mainMb);
       const actualReservation =
         measured.mainMb * 1024 ** 2 +
         resources.headroomBytes +

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   EmbeddingByteBudget,
+  isConstrainedPdgBuild,
   resolveAnalysisResourceBudget,
 } from '../../src/core/analysis-resource-budget.js';
 
@@ -90,15 +91,22 @@ describe('analysis resource admission', () => {
     },
   );
 
-  it.each([undefined, 512, 4096])(
-    'reserves inherited main-heap limits for worker override %s',
-    (workerHeapMb) => {
+  it.each([
+    [undefined, 576, 8],
+    [512, 512, 8],
+    [4096, 4096, 1],
+  ])(
+    'charges each worker its own cap for worker override %s',
+    (workerHeapMb, expectedWorkerHeapMb, expectedWorkers) => {
       const budget = resolveAnalysisResourceBudget({
         ...request,
         preferredWorkers: 16,
         workerHeapMb,
       });
-      expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(budget.mainHeapMb);
+      // The pool enforces the worker cap, so the main heap is never charged twice.
+      expect(budget.mainHeapMb).toBe(12308);
+      expect(budget.parse.workerHeapMb).toBe(expectedWorkerHeapMb);
+      expect(budget.parse.workers).toBe(expectedWorkers);
       expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
     },
   );
@@ -169,7 +177,7 @@ describe('analysis resource admission', () => {
   });
 
   it.each([
-    [8192, 1],
+    [8192, 6],
     [1024, 6],
   ])('admits a %s MiB main heap with %s fitting workers', (mainHeapMb, workers) => {
     const budget = resolveAnalysisResourceBudget({
@@ -180,7 +188,6 @@ describe('analysis resource admission', () => {
     });
     expect(budget.mainHeapMb).toBe(mainHeapMb);
     expect(budget.parse.workers).toBe(workers);
-    expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(mainHeapMb);
     expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
     expect(budget.automatic).toBe(false);
     expect(Object.isFrozen(budget)).toBe(true);
@@ -276,9 +283,9 @@ describe('analysis resource admission', () => {
   });
 
   it.each([
-    // The limit does not fit beside one worker: admit the largest heap that does.
-    [15_700, 4121],
-    // The limit fits: reserve what the process can actually use.
+    // The limit fits beside the worker reservation: reserve what the process
+    // can actually use.
+    [15_700, 4144],
     [32_768, 4144],
   ])('treats an unpinned heap limit on a %i MiB host as a ceiling', (ramMb, mainHeapMb) => {
     const budget = resolveAnalysisResourceBudget({
@@ -292,17 +299,74 @@ describe('analysis resource admission', () => {
     expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
   });
 
-  it('reports the inherited heap requirement when explicit worker caps cannot constrain it', () => {
+  it('reports the requirement of explicit main and worker reservations that cannot fit', () => {
+    // 8192 main + 1475 headroom + 1024 graph pool + 4 x (1024 + 128) per worker.
     expect(() =>
       resolveAnalysisResourceBudget({
         ...request,
-        totalMb: 24576,
+        totalMb: 12288,
         mainHeapMb: 8192,
-        workers: 2,
+        workers: 4,
         workerHeapMb: 1024,
         graphPoolBytes: 1024 * MIB,
       }),
-    ).toThrow('requires at least 28806 MiB');
+    ).toThrow('requires at least 15299 MiB');
+  });
+
+  // A 4-CPU container with a resident supervisor and no local model.
+  const container = (gib: number, cpus = 4) => ({
+    effectiveMemoryBytes: gib * 1024 * MIB,
+    availableCpus: cpus,
+    preferredWorkers: 16,
+    supervisorBytes: 200 * MIB,
+    modelMemoryMb: 0,
+  });
+
+  it.each([
+    [4, undefined, 1403, 1, 512, 3072 * MIB],
+    [4, 1, 1403, 1, 512, 3072 * MIB],
+    [10, undefined, 4206, 1, 1072, 7680 * MIB],
+    [10, 1, 4206, 1, 1072, 7680 * MIB],
+    [16, undefined, 6850, 3, 512, 12_288 * MIB],
+    [16, 1, 6850, 1, 1792, 12_288 * MIB],
+  ])(
+    'sizes the main heap first in a %i GiB container with workers %s',
+    (gib, workers, mainHeapMb, parseWorkers, workerHeapMb, reservedBytes) => {
+      const budget = resolveAnalysisResourceBudget({ ...container(gib), workers });
+      expect(budget.mainHeapMb).toBe(mainHeapMb);
+      expect(budget.parse.workers).toBe(parseWorkers);
+      expect(budget.parse.workerHeapMb).toBe(workerHeapMb);
+      expect(budget.parse.reservedBytes).toBe(reservedBytes);
+      expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+    },
+  );
+
+  it('admits the automatic main-heap ceiling as an explicit reservation and rejects one more MiB', () => {
+    expect(resolveAnalysisResourceBudget({ ...container(10), mainHeapMb: 4206 }).mainHeapMb).toBe(
+      4206,
+    );
+    expect(() => resolveAnalysisResourceBudget({ ...container(10), mainHeapMb: 4207 })).toThrow(
+      'requires at least 7681 MiB',
+    );
+  });
+
+  it('admits a 6850 MiB main heap beside three workers in 16 GiB', () => {
+    const budget = resolveAnalysisResourceBudget({ ...container(16), mainHeapMb: 6850 });
+    expect(budget.parse.workers).toBe(3);
+    expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+  });
+
+  it('fills a large host with capped workers after the main-heap cap', () => {
+    const budget = resolveAnalysisResourceBudget(container(64, 16));
+    expect(budget.mainHeapMb).toBe(16_384);
+    expect(budget.parse.workers).toBe(15);
+    expect(budget.parse.workerHeapMb).toBe(1376);
+  });
+
+  it.each([4, 24])('keeps the measured 6 GiB PDG envelope constrained with %i CPUs', (cpus) => {
+    const budget = resolveAnalysisResourceBudget({ ...container(32, cpus), totalMb: 6144 });
+    expect(budget.parse.workers).toBe(1);
+    expect(isConstrainedPdgBuild(true, budget)).toBe(true);
   });
 
   it.each([NaN, Infinity, -1, 0, 1.5, Number.MAX_SAFE_INTEGER + 1])(
