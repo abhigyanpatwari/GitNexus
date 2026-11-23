@@ -285,6 +285,11 @@ Set `GITNEXUS_QUERY_MAX_RSS_MB=<MiB>` to change the limit; `0` disables it. The
 default is max(8 GiB, 25% of available RAM), capped at 75% of available RAM,
 including a reported container/runtime constraint.
 
+The default database buffer pool is sized under this budget, leaving headroom
+for the rest of the process (a 1 GiB container gets a 384 MiB pool). The pool
+is per database, and each open database also holds fixed native memory outside
+the pool, so a small container should serve one repository per process.
+
 RSS is checked at query start/end and every 200 ms while reads run. On macOS,
 queries lasting at least one second also sample physical footprint at most
 once per second, including compressed/swapped memory. If the OS footprint
