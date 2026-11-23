@@ -1,6 +1,6 @@
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { indexTopLevelExportsByName } from 'gitnexus-shared';
-import { canonicalTypeScriptName } from './identifiers.js';
+import { canonicalModuleExportName, canonicalTypeScriptName } from './identifiers.js';
 
 /** The export name ECMAScript gives a module's default export. */
 const DEFAULT_EXPORT_NAME = 'default';
@@ -14,15 +14,20 @@ export const ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES: ReadonlySet<string> = 
 export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string, SymbolDefinition> {
   const exports = new Map<string, SymbolDefinition>();
   const ambiguous = new Set<string>();
-  const publish = (spelling: string, definition: SymbolDefinition) => {
-    const name = canonicalTypeScriptName(spelling);
+  const publish = (name: string, definition: SymbolDefinition) => {
     const previous = exports.get(name);
     if (previous && previous.nodeId !== definition.nodeId) ambiguous.add(name);
     else exports.set(name, definition);
   };
   for (const [spelling, definition] of indexTopLevelExportsByName(parsed.localDefs)) {
-    if (definition.namedExports === undefined) publish(spelling, definition);
-    else for (const name of definition.namedExports) publish(name, definition);
+    if (definition.namedExports === undefined) {
+      publish(canonicalTypeScriptName(spelling), definition);
+    } else {
+      for (const written of definition.namedExports) {
+        const name = canonicalModuleExportName(written);
+        if (name !== null) publish(name, definition);
+      }
+    }
   }
   for (const name of ambiguous) exports.delete(name);
   // Indexing only the marked defs picks the same callable winner a named import

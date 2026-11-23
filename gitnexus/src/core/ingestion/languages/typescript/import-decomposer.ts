@@ -310,7 +310,7 @@ function decomposeNamedSpecifier(
   mayHaveType: boolean,
 ): CaptureMatch | null {
   // `import_specifier` layout:
-  //   name: identifier
+  //   name: identifier | string     (string requires a local alias)
   //   alias: identifier?            (only when `as` is present)
   //   plus an optional `type` keyword token in front (per-specifier type-only)
   //
@@ -319,7 +319,7 @@ function decomposeNamedSpecifier(
   // binding the alias as the imported name would invert the edge.
   const nameNode = spec.childForFieldName('name');
   const aliasNode = spec.childForFieldName('alias');
-  if (nameNode === null) return null;
+  if (nameNode === null || (nameNode.type === 'string' && aliasNode === null)) return null;
   const name = nameNode.text;
   const typeOnly = statementTypeOnly || (mayHaveType && hasTypeKeyword(spec));
 

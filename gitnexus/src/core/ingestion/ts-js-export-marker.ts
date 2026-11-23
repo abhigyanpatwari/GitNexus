@@ -34,6 +34,7 @@
  * would mark every declaration in such a file exported.
  */
 
+import { canonicalModuleExportName } from './languages/typescript/identifiers.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
 export interface EsmExportEvidence {
@@ -282,13 +283,12 @@ export function collectEsmExportEvidence(
             const name = spec.childForFieldName('name')?.text;
             if (name === undefined || name === '') continue;
             namedLocals.add(name);
-            // `export { f as default }`: TS parses the alias as an identifier,
-            // JS as an anonymous `default` token, so compare text, not type.
             const alias = spec.childForFieldName('alias');
             if (typeOnly || spec.children.some((token) => token.type === 'type')) continue;
-            if (alias?.text === 'default') {
+            // A keyword, identifier escape, or quoted name can spell default.
+            if (alias !== null && canonicalModuleExportName(alias.text) === 'default') {
               defaultLocals.add(name);
-            } else if (alias?.type !== 'string') {
+            } else {
               namedExports ??= new Map();
               let names = namedExports.get(name);
               if (!names) namedExports.set(name, (names = new Set()));

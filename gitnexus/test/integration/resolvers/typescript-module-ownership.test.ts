@@ -222,3 +222,43 @@ export function privateNamespace() {
     ).toBe(true);
   });
 });
+
+describe.each(['ts', 'mjs'])('quoted export ownership (%s)', (extension) => {
+  const suffix = extension === 'ts' ? 'js' : extension;
+  const result = useFixture(`quoted-exports-${extension}`, {
+    [`local.${extension}`]: String.raw`
+function original() {}
+function defaultImpl() {}
+function literalEscape() {}
+function ordinary() {}
+export { original as "pub\x6cic-name", defaultImpl as 'default', literalEscape as '\\u0061', ordinary as a };
+`,
+    [`barrel.${extension}`]: `export { 'public-name' as "another name" } from './local.${suffix}';`,
+    [`entry.${extension}`]: String.raw`
+import * as namespace from './local.${suffix}';
+import primary, { 'public-name' as direct, '\\u0061' as escape } from './local.${suffix}';
+import { 'another name' as forwarded } from './barrel.${suffix}';
+export function useDirect() { direct(); }
+export function useDefault() { primary(); }
+export function useLiteralEscape() { escape(); }
+export function useBarrel() { forwarded(); }
+export function hiddenName() {
+  // @ts-expect-error The local name was never published.
+  namespace.original();
+}
+`,
+  });
+
+  it.each([
+    ['useDirect', 'original'],
+    ['useDefault', 'defaultImpl'],
+    ['useLiteralEscape', 'literalEscape'],
+    ['useBarrel', 'original'],
+    ['hiddenName', null],
+  ] as const)('emits only the exact targets for %s', (caller, target) => {
+    const actual = getRelationships(result(), 'CALLS')
+      .filter(({ rel }) => rel.sourceId === `Function:entry.${extension}:${caller}`)
+      .map(({ rel }) => rel.targetId);
+    expect(actual).toEqual(target === null ? [] : [`Function:local.${extension}:${target}`]);
+  });
+});

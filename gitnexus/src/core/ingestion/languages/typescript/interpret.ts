@@ -24,7 +24,7 @@ import type {
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { lookupNameClaim, moduleScopeIdOf } from '../../scope-resolution/scope/walkers.js';
-import { canonicalTypeScriptName } from './identifiers.js';
+import { canonicalModuleExportName, canonicalTypeScriptName } from './identifiers.js';
 
 /** Shared empty result for the non-type-only path — see `typeOnly` below. */
 const NO_TYPE_ONLY: { typeOnly?: true } = Object.freeze({});
@@ -94,11 +94,13 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       if (sourceCap === undefined || nameCap === undefined || aliasCap === undefined) {
         return null;
       }
+      const importedName = canonicalModuleExportName(nameCap.text);
+      if (importedName === null) return null;
       return {
         kind: 'alias',
         ...lexicalOwner,
         localName: aliasCap.text,
-        importedName: canonicalTypeScriptName(nameCap.text),
+        importedName,
         alias: aliasCap.text,
         targetRaw: sourceCap.text,
         ...typeOnly,
@@ -121,10 +123,12 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       // Decode them just like the names requested from the source module.
       // `export { X } from './m'`.
       if (sourceCap === undefined || nameCap === undefined) return null;
+      const name = canonicalModuleExportName(nameCap.text);
+      if (name === null) return null;
       return {
         kind: 'reexport',
-        localName: canonicalTypeScriptName(nameCap.text),
-        importedName: canonicalTypeScriptName(nameCap.text),
+        localName: name,
+        importedName: name,
         targetRaw: sourceCap.text,
         ...typeOnly,
         ...publication,
@@ -135,11 +139,14 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
       if (sourceCap === undefined || nameCap === undefined || aliasCap === undefined) {
         return null;
       }
+      const importedName = canonicalModuleExportName(nameCap.text);
+      const alias = canonicalModuleExportName(aliasCap.text);
+      if (importedName === null || alias === null) return null;
       return {
         kind: 'reexport',
-        localName: canonicalTypeScriptName(aliasCap.text),
-        importedName: canonicalTypeScriptName(nameCap.text),
-        alias: canonicalTypeScriptName(aliasCap.text),
+        localName: alias,
+        importedName,
+        alias,
         targetRaw: sourceCap.text,
         ...typeOnly,
         ...publication,

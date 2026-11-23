@@ -1,3 +1,5 @@
+import { decodeJavaScriptStringLiteral } from './string-literals.js';
+
 /** Decode ECMAScript identifier escapes without changing written graph identities. */
 export const canonicalTypeScriptName = (name: string): string =>
   name.replace(
@@ -7,3 +9,10 @@ export const canonicalTypeScriptName = (name: string): string =>
       return value <= 0x10ffff ? String.fromCodePoint(value) : escape;
     },
   );
+
+/** Read a written ModuleExportName as its runtime key. */
+export function canonicalModuleExportName(spelling: string): string | null {
+  if (spelling[0] !== '"' && spelling[0] !== "'") return canonicalTypeScriptName(spelling);
+  const decoded = decodeJavaScriptStringLiteral(spelling);
+  return decoded === null || /[\uD800-\uDFFF]/u.test(decoded) ? null : decoded;
+}
