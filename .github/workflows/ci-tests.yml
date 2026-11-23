@@ -7,6 +7,23 @@ permissions:
   contents: read
 
 jobs:
+  java-compiler-conformance:
+    name: Java compiler conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Compare overload targets with javac
+        working-directory: gitnexus
+        run: npm run test:conformance:java
+
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
     runs-on: ubuntu-latest

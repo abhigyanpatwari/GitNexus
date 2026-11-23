@@ -55,6 +55,7 @@
     "serve": "tsx src/cli/index.ts serve",
     "dev": "tsx watch src/cli/index.ts",
     "test": "vitest run",
+    "test:conformance:java": "node tools/compiler-conformance/java/check.mjs",
     "typecheck:tests": "tsc --noEmit -p tsconfig.test.json",
     "test:unit": "vitest run test/unit",
     "pretest:integration": "node scripts/build.js",
