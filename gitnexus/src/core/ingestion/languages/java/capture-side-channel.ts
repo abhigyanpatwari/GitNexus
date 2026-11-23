@@ -1,4 +1,5 @@
 import type { ParsedFile } from 'gitnexus-shared';
+import type { JavaImportUses } from './import-use-facts.js';
 import {
   createClassAnnotationFactStore,
   type ClassAnnotationFact,
@@ -16,11 +17,39 @@ import type { JavaSpringDiClassFact } from './spring-di.js';
 import type { SpringDynamicLookupFact } from '../../frameworks/spring/dynamic-lookups.js';
 import type { SpringMessageProducerFact } from '../../frameworks/spring/message-producers.js';
 import type { JavaSpringNonHttpHandlerFact } from './spring-non-http-handlers.js';
+import {
+  clearJavaContainerProofs,
+  getJavaContainerProofs,
+  getJavaImportedSpellings,
+  getJavaReturnElements,
+  getJavaTypeFields,
+  type JavaContainerProofFact,
+  type JavaImportedSpellingFact,
+  type JavaReturnElementFact,
+  type JavaTypeFieldsFact,
+} from './declared-type-captures.js';
+import {
+  clearJavaOverloadFacts,
+  getJavaOverloadFacts,
+  isJavaOverloadFileFacts,
+  setJavaOverloadFacts,
+  type JavaOverloadFileFacts,
+} from './overload-argument-facts.js';
 
 export type JavaClassAnnotationFact = ClassAnnotationFact;
 
 export interface JavaCaptureSideChannel {
   readonly kind: 'java';
+  readonly importUses?: JavaImportUses;
+  readonly overloadFacts?: JavaOverloadFileFacts;
+  /** JDK container identities that inferred element bindings depend on. */
+  readonly containerProofs?: readonly JavaContainerProofFact[];
+  /** Element types of declared JDK container returns, for call-result loops. */
+  readonly returnElements?: readonly JavaReturnElementFact[];
+  /** Dotted element spellings that are single-type imports' canonical names. */
+  readonly importedSpellings?: readonly JavaImportedSpellingFact[];
+  /** Supertypes and fields of this file's types; absent when not captured. */
+  readonly typeFields?: readonly JavaTypeFieldsFact[];
   readonly packageFact: JvmPackageFact;
   readonly classAnnotations: readonly JavaClassAnnotationFact[];
   readonly springAopFacts?: readonly JavaSpringAopFact[];
@@ -33,6 +62,16 @@ export interface JavaCaptureSideChannel {
 }
 
 const classAnnotations = createClassAnnotationFactStore();
+const importUses = new Map<string, JavaImportUses>();
+
+export function setJavaImportUses(filePath: string, facts: JavaImportUses | undefined): void {
+  if (facts === undefined) importUses.delete(filePath);
+  else importUses.set(filePath, facts);
+}
+
+export function getJavaImportUses(filePath: string): JavaImportUses | undefined {
+  return importUses.get(filePath);
+}
 const springAopFacts = new Map<string, readonly JavaSpringAopFact[]>();
 const springConfigConsumers = new Map<string, readonly JavaSpringConfigConsumerFact[]>();
 const springConditionalFacts = new Map<string, readonly JavaSpringConditionalFact[]>();
@@ -43,6 +82,9 @@ const springMessageProducerFacts = new Map<string, readonly SpringMessageProduce
 
 /** Clear facts retained by a prior workspace pass in a long-lived process. */
 export function clearJavaClassAnnotationFacts(): void {
+  importUses.clear();
+  clearJavaOverloadFacts();
+  clearJavaContainerProofs();
   classAnnotations.clear();
   springAopFacts.clear();
   springConfigConsumers.clear();
@@ -157,6 +199,7 @@ export function collectJavaCaptureSideChannel(
   filePath: string,
 ): JavaCaptureSideChannel | undefined {
   const facts = classAnnotations.get(filePath);
+  const overloadFacts = getJavaOverloadFacts(filePath);
   const aopFacts = springAopFacts.get(filePath) ?? [];
   const configConsumers = springConfigConsumers.get(filePath) ?? [];
   const conditionFacts = springConditionalFacts.get(filePath) ?? [];
@@ -165,7 +208,16 @@ export function collectJavaCaptureSideChannel(
   const nonHttpHandlerFacts = springNonHttpHandlerFacts.get(filePath) ?? [];
   const messageProducerFacts = springMessageProducerFacts.get(filePath) ?? [];
   const packageFact = getJavaPackageFact(filePath);
+  const containerProofs = getJavaContainerProofs(filePath);
+  const returnElements = getJavaReturnElements(filePath);
+  const importedSpellings = getJavaImportedSpellings(filePath);
+  const typeFields = getJavaTypeFields(filePath);
   if (
+    overloadFacts === undefined &&
+    containerProofs.length === 0 &&
+    returnElements.length === 0 &&
+    importedSpellings.length === 0 &&
+    typeFields === undefined &&
     facts.length === 0 &&
     aopFacts.length === 0 &&
     configConsumers.length === 0 &&
@@ -180,6 +232,13 @@ export function collectJavaCaptureSideChannel(
   }
   return {
     kind: 'java',
+    importUses: importUses.get(filePath),
+    ...(overloadFacts === undefined ? {} : { overloadFacts }),
+    ...(containerProofs.length > 0 ? { containerProofs } : {}),
+    ...(returnElements.length > 0 ? { returnElements } : {}),
+    ...(importedSpellings.length > 0 ? { importedSpellings } : {}),
+    // Kept when empty: an empty list proves this file's types declare no field.
+    ...(typeFields === undefined ? {} : { typeFields }),
     packageFact: packageFact ?? UNKNOWN_JVM_PACKAGE_FACT,
     classAnnotations: facts,
     ...(aopFacts.length > 0 ? { springAopFacts: aopFacts } : {}),
@@ -194,6 +253,54 @@ export function collectJavaCaptureSideChannel(
   };
 }
 
+/** Return element facts carried on a ParsedFile, keeping only well-formed ones. */
+export function javaReturnElementFacts(parsed: ParsedFile): readonly JavaReturnElementFact[] {
+  const data = parsed.captureSideChannel as JavaCaptureSideChannel | undefined;
+  return data?.kind === 'java' && Array.isArray(data.returnElements)
+    ? data.returnElements.filter(
+        (fact) =>
+          typeof fact === 'object' &&
+          fact !== null &&
+          Array.isArray(fact.proofs) &&
+          Array.isArray(fact.elements),
+      )
+    : [];
+}
+
+/** Imported element spelling facts carried on a ParsedFile, well-formed ones only. */
+export function javaImportedSpellingFacts(parsed: ParsedFile): readonly JavaImportedSpellingFact[] {
+  const data = parsed.captureSideChannel as JavaCaptureSideChannel | undefined;
+  return data?.kind === 'java' && Array.isArray(data.importedSpellings)
+    ? data.importedSpellings.filter(
+        (fact) =>
+          typeof fact === 'object' &&
+          fact !== null &&
+          typeof fact.line === 'number' &&
+          typeof fact.col === 'number' &&
+          typeof fact.spelling === 'string' &&
+          (fact.status === 'import' || fact.status === 'ambiguous'),
+      )
+    : [];
+}
+
+/** Type field facts carried on a ParsedFile; `undefined` when not captured. */
+export function javaTypeFieldFacts(parsed: ParsedFile): readonly JavaTypeFieldsFact[] | undefined {
+  const data = parsed.captureSideChannel as JavaCaptureSideChannel | undefined;
+  return data?.kind === 'java' &&
+    Array.isArray(data.typeFields) &&
+    data.typeFields.every(
+      (fact) =>
+        typeof fact === 'object' &&
+        fact !== null &&
+        typeof fact.range === 'object' &&
+        fact.range !== null &&
+        Array.isArray(fact.bases) &&
+        Array.isArray(fact.fields),
+    )
+    ? data.typeFields
+    : undefined;
+}
+
 export function getJavaClassAnnotationFacts(filePath: string): readonly JavaClassAnnotationFact[] {
   return classAnnotations.get(filePath);
 }
@@ -201,6 +308,7 @@ export function getJavaClassAnnotationFacts(filePath: string): readonly JavaClas
 /** Restore worker-collected facts before Java's post-resolution hook runs. */
 export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
   const data = parsed.captureSideChannel as JavaCaptureSideChannel | undefined;
+  setJavaImportUses(parsed.filePath, data?.kind === 'java' ? data.importUses : undefined);
   if (
     data === undefined ||
     data === null ||
@@ -208,6 +316,7 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
     data.kind !== 'java' ||
     !Array.isArray(data.classAnnotations)
   ) {
+    setJavaOverloadFacts(parsed.filePath, undefined);
     setJavaClassAnnotationFacts(parsed.filePath, []);
     setJavaSpringAopFacts(parsed.filePath, []);
     setJavaSpringConfigConsumerFacts(parsed.filePath, []);
@@ -219,6 +328,10 @@ export function applyJavaCaptureSideChannel(parsed: ParsedFile): void {
     setJavaPackageFact(parsed.filePath, UNKNOWN_JVM_PACKAGE_FACT);
     return;
   }
+  setJavaOverloadFacts(
+    parsed.filePath,
+    isJavaOverloadFileFacts(data.overloadFacts) ? data.overloadFacts : undefined,
+  );
   setJavaClassAnnotationFacts(parsed.filePath, data.classAnnotations);
   setJavaSpringAopFacts(
     parsed.filePath,

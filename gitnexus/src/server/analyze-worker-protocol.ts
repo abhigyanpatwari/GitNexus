@@ -24,7 +24,9 @@
  * sites (`analyze-launch.ts`, tests) keep working unchanged.
  */
 import type { AnalyzeOptions } from '../core/run-analyze.js';
+import type { AnalysisPhaseProgress } from '../core/analysis-progress.js';
 import type { AnalyzeResultIpc } from './analyze-worker-ipc.js';
+import type { PreparedAnalysisHandoff } from '../core/analysis-phase-supervisor.js';
 
 /** Parent → child: start one analysis run. */
 export interface StartMessage {
@@ -33,14 +35,27 @@ export interface StartMessage {
   options: AnalyzeOptions;
 }
 
+/** A new process may continue only after the graph writer actually exited. */
+export interface ContinueMessage {
+  type: 'continue';
+  repoPath: string;
+  options: AnalyzeOptions;
+  writerPid: number;
+  prepared: GraphPreparedMessage;
+}
+
+export interface GraphVisibleMessage {
+  type: 'graph-visible';
+}
+
 /** Parent → child: request safe cancellation at the next JS-visible checkpoint. */
 export interface CancelMessage {
   type: 'cancel';
 }
 
-export type ParentMessage = StartMessage | CancelMessage;
+export type ParentMessage = StartMessage | ContinueMessage | CancelMessage | GraphVisibleMessage;
 
-export interface ProgressMessage {
+export interface ProgressMessage extends AnalysisPhaseProgress {
   type: 'progress';
   phase: string;
   percent: number;
@@ -52,6 +67,18 @@ export interface CompleteMessage {
   // JSON-safe projection (no `pipelineResult` / live KnowledgeGraph). This
   // channel is default-JSON child_process IPC — see analyze-worker-ipc.ts.
   result: AnalyzeResultIpc;
+}
+
+/** Nonterminal: the graph process still owns its native allocations. */
+export interface GraphPreparedMessage {
+  type: 'graph-prepared';
+  handoff: PreparedAnalysisHandoff;
+  result: AnalyzeResultIpc;
+}
+
+/** Wait for the serving parent to refresh readers before making paid requests. */
+export interface GraphReadyMessage {
+  type: 'graph-ready';
 }
 
 export interface ErrorMessage {
@@ -75,4 +102,9 @@ export interface ErrorMessage {
 }
 
 /** Child → parent IPC messages. Shared with the parent-side launcher. */
-export type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
+export type WorkerMessage =
+  | ProgressMessage
+  | GraphPreparedMessage
+  | GraphReadyMessage
+  | CompleteMessage
+  | ErrorMessage;

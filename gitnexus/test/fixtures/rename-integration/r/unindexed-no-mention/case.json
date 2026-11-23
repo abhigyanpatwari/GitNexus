@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename when the unindexed R script does not mention the name.",
+  "categories": ["unindexed-source", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

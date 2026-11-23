@@ -313,10 +313,10 @@ describe('production routes — rate-limit middleware wiring', () => {
     );
   });
 
-  it('embed route flushes WAL via flushWAL, not inline executeQuery (#1376)', () => {
-    // The embed handler must call the consolidated helper, not hand-roll
-    // its own try/catch around executeQuery('CHECKPOINT').
-    expect(apiSource).toMatch(/await flushWAL\(\)/);
+  it('embed route delegates durable publication to the shared phase (#1376)', () => {
+    // The phase owns the vector writer and its durable checkpoint. The HTTP
+    // reader must not checkpoint its read-only graph connection.
+    expect(apiSource).toMatch(/await runAnalysisEmbeddingPhase\(/);
     expect(apiSource).not.toMatch(/executeQuery\('CHECKPOINT'\)/);
   });
 });

@@ -628,6 +628,27 @@ describe('Pass 4: type bindings', () => {
 // ─── §Pass 5: reference sites ─────────────────────────────────────────────
 
 describe('Pass 5: reference sites', () => {
+  it.each([
+    '@reference.caller-scope',
+    '@reference.lookup-scope',
+    '@reference.lookup-purpose',
+    '@reference.receiver-chain',
+  ])('does not mistake leading %s metadata for a call anchor', (tag) => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 10, 0),
+        { [tag]: cap(tag, 2, 0, 2, 20, 'metadata'), ...refMatch('call.free', 'run', 2, 2, 2, 7) },
+      ],
+      'a.ts',
+      mockProvider(),
+    );
+    expect(result.referenceSites).toHaveLength(1);
+    expect(result.referenceSites[0]).toMatchObject({
+      name: 'run',
+      kind: 'call',
+      atRange: { startLine: 2, startCol: 2, endLine: 2, endCol: 7 },
+    });
+  });
   it('emits a call reference with the innermost scope anchor', () => {
     const result = extract(
       [

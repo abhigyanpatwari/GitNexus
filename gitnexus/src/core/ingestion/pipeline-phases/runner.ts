@@ -203,6 +203,7 @@ export async function runPipeline(
   const results = new Map<string, PhaseResult<unknown>>(seed);
 
   for (const phase of sorted) {
+    ctx.options?.signal?.throwIfAborted();
     const start = Date.now();
 
     if (isDev) {

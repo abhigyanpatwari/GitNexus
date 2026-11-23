@@ -21,7 +21,7 @@ import {
 } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { followChainPostFinalize } from '../../scope-resolution/passes/imported-return-types.js';
+import { createChainFollower } from '../../scope-resolution/passes/imported-return-types.js';
 import { javaProvider } from '../java.js';
 import {
   javaArityCompatibility,
@@ -29,7 +29,33 @@ import {
   resolveJavaImportTarget,
   type JavaResolveContext,
 } from './index.js';
+import { javaOnDemandImportTargets } from './on-demand-imports.js';
+import {
+  indexJavaEnclosingLocalAliases,
+  JAVA_ENCLOSING_LOCAL_ROUTE,
+  javaAliasReadsInheritedField,
+  javaEnclosingLocalAliasType,
+} from './factory-alias-captures.js';
+import { javaArrayElementType } from './type-spelling.js';
+import {
+  javaQualifiedTypeLookupSpelling,
+  populateJavaQualifiedTypeBindings,
+} from './qualified-type-bindings.js';
+import {
+  javaCallResultElementType,
+  validateJavaQualifiedContextualBindings,
+} from './qualified-contextual-bindings.js';
+import {
+  reconcileJavaLombokWorkspaceProof,
+  emitJavaLombokWorkspaceCorrections,
+} from './lombok-workspace-proof.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
+import {
+  indexJavaSamLambdaTargets,
+  javaCallResultAssignmentApplies,
+  javaSamLambdaParameterType,
+  selectJavaLambdaOverload,
+} from './sam-lambda-types.js';
 import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
 import { attachJavaSpringAopMetadata } from './spring-aop.js';
 import { attachJavaSpringConfigBindings } from './spring-config-bindings.js';
@@ -42,11 +68,21 @@ import {
   clearJavaClassAnnotationFacts,
 } from './capture-side-channel.js';
 import { clearJavaPackageFacts } from './package-facts.js';
+import {
+  resolveJavaReceiverMember,
+  resolveJavaSelectedMethodImplementation,
+  resolveJavaUnqualifiedCall,
+  resolveJavaReceiverCallSite,
+} from './overload-resolution.js';
 
 const javaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Java,
   languageProvider: javaProvider,
   importEdgeReason: 'java-scope: import',
+  onDemandImportTargets: javaOnDemandImportTargets,
+  // `import pkg.*;` binds no name here and `resolveJavaModule` answers every
+  // importer of a package with the same list, so the package is stored once.
+  groupsWildcardImportTargets: true,
 
   loadResolutionConfig: () => {
     // Worker capture facts are process-local and outlive a single analysis in
@@ -68,13 +104,57 @@ const javaScopeResolver: ScopeResolver = {
   },
 
   mergeBindings: (existing, incoming) => [...javaMergeBindings([...existing, ...incoming])],
+  // One merge of the whole ordered bucket equals folding it group by group:
+  // a folded prefix keeps only its best tier, which the next merge would keep
+  // or drop the same way, and de-dup keeps first position with last value.
+  // Without it, every same-name append re-merges the growing prefix (N² for N
+  // same-named member types, methods or fields bound at module scope).
+  mergeBindingsAreAssociative: true,
 
   arityCompatibility: (callsite, def) => javaArityCompatibility(def, callsite),
 
   buildMro: buildJavaMro,
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateWorkspaceReferences: reconcileJavaLombokWorkspaceProof,
+  emitHeritageEdges: emitJavaLombokWorkspaceCorrections,
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
+  // A call whose every argument is an implicitly typed lambda is decided by
+  // potential applicability where the general selector has no evidence.
+  resolveReceiverMember: (owner, member, site, scopes, model) =>
+    selectJavaLambdaOverload(
+      resolveJavaReceiverMember(owner, member, site, scopes, model),
+      site,
+      scopes,
+    ),
+  resolveUnqualifiedCall: (site, scopes, model) =>
+    selectJavaLambdaOverload(resolveJavaUnqualifiedCall(site, scopes, model), site, scopes),
+  resolveSelectedMethodImplementation: resolveJavaSelectedMethodImplementation,
+  receiverMemberLookupCoversAllCalls: true,
+  // A producer indexed by trailing subscripts (`make()[0].save()`) is typed
+  // from its selected overload, one element per index step through
+  // `elementTypeOf`; resolveJavaReceiverMember re-validates that selection.
+  receiverCallSite: resolveJavaReceiverCallSite,
+  elementTypeOf: javaArrayElementType,
+  // `for (var x : xs)` over a selected method's result: only the element of
+  // that method's own proven JDK container return type. An implicitly typed
+  // lambda argument's parameter: the selected method's workspace functional
+  // interface parameter type (`sam-lambda-types.ts`). A copy of an enclosing
+  // method's local inside a local or anonymous class: the producer's own type,
+  // once no supertype of that class can declare a field of the copied name.
+  callResultElementType: (callee, returned, route, scopes) =>
+    route.startsWith('lambda:')
+      ? javaSamLambdaParameterType(callee, returned, route, scopes)
+      : route.startsWith(JAVA_ENCLOSING_LOCAL_ROUTE)
+        ? javaEnclosingLocalAliasType(returned, route, scopes)
+        : javaCallResultElementType(callee, returned, route, scopes),
+  // A lambda that capture typed through a JDK container reading of its
+  // receiver falls back to that route only where the reading was refuted.
+  callResultAssignmentApplies: (site, scopes) =>
+    !javaAliasReadsInheritedField(site.element, scopes) &&
+    javaCallResultAssignmentApplies(site, scopes),
+  qualifiedTypeLookupSpelling: javaQualifiedTypeLookupSpelling,
+  hoistedTypeBindingsRequireOwner: true,
 
   isSuperReceiver: (text) => text.trim() === 'super',
 
@@ -90,7 +170,13 @@ const javaScopeResolver: ScopeResolver = {
   // class's method). C# is the intended next adopter.
   freeCallsRequireInstanceOwnership: true,
 
-  populateNamespaceSiblings: populateJavaPackageSiblings,
+  populateNamespaceSiblings: (parsedFiles, indexes, ctx) => {
+    populateJavaPackageSiblings(parsedFiles, indexes, ctx);
+    populateJavaQualifiedTypeBindings(parsedFiles, indexes);
+    validateJavaQualifiedContextualBindings(parsedFiles, indexes);
+    indexJavaSamLambdaTargets(parsedFiles, indexes);
+    indexJavaEnclosingLocalAliases(parsedFiles, indexes);
+  },
   resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
   populateRangeBindings: populateJavaCrossFileReturnTypes,
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes, ctx) => {
@@ -150,8 +236,12 @@ function populateJavaCrossFileReturnTypes(
 
     const ambiguousMirrors = new Set<string>();
     ambiguousByFile.set(parsed.filePath, ambiguousMirrors);
-    const importedFamilies: string[][] = [];
-    importedFamiliesByFile.set(parsed.filePath, importedFamilies);
+    const importedFamilies: { readonly files: string[]; readonly key: string }[] = [];
+    // Mirroring a family or a file's class scopes a second time changes
+    // nothing (a name is only set when absent, and ambiguity is permanent), so
+    // N imports of one file mirror it once instead of N times.
+    const mirroredFamilies = new Set<string>();
+    const mirroredClassFiles = new Set<string>();
     for (const name of namesAtScope(importerModule.id, indexes)) {
       const refs = lookupBindingsAt(importerModule.id, name, indexes);
       for (const ref of refs) {
@@ -167,40 +257,61 @@ function populateJavaCrossFileReturnTypes(
           const ancestor = indexes.defs.get(ancestorId);
           if (ancestor !== undefined) sourceFiles.add(ancestor.filePath);
         }
-        importedFamilies.push([...sourceFiles]);
-        const familyNames = new Set<string>();
-        for (const sourceFile of sourceFiles) {
-          for (const [srcName, srcRef] of moduleReturnTypesByFile.get(sourceFile) ?? []) {
-            if (familyNames.has(srcName)) continue;
-            familyNames.add(srcName);
-            if (ambiguousMirrors.has(srcName)) continue;
-            const existing = tb.get(srcName);
-            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
-              ambiguousMirrors.add(srcName);
-              tb.delete(srcName);
-              continue;
+        const family = [...sourceFiles];
+        const familyKey = family.join('\0');
+        importedFamilies.push({ files: family, key: familyKey });
+        if (!mirroredFamilies.has(familyKey)) {
+          mirroredFamilies.add(familyKey);
+          const familyNames = new Set<string>();
+          for (const sourceFile of sourceFiles) {
+            for (const [srcName, srcRef] of moduleReturnTypesByFile.get(sourceFile) ?? []) {
+              if (familyNames.has(srcName)) continue;
+              familyNames.add(srcName);
+              if (ambiguousMirrors.has(srcName)) continue;
+              const existing = tb.get(srcName);
+              if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+                ambiguousMirrors.add(srcName);
+                tb.delete(srcName);
+                continue;
+              }
+              if (existing === undefined) tb.set(srcName, srcRef);
             }
-            if (existing === undefined) tb.set(srcName, srcRef);
           }
         }
 
-        for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
-          for (const [srcName, srcRef] of classScope.typeBindings) {
-            if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
-            if (ambiguousMirrors.has(srcName)) continue;
-            const existing = tb.get(srcName);
-            if (existing !== undefined && existing.rawName !== srcRef.rawName) {
-              ambiguousMirrors.add(srcName);
-              tb.delete(srcName);
-              continue;
+        if (!mirroredClassFiles.has(ref.def.filePath)) {
+          mirroredClassFiles.add(ref.def.filePath);
+          for (const classScope of classScopesByFile.get(ref.def.filePath) ?? []) {
+            for (const [srcName, srcRef] of classScope.typeBindings) {
+              if (srcRef.source === 'self' || srcRef.source === 'parameter-annotation') continue;
+              if (ambiguousMirrors.has(srcName)) continue;
+              const existing = tb.get(srcName);
+              if (existing !== undefined && existing.rawName !== srcRef.rawName) {
+                ambiguousMirrors.add(srcName);
+                tb.delete(srcName);
+                continue;
+              }
+              if (existing === undefined) tb.set(srcName, srcRef);
             }
-            if (existing === undefined) tb.set(srcName, srcRef);
           }
         }
       }
     }
+    // The walk below pops from the end, so keeping each family's LAST copy
+    // keeps its visiting order; a repeated family is a no-op when popped again.
+    const seenFamilies = new Set<string>();
+    const distinctFamilies: string[][] = [];
+    for (let i = importedFamilies.length - 1; i >= 0; i--) {
+      const { files, key } = importedFamilies[i]!;
+      if (seenFamilies.has(key)) continue;
+      seenFamilies.add(key);
+      distinctFamilies.push(files);
+    }
+    importedFamiliesByFile.set(parsed.filePath, distinctFamilies.reverse());
   }
 
+  // Every sibling module holds the package's return facts: follow each once.
+  const follower = createChainFollower(indexes);
   for (const parsed of parsedFiles) {
     const importerModule = moduleScopeByFile.get(parsed.filePath);
     if (importerModule === undefined) continue;
@@ -249,13 +360,17 @@ function populateJavaCrossFileReturnTypes(
           for (const dependency of importedFamiliesByFile.get(file) ?? []) pending.push(dependency);
         }
       }
-      if (!ambiguous && candidate !== undefined) tb.set(name, candidate);
+      if (!ambiguous && candidate !== undefined) {
+        tb.set(name, candidate);
+        follower.clear();
+      }
     }
 
     for (const [name, ref] of importerModule.typeBindings) {
-      const resolved = followChainPostFinalize(ref, importerModule.id, indexes);
+      const resolved = follower.follow(ref, importerModule.id);
       if (resolved !== ref) {
         (importerModule.typeBindings as Map<string, TypeRef>).set(name, resolved);
+        follower.clear();
       }
     }
   }
@@ -265,9 +380,10 @@ function populateJavaCrossFileReturnTypes(
     for (const scope of parsed.scopes) {
       if (scope.id === moduleScopeId) continue;
       for (const [name, ref] of scope.typeBindings) {
-        const resolved = followChainPostFinalize(ref, scope.id, indexes);
+        const resolved = follower.follow(ref, scope.id);
         if (resolved !== ref) {
           (scope.typeBindings as Map<string, TypeRef>).set(name, resolved);
+          follower.clear();
         }
       }
     }

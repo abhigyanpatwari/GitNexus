@@ -33,6 +33,32 @@ describe('NODE_SIZES', () => {
 });
 
 describe('getCommunityColor', () => {
+  it('preserves colors for legacy community IDs', () => {
+    for (let i = 0; i < 20; i++) {
+      expect(getCommunityColor(`comm_${i}`)).toBe(getCommunityColor(i));
+    }
+  });
+
+  it('assigns deterministic valid colors to opaque IDs without collapsing the palette', () => {
+    const ids = [
+      ...Array.from({ length: 32 }, (_, i) => `comm_abcdef${i.toString(16).padStart(6, '0')}`),
+      'comm_123456789012',
+      'comm_abcdef123456_2',
+    ];
+    const before = ids.map((id) => getCommunityColor(id));
+    const reversed = new Map([...ids].reverse().map((id) => [id, getCommunityColor(id)]));
+    for (const [i, id] of ids.entries()) {
+      expect(before[i]).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(reversed.get(id)).toBe(before[i]);
+    }
+    expect(new Set(before)).toEqual(new Set(COMMUNITY_COLORS));
+  });
+
+  it('preserves safe numeric IDs and hashes digit strings outside the safe integer range', () => {
+    expect(getCommunityColor('comm_123456789013')).toBe('#f97316');
+    expect(getCommunityColor('comm_9007199254740993')).toBe('#f97316');
+  });
+
   it('returns valid hex colors', () => {
     for (let i = 0; i < 20; i++) {
       expect(getCommunityColor(i)).toMatch(/^#[0-9a-f]{6}$/i);

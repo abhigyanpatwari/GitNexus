@@ -50,13 +50,30 @@ describe('scoreImpactRisk', () => {
       },
     });
     expect(fn).toEqual({
-      risk: 'HIGH',
+      risk: 'LOW',
       riskSharedAxes: 'LOW',
       riskScale: {
         comparableAcrossKinds: true,
         unusedAxes: [],
       },
     });
+  });
+
+  it.each([
+    [4, 'LOW'],
+    [5, 'MEDIUM'],
+    [14, 'MEDIUM'],
+    [15, 'HIGH'],
+    [199, 'HIGH'],
+    [200, 'CRITICAL'],
+  ] as const)('scores %i direct upstream dependants as %s', (directCount, risk) => {
+    expect(scoreImpactRisk({ ...base, directCount, impactedCount: directCount }).risk).toBe(risk);
+  });
+
+  it('keeps indirect reach separate from direct risk', () => {
+    expect(
+      scoreImpactRisk({ ...base, directCount: 1, impactedCount: 201, processCount: 20 }).risk,
+    ).toBe('LOW');
   });
 
   it('preserves UNKNOWN only for an empty upstream walk', () => {
@@ -78,7 +95,7 @@ describe('scoreImpactRisk', () => {
     });
   });
 
-  it('preserves direct and total thresholds when enrichment axes are unused', () => {
+  it('rates upstream by direct fan-out independently of enrichment', () => {
     expect(
       scoreImpactRisk({
         ...base,
@@ -86,7 +103,7 @@ describe('scoreImpactRisk', () => {
         impactedCount: 30,
         unusedAxes: fileUnusedAxes,
       }).risk,
-    ).toBe('CRITICAL');
+    ).toBe('HIGH');
     expect(
       scoreImpactRisk({
         ...base,
@@ -113,6 +130,7 @@ describe('scoreImpactRisk', () => {
     ];
     const scored = scoreImpactRisk({
       ...base,
+      direction: 'downstream',
       directCount: 2,
       processCount: 4,
       moduleCount: 4,
@@ -123,7 +141,24 @@ describe('scoreImpactRisk', () => {
     expect(scored.riskSharedAxes).toBe('LOW');
   });
 
-  it('preserves a warning already proved before a later enrichment failure', () => {
+  it.each([
+    [2, 'UNKNOWN'],
+    [5, 'UNKNOWN'],
+    [15, 'HIGH'],
+    [200, 'CRITICAL'],
+  ] as const)(
+    'withholds only unproven scores for an incomplete walk with %i direct callers',
+    (directCount, expected) => {
+      expect(
+        scoreImpactRisk({ ...base, directCount, impactedCount: directCount, incompleteWalk: true }),
+      ).toMatchObject({
+        risk: expected,
+        riskSharedAxes: expected,
+      });
+    },
+  );
+
+  it('withholds a low verdict when enrichment fails', () => {
     const scored = scoreImpactRisk({
       ...base,
       directCount: 2,
@@ -132,7 +167,7 @@ describe('scoreImpactRisk', () => {
       unusedAxes: [{ axis: 'processes', reason: 'enrichment-query-failed' }],
     });
 
-    expect(scored.risk).toBe('CRITICAL');
+    expect(scored.risk).toBe('UNKNOWN');
     expect(scored.riskSharedAxes).toBe('LOW');
     expect(scored.riskScale.comparableAcrossKinds).toBe(false);
   });

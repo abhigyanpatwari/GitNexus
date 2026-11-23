@@ -19,8 +19,17 @@ import { writeSync } from 'node:fs';
 import { LocalBackend, VALID_NODE_LABELS } from '../mcp/local/local-backend.js';
 import { cliErrorKey, cliWarnKey } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
+import {
+  ImpactBudgetExceededError,
+  shapeImpactForAgent,
+  withImpactAgentDefaults,
+} from '../mcp/impact-agent-output.js';
+import { resolveMcpMaxTokens } from '../mcp/output-budget.js';
 
 let _backend: LocalBackend | null = null;
+
+/** `output()` sleeps on this while stdout is full; nothing notifies it. */
+const PIPE_FULL_SLEEP = new Int32Array(new SharedArrayBuffer(4));
 
 async function getBackend(): Promise<LocalBackend> {
   if (_backend) return _backend;
@@ -41,7 +50,13 @@ async function getBackend(): Promise<LocalBackend> {
  * By using fs.writeSync(1, ...) we bypass the Node.js stream layer
  * and write directly to the real stdout fd (#324).
  *
- * Falls back to stderr if the fd write fails (e.g., broken pipe).
+ * One writeSync is not enough (#3947). When stdout is a pipe or socket, fd 1 is
+ * non-blocking on POSIX, so a write larger than the free buffer space stops
+ * short, and a full buffer throws EAGAIN. Keep writing the remaining bytes,
+ * waiting 1 ms whenever an attempt leaves some unwritten.
+ *
+ * A consumer that closes early (`| head -1`) raises EPIPE: stop writing and keep
+ * the exit code below. Any other write failure falls back to stderr.
  *
  * `render` is for the commands that print prose instead of JSON: they hand over
  * the STRUCTURED result and a formatter, so the payload stays visible to the
@@ -53,17 +68,29 @@ function output<T>(data: T, render?: (data: T) => string): void {
     ? render(data)
     : typeof data === 'string'
       ? data
-      : JSON.stringify(data, null, 2);
+      : // Indent for a terminal only: agents and pipes re-read this output, and
+        // indentation made impact results ~45% larger with no added information.
+        JSON.stringify(data, null, process.stdout.isTTY ? 2 : undefined);
+  const bytes = Buffer.from(text + '\n');
+  let written = 0;
   try {
-    writeSync(1, text + '\n');
-  } catch (err: any) {
-    if (err?.code === 'EPIPE') {
-      // Consumer closed the pipe (e.g., `gitnexus cypher ... | head -1`)
-      // Exit cleanly per Unix convention
-      process.exit(0);
+    while (written < bytes.length) {
+      try {
+        written += writeSync(1, bytes, written);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'EAGAIN') throw err;
+      }
+      // ponytail: fixed 1 ms poll — about 1000 wakeups/s while a reader stalls;
+      // switch to a capped backoff if that ever shows up in a profile.
+      if (written < bytes.length) Atomics.wait(PIPE_FULL_SLEEP, 0, 0, 1);
     }
-    // Fallback: stderr (previous behavior, works on all platforms)
-    process.stderr.write(text + '\n');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'EPIPE') {
+      // Fallback: stderr (previous behavior, works on all platforms). Part of
+      // the result already on stdout is an incomplete result there: fail.
+      process.stderr.write(text + '\n');
+      if (written > 0) process.exitCode = 1;
+    }
   }
   // Every tool command routes its result through here, so this is the one place
   // that keeps scripted callers honest — `gitnexus impact … && <edit>` and
@@ -234,6 +261,7 @@ export async function impactCommand(
     limit?: string;
     offset?: string;
     summaryOnly?: boolean;
+    maxTokens?: string;
   },
 ): Promise<void> {
   // A `--`-prefixed uid means Commander swallowed a following flag as the uid
@@ -266,7 +294,8 @@ export async function impactCommand(
     // rather than on a silently-dropped flag. A non-numeric `--line` parses to
     // NaN, which the backend rejects as a non-positive integer (loud, not silent).
     const parsedLine = options?.line !== undefined ? parseInt(options.line, 10) : undefined;
-    const result = await backend.callTool('impact', {
+    const maxTokens = resolveMcpMaxTokens('impact', { maxTokens: options?.maxTokens }, {});
+    const impactArgs = withImpactAgentDefaults({
       target: target || undefined,
       target_uid: options?.uid,
       file_path: options?.file,
@@ -285,6 +314,7 @@ export async function impactCommand(
       offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
     });
+    const result = await backend.callTool('impact', impactArgs);
     // Client-side cap of the affected-list payload to --limit (parity with the
     // other tool commands). The backend already paginates byDepth per level to
     // the same limit, so byDepth needs no client-side re-slice.
@@ -296,8 +326,15 @@ export async function impactCommand(
       if (Array.isArray(result.affected_routes))
         result.affected_routes = result.affected_routes.slice(0, parsedLimit);
     }
-    output(result);
+    const shaped = shapeImpactForAgent(result, maxTokens);
+    // The budget is measured on compact JSON, even when stdout is a terminal.
+    output(shaped, maxTokens === undefined ? undefined : (data) => JSON.stringify(data));
   } catch (err: unknown) {
+    if (err instanceof ImpactBudgetExceededError) {
+      output(err.toJSONText());
+      process.exitCode = 1;
+      return;
+    }
     // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
     // The backend's impact() already returns structured errors for graph query failures
     output({

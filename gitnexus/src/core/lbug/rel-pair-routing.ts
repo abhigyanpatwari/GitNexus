@@ -17,9 +17,9 @@
  * regex over the ESCAPED row — so for an id containing a `"` the router is the
  * more-correct path (it routes the edge to the right pair; the oracle's regex
  * mis-buckets or drops it). Unlike the legacy oracle, the router also rejects a
- * valid node-label pair absent from the relationship DDL. That distinction is
- * load-bearing: silently writing such a CSV lets COPY fail late and can drop an
- * otherwise valid edge during fallback. `splitRelCsvByLabelPair` is retained as
+ * valid node-label pair absent from the relationship DDL: it skips the edge,
+ * keeps routing, and fails at {@link RelPairRouter.close} with every such pair
+ * (see {@link checkDeclaredPair} for why the run fails rather than degrades). `splitRelCsvByLabelPair` is retained as
  * the differential oracle (the quote-in-id divergence is asserted explicitly).
  *
  * Backpressure: at most one stream is awaited at a time (the caller routes
@@ -111,7 +111,7 @@ export const relPairKeyFor = (
  * built once per edge inside {@link relPairKeyFor} (~1M edges on a large
  * repo), where a function call is a real regression risk; every decode site is
  * cold by construction (once per pair when its CSV is opened, or on the
- * throw path of {@link assertDeclaredPair}).
+ * failure path of {@link checkDeclaredPair}).
  */
 export const splitRelPairKey = (key: string): readonly [from: string, to: string] => {
   const sep = key.indexOf('|');
@@ -179,26 +179,77 @@ const deriveNodeFilePath = (nodeId: string): string | undefined => {
 const UNDECLARED_PAIR_ISSUE_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues/new';
 
 /**
- * An edge whose endpoint-label pair is absent from the relationship DDL.
+ * One undeclared label pair seen during an emit: the first edge that hit it,
+ * kept as the example a bug report needs, and how many edges hit it in all.
+ */
+export interface UndeclaredPairOccurrence {
+  readonly pairKey: string;
+  readonly relationType: string;
+  readonly fromId: string;
+  readonly toId: string;
+  readonly edges: number;
+}
+
+const describePair = (
+  occurrence: Omit<UndeclaredPairOccurrence, 'edges'>,
+  indent: string,
+): string => {
+  const sourceFile = deriveNodeFilePath(occurrence.fromId) ?? deriveNodeFilePath(occurrence.toId);
+  return (
+    `${indent}relationship type: ${occurrence.relationType}\n` +
+    `${indent}from node:         ${occurrence.fromId}\n` +
+    `${indent}to node:           ${occurrence.toId}\n` +
+    `${indent}source file:       ${sourceFile ?? '(none — synthetic node id)'}\n`
+  );
+};
+
+const describeOnePair = (occurrence: Omit<UndeclaredPairOccurrence, 'edges'>): string => {
+  const [fromLabel, toLabel] = splitRelPairKey(occurrence.pairKey);
+  return (
+    `GitNexus extracted a relationship its own database schema cannot store.\n` +
+    `Relationship label pair ${fromLabel} → ${toLabel} is not declared in the ` +
+    `LadybugDB relation schema.\n` +
+    describePair(occurrence, '  ')
+  );
+};
+
+const describeSeveralPairs = (pairs: readonly UndeclaredPairOccurrence[]): string =>
+  `GitNexus extracted relationships its own database schema cannot store.\n` +
+  `${pairs.length} relationship label pairs are not declared in the LadybugDB ` +
+  `relation schema:\n` +
+  pairs
+    .map((pair) => {
+      const [fromLabel, toLabel] = splitRelPairKey(pair.pairKey);
+      const edges = `${pair.edges} edge${pair.edges === 1 ? '' : 's'}`;
+      return `  ${fromLabel} → ${toLabel} (${edges}, first one below)\n${describePair(pair, '    ')}`;
+    })
+    .join('');
+
+/**
+ * Edges whose endpoint-label pair is absent from the relationship DDL.
  *
  * Carries the context the emit call site already has — relationship type, both
  * node ids, and the source file derived from them — so a user whose `analyze`
- * just died mid-run can see WHICH of their files produced the edge and file a
- * bug report that names the missing pair. The abstract label pair alone is
+ * just failed can see WHICH of their files produced the edge and file a bug
+ * report that names the missing pair. The abstract label pair alone is
  * unactionable outside GitNexus's own source (#2789).
+ *
+ * The emit paths collect every undeclared pair of a run through
+ * {@link UndeclaredPairCollector} and throw ONCE, so {@link pairs} lists all of
+ * them (#2797). The top-level fields describe the first one.
  *
  * Classify by TYPE (`err instanceof UndeclaredRelationPairError`, or
  * {@link findUndeclaredRelationPairError} when the error may be wrapped in a
  * phase `cause` chain) — the repo norm from #2385 — never by message text.
  *
- * THE MESSAGE IS THE ONLY RENDERING. It carries the five context fields AND
- * the two actionable next steps (report the pair; `.gitnexusignore` the file to
- * finish the rest of the index), because `gitnexus serve` forwards nothing but
+ * THE MESSAGE IS THE ONLY RENDERING. It carries the context fields AND the two
+ * actionable next steps (report the pair; `.gitnexusignore` the file to finish
+ * the rest of the index), because `gitnexus serve` forwards nothing but
  * `err.message` over worker IPC — anything a consumer re-renders from the
  * structured fields instead is invisible to a serve-hosted user. The CLI
  * branch in `cli/analyze.ts` therefore prints this message indented and adds
  * only the machine-readable `cliError` fields, the same idiom `LbugWipeError`
- * uses there. It used to re-render the five fields with its own wording; the
+ * uses there. It used to re-render the context fields with its own wording; the
  * two copies had already drifted on the pair separator, the no-file text and
  * the closing sentence within a single PR, and each had its own pinning test.
  */
@@ -211,26 +262,42 @@ export class UndeclaredRelationPairError extends Error {
   readonly toId: string;
   /** Source file derived from the node ids; `undefined` for synthetic ids. */
   readonly sourceFile: string | undefined;
+  /** Every undeclared pair of the emit, the first one included. */
+  readonly pairs: readonly UndeclaredPairOccurrence[];
 
-  constructor(pairKey: string, relationType: string, fromId: string, toId: string) {
+  constructor(
+    pairKey: string,
+    relationType: string,
+    fromId: string,
+    toId: string,
+    pairs: readonly UndeclaredPairOccurrence[] = [
+      { pairKey, relationType, fromId, toId, edges: 1 },
+    ],
+  ) {
     const sourceFile = deriveNodeFilePath(fromId) ?? deriveNodeFilePath(toId);
-    const [fromLabel, toLabel] = splitRelPairKey(pairKey);
+    const several = pairs.length > 1;
+    const header = several
+      ? describeSeveralPairs(pairs)
+      : describeOnePair({ pairKey, relationType, fromId, toId });
     super(
-      `GitNexus extracted a relationship its own database schema cannot store.\n` +
-        `Relationship label pair ${fromLabel} → ${toLabel} is not declared in the ` +
-        `LadybugDB relation schema.\n` +
-        `  relationship type: ${relationType}\n` +
-        `  from node:         ${fromId}\n` +
-        `  to node:           ${toId}\n` +
-        `  source file:       ${sourceFile ?? '(none — synthetic node id)'}\n` +
+      header +
         `This is a gap in GitNexus's own relation schema, not a problem with the ` +
         `analyzed code, and re-running the analysis will fail in exactly the same place.\n` +
         `Suggestions:\n` +
-        `  1. Report the missing pair so it can be declared:\n` +
-        `       ${UNDECLARED_PAIR_ISSUE_URL}\n` +
-        `     Include the label pair, the relationship type, and the source file above.\n` +
-        `  2. To finish indexing the rest meanwhile, add that file (or its directory)\n` +
-        `     to .gitnexusignore and re-run.`,
+        (several
+          ? `  1. Report the missing pairs so they can be declared:\n` +
+            `       ${UNDECLARED_PAIR_ISSUE_URL}\n` +
+            `     Include the label pairs, the relationship types, and the source files above.\n`
+          : `  1. Report the missing pair so it can be declared:\n` +
+            `       ${UNDECLARED_PAIR_ISSUE_URL}\n` +
+            `     Include the label pair, the relationship type, and the source file above.\n`) +
+        (pairs.some((pair) => pair.edges > 1)
+          ? `  2. To work around this, start by adding the example files (or their directories)\n` +
+            `     to .gitnexusignore and re-run. Only the first edge of each pair is shown;\n` +
+            `     other files may contain the same pairs and need to be excluded too.`
+          : `  2. To finish indexing the rest meanwhile, add ${
+              several ? 'those files (or their directories)' : 'that file (or its directory)'
+            }\n` + `     to .gitnexusignore and re-run.`),
     );
     this.name = 'UndeclaredRelationPairError';
     this.pairKey = pairKey;
@@ -238,6 +305,48 @@ export class UndeclaredRelationPairError extends Error {
     this.fromId = fromId;
     this.toId = toId;
     this.sourceFile = sourceFile;
+    this.pairs = pairs;
+  }
+}
+
+/**
+ * Collects the undeclared pairs one emit path meets, so the run fails once with
+ * all of them instead of on the first (#2797). Each pair keeps its first edge as
+ * the example and counts the rest. Nothing is recorded, and nothing allocated
+ * per edge, for a declared pair: {@link checkDeclaredPair} only calls
+ * {@link UndeclaredPairCollector.record} once its `has` check has failed.
+ */
+export class UndeclaredPairCollector {
+  private readonly byPair = new Map<
+    string,
+    { relationType: string; fromId: string; toId: string; edges: number }
+  >();
+
+  get size(): number {
+    return this.byPair.size;
+  }
+
+  record(pairKey: string, relationType: string, fromId: string, toId: string): void {
+    const seen = this.byPair.get(pairKey);
+    if (seen !== undefined) {
+      seen.edges++;
+      return;
+    }
+    this.byPair.set(pairKey, { relationType, fromId, toId, edges: 1 });
+  }
+
+  /** Throw one {@link UndeclaredRelationPairError} naming every recorded pair. */
+  throwIfAny(): void {
+    if (this.byPair.size === 0) return;
+    const pairs = Array.from(this.byPair, ([pairKey, seen]) => ({ pairKey, ...seen }));
+    const [first] = pairs;
+    throw new UndeclaredRelationPairError(
+      first.pairKey,
+      first.relationType,
+      first.fromId,
+      first.toId,
+      pairs,
+    );
   }
 }
 
@@ -263,35 +372,41 @@ export const findUndeclaredRelationPairError = (
   );
 
 /**
- * Fail fast on an endpoint-label pair absent from the relationship DDL, the
- * same guard `RelPairRouter.route` applies to the whole-graph emit. Exported
- * so the streamed sinks (`GraphEmitSink`, `PdgEmitSink`) can apply it too —
- * without this, an undeclared pair on a streaming run reaches `COPY`, fails
- * the bulk insert, and is silently dropped by the per-edge fallback instead
- * of failing loudly like the non-streaming path does.
+ * Check an edge's endpoint-label pair against the relationship DDL, the same
+ * guard `RelPairRouter.route` applies to the whole-graph emit. Exported so the
+ * streamed sinks (`GraphEmitSink`, `PdgEmitSink`) apply it too — without it, an
+ * undeclared pair on a streaming run reaches `COPY`, fails the bulk insert, and
+ * is silently dropped by the per-edge fallback.
+ *
+ * An undeclared pair is recorded in `undeclared` and the caller skips the edge;
+ * the emit path then fails at its close/finalize with every pair it met, not
+ * just the first (#2797). Failing at all, rather than skipping and warning, is
+ * about graph completeness: a dropped `CALLS` edge makes `impact` answer wrong,
+ * which is worse than no index. That argument is relationship-type-scoped — a
+ * missing evidence edge such as `CONDITIONAL_ON` corrupts no query — so if the
+ * policy is ever relaxed, the split belongs by relation type, not globally.
  *
  * Takes the already-built `From|To` pairKey (from {@link relPairKeyFor})
  * rather than the two labels — every caller needs that same key immediately
  * after for its own Map/stream lookup, and this is on the per-edge hot path,
- * so building it twice would be a needless allocation per edge. The error
- * splits it back apart with {@link splitRelPairKey}, which only the throw path
- * reaches. The edge context is passed POSITIONALLY for the same reason: a
- * `{ relationType, fromId, toId }` context object would allocate on every
- * edge, including the ~1M that never fail.
+ * so building it twice would be a needless allocation per edge. The edge
+ * context is passed POSITIONALLY for the same reason: a context object would
+ * allocate on every edge, including the ~1M that pass.
  *
- * The success path must stay allocation-free: no object literal, no template
- * string, no closure, no `Error` constructed before the failure branch.
+ * The declared path must stay allocation-free: no object literal, no template
+ * string, no closure before the `has` check fails.
  */
-export const assertDeclaredPair = (
+export const checkDeclaredPair = (
   pairKey: string,
   declaredPairs: ReadonlySet<string>,
+  undeclared: UndeclaredPairCollector,
   relationType: string,
   fromId: string,
   toId: string,
-): void => {
-  if (!declaredPairs.has(pairKey)) {
-    throw new UndeclaredRelationPairError(pairKey, relationType, fromId, toId);
-  }
+): boolean => {
+  if (declaredPairs.has(pairKey)) return true;
+  undeclared.record(pairKey, relationType, fromId, toId);
+  return false;
 };
 
 /**
@@ -305,6 +420,8 @@ export class RelPairRouter {
   private readonly streams = new Map<string, WriteStream>();
   skipped = 0;
   total = 0;
+  /** Undeclared pairs met so far; {@link close} fails with all of them. */
+  readonly undeclared = new UndeclaredPairCollector();
 
   private streamError: Error | null = null;
   private readonly abort = new AbortController();
@@ -351,7 +468,9 @@ export class RelPairRouter {
       return;
     }
 
-    assertDeclaredPair(pairKey, this.declaredPairs, relType, fromId, toId);
+    if (!checkDeclaredPair(pairKey, this.declaredPairs, this.undeclared, relType, fromId, toId)) {
+      return;
+    }
     const ws = this.streams.get(pairKey);
     if (ws === undefined) {
       // First edge for this pair: open the stream, write header + row.
@@ -382,7 +501,8 @@ export class RelPairRouter {
     }
   }
 
-  /** Flush + close every pair stream. Rejects if any stream errored. */
+  /** Flush + close every pair stream. Rejects if any stream errored, then if
+   *  any edge had an undeclared pair (all of them in one error). */
   async close(): Promise<void> {
     if (this.streamError) {
       this.destroy();
@@ -395,6 +515,7 @@ export class RelPairRouter {
       }),
     );
     if (this.streamError) throw this.streamError;
+    this.undeclared.throwIfAny();
   }
 
   /** Tear down all streams (no flush) — used on the error path. */

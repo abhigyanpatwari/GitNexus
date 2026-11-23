@@ -9,7 +9,7 @@
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { isNotebookFilename, SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { pythonClassConfig } from '../class-extractors/configs/python.js';
 import { defineLanguage } from '../language-provider.js';
@@ -47,6 +47,7 @@ import { pythonDecoratorRouteHandlerName } from '../route-extractors/python-deco
 import { assertCloneable } from '../workers/clone-safety.js';
 import { collectPythonCaptureSideChannel } from './python/module-accessors.js';
 import { pythonRenameProvider } from './python/rename.js';
+import { synthesizePythonInstanceFields } from './python/instance-fields.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -220,6 +221,8 @@ function normalizePythonStringLiteral(text: string): string | undefined {
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   rename: pythonRenameProvider,
+  // Notebook captures map JSON rows but retain extracted Python columns.
+  referenceSourceText: (_text, filePath) => (isNotebookFilename(filePath) ? null : undefined),
   extensions: ['.py', '.ipynb'],
   entryPointPatterns: [/^app$/, /^(get|post|put|delete|patch)_/i, /^api_/, /^view_/],
   astFrameworkPatterns: [
@@ -242,6 +245,7 @@ export const pythonProvider = defineLanguage({
   mroStrategy: 'c3',
   callExtractor: createCallExtractor(pythonCallConfig),
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
+  synthesizeStructureMembers: synthesizePythonInstanceFields,
   methodExtractor: createMethodExtractor(pythonMethodConfig),
   variableExtractor: createVariableExtractor(pythonVariableConfig),
   classExtractor: createClassExtractor(pythonClassConfig),

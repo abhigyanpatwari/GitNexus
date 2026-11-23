@@ -28,7 +28,8 @@ export const embedQuery = async (query: string): Promise<number[]> => {
 
 /**
  * Query-vector width for CAST. HTTP uses GITNEXUS_EMBEDDING_DIMS when set;
- * local is the model default. Do not bind this to schema EMBEDDING_DIMS.
+ * local uses 384 for the built-in model and GITNEXUS_EMBEDDING_DIMS for a custom
+ * GITNEXUS_EMBEDDING_MODEL_ID. Do not bind this to schema EMBEDDING_DIMS.
  */
 export const getEmbeddingDims = (): number => getEmbeddingDimensions();
 

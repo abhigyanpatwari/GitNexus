@@ -1,6 +1,6 @@
 /**
  * Locks the vitest5 runner's version guard (KTD2): the Vitest resolved from the project root must
- * be 5.0.x, and the plugin location must resolve the same Vitest copy.
+ * be 5.0.x or 5.1.x, and the plugin location must resolve the same Vitest copy.
  */
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -17,13 +17,19 @@ const install = (version: string, packageJsonPath = '/repo/node_modules/vitest/p
   ({ version, packageJsonPath }) satisfies VitestInstall;
 
 describe('checkVitestInstalls', () => {
-  it('accepts Vitest 5.0.5 resolved to one copy from both locations', () => {
-    expect(checkVitestInstalls(install('5.0.5'), install('5.0.5'))).toEqual(install('5.0.5'));
-  });
+  it.each(['5.0.5', '5.1.0', '5.1.9'])(
+    'accepts Vitest %s resolved to one copy from both locations',
+    (version) => {
+      expect(checkVitestInstalls(install(version), install(version))).toEqual(install(version));
+    },
+  );
 
-  it.each(['5.1.0', '4.1.12', '5.0.5-beta.1', '6.0.0'])('rejects Vitest %s', (version) => {
-    expect(() => checkVitestInstalls(install(version), install(version))).toThrow(/5\.0\.x/);
-  });
+  it.each(['5.2.0', '4.1.12', '5.0.5-beta.1', '5.1.0-beta.1', '6.0.0'])(
+    'rejects Vitest %s',
+    (version) => {
+      expect(() => checkVitestInstalls(install(version), install(version))).toThrow(/5\.0\.x/);
+    },
+  );
 
   it('rejects a second Vitest copy resolved from the plugin location', () => {
     expect(() =>
@@ -96,10 +102,17 @@ describe('resolveVitestInstall and assertSupportedVitest', () => {
     expect(() => assertSupportedVitest(project, plugin)).toThrow(/second Vitest copy/);
   });
 
-  it('rejects a project that resolves Vitest 5.1.0', () => {
+  it('accepts a project that resolves Vitest 5.1.0', () => {
     const project = path.join(root, 'project');
     fakeVitest(project, '5.1.0');
 
-    expect(() => assertSupportedVitest(project, project)).toThrow(/5\.1\.0/);
+    expect(assertSupportedVitest(project, project).version).toBe('5.1.0');
+  });
+
+  it('rejects a project that resolves Vitest 5.2.0', () => {
+    const project = path.join(root, 'project');
+    fakeVitest(project, '5.2.0');
+
+    expect(() => assertSupportedVitest(project, project)).toThrow(/5\.2\.0/);
   });
 });

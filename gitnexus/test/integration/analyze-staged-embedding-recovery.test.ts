@@ -1,6 +1,6 @@
 /**
- * Exercise the CLI -> native staged DB -> durable checkpoint -> SIGKILL ->
- * isolated recovery -> graph rebuild -> publication chain. The endpoint is
+ * Exercise a legacy native staged DB -> durable checkpoint -> SIGKILL ->
+ * current CLI recovery -> graph rebuild -> publication chain. The endpoint is
  * local and deterministic; request text is the billing/reuse oracle.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
@@ -10,17 +10,28 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../helpers/cli-entry.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../helpers/cli-entry.js';
 
 const DIMS = 8;
 const NODE_COUNT = 5_128;
 const DEADLINE = process.env.CI ? 180_000 : 120_000;
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const adapterUrl = pathToFileURL(path.join(packageRoot, 'src/core/lbug/lbug-adapter.ts')).href;
+const nativeUrl = pathToFileURL(path.join(packageRoot, 'src/core/lbug/lbug-config.ts')).href;
+const analysisUrl = pathToFileURL(
+  path.join(
+    packageRoot,
+    process.env.GITNEXUS_E2E_CLI === 'dist'
+      ? 'dist/core/run-analyze.js'
+      : 'src/core/run-analyze.ts',
+  ),
+).href;
 
 interface CheckpointMeta {
   repoPath: string;
   stats?: { embeddings?: number };
+  embeddingJob?: unknown;
+  graphPath?: string;
+  vectorGeneration?: { identity: string; artifactIdentity?: string };
   embeddingCheckpoint?: {
     nodesProcessed: number;
     chunksProcessed: number;
@@ -37,11 +48,13 @@ interface Run {
 
 let root: string;
 let stoppedRepo: string;
+let sourceAwareRepo: string;
 let server: http.Server;
 let endpoint: string;
 let submitted: string[] = [];
 let completed: string[] = [];
 let durableTexts: string[] = [];
+let lastOutput = '';
 const activeWindowCompleted: string[] = [];
 let held: string[] = [];
 let stopAfterCheckpoint = false;
@@ -54,7 +67,7 @@ function readMeta(repo: string): CheckpointMeta {
 }
 
 function cliEnv(repo: string): NodeJS.ProcessEnv {
-  const env = { ...process.env };
+  const env = cliAnalysisEnv();
   for (const key of Object.keys(env)) {
     if (key.startsWith('GITNEXUS_EMBEDDING_') || key.startsWith('GITNEXUS_STORAGE_'))
       delete env[key];
@@ -72,30 +85,48 @@ function cliEnv(repo: string): NodeJS.ProcessEnv {
     GITNEXUS_EMBEDDING_SUB_BATCH_SIZE: '64',
     GITNEXUS_EMBEDDING_MAX_ATTEMPTS: '1',
     GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT: '0',
-    GITNEXUS_MEMORY: 'off',
     // SIGKILL skips process exit hooks; keep orphaned cache/export spills in
     // this suite's owned directory so afterAll can remove them as well.
     TMPDIR: path.join(root, 'tmp'),
-    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=2048`.trim(),
     CI: '1',
   };
 }
 
-function runAnalyze(repo: string, flags: string[] = [], onOutput?: (output: string) => void): Run {
+function runAnalyze(
+  repo: string,
+  flags: string[] = [],
+  onOutput?: (output: string) => void,
+  legacyFixture = false,
+): Run {
   let output = '';
+  // Generate the old checkpoint format through the retained legacy core path.
+  // Every recovery below still enters through the current public CLI.
+  const legacyScript = `
+    const { runFullAnalysis } = await import(${JSON.stringify(analysisUrl)});
+    await runFullAnalysis(${JSON.stringify(repo)}, {
+      force: true, embeddings: true, skipSkills: true, skipAgentsMd: true,
+      skipFts: true, workerPoolSize: 1, skipNativeCloseOnExit: true,
+    }, { onProgress() {}, onLog: console.log });
+    process.exit(0);
+  `;
+  // A file entry keeps --input-type out of the parser workers' inherited argv.
+  const legacyEntry = path.join(root, 'legacy-analyze.mjs');
+  if (legacyFixture) fs.writeFileSync(legacyEntry, legacyScript);
   const child = spawn(
     process.execPath,
-    [
-      ...CLI_SPAWN_PREFIX,
-      'analyze',
-      repo,
-      '--no-share',
-      '--skip-skills',
-      '--skip-fts',
-      '--workers',
-      '1',
-      ...flags,
-    ],
+    legacyFixture
+      ? ['--import', tsxLoaderUrl(), legacyEntry]
+      : [
+          ...CLI_SPAWN_PREFIX,
+          'analyze',
+          repo,
+          '--no-share',
+          '--skip-skills',
+          '--skip-fts',
+          '--workers',
+          '1',
+          ...flags,
+        ],
     { cwd: repo, env: cliEnv(repo), stdio: ['ignore', 'pipe', 'pipe'] },
   );
   running.add(child);
@@ -124,6 +155,7 @@ async function successfulAnalyze(repo: string, flags: string[] = []): Promise<st
   stopAfterCheckpoint = false;
   currentRepo = repo;
   const result = await runAnalyze(repo, flags).done;
+  lastOutput = result.output;
   expect(result.output, `CLI exited ${result.code}, signal ${result.signal}`).not.toContain(
     'SIGABRT',
   );
@@ -150,15 +182,30 @@ function readPublishedRows(
   // Keep native handles out of the vitest fork, and wait for clean teardown
   // before accepting the receipt. Every read opens only a published DB.
   const receiptPath = path.join(root, `rows-${path.basename(repo)}.json`);
+  const meta = readMeta(repo);
+  const vector = meta.vectorGeneration;
+  const database = vector
+    ? path.join(
+        repo,
+        '.gitnexus',
+        'embeddings',
+        vector.artifactIdentity ?? vector.identity,
+        'vectors',
+      )
+    : path.resolve(repo, '.gitnexus', meta.graphPath ?? 'lbug');
   const script = `
-    const adapter = await import(${JSON.stringify(adapterUrl)});
+    const native = await import(${JSON.stringify(nativeUrl)});
+    const { default: lbug } = await import('@ladybugdb/core');
     const fs = await import('node:fs');
-    await adapter.initLbug(${JSON.stringify(path.join(repo, '.gitnexus', 'lbug'))});
+    const handle = await native.openLbugConnection(lbug, ${JSON.stringify(database)}, {
+      readOnly: true, bufferPoolBytes: 64 * 1024 ** 2, threads: 1,
+    });
     try {
-      const rows = await adapter.executeQuery('MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.embedding AS embedding');
+      const result = await handle.conn.query('MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.embedding AS embedding');
+      const rows = await result.getAll();
       fs.writeFileSync(${JSON.stringify(receiptPath)}, JSON.stringify(rows));
       console.log('ROWS_RECEIPT:' + rows.length);
-    } finally { await adapter.closeLbug(); }
+    } finally { await native.closeLbugConnection(handle); }
   `;
   const result = spawnSync(
     process.execPath,
@@ -187,6 +234,7 @@ function readPublishedRows(
 function expectPublishedComplete(repo: string, expectedNodes: number): void {
   const meta = readMeta(repo);
   expect(meta.embeddingCheckpoint).toBeUndefined();
+  expect(meta.embeddingJob).toBeUndefined();
   const rows = readPublishedRows(repo);
   expect(new Set(rows.map((row) => row.nodeId)).size).toBe(expectedNodes);
   expect(meta.stats?.embeddings).toBe(rows.length);
@@ -208,6 +256,53 @@ function expectPublishedComplete(repo: string, expectedNodes: number): void {
   ).toEqual([]);
 }
 
+function expectLegacyReuse(texts: string[], unfinishedInputs: number): void {
+  // Legacy checkpoints record the provider but not chunk size/overlap. The
+  // complete single-chunk groups are provably reusable; the long group's
+  // historical input boundaries cannot be certified and must be explained.
+  const unverified = durableTexts.filter((text) => text.includes('longRecoverable'));
+  const reusable = new Set(durableTexts.filter((text) => !text.includes('longRecoverable')));
+  expect(texts.filter((text) => reusable.has(text))).toEqual([]);
+  expect(unverified.length).toBeGreaterThan(1);
+  for (const text of unverified) expect(texts).toContain(text);
+  expect(texts).toHaveLength(unfinishedInputs + unverified.length);
+  expect(lastOutput).toContain('Legacy multi-chunk input provenance is unknown');
+}
+
+function removeLegacyInputProvenance(repo: string): void {
+  const stagingFile = readMeta(repo).embeddingCheckpoint?.recovery?.stagingFile;
+  if (!stagingFile) throw new Error('fixture has no retained generation');
+  // The retained core path now writes source-aware hashes. Downgrade only the
+  // long group's input digest to exercise checkpoints predating that receipt.
+  const script = `
+    const native = await import(${JSON.stringify(nativeUrl)});
+    const { default: lbug } = await import('@ladybugdb/core');
+    const handle = await native.openLbugConnection(lbug, ${JSON.stringify(path.join(repo, '.gitnexus', stagingFile))}, {
+      bufferPoolBytes: 64 * 1024 ** 2, threads: 1,
+    });
+    try {
+      const nodeId = 'Function:functions.ts:longRecoverable';
+      const query = await handle.conn.prepare('MATCH (e:CodeEmbedding {nodeId: $nodeId}) RETURN e.contentHash AS contentHash');
+      const result = await handle.conn.execute(query, { nodeId });
+      const rows = await result.getAll();
+      result.close();
+      const hash = rows[0]?.contentHash;
+      if (rows.length < 2 || !/^[a-f0-9]{40}:[a-f0-9]{40}$/.test(hash) || rows.some(row => row.contentHash !== hash))
+        throw new Error('Expected a complete source-aware multi-chunk fixture');
+      const update = await handle.conn.prepare('MATCH (e:CodeEmbedding {nodeId: $nodeId}) SET e.contentHash = $contentHash');
+      (await handle.conn.execute(update, { nodeId, contentHash: hash.slice(0, 40) })).close();
+      console.log('LEGACY_INPUT_PROVENANCE_REMOVED');
+    } finally { await native.closeLbugConnection(handle); }
+  `;
+  const result = spawnSync(
+    process.execPath,
+    ['--import', tsxLoaderUrl(), '--input-type=module', '-e', script],
+    { cwd: packageRoot, env: cliEnv(repo), encoding: 'utf8', timeout: 30_000 },
+  );
+  expect(result.status, `${result.error ?? ''}\n${result.stderr}\n${result.stdout}`).toBe(0);
+  expect(result.stdout).toContain('LEGACY_INPUT_PROVENANCE_REMOVED');
+}
+
 beforeAll(async () => {
   if (process.platform === 'win32') return;
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-staged-recovery-e2e-'));
@@ -219,7 +314,8 @@ beforeAll(async () => {
     { length: NODE_COUNT - 1 },
     (_, index) => `export function recoverable${index}() { return ${index}; }`,
   );
-  // Multi-chunk nodes must be reused as a complete group, including their tail.
+  // Missing legacy input provenance must invalidate the whole multi-chunk
+  // group, while retaining every provably compatible single-chunk group.
   const longFunction = `export function longRecoverable() {\n${Array.from({ length: 80 }, (_, index) => `  // retained chunk marker ${index} ${'x'.repeat(80)}`).join('\n')}\n  return 42;\n}`;
   fs.writeFileSync(
     path.join(stoppedRepo, 'functions.ts'),
@@ -284,7 +380,7 @@ beforeAll(async () => {
   const gate = new Promise<void>((resolve) => {
     gateResolve = resolve;
   });
-  const first = runAnalyze(stoppedRepo, ['--force', '--embeddings']);
+  const first = runAnalyze(stoppedRepo, [], undefined, true);
   await Promise.race([
     gate,
     first.done.then((result) => {
@@ -301,6 +397,8 @@ beforeAll(async () => {
   expect(completed.filter((text) => text.includes('longRecoverable')).length).toBeGreaterThan(1);
   expect(activeWindowCompleted).toHaveLength(64);
   expect(held.length).toBeGreaterThan(0);
+  sourceAwareRepo = cloneStoppedRepo('source-aware');
+  removeLegacyInputProvenance(stoppedRepo);
   gateResolve = undefined;
   stopAfterCheckpoint = false;
 }, DEADLINE * 2);
@@ -324,34 +422,44 @@ describe.skipIf(process.platform === 'win32')(
   'interrupted staged embedding recovery (real CLI and native DB)',
   { concurrent: false },
   () => {
+    it(
+      'reuses verified source-aware multi-chunk groups without repeat provider work',
+      async () => {
+        const texts = await successfulAnalyze(sourceAwareRepo);
+        expect(texts.filter((text) => durableTexts.includes(text))).toEqual([]);
+        expect(texts).toHaveLength(128);
+        for (const text of held) expect(texts).toContain(text);
+        for (const text of activeWindowCompleted) expect(texts).toContain(text);
+        expectPublishedComplete(sourceAwareRepo, NODE_COUNT);
+      },
+      DEADLINE,
+    );
+
     it.each([
       ['plain', []],
       ['forced', ['--force', '--embeddings']],
     ] as const)(
-      '%s retry bills only unfinished groups and publishes an honest count',
+      '%s retry reuses verified groups and explains unverified legacy input',
       async (name, flags) => {
         const repo = cloneStoppedRepo(name);
         const texts = await successfulAnalyze(repo, [...flags]);
-        const durable = new Set(durableTexts);
-        expect(texts.filter((text) => durable.has(text))).toEqual([]);
+        expectLegacyReuse(texts, 128);
         for (const text of held) expect(texts).toContain(text);
         for (const text of activeWindowCompleted) expect(texts).toContain(text);
-        expect(texts.length).toBe(128);
         expectPublishedComplete(repo, NODE_COUNT);
       },
       DEADLINE,
     );
 
     it(
-      'manual checkpoint opt-out completes a staged retry without resubmitting durable chunks',
+      'manual checkpoint opt-out retains verified staged groups',
       async () => {
         const repo = cloneStoppedRepo('manual-checkpoint-opt-out');
         const previous = process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
         process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = '0';
         try {
           const texts = await successfulAnalyze(repo, ['--force', '--embeddings']);
-          expect(texts.filter((text) => new Set(durableTexts).has(text))).toEqual([]);
-          expect(texts.length).toBe(128);
+          expectLegacyReuse(texts, 128);
           expectPublishedComplete(repo, NODE_COUNT);
         } finally {
           if (previous === undefined) delete process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
@@ -384,8 +492,7 @@ describe.skipIf(process.platform === 'win32')(
         expect(readMeta(repo).embeddingCheckpoint?.recovery?.stagingFile).toBe(source);
         expect(fs.existsSync(path.join(repo, '.gitnexus', source))).toBe(true);
         const finalTexts = await successfulAnalyze(repo);
-        expect(finalTexts.filter((text) => new Set(durableTexts).has(text))).toEqual([]);
-        expect(finalTexts.length).toBe(128);
+        expectLegacyReuse(finalTexts, 128);
         expectPublishedComplete(repo, NODE_COUNT);
       },
       DEADLINE * 2,
@@ -412,8 +519,7 @@ describe.skipIf(process.platform === 'win32')(
           true,
         );
         expect(texts.some((text) => text.includes('recoverable6'))).toBe(false);
-        expect(texts.filter((text) => new Set(durableTexts).has(text))).toEqual([]);
-        expect(texts.length).toBe(129);
+        expectLegacyReuse(texts, 129);
         expectPublishedComplete(repo, NODE_COUNT - 1);
       },
       DEADLINE,

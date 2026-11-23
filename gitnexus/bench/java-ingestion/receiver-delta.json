@@ -1,0 +1,802 @@
+{
+  "schemaVersion": 1,
+  "sourcePin": "26636d7a058d32c165999ab5f28a8a2540f50df5",
+  "combinedCorpus": "test/fixtures/lang-resolution",
+  "combinedTypeCounts": {
+    "models.User": 26,
+    "models.Repo": 13
+  },
+  "beforeCallDrops": 50,
+  "afterCallDrops": 63,
+  "siteCount": 13,
+  "sites": [
+    {
+      "filePath": "java-foreach-call-expr/Main.java",
+      "line": 7,
+      "source": "user.save();",
+      "callerId": "Method:java-foreach-call-expr/Main.java:Main.processUsers#0",
+      "member": "save",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-foreach-call-expr/Main.java",
+        "name": "save",
+        "range": {
+          "startLine": 7,
+          "startCol": 12,
+          "endLine": 7,
+          "endCol": 23
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [
+        {
+          "kind": "resolved",
+          "targetId": "def:java-foreach-call-expr/models/User.java#12:4:Method:save",
+          "phase": "receiver-bound-calls",
+          "filePath": "java-foreach-call-expr/Main.java",
+          "name": "save",
+          "range": {
+            "startLine": 7,
+            "startCol": 12,
+            "endLine": 7,
+            "endCol": 23
+          }
+        }
+      ],
+      "callerMemberGraphTargetsBefore": [
+        "Method:java-foreach-call-expr/models/User.java:User.save#0"
+      ],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": ["Method:java-foreach-call-expr/models/User.java:User.save#0"],
+      "afterSiteTargetIds": [],
+      "classification": "ambiguous-combined-fixture-fqn"
+    },
+    {
+      "filePath": "java-foreach-call-expr/Main.java",
+      "line": 13,
+      "source": "repo.save();",
+      "callerId": "Method:java-foreach-call-expr/Main.java:Main.processRepos#0",
+      "member": "save",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-foreach-call-expr/Main.java",
+        "name": "save",
+        "range": {
+          "startLine": 13,
+          "startCol": 12,
+          "endLine": 13,
+          "endCol": 23
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [
+        {
+          "kind": "resolved",
+          "targetId": "def:java-foreach-call-expr/models/Repo.java#12:4:Method:save",
+          "phase": "receiver-bound-calls",
+          "filePath": "java-foreach-call-expr/Main.java",
+          "name": "save",
+          "range": {
+            "startLine": 13,
+            "startCol": 12,
+            "endLine": 13,
+            "endCol": 23
+          }
+        }
+      ],
+      "callerMemberGraphTargetsBefore": [
+        "Method:java-foreach-call-expr/models/Repo.java:Repo.save#0"
+      ],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": ["Method:java-foreach-call-expr/models/Repo.java:Repo.save#0"],
+      "afterSiteTargetIds": [],
+      "classification": "ambiguous-combined-fixture-fqn"
+    },
+    {
+      "filePath": "java-foreach/App.java",
+      "line": 7,
+      "source": "user.save();",
+      "callerId": "Method:java-foreach/App.java:App.processEntities#2",
+      "member": "save",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-foreach/App.java",
+        "name": "save",
+        "range": {
+          "startLine": 7,
+          "startCol": 12,
+          "endLine": 7,
+          "endCol": 23
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [
+        {
+          "kind": "resolved",
+          "targetId": "def:java-foreach/models/User.java#4:4:Method:save",
+          "phase": "receiver-bound-calls",
+          "filePath": "java-foreach/App.java",
+          "name": "save",
+          "range": {
+            "startLine": 7,
+            "startCol": 12,
+            "endLine": 7,
+            "endCol": 23
+          }
+        }
+      ],
+      "callerMemberGraphTargetsBefore": [
+        "Method:java-foreach/models/Repo.java:Repo.save#0",
+        "Method:java-foreach/models/User.java:User.save#0"
+      ],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": ["Method:java-foreach/models/User.java:User.save#0"],
+      "afterSiteTargetIds": [],
+      "classification": "ambiguous-combined-fixture-fqn"
+    },
+    {
+      "filePath": "java-foreach/App.java",
+      "line": 10,
+      "source": "repo.save();",
+      "callerId": "Method:java-foreach/App.java:App.processEntities#2",
+      "member": "save",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-foreach/App.java",
+        "name": "save",
+        "range": {
+          "startLine": 10,
+          "startCol": 12,
+          "endLine": 10,
+          "endCol": 23
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [
+        {
+          "kind": "resolved",
+          "targetId": "def:java-foreach/models/Repo.java#4:4:Method:save",
+          "phase": "receiver-bound-calls",
+          "filePath": "java-foreach/App.java",
+          "name": "save",
+          "range": {
+            "startLine": 10,
+            "startCol": 12,
+            "endLine": 10,
+            "endCol": 23
+          }
+        }
+      ],
+      "callerMemberGraphTargetsBefore": [
+        "Method:java-foreach/models/Repo.java:Repo.save#0",
+        "Method:java-foreach/models/User.java:User.save#0"
+      ],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": ["Method:java-foreach/models/Repo.java:Repo.save#0"],
+      "afterSiteTargetIds": [],
+      "classification": "ambiguous-combined-fixture-fqn"
+    },
+    {
+      "filePath": "java-map-keys-values/src/App.java",
+      "line": 8,
+      "source": "for (var user : data.values()) {",
+      "callerId": "Method:java-map-keys-values/src/App.java:App.processValues#1",
+      "member": "values",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-map-keys-values/src/App.java",
+        "name": "values",
+        "range": {
+          "startLine": 8,
+          "startCol": 24,
+          "endLine": 8,
+          "endCol": 37
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-method-reference/models/ChildHandler.java",
+      "line": 8,
+      "source": "return values.stream()",
+      "callerId": "Method:java-method-reference/models/ChildHandler.java:ChildHandler.wrapTransform#1",
+      "member": "stream",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-method-reference/models/ChildHandler.java",
+        "name": "stream",
+        "range": {
+          "startLine": 8,
+          "startCol": 15,
+          "endLine": 8,
+          "endCol": 30
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-method-reference/services/MethodRefService.java",
+      "line": 16,
+      "source": "return inputs.stream()",
+      "callerId": "Method:java-method-reference/services/MethodRefService.java:MethodRefService.mapViaInstanceBuilder#1",
+      "member": "stream",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-method-reference/services/MethodRefService.java",
+        "name": "stream",
+        "range": {
+          "startLine": 16,
+          "startCol": 15,
+          "endLine": 16,
+          "endCol": 30
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-method-reference/services/MethodRefService.java",
+      "line": 25,
+      "source": "return values.stream()",
+      "callerId": "Method:java-method-reference/services/MethodRefService.java:MethodRefService.mapViaStaticUtil#1",
+      "member": "stream",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-method-reference/services/MethodRefService.java",
+        "name": "stream",
+        "range": {
+          "startLine": 25,
+          "startCol": 15,
+          "endLine": 25,
+          "endCol": 30
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-method-reference/services/MethodRefService.java",
+      "line": 34,
+      "source": "return users.stream()",
+      "callerId": "Method:java-method-reference/services/MethodRefService.java:MethodRefService.mapUserNames#1",
+      "member": "stream",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-method-reference/services/MethodRefService.java",
+        "name": "stream",
+        "range": {
+          "startLine": 34,
+          "startCol": 15,
+          "endLine": 34,
+          "endCol": 29
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-method-reference/services/MethodRefService.java",
+      "line": 43,
+      "source": "return names.stream()",
+      "callerId": "Method:java-method-reference/services/MethodRefService.java:MethodRefService.mapNewUsers#1",
+      "member": "stream",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-method-reference/services/MethodRefService.java",
+        "name": "stream",
+        "range": {
+          "startLine": 43,
+          "startCol": 15,
+          "endLine": 43,
+          "endCol": 29
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-method-reference/services/MethodRefService.java",
+      "line": 52,
+      "source": "return users.stream()",
+      "callerId": "Method:java-method-reference/services/MethodRefService.java:MethodRefService.mapSaves#1",
+      "member": "stream",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-method-reference/services/MethodRefService.java",
+        "name": "stream",
+        "range": {
+          "startLine": 52,
+          "startCol": 15,
+          "endLine": 52,
+          "endCol": 29
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-optional-receiver/App.java",
+      "line": 14,
+      "source": "User user = opt.get();",
+      "callerId": "Method:java-optional-receiver/App.java:App.processEntities#0",
+      "member": "get",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-optional-receiver/App.java",
+        "name": "get",
+        "range": {
+          "startLine": 14,
+          "startCol": 20,
+          "endLine": 14,
+          "endCol": 29
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    },
+    {
+      "filePath": "java-overload-types/src/main/java/demo/LookupService.java",
+      "line": 13,
+      "source": "for (Long id : ids) out.put(id, new Perm(id));",
+      "callerId": "Method:java-overload-types/src/main/java/demo/LookupService.java:LookupService.find#1~Collection<Long>",
+      "member": "put",
+      "receipt": {
+        "kind": "suppressed",
+        "reason": "receiver-unresolved",
+        "candidateIds": [],
+        "phase": "receiver-bound-calls",
+        "filePath": "java-overload-types/src/main/java/demo/LookupService.java",
+        "name": "put",
+        "range": {
+          "startLine": 13,
+          "startCol": 28,
+          "endLine": 13,
+          "endCol": 53
+        },
+        "siteKind": "call"
+      },
+      "beforeReceipts": [],
+      "callerMemberGraphTargetsBefore": [],
+      "callerMemberGraphTargetsAfter": [],
+      "beforeSiteTargetIds": [],
+      "afterSiteTargetIds": [],
+      "classification": "external-jdk-container-receipt"
+    }
+  ],
+  "isolated": {
+    "java-foreach": {
+      "base": {
+        "root": "test/fixtures/lang-resolution/java-foreach",
+        "fixtureManifest": [
+          ["App.java", "1f8e265530125f4c1fde4722dc1f2e8d65fce2e4ed2d6085f33bab5933d1d961"],
+          ["models/Repo.java", "51e527224acfe8f7010813296f59e3c064135e3baf0093d5e3794d4b375ecfbf"],
+          ["models/User.java", "7b7ac967148438daeaa2f667ab44af18f8275be59da9b229c537515c1bfde6bd"]
+        ],
+        "counts": {
+          "allCallDrops": 0,
+          "allDrops": 0,
+          "javaCallDrops": 0
+        },
+        "javaOutcomes": [
+          {
+            "kind": "resolved",
+            "targetId": "def:models/User.java#4:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "App.java",
+            "name": "save",
+            "range": {
+              "startLine": 7,
+              "startCol": 12,
+              "endLine": 7,
+              "endCol": 23
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/Repo.java#4:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "App.java",
+            "name": "save",
+            "range": {
+              "startLine": 10,
+              "startCol": 12,
+              "endLine": 10,
+              "endCol": 23
+            }
+          }
+        ],
+        "calls": [
+          {
+            "id": "rel:CALLS:Method:App.java:App.processEntities#2->Method:models/User.java:User.save#0",
+            "sourceId": "Method:App.java:App.processEntities#2",
+            "targetId": "Method:models/User.java:User.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:App.java:App.processEntities#2->Method:models/Repo.java:Repo.save#0",
+            "sourceId": "Method:App.java:App.processEntities#2",
+            "targetId": "Method:models/Repo.java:Repo.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          }
+        ]
+      },
+      "current": {
+        "root": "test/fixtures/lang-resolution/java-foreach",
+        "fixtureManifest": [
+          ["App.java", "1f8e265530125f4c1fde4722dc1f2e8d65fce2e4ed2d6085f33bab5933d1d961"],
+          ["models/Repo.java", "51e527224acfe8f7010813296f59e3c064135e3baf0093d5e3794d4b375ecfbf"],
+          ["models/User.java", "7b7ac967148438daeaa2f667ab44af18f8275be59da9b229c537515c1bfde6bd"]
+        ],
+        "counts": {
+          "allCallDrops": 0,
+          "allDrops": 0,
+          "javaCallDrops": 0
+        },
+        "javaOutcomes": [
+          {
+            "kind": "resolved",
+            "targetId": "def:models/User.java#4:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "App.java",
+            "name": "save",
+            "range": {
+              "startLine": 7,
+              "startCol": 12,
+              "endLine": 7,
+              "endCol": 23
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/Repo.java#4:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "App.java",
+            "name": "save",
+            "range": {
+              "startLine": 10,
+              "startCol": 12,
+              "endLine": 10,
+              "endCol": 23
+            }
+          }
+        ],
+        "calls": [
+          {
+            "id": "rel:CALLS:Method:App.java:App.processEntities#2->Method:models/User.java:User.save#0",
+            "sourceId": "Method:App.java:App.processEntities#2",
+            "targetId": "Method:models/User.java:User.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:App.java:App.processEntities#2->Method:models/Repo.java:Repo.save#0",
+            "sourceId": "Method:App.java:App.processEntities#2",
+            "targetId": "Method:models/Repo.java:Repo.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          }
+        ]
+      }
+    },
+    "java-foreach-call-expr": {
+      "base": {
+        "root": "test/fixtures/lang-resolution/java-foreach-call-expr",
+        "fixtureManifest": [
+          ["Main.java", "80491dcb7265b0f509cc78fe6b8882f6323bc47c1d3340d3f31d9730012e32d5"],
+          ["models/Repo.java", "24c2b608ad3bf73d640c0bd3c4765f94ed35b799555d30486479538b5cdf564f"],
+          ["models/User.java", "2203bdf259ca6909ccdefb76f2fbc64d4547903cb8bf26e86c67f6cb06793aee"]
+        ],
+        "counts": {
+          "allCallDrops": 0,
+          "allDrops": 0,
+          "javaCallDrops": 0
+        },
+        "javaOutcomes": [
+          {
+            "kind": "resolved",
+            "targetId": "def:models/User.java#14:4:Method:getUsers",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "getUsers",
+            "range": {
+              "startLine": 6,
+              "startCol": 25,
+              "endLine": 6,
+              "endCol": 40
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/User.java#12:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "save",
+            "range": {
+              "startLine": 7,
+              "startCol": 12,
+              "endLine": 7,
+              "endCol": 23
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/Repo.java#14:4:Method:getRepos",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "getRepos",
+            "range": {
+              "startLine": 12,
+              "startCol": 25,
+              "endLine": 12,
+              "endCol": 40
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/Repo.java#12:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "save",
+            "range": {
+              "startLine": 13,
+              "startCol": 12,
+              "endLine": 13,
+              "endCol": 23
+            }
+          }
+        ],
+        "calls": [
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processUsers#0->Method:models/User.java:User.getUsers#0",
+            "sourceId": "Method:Main.java:Main.processUsers#0",
+            "targetId": "Method:models/User.java:User.getUsers#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processUsers#0->Method:models/User.java:User.save#0",
+            "sourceId": "Method:Main.java:Main.processUsers#0",
+            "targetId": "Method:models/User.java:User.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processRepos#0->Method:models/Repo.java:Repo.getRepos#0",
+            "sourceId": "Method:Main.java:Main.processRepos#0",
+            "targetId": "Method:models/Repo.java:Repo.getRepos#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processRepos#0->Method:models/Repo.java:Repo.save#0",
+            "sourceId": "Method:Main.java:Main.processRepos#0",
+            "targetId": "Method:models/Repo.java:Repo.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:models/Repo.java:Repo.getRepos#0->Constructor:models/Repo.java:Repo.Repo#1",
+            "sourceId": "Method:models/Repo.java:Repo.getRepos#0",
+            "targetId": "Constructor:models/Repo.java:Repo.Repo#1",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "local-call"
+          },
+          {
+            "id": "rel:CALLS:Method:models/User.java:User.getUsers#0->Constructor:models/User.java:User.User#1",
+            "sourceId": "Method:models/User.java:User.getUsers#0",
+            "targetId": "Constructor:models/User.java:User.User#1",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "local-call"
+          }
+        ]
+      },
+      "current": {
+        "root": "test/fixtures/lang-resolution/java-foreach-call-expr",
+        "fixtureManifest": [
+          ["Main.java", "80491dcb7265b0f509cc78fe6b8882f6323bc47c1d3340d3f31d9730012e32d5"],
+          ["models/Repo.java", "24c2b608ad3bf73d640c0bd3c4765f94ed35b799555d30486479538b5cdf564f"],
+          ["models/User.java", "2203bdf259ca6909ccdefb76f2fbc64d4547903cb8bf26e86c67f6cb06793aee"]
+        ],
+        "counts": {
+          "allCallDrops": 0,
+          "allDrops": 0,
+          "javaCallDrops": 0
+        },
+        "javaOutcomes": [
+          {
+            "kind": "resolved",
+            "targetId": "def:models/User.java#14:4:Method:getUsers",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "getUsers",
+            "range": {
+              "startLine": 6,
+              "startCol": 25,
+              "endLine": 6,
+              "endCol": 40
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/User.java#12:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "save",
+            "range": {
+              "startLine": 7,
+              "startCol": 12,
+              "endLine": 7,
+              "endCol": 23
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/Repo.java#14:4:Method:getRepos",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "getRepos",
+            "range": {
+              "startLine": 12,
+              "startCol": 25,
+              "endLine": 12,
+              "endCol": 40
+            }
+          },
+          {
+            "kind": "resolved",
+            "targetId": "def:models/Repo.java#12:4:Method:save",
+            "phase": "receiver-bound-calls",
+            "filePath": "Main.java",
+            "name": "save",
+            "range": {
+              "startLine": 13,
+              "startCol": 12,
+              "endLine": 13,
+              "endCol": 23
+            }
+          }
+        ],
+        "calls": [
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processUsers#0->Method:models/User.java:User.getUsers#0",
+            "sourceId": "Method:Main.java:Main.processUsers#0",
+            "targetId": "Method:models/User.java:User.getUsers#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processUsers#0->Method:models/User.java:User.save#0",
+            "sourceId": "Method:Main.java:Main.processUsers#0",
+            "targetId": "Method:models/User.java:User.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processRepos#0->Method:models/Repo.java:Repo.getRepos#0",
+            "sourceId": "Method:Main.java:Main.processRepos#0",
+            "targetId": "Method:models/Repo.java:Repo.getRepos#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:Main.java:Main.processRepos#0->Method:models/Repo.java:Repo.save#0",
+            "sourceId": "Method:Main.java:Main.processRepos#0",
+            "targetId": "Method:models/Repo.java:Repo.save#0",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "import-resolved"
+          },
+          {
+            "id": "rel:CALLS:Method:models/Repo.java:Repo.getRepos#0->Constructor:models/Repo.java:Repo.Repo#1",
+            "sourceId": "Method:models/Repo.java:Repo.getRepos#0",
+            "targetId": "Constructor:models/Repo.java:Repo.Repo#1",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "local-call"
+          },
+          {
+            "id": "rel:CALLS:Method:models/User.java:User.getUsers#0->Constructor:models/User.java:User.User#1",
+            "sourceId": "Method:models/User.java:User.getUsers#0",
+            "targetId": "Constructor:models/User.java:User.User#1",
+            "type": "CALLS",
+            "confidence": 0.85,
+            "reason": "local-call"
+          }
+        ]
+      }
+    }
+  }
+}

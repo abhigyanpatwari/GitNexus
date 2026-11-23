@@ -10,7 +10,6 @@ import {
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
-import { getLanguageForFileContent, getProvider } from '../ingestion/languages/index.js';
 import { extractNotebookPython, isNotebookPath } from '../ingestion/ipynb-extractor.js';
 
 const parserCache = new Map<string, any>();
@@ -20,6 +19,8 @@ const parserCache = new Map<string, any>();
  * Returns null if language is unavailable or parsing fails.
  */
 export const ensureAndParse = async (content: string, filePath: string): Promise<any | null> => {
+  const { getLanguageForFileContent, getProvider } =
+    await import('../ingestion/languages/index.js');
   // Same classifier as ingest. Filename-only maps `.h` → C++, so Objective-C
   // headers (and method snippets from those headers) would parse with the
   // wrong grammar and miss class_interface / protocol_declaration / methods.
@@ -84,57 +85,66 @@ const FUNCTION_LIKE_TYPES = new Set([
 ]);
 
 /**
- * Find the first function/method-like declaration in a snippet AST.
- * Used by the chunker when parsing node.content where absolute line
- * numbers don't apply.
+ * Find a declaration of one of the supplied types in a snippet AST.
+ * Without a name, return the first match. With a name, prefer that match
+ * and fall back only when the snippet has a single candidate.
+ * Snippet offsets are relative to node.content, not the original file.
  */
-export const findFunctionNode = (root: any): any | null => {
+const findSnippetNode = (
+  root: any,
+  types: ReadonlySet<string>,
+  expectedName?: string,
+): any | null => {
   // Iterative DFS — avoids stack overflow on deeply nested ASTs.
   const stack = [root];
+  let first: any = null;
+  let candidates = 0;
   while (stack.length > 0) {
     const node = stack.pop()!;
-    if (FUNCTION_LIKE_TYPES.has(node.type)) return node;
+    if (types.has(node.type)) {
+      if (expectedName === undefined) return node;
+      let name = node.childForFieldName?.('name')?.text;
+      // Kotlin class/object names are direct children without a field name.
+      // On callables, a direct type_identifier can instead be the return type.
+      if (!name && (node.type === 'class_declaration' || node.type === 'object_declaration')) {
+        name = node.namedChildren?.find((child: any) => child.type === 'type_identifier')?.text;
+      }
+      name ??= node.parent?.childForFieldName?.('name')?.text;
+      if (name === expectedName) return node;
+      first ??= node;
+      candidates++;
+    }
     for (let i = node.namedChildCount - 1; i >= 0; i--) {
       const child = node.namedChild(i);
       if (child) stack.push(child);
     }
   }
-  return null;
+  // Some providers expose qualified names or anonymous declarations. A unique
+  // declaration is still unambiguous; multiple unmatched siblings are not.
+  return candidates === 1 ? first : null;
 };
 
-/**
- * Find the first class/struct/interface/enum-like declaration in an AST.
- * Used when parsing node.content (a snippet, not a full file) where
- * absolute line numbers don't apply.
- */
-export const findDeclarationNode = (root: any): any | null => {
-  const CLASS_LIKE_TYPES = new Set([
-    'class_declaration',
-    'class_definition',
-    'struct_declaration',
-    'struct_item',
-    'interface_declaration',
-    'interface_definition',
-    'protocol_declaration', // Objective-C protocol
-    'class_interface', // Objective-C class, category, or extension
-    'class_implementation', // Objective-C implementation
-    'enum_declaration',
-    'enum_item',
-    'type_declaration', // Go: type X struct
-    'declaration', // Go: type X struct
-    'object_declaration', // Kotlin: object
-    'impl_item', // Rust: impl
-  ]);
+export const findFunctionNode = (root: any, expectedName?: string): any | null =>
+  findSnippetNode(root, FUNCTION_LIKE_TYPES, expectedName);
 
-  // Iterative DFS — avoids stack overflow on deeply nested ASTs.
-  const stack = [root];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    if (CLASS_LIKE_TYPES.has(node.type)) return node;
-    for (let i = node.namedChildCount - 1; i >= 0; i--) {
-      const child = node.namedChild(i);
-      if (child) stack.push(child);
-    }
-  }
-  return null;
-};
+const CLASS_LIKE_TYPES = new Set([
+  'class_declaration',
+  'class_definition',
+  'class_specifier',
+  'struct_declaration',
+  'struct_item',
+  'interface_declaration',
+  'interface_definition',
+  'protocol_declaration', // Objective-C protocol
+  'class_interface', // Objective-C class, category, or extension
+  'class_implementation', // Objective-C implementation
+  'enum_declaration',
+  'enum_item',
+  'type_declaration', // Go: type X struct
+  'declaration', // Go: type X struct
+  'object_declaration', // Kotlin: object
+  'impl_item', // Rust: impl
+]);
+
+export const findDeclarationNode = (root: any, expectedName?: string): any | null =>
+  findSnippetNode(root, CLASS_LIKE_TYPES, expectedName);

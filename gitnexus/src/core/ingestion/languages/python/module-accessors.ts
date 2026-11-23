@@ -1,6 +1,7 @@
 import type { CaptureMatch, ParsedFile } from 'gitnexus-shared';
-import { nodeToCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { nodeToCapture, walkNamedTree, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { splitImportStatement } from './import-decomposer.js';
+import { pythonStringLiteral } from './string-literal.js';
 import {
   applyPythonSubtypeDispatchSideChannel,
   collectPythonSubtypeDispatchSideChannel,
@@ -37,14 +38,18 @@ export interface PythonCaptureSideChannel {
   readonly subtypeDispatch?: PythonSubtypeDispatchSideChannel;
   readonly moduleAccessors: readonly PythonModuleAccessorFact[];
   readonly callResultAssignments: readonly PythonCallResultAssignmentFact[];
+  /** Names of a literal module-level `__all__`; absent for every other `__all__` form. */
+  readonly literalAll?: readonly string[];
 }
 
 const accessorsByFile = new Map<string, Map<string, PythonModuleAccessorFact>>();
 const assignmentsByFile = new Map<string, Map<string, PythonCallResultAssignmentFact>>();
+const literalAllByFile = new Map<string, readonly string[]>();
 
 export function beginPythonModuleAccessorCapture(filePath: string): void {
   accessorsByFile.delete(filePath);
   assignmentsByFile.delete(filePath);
+  literalAllByFile.delete(filePath);
 }
 
 /** Read an exact callable, never a workspace-wide same-name candidate. */
@@ -209,16 +214,80 @@ export function synthesizePythonCallResultAssignment(
   };
 }
 
+/** `__all__ = [...]` or `__all__ += (...)` as a module statement, with string items. */
+function literalAllAssignment(
+  identifier: SyntaxNode,
+): { readonly reset: boolean; readonly names: readonly string[] } | undefined {
+  const assignment = identifier.parent;
+  if (
+    assignment === null ||
+    assignment.hasError ||
+    assignment.parent?.type !== 'expression_statement' ||
+    assignment.parent.parent?.type !== 'module' ||
+    assignment.childForFieldName('left')?.id !== identifier.id
+  )
+    return undefined;
+  const reset = assignment.type === 'assignment';
+  if (
+    !reset &&
+    (assignment.type !== 'augmented_assignment' ||
+      assignment.childForFieldName('operator')?.type !== '+=')
+  )
+    return undefined;
+  const value = assignment.childForFieldName('right');
+  if (value?.type !== 'list' && value?.type !== 'tuple') return undefined;
+  const names: string[] = [];
+  for (const item of namedChildren(value)) {
+    const name = pythonStringLiteral(item);
+    if (name === undefined) return undefined;
+    names.push(name);
+  }
+  return { reset, names };
+}
+
+/**
+ * `from m import *` binds exactly `m.__all__` when `m` defines it. Record its
+ * names only when every `__all__` token is the target of such a literal
+ * assignment, replayed in source order; any other read, write, or import of
+ * `__all__` leaves the value unknown.
+ */
+export function pythonLiteralAll(root: SyntaxNode): readonly string[] | undefined {
+  let names: string[] | undefined;
+  let literal = true;
+  walkNamedTree(root, (node) => {
+    // Length first: `.text` copies the token out of the native tree.
+    if (!literal || node.type !== 'identifier') return;
+    if (node.endIndex - node.startIndex !== 7 || node.text !== '__all__') return;
+    const assignment = literalAllAssignment(node);
+    if (assignment === undefined) literal = false;
+    else if (assignment.reset) names = [...assignment.names];
+    // A `+=` before any literal `=` extends a value bound elsewhere (a star
+    // import, for one), so the full list is unknown.
+    else if (names === undefined) literal = false;
+    // Append in place: copying the list on every `+=` is quadratic in the
+    // number of statements.
+    else names.push(...assignment.names);
+  });
+  return literal ? names : undefined;
+}
+
+export function recordPythonLiteralAll(filePath: string, root: SyntaxNode): void {
+  const names = pythonLiteralAll(root);
+  if (names !== undefined) literalAllByFile.set(filePath, names);
+}
+
 export function collectPythonCaptureSideChannel(
   filePath: string,
 ): PythonCaptureSideChannel | undefined {
   const subtypeDispatch = collectPythonSubtypeDispatchSideChannel(filePath);
   const moduleAccessors = [...(accessorsByFile.get(filePath)?.values() ?? [])];
   const callResultAssignments = [...(assignmentsByFile.get(filePath)?.values() ?? [])];
+  const literalAll = literalAllByFile.get(filePath);
   if (
     subtypeDispatch === undefined &&
     moduleAccessors.length === 0 &&
-    callResultAssignments.length === 0
+    callResultAssignments.length === 0 &&
+    literalAll === undefined
   )
     return undefined;
   return {
@@ -226,6 +295,7 @@ export function collectPythonCaptureSideChannel(
     ...(subtypeDispatch === undefined ? {} : { subtypeDispatch }),
     moduleAccessors,
     callResultAssignments,
+    ...(literalAll === undefined ? {} : { literalAll }),
   };
 }
 

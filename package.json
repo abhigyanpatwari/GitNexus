@@ -23,6 +23,11 @@
     "prettier-plugin-tailwindcss": "^0.7.0",
     "typescript": "^5.9.3"
   },
+  "overrides": {
+    "@typescript-eslint/typescript-estree": {
+      "minimatch": "^11.0.1"
+    }
+  },
   "lint-staged": {
     "*.{ts,tsx}": [
       "eslint --fix",

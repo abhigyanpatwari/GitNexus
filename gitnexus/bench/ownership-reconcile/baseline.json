@@ -1,0 +1,114 @@
+{
+  "_what": "Owner reconciliation: exact owned registrations, empty ownerless buckets, time scaling and registry-read scaling. Uses the real TypeScript extractor and SemanticModel.",
+  "_triage": "Output/count drift fails immediately. A timing ratio over budget is remeasured for up to three rounds. Rerun timing failures on a quiet host; never rebaseline an output change without graph parity evidence.",
+  "shapes": {
+    "small": {
+      "files": 250,
+      "input_bytes": 47500,
+      "defs": 1250,
+      "first_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 250,
+        "nestedTypesRegistered": 0,
+        "skippedAlreadyPresent": 0
+      },
+      "second_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 0,
+        "nestedTypesRegistered": 0,
+        "skippedAlreadyPresent": 250
+      },
+      "shared_buckets": {
+        "fields:config": 0,
+        "fields:logger": 0,
+        "fields:router": 0,
+        "types:Options": 0
+      },
+      "registry_entries": 250,
+      "fingerprint": "3a86bdb1dea303a6c78df562c1daf08817eacce5a4730088c0df089a53fc1886"
+    },
+    "large": {
+      "files": 1000,
+      "input_bytes": 190000,
+      "defs": 5000,
+      "first_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 1000,
+        "nestedTypesRegistered": 0,
+        "skippedAlreadyPresent": 0
+      },
+      "second_pass": {
+        "methodsRegistered": 0,
+        "fieldsRegistered": 0,
+        "nestedTypesRegistered": 0,
+        "skippedAlreadyPresent": 1000
+      },
+      "shared_buckets": {
+        "fields:config": 0,
+        "fields:logger": 0,
+        "fields:router": 0,
+        "types:Options": 0
+      },
+      "registry_entries": 1000,
+      "fingerprint": "86058d61f45f300d3ce954eb2ad1b30401caa58022b658b014c9e692d89cf016"
+    }
+  },
+  "_shape_note": "250 and 1000 files, each with three module values and interface Options { level: number }. Only Options.level registers in the owner-keyed index; the other four definitions remain in file-scoped indexes. Second pass adds no entries.",
+  "_fingerprint_note": "Updated after removing ownerless field/type registration. The complete language-fixture graph is identical with legacy ownerless buckets restored or omitted (ownerless-registry-parity.test.ts). Every key and ordered node-id list is hashed, including empty ownerless keys.",
+  "budgets": {
+    "reconcile_files_scaling_ratio": 1.5
+  },
+  "operation_budgets": {
+    "registry_entries_read_files_scaling_ratio": 1.1
+  },
+  "_scaling_note": "The scaling ratio is (t_large / t_small) / growth, where growth is the larger of the input-byte, def and registry-entry growth between the two cells (4 here): about 1 is linear, about 4 is quadratic at these sizes. Budget 1.5, as in bench/scope-capture and bench/dart-closure-binders. Under --check a ratio over the budget is sampled again, up to 3 rounds of the profile's samples, and the minimum is taken over all of them; the budget itself does not move.",
+  "_operations_note": "Each owned field bucket is read once on the second pass; ownerless definitions cause no registry reads. The normalized entry-read ratio must remain at most 1.1.",
+  "_size_note": "The shapes are small on purpose. A pass costs well under a microsecond per def, mostly hash probes into tables that grow with the file count, so once the large shape's tables leave a cache level the small shape still sits in, per-def time rises with no change in the work done: a plain loop doing the same probes read 1.5-1.8 at 1000 vs 4000 files on a loaded host, and the linear pass read 1.3-1.6 there. At 250 vs 1000 both cells sit in the same regime and the bucket scan still reads about 4.",
+  "_negative_controls_note": "Making the pass scan every bucket (no node-id sets) keeps every shape and fingerprint identical and fails both gates under --check: 'reconcile_files_scaling_ratio: 4.636740799642482 > 1.5 (min of 75 samples)' and 'registry_entries_read_files_scaling_ratio: 4.002001334222816 > 1.1'. The scan was handed 374750 registry entries for the small cell and 5999000 for the large one (299.8 and 1199.8 per def) against 1430 and 5180 (1.14 and 1.04 per def) with the scan-then-set check.",
+  "_profiles_note": "Two profiles share the shapes and every accuracy gate. CI (the default, and what --check runs in the benchmarks job): one process, every workload timed interleaved in rotating order, min of 25 after 3 warmups. --full: min of 75 after 5 warmups. A sample takes milliseconds, so the sample count is higher than in the parse-worker gates at no real cost. Under --check a timing ratio over budget adds another round of samples, up to 3 rounds. Build-free: no parse worker, no dist/.",
+  "_measured_note": "Two CI-profile --check runs with the scan-then-set check (both PASS) and one with every bucket scanned (FAIL on both gates). Exact shapes and fingerprints are identical in all three.",
+  "_historical_measured_ci": {
+    "environment": "Linux x64 (i9-12900K, 24 logical cores) / Node 22.23.3, 2026-11-14, shared host (load average about 4 to 9 during these runs)",
+    "reps": 25,
+    "warmup": 3,
+    "scan_then_set_run_1": {
+      "reconcile_files_scaling_ratio": 1.321,
+      "registry_entries_read_files_scaling_ratio": 0.906,
+      "small_reconcile_ms": 0.347,
+      "large_reconcile_ms": 1.832,
+      "rounds": 1
+    },
+    "scan_then_set_run_2": {
+      "reconcile_files_scaling_ratio": 1.198,
+      "registry_entries_read_files_scaling_ratio": 0.906,
+      "small_reconcile_ms": 0.348,
+      "large_reconcile_ms": 1.665,
+      "rounds": 2
+    },
+    "bucket_scan": {
+      "reconcile_files_scaling_ratio": 4.637,
+      "registry_entries_read_files_scaling_ratio": 4.002,
+      "small_reconcile_ms": 3.018,
+      "large_reconcile_ms": 55.979,
+      "rounds": 3
+    },
+    "timing_gate_under_load": "30 --check runs alternated with 30 single-round runs while 18 busy loops ran alongside on 24 cores: 6 single-round runs exceeded 1.5 (highest 1.788); with up to 3 rounds 1 did (1.877), and 5 passes needed more than one round."
+  },
+  "_measured_local": {
+    "node": "22.23.3",
+    "metrics": {
+      "reconcile_files_scaling_ratio": 1.0968370950415145
+    },
+    "operation_metrics": {
+      "registry_entries_read_files_scaling_ratio": 1
+    },
+    "timings": {
+      "small": {
+        "reconcile_ms": 0.13025999999990745
+      },
+      "large": {
+        "reconcile_ms": 0.5714960000000247
+      }
+    }
+  }
+}

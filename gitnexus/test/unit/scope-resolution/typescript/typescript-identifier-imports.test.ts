@@ -70,3 +70,36 @@ export function unique() { return 4; }
     expect([...typescriptModuleExports(parsed).keys()]).toEqual(['unique']);
   });
 });
+
+describe('default export key (#3956)', () => {
+  it('publishes a default-exported declaration under its name and under `default`', () => {
+    const exports = typescriptModuleExports(parse('export default function Child() {}'));
+    expect(exports.get('default')?.type).toBe('Function');
+    expect(exports.get('default')).toBe(exports.get('Child'));
+  });
+
+  it('maps `default` to the callable winner of a `const` arrow default', () => {
+    const exports = typescriptModuleExports(parse('const X = () => 1;\nexport default X;'));
+    expect(exports.get('default')?.type).toBe('Function');
+    expect(exports.get('default')).toBe(exports.get('X'));
+  });
+
+  it('maps `default` to the same def a named lookup of an overloaded default returns', () => {
+    const exports = typescriptModuleExports(
+      parse(
+        'export default function f(a: string): void;\nexport default function f(a: number): void;\nexport default function f(a: unknown) {}',
+      ),
+    );
+    expect(exports.get('default')).toBeDefined();
+    expect(exports.get('default')).toBe(exports.get('f'));
+  });
+
+  it('publishes no `default` for two differently named defaults or for a file without one', () => {
+    expect(
+      typescriptModuleExports(
+        parse('export default function A() {}\nexport default function B() {}'),
+      ).has('default'),
+    ).toBe(false);
+    expect(typescriptModuleExports(parse('export function Named() {}')).has('default')).toBe(false);
+  });
+});

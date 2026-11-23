@@ -1337,8 +1337,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-vector-stamp-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       // stats.embeddings > 0 → deriveEmbeddingMode loads the cache; force +
       // embeddingsNodeLimit(1) < getLbugStats().nodes(2) → generation is
       // cap-skipped. That makes this a wiped PRESERVE-shaped run — exactly
@@ -1379,7 +1380,7 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
     }
   });
 
-  it('warns and continues without restore when loadCachedEmbeddings rejects (R11)', async () => {
+  it('stops before destroying old vectors when loadCachedEmbeddings rejects', async () => {
     const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
     const stubNode = {
       id: RESTORED_NODE_ID,
@@ -1438,8 +1439,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-cache-reject-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       await saveMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: '',
@@ -1449,14 +1451,17 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
       const logs: string[] = [];
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(
-        tmpRepo.dbPath,
-        { force: true, embeddingsNodeLimit: 1 },
-        { onProgress: () => {}, onLog: (m) => logs.push(m) },
-      );
-
-      expect(logs.some((m) => m.includes('Warning: could not load cached embeddings'))).toBe(true);
-      expect(logs.some((m) => m.includes('spill write failed'))).toBe(true);
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { force: true, embeddingsNodeLimit: 1 },
+          { onProgress: () => {}, onLog: (m) => logs.push(m) },
+        ),
+      ).rejects.toThrow('spill write failed');
+      const { wipeLbugDbFiles, loadGraphToLbug } =
+        await import('../../src/core/lbug/lbug-adapter.js');
+      expect(wipeLbugDbFiles).not.toHaveBeenCalled();
+      expect(loadGraphToLbug).not.toHaveBeenCalled();
       expect(
         executeWithReusedStatement.mock.calls.some((call) =>
           String(call[0]).includes('CREATE (e:CodeEmbedding'),
@@ -1555,8 +1560,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-ktd7-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       await saveMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: '',
@@ -1669,8 +1675,9 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-partial-restore-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
+      await createPlaceholderGraphStore(lbugPath);
       await saveMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: '',
@@ -1889,9 +1896,8 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
       );
       return {
         ...actual,
-        getCurrentCommit,
+        getCurrentCheckout: () => ({ commit: getCurrentCommit(), branch: 'main' }),
         hasGitDir: () => true,
-        getCurrentBranch: () => 'main',
         isWorkingTreeDirty: () => false,
       };
     });
@@ -1947,7 +1953,7 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
         })),
       };
     });
-    // getCurrentCommit succeeds on the pre-lock resolve, then throws on the
+    // getCurrentCheckout succeeds on the pre-lock resolve, then throws on the
     // under-lock re-resolve — the exact shape a mid-wait git change produces.
     let call = 0;
     vi.doMock('../../src/storage/git.js', async () => {
@@ -1957,10 +1963,9 @@ describe('runFullAnalysis re-resolves git state under the lock (#2658 review H2)
       return {
         ...actual,
         hasGitDir: () => true,
-        getCurrentBranch: () => 'main',
         isWorkingTreeDirty: () => false,
-        getCurrentCommit: () => {
-          if (call++ === 0) return 'c1';
+        getCurrentCheckout: () => {
+          if (call++ === 0) return { commit: 'c1', branch: 'main' };
           throw new Error('git HEAD read failed mid-wait');
         },
       };
@@ -2888,7 +2893,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
     vi.stubEnv('GITNEXUS_ATOMIC_WINDOWS_SWAP', '1');
     const tmpRepo = await createTempDir('gitnexus-2790r-latest-meta-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       // The dangerous starting point: a prior meta claiming zero embeddings.
       await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 0 } });
       const controls: ResilienceControls = {
@@ -2932,6 +2937,7 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
       );
 
       // ── The consequence: the next --force must still load the cache ─────
+      await createPlaceholderGraphStore(lbugPath);
       controls.count = [{ cnt: MID_RUN_COUNT }];
       controls.pipeline = async () => cleanResult();
       loadCachedEmbeddings.mockClear();
@@ -3790,8 +3796,9 @@ describe('runFullAnalysis embedding-checkpoint resilience (#2790 review)', () =>
   it('retains a failed stage and keeps future incomplete restore groups unsafe', async () => {
     const tmpRepo = await createTempDir('gitnexus-3456-unsafe-restore-');
     try {
-      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await seedMeta(storagePath, tmpRepo.dbPath, { stats: { nodes: 2, embeddings: 1 } });
+      await createPlaceholderGraphStore(lbugPath);
       let completedWindow: RepoMeta | null = null;
       const { loadCachedEmbeddings, batchInsertEmbeddings } = mockResilienceHarness({
         count: [{ cnt: 5 }],

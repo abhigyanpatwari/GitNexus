@@ -103,6 +103,58 @@ Output: `results/wfbench-<timestamp>/results.jsonl` (every run, with session
 ids for transcript drill-down) and `report.md` (medians per task per arm,
 plus a savings row: input / cache / output tokens, cost, wall time).
 
+## Paired patch-proposal costs on stock Ubuntu
+
+The `checkout-proposal/v1` evaluator runs directly on Ubuntu 24.04 and 26.04
+with local Docker Engine, Git, Node/npm, uv and the repository's pinned Claude
+Code CLI. Run it as a non-root operator with access to the local Docker
+socket. The controller starts a read-only checkout service on each run. Claude
+can inspect tracked files and submit a unified diff. The GitNexus arm also
+gets a read-only MCP connection to a freshly indexed copy. Both arms receive
+the same task and model settings. The controller applies submissions and runs
+the pinned task checks and hidden oracles in offline workers.
+
+In Actions, run **Paired patch-proposal costs** from `main`, select the Ubuntu
+release and choose the per-session budget. The workflow uses the Anthropic key
+in the protected `gitnexus-evolution` environment and uploads the JSON and
+Markdown reports. For a local run, build the runtime and the fixed task revision
+in disposable worktrees. Set `GITNEXUS_BENCH_ANTHROPIC_API_KEY` in the
+operator environment before starting the measured run.
+
+```bash
+run_dir=$(mktemp -d)
+task_sha=$(uv run --locked --extra dev --directory eval python -m workflow_bench.release_report task-sha)
+git worktree add --detach "$run_dir/candidate" HEAD
+git worktree add --detach "$run_dir/tasks" "$task_sha"
+for tree in candidate tasks; do
+  uv run --locked --extra dev --directory eval python -m workflow_bench.release_build \
+    --backend docker --repo "$run_dir/$tree"
+done
+mkdir "$run_dir/claude"
+cp .github/claude-canary-runtime/package{,-lock}.json "$run_dir/claude/"
+npm ci --prefix "$run_dir/claude" --audit=false --fund=false
+uv run --locked --extra dev --directory eval python -m workflow_bench.proposal_evaluation \
+  --runtime "$run_dir/candidate" --task-repo "$run_dir/tasks" \
+  --claude-bin "$run_dir/claude/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+  --model claude-sonnet-4-6 --effort high --runs 3 --max-budget-usd 1 \
+  --out "$run_dir/report"
+```
+
+Four tasks, two arms and three repetitions produce 24 model sessions. The
+example sets a USD 1 limit per session. A budget stop or infrastructure failure
+makes the evidence incomplete. Each session records the CLI's input, output
+and cache token counts, estimated USD and wall time. An incorrect submission
+still counts in its arm's solve rate. Each offline grading command has a
+15-minute deadline. `proposal-evaluation.json` binds those
+measurements to the runtime and harness revisions, task and dependency digests,
+CLI version and worker image. Use `proposal-evaluation.md` to read the results.
+The historical shell benchmark uses a different toolset and report schema.
+
+The native CI jobs use a scripted loopback provider. They require six real CLI
+sessions, a GitNexus tool result, exact usage accounting and a grader that
+rejects a deliberately incorrect patch. These reports carry `usage_source:
+fixture`. Live runs with the Anthropic API carry `usage_source: anthropic`.
+
 ## Release evaluation
 
 ### Measure an unmerged PR against a previous run
@@ -189,11 +241,16 @@ Run **Release evaluation** from `main` before cutting a stable tag. Set
 `candidate_ref` to the full, already-reviewed stable commit SHA. The workflow
 uses main's trusted harness and `--gitnexus-root` to select a separate immutable
 runtime checkout.
-Candidate installs run in Bubblewrap with only that checkout (minus `.git`)
-writable, system tools read-only, and a cleared environment. Locked downloads
-run without package scripts; every lifecycle script then runs with no network. The trusted harness
-and host command files are not mounted into the candidate build.
-Before any paid sessions, `workflow_bench.release_preflight` builds and
+Candidate installs run in Bubblewrap where the host permits its namespaces.
+On stock Linux hosts that restrict those namespaces, the builder uses local
+Docker Engine and a digest-pinned Node 22.18.0 image. Both builders give the
+task write access to its checkout, protect Git metadata and clear the host
+environment. Locked downloads disable package scripts. Lifecycle scripts run
+offline. The OCI worker runs as the invoking non-root user with all
+capabilities dropped and exits when its evaluator exits.
+Before any paid sessions, `workflow_bench.release_preflight` asks the pinned
+Claude CLI to write and read a scratch file through Bash using a loopback model
+fixture. It checks the tool response and the resulting file, then builds and
 materializes the real sanitized graphs for both runtimes on the runner's temp
 filesystem. A copy or containment failure stops the workflow at that point.
 Buffered copies use the same 2 GiB hard ceiling as snapshot capture, including
@@ -315,9 +372,8 @@ MCP configuration. Bash children do
 not inherit the model credential and their network sandbox denies all
 domains.
 
-The release baseline's candidate MCP server runs in a sibling Bubblewrap
-boundary, reached by a stdio socket connector. Workflow/CLI arms retain a nested
-server boundary. In both cases its
+Each GitNexus-enabled cell runs its MCP server in a sibling Bubblewrap
+boundary, reached by a stdio socket connector. The server's
 workspace (including the graph), registry, compiled runtime and shared package
 mounts are read-only. Its home and temporary directories are private tmpfs,
 and it has a fresh PID namespace and `/proc`, no network or capabilities, and
@@ -326,9 +382,9 @@ cannot write patches that would be credited to the agent; the agent retains
 its writable workspace for implementation tasks. Mutating MCP tools are not
 granted in any phase.
 
-The cell owns the socket listener and its servers through the existing managed
-process supervisor and an outer PID namespace. Each connection starts one
-server; reconnects are sequential. Server failures invalidate the cell, and
+The evaluator owns the cell's socket listener. For each connection its process
+supervisor launches a server directly in a fresh Bubblewrap PID namespace.
+Reconnects are sequential. Server failures invalidate the cell, and
 teardown reaps detached descendants before removing the socket. Native canaries
 in `test_proposer_sandbox.py` run in the required Linux containment job; a local
 namespace skip does not prove isolation.

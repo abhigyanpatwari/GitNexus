@@ -507,6 +507,25 @@ describe('wikiCommand provider switch persistence', () => {
     });
   });
 
+  it('fills in the Anthropic endpoint and default model when switching to anthropic', async () => {
+    const saveCLIConfig = await saveProviderSwitch(
+      {
+        provider: 'minimax',
+        apiKey: 'old-minimax-key',
+        baseUrl: 'https://api.minimax.io/v1',
+        model: 'MiniMax-M3',
+      },
+      { provider: 'anthropic', apiKey: 'sk-ant-new' },
+    );
+
+    expect(saveCLIConfig).toHaveBeenCalledWith({
+      provider: 'anthropic',
+      apiKey: 'sk-ant-new',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-opus-5-5',
+    });
+  });
+
   it('saves grok model to grokModel instead of the HTTP model field', async () => {
     const saveCLIConfig = await saveProviderSwitch(
       {

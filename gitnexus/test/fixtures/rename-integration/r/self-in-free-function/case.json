@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse when a free function calls self$greet(): outside an R6 method self is no known instance, so the call cannot be proved not to reach a method that the rename would have to leave alone, and the provider does not guess.",
+  "categories": ["r6", "negative", "unchanged-on-error"],
+  "target": { "name": "greet", "kind": "Function", "file": "free.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "ambiguous_reference", "planningStatus": "blocked" },
+  "edges": []
+}

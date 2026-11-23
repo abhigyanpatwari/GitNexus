@@ -7,7 +7,7 @@
  *   - `tryEmitEdge` — given a reference site + target def, resolve
  *     caller + target to graph ids and emit the edge with
  *     language-provided reason text, dedup-keyed by
- *     `(edgeType, callerId, targetId, line, col)`.
+ *     `(edgeType, callerId, targetId, accessKind, line, col, endLine?, endCol?)`.
  *
  * Next-consumer contract: any language provider can call `tryEmitEdge`
  * from its own post-pass to emit edges it resolves Python-specific
@@ -71,6 +71,32 @@ export function mapReferenceKindToEdgeType(
   }
 }
 
+/** Shared identity for precise and fallback reference edges. Augmented
+ * assignments read and write at the same location; retain both access kinds. */
+export function referenceEdgeKey(
+  edgeType: string,
+  callerGraphId: string,
+  targetGraphId: string,
+  site: {
+    readonly kind: string;
+    readonly atRange: { startLine: number; startCol: number } & (
+      | { endLine: number; endCol: number }
+      | { endLine?: never; endCol?: never }
+    );
+  },
+  collapseByCallerTarget = false,
+): string {
+  const pair = `${edgeType}:${callerGraphId}->${targetGraphId}`;
+  if (collapseByCallerTarget && edgeType === 'CALLS') return pair;
+  const accessKind = edgeType === 'ACCESSES' ? `:${site.kind}` : '';
+  const { startLine, startCol, endLine, endCol } = site.atRange;
+  // A chained expression can contain distinct AST sites with the same start.
+  // Keep the complete span when available; legacy point-only sites remain
+  // distinguishable as unverified by the ingestion integrity guard.
+  const end = endLine === undefined && endCol === undefined ? '' : `:${endLine}:${endCol}`;
+  return `${pair}${accessKind}:${startLine}:${startCol}${end}`;
+}
+
 /**
  * Is this read site a PHANTOM — a duplicate of the call happening beside it?
  *
@@ -111,7 +137,7 @@ function isPhantomCalleeRead(
  * if the edge was emitted (not deduped, not skipped).
  *
  * `seen` is a language-shared dedup set keyed by
- * `${edgeType}:${callerGraphId}->${targetGraphId}:${line}:${col}` so
+ * `referenceEdgeKey` so
  * multiple language-specific post-passes can share it and never
  * double-emit a resolution one of them already produced.
  */
@@ -173,10 +199,13 @@ export function tryEmitEdge(
   // the provider opts in (C# matches legacy DAG behavior this way).
   // Write/read ACCESSES keep per-site dedup so multiple writes to the
   // same field on different lines produce distinct edges.
-  const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
-  const dedupKey = useCollapsed
-    ? `${edgeType}:${callerGraphId}->${targetGraphId}`
-    : `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  const dedupKey = referenceEdgeKey(
+    edgeType,
+    callerGraphId,
+    targetGraphId,
+    site,
+    collapseByCallerTarget,
+  );
   if (seen.has(dedupKey)) return false;
   seen.add(dedupKey);
 
@@ -254,10 +283,13 @@ export function tryEmitEdgeWithExplicitTargetId(
     );
   }
 
-  const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
-  const dedupKey = useCollapsed
-    ? `${edgeType}:${callerGraphId}->${targetGraphId}`
-    : `${edgeType}:${callerGraphId}->${targetGraphId}:${site.atRange.startLine}:${site.atRange.startCol}`;
+  const dedupKey = referenceEdgeKey(
+    edgeType,
+    callerGraphId,
+    targetGraphId,
+    site,
+    collapseByCallerTarget,
+  );
   if (seen.has(dedupKey)) return false;
   seen.add(dedupKey);
 

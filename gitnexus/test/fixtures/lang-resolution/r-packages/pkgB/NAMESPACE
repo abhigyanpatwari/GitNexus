@@ -1,0 +1,5 @@
+export(CleanData)
+exportPattern("^Pattern")
+S3method(print, FancyWidget)
+exportClasses(ExportedS4Class)
+exportMethods(exportedMethod)

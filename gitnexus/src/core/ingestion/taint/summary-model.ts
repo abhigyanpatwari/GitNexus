@@ -48,18 +48,18 @@ export type ParamIndex = number;
  * `param i` flows into argument `argIndex` of a call at source line `callLine`.
  * The interprocedural solver joins this to the caller's outgoing `CALLS` edges
  * by CALLEE NAME (`calleeName`) — NOT by `callLine` — because line-base parity
- * between the CFG harvest (1-based) and the resolved reference site is fragile,
- * while the callee identity is exact. It then applies the callee's summary at
- * port `param argIndex`. This is the TITO ("taint-in-taint-out") propagation
- * edge — a param laundered into a callee, the callee's behaviour deciding what
- * happens next.
+ * between the CFG harvest (1-based) and the resolved reference site is fragile.
+ * Two distinct callees of one caller that share a name both receive the flow.
+ * It then applies the callee's summary at port `param argIndex`. This is the
+ * TITO ("taint-in-taint-out") propagation edge — a param laundered into a
+ * callee, the callee's behaviour deciding what happens next.
  *
  * `calleeName` is the site's dotted-callee tail (best-effort); absent when the
  * callee chain was not statically resolvable, in which case the solver
  * conservatively matches every outgoing call (sound over-approximation).
  * `callLine` is the 1-based statement line as harvested (`StatementFacts.line`)
- * — carried for hop display and as a TIE-BREAKER among several same-named
- * callees of one caller, never as the primary join key.
+ * — carried for hop display, and part of the entry's identity, so two calls
+ * on different lines stay two entries. The solver never joins on it.
  */
 export interface ParamToCallArg {
   readonly valueEffect?: ValueEffect;
@@ -146,8 +146,8 @@ export interface CallResult {
 export interface SourceToCallArg {
   readonly valueEffect?: ValueEffect;
   readonly sourceKind: SourceKind;
-  /** Carried for hop display + same-name tie-break; NOT the join key (see
-   *  {@link ParamToCallArg} — the solver joins by `calleeName`). */
+  /** Carried for hop display; NOT the join key (see {@link ParamToCallArg} —
+   *  the solver joins by `calleeName`). */
   readonly callLine: number;
   readonly argIndex: number;
   readonly calleeName?: string;

@@ -17,6 +17,8 @@ import {
 import type { ContentRetention, RepoMeta } from '../storage/repo-meta.js';
 import type { RegistryEntry } from '../storage/repo-manager.js';
 import { publicRepoId } from './public-repo-id.js';
+import { getGraphIncompleteReasons, getIndexIncompleteReasons } from '../core/index-freshness.js';
+import type { EmbeddingJobProgress } from '../core/analysis-progress.js';
 
 /** Retention + checkout facts computed by the route (see getSourceAvailability). */
 export interface RepoProjectionSource {
@@ -85,6 +87,8 @@ export const projectRepoDetail = (
   meta: RepoMeta | null | undefined,
   staleness: StalenessInfo,
   source: RepoProjectionSource,
+  embeddingProgress?: EmbeddingJobProgress,
+  capabilities?: RepoMeta['capabilities'],
 ) => ({
   name: entry.name,
   repoPath: entry.path,
@@ -95,6 +99,10 @@ export const projectRepoDetail = (
   branch: meta?.branch ?? entry.branch,
   contentRetention: source.contentRetention,
   sourceAvailable: source.sourceAvailable,
+  incompleteReasons: getIndexIncompleteReasons(meta),
+  graphIncompleteReasons: getGraphIncompleteReasons(meta),
+  embeddingProgress,
+  capabilities,
   ...stalenessField(staleness),
 });
 

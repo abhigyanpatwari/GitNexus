@@ -69,15 +69,43 @@ process.on('unhandledRejection', (reason: unknown) => {
   }
 });
 
-// IPC cancellation is the cross-platform control path. It only records the
-// request while analysis is active; cleanup waits until the analysis promise has
-// returned to JS. SIGTERM is retained only for local process shutdown.
+// IPC cancellation records the request and aborts the analysis signal. Native
+// work drains at safe points before cleanup after the analysis promise settles.
+// SIGTERM is retained only for local process shutdown.
 let cancellationRequested = false;
 let started = false;
+const cancellation = new AbortController();
+let graphVisible: (() => void) | undefined;
+
+async function waitForGraphVisibility(): Promise<void> {
+  cancellation.signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      graphVisible = undefined;
+      cancellation.signal.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(cancellation.signal.reason);
+    };
+    graphVisible = () => {
+      cleanup();
+      resolve();
+    };
+    cancellation.signal.addEventListener('abort', onAbort, { once: true });
+    try {
+      send({ type: 'graph-ready' });
+    } catch (error) {
+      cleanup();
+      reject(error);
+    }
+  });
+}
 function requestWorkerCancellation(source: string): void {
   if (cancellationRequested) return;
   cancellationRequested = true;
-  if (claimTerminal()) {
+  cancellation.abort(new Error(`Analysis cancelled (${source})`));
+  if (claimTerminal() && process.connected) {
     send({ type: 'error', message: `Analysis cancelled (${source})` });
   }
   if (!started) {
@@ -102,9 +130,14 @@ function exitAfterCancellation(): void {
 }
 
 process.on('SIGTERM', () => requestWorkerCancellation('worker received SIGTERM'));
+process.on('disconnect', () => requestWorkerCancellation('supervisor disconnected'));
 
 // Listen for parent commands — guarded against re-entry.
 process.on('message', async (msg: ParentMessage) => {
+  if (msg.type === 'graph-visible') {
+    graphVisible?.();
+    return;
+  }
   if (msg.type === 'cancel') {
     requestWorkerCancellation('parent requested cancellation');
     return;
@@ -141,11 +174,16 @@ process.on('message', async (msg: ParentMessage) => {
       msg.options,
       {
         runFullAnalysis: prepared.loaded.analysisModule.runFullAnalysis,
+        continuePreparedAnalysis: prepared.loaded.analysisModule.continuePreparedAnalysis,
+        onGraphPublished: msg.options.graphPublication ? waitForGraphVisibility : undefined,
+        signal: cancellation.signal,
         assertAnalysisFinalized: prepared.loaded.repoManager.assertAnalysisFinalized,
         send,
         claimTerminal,
+        isCancelled: () => cancellationRequested,
       },
       prepared.runnerIdentity,
+      msg.type === 'continue' ? msg : undefined,
     );
   } catch (error) {
     if (claimTerminal()) {

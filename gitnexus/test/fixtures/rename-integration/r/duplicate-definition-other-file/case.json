@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when another file of the same package defines the name at top level: R sources the package files in collation order, so load order decides which definition callers reach.",
+  "categories": ["duplicate-definition", "package", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "R/a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

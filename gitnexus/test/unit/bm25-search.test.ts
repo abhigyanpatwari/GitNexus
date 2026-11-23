@@ -8,6 +8,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/lbug/lbug-adapter.js')>();
   return {
     ...actual,
+    executeQuery: vi.fn().mockResolvedValue([]),
     queryFTS: vi.fn().mockResolvedValue([]),
     createFTSIndex: vi.fn().mockResolvedValue(undefined),
     dropFTSIndex: vi.fn().mockResolvedValue(undefined),
@@ -294,7 +295,11 @@ describe('BM25 search', () => {
       await searchFTSFromLbug(userQuery, 5, REPO);
 
       expect(mockExecuteParameterized).toHaveBeenCalled();
-      for (const call of mockExecuteParameterized.mock.calls) {
+      const searchCalls = mockExecuteParameterized.mock.calls.filter((call) =>
+        String(call[1]).includes('QUERY_FTS_INDEX'),
+      );
+      expect(searchCalls).toHaveLength(FTS_INDEXES.length);
+      for (const call of searchCalls) {
         const cypher = String(call[1]);
         expect(cypher).toContain('$query');
         expect(cypher).not.toContain(userQuery);
@@ -431,7 +436,7 @@ describe('BM25 search', () => {
     it('a real error on one table while another succeeds is still reported (partial-failure gap closed)', async () => {
       let call = 0;
       mockExecuteParameterized.mockImplementation(async (_repo: string, cypher: string) => {
-        call++;
+        if (cypher.includes('QUERY_FTS_INDEX')) call++;
         if (cypher.includes("QUERY_FTS_INDEX('Function'")) {
           throw new Error('Query execution timed out after 30000ms');
         }
@@ -540,7 +545,11 @@ describe('BM25 search', () => {
       await searchFTSFromLbug('审批流程', 5, CJK_REPO);
 
       expect(mockExecuteParameterized).toHaveBeenCalled();
-      for (const call of mockExecuteParameterized.mock.calls) {
+      const searchCalls = mockExecuteParameterized.mock.calls.filter((call) =>
+        String(call[1]).includes('QUERY_FTS_INDEX'),
+      );
+      expect(searchCalls).toHaveLength(FTS_INDEXES.length);
+      for (const call of searchCalls) {
         expect(String(call[1])).toContain('$query');
         expect(String(call[1])).not.toContain('审批流程');
         expect(call[2]).toEqual({ query: '审批 批流 流程' });
@@ -655,8 +664,9 @@ describe('FTS index completeness', () => {
   beforeEach(async () => {
     resetExtensionState();
     mockExecuteParameterized.mockReset();
-    const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+    const { queryFTS, executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
     vi.mocked(queryFTS).mockReset();
+    vi.mocked(executeQuery).mockReset().mockResolvedValue([]);
   });
 
   const missing = (table: string, indexName: string) =>
@@ -666,14 +676,47 @@ describe('FTS index completeness', () => {
     const mode = pooled ? 'pool' : 'core';
     const repo = pooled ? 'completeness-test' : undefined;
 
-    async function useOutcome(outcome: (table: string, indexName: string) => Promise<any[]>) {
-      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+    async function useOutcome(
+      outcome: (table: string, indexName: string) => Promise<any[]>,
+      counts: Array<{ tableName: string; rowCount: number }> = [],
+    ) {
+      const { queryFTS, executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(executeQuery).mockResolvedValue(counts);
       vi.mocked(queryFTS).mockImplementation((table, indexName) => outcome(table, indexName));
       mockExecuteParameterized.mockImplementation(async (_repo: string, cypher: string) => {
         const match = cypher.match(/QUERY_FTS_INDEX\('([^']+)', '([^']+)'/);
-        return outcome(match![1], match![2]);
+        return match ? outcome(match[1], match[2]) : counts;
       });
     }
+
+    it(`${mode}: an entirely empty graph has healthy zero matches without index queries`, async () => {
+      const outcome = vi.fn();
+      await useOutcome(
+        outcome,
+        FTS_INDEXES.map(({ table }) => ({ tableName: table, rowCount: 0 })),
+      );
+      expect(await searchFTSFromLbug('auth', 5, repo)).toEqual({ results: [], ftsAvailable: true });
+      expect(outcome).not.toHaveBeenCalled();
+    });
+
+    it(`${mode}: empty tables cannot hide a missing index on the only populated table`, async () => {
+      const outcome = vi.fn(async (table: string, indexName: string) => {
+        throw missing(table, indexName);
+      });
+      await useOutcome(
+        outcome,
+        FTS_INDEXES.map(({ table }) => ({
+          tableName: table,
+          rowCount: table === 'Function' ? 1 : 0,
+        })),
+      );
+      expect(await searchFTSFromLbug('auth', 5, repo)).toEqual({
+        results: [],
+        ftsAvailable: false,
+        missingIndexes: ['Function.function_fts'],
+      });
+      expect(outcome.mock.calls).toEqual([['Function', 'function_fts']]);
+    });
 
     it(`${mode}: distinguishes healthy zero matches from missing indexes`, async () => {
       await useOutcome(async () => []);

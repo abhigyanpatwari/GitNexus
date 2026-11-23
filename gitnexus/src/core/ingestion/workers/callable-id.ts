@@ -25,21 +25,70 @@ import { definitionIdPosition } from '../scope-resolution/utils/definition-id.js
 
 const LOCAL_IDENTITY_SUFFIX = /@\d+:\d+$/;
 
+/** Zero-based (row, column) parsed from a definition id. */
+interface DefinitionPosition {
+  readonly row: number;
+  readonly column: number;
+}
+
+/**
+ * Same label+name definitions. `positions` is materialized on the first lookup
+ * of the bucket: each def's id is parsed once, defs without a parseable
+ * position are dropped (every lookup skipped them anyway), and the rest are
+ * sorted by (row, column) so a node range selects a contiguous slice.
+ */
+interface DefinitionBucket {
+  readonly defs: SymbolDefinition[];
+  positions: readonly DefinitionPosition[] | undefined;
+}
+
+// Parsed-file definitions are finalized before worker graph extraction. Index
+// once per immutable array; weak keys release the index with its parse result.
+const definitionsByName = new WeakMap<readonly SymbolDefinition[], Map<string, DefinitionBucket>>();
+
+function compareDefinitionPositions(a: DefinitionPosition, b: DefinitionPosition): number {
+  return a.row - b.row || a.column - b.column;
+}
+
+function bucketPositions(bucket: DefinitionBucket): readonly DefinitionPosition[] {
+  if (bucket.positions !== undefined) return bucket.positions;
+  const positions: DefinitionPosition[] = [];
+  for (const def of bucket.defs) {
+    const position = definitionIdPosition(def.nodeId, def.filePath);
+    if (position === undefined) continue;
+    positions.push({ row: position.line - 1, column: position.column });
+  }
+  positions.sort(compareDefinitionPositions);
+  bucket.positions = positions;
+  return positions;
+}
+
+/** First index whose position is >= (row, column), or `positions.length`. */
+function lowerBoundPosition(
+  positions: readonly DefinitionPosition[],
+  row: number,
+  column: number,
+): number {
+  let lo = 0;
+  let hi = positions.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const candidate = positions[mid];
+    if (candidate.row < row || (candidate.row === row && candidate.column < column)) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
 function simpleDefinitionName(def: SymbolDefinition): string | undefined {
   const qualifiedName = def.qualifiedName;
   if (qualifiedName === undefined) return undefined;
   const dot = qualifiedName.lastIndexOf('.');
   const tail = dot === -1 ? qualifiedName : qualifiedName.slice(dot + 1);
   return tail.replace(LOCAL_IDENTITY_SUFFIX, '');
-}
-
-function containsPosition(node: SyntaxNode, row: number, column: number): boolean {
-  const start = node.startPosition;
-  const end = node.endPosition;
-  if (row < start.row || row > end.row) return false;
-  if (row === start.row && column < start.column) return false;
-  if (row === end.row && column > end.column) return false;
-  return true;
 }
 
 /**
@@ -67,39 +116,48 @@ export function boundCallableStartPosition(
 ): { readonly row: number; readonly column: number } {
   if (localDefs === undefined) return definitionNode.startPosition;
 
-  const origin = nameNode?.startPosition ?? definitionNode.startPosition;
+  let index = definitionsByName.get(localDefs);
+  if (index === undefined) {
+    index = new Map();
+    for (const def of localDefs) {
+      for (const name of new Set([simpleDefinitionName(def), def.qualifiedName])) {
+        if (name === undefined) continue;
+        const key = `${def.type}\0${name}`;
+        const bucket = index.get(key);
+        if (bucket === undefined) index.set(key, { defs: [def], positions: undefined });
+        else bucket.defs.push(def);
+      }
+    }
+    definitionsByName.set(localDefs, index);
+  }
+
+  const start = definitionNode.startPosition;
+  const bucket = index.get(`${nodeLabel}\0${nodeName}`);
+  if (bucket === undefined) return start;
+
+  const end = definitionNode.endPosition;
+  const origin = nameNode?.startPosition ?? start;
+  const positions = bucketPositions(bucket);
   let best: { row: number; column: number; distance: number } | undefined;
   let tied = false;
 
-  for (const def of localDefs) {
-    if (
-      def.type !== nodeLabel ||
-      (simpleDefinitionName(def) !== nodeName && def.qualifiedName !== nodeName)
-    ) {
-      continue;
-    }
-    const position = definitionIdPosition(def.nodeId, def.filePath);
-    if (position === undefined) continue;
+  // Positions inside [start, end] (both bounds inclusive) are a contiguous run
+  // of the (row, column)-sorted bucket: begin at the first one >= start and stop
+  // at the first one past end.
+  for (let i = lowerBoundPosition(positions, start.row, start.column); i < positions.length; i++) {
+    const { row, column } = positions[i];
+    if (row > end.row || (row === end.row && column > end.column)) break;
 
-    const row = position.line - 1;
-    if (!containsPosition(definitionNode, row, position.column)) continue;
-
-    const distance =
-      Math.abs(row - origin.row) * 1_000_000 + Math.abs(position.column - origin.column);
+    const distance = Math.abs(row - origin.row) * 1_000_000 + Math.abs(column - origin.column);
     if (best === undefined || distance < best.distance) {
-      best = { row, column: position.column, distance };
+      best = { row, column, distance };
       tied = false;
-    } else if (
-      distance === best.distance &&
-      (row !== best.row || position.column !== best.column)
-    ) {
+    } else if (distance === best.distance && (row !== best.row || column !== best.column)) {
       tied = true;
     }
   }
 
-  return best !== undefined && !tied
-    ? { row: best.row, column: best.column }
-    : definitionNode.startPosition;
+  return best !== undefined && !tied ? { row: best.row, column: best.column } : start;
 }
 
 export function boundCallableStartRow(

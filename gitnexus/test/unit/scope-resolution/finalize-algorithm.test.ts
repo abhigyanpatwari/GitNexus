@@ -155,6 +155,37 @@ const bindingsFor = (
 // ─── Tests ──────────────────────────────────────────────────────────────────
 
 describe('finalize', () => {
+  it('does not re-export a private wildcard import, including grouped targets', () => {
+    for (const grouped of [false, true]) {
+      const tools = file('tools', [def('helper', 'Function', 'helper')]);
+      const facade = file(
+        'facade',
+        [],
+        [{ kind: 'wildcard', targetRaw: 'tools', reexportsName: false }],
+      );
+      const caller = file('caller', [], [named('helper', 'helper', 'facade')]);
+      const files = [caller, facade, tools];
+      const phases: string[] = [];
+      const out = finalize(
+        { files, workspaceIndex: undefined, onProgress: (phase) => phases.push(phase) },
+        {
+          ...defaultHooks(files),
+          groupsWildcardTargets: grouped,
+          resolveImportTarget: (target) => (target === 'tools' ? ['tools'] : target),
+          expandsWildcardTo: () => [],
+        },
+      );
+      // The caller's import stays, unresolved: the facade does not publish `helper`.
+      expect(
+        (out.imports.get(caller.moduleScope) ?? []).map((edge) => [
+          edge.localName,
+          edge.linkStatus,
+          edge.targetDefId,
+        ]),
+      ).toEqual([['helper', 'unresolved', undefined]]);
+      expect(phases).not.toContain('reexports-start');
+    }
+  });
   describe('trivial / acyclic', () => {
     it('handles an empty workspace', () => {
       const out = finalize({ files: [], workspaceIndex: undefined }, defaultHooks([]));
@@ -398,6 +429,54 @@ describe('finalize', () => {
       const imported = bindings.find((br) => br.origin === 'wildcard');
       expect(imported).toBeDefined();
       expect(imported!.def.nodeId).toBe('def:b.X');
+    });
+
+    it.each([
+      {
+        label: 'show',
+        nameFilters: [{ kind: 'show', names: ['X', 'Z', 'NotExported'] }],
+        expected: ['X', 'Z'],
+      },
+      { label: 'hide', nameFilters: [{ kind: 'hide', names: ['Y'] }], expected: ['X', 'Z'] },
+      {
+        label: 'show then hide',
+        nameFilters: [
+          { kind: 'show', names: ['X', 'Y'] },
+          { kind: 'hide', names: ['Y'] },
+        ],
+        expected: ['X'],
+      },
+    ] as const)(
+      "expands only the names the statement's nameFilters admit ($label)",
+      ({ nameFilters, expected }) => {
+        const b = file('b', [
+          def('def:b.X', 'Class', 'b.X'),
+          def('def:b.Y', 'Class', 'b.Y'),
+          def('def:b.Z', 'Class', 'b.Z'),
+        ]);
+        const a = file('a', [], [{ ...wildcard('b'), nameFilters }]);
+        const files = [a, b];
+        const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+        const edges = out.imports.get(a.moduleScope) ?? [];
+        expect(edges.map((e) => e.localName).sort()).toEqual(expected);
+        expect([...(out.bindings.get(a.moduleScope)?.keys() ?? [])].sort()).toEqual(expected);
+      },
+    );
+
+    it('keeps the file-level edge of a wildcard whose nameFilters admit no name', () => {
+      const b = file('b', [def('def:b.X', 'Class', 'b.X')]);
+      const a = file(
+        'a',
+        [],
+        [{ ...wildcard('b'), nameFilters: [{ kind: 'hide', names: ['X'] }] }],
+      );
+      const files = [a, b];
+      const out = finalize({ files, workspaceIndex: undefined }, defaultHooks(files));
+      const edges = out.imports.get(a.moduleScope) ?? [];
+      expect(edges.map((e) => [e.targetFile, e.localName, e.targetDefId])).toEqual([
+        ['b', '', undefined],
+      ]);
+      expect(bindingsFor(out, a.moduleScope, 'X')).toEqual([]);
     });
   });
 
@@ -1092,5 +1171,76 @@ describe('finalize', () => {
       expect(out.sccs[0]!.files[0]).toBe('c');
       expect(out.sccs[out.sccs.length - 1]!.files[0]).toBe('a');
     });
+  });
+});
+
+describe('finalize — wildcardReexportExcludedNames (#3956)', () => {
+  /** A module whose export surface publishes its default-exported declaration
+   *  under both its name and `default`, the way the ECMAScript providers do. */
+  const withDefault = (filePath: string, nodeId: string, name: string): FinalizeFile => {
+    const declaration = { ...def(nodeId, 'Function', name), filePath };
+    return {
+      ...file(filePath, [declaration]),
+      localExports: new Map([
+        [name, declaration],
+        ['default', declaration],
+      ]),
+    };
+  };
+  const esmHooks = (files: readonly FinalizeFile[], excluded?: ReadonlySet<string>) => ({
+    ...defaultHooks(files),
+    expandsWildcardTo: () => [],
+    ...(excluded !== undefined ? { wildcardReexportExcludedNames: excluded } : {}),
+  });
+  const EXCLUDE_DEFAULT: ReadonlySet<string> = new Set(['default']);
+  const importDefault = (local: string, targetRaw: string) =>
+    aliased(local, 'default', local, targetRaw);
+
+  it('does not carry an excluded name through `export *` from the source module', () => {
+    const child = withDefault('child', 'def:Child', 'Child');
+    const barrel = file('barrel', [], [wildcard('child')]);
+    const consumer = file(
+      'consumer',
+      [],
+      [importDefault('X', 'barrel'), named('Child', 'Child', 'barrel')],
+    );
+    const files = [consumer, barrel, child];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files, EXCLUDE_DEFAULT));
+    const imports = out.imports.get(consumer.moduleScope) ?? [];
+    const defaultImport = imports.find((edge) => edge.localName === 'X');
+    expect(defaultImport).toBeDefined();
+    expect(defaultImport?.targetDefId).toBeUndefined();
+    expect(imports.find((edge) => edge.localName === 'Child')?.targetDefId).toBe('def:Child');
+  });
+
+  it('does not carry an excluded name inherited from the source module closure', () => {
+    const leaf = withDefault('leaf', 'def:Leaf', 'Leaf');
+    const child = file('child', [], [reexport('default', 'default', 'leaf')]);
+    const barrel = file('barrel', [], [wildcard('child')]);
+    const viaChild = file('via-child', [], [importDefault('Y', 'child')]);
+    const viaBarrel = file('via-barrel', [], [importDefault('Z', 'barrel')]);
+    const files = [viaChild, viaBarrel, barrel, child, leaf];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files, EXCLUDE_DEFAULT));
+    expect(firstImport(out, viaChild.moduleScope)?.targetDefId).toBe('def:Leaf');
+    expect(firstImport(out, viaBarrel.moduleScope)?.targetDefId).toBeUndefined();
+  });
+
+  it('still binds a named re-export of the excluded name next to `export *`', () => {
+    const child = withDefault('child', 'def:Child', 'Child');
+    const other = withDefault('other', 'def:Other', 'Other');
+    const barrel = file('barrel', [], [reexport('default', 'default', 'child'), wildcard('other')]);
+    const consumer = file('consumer', [], [importDefault('X', 'barrel')]);
+    const files = [consumer, barrel, child, other];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files, EXCLUDE_DEFAULT));
+    expect(firstImport(out, consumer.moduleScope)?.targetDefId).toBe('def:Child');
+  });
+
+  it('carries every name through `export *` when the hook is absent', () => {
+    const child = withDefault('child', 'def:Child', 'Child');
+    const barrel = file('barrel', [], [wildcard('child')]);
+    const consumer = file('consumer', [], [importDefault('X', 'barrel')]);
+    const files = [consumer, barrel, child];
+    const out = finalize({ files, workspaceIndex: undefined }, esmHooks(files));
+    expect(firstImport(out, consumer.moduleScope)?.targetDefId).toBe('def:Child');
   });
 });

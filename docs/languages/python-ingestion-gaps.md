@@ -28,6 +28,31 @@ and no same-named call to a different owner. WRONG-TARGET records incorrect edge
 
 All applicable measured cells resolve, including awaited, indexed and decorated-field receivers. The row does not establish support for every dynamic Python expression or every cross-module binding.
 
+## Value reads and callable arguments
+
+Bare names produce `ACCESSES` edges in binary, comparison and boolean expressions,
+returns, assignment right-hand sides, parameter defaults, and direct positional or
+keyword call arguments. Defaults belong to the enclosing definition scope. Type
+annotations are excluded, and method reads use lexical bindings rather than
+implicitly reading a same-named class field.
+
+A function passed directly as a bare-name call argument produces a `USES` edge,
+including imported aliases and nested functions. Passing a function does not add
+a `CALLS` edge. Existing FastAPI `Depends` default invocations retain their call
+edges without extra value-reference edges.
+
+Bare reads are not captured in conditions, iterables, subscripts, augmented
+assignments, f-strings, collection literals, conditional expressions, starred
+arguments or attribute receivers. Callable value references do not cover attribute
+arguments (`mod.helper`, `self.method`), collection entries, local aliases,
+parameter defaults or classes passed as callables.
+
+Two lookup limits still omit edges: a global write in another function can block
+readers in the same file, and an imported module variable assigned more than once
+does not resolve. Same-file reads of that reassigned variable still resolve.
+[Value-reference regressions](../../gitnexus/test/integration/resolvers/python-value-references.test.ts)
+cover these limits, scope ownership, shadowing and callable arguments.
+
 ## Planning candidates
 
 | ID        | Evidence       | Gap or boundary                                                                                    | Next planning step and acceptance                                                                                                                                                                       |

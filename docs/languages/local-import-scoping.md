@@ -39,7 +39,7 @@ pin that distinction.
 ## Providers with expanded lexical support
 
 These seven entries are part of the
-[18-provider registry](../../gitnexus/src/core/ingestion/languages/index.ts).
+[19-provider registry](../../gitnexus/src/core/ingestion/languages/index.ts).
 The evidence links cover exact targets and negative cases, not just edge counts.
 
 | Provider | Supported behavior | Source and regression evidence |
@@ -67,7 +67,9 @@ Mixed import/value rebinding and conflicting import identities conservatively
 abstain throughout the environment, including simple sequential rebinding; this
 is not a control-flow evaluator. A definite `def`/`class` declaration can still
 supply its own target after activation. The
-[provider policy](../../gitnexus/src/core/ingestion/languages/python/lexical-bindings.ts)
+[provider policy](../../gitnexus/src/core/ingestion/languages/python/import-claims.ts)
+(`reconcilePythonImportClaims`, applied by
+[lexical-bindings.ts](../../gitnexus/src/core/ingestion/languages/python/lexical-bindings.ts))
 and [rebinding regressions](../../gitnexus/test/integration/resolvers/python-namespace-semantics.test.ts)
 define this boundary. There is no full annotation evaluator, `exec` evaluation,
 or general closure scheduling model. A deferred `global`/`nonlocal` installer is
@@ -225,7 +227,7 @@ activate before their declarations.
 
 ## Retained provider behavior
 
-The other eleven providers retain their existing import/loading models. This
+The other twelve providers retain their existing import/loading models. This
 work does not reinterpret every dependency construct as a local value import.
 
 | Provider | Retained model and boundary | Evidence |
@@ -241,6 +243,7 @@ work does not reinterpret every dependency construct as a local value import.
 | C# | Namespace/file `using` directives remain imports; resource `using` statements are not import directives. | [Directive query](../../gitnexus/src/core/ingestion/languages/csharp/query.ts), [import tests](../../gitnexus/test/unit/scope-resolution/csharp/csharp-imports.test.ts) |
 | Swift | Imports and target/module visibility retain provider ownership. | [Ownership](../../gitnexus/src/core/ingestion/languages/swift/simple-hooks.ts), [import decomposition](../../gitnexus/test/unit/scope-resolution/swift/import-decomposer.test.ts), [target siblings](../../gitnexus/test/unit/scope-resolution/swift/target-siblings.test.ts) |
 | Dart | Library imports retain existing package identity and visibility rules. | [Ownership](../../gitnexus/src/core/ingestion/languages/dart/simple-hooks.ts), [library/package regressions](../../gitnexus/test/integration/resolvers/dart.test.ts) |
+| R | `library()`/`require()` of a local package attach its exported names (every top-level name when it has no NAMESPACE; wildcard loading, filtered by NAMESPACE, and not told apart inside a function); `source()` binds no name; NAMESPACE `importFrom()` names bind to definitions in local packages; `pkg::fn()` is decided by its qualifier. No function-local loading model. | [Provider guide](r-provider.md), [Import resolver](../../gitnexus/src/core/ingestion/languages/r/import-target.ts), [Ownership](../../gitnexus/src/core/ingestion/languages/r/simple-hooks.ts), [library masking](../../gitnexus/test/integration/resolvers/r-library-masking.test.ts), [importFrom binding](../../gitnexus/test/unit/scope-resolution/r/r-namespace-imports.test.ts) |
 
 ## Taint provenance
 

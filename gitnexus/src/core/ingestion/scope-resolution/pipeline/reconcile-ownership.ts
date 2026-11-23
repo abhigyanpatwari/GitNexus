@@ -80,6 +80,12 @@ export function reconcileOwnership(
   let fieldsRegistered = 0;
   let nestedTypesRegistered = 0;
   let skippedAlreadyPresent = 0;
+  const fieldNodeIds = registeredNodeIds((owner, name) =>
+    model.fields.lookupAllByOwner(owner, name),
+  );
+  const nestedTypeNodeIds = registeredNodeIds((owner, name) =>
+    model.types.lookupAllByOwner(owner, name),
+  );
 
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
@@ -109,6 +115,8 @@ export function reconcileOwnership(
           });
           continue;
         }
+        // Only owned callables reach this scan, so the bucket holds one owner's
+        // overloads; it also matches a deleted def by signature, not node id.
         const existing = model.methods.lookupAllByOwner(ownerId, simple);
         const existingDef = existing.find(
           (candidate) =>
@@ -130,26 +138,82 @@ export function reconcileOwnership(
         def.type === 'Const' ||
         def.type === 'Static'
       ) {
-        const existing = model.fields.lookupAllByOwner(ownerId, simple);
-        if (existing.some((e) => e.nodeId === def.nodeId)) {
+        // File-scoped values remain in the symbol/scope indexes. Owner-keyed
+        // registries serve member lookup only; `undefined` is not an owner.
+        if (ownerId === undefined) continue;
+        if (fieldNodeIds.has(ownerId, simple, def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
         }
         model.fields.register(ownerId, simple, def);
+        fieldNodeIds.add(ownerId, simple, def.nodeId);
         fieldsRegistered++;
       } else if (NESTED_TYPE_KINDS.has(def.type)) {
-        const existing = model.types.lookupAllByOwner(ownerId, simple);
-        if (existing.some((e) => e.nodeId === def.nodeId)) {
+        if (ownerId === undefined) continue;
+        if (nestedTypeNodeIds.has(ownerId, simple, def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
         }
         model.types.registerByOwner(ownerId, simple, def);
+        nestedTypeNodeIds.add(ownerId, simple, def.nodeId);
         nestedTypesRegistered++;
       }
     }
   }
 
   return { methodsRegistered, fieldsRegistered, nestedTypesRegistered, skippedAlreadyPresent };
+}
+
+/**
+ * A bucket up to this long is scanned for the duplicate check; a longer one
+ * gets a node-id set. Most `(owner, name)` keys hold one def (a class's
+ * fields), and a set per key cost more time and memory there than the scan
+ * it replaced.
+ */
+const SCAN_LIMIT = 8;
+
+/**
+ * Answers "is this node id already registered under `(owner, name)`?" for one
+ * owner-keyed registry, without rescanning a long bucket for every def.
+ *
+ * Owned members with the same name share a bucket. Large generated classes
+ * can still have many declarations under one key, so duplicate detection
+ * must not scan that bucket for every def. Ownerless fields/types are skipped
+ * before this helper; file-scoped lookup uses the symbol/scope indexes.
+ *
+ * A short bucket is scanned in the registry, as before. Once a key's bucket is
+ * longer than `SCAN_LIMIT` its node ids are read into a set, and the caller
+ * keeps that set current through `add` after each registration; nothing else
+ * writes these registries while the pass runs. Sets are keyed by owner, then
+ * name, like the registries themselves.
+ */
+function registeredNodeIds(
+  lookupAll: (owner: string | undefined, name: string) => readonly { readonly nodeId: string }[],
+): {
+  has(owner: string | undefined, name: string, nodeId: string): boolean;
+  add(owner: string | undefined, name: string, nodeId: string): void;
+} {
+  const byOwner = new Map<string | undefined, Map<string, Set<string>>>();
+  return {
+    has(owner, name, nodeId) {
+      const ids = byOwner.get(owner)?.get(name);
+      if (ids !== undefined) return ids.has(nodeId);
+      const bucket = lookupAll(owner, name);
+      if (bucket.length <= SCAN_LIMIT) return bucket.some((def) => def.nodeId === nodeId);
+      const promoted = new Set<string>();
+      for (const def of bucket) promoted.add(def.nodeId);
+      let byName = byOwner.get(owner);
+      if (byName === undefined) {
+        byName = new Map();
+        byOwner.set(owner, byName);
+      }
+      byName.set(name, promoted);
+      return promoted.has(nodeId);
+    },
+    add(owner, name, nodeId) {
+      byOwner.get(owner)?.get(name)?.add(nodeId);
+    },
+  };
 }
 
 function callableSignatureMatches(

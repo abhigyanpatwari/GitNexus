@@ -24,13 +24,16 @@
  * purpose. Java fixtures also cover import-chain storage and traversal order.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
 import { finalizeScopeModel } from '../../../src/core/ingestion/finalize-orchestrator.js';
 import { buildWorkspaceResolutionIndex } from '../../../src/core/ingestion/scope-resolution/workspace-index.js';
-import { propagateImportedReturnTypes } from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
+import {
+  createChainFollower,
+  propagateImportedReturnTypes,
+} from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
 import type {
   BindingRef,
   ParsedFile,
@@ -148,6 +151,28 @@ function moduleTypeBinding(parsedFiles: readonly ParsedFile[], filePath: string,
   if (moduleScope === undefined) throw new Error(`no module scope for ${filePath}`);
   return moduleScope.typeBindings.get(name);
 }
+
+it('starts caching a stopped type only when another scope reads it', () => {
+  const { parsedFiles, finalized } = runPipelineToPropagation([
+    { path: 'owner.ts', content: 'export function run(p: External) {}' },
+    { path: 'reader.ts', content: 'export class Reader {}' },
+  ]);
+  const [owner, reader] = parsedFiles;
+  const ref = owner.scopes.map((scope) => scope.typeBindings.get('p')).find((type) => type);
+  if (!ref) throw new Error('missing parameter type for p');
+  const resolveCallee = vi.fn(() => undefined);
+  const follower = createChainFollower(finalized, resolveCallee);
+
+  expect(follower.follow(ref, ref.declaredAtScope)).toBe(ref);
+  expect(resolveCallee).toHaveBeenCalledTimes(1);
+  expect(follower.follow(ref, reader.moduleScope)).toBe(ref);
+  expect(resolveCallee).toHaveBeenCalledTimes(2);
+  expect(follower.follow(ref, reader.moduleScope)).toBe(ref);
+  expect(resolveCallee).toHaveBeenCalledTimes(2);
+  follower.clear();
+  expect(follower.follow(ref, reader.moduleScope)).toBe(ref);
+  expect(resolveCallee).toHaveBeenCalledTimes(3);
+});
 
 describe('propagateImportedReturnTypes — SCC-ordered terminal-type collapse', () => {
   it('collapses a 4-file alias chain in a single pass (leaves first)', () => {

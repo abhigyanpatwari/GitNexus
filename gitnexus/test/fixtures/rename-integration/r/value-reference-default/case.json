@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that a parameter default reads (f = assist): the default would start to mean the renamed function.",
+  "categories": ["name-collision", "value-reference", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "ref.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}

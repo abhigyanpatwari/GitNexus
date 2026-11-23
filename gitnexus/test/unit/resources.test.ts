@@ -566,6 +566,23 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
     );
   });
 
+  it('separates a complete graph from an unverified pending embedding journal', async () => {
+    loadMetaMock.mockResolvedValue({
+      repoPath: '/tmp/test-repo',
+      lastCommit: 'current-head',
+      indexedAt: '',
+      scopeExtractionReceipt: 1,
+      embeddingJob: { version: 1, identity: 'a'.repeat(64), graphGeneration: 'b'.repeat(32) },
+    });
+    const result = await readResource(
+      'gitnexus://repo/test-project/context',
+      createMockBackend({ context: CONTEXT }),
+    );
+    expect(result).toContain('incomplete_reasons: ["embedding-job-pending"]');
+    expect(result).toContain('graph_incomplete_reasons: []');
+    expect(result).toContain('embedding_progress: {"phase":"unverified"}');
+  });
+
   it('exposes Spring Actuator index metadata to agents', async () => {
     loadMetaMock.mockResolvedValue({
       repoPath: '/tmp/test-repo',

@@ -9,14 +9,16 @@
  */
 
 import {
-  acquireIndexLock,
   IndexLockTimeoutError,
   requireExclusiveIndexLock,
   sweepStagingArtifacts,
   type IndexLockHandle,
 } from '../storage/index-lock.js';
+import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
 import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
 import { resolveGraphPath } from '../storage/shared-store.js';
+import { readEmbeddingJobProgress } from '../storage/embedding-job-progress.js';
+import { readIndexCapabilities } from '../storage/index-capabilities.js';
 import {
   reclaimAfterSlotRemoval,
   removeCheckoutStorage,
@@ -25,11 +27,11 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
+import { getHeapStatistics } from 'node:v8';
 import {
   canonicalizePath,
   cloneDirBelongsToEntry,
   loadMeta,
-  saveMeta,
   listRegisteredRepos,
   registryPathEquals,
   type RegistryEntry,
@@ -44,10 +46,9 @@ import {
 import {
   executeQuery,
   executePrepared,
-  executeWithReusedStatement,
   streamQuery,
-  flushWAL,
   closeLbug,
+  drainAnalysisNativeResources,
   withLbugDb,
   isReadOnlyDbError,
 } from '../core/lbug/lbug-adapter.js';
@@ -62,24 +63,13 @@ import {
   contentRetentionFromMeta,
   isFullSourceAvailable,
 } from '../core/content-retention.js';
-import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../core/search/fts-policy.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { installServeMcpAuth, mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
-import { isTerminalJobStatus, JobManager, type AnalyzeJobPartialOutcome } from './analyze-job.js';
+import { isTerminalJobStatus, JobManager } from './analyze-job.js';
 import { mountSSEProgress } from './sse-progress.js';
-import {
-  resolveEmbedRunOutcome,
-  withMeasuredEmbeddingCount,
-  type EmbedRunFinalizeContext,
-} from './embed-run-outcome.js';
-import { decideEmbeddingResume, mintInterruptedCheckpoint } from '../core/embedding-checkpoint.js';
-import {
-  measurePersistedEmbeddingCount,
-  persistedEmbeddingCountOrUndefined,
-  type PersistedEmbeddingCount,
-} from '../core/embedding-count.js';
+import { projectAnalysisPhaseProgress } from '../core/analysis-progress.js';
 import { assertString, BadRequestError, createRouteLimiter } from './validation.js';
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from './grep-params.js';
 import { runGrepScanInWorker } from './grep-scan.js';
@@ -997,6 +987,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const app = express();
   app.disable('x-powered-by');
   const serverStartedAt = Date.now();
+  let shuttingDown = false;
+  const activeEmbeddingRuns = new Set<Promise<void>>();
 
   // Which upstream hops may set X-Forwarded-*. Process-wide: every route's
   // req.ip, and so the per-IP rate limiter, resolves through this.
@@ -1065,6 +1057,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   const activeRepoPaths = new Set<string>();
 
   const acquireRepoLock = (repoPath: string): string | null => {
+    if (shuttingDown) return 'Server is shutting down';
     if (activeRepoPaths.has(repoPath)) {
       return `Another job is already active for this repository`;
     }
@@ -1152,19 +1145,27 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           for (let wait = 0; wait < HOLD_QUEUE_TIMEOUT_SECS; wait++) {
             if (clientGone) return null; // client disconnected — stop polling
             const currentJob = jobManager.getJob(job.id);
-            if (!currentJob || currentJob.status === 'failed') {
+            if (
+              currentJob?.progress.graphPhase === 'ready' ||
+              currentJob?.status === 'complete' ||
+              currentJob?.status === 'failed'
+            ) {
+              // A published graph is usable while embeddings are pending or
+              // failed. Re-resolve its owned registry entry before returning.
+              await backend.init();
+              const freshRepos = await listRegisteredRepos({
+                validate: options.validateStorage !== false,
+              });
+              const published = resolveRegisteredRepoEntry(freshRepos, repoName);
+              if (published) return validate(published);
+              if (currentJob.status === 'complete' || currentJob.status === 'failed') return null;
+            }
+            if (!currentJob) {
               // The job is over and produced no registry entry. This is a
               // plain "not found", not "still analyzing" — falling through to
               // the timed-out sentinel here told callers to keep waiting for
               // a job that had already failed.
               return null;
-            }
-            if (currentJob.status === 'complete') {
-              await backend.init();
-              const freshRepos = await listRegisteredRepos({
-                validate: options.validateStorage !== false,
-              });
-              return validate(resolveRegisteredRepoEntry(freshRepos, repoName));
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
@@ -1270,15 +1271,24 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       // Timed out waiting for an active analysis job
       if (respondIfAnalysisPending(entry, res)) return;
       const meta = await loadMeta(entry.storagePath);
-      const [staleness, availability] = await Promise.all([
+      const [staleness, availability, embeddingProgress, capabilities] = await Promise.all([
         checkStalenessAsync(entry.path, resolveLastCommit(entry, meta)),
         getSourceAvailability(entry, meta),
+        readEmbeddingJobProgress(entry.storagePath, meta),
+        readIndexCapabilities(entry.storagePath, meta),
       ]);
       res.json(
-        projectRepoDetail(entry, meta, staleness, {
-          contentRetention: availability.contentRetention ?? contentRetentionFromMeta(meta),
-          sourceAvailable: availability.available,
-        }),
+        projectRepoDetail(
+          entry,
+          meta,
+          staleness,
+          {
+            contentRetention: availability.contentRetention ?? contentRetentionFromMeta(meta),
+            sourceAvailable: availability.available,
+          },
+          embeddingProgress,
+          capabilities,
+        ),
       );
     } catch (err: any) {
       if (sendStorageRequirementHttp(err, res)) return;
@@ -1510,15 +1520,33 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         async () => {
           let searchResults: any[];
           let ftsAvailable: boolean | undefined;
+          const metadata = mode === 'bm25' ? null : await loadMeta(entry.storagePath);
+          const snapshot =
+            metadata &&
+            (metadata.graphGeneration || metadata.vectorGeneration || metadata.embeddingJob)
+              ? { metadataDirectory: entry.storagePath, metadata, graphPath: lbugPath }
+              : undefined;
+          const semanticReady =
+            mode !== 'bm25' && (await import('../core/embeddings/embedder.js')).isEmbedderReady();
+          const semanticLane = async (execute: typeof executeQuery, text: string, count = 10) => {
+            const { semanticSearch } = await import('../core/embeddings/embedding-pipeline.js');
+            return semanticSearch(
+              execute,
+              text,
+              count,
+              undefined,
+              snapshot,
+              snapshot
+                ? async (input) => (await import('../mcp/core/embedder.js')).embedQuery(input)
+                : undefined,
+            );
+          };
 
           if (mode === 'semantic') {
-            const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
-            if (!isEmbedderReady()) {
+            if (!semanticReady) {
               return { searchResults: [] as any[], ftsAvailable: undefined };
             }
-            const { semanticSearch: semSearch } =
-              await import('../core/embeddings/embedding-pipeline.js');
-            searchResults = await semSearch(executeQuery, query, limit);
+            searchResults = await semanticLane(executeQuery, query, limit);
             // Normalize semantic results to HybridSearchResult shape
             searchResults = searchResults.map((r: any, i: number) => ({
               ...r,
@@ -1536,15 +1564,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             }));
           } else {
             // hybrid (default)
-            const { isEmbedderReady } = await import('../core/embeddings/embedder.js');
-            if (isEmbedderReady()) {
-              const { semanticSearch: semSearch } =
-                await import('../core/embeddings/embedding-pipeline.js');
+            if (semanticReady) {
               searchResults = await hybridSearch(
                 query,
                 limit,
                 executeQuery,
-                semSearch,
+                semanticLane,
                 ftsDisabledReason,
               );
               if (ftsDisabledReason) ftsAvailable = false;
@@ -2033,7 +2058,6 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             });
           }
         })();
-
         res.status(202).json({ jobId: job.id, status: job.status });
       } catch (err: any) {
         if (err.message?.includes('already in progress')) {
@@ -2117,6 +2141,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // lookup and a long-running metadata-writing job.
         const storagePath = await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
 
+        // This server cannot resize its running V8 heap. Admit its actual limit
+        // before locking or touching the index, just like embeddings sync.
+        const { resolveHostAnalysisResources } = await import('../core/analysis-host-resources.js');
+        const resources = resolveHostAnalysisResources({
+          mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+          includeParsing: false,
+          includeEmbeddings: true,
+        });
+
         // Check shared repo lock — prevent concurrent analyze + embed on same repo
         const repoLockPath = storagePath;
         const lockErr = acquireRepoLock(repoLockPath);
@@ -2144,261 +2177,80 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         }, EMBED_TIMEOUT_MS);
 
         // Run embedding pipeline asynchronously
-        (async () => {
-          // Set inside withLbugDb, read after it closes (#2790).
-          let partialRunError: string | undefined;
-          let partialRunDetail: AnalyzeJobPartialOutcome | undefined;
-          // The in-memory repo lock only serializes this server; a CLI analyze
-          // in another process guards the slot with the index lock, so hold it
-          // for the whole embedding write, released in the finally below.
+        const run = (async () => {
+          // Both server writers and other CLI processes serialize on this slot.
           let slotLock: IndexLockHandle | undefined;
           try {
-            slotLock = await acquireIndexLock(storagePath, { sweep: false });
+            slotLock = await acquireAnalysisSlotLock(storagePath, { sweep: false });
             requireExclusiveIndexLock(
               slotLock,
               `Cannot acquire the index lock at ${storagePath}; refusing an unlocked embedding run.`,
             );
-            // This writer cannot recover staged generations. Preserve their
-            // receipts, including malformed ones, before sweeping or writing.
-            const recoveryCheckpoint = (await loadMeta(storagePath))?.embeddingCheckpoint;
-            if (recoveryCheckpoint && Object.hasOwn(recoveryCheckpoint, 'recovery')) {
+            embedController.signal.throwIfAborted();
+            const metadata = await loadMeta(storagePath);
+            if (
+              metadata?.embeddingCheckpoint &&
+              Object.hasOwn(metadata.embeddingCheckpoint, 'recovery')
+            )
               throw new Error(
-                'Cannot generate embeddings: the index checkpoint references staged embeddings. ' +
-                  'Run `gitnexus analyze` to recover them first.',
+                'Cannot generate embeddings: the index checkpoint references staged embeddings. Run `gitnexus analyze` to recover them first.',
               );
-            }
+            const { readPreparedAnalysis } = await import('../core/analysis-publication.js');
+            if (await readPreparedAnalysis(storagePath))
+              throw new Error('A prepared graph awaits publication. Run gitnexus analyze first.');
             sweepStagingArtifacts(storagePath);
-            // Writes go to the slot's own graph; a shared-store checkout
-            // reading an immutable commit graph (#3352) takes a private copy.
-            if (!(await ensurePrivateSharedGraph(storagePath, () => {}))) {
+            if (!(await ensurePrivateSharedGraph(storagePath, () => {})))
               throw new Error('The shared graph this repository reads is gone. Re-run analyze.');
-            }
-            const lbugPath = path.join(storagePath, LBUG_DIRECTORY);
-            const ftsSession = await loadFtsSession(storagePath);
-            let embeddingMeta = ftsSession.meta;
-            // Writable embed still replays a leftover FTS-abort WAL. Refuse
-            // here — doInitLbug only gates the readOnly path, and analyze
-            // writers must still be able to park/rebuild.
+            const lbugPath = resolveGraphPath(storagePath);
             await assertReadOnlyFtsCrashSafe(lbugPath);
-            await withLbugDb(
-              lbugPath,
-              async () => {
-                const { runEmbeddingPipeline } =
-                  await import('../core/embeddings/embedding-pipeline.js');
-                const { resolveEmbeddingIdentity } =
-                  await import('../core/embeddings/embedding-identity.js');
-                const embeddingIdentity = resolveEmbeddingIdentity();
-                if (!embeddingMeta) {
-                  throw new Error('Repository metadata is missing; run gitnexus analyze first');
-                }
-                const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
-                // The SAME decision the CLI's resume gate makes
-                // (core/embedding-checkpoint.ts). This route used to hard-throw on
-                // any identity mismatch and ignore `attempts` entirely, so a
-                // `'partial'` marker written by `gitnexus analyze` and resumed
-                // here hit exactly the permanent wedge `kind` exists to remove:
-                // two readers of one record disagreeing about the rule it encodes.
-                // No `force`/`--drop-embeddings` equivalent exists on this route,
-                // so the flag options go unset and `'discard'` is unreachable —
-                // it is folded into the abandon arm rather than given an invented
-                // flag. `maxAttempts` is left to the shared default.
-                const resume = priorCheckpoint
-                  ? decideEmbeddingResume(priorCheckpoint, embeddingIdentity)
-                  : undefined;
-                if (resume?.action === 'abort') throw new Error(resume.error);
-                if (resume?.action === 'abandon' || resume?.action === 'discard') {
-                  logger.warn({ repo: entry.name }, resume.log);
-                }
-                const forceReembedNodeIds: ReadonlySet<string> =
-                  resume?.action === 'resume' ? resume.pendingNodeIds : new Set<string>();
-                const saveEmbeddingCheckpoint = async (
-                  checkpoint: {
-                    nodesProcessed: number;
-                    totalNodes: number;
-                    chunksProcessed: number;
-                  },
-                  pendingNodeIds: string[],
-                  embeddings?: PersistedEmbeddingCount,
-                ): Promise<void> => {
-                  // tri-review NEW-2: re-read immediately before writing (mirrors
-                  // the pattern in run-analyze.ts's --repair-fts stamp) instead of
-                  // spreading the stale `embeddingMeta` snapshot captured once at
-                  // job start. This job can run up to EMBED_TIMEOUT_MS (30 min);
-                  // without a fresh read, a concurrent writer's update (e.g. a
-                  // --repair-fts capability stamp) would be silently reverted on
-                  // every checkpoint save for the job's whole lifetime.
-                  const latestMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
-                  // `stats.embeddings` only moves when the caller MEASURED the
-                  // live count (the post-flush `onCheckpoint`). The window-start
-                  // callback measures nothing and passes nothing: restating the
-                  // old count there would re-publish a stale number and clobber
-                  // what a preceding `onCheckpoint` just wrote (same split as
-                  // run-analyze.ts's checkpoint writer).
-                  embeddingMeta = withMeasuredEmbeddingCount(
-                    {
-                      ...latestMeta,
-                      // In flight ⇒ `kind: 'interrupted'` (embedding-checkpoint.ts).
-                      embeddingCheckpoint: mintInterruptedCheckpoint(
-                        embeddingIdentity,
-                        checkpoint,
-                        pendingNodeIds,
-                      ),
+            await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
+            const { runAnalysisEmbeddingPhase } =
+              await import('../core/analysis-embedding-phase.js');
+            await runAnalysisEmbeddingPhase({
+              metadataDirectory: storagePath,
+              graphPath: lbugPath,
+              resources,
+              nodeLimit: 0,
+              expectedGeneration: metadata?.graphGeneration?.id,
+              signal: embedController.signal,
+              callbacks: {
+                onGraphPublished: async () => {
+                  await drainAnalysisNativeResources();
+                  await backend.init();
+                },
+                onProgress: (phase, percent, message, details) => {
+                  embedJobManager.updateJob(job.id, {
+                    progress: {
+                      ...projectAnalysisPhaseProgress(details),
+                      phase:
+                        phase === 'embeddings'
+                          ? details?.embeddingProgress?.phase === 'indexing'
+                            ? 'indexing'
+                            : 'embedding'
+                          : phase,
+                      percent,
+                      message,
                     },
-                    embeddings,
-                  );
-                  await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
-                  await saveMeta(storagePath, embeddingMeta);
-                };
-                /**
-                 * Count the persisted rows, or report the answer never arrived.
-                 * The TRI-STATE is carried to the fold rather than collapsed here:
-                 * `unknown` is not 0, and only the fold knows what to carry
-                 * forward instead (core/embedding-count.ts).
-                 */
-                const countPersistedEmbeddings = async (): Promise<PersistedEmbeddingCount> => {
-                  const counted = await measurePersistedEmbeddingCount(executeQuery);
-                  if (counted.kind === 'unknown') {
-                    logger.warn(
-                      { reason: counted.reason },
-                      '[embed] could not count persisted embeddings; leaving stats.embeddings untouched',
-                    );
-                  }
-                  return counted;
-                };
-                // Fetch existing content hashes for incremental embedding.
-                // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
-                const { fetchExistingEmbeddingHashes } =
-                  await import('../core/lbug/lbug-adapter.js');
-                const existingEmbeddings = await fetchExistingEmbeddingHashes(executeQuery);
-                if (existingEmbeddings && existingEmbeddings.size > 0) {
-                  console.log(
-                    `[embed] ${existingEmbeddings.size} nodes already embedded — incremental run with content-hash comparison`,
-                  );
-                }
-                const pipelineResult = await runEmbeddingPipeline(
-                  executeQuery,
-                  executeWithReusedStatement,
-                  (p) => {
-                    embedJobManager.updateJob(job.id, {
-                      progress: {
-                        // `ready` maps to 'finalizing', NOT 'complete' (#2790).
-                        // The pipeline emits `ready`/100% unconditionally before
-                        // returning — including when it dropped nodes to endpoint
-                        // failures — and the route has not measured the index or
-                        // decided the outcome yet, so 'complete' here would make
-                        // the job record contradict itself (`status: 'analyzing'`,
-                        // `progress.phase: 'complete'`).
-                        phase:
-                          p.phase === 'ready'
-                            ? 'finalizing'
-                            : p.phase === 'error'
-                              ? 'failed'
-                              : p.phase,
-                        percent: p.percent,
-                        message:
-                          p.phase === 'loading-model'
-                            ? 'Loading embedding model...'
-                            : p.phase === 'embedding'
-                              ? `Embedding nodes (${p.percent}%)...`
-                              : p.phase === 'indexing'
-                                ? 'Creating vector index...'
-                                : p.phase === 'ready'
-                                  ? 'Finalizing embeddings...'
-                                  : `${p.phase} (${p.percent}%)`,
-                      },
-                    });
-                  },
-                  {}, // config: use defaults
-                  undefined, // skipNodeIds
-                  existingEmbeddings,
-                  {
-                    signal: embedController.signal,
-                    forceReembedNodeIds,
-                    onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
-                      await saveEmbeddingCheckpoint(checkpoint, nodeIds);
-                    },
-                    onCheckpoint: async (checkpoint) => {
-                      // Count AFTER the flush, so the number describes rows that
-                      // are durable rather than rows still pending in the WAL.
-                      await flushWAL();
-                      await saveEmbeddingCheckpoint(
-                        checkpoint,
-                        [],
-                        await countPersistedEmbeddings(),
-                      );
-                    },
-                  },
-                );
-
-                // Flush WAL so subsequent /api/search requests see the new
-                // embeddings immediately (#1149). In the CLI path closeLbug()
-                // handles this during process exit, but the server keeps the
-                // connection open for other routes — a CHECKPOINT is enough.
-                await flushWAL();
-                // Measure inside withLbugDb, after the flush and while the
-                // connection is still open — this is the route's only chance to
-                // stamp `stats.embeddings` (embed-run-outcome.ts). A partial run
-                // gets the same stamp: an honest count of a partial index is what
-                // makes it survivable.
-                const measuredEmbeddings = await countPersistedEmbeddings();
-                // Same re-read-before-write reasoning as saveEmbeddingCheckpoint
-                // above — and the outcome decision reads it too: its
-                // `embeddingCheckpoint` is the marker this run's own mid-run
-                // writer saved, which is the only record of the work when the
-                // count query could not answer.
-                const finalMeta = (await loadMeta(storagePath)) ?? embeddingMeta;
-                const finalizeContext: EmbedRunFinalizeContext = {
-                  measuredEmbeddings: persistedEmbeddingCountOrUndefined(measuredEmbeddings),
-                  onDisk: finalMeta,
-                  // The marker the job STARTED from — `finalMeta`'s has since been
-                  // overwritten by the in-flight writer, so only this one carries
-                  // the `'partial'` attempt chain.
-                  resumedFrom: priorCheckpoint,
-                };
-                const outcome = resolveEmbedRunOutcome(
-                  embeddingIdentity,
-                  pipelineResult,
-                  finalizeContext,
-                );
-                partialRunError = outcome.error;
-                partialRunDetail = outcome.partial;
-                embeddingMeta = withMeasuredEmbeddingCount(
-                  { ...finalMeta, embeddingCheckpoint: outcome.checkpoint },
-                  measuredEmbeddings,
-                );
-                await requireRegisteredStoragePath(entry, STATUS_STORAGE_REQUIREMENTS);
-                await saveMeta(storagePath, embeddingMeta);
+                  });
+                },
+                onLog: (message) => logger.info({ repo: entry.name }, message),
               },
-              skipFtsOption(ftsSession.skipFts),
-            );
-
-            // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
+            });
+            await backend.init();
             const current = embedJobManager.getJob(job.id);
-            if (!current || current.status !== 'failed') {
-              // The ONLY terminal event for the job, on both branches — nothing
-              // earlier maps to a terminal status, and `updateJob` synthesizes
-              // exactly one event per terminal status (#2264 P3). The explicit
-              // `progress` keeps the record self-consistent for a poller reading
-              // `progress.phase` (#2790).
-              embedJobManager.updateJob(
-                job.id,
-                partialRunError === undefined
-                  ? {
-                      status: 'complete',
-                      progress: { phase: 'complete', percent: 100, message: 'Embeddings complete' },
-                    }
-                  : {
-                      status: 'failed',
-                      error: partialRunError,
-                      // Lets a client separate "retry these N nodes" from "the
-                      // run produced nothing" without a new status member.
-                      partial: partialRunDetail,
-                      progress: { phase: 'failed', percent: 100, message: partialRunError },
-                    },
-              );
-            }
+            if (current && !isTerminalJobStatus(current.status))
+              embedJobManager.updateJob(job.id, {
+                status: 'complete',
+                progress: { phase: 'complete', percent: 100, message: 'Embeddings complete' },
+              });
           } catch (err: any) {
             const current = embedJobManager.getJob(job.id);
+            // Provider causes may contain response text. Log only the public
+            // message, as the CLI does, without pino's recursive Error serializer.
+            logger.error(
+              { reason: err.message || 'Embedding generation failed', repo: entry.name },
+              'Embedding generation failed',
+            );
             if (!current || current.status !== 'failed') {
               embedJobManager.updateJob(job.id, {
                 status: 'failed',
@@ -2411,6 +2263,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             releaseRepoLock(repoLockPath);
           }
         })();
+        activeEmbeddingRuns.add(run);
+        // Observe both outcomes without creating an unhandled finally promise.
+        void run.then(
+          () => activeEmbeddingRuns.delete(run),
+          () => activeEmbeddingRuns.delete(run),
+        );
 
         res.status(202).json({ jobId: job.id, status: 'analyzing' });
       } catch (err: any) {
@@ -2549,11 +2407,17 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // destination is `sync: false` (buffered); `flushLoggerSync()` before
     // `process.exit` so records emitted during cleanup reach stderr.
     const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       console.log('\nShutting down...');
       updateController.stop();
       server.close();
       jobManager.dispose();
       embedJobManager.dispose();
+      // Abort requests are cooperative. Keep the ordinary writer locks and
+      // native handles alive until each in-process embedding run has settled.
+      await Promise.allSettled(activeEmbeddingRuns);
+      await jobManager.waitForChildren();
       await cleanupMcp();
       await closeLbug();
       await backend.disconnect();
@@ -2571,12 +2435,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     // Worker-thread transports (pino-pretty under TTY) handle their own
     // flush on process exit in v10. `pino.final` was removed in v10
     // because the new transport architecture made it unnecessary.
-    let shuttingDown = false;
     process.on('uncaughtException', (err) => {
       logger.error({ err }, 'GitNexus uncaughtException');
       flushLoggerSync();
       if (!shuttingDown) {
-        shuttingDown = true;
         shutdown().catch(() => {});
       }
     });

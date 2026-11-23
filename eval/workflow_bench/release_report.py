@@ -16,11 +16,15 @@ from typing import Any
 import yaml
 
 from .oracle_assets import capture_task_oracles
+from .oci_worker import WORKER_IMAGE
 from .runner_tasks import normalized_model_identifier, select_tasks
 from .session_diagnostics import public_cell_diagnostics, render_diagnostics
 from .task_assets import DEPENDENCY_CONTENT_BINDING_FIELD
 
 SCHEMA = "gitnexus.release-evaluation/v1"
+PROPOSAL_EXECUTOR = "checkout-proposal/v1"
+PROPOSAL_SCHEMA = "gitnexus.proposal-evaluation/v1"
+PROPOSAL_CLIENT = "2.1.214 (Claude Code)"
 ARMS = ("baseline_nomcp", "baseline")
 TASKS = Path(__file__).with_name("tasks.scenarios.yaml")
 META_FIELDS = ("runtime_sha", "harness_sha", "task_set_digest", "model", "effort", "runs", "tasks")
@@ -100,7 +104,16 @@ def _json_safe(value: Any) -> Any:
 
 def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     report = {key: metadata[key] for key in META_FIELDS}
-    report.update(schema=SCHEMA, generated_at=(now or datetime.now(UTC)).isoformat())
+    executor = metadata.get("executor")
+    if executor not in (None, PROPOSAL_EXECUTOR):
+        raise ValueError(f"unknown evaluation executor: {executor}")
+    proposal = executor == PROPOSAL_EXECUTOR
+    if proposal:
+        if metadata.get("usage_source") not in ("anthropic", "fixture"):
+            raise ValueError("a proposal report requires its usage source")
+        report.update(executor=executor, worker_image=WORKER_IMAGE, claude_version=PROPOSAL_CLIENT,
+                      usage_source=metadata["usage_source"])
+    report.update(schema=PROPOSAL_SCHEMA if proposal else SCHEMA, generated_at=(now or datetime.now(UTC)).isoformat())
     runs, tasks = report["runs"], report["tasks"]
     if type(runs) is not int or runs < 3 or not tasks:
         raise ValueError("release evaluation requires tasks and at least three runs per arm")
@@ -118,6 +131,9 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
             continue
         # Invalid rows still need a public, JSON-serializable failure receipt.
         safe_row = {key: _json_safe(row[key]) for key in ROW_FIELDS if key in row}
+        if proposal:
+            for field in ("executor", "worker_image", "claude_version", "proposal_applied", "usage_source"):
+                safe_row[field] = _json_safe(row.get(field))
         safe_row.update(public_cell_diagnostics(row))
         safe_rows.append(safe_row)
         task, run, arm = row.get("task"), row.get("run"), row.get("arm")
@@ -135,7 +151,8 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
             and row.get("oracle_digest") == pin["oracle_digest"]
             and row.get("model") == report["model"]
             and row.get("effort") == report["effort"]
-            and row.get("sandbox_backend") == "bwrap"
+            and row.get("sandbox_backend") == ("docker" if proposal else "bwrap")
+            and row.get("executor") == executor
             and row.get("runtime_exposure") == ("none" if arm == "baseline_nomcp" else "stdio-only")
             and row.get("ok") is True
             and type(row.get("resolved")) is bool
@@ -149,6 +166,15 @@ def build_report(rows: list[Any], metadata: dict[str, Any], *, now: datetime | N
             and isinstance(row.get(DEPENDENCY_CONTENT_BINDING_FIELD), str)
             and re.fullmatch(r"[0-9a-f]{64}", row[DEPENDENCY_CONTENT_BINDING_FIELD]) is not None
         )
+        if proposal:
+            valid = valid and (
+                row.get("worker_image") == WORKER_IMAGE and row.get("claude_version") == PROPOSAL_CLIENT
+                and row.get("usage_source") == report["usage_source"]
+                and type(row.get("proposal_applied")) is bool and (row["proposal_applied"] or not row["resolved"])
+                and row.get("runtime_sha") == report["runtime_sha"] and row.get("harness_sha") == report["harness_sha"]
+                and all(type(row.get(k)) is int and row[k] >= 0 for k in (
+                    "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
+            )
         if not valid:
             problems.append(f"{task}/{arm}/{run}: untrustworthy measurement")
     if expected != set(measured):
@@ -182,6 +208,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         "No-GitNexus `baseline_nomcp` is compared with MCP `baseline`; neither uses workflow skills.",
         "",
     ]
+    if report["schema"] == PROPOSAL_SCHEMA:
+        lines[0] = "## Paired patch-proposal evaluation"
+        lines.insert(5, "Both arms investigate a frozen checkout and submit one Git diff. Grading runs after the session.")
+        lines.insert(6, "Usage comes from the loopback test fixture. No provider charge was incurred."
+                     if report["usage_source"] == "fixture" else
+                     "Token counts and estimated USD come from the Claude CLI's final usage record.")
     if not report["complete"]:
         lines += ["**Incomplete evidence; release validation failed.**", "", *[f"- {p}" for p in report["problems"]]]
     else:
@@ -211,7 +243,9 @@ def render_markdown(report: dict[str, Any]) -> str:
             )
             else "Runtime isolation is unproven. Historical MCP cells had readable compiled runtime code and cannot isolate tool assistance from access to later fixes."
         ),
-        "This small pinned task set is release evidence; it does not establish general gains or statistical significance.",
+        ("These solve counts and costs measure the pinned patch-proposal tasks."
+         if report["schema"] == PROPOSAL_SCHEMA else
+         "This small pinned task set is release evidence; it does not establish general gains or statistical significance."),
         "",
     ]
     lines += render_diagnostics(report.get("per_run", []))
@@ -225,9 +259,13 @@ def validate_report(
     task_set_digest: str,
     task_pins: dict[str, Any] | None = None,
     now: datetime | None = None,
+    expected_schema: str = SCHEMA,
+    expected_usage_source: str = "anthropic",
 ) -> None:
-    if report.get("schema") != SCHEMA or report.get("complete") is not True:
+    if expected_schema not in (SCHEMA, PROPOSAL_SCHEMA) or report.get("schema") != expected_schema or report.get("complete") is not True:
         raise ValueError("incomplete or unsupported release evidence")
+    if expected_schema == PROPOSAL_SCHEMA and report.get("usage_source") != expected_usage_source:
+        raise ValueError("proposal evidence has a different usage source")
     if report.get("runtime_sha") != runtime_sha or report.get("task_set_digest") != task_set_digest:
         raise ValueError("release evidence belongs to a different runtime or task set")
     if task_pins is not None and report.get("tasks") != task_pins:

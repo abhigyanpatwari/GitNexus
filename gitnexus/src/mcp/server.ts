@@ -49,6 +49,11 @@ import {
   mcpRepositoryPolicyConfigured,
 } from './repository-policy.js';
 import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
+import {
+  ImpactBudgetExceededError,
+  shapeImpactForAgent,
+  withImpactAgentDefaults,
+} from './impact-agent-output.js';
 import { assertKnownMcpToolArguments, schemaSourceToolName } from './tool-arguments.js';
 import {
   applyMcpResponseFilter,
@@ -74,6 +79,18 @@ export function getNextStepHint(
   const repo = args?.repo;
   const repoParam = repo ? `, repo: "${repo}"` : '';
   const repoPath = repo || '{name}';
+
+  if ((toolName === 'query' || toolName === 'search') && Array.isArray(repo)) {
+    const failed =
+      toolResult !== null &&
+      typeof toolResult === 'object' &&
+      'error' in toolResult &&
+      toolResult.error !== undefined;
+    const hint = failed
+      ? 'Resolve the reported error before retrying this search.'
+      : `For a returned symbol, use context({uid: "<id>", repo: "<row._repo>"}) to inspect its references and processes.${args?.include_content === true ? ' Source previews marked content_truncated are incomplete; use context({uid: "<id>", repo: "<row._repo>", include_content: true}) or read_file with a bounded line range for more.' : ''}`;
+    return toolName === 'search' ? `\n\n---\n**Next:** ${hint}` : hint;
+  }
 
   switch (toolName) {
     case 'list_repos':
@@ -323,23 +340,35 @@ export function createMCPServer(
       }
       const responseFilter = resolveMcpResponseFilter(schemaSource, typedArgs);
       maxTokens = resolveMcpMaxTokens(name, typedArgs);
-      const backendArgs = withoutMcpResponseFilterArgs(
+      const isImpact = schemaSource === 'impact';
+      const strippedArgs = withoutMcpResponseFilterArgs(
         withoutMcpBudgetArg(typedArgs),
         responseFilter,
       );
+      const backendArgs = isImpact ? withImpactAgentDefaults(strippedArgs) : strippedArgs;
       // Only a refresh with a progress token takes a context; every other call
       // keeps its exact arguments.
       const callContext =
         name === MCP_REFRESH_TOOL
           ? refreshProgress(request.params._meta?.progressToken, extra)
           : undefined;
-      const result = applyMcpResponseFilter(
+      const rawResult = applyMcpResponseFilter(
         await (callContext
           ? scopedBackend.callTool(name, backendArgs, callContext)
           : scopedBackend.callTool(name, backendArgs)),
         responseFilter,
       );
-      const hint = getNextStepHint(name, args as Record<string, any> | undefined, readOnly, result);
+      const hint = getNextStepHint(
+        name,
+        args as Record<string, any> | undefined,
+        readOnly,
+        rawResult,
+      );
+      // Trim whole impact records to the budget so the JSON stays valid; the
+      // byte cap below remains the backstop for everything else.
+      const result = isImpact
+        ? shapeImpactForAgent(rawResult, maxTokens, Buffer.byteLength(hint, 'utf8'))
+        : rawResult;
       const resultText =
         name === 'query' && result !== null && typeof result === 'object' && !Array.isArray(result)
           ? JSON.stringify({ ...result, next: hint })
@@ -358,7 +387,10 @@ export function createMCPServer(
         content: [
           {
             type: 'text',
-            text: applyMcpMaxTokens(formatMcpToolError(error), maxTokens),
+            text:
+              error instanceof ImpactBudgetExceededError
+                ? error.toJSONText()
+                : applyMcpMaxTokens(formatMcpToolError(error), maxTokens),
           },
         ],
         isError: true,

@@ -129,16 +129,23 @@ export const zhCN = {
     'diff 触及 {{files}} 个文件，但没有索引符号与这些 hunk 重叠 — 并非干净工作区。',
   'tool.detectChanges.partial':
     '结果不完整：变更符号或流程映射不完整。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.partialCheck': '结果不完整：变更分析未完成。请勿将其视为通过的提交前检查。',
+  'tool.detectChanges.keywordCoverage': '调用兼容性检查不完整：{{examples}}',
   'tool.detectChanges.unmappedSource':
     '变更源码文件未映射到符号：{{files}}。请重建索引并检查 diff；仅重试可能无法解决符号缺失或源码范围不匹配。',
   'tool.detectChanges.truncated':
-    '列表已截断：已变更符号列表被截断，未列出全部变更符号。计数与风险等级仍涵盖全部符号。',
+    '列表已截断：一个或多个结果列表未完整显示。计数涵盖全部已观测结果。',
   'tool.detectChanges.truncatedDegraded':
-    '列表已截断：已变更符号列表被截断。本次运行同时不完整，因此计数为下限而非总数。',
+    '列表已截断：一个或多个结果列表未完整显示。本次运行不完整，因此计数为下限。',
   'tool.detectChanges.changesSummary': '变更：{{files}} 个文件，{{symbols}} 个符号',
   'tool.detectChanges.affectedProcesses': '受影响流程：{{count}}',
   'tool.detectChanges.riskLevel': '风险等级：{{risk}}',
   'tool.detectChanges.unknownRisk': '未知',
+  'tool.detectChanges.docSections': '更改的文档章节：{{count}}',
+  'tool.detectChanges.indexedHeadings':
+    '本次审查使用索引中的 Markdown 标题。如果在索引后添加或移动了标题，请运行 gitnexus analyze --index-only 后重新审查。',
+  'tool.detectChanges.incompatibleCalls': '不兼容的调用：',
+  'tool.detectChanges.removedKeyword': '  {{file}}:{{line}} — {{name}} 不再接受关键字 {{keyword}}',
   'tool.detectChanges.changedSymbols': '已变更符号：',
   'tool.detectChanges.overflowMore': '... 以及另外 {{count}} 个',
   'tool.detectChanges.affectedExecutionFlows': '受影响执行流程：',
@@ -259,16 +266,16 @@ export const zhCN = {
     '重建时删除现有嵌入。默认情况下，未传 `--embeddings` 的 `analyze` 会保留索引中已有嵌入。',
   'help.option.analyze.skills':
     '根据检测到的社区生成仓库专属 skill 文件（同时设置 --index-only 时无效）。',
+  'help.option.analyze.instructionFile':
+    '仅将 GitNexus 区块写入一个说明文件，而不是同时写入 AGENTS.md 和 CLAUDE.md：可以是这两者之一，也可以是仓库相对路径（例如 .claude/CLAUDE.md）。',
   'help.option.analyze.skipAgentsMd':
-    '跳过更新选定上下文文件中的 gitnexus 区块（包括 --context-file 指定的文件）。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
-  'help.option.analyze.contextFile':
-    '将 GitNexus 上下文区块写入一个仓库相对路径文件，而不是根目录的 AGENTS.md 和 CLAUDE.md。',
-  'help.option.analyze.noStats': '从选定的上下文文件中省略易变的文件/符号计数',
+    '跳过更新选定说明文件中的 gitnexus 区块（包括 --instruction-file 指定的自定义文件）。不会跳过 .claude/skills 或 .agents/skills 下的标准 skill；如需跳过那些请使用 --skip-skills。--skills 生成的社区 skill 不受影响。',
+  'help.option.analyze.noStats': '从选定的说明文件中省略易变的文件/符号计数',
   'help.option.analyze.selfCommit':
-    '在 analyze 后自动提交生成的上下文文件变更（默认关闭，需显式开启）。仅限选定的上下文文件（绝不使用 `git add -A`）；若没有上下文文件存在、没有文件变更，或仓库未配置 git 身份，则不执行任何操作。',
+    '在 analyze 后自动提交生成的说明文件变更（默认关闭，需显式开启）。仅限选定的说明文件（绝不使用 `git add -A`）；若没有说明文件存在、没有文件变更，或仓库未配置 git 身份，则不执行任何操作。',
   'help.option.analyze.skipSkills':
     '跳过直接安装在 .claude/skills/ 和 .agents/skills/ 下的标准 GitNexus skill 文件。不抑制 --skills 生成的社区 skill（位于 .claude/skills/gitnexus-area-*）。使用 --index-only 可跳过所有 AI 上下文文件注入。',
-  'help.option.analyze.indexOnly': '纯索引模式：跳过所有文件注入（默认或自定义上下文文件、skills）',
+  'help.option.analyze.indexOnly': '纯索引模式：跳过所有文件注入（默认或自定义说明文件、skills）',
   'help.option.skipGit': '将提供的路径/cwd 视为索引根目录，并跳过向上查找 git 根目录',
   'help.option.analyze.name':
     '在 ~/.gitnexus/registry.json 中使用自定义名称注册该仓库（用于区分路径 basename 相同的仓库，例如两个不同的 .../app 目录）',
@@ -286,6 +293,8 @@ export const zhCN = {
     'analyze 期间 LadybugDB WAL 自动 checkpoint 阈值（字节，整数 >= -1；默认：67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。',
   'help.option.analyze.memoryBudget':
     'analyze 主线程 V8 堆大小（MB，整数 >= 200）。以该堆大小重新运行 analyze，覆盖按 RAM/cgroup 自动计算的上限及任何 --max-old-space-size 设置；解析 worker 各自保留独立的堆上限。',
+  'help.option.analyze.resourceBudget':
+    '分析进程的资源总预算（MiB），包括原生数据库缓冲池、解析 worker、嵌入模型和监督进程。',
   'help.option.analyze.workers':
     '解析 worker 池大小（>=1）。默认：cores-1，最多 16，按仓库规模自适应。',
   'help.option.analyze.maxProcesses':
@@ -320,7 +329,7 @@ export const zhCN = {
   'help.option.clean.localIndex': '删除此检出迁入共享存储后遗留在 <repo>/.gitnexus 中的索引',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
-    'LLM 提供商：minimax、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',
+    'LLM 提供商：minimax、anthropic、openai、openrouter、azure、custom、cursor、claude、codex、opencode 或 grok（默认：minimax）',
   'help.option.wiki.model': 'LLM 模型或 deployment 名称（默认：MiniMax-M3）',
   'help.option.wiki.baseUrl':
     'LLM API base URL。Azure v1：https://{resource}.openai.azure.com/openai/v1',
@@ -354,9 +363,11 @@ export const zhCN = {
   'help.option.impact.depth': '最大关系遍历深度（默认：3）',
   'help.option.impact.includeTests': '在结果中包含测试文件',
   'help.option.impact.limit':
-    '每层深度最大符号数（默认：100）；显式指定 --limit 时，也限制受影响流程/模块/路由数',
+    '调用图模式下每层深度最大符号数（默认：30，设 GITNEXUS_IMPACT_DEFAULT_LIMIT=0 返回全部）；显式指定 --limit 时，也限制受影响流程/模块/路由数',
   'help.option.impact.offset': '每层深度跳过 N 个符号（分页用）',
   'help.option.impact.summaryOnly': '仅返回计数和风险等级，省略符号列表',
+  'help.option.impact.maxTokens':
+    '将紧凑 JSON 控制在约 N 个 token 内；调用图优先舍弃最深层符号，必要内容无法容纳时返回错误。PDG 和仓库组结果必须完整容纳',
   'help.option.trace.fromUid': '源符号 UID（零歧义查找）',
   'help.option.trace.fromFile': '源文件路径，用于消除常见名称歧义',
   'help.option.trace.toUid': '目标符号 UID（零歧义查找）',
@@ -395,5 +406,5 @@ export const zhCN = {
   'help.identityCache.environment':
     '\n分析器身份缓存：\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir\n    由操作员明确信任的持久缓存，用于跨进程快速查询状态。目录必须预先存在、位于 GitNexus 包/构建根目录之外，且路径中不得包含符号链接或 junction。缺少 POSIX 所有权 API 的平台默认保持故障关闭。',
   'help.analyze.environment':
-    '\n环境变量：\n  GITNEXUS_NO_GITIGNORE=1   跳过 .gitignore 解析（仍读取 .gitnexusignore）\n  GITNEXUS_MAX_FILE_SIZE=N  覆盖大文件跳过阈值（KB）。默认 512，最大 32768。\n  GITNEXUS_STORAGE_PATH=/absolute/index  完整外部索引目录。保留既有配置语义；与 GITNEXUS_STORAGE_ROOT 同时设置时优先使用。\n  GITNEXUS_STORAGE_ROOT=/absolute/root  外部索引根目录；每个仓库使用独立的 <仓库名>-<规范路径哈希>/ 子目录。\n  GITNEXUS_CONTENT_RETENTION=full  源码文本保留策略：full、symbol 或 none。默认 full。\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  由操作员明确信任的持久分析器身份缓存；目录必须预先存在、位于包/构建根目录之外，且路径中不得包含符号链接或 junction。\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker 空闲超时（毫秒）。默认 30000。\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL 自动 checkpoint 阈值（字节，默认 67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker 作业字节预算。默认 8388608。\n  GITNEXUS_WORKER_POOL_SIZE=N  解析 worker 数量覆盖值。默认 cores-1，最多 16。\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  并发进行中的解析分块数。默认 2。\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  每个 slot 丢弃前允许的最大替换进程数。默认 3。\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  每个作业的总重试墙钟时间。默认 5 倍子批次超时。\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  每个 slot 触发熔断的死亡次数。默认 max(3, poolSize)。\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  线程池关闭时等待仍在原生代码中的已退役 worker 的最长时间（到达安全点后再终止，避免进程级 abort）。默认 30000。\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  C++ 捕获提取的每文件墙钟预算；超出后该文件保留部分捕获并输出警告。默认 20000。\n  GITNEXUS_EMBEDDING_THREADS=N  限制 --embeddings 的本地 ONNX CPU 线程数。\n  GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1  将单次 HTTP 嵌入超时纳入 GITNEXUS_EMBEDDING_MAX_ATTEMPTS 重试（默认关闭，超时仍为终止错误）。\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  exact-scan 回退的最大嵌入分块数。默认 10000。\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  语义/向量搜索接受的最大余弦距离（0 < N <= 2；超出则钳制为 2）。CLI/MCP query 默认 0.6，独立语义搜索默认 0.5。应根据嵌入模型调节：提高阈值可增加召回，但可能降低相关性。在查询/服务器进程的环境中设置，无需重新索引。\n  GITNEXUS_MAX_PROCESSES=N  流程检测的流程数量上限（正整数）。覆盖动态的 max(20, round(symbols/10)) 公式。与查询时的 IMPACT_MAX_CHUNKS 无关。\n  GITNEXUS_MAX_PROCESS_BRANCHING=N  流程检测的单节点分支上限。默认 4。\n  GITNEXUS_MAX_PROCESS_TRACE_DEPTH=N  流程检测的 DFS 深度上限。默认 10。\n  GITNEXUS_MAX_ENTRY_POINT_CANDIDATES=N  排序后的入口点候选池。默认 200。仅在警告点名该上限时提高；那时通常先翻倍。\n\nCLI 参数优先于 `.gitnexusrc`，后者优先于环境变量，环境变量优先于内置默认值。\n\n提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。比如添加\n     `!__tests__/` 可以索引默认自动过滤的目录（#771）。',
+    '\n环境变量：\n  GITNEXUS_NO_GITIGNORE=1   跳过 .gitignore 解析（仍读取 .gitnexusignore）\n  GITNEXUS_MAX_FILE_SIZE=N  覆盖大文件跳过阈值（KB）。默认 512，最大 32768。\n  GITNEXUS_STORAGE_PATH=/absolute/index  完整外部索引目录。保留既有配置语义；与 GITNEXUS_STORAGE_ROOT 同时设置时优先使用。\n  GITNEXUS_STORAGE_ROOT=/absolute/root  外部索引根目录；每个仓库使用独立的 <仓库名>-<规范路径哈希>/ 子目录。\n  GITNEXUS_CONTENT_RETENTION=full  源码文本保留策略：full、symbol 或 none。默认 full。\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir  由操作员明确信任的持久分析器身份缓存；目录必须预先存在、位于包/构建根目录之外，且路径中不得包含符号链接或 junction。\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker 空闲超时（毫秒）。默认 30000。\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL 自动 checkpoint 阈值（字节，默认 67108864 = 64 MiB；-1 保持 Ladybug 默认约 16 MiB）。\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker 作业字节预算。默认 8388608。\n  GITNEXUS_WORKER_POOL_SIZE=N  解析 worker 数量覆盖值。默认 cores-1，最多 16。\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  并发进行中的解析分块数。默认 2。\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  每个 slot 丢弃前允许的最大替换进程数。默认 3。\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  每个作业的总重试墙钟时间。默认 5 倍子批次超时。\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  每个 slot 触发熔断的死亡次数。默认 max(3, poolSize)。\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  线程池关闭时等待仍在原生代码中的已退役 worker 的最长时间（到达安全点后再终止，避免进程级 abort）。默认 30000。\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  C++ 捕获提取的每文件墙钟预算；超出后该文件保留部分捕获并输出警告。默认 20000。\n  GITNEXUS_EMBEDDING_THREADS=N  限制 --embeddings 的本地 ONNX CPU 线程数。\n  GITNEXUS_EMBEDDING_MODEL_ID=id  本地 Hugging Face 嵌入模型。默认 Snowflake/snowflake-arctic-embed-xs；请将 GITNEXUS_EMBEDDING_DIMS 设为其向量维度。\n  GITNEXUS_EMBEDDING_RETRY_TIMEOUTS=1  将单次 HTTP 嵌入超时纳入 GITNEXUS_EMBEDDING_MAX_ATTEMPTS 重试（默认关闭，超时仍为终止错误）。\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  exact-scan 回退的最大嵌入分块数。默认 10000。\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  语义/向量搜索接受的最大余弦距离（0 < N <= 2；超出则钳制为 2）。CLI/MCP query 默认 0.6，独立语义搜索默认 0.5。应根据嵌入模型调节：提高阈值可增加召回，但可能降低相关性。在查询/服务器进程的环境中设置，无需重新索引。\n  GITNEXUS_MAX_PROCESSES=N  流程检测的流程数量上限（正整数）。覆盖动态的 max(20, round(symbols/10)) 公式。与查询时的 IMPACT_MAX_CHUNKS 无关。\n  GITNEXUS_MAX_PROCESS_BRANCHING=N  流程检测的单节点分支上限。默认 4。\n  GITNEXUS_MAX_PROCESS_TRACE_DEPTH=N  流程检测的 DFS 深度上限。默认 10。\n  GITNEXUS_MAX_ENTRY_POINT_CANDIDATES=N  排序后的入口点候选池。默认 200。仅在警告点名该上限时提高；那时通常先翻倍。\n\nCLI 参数优先于 `.gitnexusrc`，后者优先于环境变量，环境变量优先于内置默认值。\n\n提示：`.gitnexusignore` 支持 `.gitignore` 风格的取反。比如添加\n     `!__tests__/` 可以索引默认自动过滤的目录（#771）。',
 } satisfies EnglishMessages;

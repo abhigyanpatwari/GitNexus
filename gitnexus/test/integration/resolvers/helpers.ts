@@ -2,7 +2,9 @@
  * Shared test helpers for language resolution integration tests.
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'path';
+import { afterAll, beforeAll } from 'vitest';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
@@ -32,6 +34,27 @@ export function writeFixtureRepo(root: string, files: Record<string, string>): v
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content, 'utf8');
   }
+}
+
+/**
+ * Materialize `files` in a temp repo, run the pipeline once for the enclosing
+ * `describe`, and remove the repo after it. Returns the accessor for the result.
+ */
+export function useFixture(prefix: string, files: Record<string, string>): () => PipelineResult {
+  let root = '';
+  let result: PipelineResult | undefined;
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), `gitnexus-${prefix}-`));
+    writeFixtureRepo(root, files);
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+  afterAll(() => {
+    if (root !== '') fs.rmSync(root, { recursive: true, force: true });
+  });
+  return () => {
+    if (result === undefined) throw new Error('pipeline did not run');
+    return result;
+  };
 }
 
 export type RelEdge = {
@@ -113,11 +136,12 @@ export function hasAccessesAtSite(
   line: number,
   col: number,
 ): boolean {
+  const sitePattern = new RegExp(`^:(?:read:|write:)?${line}:${col}(?::\\d+:\\d+)?$`);
   return getRelationships(result, 'ACCESSES').some(
     (edge) =>
       edge.rel.sourceId === sourceId &&
       edge.rel.targetId === targetId &&
-      edge.rel.id.endsWith(`:${line}:${col}`),
+      sitePattern.test(edge.rel.id.slice(edge.rel.id.lastIndexOf(targetId) + targetId.length)),
   );
 }
 

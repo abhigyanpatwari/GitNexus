@@ -42,6 +42,7 @@ import { answeredSiteKey } from '../resolution-outcome.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId } from '../graph-bridge/ids.js';
+import { referenceEdgeKey } from '../graph-bridge/edges.js';
 import {
   findCallableBindingInScope,
   findClassBindingInScope,
@@ -502,7 +503,7 @@ export function emitReturnShapeMemberAccesses(
       if (callerGraphId === undefined) continue;
       if (callerGraphId === target.id) continue;
 
-      const dedupKey = `ACCESSES:${callerGraphId}->${target.id}:${site.atRange.startLine}:${site.atRange.startCol}`;
+      const dedupKey = referenceEdgeKey('ACCESSES', callerGraphId, target.id, site);
       if (seen.has(dedupKey)) continue;
       seen.add(dedupKey);
 

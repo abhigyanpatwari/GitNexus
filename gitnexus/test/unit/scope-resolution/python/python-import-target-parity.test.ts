@@ -218,3 +218,136 @@ describe('resolvePythonImportTarget — index parity', () => {
     expect(isPythonImportedModule(parsed, target ?? '', 'pkg/app.py')).toBe(false);
   });
 });
+
+/** The #3949 layout: the package lives under `src/`, importers sit beside it. */
+const SRC_LAYOUT = [
+  'src/mypkg/__init__.py',
+  'src/mypkg/core.py',
+  'tests/test_core.py',
+  'scripts/run.py',
+  'main.py',
+];
+const TWO_SERVICES = [
+  'svc_a/src/shared/x.py',
+  'svc_b/src/shared/x.py',
+  'svc_a/tests/t.py',
+  'svc_b/tests/t.py',
+  'svc_b/tests/shared/test_x.py',
+  'tools/t.py',
+];
+
+describe('resolvePythonImportTarget — src layout (#3949)', () => {
+  it.each([
+    {
+      name: 'from mypkg.core import compute in tests/',
+      fromFile: 'tests/test_core.py',
+      files: SRC_LAYOUT,
+      parsed: mkNamed('mypkg.core', 'compute'),
+      expected: 'src/mypkg/core.py',
+    },
+    {
+      name: 'import mypkg.core in scripts/',
+      fromFile: 'scripts/run.py',
+      files: SRC_LAYOUT,
+      parsed: mkImport('mypkg.core'),
+      expected: 'src/mypkg/core.py',
+    },
+    {
+      name: 'from mypkg import core in tests/',
+      fromFile: 'tests/test_core.py',
+      files: SRC_LAYOUT,
+      parsed: mkNamed('mypkg', 'core'),
+      expected: 'src/mypkg/core.py',
+    },
+    {
+      name: 'a root-level importer',
+      fromFile: 'main.py',
+      files: SRC_LAYOUT,
+      parsed: mkImport('mypkg.core'),
+      expected: 'src/mypkg/core.py',
+    },
+    {
+      name: 'a nested service root',
+      fromFile: 'data_pipeline/tests/t.py',
+      files: [
+        'data_pipeline/src/pkg/__init__.py',
+        'data_pipeline/src/pkg/core.py',
+        'data_pipeline/tests/t.py',
+      ],
+      parsed: mkImport('pkg.core'),
+      expected: 'data_pipeline/src/pkg/core.py',
+    },
+    {
+      name: 'service A gets its own copy',
+      fromFile: 'svc_a/tests/t.py',
+      files: TWO_SERVICES,
+      parsed: mkImport('shared.x'),
+      expected: 'svc_a/src/shared/x.py',
+    },
+    {
+      name: 'service B gets its own copy',
+      fromFile: 'svc_b/tests/t.py',
+      files: TWO_SERVICES,
+      parsed: mkImport('shared.x'),
+      expected: 'svc_b/src/shared/x.py',
+    },
+    {
+      // `svc_b/tests/shared/` passes the in-repo gate, so this runs through
+      // the full tier chain: the closest src root beats the suffix tie-break,
+      // which would pick the lexicographically smaller svc_a copy.
+      name: 'service B wins over the suffix tie-break when the gate passes',
+      fromFile: 'svc_b/tests/shared/test_x.py',
+      files: TWO_SERVICES,
+      parsed: mkImport('shared.x'),
+      expected: 'svc_b/src/shared/x.py',
+    },
+    {
+      name: 'an importer outside both services stays unresolved',
+      fromFile: 'tools/t.py',
+      files: TWO_SERVICES,
+      parsed: mkImport('shared.x'),
+      expected: null,
+    },
+    {
+      name: 'a namespace package without __init__.py',
+      fromFile: 'tests/t.py',
+      files: ['src/nspkg/mod.py', 'tests/t.py'],
+      parsed: mkImport('nspkg.mod'),
+      expected: 'src/nspkg/mod.py',
+    },
+    {
+      name: 'a missing module does not leak to an unrelated suffix match',
+      fromFile: 'tests/test_core.py',
+      files: [...SRC_LAYOUT, 'other/mypkg/missing.py'],
+      parsed: mkImport('mypkg.missing'),
+      expected: null,
+    },
+    {
+      name: 'a vendored src copy does not capture an external import',
+      fromFile: 'app/main.py',
+      files: ['app/main.py', 'x/src/django/apps.py'],
+      parsed: mkImport('django.apps'),
+      expected: null,
+    },
+    {
+      name: 'a src/ that is itself a package is not an import root',
+      fromFile: 'tests/test_mail.py',
+      files: ['tests/test_mail.py', 'src/__init__.py', 'src/email/utils.py'],
+      parsed: mkImport('email.utils'),
+      expected: null,
+    },
+  ])('resolves into src/ — $name', ({ fromFile, files, parsed, expected }) => {
+    expect(resolvePythonImportTarget(parsed, { fromFile, allFilePaths: new Set(files) })).toBe(
+      expected,
+    );
+  });
+
+  it('classifies the resolved from mypkg import core as an imported module', () => {
+    const parsed = mkNamed('mypkg', 'core');
+    const target = resolvePythonImportTarget(parsed, {
+      fromFile: 'tests/test_core.py',
+      allFilePaths: new Set(SRC_LAYOUT),
+    });
+    expect(isPythonImportedModule(parsed, target ?? '', 'tests/test_core.py')).toBe(true);
+  });
+});

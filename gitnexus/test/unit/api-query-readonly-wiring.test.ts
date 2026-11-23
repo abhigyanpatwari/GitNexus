@@ -30,6 +30,9 @@ describe('api query read-only wiring', () => {
       path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'lbug-adapter.ts'),
       'utf-8',
     );
-    expect(source).toMatch(/openLbugConnection\(lbug,\s*dbPath,\s*\{\s*readOnly:\s*true\s*\}\)/);
+    // Read-only opens also carry the caller's native memory/thread limits.
+    expect(source).toMatch(
+      /openLbugConnection\(lbug,\s*dbPath,\s*\{\s*readOnly:\s*true\s*,\s*\.\.\.resources\s*,?\s*\}\)/,
+    );
   });
 });

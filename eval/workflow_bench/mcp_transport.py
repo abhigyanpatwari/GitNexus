@@ -5,15 +5,13 @@ from __future__ import annotations
 import json
 import shutil
 import socket
-import subprocess
-import sys
 import tempfile
 import threading
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Iterator, Sequence
 
-from .process_control import ManagedProcessResult, run_managed
+from .process_control import run_managed
 from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
@@ -25,32 +23,37 @@ from .proposer_sandbox import (
     ReadOnlyMount,
     SandboxError,
     bwrap_base_args,
-    pid_namespace_command,
 )
 
-def serve_stdio(endpoint: Path, failure: Path, command: Sequence[str]) -> None:
-    """Connect each client socket directly to one server's stdin/stdout.
 
-    The trusted owner runs in an owned PID namespace. The command establishes
-    the candidate's separate filesystem, network and process boundaries.
-    No MCP parsing, shell expansion, or concurrent server fan-out happens here.
-    """
+def serve_stdio(
+    endpoint: Path, failure: Path, command: Sequence[str], *,
+    ready: threading.Event, stop: threading.Event, require_pid_namespace: bool = True,
+) -> None:
+    """Run one managed server per connection to the cell's private socket."""
     try:
         with socket.socket(socket.AF_UNIX) as listener:
             listener.bind(str(endpoint))
             endpoint.chmod(0o600)
             listener.listen(1)
-            print("ready", flush=True)
-            while True:
-                connection, _ = listener.accept()
+            listener.settimeout(0.1)
+            ready.set()
+            while not stop.is_set():
+                try:
+                    connection, _ = listener.accept()
+                except TimeoutError:
+                    continue
                 with connection:
                     try:
-                        with subprocess.Popen(
-                            command, stdin=connection, stdout=connection, close_fds=True,
-                        ) as server:
-                            returncode = server.wait()
-                        if returncode:
-                            raise RuntimeError(f"MCP server exited with status {returncode}")
+                        result = run_managed(
+                            command, timeout=24 * 60 * 60, stdio_socket=connection, cancel_event=stop,
+                            require_pid_namespace=require_pid_namespace,
+                            env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8"},
+                        )
+                        if result.state == "cancelled" and stop.is_set():
+                            return
+                        if not result.ok:
+                            raise RuntimeError(f"MCP server exited with status {result.returncode} ({result.state})")
                         try:
                             pending = connection.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT)
                         except BlockingIOError:
@@ -93,53 +96,38 @@ def server_command(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: P
 
 
 def connector_config() -> str:
+    # socat's default half-close grace is 0.5s. Give the final response the
+    # same window as the CLI client when a caller closes stdin after a request.
     return json.dumps({"mcpServers": {"gitnexus": {
         "type": "stdio", "command": "/usr/bin/socat",
-        "args": ["STDIO", f"UNIX-CONNECT:{SANDBOX_MCP_SOCKET}"],
+        "args": ["-t", "600", "STDIO", f"UNIX-CONNECT:{SANDBOX_MCP_SOCKET}"],
     }}}, sort_keys=True, separators=(",", ":"))
 
 
 @contextmanager
 def isolated_mcp(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: Path) -> Iterator[ReadOnlyMount]:
     """Own the socket and every server until the complete model session ends."""
+    command = server_command(clone=clone, mounts=mounts, bwrap_bin=bwrap_bin)
     # A short, private host path also stays below Linux's Unix-socket path limit.
     with ExitStack() as cleanup:
         root = Path(tempfile.mkdtemp(prefix="wf-mcp-"))
         endpoint, failure = root / "mcp.sock", root / "failure"
         ready, stop = threading.Event(), threading.Event()
-        outcomes: list[ManagedProcessResult | Exception] = []
-        command = pid_namespace_command([
-            sys.executable, "-m", "workflow_bench.mcp_transport", str(endpoint), str(failure),
-            *server_command(clone=clone, mounts=mounts, bwrap_bin=bwrap_bin),
-        ], bwrap_bin=bwrap_bin)
+        errors: list[Exception] = []
 
         def run() -> None:
             try:
-                outcomes.append(run_managed(
-                    command, timeout=24 * 60 * 60, require_pid_namespace=True,
-                    env={"PATH": "/usr/local/bin:/usr/bin:/bin", "LANG": "C.UTF-8",
-                         "PYTHONPATH": str(Path(__file__).resolve().parent.parent)},
-                    cancel_event=stop, stdout_observer=lambda _chunk: ready.set(),
-                ))
+                serve_stdio(endpoint, failure, command, ready=ready, stop=stop)
             except Exception as exc:
-                outcomes.append(exc)
+                errors.append(exc)
             finally:
                 ready.set()
 
         worker = threading.Thread(target=run, name="mcp-transport", daemon=True)
         cleanup.callback(lambda: shutil.rmtree(root) if not worker.is_alive() else None)
-        worker.start()
-        primary: BaseException | None = None
-        try:
-            if not ready.wait(10) or not endpoint.exists() or outcomes:
-                raise SandboxError(f"MCP transport failed to start: {outcomes!r}")
-            yield ReadOnlyMount(endpoint, SANDBOX_MCP_SOCKET)
-            if outcomes or failure.exists():
-                raise SandboxError(f"MCP transport failed: {failure.read_text() if failure.exists() else outcomes!r}")
-        except BaseException as exc:
-            primary = exc
-            raise
-        finally:
+
+        def stop_server(_type, primary, _trace) -> None:
+            stopped_early = not worker.is_alive()
             stop.set()
             worker.join(timeout=15)
             error = None
@@ -147,15 +135,17 @@ def isolated_mcp(*, clone: Path, mounts: Sequence[ReadOnlyMount], bwrap_bin: Pat
                 error = f"MCP transport supervisor did not stop; backing paths retained at {root}"
             elif failure.exists():
                 error = f"MCP transport failed: {failure.read_text()}"
-            elif not outcomes or isinstance(outcomes[0], Exception):
-                error = f"MCP transport supervision failed: {outcomes!r}"
-            elif outcomes[0].state not in ("cancelled",):
-                error = f"MCP transport exited unexpectedly: {outcomes[0]!r}"
+            elif errors:
+                error = f"MCP transport supervision failed: {errors!r}"
+            elif stopped_early:
+                error = "MCP transport stopped before its model session finished"
             if error:
                 if primary is None:
                     raise SandboxError(error)
                 primary.add_note(error)
 
-
-if __name__ == "__main__":
-    serve_stdio(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3:])
+        worker.start()
+        cleanup.push(stop_server)
+        if not ready.wait(10) or not worker.is_alive() or errors:
+            raise SandboxError(f"MCP transport failed to start: {errors!r}")
+        yield ReadOnlyMount(endpoint, SANDBOX_MCP_SOCKET)

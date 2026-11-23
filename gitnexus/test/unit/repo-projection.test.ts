@@ -171,6 +171,23 @@ describe('projectRepoListEntry — GET /api/repos', () => {
 });
 
 describe('projectRepoDetail — GET /api/repo', () => {
+  it('reports graph completeness separately from pending vector work', () => {
+    const metadata = meta({
+      scopeExtractionReceipt: 1,
+      embeddingJob: { version: 1, identity: 'a'.repeat(64), graphGeneration: 'b'.repeat(32) },
+    });
+    const out = projectRepoDetail(entry(), metadata, FRESH, FULL_SOURCE, {
+      phase: 'embedding',
+      totalUnits: 3,
+      completedUnits: 1,
+      reusedUnits: 0,
+      pendingUnits: 1,
+      failedUnits: 1,
+    });
+    expect(out.graphIncompleteReasons).toEqual([]);
+    expect(out.incompleteReasons).toEqual(['embedding-job-pending']);
+    expect(out.embeddingProgress).toMatchObject({ failedUnits: 1, pendingUnits: 1 });
+  });
   it('returns lastCommit and branch, which the route used to drop', () => {
     const out = projectRepoDetail(entry({ branch: 'master' }), null, FRESH, FULL_SOURCE);
     expect(out.lastCommit).toBe(entry().lastCommit);

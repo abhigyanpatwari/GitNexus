@@ -1,0 +1,26 @@
+transform <- function(x) x + 1
+validate <- function(x) x
+callback <- function(x) x
+handler <- function(x) x
+
+apply_it <- function(data, transform) transform(data)
+
+run_with <- function(data, validate) validate(data)
+
+each_cb <- function(fns, d) {
+  for (callback in fns) callback(d)
+}
+
+lapply <- function(x, f) f(x)
+
+via_lapply <- function(xs) lapply(xs, function(handler) handler(1))
+
+via_lapply_unshadowed <- function(xs) lapply(xs, function(item) handler(item))
+
+plain <- function(data) transform(data)
+
+constant_default <- function(data, transform = 2) transform(data)
+
+null_default <- function(data, transform = NULL) transform(data)
+
+function_default <- function(data, validate = function(x) x) validate(data)

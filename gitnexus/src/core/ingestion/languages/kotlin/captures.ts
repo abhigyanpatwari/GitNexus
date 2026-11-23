@@ -1335,7 +1335,9 @@ function collectKotlinLocalTypeTexts(
   returnTypes: ReadonlyMap<string, string>,
 ): Map<string, string> {
   const out = new Map<string, string>();
-  for (const node of descendants(fnNode)) {
+  // Preserve declaration order for local inference while skipping expression
+  // nodes that cannot introduce either a parameter or a property binding.
+  for (const node of fnNode.descendantsOfType(['parameter', 'property_declaration'])) {
     if (node.type === 'parameter') {
       const name = descendantsOfType(node, 'simple_identifier')[0];
       const type = node.namedChildren.find((child) => isKotlinTypeNode(child));
@@ -1579,17 +1581,9 @@ function isKotlinTypeNode(node: SyntaxNode): boolean {
 }
 
 function descendantsOfType(node: SyntaxNode, type: string): SyntaxNode[] {
-  return descendants(node).filter((child) => child.type === type);
-}
-
-function descendants(node: SyntaxNode): SyntaxNode[] {
-  const out: SyntaxNode[] = [];
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child === null) continue;
-    out.push(child, ...descendants(child));
-  }
-  return out;
+  // Search in native code without materializing every unrelated descendant.
+  // Unlike our descendant-only helper, tree-sitter also returns a matching root.
+  return node.descendantsOfType(type).filter((child) => child.id !== node.id);
 }
 
 function shouldEmitReadMember(navNode: SyntaxNode): boolean {

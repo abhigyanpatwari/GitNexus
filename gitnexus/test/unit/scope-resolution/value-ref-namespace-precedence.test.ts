@@ -34,6 +34,7 @@ import type {
   ScopeId,
   SymbolDefinition,
 } from 'gitnexus-shared';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../../src/core/ingestion/model/semantic-model.js';
 
@@ -94,7 +95,11 @@ function indexes(opts: {
       [CONSUMER_FILE, CONSUMER],
       [HUB_FILE, HUB],
     ]),
-    imports: new Map([[CONSUMER, [{ kind: 'namespace', localName: 'hub', targetFile: HUB_FILE }]]]),
+    imports: createEagerImportVisibility(
+      new Map([
+        [CONSUMER, [{ kind: 'namespace', localName: 'hub', targetFile: HUB_FILE } as ImportEdge]],
+      ]),
+    ),
     bindings,
     bindingAugmentations: augmentations,
     workspaceFqnBindings: new Map(),
@@ -204,21 +209,26 @@ describe('namespace value references follow lexical visibility', () => {
       moduleScopes: {
         get: (file: string) => (file === OTHER_FILE ? OTHER : base.moduleScopes.get(file)),
       },
-      imports: new Map([
-        ...base.imports,
-        [
-          importScope,
+      imports: createEagerImportVisibility(
+        new Map([
+          ...[...base.imports.scopes()].map((scope): [ScopeId, readonly ImportEdge[]] => [
+            scope,
+            base.imports.edgesAt(scope) ?? [],
+          ]),
           [
-            {
-              localName: 'hub',
-              targetExportedName: 'other',
-              targetFile: OTHER_FILE,
-              kind: 'namespace',
-              ...edge,
-            } as ImportEdge,
+            importScope,
+            [
+              {
+                localName: 'hub',
+                targetExportedName: 'other',
+                targetFile: OTHER_FILE,
+                kind: 'namespace',
+                ...edge,
+              } as ImportEdge,
+            ],
           ],
-        ],
-      ]),
+        ]),
+      ),
       bindings: new Map([
         ...base.bindings,
         [OTHER, new Map([['scale', [ref(OTHER_FN, 'local')]]])],

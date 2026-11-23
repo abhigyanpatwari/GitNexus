@@ -1,7 +1,7 @@
 import type { ParsedFile } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
-import { DART_PACKAGE_IDENTITY_REASON } from '../../scope-resolution/graph-bridge/imports-to-edges.js';
+import { DART_PACKAGE_IDENTITY_REASON } from './query-provider.js';
 import type { DartPackageConfig } from './package-config.js';
 import { dartPackageImportName } from './package-uri.js';
 

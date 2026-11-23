@@ -15,18 +15,83 @@ const parse = (text) => {
   return result.config;
 };
 
+test('runtime profiles use the substituted mounts list and disable the automatic workspace mount', () => {
+  for (const text of [
+    source,
+    ...[
+      {},
+      { native: true },
+      { ui: true, playwright: '1.63.0' },
+      { native: true, image: 'example/toolchain' },
+      { native: true, ui: true, playwright: '1.63.0' },
+      { ui: true, image: 'example/toolchain' },
+      { native: true, ui: true, image: 'example/toolchain' },
+    ].map((options) => profile(source, options)),
+  ]) {
+    const config = parse(text);
+    assert.equal(config.workspaceMount, '');
+    assert.equal(
+      config.mounts.filter((mount) => mount.split(',').includes('target=/workspace')).length,
+      1,
+    );
+    for (const mount of config.mounts) {
+      assert.match(mount, /(?:^|,)type=volume(?:,|$)/);
+      assert.doesNotMatch(mount, /localEnv|type=bind|workspace-host/);
+    }
+    assert.equal(config.capAdd, undefined);
+    assert.equal(config.postStartCommand, undefined);
+    assert.equal(config.containerEnv.WORKSPACE_9P_TUNE, undefined);
+    assert.equal(config.mounts.filter((m) => m.includes('-snapshot-')).length, 6);
+  }
+});
+
+test('default, UI and prebuilt profiles seed local work into a source volume', () => {
+  for (const text of [
+    source,
+    profile(source, { ui: true, playwright: '1.63.0' }),
+    profile(source, { image: 'example/toolchain' }),
+  ]) {
+    const c = parse(text);
+    assert.deepEqual(
+      c.mounts.filter((mount) => mount.split(',').includes('target=/workspace')),
+      ['source=gitnexus-source-${devcontainerId},target=/workspace,type=volume,volume-nocopy'],
+    );
+    assert.ok(c.mounts.includes('source=gitnexus-seed-${devcontainerId},target=/seed,type=volume'));
+    assert.equal(c.workspaceFolder, '/workspace');
+    assert.equal(
+      c.onCreateCommand,
+      'sudo -n node /seed/seed-workspace.cjs --prepare /workspace /seed',
+    );
+    assert.deepEqual(c.initializeCommand, [
+      'node',
+      '.devcontainer/initialize-volumes.cjs',
+      '${devcontainerId}',
+      'source',
+    ]);
+  }
+});
+
 test('native/UI profile inherits hooks, storage and defaults while changing workspace and browser setup', () => {
   const c = parse(
     profile(source, { native: true, ui: true, playwright: '1.63.0', ref: 'feature/test' }),
   );
-  assert.match(c.workspaceMount, /type=volume/);
+  assert.equal(c.workspaceMount, '');
   assert.match(c.onCreateCommand, /bootstrap-native/);
+  assert.deepEqual(
+    c.mounts.filter((mount) => mount.split(',').includes('target=/workspace')),
+    ['source=gitnexus-workspace-${devcontainerId},target=/workspace,type=volume'],
+  );
+  assert.equal(
+    c.mounts.some((m) => m.includes('target=/workspace-host,') || m.includes('gitnexus-seed-')),
+    false,
+  );
   assert.equal(c.containerEnv.GITNEXUS_CLONE_REF, 'feature/test');
   assert.equal(c.build.args.PLAYWRIGHT_VERSION, '1.63.0');
   assert.equal(c.containerEnv.GITNEXUS_DEV_UI, '1');
   assert.ok(c.mounts.some((m) => m.includes('ms-playwright')));
   assert.ok(c.mounts.some((m) => m.includes('/home/node/.gitnexus')));
-  assert.deepEqual(c.capAdd, ['SYS_ADMIN']);
+  assert.equal(c.capAdd, undefined);
+  assert.equal(c.initializeCommand.at(-1), 'native');
   assert.equal(c.updateContentCommand, 'bash .devcontainer/install-deps.sh');
 });
 
@@ -120,8 +185,9 @@ test('native branch validation rejects invalid Git refs before generation', () =
 test('UI variants preserve empty, custom, and absent capability selections', () => {
   for (const capabilities of [[], ['SYS_PTRACE'], undefined]) {
     const customized = source.replace(
-      '  "capAdd": ["SYS_ADMIN"],',
-      capabilities === undefined ? '' : `  "capAdd": ${JSON.stringify(capabilities)},`,
+      '  "init": true,',
+      '  "init": true,' +
+        (capabilities === undefined ? '' : `\n  "capAdd": ${JSON.stringify(capabilities)},`),
     );
     for (const options of [{}, { native: true }, { image: 'ghcr.io/example/devcontainer:ui' }]) {
       const c = parse(profile(customized, { ...options, ui: true, playwright: '1.63.0' }));

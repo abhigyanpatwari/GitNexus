@@ -12,8 +12,9 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
+import type { AnalysisPhaseProgress } from '../core/analysis-progress.js';
 
-export interface AnalyzeJobProgress {
+export interface AnalyzeJobProgress extends AnalysisPhaseProgress {
   phase: string;
   percent: number;
   message: string;
@@ -88,8 +89,8 @@ export interface AnalyzeJob {
 const JOB_TTL_MS = 60 * 60 * 1000; // 1 hour
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
-/** How long a cancelled worker gets to exit via IPC before a signal is sent. */
-const CANCEL_GRACE_MS = 15_000;
+/** Delay before force-killing an unresponsive standalone child after cancellation. */
+const CANCEL_GRACE_MS = 60_000;
 
 export class JobManager {
   private jobs = new Map<string, AnalyzeJob>();
@@ -156,6 +157,7 @@ export class JobManager {
     };
 
     this.jobs.set(job.id, job);
+    this.armAnalysisTimeout(job.id);
     return job;
   }
 
@@ -191,6 +193,8 @@ export class JobManager {
     if (this.isTerminal(job.status)) {
       job.completedAt = job.completedAt ?? Date.now();
       this.abortControllers.delete(id);
+      clearTimeout(this.timeouts.get(id));
+      this.timeouts.delete(id);
     }
 
     // Emit exactly one event per updateJob call to prevent SSE double-write
@@ -206,22 +210,33 @@ export class JobManager {
     }
   }
 
-  /** Register a child process for a job — enables cancellation and timeout. */
+  private armAnalysisTimeout(jobId: string): void {
+    const previousTimer = this.timeouts.get(jobId);
+    if (previousTimer) clearTimeout(previousTimer);
+
+    // One deadline covers preflight, graph preparation, continuation, and retries.
+    const elapsed = Date.now() - (this.jobs.get(jobId)?.startedAt ?? Date.now());
+    const timer = setTimeout(
+      () => {
+        const job = this.jobs.get(jobId);
+        if (job && !this.isTerminal(job.status)) {
+          this.cancelJob(jobId, 'Analysis timed out (30 minute limit)');
+        }
+      },
+      Math.max(0, JOB_TIMEOUT_MS - elapsed),
+    );
+    this.timeouts.set(jobId, timer);
+  }
+
+  /** Register a child process while retaining the job's original deadline. */
   registerChild(jobId: string, child: ChildProcess) {
     this.children.set(jobId, child);
-
-    // 30-minute timeout
-    const timer = setTimeout(() => {
-      const job = this.jobs.get(jobId);
-      if (job && !this.isTerminal(job.status)) {
-        this.cancelJob(jobId, 'Analysis timed out (30 minute limit)');
-      }
-    }, JOB_TIMEOUT_MS);
-    this.timeouts.set(jobId, timer);
+    this.armAnalysisTimeout(jobId);
 
     // Apply a pending cancel BEFORE other `exit` listeners (analyze-launch's
     // crash-retry) see a still-non-terminal job and fork a replacement worker.
     const onExit = (): void => {
+      if (this.children.get(jobId) !== child) return;
       this.releaseChild(jobId);
       this.applyPendingCancel(jobId);
     };
@@ -286,12 +301,8 @@ export class JobManager {
   /**
    * Cancel a running job.
    *
-   * The worker is asked to stop over IPC first (`{ type: 'cancel' }`), which
-   * lets it reach a JS-visible safe point and checkpoint before exiting —
-   * the same cross-platform control path `core/auto-sync` uses. A signal is
-   * sent only as a bounded fallback: on Windows `child.kill('SIGTERM')` is a
-   * forceful termination (Node ignores the signal name there), so leading
-   * with it could kill the worker mid LadybugDB write.
+   * Request cooperative cancellation over IPC first. A standalone child that
+   * outlasts the grace period is killed; ownership remains held until its exit.
    */
   cancelJob(jobId: string, reason?: string): boolean {
     const job = this.jobs.get(jobId);
@@ -328,31 +339,25 @@ export class JobManager {
   }
 
   /**
-   * Ask a worker to shut down: IPC cancel now, signal after a grace period if
-   * it has not exited on its own. The grace timer is cleared by the child's
-   * `exit` handler registered in `registerChild`.
+   * Request cancellation, then stop a wedged standalone process after grace.
+   * Ownership and the job slot remain held until the actual process exit.
    */
   private requestChildShutdown(jobId: string, child: ChildProcess): void {
-    let ipcSent = false;
     if (child.connected) {
       try {
-        child.send({ type: 'cancel' });
-        ipcSent = true;
+        child.send({ type: 'cancel' }, () => {
+          /* Disconnect also requests cancellation. */
+        });
       } catch {
-        // Channel already closed — fall through to the signal path.
+        // The child's disconnect handler cancels without interrupting native work.
       }
-    }
-    if (!ipcSent) {
-      child.kill('SIGTERM');
-      return;
     }
     if (this.cancelGraceTimers.has(jobId)) return;
     const grace = setTimeout(() => {
       this.cancelGraceTimers.delete(jobId);
       if (child.exitCode === null && child.signalCode === null) {
-        // IPC already set the worker's cooperative cancel flag; a second
-        // SIGTERM is a no-op there. SIGKILL is the actual bounded fallback
-        // (on Windows `kill()` is already TerminateProcess).
+        // Process termination preserves crash-recovery receipts. Never use
+        // this policy for worker_threads running native code in this process.
         child.kill('SIGKILL');
       }
     }, CANCEL_GRACE_MS);
@@ -361,23 +366,14 @@ export class JobManager {
   }
 
   dispose() {
-    // IPC first so a worker that checks in can stop at a safe point.
-    // On Windows `child.kill('SIGTERM')` is TerminateProcess — skip that
-    // immediate kill and leave the 15s grace timer to SIGKILL. On Unix,
-    // SIGTERM after IPC is cooperative, so the grace timers can be dropped.
-    const windows = process.platform === 'win32';
+    // Cancel jobs between workers too, so an already scheduled retry cannot fork.
+    for (const job of this.jobs.values()) {
+      if (!this.hasPendingCancel(job.id)) this.cancelJob(job.id, 'Server shutting down');
+    }
+    // Cooperative cancellation precedes bounded standalone-process shutdown.
     for (const [jobId, child] of this.children) {
-      this.requestChildShutdown(jobId, child);
-      if (!windows) {
-        child.kill('SIGTERM');
-      }
+      if (!this.hasPendingCancel(jobId)) this.requestChildShutdown(jobId, child);
     }
-    this.children.clear();
-    if (!windows) {
-      for (const timer of this.cancelGraceTimers.values()) clearTimeout(timer);
-      this.cancelGraceTimers.clear();
-    }
-    this.pendingCancelReasons.clear();
     for (const controller of this.abortControllers.values()) controller.abort();
     this.abortControllers.clear();
 
@@ -391,6 +387,29 @@ export class JobManager {
     this.emitter.removeAllListeners();
   }
 
+  /** Keep shutdown alive until standalone writers have physically exited. */
+  async waitForChildren(): Promise<void> {
+    await Promise.all(
+      [...this.children.values()].map(
+        (child) =>
+          new Promise<void>((resolve) => {
+            if (child.exitCode !== null || child.signalCode !== null) {
+              resolve();
+              return;
+            }
+            const finished = () => {
+              child.removeListener('exit', finished);
+              child.removeListener('close', finished);
+              resolve();
+            };
+            child.once('exit', finished);
+            // Spawn failures emit error and close, but never exit.
+            child.once('close', finished);
+          }),
+      ),
+    );
+  }
+
   private isTerminal(status: AnalyzeJob['status']): boolean {
     return isTerminalJobStatus(status);
   }
@@ -402,7 +421,12 @@ export class JobManager {
   private cleanup() {
     const now = Date.now();
     for (const [id, job] of this.jobs) {
-      if (this.isTerminal(job.status) && job.completedAt && now - job.completedAt > JOB_TTL_MS) {
+      if (
+        !this.children.has(id) &&
+        this.isTerminal(job.status) &&
+        job.completedAt &&
+        now - job.completedAt > JOB_TTL_MS
+      ) {
         this.jobs.delete(id);
         this.abortControllers.delete(id);
       }

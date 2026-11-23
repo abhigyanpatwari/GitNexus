@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createLbugDatabase,
   estimateBufferPool,
+  estimateWriteBufferPool,
   maxDbSizeReachedRemedy,
   parseMaxDbSize,
   pastEofReadRemedy,
@@ -220,6 +221,21 @@ describe('createLbugDatabase WAL replay option', () => {
 });
 
 describe('createLbugDatabase buffer pool size (#2557)', () => {
+  it('passes an explicit native-default pool through to the constructor', () => {
+    const Database = vi.fn(function (this: unknown) {});
+    try {
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', '1073741824');
+      createLbugDatabase(
+        { Database } as unknown as Parameters<typeof createLbugDatabase>[0],
+        '/tmp/lbug-zero',
+        { bufferPoolBytes: 0 },
+      );
+      expect(bufferPoolArg(Database)).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   const GiB = 1024 * 1024 * 1024;
 
   // Pin a 4 KiB page so every expectation below is host-independent — on a
@@ -328,6 +344,20 @@ describe('adaptive buffer pool hint', () => {
   });
 
   describe('estimateBufferPool', () => {
+    it('budgets COPY for source-heavy graphs while respecting the host cap', () => {
+      const memory = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
+      try {
+        expect(estimateWriteBufferPool(66_560, 209 * MiB, false)).toBeGreaterThanOrEqual(768 * MiB);
+        expect(estimateWriteBufferPool(66_560, 209 * MiB, true)).toBeGreaterThanOrEqual(1664 * MiB);
+        expect(estimateWriteBufferPool(100_000, MiB, true)).toBe(estimateBufferPool(100_000));
+        expect(estimateWriteBufferPool(41, GiB, true)).toBe(2 * GiB);
+        memory.mockReturnValue(GiB);
+        expect(estimateWriteBufferPool(41, GiB, true)).toBe(Math.floor(0.8 * GiB));
+      } finally {
+        memory.mockRestore();
+      }
+    });
+
     it.each([
       ['tiny graph clamps up to the 256 MiB COPY-safety floor', 41, 256 * MiB],
       ['a graph under the floor still clamps up to 256 MiB', 40_000, 256 * MiB],

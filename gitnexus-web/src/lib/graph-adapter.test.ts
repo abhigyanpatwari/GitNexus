@@ -1,8 +1,12 @@
-import { describe, it, expect } from 'vitest';
-import { knowledgeGraphToTreeGraphology, knowledgeGraphToCirclesGraphology } from './graph-adapter';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  knowledgeGraphToGraphology,
+  knowledgeGraphToTreeGraphology,
+  knowledgeGraphToCirclesGraphology,
+} from './graph-adapter';
 import type { KnowledgeGraph } from '../core/graph/types';
 import type { GraphNode } from 'gitnexus-shared';
-import { EDGE_INFO } from './constants';
+import { COMMUNITY_COLORS, EDGE_INFO, NODE_COLORS } from './constants';
 
 function makeNode(id: string, label: string, name: string): GraphNode {
   return {
@@ -11,6 +15,121 @@ function makeNode(id: string, label: string, name: string): GraphNode {
     properties: { name, filePath: '', startLine: 1, endLine: 1 },
   };
 }
+
+describe('opaque community identities', () => {
+  const communityGraph = (ids: string[]): KnowledgeGraph => ({
+    nodes: ids.flatMap((id) => [
+      makeNode(id, 'Community', id),
+      makeNode(`member:${id}`, 'Function', `member:${id}`),
+    ]),
+    relationships: ids.map((id) => ({
+      id: `membership:${id}`,
+      type: 'MEMBER_OF',
+      sourceId: `member:${id}`,
+      targetId: id,
+    })),
+  });
+
+  it('keeps hashed and suffixed communities distinct when deriving memberships', () => {
+    const ids = ['comm_abcdef123456', 'comm_abcdef123456_2', 'comm_123456789012'];
+    const result = knowledgeGraphToGraphology(communityGraph(ids));
+    for (const id of ids) {
+      const attributes = result.getNodeAttributes(`member:${id}`);
+      expect(attributes.community).toBe(id);
+      expect(attributes.color).toMatch(/^#[0-9a-f]{6}$/i);
+      expect(Number.isFinite(attributes.x)).toBe(true);
+      expect(Number.isFinite(attributes.y)).toBe(true);
+    }
+  });
+
+  it('preserves existing colors after an unrelated community is added or reordered', () => {
+    const ids = ['comm_abcd01234567', 'comm_bcde01234567'];
+    const before = knowledgeGraphToGraphology(communityGraph(ids));
+    const after = knowledgeGraphToGraphology(
+      communityGraph(['comm_aaaa01234567', ...ids.toReversed()]),
+    );
+    for (const id of ids) {
+      const member = `member:${id}`;
+      expect(after.getNodeAttribute(member, 'community')).toBe(id);
+      expect(after.getNodeAttribute(member, 'color')).toBe(
+        before.getNodeAttribute(member, 'color'),
+      );
+    }
+  });
+
+  it('ignores missing and non-Community membership targets', () => {
+    const graph = communityGraph(['comm_abcdef123456']);
+    graph.nodes.push(
+      makeNode('orphan', 'Function', 'orphan'),
+      makeNode('wrong', 'Function', 'wrong'),
+    );
+    graph.relationships.push(
+      { id: 'missing', type: 'MEMBER_OF', sourceId: 'orphan', targetId: 'comm_missing' },
+      { id: 'non-community', type: 'MEMBER_OF', sourceId: 'wrong', targetId: 'orphan' },
+    );
+    const result = knowledgeGraphToGraphology(graph);
+    expect(result.getNodeAttribute('orphan', 'community')).toBeUndefined();
+    expect(result.getNodeAttribute('wrong', 'community')).toBeUndefined();
+  });
+
+  it('preserves legacy colors and explicit numeric membership maps', () => {
+    const graph = communityGraph(['comm_1']);
+    const legacy = knowledgeGraphToGraphology(graph);
+    const explicit = knowledgeGraphToGraphology(graph, new Map([['member:comm_1', 1]]));
+    expect(legacy.getNodeAttribute('member:comm_1', 'color')).toBe(COMMUNITY_COLORS[1]);
+    expect(explicit.getNodeAttribute('member:comm_1', 'community')).toBe(1);
+    expect(explicit.getNodeAttribute('member:comm_1', 'color')).toBe(COMMUNITY_COLORS[1]);
+  });
+
+  it('keeps type coloring for a non-symbol community member', () => {
+    const graph = communityGraph(['comm_1']);
+    graph.nodes[1].label = 'File';
+    const result = knowledgeGraphToGraphology(graph);
+    expect(result.getNodeAttributes('member:comm_1')).toMatchObject({
+      community: 'comm_1',
+      communityColor: COMMUNITY_COLORS[1],
+      color: NODE_COLORS.File,
+    });
+  });
+});
+
+it('seeds descendants breadth-first even when input nodes put children first', () => {
+  const random = vi.spyOn(Math, 'random').mockReturnValue(0.75);
+  try {
+    const graph: KnowledgeGraph = {
+      nodes: [
+        makeNode('leaf', 'Function', 'leaf'),
+        makeNode('child', 'Class', 'child'),
+        makeNode('sibling', 'File', 'sibling'),
+        makeNode('parent', 'File', 'parent'),
+        makeNode('root', 'Folder', 'root'),
+      ],
+      relationships: [
+        { id: 'r1', type: 'CONTAINS', sourceId: 'root', targetId: 'parent' },
+        { id: 'r2', type: 'CONTAINS', sourceId: 'root', targetId: 'sibling' },
+        { id: 'r3', type: 'DEFINES', sourceId: 'parent', targetId: 'child' },
+        { id: 'r4', type: 'DEFINES', sourceId: 'child', targetId: 'leaf' },
+      ],
+    };
+    const result = knowledgeGraphToGraphology(graph);
+    expect(result.nodes()).toEqual(['root', 'parent', 'sibling', 'child', 'leaf']);
+    const offset = Math.sqrt(graph.nodes.length) * 3 * 0.25;
+    for (const [child, parent] of [
+      ['parent', 'root'],
+      ['sibling', 'root'],
+      ['child', 'parent'],
+      ['leaf', 'child'],
+    ]) {
+      for (const axis of ['x', 'y']) {
+        expect(result.getNodeAttribute(child, axis)).toBeCloseTo(
+          result.getNodeAttribute(parent, axis) + offset,
+        );
+      }
+    }
+  } finally {
+    random.mockRestore();
+  }
+});
 
 describe('knowledgeGraphToTreeGraphology', () => {
   it('should create a graph with tree layout', () => {

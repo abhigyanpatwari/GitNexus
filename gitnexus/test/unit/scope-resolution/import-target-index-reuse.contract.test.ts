@@ -551,6 +551,20 @@ const FIXTURES: ReadonlyMap<SupportedLanguages, ImportTargetFixture> = new Map<
     },
   ],
   [
+    SupportedLanguages.R,
+    {
+      files: ['scripts/main.R', 'scripts/utils.R', 'pkgA/R/other.R'],
+      fromFile: 'scripts/main.R',
+      resolutionConfig: undefined,
+      // R preserves the quotes of source("file.R") in ParsedImport.targetRaw.
+      missTarget: (i) => `"ghost${i}.R"`,
+      hitTarget: '"utils.R"',
+      parsedImport: (targetRaw) => ({ kind: 'side-effect', targetRaw }),
+      minimumScans: 1,
+      minimumParsedFileReads: 0,
+    },
+  ],
+  [
     SupportedLanguages.ObjectiveC,
     {
       // `resolutionConfig` is the workspace scan from `loadResolutionConfig`

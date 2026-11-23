@@ -1,0 +1,15 @@
+{
+  "language": "r",
+  "description": "Rename a plain function that is also called through its backticked spelling; both calls are the same symbol.",
+  "categories": ["call-graph", "same-file", "backtick-name"],
+  "target": { "name": "helper", "kind": "Function", "file": "ticks.R", "startLine": 0 },
+  "newName": "assist",
+  "expect": { "status": "success", "edits": 3 },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": { "name": "step", "kind": "Function", "file": "ticks.R", "startLine": 2 },
+      "to": { "name": "helper", "kind": "Function", "file": "ticks.R", "startLine": 0 }
+    }
+  ]
+}

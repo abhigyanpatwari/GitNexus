@@ -20,6 +20,18 @@ export function rubyBindingScopeFor(
   if (decl['@type-binding.self'] !== undefined) {
     return innermost.id;
   }
+  // YARD `@param` tags are the only `@type-binding.parameter` captures Ruby
+  // emits (a bare `@type [T]` synthesizes nothing). They are anchored on the
+  // `method` node (the comment precedes it; `findFollowingMethod` in
+  // captures.ts). That node is also the method's own `@scope.function`, so
+  // the extractor's equal-range auto-hoist (built for return types, which
+  // callers read by the function's name) would lift the binding to the
+  // enclosing class/module — and every sibling with a same-named parameter
+  // would borrow it (RUBY-01). A parameter's type belongs to the one method
+  // that declares it.
+  if (decl['@type-binding.parameter'] !== undefined) {
+    return innermost.id;
+  }
   // A plain Ruby `def` creates a method on the enclosing class/module (or
   // Object at top level), even when it appears textually inside another
   // method. The provider proves this from the AST before emitting either a

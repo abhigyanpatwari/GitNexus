@@ -714,6 +714,7 @@ def _check_c_provenance_mutants(candidate: Path, base: Path, task: dict[str, obj
         ("inv-feature-c-include-provenance", "inv-feature-c-include-provenance-flag"),
         ("inv-feature-c-include-provenance", "inv-feature-c-include-provenance-delimiter"),
         ("inv-feature-list-repos-filter", "inv-feature-list-repos-filter"),
+        ("inv-feature-list-repos-filter", "inv-feature-list-repos-filter-policy"),
         ("cross-module-parse-retry", "cross-module-parse-retry"),
         ("cross-module-parse-retry", "cross-module-parse-retry-pool"),
     ],
@@ -736,6 +737,29 @@ def test_shipped_oracles_reject_task_base_and_accept_reference_fixes(
     subprocess.run(["git", "apply", str(patches / f"{reference}.patch")], cwd=candidate, check=True)
     positive = _verify_shipped_oracle(candidate, tasks[task_id])
     assert positive.returncode == 0, positive.stdout + positive.stderr
+    if task_id == "inv-feature-list-repos-filter":
+        typed = subprocess.run(
+            ["./node_modules/.bin/tsc", "--noEmit"],
+            cwd=candidate / "gitnexus",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=180,
+        )
+        assert typed.returncode == 0, typed.stdout + typed.stderr
+        # Advertising the parameter alone must not satisfy the public oracle.
+        # Restore only the implementation, leaving the advertised schema intact.
+        implementation = Path(
+            "gitnexus/src/mcp/repository-policy.ts" if reference.endswith("-policy")
+            else "gitnexus/src/mcp/local/local-backend.ts"
+        )
+        path = candidate / implementation
+        original = path.read_bytes()
+        path.write_bytes((base / implementation).read_bytes())
+        try:
+            _assert_behavioral_rejection(_verify_shipped_oracle(candidate, tasks[task_id]), "total")
+        finally:
+            path.write_bytes(original)
     if task_id == "inv-feature-c-include-provenance":
         # A reference passing transpile-only Vitest is not enough: use the same
         # typed, authored verification that an evaluated repair must satisfy.

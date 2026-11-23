@@ -1,0 +1,48 @@
+{
+  "language": "typescript",
+  "description": "Rename a default-exported function (#3956): importers bind their own local names to the default export, so neither a same-named nor a differently named default-import local is rewritten.",
+  "categories": [
+    "cross-file",
+    "default-export",
+    "alias",
+    "call-graph"
+  ],
+  "target": {
+    "name": "Child",
+    "kind": "Function",
+    "file": "source.ts"
+  },
+  "newName": "Widget",
+  "expect": {
+    "status": "success",
+    "edits": 1
+  },
+  "edges": [
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "useSame",
+        "kind": "Function",
+        "file": "same.ts"
+      },
+      "to": {
+        "name": "Child",
+        "kind": "Function",
+        "file": "source.ts"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": {
+        "name": "useAlias",
+        "kind": "Function",
+        "file": "alias.ts"
+      },
+      "to": {
+        "name": "Child",
+        "kind": "Function",
+        "file": "source.ts"
+      }
+    }
+  ]
+}

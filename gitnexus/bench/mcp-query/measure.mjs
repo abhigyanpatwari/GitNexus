@@ -10,6 +10,7 @@ import { performance } from 'node:perf_hooks';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { summarize, formatReport } from './statistics.mjs';
+import { parityBody } from './integrity-parity.mjs';
 
 const { values } = parseArgs({
   options: {
@@ -60,6 +61,8 @@ const runtimes = Object.fromEntries(
   }),
 );
 const repo = path.join(out, 'repo');
+/** Main heap (MiB) for building each 64-file fixture index. */
+const INDEX_HEAP_MB = '1024';
 const env = {
   PATH: process.env.PATH,
   HOME: process.env.HOME,
@@ -165,6 +168,7 @@ function inspect(response, entry, variant) {
   if (entry.tool === 'context') {
     assert(body.symbol?.content?.length > 4096, 'Context must preserve the indexed source snippet');
   }
+  const comparable = parityBody(body, variant, report.indexes);
   return {
     bytes: Buffer.byteLength(text),
     rows: rows.length,
@@ -173,8 +177,8 @@ function inspect(response, entry, variant) {
     digest: hash(
       JSON.stringify(
         entry.tool === 'context'
-          ? { ...canonical(body), content: body.symbol.content }
-          : canonical(body),
+          ? { ...canonical(comparable), content: body.symbol.content }
+          : canonical(comparable),
       ),
     ),
   };
@@ -249,7 +253,7 @@ const records = [],
 const report = {
   version: 1,
   harnessSha256: hash(
-    ['measure.mjs', 'statistics.mjs']
+    ['measure.mjs', 'statistics.mjs', 'integrity-parity.mjs']
       .map((file) => fs.readFileSync(new URL(file, import.meta.url), 'utf8'))
       .join('\n'),
   ),
@@ -310,11 +314,15 @@ try {
     for (const variant of ['baseline', 'candidate']) {
       const runtimeEnv = runtimeEnvs[variant];
       fs.writeSync(log, `\n${variant} index (${runtimes[variant].sha})\n`);
-      execFileSync(process.execPath, [runtimes[variant].cli, 'analyze', repo, '--index-only'], {
-        cwd: repo,
-        env: runtimeEnv,
-        stdio: ['ignore', log, log],
-      });
+      // Indexing is setup, outside the timing window. Give it an explicit heap
+      // so admission does not depend on the runner's RAM or on the runtime's
+      // default heap policy: with GITNEXUS_MEMORY=off, a runtime that reserves
+      // V8's default limit refuses hosts reporting under about 15.8 GiB.
+      execFileSync(
+        process.execPath,
+        [runtimes[variant].cli, 'analyze', repo, '--index-only', '--memory-budget', INDEX_HEAP_MB],
+        { cwd: repo, env: runtimeEnv, stdio: ['ignore', log, log] },
+      );
       const metadata = JSON.parse(
         fs.readFileSync(path.join(runtimeEnv.GITNEXUS_STORAGE_PATH, 'gitnexus.json'), 'utf8'),
       );

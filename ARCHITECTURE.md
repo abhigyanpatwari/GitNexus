@@ -24,7 +24,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
    - **HTTP bridge:** `serve.ts` → Express (`api.ts`, `mcp-http.ts`) for web UI
    - **CLI direct:** `gitnexus query|context|impact|cypher` in `tool.ts`
 
-4. **Staleness** — `core/git-staleness.ts` compares indexed `lastCommit` to `HEAD` and classifies the result as `current`, `behind`, `diverged` (HEAD moved off the indexed commit, gap uncountable) or `unknown`; `core/staleness-status.ts` builds the one `staleness` payload that MCP `list_repos`, the read tools and the `serve` repo routes all emit.
+4. **Staleness** — `core/git-staleness.ts` compares indexed `lastCommit` to `HEAD` and classifies the result as `current`, `behind`, `diverged` or `unknown`. The MCP read tools and `serve` repo routes use `core/staleness-status.ts` to format the result. MCP `list_repos` skips Git checks and reports `unknown` during discovery.
 
 ## MCP tools
 
@@ -69,7 +69,7 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 | Embeddings                                              | `src/core/embeddings/` + `src/core/run-analyze.ts`                                                     |
 | Wiki generation                                         | `src/core/wiki/`                                                                                       |
 | Language support                                        | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts`        |
-| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks |
+| Import resolution | `src/core/ingestion/scope-resolution/pipeline/run.ts` + per-language `ScopeResolver.resolveImportTarget` hooks (which files an import can reach) and optional `ScopeResolver.onDemandImportTargets` (which wildcard targets become persisted `IMPORTS` edges) |
 | Call resolution/inheritance/MRO                         | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge)                                |
 | Type extraction                                         | `src/core/ingestion/type-extractors/`                                                                  |
 | Worker pool                                             | `src/core/ingestion/workers/`                                                                          |
@@ -113,6 +113,20 @@ scan → structure → [springConfig, markdown, cobol] → parse → [routes, to
 | `processes`               | `processes.ts`                         | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges                                                                                                                                                       |
 
 **Non-phase files in the same directory:** `parse-impl.ts`, `cross-file-impl.ts` (implementation), `wildcard-synthesis.ts` (whole-module import expansion), `types.ts`, `runner.ts`, `index.ts`.
+
+### Incremental resolution groups
+
+`LanguageProvider.incrementalResolutionGroup(filePath)` groups files whose
+resolution can change together even without a persisted import edge. Java uses
+one workspace-wide group because a chained call can depend on an unmentioned
+type in another directory. Edits, additions and deletions make every group member
+and its importers candidates for rewriting.
+
+After resolution, `incremental/file-row-digests.ts` compares each candidate's
+graph rows with the digest recorded in index metadata at its last write. Only
+changed candidates join the write set; missing digests conservatively require a
+rewrite. This preserves incremental/full parity without making every Java body
+edit rewrite the whole language. Grouping affects invalidation, not name visibility.
 
 ### DAG runner
 
@@ -324,6 +338,14 @@ authoritative declaration registries.
    for downstream resolution passes. `finalizeScopeModel` returns the scope/index
    bundle that the orchestrator consumes directly.
 
+The bundle's `imports` field is an `ImportVisibility` (`gitnexus-shared`,
+`scope-resolution/import-visibility.ts`), the only way to ask what a scope
+imports. A reader that needs every file a scope reaches asks `reaches`,
+`membership` or `forEachTarget`; a reader that picks an import by name,
+definition or kind uses `edgesAt`. How finalize stores imports is not visible to
+either, so no reader can hold a collection that omits part of what a scope
+reaches.
+
 This read-only model handle restricts registry writes. It does not freeze every
 scope map: imported-return propagation and precise call-result binding deliberately
 refine `Scope.typeBindings` in ordered passes. Graph-query MCP and HTTP endpoints read the
@@ -371,6 +393,8 @@ A provider can explicitly restrict its edge mode. COBOL currently uses
 `callable-flow-only`: its established processor retains structural CALLS/IMPORTS,
 and scope resolution contributes procedure-pointer calls. Registration alone is
 not a claim that every language feature uses identical resolution rules.
+
+Shared code does not name languages. When a language needs an extension point that does not exist yet, it is added as an optional `LanguageProvider` hook that no other language has to implement (R's `postParse` and `resolveMemberOwnerNode`; see the hook table below).
 
 ### Pipeline stages
 
@@ -432,6 +456,60 @@ Wire format is **v2**: `2|<base>|<step>|<step>…`, one-character version prefix
 
 Receivers the resolver could not type are not silently dropped. Each records a `ResolutionOutcome` (`scope-resolution/resolution-outcome.ts`) carrying the receiver's *shape* (`classifyReceiverShape`: `chain-call` / `chain-field` / `chain-mixed` / `chain-unwrap` / `no-chain` — the bench censuses these) and its *origin* (`in-program` / `external` / `unknown`). `scope-resolution/unresolved-receivers.ts` aggregates them per member name into the index-persisted `unresolvedReceiverMembers` summary, keeping in-program and external counts under separate keys. Only in-program drops make a count short: an external-rooted call (`System.out.println`, `fetch(...)`) has no in-graph node an edge could have reached, so it is reported but does not hedge. `impact` / `context` read that summary and publish `epistemic: 'exact' | 'lower-bound'`, prose `boundaries`, and the machine-readable `causes` split (`EpistemicCauses` in `mcp/local/local-backend.ts`).
 
+Python's provider classifies attribute reads and assignment targets separately; augmented assignments produce both read and write references. Constructor assignments on a proven instance receiver also create `Property` nodes without requiring a value type annotation. Annotation-only targets do not assign a value. These rules follow the [Python attribute-reference](https://docs.python.org/3/reference/expressions.html#attribute-references) and [assignment](https://docs.python.org/3/reference/simple_stmts.html#assignment-statements) semantics.
+
+Property references declined across language boundaries are recorded in `crossLanguageProperties`. Both `context` and upstream `impact` on an affected property report `epistemic: 'lower-bound'`, with the explanation in `boundaries` and `unresolved`, and the definition languages in `anchorLanguages`. This evidence does not fabricate cross-language edges and does not qualify a downstream walk.
+
+### Java overload selection and missing call edges (#3789)
+
+Java resolves an overload family through provider hooks before the shared passes
+prune candidates by owner or conversion rank. The provider gathers eligible
+members across the receiver's compile-time hierarchy, removes overridden
+signatures, and applies the JLS 15.12.2 phases in order: strict invocation, loose
+invocation, then variable arity. Within the first applicable phase it compares
+parameter types pairwise for specificity. Boxing, primitive widening, arrays,
+null, and concrete invariant generic arguments retain their distinct meanings.
+Lexically scoped argument facts travel in Java's existing `captureSideChannel`,
+so parse workers and durable cache replay make the same decisions.
+Static imports use accessible overload families; an explicit import shadows only
+the same signature from an on-demand import. Enum constant bodies and implicit
+record accessors reuse the provider's existing synthetic identities. Field,
+hierarchy, and subtype walks memoize shared ancestors while preserving cycle and
+depth bounds.
+
+The provider models a bounded set of qualified JDK type relationships and
+`Arrays.asList` / `Collections.singletonList` calls. These factories are poly
+expressions: their type arguments depend on the candidate's parameter type.
+Source declarations and lexical shadowing take precedence over these summaries.
+Unsupported generic inference, unavailable argument types, and incomplete
+inherited inventories leave an overload unresolved. A complete original family
+containing only one declaration may retain the existing unique-member inference
+for opaque arguments; this exception does not apply to a family narrowed to one
+candidate. Runtime implementation dispatch follows the selected signature.
+It preserves the original receiver's subtype bound and excludes static and private
+methods from virtual dispatch.
+
+Captures also retain callable-owned return annotations and structural identities
+for `var` initializers. The shared passes keep the selected compile-time method
+separate from runtime dispatch targets, then propagate owned return types to
+untyped assignments and revisit waiting receiver calls through a dependency
+queue. Sequential assignments have no expression-depth cutoff. Unresolved producers
+cannot restore an earlier name-based return guess. Generic implementation
+signatures substitute a whole formal type parameter only when concrete source
+heritage proves its binding; unsupported substitutions remain unknown.
+
+Suppressed overload calls record graph identities for their candidate methods,
+declaring owners, and caller. `unresolved-overloads.ts` reconciles decisions per
+call site and resolution phase and persists a bounded `unresolvedOverloads`
+receipt, including an explicit complete-empty receipt. `impact` and `context`
+report matching omitted sites through `causes.overloadResolution` and
+`epistemic: 'lower-bound'`; possible callers never become ordinary `CALLS`
+edges or inflate known caller counts. Impact checks the nodes whose neighbors
+were actually expanded before pagination, using candidate identities upstream
+and caller identities downstream. Missing, malformed, or capped receipts retain
+an uncertainty boundary. Re-analyze with the current build (`--force` when
+repairing metadata) to replace a legacy receipt.
+
 ### Optional CFG/PDG emission (`--pdg`, #2081–#2086)
 
 On a `--pdg` run providers build control-flow graphs through `LanguageProvider.cfgVisitor` (Tree-sitter ASTs) or `collectSourceCfgs` (standalone source processing). Every supported language supplies one of these hooks; Vue covers executable scripts. AST visitors run in the parse worker, while source-backed providers run during fresh scope extraction. Both produce plain `ParsedFile.cfgSideChannel` data. Scope-resolution emits the program-dependence layers **inside Phase 4 of `runScopeResolution`, while the disk-backed ParsedFile store is still live**. The store is cleared after that phase, so a later standalone phase cannot consume it.
@@ -476,6 +554,8 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `resolveQualifiedCallee?`                               | `(calleeText, inScope, …) → callable \| undefined` — resolve a qualified callee only the language can read (Rust `rp::make` in `x = rp::make()` / `rp::make().m()`, Kotlin package path `com.acme.mod.make`) so chain-follow types the call from its return annotation; default off |
 | `resolveQualifiedTypeSpellings?`                        | A receiver's declared or return type written QUALIFIED (`rp::C x`, `f(a::Config c)`) that binds nothing through the scope chain resolves through `resolveQualifiedInheritanceBase` — qualifier matched against the candidate's namespace, refuse on a tie — instead of by its tail, which binds the nearer same-named class. Runs after every existing lookup and after the template-argument match; default off, C++ opts in |
 | `splitQualifiedCallee?`                                 | `(callee, callerScope?, scopes?, position?) → { receiver, member } \| undefined` — map a qualified callee spelling (`rp::make`) onto a receiver/member pair that retains the full written namespace qualifier, so a factory result (`auto x = rp::make(); x.m()`, `rp::make().m()`) is typed from the definition `resolveQualifiedReceiverMember` returns and that definition's own declared return type. Caller scope, indexes and source position let a provider reject shadowed or aliased namespace qualifiers only when visible at the factory expression. Shared code never splits on a separator; default off, C++ implements it |
+| `onDemandImportTargets?(parsed, indexes)`               | Files supplying what a source file takes through on-demand (wildcard) imports; narrows persisted File→File `IMPORTS` edges only — `undefined` keeps every edge. Default: no narrowing                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `groupsWildcardImportTargets?`                          | Store a wildcard import that resolves to a list of files as one group over that list instead of one import edge per file. Applies when finalize creates no per-name wildcard bindings; later name resolution uses `ImportVisibility`. Default: one edge per file |
 
 ### Per-language registration
 
@@ -514,7 +594,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 
 ## Language-agnostic graph feeding
 
-18 languages → single unified graph. Four abstraction layers:
+19 languages → single unified graph. Four abstraction layers:
 
 ```
  Unified Graph Schema (44 node types, 21 relationship types)
@@ -540,8 +620,10 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `mroStrategy`          | `first-wins` / `c3` / `none`                                                                                                                                                                                                                                                                                                      |
 | `descriptionExtractor` | Optional hook returning a symbol's doc-comment text as its `description`; feeds the embedding metadata header so doc-only terms are semantically searchable (issue #2270). Most languages register `createLeadingDocDescriptionExtractor` (shared, language-neutral; per-language comment/wrapper config passed at the call site) |
 | `definitionPropertiesExtractor` | Optional language-owned hook for structured, clone-safe definition metadata. Shared ingestion persists these properties opaquely; the owning provider supplies the extraction semantics. |
+| `postParse` | Optional. Whole-graph pass a language runs once after every chunk is merged and before scope resolution (deferred owner resolution, manifest-driven export refinement). Called once per analyze, awaited, only when the language has parsed files; a throw aborts the parse phase. Incremental analyse writes back only changed files, so a mutation of an unchanged file's nodes is not persisted; a hook whose result depends on manifests that are not parsed sources needs `--force` after such an edit. R: deferred `setMethod`/R6 owners + NAMESPACE exports. |
+| `resolveMemberOwnerNode` | Optional. For languages whose members are owned by a call/assignment rather than an enclosing container node (R: R6/RefClass): returns the node the method and field extractors read members from, or null. Consulted by the enclosing-owner slot after the container walk and `resolveFileTypeOwner` (same slot; Zig file-owner is the precedent). Not an S4 mechanism: R's `setMethod(...)` returns null (its owner is a string-literal class name, not a node); S4 ownership arrives only through the `ownerNameHint` → `postParse` path. |
 
-18 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
+19 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
 
 ### Unified capture tags
 
@@ -586,25 +668,45 @@ Inheritance is captured by the `@reference.inherits` tag and emitted by the scop
 
 ```
 CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
-  1. Early exit if lastCommit == HEAD (unless --force)     [0%]
-  2. Cache existing embeddings from prior index             [0%]
-  3. runPipelineFromRepo() → KnowledgeGraph                [0-60%]
-  4. Clean up legacy KuzuDB files                          [60%]
-  5. initLbug() → loadGraphToLbug() via CSV streaming      [60-85%]
-  6. Create FTS indexes (File, Function, Class, Method...) [85-90%]
-  7. Restore cached embeddings (batch insert)              [88%]
-  8. Generate new embeddings if --embeddings               [90-98%]
-  9. Save metadata + register repo + update .gitignore     [98-100%]
- 10. Generate AI context files (AGENTS.md, CLAUDE.md)      [100%]
+  1. Admit phase resources and recover any prepared graph publication.
+  2. Reuse unchanged graph/parser work where its receipts still match.
+  3. runPipelineFromRepo() → KnowledgeGraph → bounded graph write → FTS.
+  4. Prepare the owned graph and publication receipt; drain native resources.
+  5. Supervisor waits for graph-process exit, verifies and publishes metadata.
+  6. If embeddings are requested/pending, open the resumable embedding job.
+  7. Reuse verified vectors, commit bounded units, then seal/checkpoint/publish.
+  8. Register the repo and generate AI context files.
+
+Graph-only legacy slots keep their existing path until separate publication is
+needed. A ready graph remains queryable while an embedding job is pending;
+semantic search reports degradation until a compatible sealed artifact is ready.
 ```
 
-**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, skipped if >50k nodes), `--skipGit`, `--noStats`.
+Unit acknowledgements follow verified, durable WAL commits. Native automatic
+checkpoints bound WAL growth; the final checkpoint prepares the sealed artifact
+for read-only publication without requiring WAL replay.
+
+Automatic resource admission uses 75% of effective process/container RAM as a
+fixed process-family ceiling, divided across concurrent analyses. Each phase
+accounts for the main heap, retained supervisor, native pools and headroom;
+parser workers and embedding model/queues use separate phase reservations.
+Parser workers reserve at least the main-heap allocation because Node's process
+heap flag overrides per-worker V8 limits. Automatic main-heap sizing leaves room
+for required worker reservations. Explicit limits never expand the family
+ceiling; combinations that cannot fit fail admission.
+This bounds reservations, not operating-system RSS.
+
+**Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 
 ## Storage
 
 ```
 <repo>/.gitnexus/
-  ├── lbug           # LadybugDB database
+  ├── lbug           # Legacy monolithic database, until first separate publication
+  ├── lbug.generation.<id>  # Owned private graph, selected by graphPath in metadata
+  ├── analysis-publication.json  # Recoverable prepared graph receipt
+  ├── embeddings/<identity>/     # Job journal, manifest and separate vector database
+  ├── embeddings/spaces/         # Model-space ownership/reuse receipts
   ├── lbug.wal       # Write-ahead log
   ├── lbug.shadow    # Shadow sidecar (checkpoint staging)
   ├── lbug.lock      # Single-writer lock
@@ -636,7 +738,11 @@ the read-only open is retried — see `sidecar-recovery.ts`
 (`isReadOnlyCheckpointInProgressError`) and the
 `lbug-interrupted-checkpoint-recovery` integration test.
 
-Managed by `repo-manager.ts`.
+Managed by `repo-manager.ts`. Publication reclaims unreferenced private graphs
+and job artifacts under the slot lock, preserving current jobs, model spaces,
+legacy reuse sources and prepared publications. Busy reader files are retried on
+a later publication. See [MIGRATION.md](MIGRATION.md#resumable-analysis-and-separate-vector-storage-3598)
+before mixing binary versions or rolling back.
 
 ### Automatic parse-cache identity
 
@@ -668,12 +774,29 @@ Inputs outside that boundary require an ownership decision and an update to
 `test/unit/parse-cache-input-coverage.test.ts`, which audits imports, dynamic
 loaders, runtime assets, and shared dependencies.
 
-Both the worker-result index and durable `ParsedFile` index validate the base
-identity before workers can be skipped. Physical chunk keys bind that identity
-and sorted source path/content hashes; PDG-enabled chunks additionally bind
-the PDG identity and resolved function-line cap. A CFG-only change therefore
-does not invalidate ordinary chunks. Legacy numeric, missing, malformed, or
-foreign identities miss; a concurrently pruned shard is also a miss.
+Each logical cache entry belongs to one source path and content hash, bound to
+its base parser identity. PDG entries also bind the PDG identity and resolved
+function-line cap. Chunk membership, byte budgets and worker assignment affect
+scheduling only: editing, adding or renaming one file does not invalidate its
+unchanged neighbours. Cross-file resolution still runs from all current facts.
+
+Workers encode facts and `ParsedFile` scopes separately, with runtime-checked V8
+envelopes and bounded compression. The coordinator appends these sections to
+32 MiB target packs (a larger valid file occupies a dedicated pack), with range
+references in `parse-cache/files/index.json`. It accepts a hit only after both
+sections validate and the scope bytes are pinned into the run-owned store.
+Scope resolution reads only its requested files. Empty scope sections are
+explicit; warnings, quarantine and incomplete scope extraction prevent reuse.
+
+Publication retains immutable live packs by hard link (atomic copy fallback)
+under the existing store lock, repacking when less than half a pack's bytes
+remain selected. New staged records are packed separately. It retains compatible
+sibling keys and excludes retired files or missing staged repairs. Bounds are
+checked during publication; section hashes are checked on every read before a
+cache hit is accepted. The child/supervisor receipt binds the graph generation, parser identity
+and selected file keys. The format transition changes parser identity, so old
+chunk caches miss once; legacy helpers remain for compatibility. Missing,
+malformed, incompatible or concurrently pruned records are misses.
 
 `RepoMeta.parseCacheIdentity` records the effective parser identity for
 unchanged-analysis and shared-current adoption checks. Analysis resolves it
@@ -740,4 +863,5 @@ Node IDs use arity suffix (`#<paramCount>`): `Method:file:Class.method#1` vs `#2
 - [GUARDRAILS.md](GUARDRAILS.md) — safety boundaries for humans and agents
 - [TESTING.md](TESTING.md) — how to run tests
 - [docs/languages/objective-c-provider.md](docs/languages/objective-c-provider.md) — Objective-C provider behavior and limits
+- [docs/languages/r-provider.md](docs/languages/r-provider.md) — R provider behavior and limits
 - `AGENTS.md` / `CLAUDE.md` — agent workflows and tool usage

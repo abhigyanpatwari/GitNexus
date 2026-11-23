@@ -99,7 +99,7 @@ export function heapPressureRemedy(
   if (heapLimitBytes < autoCapBytes * 0.9) {
     if (source === 'budget') {
       return (
-        `This machine has more memory available: raise --memory-budget, or omit it ` +
+        `This machine has more memory available: raise --memory-budget (and --resource-budget if set), or omit the limits ` +
         `so gitnexus sizes its heap to the machine automatically.`
       );
     }

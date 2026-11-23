@@ -16,6 +16,10 @@ process.on('message', (msg: SidecarRequest) => {
   void handle(msg);
 });
 
+// This is a standalone process, not a worker thread. If its owner exits or is
+// killed after cancellation grace, release the model instead of orphaning it.
+process.once('disconnect', () => process.exit(1));
+
 async function handle(msg: SidecarRequest): Promise<void> {
   try {
     switch (msg.type) {

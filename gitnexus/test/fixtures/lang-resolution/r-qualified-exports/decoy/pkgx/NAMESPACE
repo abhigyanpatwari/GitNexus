@@ -1,0 +1,3 @@
+importFrom(extpkg, fmt)
+export(fmt)
+export(x_other)

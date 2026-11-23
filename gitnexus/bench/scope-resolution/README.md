@@ -13,7 +13,9 @@ plus callers and helpers. Rust also needs a root
 module file; Objective-C has a header and implementation per entity. Java adds an
 isolated producer file and exercises transitive factory returns and repeated
 unreachable return-name lookups. Swift uses same-module visibility; COBOL exercises
-program references and procedure pointers. Other arms import the preceding file and call through its
+program references and procedure pointers. R sources the preceding file and calls
+through an R6 instance; the second call of its chain stays unresolved, because R6
+method results carry no type. Other arms import the preceding file and call through its
 return value. These generated sources exercise the analyzer; they are not builds
 or representative application benchmarks.
 
@@ -82,9 +84,29 @@ marker therefore points into finalization after extraction.
 ```sh
 node --expose-gc --import tsx bench/scope-resolution/call-signature-memory.mts 500000
 GITNEXUS_DEBUG_HEAP=1 node --import tsx bench/scope-resolution/dense-java.mts 300 20 10
+node --expose-gc --import tsx bench/scope-resolution/wildcard-java.mts 700 700
 ```
 
-CI runs both probes once with `--check` in the existing
+`wildcard-java.mts` has 700 files that each write `import big.*;` over a 700-file
+package and use one of its types: 490,000 (importer, package file) pairs, 700
+`IMPORTS` edges. With `--check` it requires that no wildcard import is stored as
+one edge per package file, that every importer still reaches every package file,
+the reviewed graph fingerprint, and at most 16 MiB of heap retained by the pass.
+The pass retains about 4 MiB when on-demand imports are stored as groups and about
+54 MiB with one edge per package file; set `GITNEXUS_DISABLE_IMPORT_GROUPS=1`
+(without `--check`) to measure the second form on the same build. This is one
+synthetic shape, not a representative repository.
+
+`--closure` adds an enum whose file has `import big.*;` and a static import of
+one of its constants. Finalize does not find that name among the enum file's
+top-level declarations, so it builds re-export closures for the workspace. Retained heap stays near
+4 MiB either way; what the build holds while it runs shows only in the heap the
+process needs. CI therefore runs this shape under `--max-old-space-size=180`:
+the pass completes in 160 MB (not in 150 MB), and did not complete in 200 MB
+when the build wrote out one draft per (importer, package file) pair. The
+closure tables themselves are still one entry per importer and imported name.
+
+CI runs these probes once with `--check` in the existing
 `scope-resolution-benchmark` job, alongside its all-language measurements.
 The ordinary-call check rejects any retained signatures. The dense Java check
 requires the default 300/20/10 workload and its reviewed full graph fingerprint
@@ -118,3 +140,5 @@ provider hooks, including elapsed emit time and graph counts. `sr-post-resolve`
 marks the end of the initial registry lookup only; substantial resolution still
 follows it. These markers distinguish that work on the next reporter run.
 The private repository's complete OOM has not been reproduced by these probes.
+
+For the import-emission memory benchmark, see [its README](../import-emission/README.md).

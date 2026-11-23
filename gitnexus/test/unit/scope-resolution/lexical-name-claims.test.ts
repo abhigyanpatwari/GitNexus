@@ -14,10 +14,12 @@ import {
   findClassBindingInScope,
   findReceiverTypeBinding,
   isNamespaceNameShadowed,
+  lookupNameClaim,
 } from '../../../src/core/ingestion/scope-resolution/scope/walkers.js';
 import { findCallableBindingsAndAdlBlocker } from '../../../src/core/ingestion/languages/cpp/callable-bindings.js';
 import { followChainPostFinalize } from '../../../src/core/ingestion/scope-resolution/passes/imported-return-types.js';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const range = { startLine: 4, startCol: 0, endLine: 4, endCol: 20 };
 const target: SymbolDefinition = { nodeId: 'outer:helper', filePath: 'outer.ts', type: 'Function' };
@@ -53,13 +55,47 @@ function indexes(
     moduleScopes: { byFilePath: new Map([['caller.ts', outer.id]]) },
     bindings: new Map(),
     bindingAugmentations: new Map(),
-    imports: new Map(),
+    imports: createEagerImportVisibility(new Map()),
     defs: { get: () => target },
     qualifiedNames: { get: () => [target.nodeId] },
   } as unknown as ScopeResolutionIndexes;
 }
 
 describe('lexical name ownership', () => {
+  it.each(['Function', 'Class'] as const)(
+    'keeps %s lookup snapshots after source bindings change',
+    (kind) => {
+      const bindings = new Map<string, BindingRef[]>();
+      const inner = scope('fn', 'module', { bindings, kind });
+      const outer = scope('module', null);
+      const state = { ...indexes(inner, outer), bindings: new Map([[inner.id, bindings]]) };
+      const missing = lookupNameClaim(inner.id, 'helper', state);
+      expect(missing.status).toBe('absent');
+      const local: BindingRef[] = [binding];
+      bindings.set('helper', local);
+      const found = lookupNameClaim(inner.id, 'helper', state);
+      expect(found.bindings).toEqual([binding]);
+      local.push({ def: { ...target, nodeId: 'second:helper' }, origin: 'local' });
+      expect(found.bindings).toEqual([binding]);
+      expect(missing.bindings).toEqual([]);
+      expect(lookupNameClaim(inner.id, 'helper', state).bindings).toHaveLength(2);
+    },
+  );
+
+  it('clears deferred activation without mutating reused caller options', () => {
+    const late: BindingRef = { ...binding, availableFrom: { startLine: 8, startCol: 0 } };
+    const outer = scope('module', null, { bindings: new Map([['helper', [late]]]) });
+    const inner = scope('fn', outer.id, { lookupPolicy: { deferParentActivation: true } });
+    const options = Object.freeze({ position: Object.freeze({ startLine: 1, startCol: 0 }) });
+    const state = indexes(inner, outer);
+    expect(lookupNameClaim(inner.id, 'helper', state, options).bindings).toEqual([late]);
+    expect(lookupNameClaim(outer.id, 'helper', state, options).status).toBe('absent');
+    expect(
+      lookupNameClaim(inner.id, 'helper', state, { ...options, preservePosition: true }).status,
+    ).toBe('absent');
+    expect(options.position).toEqual({ startLine: 1, startCol: 0 });
+  });
+
   it('keeps touching half-open import ranges separate', () => {
     const earlier = { startLine: 1, startCol: 0, endLine: 1, endCol: 10 };
     const later = { startLine: 1, startCol: 10, endLine: 1, endCol: 20 };

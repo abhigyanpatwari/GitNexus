@@ -34,14 +34,15 @@ const storedIdentityField = (node: GraphNode, field: string): unknown => {
  * retained rows. A write-set-only probe misses corruption of an unchanged row.
  * Scan one label at a time, without path/range predicates: a corrupt field must
  * not be able to hide its own row. No multi-label scans (#3139), N+1 ID lookups,
- * source-content copies, or whole-graph row materialization.
+ * source-content copies, or JS row-array materialization. The reader calls the
+ * synchronous visitor for each row and releases its cursor before resolving.
  *
  * This certifies node identity, not relationships or native storage internals.
  * Call after COPY/checkpoint and after FTS/embedding/checkpoint, before metadata.
  */
 export async function reconcileGraphNodeIdentities(
   graph: KnowledgeGraph,
-  query: (cypher: string) => Promise<IdentityRow[]>,
+  readRows: (cypher: string, onRow: (row: IdentityRow) => undefined) => Promise<void>,
   phase: string,
 ): Promise<{ nodes: number; tables: number }> {
   const expected = new Map<NodeTableName, Map<string, GraphNode>>();
@@ -71,31 +72,31 @@ export async function reconcileGraphNodeIdentities(
         { cause },
       );
     };
-    let rows: IdentityRow[];
     try {
-      rows = await query(
+      await readRows(
         `MATCH (n:\`${table}\`) RETURN ${fields.map((f) => `n.${f} AS ${f}`).join(', ')}`,
+        (row) => {
+          const node = remaining.get(row.id);
+          if (!node) throw new Error(`unexpected or duplicate ID ${JSON.stringify(row.id)}`);
+          for (const field of identityFields) {
+            const wanted = storedIdentityField(node, field);
+            const actual =
+              field === 'name' || field === 'filePath' ? (row[field] ?? '') : row[field];
+            if (actual !== wanted) {
+              throw new Error(
+                `${row.id}.${field}: expected ${JSON.stringify(wanted)}, read ${JSON.stringify(actual)}`,
+              );
+            }
+          }
+          remaining.delete(row.id);
+          nodes++;
+        },
       );
     } catch (error) {
       fail(
         `could not read identity fields: ${error instanceof Error ? error.message : String(error)}`,
         error,
       );
-    }
-    for (const row of rows) {
-      const node = remaining.get(row.id);
-      if (!node) fail(`unexpected or duplicate ID ${JSON.stringify(row.id)}`);
-      for (const field of identityFields) {
-        const wanted = storedIdentityField(node, field);
-        const actual = field === 'name' || field === 'filePath' ? (row[field] ?? '') : row[field];
-        if (actual !== wanted) {
-          fail(
-            `${row.id}.${field}: expected ${JSON.stringify(wanted)}, read ${JSON.stringify(actual)}`,
-          );
-        }
-      }
-      remaining.delete(row.id);
-      nodes++;
     }
     if (remaining.size) {
       fail(

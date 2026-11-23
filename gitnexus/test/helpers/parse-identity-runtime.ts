@@ -28,6 +28,9 @@ export async function copyAnalysisRuntime(directory: string): Promise<string> {
     recursive: true,
     filter: (candidate) => !candidate.split(path.sep).includes('node_modules'),
   });
+  const launcher = 'gitnexus-claude-plugin/hooks/gitnexus-hook.js';
+  await mkdir(path.dirname(path.join(directory, launcher)), { recursive: true });
+  await cp(path.join(PACKAGE_ROOT, '..', launcher), path.join(directory, launcher));
   await symlink(
     path.join(PACKAGE_ROOT, 'node_modules'),
     path.join(runtime, 'node_modules'),

@@ -545,7 +545,7 @@ export function populateCppUsingBindings(
   const visibleFiles = createIncludeClosure((filePath) => {
     const parsed = byFile.get(filePath);
     if (parsed === undefined) return [];
-    return (indexes.imports.get(parsed.moduleScope) ?? []).flatMap((edge) =>
+    return (indexes.imports.edgesAt(parsed.moduleScope) ?? []).flatMap((edge) =>
       edge.targetFile !== null && edge.linkStatus !== 'unresolved' ? [edge.targetFile] : [],
     );
   });
@@ -562,7 +562,7 @@ export function populateCppUsingBindings(
   );
   if (aliasFiles.size > 0) {
     for (const consumer of parsedFiles) {
-      for (const edge of indexes.imports.get(consumer.moduleScope) ?? []) {
+      for (const edge of indexes.imports.edgesAt(consumer.moduleScope) ?? []) {
         if (edge.targetFile === null || edge.linkStatus === 'unresolved') continue;
         for (const header of visibleFiles(edge.targetFile)) {
           if (header === consumer.filePath || !aliasFiles.has(header)) continue;
@@ -733,7 +733,7 @@ export function populateCppUsingBindings(
     const owner = indexes.scopeTree.getScope(parsed.moduleScope);
     if (owner === undefined) continue;
     const seenIncludes = new Set<string>();
-    for (const edge of indexes.imports.get(parsed.moduleScope) ?? []) {
+    for (const edge of indexes.imports.edgesAt(parsed.moduleScope) ?? []) {
       if (
         edge.targetFile === null ||
         edge.linkStatus === 'unresolved' ||

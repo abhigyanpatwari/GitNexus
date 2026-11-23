@@ -59,21 +59,52 @@ function detection(
   return { role, framework: 'test', method, path: p, name, confidence: 0.8 };
 }
 
-const containsFor = (names: string[]) =>
+const containsFor = (names: string[], filePath = 'OrderController.java') =>
   names.map((name) => ({
     uid: `uid-${name}`,
     name,
-    filePath: 'OrderController.java',
+    filePath,
     labels: ['Method'],
     0: `uid-${name}`,
     1: name,
-    2: 'OrderController.java',
+    2: filePath,
     3: ['Method'],
   }));
 
 describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () => {
   beforeEach(() => {
     FILE_DETECTIONS.clear();
+  });
+
+  it('keeps contract order and duplicate winners independent of graph row order', async () => {
+    const providers = [
+      { filePath: 'routes.fake', routePath: '/same', routeMethod: 'GET', handlerSymbolId: 'b' },
+      { filePath: 'routes.fake', routePath: '/same', routeMethod: 'GET', handlerSymbolId: 'a' },
+      { filePath: 'routes.fake', routePath: '/other', routeMethod: 'POST', handlerSymbolId: 'c' },
+    ];
+    const consumers = [
+      { filePath: 'client.fake', routePath: '/z', fetchReason: 'second' },
+      { filePath: 'client.fake', routePath: '/a', fetchReason: 'first' },
+      { filePath: 'client.fake', routePath: '/a', fetchReason: 'duplicate' },
+    ];
+    const extract = async (reversed: boolean) =>
+      new HttpRouteExtractor().extract(
+        async (query) => {
+          const rows = query.includes('HANDLES_ROUTE')
+            ? providers
+            : query.includes('FETCHES')
+              ? consumers
+              : [];
+          return reversed ? [...rows].reverse() : [...rows];
+        },
+        '/repo',
+        { name: 'r', url: 'r' } as never,
+      );
+    const forward = await extract(false);
+    expect(await extract(true)).toEqual(forward);
+    expect(
+      forward.find((c) => c.role === 'provider' && c.contractId === 'http::GET::/same')?.symbolUid,
+    ).toBe('a');
   });
 
   it('framework-route: uses Route.method when the edge reason cannot decode the verb', async () => {
@@ -188,7 +219,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
           },
         ];
       }
-      if (query.includes('UNION ALL')) return containsFor(['listOrders']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders'], 'routes.ts');
       return [];
     });
 
@@ -301,7 +332,9 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
 
   it('fast path: a failed CONTAINING_QUERY is cached as empty and not retried per route', async () => {
     // Failures previously fell through to the uid + basename fallback per route;
-    // memoizing must keep that fallback while collapsing the retries.
+    // memoizing must keep that fallback while collapsing the retries. The file
+    // is first asked for in a batch; when that fails it gets one query of its
+    // own, and when that fails too the empty result is what is cached.
     const ids = ['listOrders', 'createOrder'].map(
       (name) => [name, `Method:OrderController.java:OrderController.${name}#0`] as const,
     );
@@ -327,7 +360,10 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
       url: 'r',
     } as never);
 
-    expect(db.mock.calls.filter(([query]) => query.includes('UNION ALL'))).toHaveLength(1);
+    const symbolQueries = db.mock.calls.filter(([query]) => query.includes('UNION ALL'));
+    expect(symbolQueries.filter(([query]) => query.includes('UNWIND $filePaths'))).toHaveLength(1);
+    expect(symbolQueries.filter(([query]) => query.includes('= $filePath'))).toHaveLength(1);
+    expect(symbolQueries).toHaveLength(2);
     expect(out.map((c) => c.symbolUid).sort()).toEqual(ids.map(([, uid]) => uid).sort());
     // The authoritative uid survives; only the display name falls back.
     for (const contract of out) expect(contract.symbolName).toBe('OrderController.java');

@@ -3,7 +3,7 @@ import { existsSync } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
+import { listRegisteredRepos, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
 import {
   readSharedStorePointer,
   resolveSharedStore,
@@ -115,6 +115,28 @@ describe('shared store adoption and reporting (#3352)', () => {
       layout.checkoutSlot,
     );
   }, 240_000);
+
+  it.each(['flat', 'branch'])(
+    'retains unfinished private %s analysis before shared-store adoption',
+    async (kind) => {
+      await legacyIndex(wt);
+      const local = path.join(wt, '.gitnexus');
+      const meta = await loadMeta(local);
+      if (!meta) throw new Error('Missing local fixture metadata');
+      const directory = kind === 'flat' ? local : path.join(local, 'branches', 'unfinished');
+      await fs.mkdir(directory, { recursive: true });
+      await saveMeta(directory, {
+        ...meta,
+        incrementalInProgress: { startedAt: Date.now(), toWriteCount: 1 },
+      });
+      await analyze(wt);
+      expect((await listRegisteredRepos()).find((entry) => entry.path === wt)?.storagePath).toBe(
+        local,
+      );
+      expect(readSharedStorePointer(wt)).toBeNull();
+    },
+    240_000,
+  );
 
   it('status reports the shared graph and the leftover index with its removal command', async () => {
     await legacyIndex(wt);

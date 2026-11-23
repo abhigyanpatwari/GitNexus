@@ -1,0 +1,8 @@
+setClass("Person", representation(name = "character"))
+setClassUnion("NumOrChar", c("numeric", "character"))
+setValidity("Person", function(object) TRUE)
+setGeneric("rename<-", function(x, value) standardGeneric("rename<-"))
+setReplaceMethod("rename", "Person", function(x, value) x)
+PatOne <- setClass("PatOne", representation(x = "numeric"))
+Gen <- setRefClass("Gen", fields = list(n = "numeric"))
+Gen$methods(extra = function() 1)

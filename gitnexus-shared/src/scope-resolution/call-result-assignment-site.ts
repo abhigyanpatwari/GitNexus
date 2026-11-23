@@ -11,4 +11,12 @@ export interface CallResultAssignmentSite {
   readonly callSite: Range;
   readonly inScope: ScopeId;
   readonly lhs: string;
+  /**
+   * Present when `lhs` holds an element reached from the call's result (for
+   * example an iteration variable) instead of the result itself. The value is
+   * a provider-defined route. `callResultAssignmentApplies` may consult it
+   * when validating the assignment. `callResultElementType` supplies the
+   * element type for an applicable assignment. An unknown type leaves `lhs` unbound.
+   */
+  readonly element?: string;
 }

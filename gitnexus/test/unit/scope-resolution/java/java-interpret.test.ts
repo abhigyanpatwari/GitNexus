@@ -39,26 +39,35 @@ describe('interpretJavaTypeBinding — type normalization (F41 #1928)', () => {
     expect(raw('com.example.BaseModel<T>')).toBe('BaseModel');
   });
 
-  it('does not corrupt a qualified generic TYPE ARGUMENT (the F41 bug)', () => {
+  it('retains the container around a qualified generic argument (the F41 bug)', () => {
     // Before the fix: stripQualifier ran first → `User>` (trailing bracket).
-    expect(raw('Map<String, com.example.User>')).toBe('User');
+    expect(raw('Map<String, com.example.User>')).toBe('Map');
   });
 
-  it('extracts the element type from a single-arg container with qualified arg', () => {
-    expect(raw('List<com.example.User>')).toBe('User');
+  it('retains a single-arg container with a qualified argument', () => {
+    expect(raw('List<com.example.User>')).toBe('List');
   });
 
-  it('extracts the element type from a qualified container', () => {
-    expect(raw('java.util.List<User>')).toBe('User');
+  it('retains a qualified container', () => {
+    expect(raw('java.util.List<User>')).toBe('List');
   });
 
-  it('extracts the element type from a simple container', () => {
-    expect(raw('List<User>')).toBe('User');
-    expect(raw('Optional<User>')).toBe('User');
+  it('retains simple containers until an operation yields their element', () => {
+    expect(raw('List<User>')).toBe('List');
+    expect(raw('Optional<User>')).toBe('Optional');
   });
 
-  it('extracts the value type from a two-arg map', () => {
-    expect(raw('Map<String, User>')).toBe('User');
+  it('retains a two-arg map', () => {
+    expect(raw('Map<String, User>')).toBe('Map');
+  });
+
+  it.each([
+    ['User[]', 'User[]'],
+    ['User[][]', 'User[][]'],
+    ['List<User>[]', 'List[]'],
+    ['pkg.Box<User>[][]', 'Box[][]'],
+  ])('preserves all dimensions of %s', (written, expected) => {
+    expect(raw(written)).toBe(expected);
   });
 
   it('passes through a plain simple type', () => {

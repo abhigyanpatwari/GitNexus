@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 /**
  * Tests for the custom HTTP embedding endpoint failure path in the
  * `analyzeCommand` CLI (#2385).
@@ -58,7 +59,12 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
-  getStoragePaths: vi.fn(() => ({ storagePath: '.gitnexus', lbugPath: '.gitnexus/lbug' })),
+  loadMeta: vi.fn(async () => null),
+  getStoragePaths: vi.fn(() => ({
+    storagePath: '.gitnexus',
+    lbugPath: '.gitnexus/lbug',
+    metaPath: '.gitnexus/gitnexus.json',
+  })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
   AnalysisNotFinalizedError: class AnalysisNotFinalizedError extends Error {},

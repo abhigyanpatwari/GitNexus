@@ -162,6 +162,57 @@ describe('uninstallCommand', () => {
     await expect(fs.access(path.join(skillsDir, 'my-skill'))).resolves.toBeUndefined();
   });
 
+  it('removes the MCP entry, hooks and skills from $CLAUDE_CONFIG_DIR when it is set', async () => {
+    const configDir = path.join(tempHome, 'relocated', 'claude');
+    process.env.CLAUDE_CONFIG_DIR = configDir;
+    try {
+      await fs.mkdir(path.join(configDir, 'skills', 'gitnexus-cli'), { recursive: true });
+      await fs.writeFile(
+        path.join(configDir, 'skills', 'gitnexus-cli', 'SKILL.md'),
+        '# y',
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(configDir, '.claude.json'),
+        JSON.stringify({ keep: 1, mcpServers: { gitnexus: { command: 'npx' } } }),
+        'utf-8',
+      );
+      await fs.writeFile(
+        path.join(configDir, 'settings.json'),
+        JSON.stringify({
+          hooks: {
+            PreToolUse: [
+              {
+                matcher: 'Bash',
+                hooks: [{ type: 'command', command: 'node ".../gitnexus-hook.cjs"' }],
+              },
+            ],
+          },
+        }),
+        'utf-8',
+      );
+      const hookDir = path.join(configDir, 'hooks', 'gitnexus');
+      await fs.mkdir(hookDir, { recursive: true });
+      await fs.writeFile(path.join(hookDir, 'gitnexus-hook.cjs'), '// hook', 'utf-8');
+
+      const uninstallCommand = await importUninstall();
+      await uninstallCommand({ force: true });
+
+      const mcp = JSON.parse(await fs.readFile(path.join(configDir, '.claude.json'), 'utf-8'));
+      expect(mcp.keep).toBe(1);
+      expect(mcp.mcpServers?.gitnexus).toBeUndefined();
+      const settings = JSON.parse(
+        await fs.readFile(path.join(configDir, 'settings.json'), 'utf-8'),
+      );
+      expect(settings.hooks.PreToolUse).toHaveLength(0);
+      await expect(fs.access(hookDir)).rejects.toThrow();
+      await expect(fs.access(path.join(configDir, 'skills', 'gitnexus-cli'))).rejects.toThrow();
+    } finally {
+      // vitest.config.ts pins it to '' so a developer shell's value never leaks in.
+      process.env.CLAUDE_CONFIG_DIR = '';
+    }
+  });
+
   // ── renamed skills: the legacy dir name must still be uninstalled ──
   it('removes a legacy renamed skill dir (gitnexus-pr-review) absent from the bundled source', async () => {
     const skillsDir = path.join(tempHome, '.claude', 'skills');
@@ -546,16 +597,50 @@ describe('uninstallCommand', () => {
     const raw = ['[mcp_servers.gitnexus]', 'command = "gitnexus"', 'args = ["mcp"]', ''].join('\n');
     await fs.writeFile(configPath, raw, 'utf-8');
 
-    const uninstallCommand = await importUninstall();
-    await uninstallCommand({ force: true });
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      const uninstallCommand = await importUninstall();
+      await uninstallCommand({ force: true });
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
 
     expect(execFileMock).toHaveBeenCalledWith(
       'codex',
       ['mcp', 'remove', 'gitnexus'],
-      expect.any(Object),
+      expect.objectContaining({ shell: false }),
       expect.any(Function),
     );
     // CLI path handles removal; we must not also rewrite the file.
+    expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
+  });
+
+  it('runs `codex mcp remove` as one shell command line on Windows', async () => {
+    execFileMock.mockImplementationOnce((...args: any[]) => {
+      const callback = args.at(-1);
+      if (typeof callback === 'function') callback(null, '', '');
+    });
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    const raw = ['[mcp_servers.gitnexus]', 'command = "gitnexus"', 'args = ["mcp"]', ''].join('\n');
+    await fs.writeFile(configPath, raw, 'utf-8');
+
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const uninstallCommand = await importUninstall();
+      await uninstallCommand({ force: true });
+    } finally {
+      Object.defineProperty(process, 'platform', platform);
+    }
+
+    expect(execFileMock).toHaveBeenCalledWith(
+      'codex mcp remove gitnexus',
+      [],
+      expect.objectContaining({ shell: true }),
+      expect.any(Function),
+    );
     expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
   });
 

@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
-import { extractGoGinEchoRoutes } from '../../src/core/ingestion/route-extractors/go-gin-echo.js';
+import {
+  extractGoGinEchoRoutes,
+  extractGoRouteCandidates,
+} from '../../src/core/ingestion/route-extractors/go-gin-echo.js';
 
 const parser = new Parser();
 parser.setLanguage(Go);
@@ -392,5 +395,76 @@ describe('Go route type-parameter shadowing', () => {
     expect(routes).toHaveLength(1);
     expect(routes[0]).toMatchObject({ routePath: '/generic', handlerName: 'h.Do' });
     expect(routes[0].handlerReceiver).toBeUndefined();
+  });
+});
+
+describe('wrapper-package route candidates', () => {
+  const CORE_PATH = 'example.com/infra/pkg';
+  const CORE = `import (
+  consoleApi "example.com/app/api"
+  "example.com/app/common"
+  mw "example.com/app/middleware"
+  core "${CORE_PATH}"
+)
+`;
+  const candidates = (body: string, header = CORE) =>
+    extractGoRouteCandidates(parser.parse(`package routes\n${header}${body}`));
+
+  it('records Group prefixes under the root parameter type, not as routes', () => {
+    const body = `func initConsoleRoutes(s *core.Engine, api *consoleApi.API) {
+      v1 := s.Group("/console/v1")
+      {
+        oauth := v1.Group("/oauth")
+        oauth.GET("/iam/oauthback", mw.AppTag(), consoleApi.IamOauthBack)
+        oauth.POST("/sso/sign", common.Wrapper(api.SingleSignOn))
+      }
+    }`;
+    expect(extractGoGinEchoRoutes(parser.parse(`package routes\n${CORE}${body}`), 'r.go')).toEqual(
+      [],
+    );
+    const facts = candidates(body);
+    expect(facts?.roots).toHaveLength(1);
+    expect(facts?.roots[0]).toMatchObject({ importPath: CORE_PATH, typeName: 'Engine' });
+    expect(
+      facts?.roots[0].routes.map((r) => ({
+        route: `${r.httpMethod} ${r.routePath}`,
+        gin: r.handlers.at(-1),
+      })),
+    ).toEqual([
+      {
+        route: 'GET /console/v1/oauth/iam/oauthback',
+        gin: {
+          handlerName: 'consoleApi.IamOauthBack',
+          handlerReceiver: { kind: 'module', qualifier: 'consoleApi' },
+        },
+      },
+      {
+        route: 'POST /console/v1/oauth/sso/sign',
+        gin: {
+          handlerWrapper: {
+            callee: 'common.Wrapper',
+            handlerName: 'api.SingleSignOn',
+            handlerReceiver: { kind: 'type', name: 'API', qualifier: 'consoleApi' },
+          },
+        },
+      },
+    ]);
+  });
+
+  it('records the echo-order handler too, without deciding the framework', () => {
+    const facts = candidates(`func R(s *core.Engine) { s.GET("/x", First, mw.Log()) }`);
+    expect(facts?.roots[0].routes[0].handlers[0]).toEqual({ handlerName: 'First' });
+    // gin order reads the trailing middleware call: no designator, no wrapper.
+    expect(facts?.roots[0].routes[0].handlers.at(-1)).toEqual({});
+  });
+
+  it('emits no candidate for a direct gin engine or an unimported type', () => {
+    expect(candidates(`func R(r *gin.Engine) { r.GET("/x", H) }`, GIN)).toBeUndefined();
+    expect(candidates(`func R(r *Engine) { r.GET("/x", H) }`)).toBeUndefined();
+  });
+
+  it('does not treat a wrapper on a local value as configurable', () => {
+    const facts = candidates(`func R(s *core.Engine, m Wrapper) { s.GET("/x", m.Wrap(H)) }`);
+    expect(facts?.roots[0].routes[0].handlers.at(-1)).toEqual({});
   });
 });

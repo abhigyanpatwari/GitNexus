@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the script function to a name that is only assigned inside local() and test_that() blocks: those bind in the block only, so they do not collide with the new name at top level.",
+  "categories": ["name-collision", "block-scope", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "foo.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

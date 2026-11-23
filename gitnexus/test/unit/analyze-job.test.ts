@@ -1,4 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import os from 'node:os';
+import path from 'node:path';
 import {
   JobManager,
   isTerminalJobStatus,
@@ -29,6 +34,78 @@ describe('JobManager', () => {
     const created = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
     const retrieved = manager.getJob(created.id);
     expect(retrieved).toEqual(created);
+  });
+
+  it('retains terminal jobs past their TTL while the child still owns the slot', () => {
+    vi.useFakeTimers();
+    manager.dispose();
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    const child = Object.assign(new EventEmitter(), {
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: vi.fn(),
+      unref: vi.fn(),
+    });
+    manager.registerChild(job.id, child as unknown as import('node:child_process').ChildProcess);
+    manager.updateJob(job.id, { status: 'failed', error: 'Cancelled' });
+    vi.advanceTimersByTime(70 * 60 * 1000);
+    expect(manager.getJob(job.id)?.status).toBe('failed');
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(
+      'Analysis already in progress',
+    );
+    child.emit('exit', 0);
+    vi.advanceTimersByTime(5 * 60 * 1000);
+    expect(manager.getJob(job.id)).toBeUndefined();
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('keeps the original deadline when a graph worker hands off to an embedding worker', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const child = () =>
+      Object.assign(new EventEmitter(), {
+        connected: true,
+        exitCode: null,
+        signalCode: null,
+        send: vi.fn(),
+        unref: vi.fn(),
+        channel: { unref: vi.fn() },
+      });
+    const graph = child();
+    manager.registerChild(job.id, graph as any);
+    vi.advanceTimersByTime(20 * 60_000);
+    graph.emit('exit', 0);
+    const embeddings = child();
+    manager.registerChild(job.id, embeddings as any);
+    vi.advanceTimersByTime(10 * 60_000 - 1);
+    expect(embeddings.send).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(embeddings.send).toHaveBeenCalledWith({ type: 'cancel' }, expect.any(Function));
+    expect(manager.hasPendingCancel(job.id)).toBe(true);
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
+    embeddings.emit('exit', 0);
+    expect(manager.getJob(job.id)?.error).toContain('30 minute limit');
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
+  });
+
+  it('expires preflight before any child is registered and releases the job slot', () => {
+    manager.dispose();
+    vi.useFakeTimers();
+    manager = new JobManager();
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    vi.advanceTimersByTime(30 * 60_000 - 1);
+    expect(manager.getJob(job.id)?.status).toBe('queued');
+    vi.advanceTimersByTime(1);
+    expect(manager.getJob(job.id)).toMatchObject({
+      status: 'failed',
+      error: 'Analysis timed out (30 minute limit)',
+    });
+    expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
   });
 
   it('returns undefined for unknown job id', () => {
@@ -371,12 +448,24 @@ describe('JobManager', () => {
     expect(manager.createJob({ repoPath: '/tmp/other' }).status).toBe('queued');
   });
 
-  it('cancelJob falls back to a signal when the IPC channel is already closed', () => {
+  it('finishes shutdown when a registered child fails to spawn without emitting exit', async () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    const child = spawn(process.execPath, [], { cwd: path.join(os.tmpdir(), randomUUID()) });
+    child.on('error', () => manager.releaseChild(job.id));
+    const exit = vi.fn();
+    child.on('exit', exit);
+    manager.registerChild(job.id, child);
+    await manager.waitForChildren();
+    expect(exit).not.toHaveBeenCalled();
+    expect(child.listenerCount('close')).toBe(0);
+  });
+
+  it('cancelJob leaves a disconnected native worker running until it exits', () => {
     const job = manager.createJob({ repoPath: '/tmp/repo' });
     manager.updateJob(job.id, { status: 'analyzing' });
 
     const signals: string[] = [];
-    // connected:false — requestChildShutdown skips send() and signal-kills.
+    // The worker's disconnect handler requests cancellation at a safe point.
     const fakeChild = {
       connected: false,
       exitCode: null,
@@ -391,10 +480,11 @@ describe('JobManager', () => {
 
     manager.cancelJob(job.id);
 
-    expect(signals).toEqual(['SIGTERM']);
+    expect(signals).toEqual([]);
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
   });
 
-  it('cancelJob SIGKILLs after the grace period when the worker ignores IPC', () => {
+  it('cancelJob stops a wedged process after grace, retaining ownership until exit', () => {
     manager.dispose();
     vi.useFakeTimers();
     manager = new JobManager();
@@ -407,6 +497,8 @@ describe('JobManager', () => {
       exitCode: null,
       signalCode: null,
       send: () => true,
+      unref: vi.fn(),
+      channel: { unref: vi.fn() },
       kill: (signal?: string) => {
         signals.push(signal ?? 'SIGTERM');
         return true;
@@ -418,10 +510,13 @@ describe('JobManager', () => {
     expect(manager.cancelJob(job.id)).toBe(true);
     expect(signals).toEqual([]);
     vi.advanceTimersByTime(15_000);
+    expect(signals).toEqual([]);
+    vi.advanceTimersByTime(45_000);
     expect(signals).toEqual(['SIGKILL']);
+    expect(() => manager.createJob({ repoPath: '/tmp/other' })).toThrow(/already in progress/);
   });
 
-  it('dispose on Windows skips immediate SIGTERM and leaves the IPC grace timer', () => {
+  it('dispose on Windows allows cooperative shutdown before stopping a wedged process', () => {
     manager.dispose();
     vi.useFakeTimers();
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
@@ -446,11 +541,11 @@ describe('JobManager', () => {
 
     expect(signals).toEqual([]);
     vi.advanceTimersByTime(15_000);
-    expect(signals).toEqual(['SIGKILL']);
+    expect(signals).toEqual([]);
     vi.restoreAllMocks();
   });
 
-  it('dispose on Unix SIGTERMs after IPC and clears the grace timer', () => {
+  it('dispose on Unix also waits for the cooperative native safe point', () => {
     manager.dispose();
     vi.useFakeTimers();
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
@@ -473,10 +568,18 @@ describe('JobManager', () => {
     manager.registerChild(job.id, fakeChild as any);
     manager.dispose();
 
-    expect(signals).toEqual(['SIGTERM']);
+    expect(signals).toEqual([]);
     vi.advanceTimersByTime(15_000);
-    expect(signals).toEqual(['SIGTERM']);
+    expect(signals).toEqual([]);
     vi.restoreAllMocks();
+  });
+
+  it('aborts in-process embedding work before shutdown waits for it', () => {
+    const job = manager.createJob({ repoPath: '/tmp/embed' });
+    const controller = new AbortController();
+    manager.registerAbortController(job.id, controller);
+    manager.dispose();
+    expect(controller.signal.aborted).toBe(true);
   });
 
   it('cancelJob returns false for terminal jobs', () => {

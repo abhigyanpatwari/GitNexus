@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "_method": "Three fresh Node processes, 512 MiB old-space cap, real streaming graph sink, live synthetic inputs and explicit GC at each checkpoint. --check compares every count/hash and each first-emission heap delta. Timing and total heap/RSS checkpoints are diagnostic references, not portable speed budgets.",
+  "_budget": "Allow 16 MiB of additional heap before the first emitted edge, versus approximately -1 MiB after this optimization and 86.7 MiB with the global collector. This budget has substantial runtime headroom while rejecting the previous allocation pattern. A signed delta includes GC/runtime bookkeeping; it is not an exact collector size.",
+  "_triage": "Investigate changed hashes or heap growth before changing this reviewed baseline. CI never records or updates baselines.",
+  "samples": 3,
+  "workload": { "fileCount": 17095, "importsPerFile": 32, "pathLength": 140 },
+  "correctness": {
+    "count": 547040,
+    "edgeDigest": "780b5304a9656029612806468d0fb1f38acbb7f7da5f62fc8e8887a4c8823865",
+    "csvDigest": "4558668a68f94f4069ed0d471c553db82e0c370877bb3e145b3ac1f9e9f7a1bc"
+  },
+  "budgets": { "maxFirstEmitHeapDeltaBytes": 16777216 },
+  "reference": {
+    "node": "v22.23.3",
+    "platform": "linux",
+    "arch": "x64",
+    "samplesPerRevision": 3,
+    "baselineCommit": "3c068dd11d53c1c8f373957d0c144da0acbfbc17",
+    "optimizedCommit": "286e0fa2e841afee342910864fed524396672c28",
+    "baselineMedians": {
+      "firstEmitHeap": 144663792,
+      "firstEmitHeapDeltaBytes": 90881744,
+      "lastEmitHeap": 362641416
+    },
+    "optimizedMedians": {
+      "firstEmitHeap": 53488104,
+      "firstEmitHeapDeltaBytes": -1030312,
+      "lastEmitHeap": 270733800
+    }
+  }
+}

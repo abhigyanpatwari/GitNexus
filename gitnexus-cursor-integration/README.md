@@ -84,7 +84,7 @@ Empty stdout means "no augmentation, continue normally" — the hook never block
 | ------- | ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `Grep`  | `tool_input.query` (also `pattern`, `regex`, `q`, `search`, `searchQuery`)                                             | Last-resort fallback: longest string value in `tool_input` (≥ 3 chars).                              |
 | `Read`  | basename of `tool_input.target_file` (also `file_path`, `filePath`, `path`, `file`), stripped to identifier characters | `auth/handler.ts` → `handler`.                                                                       |
-| `Shell` | First positional argument after `rg` / `grep` in `tool_input.command`                                                  | Best-effort tokenizer; quoted multi-word patterns (`rg "User Service"`) extract the first word only. |
+| `Shell` | First positional argument, or `-e` / `--regexp` value, of an `rg` / `grep` that starts `tool_input.command` (after `NAME=value` assignments and wrappers such as `npx`, `sudo`, `env`) | Best-effort tokenizer; quoted patterns stay whole (`rg "User Service"`). A search after `&&`, `;`, `\|\|` or `\|` (`cd src && rg x`, `git log \| grep fix`) gets no pattern. |
 
 ## Troubleshooting
 

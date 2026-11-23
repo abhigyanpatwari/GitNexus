@@ -1,36 +1,17 @@
 import { lstat } from 'node:fs/promises';
+import { getHeapStatistics } from 'node:v8';
 import { ensurePrivateSharedGraph } from '../core/shared-store-analyze.js';
-import { LBUG_DIRECTORY } from '../storage/storage-constants.js';
+import { resolveGraphPath } from '../storage/shared-store.js';
+import { resolveHostAnalysisResources } from '../core/analysis-host-resources.js';
+import { readPreparedAnalysis } from '../core/analysis-publication.js';
 import path from 'node:path';
 import { cliInfo } from './cli-message.js';
 import { getGitRoot } from '../storage/git.js';
-import {
-  acquireIndexLock,
-  requireExclusiveIndexLock,
-  sweepStagingArtifacts,
-} from '../storage/index-lock.js';
-import { getStoragePaths, loadMeta, saveMeta } from '../storage/repo-manager.js';
-import {
-  closeLbug,
-  executeQuery,
-  executeWithReusedStatement,
-  fetchExistingEmbeddingHashes,
-  initLbug,
-} from '../core/lbug/lbug-adapter.js';
-import {
-  decideEmbeddingResume,
-  mintInterruptedCheckpoint,
-  mintPartialCheckpoint,
-  mintUnverifiedCountCheckpoint,
-  type EmbeddingCheckpoint,
-  type EmbeddingCheckpointProgress,
-} from '../core/embedding-checkpoint.js';
+import { requireExclusiveIndexLock, sweepStagingArtifacts } from '../storage/index-lock.js';
+import { acquireAnalysisSlotLock } from '../storage/analysis-slot-lock.js';
+import { getStoragePaths, loadMeta } from '../storage/repo-manager.js';
+import { decideEmbeddingResume } from '../core/embedding-checkpoint.js';
 import { EMBEDDING_DIMS, embeddingDimsMismatch } from '../core/lbug/schema.js';
-import type { RepoMeta } from '../storage/repo-meta.js';
-import {
-  measurePersistedEmbeddingCount,
-  persistedEmbeddingCountOrUndefined,
-} from '../core/embedding-count.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
 import {
   ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
@@ -42,7 +23,6 @@ import {
   assessLocalEmbeddingRuntime,
   localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
-import { reapEmbeddingSidecarSafely } from '../core/embeddings/embedding-sidecar-reap.js';
 
 /** Add missing embeddings directly to a healthy index, checkpointing periodically. */
 export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> => {
@@ -53,8 +33,12 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
   const metaDir = path.dirname(metaPath);
   // Writes go to the slot's own graph. A shared-store checkout that reads an
   // immutable commit graph (#3352) takes a private copy first.
-  const lbugPath = path.join(metaDir, LBUG_DIRECTORY);
-  const lock = await acquireIndexLock(metaDir, { sweep: false });
+  const resources = resolveHostAnalysisResources({
+    mainHeapMb: Math.ceil(getHeapStatistics().heap_size_limit / 1024 ** 2),
+    includeParsing: false,
+    includeEmbeddings: true,
+  });
+  const lock = await acquireAnalysisSlotLock(metaDir, { sweep: false });
   try {
     requireExclusiveIndexLock(
       lock,
@@ -69,6 +53,8 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
           'Run `gitnexus analyze` to recover them first.',
       );
     }
+    if (await readPreparedAnalysis(metaDir))
+      throw new Error('A prepared graph awaits publication. Run gitnexus analyze first.');
     sweepStagingArtifacts(metaDir);
     if (!(await ensurePrivateSharedGraph(metaDir, (m) => console.log(`  ${m}`)))) {
       throw new Error('The shared graph this checkout reads is gone. Run gitnexus analyze first.');
@@ -80,6 +66,7 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       throw new Error('The structural index is incomplete. Run gitnexus analyze --force first.');
     }
 
+    const lbugPath = resolveGraphPath(metaDir);
     let lbugStat;
     try {
       lbugStat = await lstat(lbugPath);
@@ -96,8 +83,6 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
 
     const { resolveEmbeddingIdentity } = await import('../core/embeddings/embedding-identity.js');
     const identity = resolveEmbeddingIdentity();
-    let forceReembedNodeIds: ReadonlySet<string> | undefined;
-    let resumedFrom: EmbeddingCheckpoint | undefined;
     if (meta.embeddingCheckpoint) {
       const checkpoint = meta.embeddingCheckpoint;
       const decision = decideEmbeddingResume(checkpoint, identity);
@@ -124,25 +109,15 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
         );
       }
       cliInfo(decision.log);
-      if (decision.action === 'resume') {
-        forceReembedNodeIds = decision.pendingNodeIds;
-        resumedFrom = decision.resumedFrom;
-      }
     }
 
-    // The vector column is FLOAT[N] fixed when the index was built, and the
-    // pipeline deletes each batch's stale rows immediately before inserting the
-    // replacements — so a width change here deletes rows it cannot re-insert.
-    // `analyze` forces a full rebuild on the same mismatch; only a rebuild can
-    // retype the column, so this writer refuses instead. An absent recorded
-    // width is not a mismatch (see `embeddingDimsMismatch`).
-    if (embeddingDimsMismatch(meta.embeddingDims, EMBEDDING_DIMS)) {
+    // Keep legacy sync's explicit migration requirement; the new vector store
+    // can use a different width once analyze has established its own generation.
+    if (!meta.graphGeneration && embeddingDimsMismatch(meta.embeddingDims, EMBEDDING_DIMS))
       throw new Error(
         `Cannot sync embeddings: this index stores FLOAT[${meta.embeddingDims}] vectors, ` +
-          `but this run embeds at ${EMBEDDING_DIMS} dimensions. ` +
-          'Run `gitnexus analyze --embeddings --force` to rebuild the column at the new width.',
+          `but this run embeds at ${EMBEDDING_DIMS} dimensions. Run gitnexus analyze --embeddings --force.`,
       );
-    }
 
     if (!isHttpMode()) {
       const assessment = assessLocalEmbeddingRuntime();
@@ -166,88 +141,27 @@ export const embeddingsSyncCommand = async (inputPath?: string): Promise<void> =
       }
     }
 
-    await initLbug(lbugPath);
-    try {
-      const existing = await fetchExistingEmbeddingHashes(executeQuery);
-      let lastPercent = -1;
-
-      const countEmbeddings = async (): Promise<number | undefined> =>
-        persistedEmbeddingCountOrUndefined(await measurePersistedEmbeddingCount(executeQuery));
-      // One write path for every meta update this command makes. The re-read
-      // happens immediately before each save so a concurrent writer's fields
-      // survive. #2790 traced two production drifts to hand-copied writers of
-      // these exact fields, so this file keeps one copy instead of three.
-      const persistMeta = async (patch: (latest: RepoMeta) => Partial<RepoMeta>): Promise<void> => {
-        const latest = (await loadMeta(metaDir)) ?? meta;
-        await saveMeta(metaDir, { ...latest, ...patch(latest) });
-      };
-      const saveCheckpoint = async (
-        checkpoint: EmbeddingCheckpointProgress,
-        pendingNodeIds: string[],
-        embeddings?: number,
-      ): Promise<void> =>
-        persistMeta((latest) => ({
-          ...(embeddings === undefined ? {} : { stats: { ...latest.stats, embeddings } }),
-          embeddingCheckpoint: mintInterruptedCheckpoint(identity, checkpoint, pendingNodeIds),
-        }));
-
-      cliInfo(`Embedding ${repoPath}`);
-      cliInfo(`Checkpointed nodes already present: ${existing?.size ?? 0}`);
-
-      const { runEmbeddingPipeline } = await import('../core/embeddings/embedding-pipeline.js');
-      const result = await runEmbeddingPipeline(
-        executeQuery,
-        executeWithReusedStatement,
-        (progress) => {
-          const percent = Math.floor(progress.percent);
-          if (percent !== lastPercent && (percent % 5 === 0 || percent === 100)) {
-            lastPercent = percent;
-            cliInfo(
-              `  ${percent}% — ${progress.nodesProcessed ?? 0}/${progress.totalNodes ?? '?'} nodes`,
-            );
+    cliInfo(`Embedding ${repoPath}`);
+    let lastPercent = -1;
+    const { runAnalysisEmbeddingPhase } = await import('../core/analysis-embedding-phase.js');
+    const completed = await runAnalysisEmbeddingPhase({
+      metadataDirectory: metaDir,
+      graphPath: lbugPath,
+      resources,
+      nodeLimit: 0,
+      expectedGeneration: meta.graphGeneration?.id,
+      callbacks: {
+        onLog: cliInfo,
+        onProgress: (_phase, percent, message) => {
+          const rounded = Math.floor(percent);
+          if (rounded !== lastPercent) {
+            lastPercent = rounded;
+            cliInfo(`  ${rounded}% — ${message}`);
           }
         },
-        {},
-        undefined,
-        existing && existing.size ? existing : undefined,
-        {
-          forceReembedNodeIds,
-          onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
-            await saveCheckpoint(checkpoint, nodeIds);
-          },
-          onCheckpoint: async (checkpoint) => {
-            await saveCheckpoint(checkpoint, [], await countEmbeddings());
-          },
-        },
-      );
-
-      const embeddings = await countEmbeddings();
-      if (embeddings === undefined) {
-        // Keep last-known stats.embeddings. An interrupted window marker would
-        // fail the identity gate on the next run even though this run finished;
-        // unverified-count is the recovery kind that forces a recount (#2790).
-        await persistMeta(() => ({
-          embeddingCheckpoint: result.failedNodeIds.length
-            ? mintPartialCheckpoint(identity, result, resumedFrom)
-            : mintUnverifiedCountCheckpoint(identity, {
-                nodesProcessed: result.nodesProcessed,
-                totalNodes: result.nodesProcessed,
-                chunksProcessed: result.chunksProcessed,
-              }),
-        }));
-        throw new Error('Could not verify persisted embedding count.');
-      }
-      await persistMeta((latest) => ({
-        stats: { ...latest.stats, embeddings },
-        embeddingCheckpoint: result.failedNodeIds.length
-          ? mintPartialCheckpoint(identity, result, resumedFrom)
-          : undefined,
-      }));
-      cliInfo(`Embeddings ready: ${embeddings}`);
-    } finally {
-      await closeLbug().catch(() => {});
-      await reapEmbeddingSidecarSafely();
-    }
+      },
+    });
+    cliInfo(`Embeddings ready: ${completed.stats?.embeddings ?? 0}`);
   } finally {
     lock.release();
   }

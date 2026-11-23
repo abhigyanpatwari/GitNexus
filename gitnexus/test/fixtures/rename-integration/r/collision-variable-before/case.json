@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a new name that an earlier top-level variable already holds: the renamed function would overwrite it.",
+  "categories": ["name-collision", "variable", "negative", "unchanged-on-error"],
+  "target": { "name": "helper", "kind": "Function", "file": "vars.R", "startLine": 2 },
+  "newName": "assist",
+  "expect": { "status": "error", "code": "name_collision", "planningStatus": "blocked" },
+  "edges": []
+}

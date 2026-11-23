@@ -412,6 +412,177 @@ REAL_GIT_FIXTURES('evidence provenance v2 helper', () => {
     }
   });
 
+  // Git accepts far more than letters, digits and `._/-` in a branch name, and
+  // lets one end with a no-break space.
+  it.each([
+    ['feature/c++', 'feature/c++'],
+    ['fix/@scope', 'fix/@scope'],
+    ['user/a,b=c#1', 'user/a,b=c#1'],
+    ['café', 'café'],
+    ['release.lock followed by U+00A0', 'release.lock '],
+  ])('snapshots evidence on the branch %s', async (_name, branch) => {
+    const repo = createBaseRepo();
+    try {
+      git(repo, ['switch', '--quiet', '-c', branch]);
+      for (const helperPath of [PLAN_HELPER, WORK_HELPER]) {
+        const helper = await importHelper(helperPath);
+        const receipt = helper.snapshotEvidence({
+          repo,
+          generatedPlanPath: GENERATED_PLAN_PATH,
+          citedPaths: ['base.txt'],
+        });
+        expect(receipt.cited_path_manifest.map((entry) => entry.path)).toEqual(['base.txt']);
+      }
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['feature/c++', 'feature/c++'],
+    ['feature/c++ followed by U+00A0', 'feature/c++ '],
+  ])('guards the ref file of a branch named %s', async (_name, branch) => {
+    const repo = createBaseRepo();
+    try {
+      git(repo, ['switch', '--quiet', '-c', branch]);
+      const commitA = git(repo, ['rev-parse', 'HEAD']);
+      write(repo, 'second.txt', 'second\n');
+      git(repo, ['add', 'second.txt']);
+      git(repo, ['commit', '--quiet', '-m', 'second']);
+      const commitB = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, ['reset', '--hard', '--quiet', commitA]);
+      // Without reflogs, the branch's own ref file is the only control file
+      // that an update of the branch touches.
+      git(repo, ['config', 'core.logAllRefUpdates', 'false']);
+      fs.rmSync(path.join(repo, '.git', 'logs'), { recursive: true, force: true });
+
+      const planner = await importHelper(PLAN_HELPER);
+      expect(() =>
+        planner.snapshotEvidence({
+          repo,
+          generatedPlanPath: GENERATED_PLAN_PATH,
+          citedPaths: ['base.txt'],
+          testHooks: {
+            afterAnchorCapture() {
+              git(repo, ['update-ref', `refs/heads/${branch}`, commitB]);
+            },
+            afterGitLayerLoad() {
+              git(repo, ['update-ref', `refs/heads/${branch}`, commitA]);
+            },
+          },
+        }),
+      ).toThrow(`Git refs/heads/${branch} changed while evidence was materialized`);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('guards the reflog of a branch named feature/c++', async () => {
+    const repo = createBaseRepo();
+    try {
+      git(repo, ['switch', '--quiet', '-c', 'feature/c++']);
+
+      const planner = await importHelper(PLAN_HELPER);
+      expect(() =>
+        planner.snapshotEvidence({
+          repo,
+          generatedPlanPath: GENERATED_PLAN_PATH,
+          citedPaths: ['base.txt'],
+          testHooks: {
+            // Rewrites the branch's reflog and no other control file.
+            afterAnchorCapture() {
+              git(repo, ['reflog', 'expire', '--expire=all', 'refs/heads/feature/c++']);
+            },
+          },
+        }),
+      ).toThrow('Git logs/refs/heads/feature/c++ changed while evidence was materialized');
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('guards the ref file of a branch checked out in a linked worktree', async () => {
+    const repo = createBaseRepo();
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-evidence-linked-'));
+    const linked = path.join(parent, 'linked');
+    try {
+      // The ref file lives in the main repository, not beside the linked HEAD.
+      git(repo, ['config', 'core.logAllRefUpdates', 'false']);
+      git(repo, ['worktree', 'add', '--quiet', '-b', 'feature/c++', linked]);
+      const commitA = git(linked, ['rev-parse', 'HEAD']);
+      write(linked, 'second.txt', 'second\n');
+      git(linked, ['add', 'second.txt']);
+      git(linked, ['commit', '--quiet', '-m', 'second']);
+      const commitB = git(linked, ['rev-parse', 'HEAD']);
+      git(linked, ['reset', '--hard', '--quiet', commitA]);
+
+      const planner = await importHelper(PLAN_HELPER);
+      expect(() =>
+        planner.snapshotEvidence({
+          repo: linked,
+          generatedPlanPath: GENERATED_PLAN_PATH,
+          citedPaths: ['base.txt'],
+          testHooks: {
+            afterAnchorCapture() {
+              git(repo, ['update-ref', 'refs/heads/feature/c++', commitB]);
+            },
+            afterGitLayerLoad() {
+              git(repo, ['update-ref', 'refs/heads/feature/c++', commitA]);
+            },
+          },
+        }),
+      ).toThrow('Git refs/heads/feature/c++ changed while evidence was materialized');
+    } finally {
+      fs.rmSync(parent, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // Git never reports such a name for HEAD, so a stand-in answers
+  // `symbolic-ref` and passes every other command to the real git.
+  it.each([
+    'refs/heads/../../config',
+    'refs/heads/a\\b',
+    'refs/heads/.hidden',
+    'refs/heads/a b',
+    'refs/heads/a:b',
+    'refs/heads/a.lock',
+    'heads/main',
+  ])('refuses the symbolic HEAD ref %s', async (ref) => {
+    const repo = createBaseRepo();
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-evidence-git-'));
+    try {
+      fs.writeFileSync(
+        path.join(bin, 'git'),
+        [
+          '#!/bin/sh',
+          'if [ "$3" = symbolic-ref ]; then printf \'%s\\n\' "$FAKE_SYMBOLIC_REF"; exit 0; fi',
+          'PATH="$REAL_GIT_PATH" exec git "$@"',
+          '',
+        ].join('\n'),
+        { mode: 0o755 },
+      );
+      vi.stubEnv('REAL_GIT_PATH', process.env.PATH ?? '');
+      vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`);
+      vi.stubEnv('FAKE_SYMBOLIC_REF', ref);
+
+      for (const helperPath of [PLAN_HELPER, WORK_HELPER]) {
+        const helper = await importHelper(helperPath);
+        expect(() =>
+          helper.snapshotEvidence({
+            repo,
+            generatedPlanPath: GENERATED_PLAN_PATH,
+            citedPaths: ['base.txt'],
+          }),
+        ).toThrow(`Invalid symbolic HEAD ref: ${ref}`);
+      }
+    } finally {
+      vi.unstubAllEnvs();
+      fs.rmSync(bin, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it('materializes one captured index listing and detects an index ABA', async () => {
     const repo = createBaseRepo();
     try {

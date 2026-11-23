@@ -28,7 +28,7 @@ import type { PipelinePhase, PipelineContext, PhaseResult } from '../../pipeline
 import { getPhaseOutput } from '../../pipeline-phases/types.js';
 import type { StructureOutput } from '../../pipeline-phases/structure.js';
 import type { ParseOutput } from '../../pipeline-phases/parse.js';
-import { SupportedLanguages, getLanguageFromFilename } from 'gitnexus-shared';
+import { SupportedLanguages, getLanguageFromFilename, type ParsedFile } from 'gitnexus-shared';
 import { readFileContents } from '../../filesystem-walker.js';
 import { runScopeResolution, type ScopeResolutionSubPhase } from './run.js';
 import { isLanguageAvailable } from '../../../tree-sitter/parser-loader.js';
@@ -141,7 +141,11 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
 export function selectScopeSourcePathsToRead(
   provider: ScopeResolver,
   primaryFilePaths: readonly string[],
-  preExtractedByPath: { readonly has: (filePath: string) => boolean },
+  preExtractedByPath: {
+    readonly has: (filePath: string) => boolean;
+    readonly get?: (filePath: string) => ParsedFile | undefined;
+  },
+  resolutionConfig?: unknown,
 ): string[] {
   const hasPostExtractHooks =
     provider.populateWorkspaceOwners !== undefined ||
@@ -154,7 +158,15 @@ export function selectScopeSourcePathsToRead(
 
   return needsAllSourceText
     ? [...primaryFilePaths]
-    : primaryFilePaths.filter((filePath) => !preExtractedByPath.has(filePath));
+    : primaryFilePaths.filter(
+        (filePath) =>
+          !preExtractedByPath.has(filePath) ||
+          provider.requiresPostExtractSourceText?.(
+            filePath,
+            resolutionConfig,
+            preExtractedByPath.get?.(filePath),
+          ) === true,
+      );
 }
 
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
@@ -440,6 +452,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             provider,
             primaryFilePaths,
             preExtractedByPath,
+            resolutionConfig,
           );
           contents = await readFileContents(ctx.repoPath, pathsToRead);
         }

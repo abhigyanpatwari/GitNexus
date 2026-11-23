@@ -16,6 +16,7 @@
 
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
 import { HERITAGE_MARKER_PREFIX } from '../../utils/heritage-marker.js';
+import type { ElementAccessRoute } from '../../scope-resolution/contract/scope-resolver.js';
 
 /** Marker prefix carried on a side-effect `ParsedImport.targetRaw` for
  *  `implements`/`with` heritage, consumed by `emitDartHeritageEdges`. Aliased to
@@ -36,6 +37,16 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
   const sourceCap = captures['@import.source'];
   if (sourceCap === undefined) return null;
   const raw = stripQuotes(sourceCap.text);
+  const metadata = {
+    ...(captures['@import.exports-only'] === undefined ? {} : { exportsOnly: true }),
+    ...(captures['@import.name-filters'] === undefined
+      ? {}
+      : {
+          nameFilters: JSON.parse(captures['@import.name-filters'].text) as NonNullable<
+            ParsedImport['nameFilters']
+          >,
+        }),
+  };
   const alias = captures['@import.alias'];
   if (alias !== undefined) {
     return {
@@ -44,13 +55,14 @@ export function interpretDartImport(captures: CaptureMatch): ParsedImport | null
       localName: alias.text,
       importedName: raw,
       explicitAlias: true,
+      ...metadata,
     };
   }
-  // Dart `import '...'` brings every PUBLIC top-level symbol of the target
-  // library directly into scope (no prefix) — wildcard semantics. The
-  // `expandsWildcardTo` hook enumerates those names so cross-file return
-  // types propagate (`var u = importedFn(); u.m()`).
-  return { kind: 'wildcard', targetRaw: raw };
+  // Dart `import '...'` brings every name of the target library's public
+  // export namespace directly into scope (no prefix) — wildcard semantics. The
+  // statement stays ONE import; `populateDartImportNamespaces` publishes each
+  // library's names once and applies this directive's `show` / `hide` there.
+  return { kind: 'wildcard', targetRaw: raw, reexportsName: false, ...metadata };
 }
 
 /** Container generics whose single type argument is the runtime element
@@ -85,6 +97,39 @@ export function normalizeDartType(text: string): string {
   return s;
 }
 
+/**
+ * What awaiting a value of this declared type yields — `Future<User>` /
+ * `FutureOr<User>` → `User`; `undefined` for anything else, including a
+ * `Future<void>` / `Future<dynamic>` (nothing to type) and a non-awaitable
+ * container (`List<User>` is NOT unwrapped by an await). The Dart
+ * `elementTypeOf` answers the fold's `await` route with this.
+ */
+export function dartAwaitedType(text: string): string | undefined {
+  const m = /^(?:Future|FutureOr)<(.+)>$/.exec(text.trim().replace(/\?+$/, ''));
+  if (m === null || m[1] === undefined) return undefined;
+  // A library prefix is KEPT (`models.User` stays `models.User`): the
+  // qualifier is what rules out a same-named local class, and the receiver
+  // lookups read a `.` qualifier as a namespace-import handle — binding the
+  // named class through that import or nothing, never the bare tail.
+  const inner = m[1].trim().replace(/\?+$/, '');
+  return inner === '' || inner === 'void' || inner === 'dynamic' ? undefined : inner;
+}
+
+/**
+ * `elementTypeOf` for Dart, handed to BOTH the `LanguageProvider` (the scope
+ * extractor's chain follow, parse side) and the `ScopeResolver` (the receiver
+ * fold and the post-finalize follow): the one container route Dart answers is
+ * `await` (DART-04). The index route stays unanswered (DART-01), and no other
+ * container is unwrapped — a container and its element can share a method
+ * name, and that edge would be a guess.
+ */
+export function dartElementTypeOf(
+  containerType: string,
+  via: ElementAccessRoute,
+): string | undefined {
+  return via.kind === 'await' ? dartAwaitedType(containerType) : undefined;
+}
+
 export function interpretDartTypeBinding(captures: CaptureMatch): ParsedTypeBinding | null {
   const nameCap = captures['@type-binding.name'];
   const typeCap = captures['@type-binding.type'];
@@ -92,10 +137,20 @@ export function interpretDartTypeBinding(captures: CaptureMatch): ParsedTypeBind
 
   // A call-derived `prefix.member` names a namespace function or a member
   // call, not a library-prefixed type, so it keeps its prefix (#3498).
+  //
+  // An awaitable RETURN (`Future<User>`, carried whole by
+  // `awaitableReturnSpelling`) is kept whole rather than unwrapped: the
+  // binding is read for the function's name with or without an await, and
+  // `svc.getUserAsync().save()` must not type the Future as a `User`. The
+  // fold's await step unwraps it through `dartAwaitedType` (DART-04).
   const rawType =
-    captures['@type-binding.constructor'] !== undefined && typeCap.text.includes('.')
-      ? typeCap.text
-      : normalizeDartType(typeCap.text);
+    (captures['@type-binding.constructor'] !== undefined && typeCap.text.includes('.')) ||
+    /^[A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*\??$/.test(typeCap.text)
+      ? typeCap.text.replace(/\?$/, '')
+      : captures['@type-binding.return'] !== undefined &&
+          dartAwaitedType(typeCap.text) !== undefined
+        ? typeCap.text.trim().replace(/\?+$/, '')
+        : normalizeDartType(typeCap.text);
   if (
     rawType === '' ||
     rawType === 'void' ||

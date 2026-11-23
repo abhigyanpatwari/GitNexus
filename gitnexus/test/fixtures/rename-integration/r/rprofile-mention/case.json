@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when .Rprofile, which is not an indexed source, mentions the name: it would not be updated.",
+  "categories": ["unindexed-source", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "incomplete_semantics",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

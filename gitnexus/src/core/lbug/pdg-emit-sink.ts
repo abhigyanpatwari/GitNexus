@@ -56,7 +56,8 @@ import {
 } from './csv-generator.js';
 import {
   VALID_NODE_TABLES,
-  assertDeclaredPair,
+  checkDeclaredPair,
+  UndeclaredPairCollector,
   relPairKeyFor,
   splitRelPairKey,
 } from './rel-pair-routing.js';
@@ -118,6 +119,8 @@ export class PdgEmitSink implements KnowledgeGraph {
    * of that file's rows (#2202 review #4/#6).
    */
   private openFailure: unknown | undefined = undefined;
+  /** Undeclared pairs met while streaming; {@link finalize} fails with all of them. */
+  private readonly undeclared = new UndeclaredPairCollector();
   // NOTE on dedup: the same file can be PDG-emitted in more than one language
   // pass (e.g. a `.ts` module imported by a `.vue` SFC is emitted in both the
   // TypeScript pass and the Vue context pass over the same worker-built
@@ -173,13 +176,18 @@ export class PdgEmitSink implements KnowledgeGraph {
         VALID_NODE_TABLES,
       );
       if (pairKey === undefined) return;
-      assertDeclaredPair(
-        pairKey,
-        DECLARED_RELATION_PAIRS,
-        relationship.type,
-        relationship.sourceId,
-        relationship.targetId,
-      );
+      if (
+        !checkDeclaredPair(
+          pairKey,
+          DECLARED_RELATION_PAIRS,
+          this.undeclared,
+          relationship.type,
+          relationship.sourceId,
+          relationship.targetId,
+        )
+      ) {
+        return;
+      }
       let writer = this.relWriters.get(pairKey);
       if (writer === undefined) {
         // Cold: once per pair, so decoding the key back into labels is free.
@@ -244,6 +252,8 @@ export class PdgEmitSink implements KnowledgeGraph {
           }`,
       );
     }
+
+    this.undeclared.throwIfAny();
 
     return { nodeFiles, relsByPair };
   }

@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a RefClass method calls the name bare and a parent class (contains =) defines a method of that name: R installs the inherited method, so the call reaches it, not the function being renamed.",
+  "categories": ["refclass", "inheritance", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

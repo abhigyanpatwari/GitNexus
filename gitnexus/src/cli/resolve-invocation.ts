@@ -22,6 +22,7 @@ interface InvocationResolver {
   // no argument.
   resolveInvocationMode: (
     probe?: (command: string, gitnexusWrapper?: boolean) => string | null,
+    deps?: { readonly npmMajor?: number | null },
   ) => InvocationMode;
   formatDocumentationDlxCommand: (
     gitnexusArgs: string,
@@ -58,16 +59,21 @@ export { NPX_REF };
 // `npm --version` is a sub-second local call.
 export function getNpmMajorVersion(): number | null {
   try {
-    const output = execFileSync('npm', ['--version'], {
-      encoding: 'utf-8',
+    const options = {
+      encoding: 'utf-8' as const,
       timeout: 1000,
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'ignore'] as ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
-      // Windows `npm` is a `.cmd` shim; without a shell execFileSync ENOENTs
-      // (CVE-2024-27980) and the npm-11 npx-crash warning below would never
-      // fire on Windows. Mirrors probeVersion in resolve-analyze-cmd.cjs.
-      shell: process.platform === 'win32',
-    });
+    };
+    // Windows `npm` is a `.cmd` shim; without a shell execFileSync ENOENTs
+    // (CVE-2024-27980) and the npm-11 npx-crash warning below would never
+    // fire on Windows. Mirrors probeVersion in resolve-analyze-cmd.cjs. The
+    // shell gets one command line, not an args array: Node >=24 prints a
+    // DEP0190 deprecation warning for shell:true plus args on every analyze.
+    const output =
+      process.platform === 'win32'
+        ? execFileSync('npm --version', { ...options, shell: true })
+        : execFileSync('npm', ['--version'], { ...options, shell: false });
     // Read the first version-shaped line so a Corepack/update banner on stdout
     // doesn't defeat the parse (mirrors the cjs probeVersion hardening).
     const major = output
@@ -91,8 +97,17 @@ export function getNpmMajorVersion(): number | null {
  * cannot run.
  */
 export function warnIfNpm11NpxRisk(): void {
-  if (resolveInvocationMode() !== 'npx') return;
-  const major = getNpmMajorVersion();
+  // The resolver and warning need the same version. Probe once, lazily: a
+  // preferred global binary or forced alternative still needs no npm spawn.
+  let cachedMajor: number | null | undefined;
+  const deps = {
+    get npmMajor(): number | null {
+      if (cachedMajor === undefined) cachedMajor = getNpmMajorVersion();
+      return cachedMajor;
+    },
+  };
+  if (resolveInvocationMode(undefined, deps) !== 'npx') return;
+  const major = deps.npmMajor;
   if (major === null || major < 11) return;
   process.stderr.write(
     `Warning: npm ${major}.x can crash while installing gitnexus via npx ` +

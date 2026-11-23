@@ -15,6 +15,7 @@
  * the query is the analyzer's own record of what it could not decide, read from
  * the index metadata.
  */
+import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import { it, expect, beforeAll, vi } from 'vitest';
 import path from 'node:path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
@@ -109,6 +110,7 @@ withTestLbugDB(
       // file directly would pin a shape no real analyze can produce.
       await saveMeta(path.dirname(h.dbPath), {
         scopeExtractionReceipt: 1,
+        unresolvedOverloads: summarizeUnresolvedOverloads([]),
         undecidedInterfaceSatisfaction: {
           counts: { CtxStore: 2 },
           totalInterfaces: 1,

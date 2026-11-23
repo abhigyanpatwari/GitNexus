@@ -45,6 +45,23 @@ const currentParserProvenance = () => {
   return { base: parser.identity.base };
 };
 
+/** Seed the storage prerequisite independently of the fast-path guard under test. */
+const saveCompactFixtureMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
+  await fs.mkdir(storagePath, { recursive: true });
+  const lbugPath = path.join(storagePath, 'lbug');
+  const { initLbug, closeLbug } = await import('../../src/core/lbug/lbug-adapter.js');
+  await initLbug(lbugPath, { skipFts: true });
+  await closeLbug();
+  await saveMeta(storagePath, {
+    ...meta,
+    graphCompaction: {
+      version: 1,
+      compactBytes: (await fs.stat(lbugPath)).size,
+      incrementalWrites: 0,
+    },
+  });
+};
+
 describe('run-analyze module', () => {
   it('adds and removes dot-directory coverage on a clean same-commit analyze', async () => {
     const tmpRepo = await createTempDir('gitnexus-dotdirs-policy-');
@@ -148,7 +165,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -202,7 +219,7 @@ describe('run-analyze module', () => {
           vectorSearch: { provider: 'exact-scan', status: 'unavailable', exactScanLimit: 0 },
         },
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(
@@ -255,7 +272,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'old' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -282,13 +299,18 @@ describe('run-analyze module', () => {
     }
   });
 
-  it('repeating the same --name on the fast path is a no-op, not an error', async () => {
+  it.each([
+    ['repeating the same --name', { registryName: 'kept' }],
+    ['creating a selected instruction file', { instructionFile: 'CLAUDE.md', skipSkills: true }],
+  ] as const)('preserves the registered name on the fast path when %s', async (_name, options) => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-fast-name-repeat-');
     const tmpHome = await createTempDir('gitnexus-run-analyze-fast-name-repeat-home-');
     const savedHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
     try {
       execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      await fs.writeFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), '# Local instructions\n');
+      execSync('git add CLAUDE.md', { cwd: tmpRepo.dbPath });
       execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
         cwd: tmpRepo.dbPath,
         stdio: 'pipe',
@@ -307,18 +329,25 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'kept' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      const result = await runFullAnalysis(
-        tmpRepo.dbPath,
-        { registryName: 'kept' },
-        { onProgress: () => {} },
-      );
+      const result = await runFullAnalysis(tmpRepo.dbPath, options, { onProgress: () => {} });
 
-      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.alreadyUpToDate, result.rebuildReasons.join(', ')).toBe(true);
       expect((await readRegistry())[0].name).toBe('kept');
+      if ('instructionFile' in options) {
+        await expect(
+          fs.readFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), 'utf8'),
+        ).resolves.toContain('indexed by GitNexus as **kept**');
+        await expect(
+          fs.readFile(path.join(tmpRepo.dbPath, 'CLAUDE.md'), 'utf8'),
+        ).resolves.toContain('# Local instructions');
+        await expect(fs.access(path.join(tmpRepo.dbPath, 'AGENTS.md'))).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      }
     } finally {
       if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = savedHome;
@@ -366,7 +395,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, metaB);
+      await saveCompactFixtureMeta(storagePath, metaB);
       await registerRepo(tmpB.dbPath, metaB, { name: 'old' });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
@@ -407,7 +436,7 @@ describe('run-analyze module', () => {
         runnerIdentity: currentRunnerIdentity(),
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(storagePath, meta);
+      await saveCompactFixtureMeta(storagePath, meta);
       await registerRepo(tmpRepo.dbPath, meta, { name: 'original' });
 
       const registerSpy = vi.spyOn(
@@ -972,9 +1001,9 @@ describe('run-analyze module', () => {
         runnerIdentity,
         parseCacheIdentity: currentParserProvenance(),
       };
-      await saveMeta(flat.storagePath, flatMetaSeed);
+      await saveCompactFixtureMeta(flat.storagePath, flatMetaSeed);
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
-      await saveMeta(path.dirname(branch.metaPath), {
+      await saveCompactFixtureMeta(path.dirname(branch.metaPath), {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1032,7 +1061,7 @@ describe('run-analyze module', () => {
       const runnerIdentity = currentRunnerIdentity();
 
       const flat = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(flat.storagePath, {
+      await saveCompactFixtureMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1043,7 +1072,7 @@ describe('run-analyze module', () => {
         parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
-      await saveMeta(path.dirname(branch.metaPath), {
+      await saveCompactFixtureMeta(path.dirname(branch.metaPath), {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1093,7 +1122,7 @@ describe('run-analyze module', () => {
       const runnerIdentity = currentRunnerIdentity();
 
       const flat = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(flat.storagePath, {
+      await saveCompactFixtureMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1146,7 +1175,7 @@ describe('run-analyze module', () => {
       // Flat slot recorded for main; feature/x has its own up-to-date pinned
       // sub-index, so an explicit `--branch feature/x` run routes there.
       const flat = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(flat.storagePath, {
+      await saveCompactFixtureMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1157,7 +1186,7 @@ describe('run-analyze module', () => {
         parseCacheIdentity: currentParserProvenance(),
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
-      await saveMeta(path.dirname(branch.metaPath), {
+      await saveCompactFixtureMeta(path.dirname(branch.metaPath), {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
@@ -1218,7 +1247,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1263,7 +1292,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1308,7 +1337,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1355,7 +1384,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
@@ -1403,7 +1432,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
-      await saveMeta(storagePath, {
+      await saveCompactFixtureMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),

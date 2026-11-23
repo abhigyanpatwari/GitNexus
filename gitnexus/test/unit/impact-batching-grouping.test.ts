@@ -387,6 +387,8 @@ describe('impact: batching and grouping', () => {
     expect(res.riskScale.unusedAxes).toEqual(
       expect.arrayContaining([expect.objectContaining({ reason: 'enrichment-budget-exhausted' })]),
     );
+    expect(res.partial).toBe(true);
+    expect(res.riskSharedAxes).toBe('LOW');
     delete process.env.IMPACT_MAX_CHUNKS;
   });
 

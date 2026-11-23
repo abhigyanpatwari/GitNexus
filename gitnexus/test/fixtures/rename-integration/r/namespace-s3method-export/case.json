@@ -1,0 +1,9 @@
+{
+  "language": "r",
+  "description": "Refuse a package function that S3method() registers by its third argument, because the registration would go stale.",
+  "categories": ["namespace", "package-export", "s3", "negative", "unchanged-on-error"],
+  "target": { "name": "show_foo", "kind": "Function", "file": "R/lib.R", "startLine": 0 },
+  "newName": "display_foo",
+  "expect": { "status": "error", "code": "unsupported_occurrence", "planningStatus": "unsupported" },
+  "edges": []
+}

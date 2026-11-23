@@ -42,6 +42,8 @@ export const PARSE_CACHE_BASE_FILES = [
   'storage/parse-cache.ts',
   'storage/parsedfile-store.ts',
   'storage/v8-sidecar.ts',
+  'storage/file-result-codec.ts',
+  'storage/file-result-store.ts',
 ] as const;
 
 /** Non-grammar parser dependencies; grammar names come from the runtime loader registry. */
@@ -204,7 +206,10 @@ class ParseArtifactInventory {
   private packages = 0;
   private readonly packageLocations = new Map<string, string>();
 
-  constructor(private readonly options: ParseCacheIdentityResolveOptions) {
+  constructor(
+    private readonly options: ParseCacheIdentityResolveOptions,
+    private readonly analyzerDigests: ReadonlyMap<string, { state: FileState; digest: string }>,
+  ) {
     for (const [key, value] of Object.entries(options.traversalLimits ?? {})) {
       if (!(key in this.limits) || !Number.isSafeInteger(value) || value < 1)
         throw new Error(`Invalid parser identity traversal limit: ${key}`);
@@ -245,31 +250,36 @@ class ParseArtifactInventory {
   }
 
   private fileDigest(candidate: string): string {
-    let digest = this.fileDigests.get(candidate);
-    if (!digest) {
-      const before = artifacts.snapshotReadableFile(candidate);
-      const size = Number(before.target.size);
-      if (!Number.isSafeInteger(size) || size < 0 || this.bytes + size > this.limits.bytes)
-        throw new Error(`Parser identity scan exceeded ${this.limits.bytes} bytes: ${candidate}`);
-      this.bytes += size;
-      const cached = digestMemo.get(candidate);
-      if (cached && isDeepStrictEqual(cached.state, before)) {
-        digest = cached.digest;
-      } else {
-        const hashed = artifacts.hashStableFile(candidate);
-        if (!isDeepStrictEqual(before, hashed.state))
-          throw new Error(`Parser artifact changed during identity capture: ${candidate}`);
-        digest = hashed.digest;
-        this.options.onHashedInput?.({ path: candidate, bytes: hashed.bytes });
-        digestMemo.set(candidate, { state: hashed.state, digest });
-        if (digestMemo.size > MAX_MEMO_ENTRIES) digestMemo.delete(digestMemo.keys().next().value!);
-      }
-      this.guards.set(`file:${candidate}`, {
-        snapshot: () => artifacts.snapshotReadableFile(candidate),
-        state: before,
-      });
-      this.fileDigests.set(candidate, digest);
+    const existing = this.fileDigests.get(candidate);
+    if (existing) return existing;
+
+    const before = artifacts.snapshotReadableFile(candidate);
+    const size = Number(before.target.size);
+    if (!Number.isSafeInteger(size) || size < 0 || this.bytes + size > this.limits.bytes)
+      throw new Error(`Parser identity scan exceeded ${this.limits.bytes} bytes: ${candidate}`);
+    this.bytes += size;
+    const local = digestMemo.get(candidate);
+    const cached = local ?? this.analyzerDigests.get(candidate);
+    let digest: string;
+    if (cached && isDeepStrictEqual(cached.state, before)) {
+      // A runner digest can come from a previous process. Check that this
+      // process can open the input before it uses those verified bytes.
+      if (!local) closeSync(openSync(candidate, 'r'));
+      digest = cached.digest;
+    } else {
+      const hashed = artifacts.hashStableFile(candidate);
+      if (!isDeepStrictEqual(before, hashed.state))
+        throw new Error(`Parser artifact changed during identity capture: ${candidate}`);
+      digest = hashed.digest;
+      this.options.onHashedInput?.({ path: candidate, bytes: hashed.bytes });
+      digestMemo.set(candidate, { state: hashed.state, digest });
+      if (digestMemo.size > MAX_MEMO_ENTRIES) digestMemo.delete(digestMemo.keys().next().value!);
     }
+    this.guards.set(`file:${candidate}`, {
+      snapshot: () => artifacts.snapshotReadableFile(candidate),
+      state: before,
+    });
+    this.fileDigests.set(candidate, digest);
     return digest;
   }
 
@@ -539,9 +549,12 @@ export function resolveParseCacheIdentity(
   options: ParseCacheIdentityResolveOptions = {},
 ): ParseCacheIdentityResolution {
   try {
-    const inventory = new ParseArtifactInventory(options);
     const modulePath = realpathSync.native(fileURLToPath(analyzerModuleUrl));
     const build = artifacts.resolveBuildRoot(modulePath);
+    const inventory = new ParseArtifactInventory(
+      options,
+      artifacts.cachedDependencyFileDigests(build.buildRoot),
+    );
     const implUrl = pathToFileURL(
       path.join(
         build.buildRoot,

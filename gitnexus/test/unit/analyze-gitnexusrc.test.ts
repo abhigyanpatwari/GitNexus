@@ -1,3 +1,4 @@
+import '../helpers/mock-analysis-host.js';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
@@ -17,6 +18,7 @@ const {
   runFullAnalysisMock,
   generateAIContextFilesMock,
   refreshBaseRefLineMock,
+  refreshStatsLineMock,
   generateSkillFilesMock,
   cliErrorMock,
   getDefaultBranchMock,
@@ -28,6 +30,7 @@ const {
   refreshBaseRefLineMock: vi.fn<typeof import('../../src/cli/ai-context.js').refreshBaseRefLine>(
     async () => ({ files: [] as string[] }),
   ),
+  refreshStatsLineMock: vi.fn(async () => ({ files: [] as string[] })),
   generateSkillFilesMock: vi.fn(async () => ({
     skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
     outputPath: '/repo/.claude/skills',
@@ -40,6 +43,7 @@ vi.mock('../../src/core/run-analyze.js', () => ({ runFullAnalysis: runFullAnalys
 vi.mock('../../src/cli/ai-context.js', () => ({
   generateAIContextFiles: generateAIContextFilesMock,
   refreshBaseRefLine: refreshBaseRefLineMock,
+  refreshStatsLine: refreshStatsLineMock,
 }));
 vi.mock('../../src/cli/skill-gen.js', () => ({ generateSkillFiles: generateSkillFilesMock }));
 vi.mock('../../src/cli/cli-message.js', () => ({ cliError: cliErrorMock }));
@@ -50,9 +54,11 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
+  loadMeta: vi.fn(async () => null),
   getStoragePaths: vi.fn((repoPath: string) => ({
     storagePath: path.join(repoPath, '.gitnexus'),
     lbugPath: path.join(repoPath, '.gitnexus', 'lbug'),
+    metaPath: path.join(repoPath, '.gitnexus', 'gitnexus.json'),
   })),
   getGlobalRegistryPath: vi.fn(() => 'registry.json'),
   RegistryNameCollisionError: class RegistryNameCollisionError extends Error {},
@@ -89,6 +95,8 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     generateAIContextFilesMock.mockResolvedValue({ files: [] });
     refreshBaseRefLineMock.mockReset();
     refreshBaseRefLineMock.mockResolvedValue({ files: [] });
+    refreshStatsLineMock.mockReset();
+    refreshStatsLineMock.mockResolvedValue({ files: [] });
     generateSkillFilesMock.mockReset();
     generateSkillFilesMock.mockResolvedValue({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
@@ -135,11 +143,11 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
   it('indexOnly suppresses a selected custom context file', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-    await analyzeCommand(dir, { indexOnly: true, contextFile: '.claude/CLAUDE.md' });
+    await analyzeCommand(dir, { indexOnly: true, instructionFile: '.claude/CLAUDE.md' });
 
     expect(runFullAnalysisMock).toHaveBeenCalledTimes(1);
     expect(runFullAnalysisMock.mock.calls[0][1]).toMatchObject({
-      contextFile: '.claude/CLAUDE.md',
+      instructionFile: '.claude/CLAUDE.md',
       skipAgentsMd: true,
       skipSkills: true,
     });
@@ -212,14 +220,14 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     try {
       const { analyzeCommand } = await import('../../src/cli/analyze.js');
 
-      await analyzeCommand(dir, { skills: true, contextFile: '.claude/CLAUDE.md' });
+      await analyzeCommand(dir, { skills: true, instructionFile: '.claude/CLAUDE.md' });
 
       expect(generateSkillFilesMock).toHaveBeenCalledTimes(1);
       expect(generateAIContextFilesMock).toHaveBeenCalledTimes(1);
       const aiCtxOpts = generateAIContextFilesMock.mock.calls[0]![5];
       expect(aiCtxOpts).toMatchObject({
         defaultBranch: 'develop',
-        contextFile: '.claude/CLAUDE.md',
+        instructionFile: '.claude/CLAUDE.md',
       });
     } finally {
       exitSpy.mockRestore();
@@ -241,23 +249,23 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     );
   });
 
-  it('passes --context-file to analysis and the up-to-date refresh', async () => {
+  it('passes --instruction-file to analysis and the up-to-date refresh', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    await analyzeCommand(dir, { contextFile: '.claude/CLAUDE.md' });
+    await analyzeCommand(dir, { instructionFile: '.claude/CLAUDE.md' });
 
-    expect(runFullAnalysisMock.mock.calls[0][1].contextFile).toBe('.claude/CLAUDE.md');
+    expect(runFullAnalysisMock.mock.calls[0][1].instructionFile).toBe('.claude/CLAUDE.md');
     expect(refreshBaseRefLineMock.mock.calls[0][2]).toMatchObject({
-      contextFile: '.claude/CLAUDE.md',
+      instructionFile: '.claude/CLAUDE.md',
     });
   });
 
-  it('rejects an escaping --context-file before analysis', async () => {
+  it('rejects an escaping --instruction-file before analysis', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
-    await analyzeCommand(dir, { contextFile: '../outside.md' });
+    await analyzeCommand(dir, { instructionFile: '../outside.md' });
 
     expect(process.exitCode).toBe(1);
     expect(runFullAnalysisMock).not.toHaveBeenCalled();
-    expect(cliErrorMock).toHaveBeenCalledWith(expect.stringMatching(/--context-file/));
+    expect(cliErrorMock).toHaveBeenCalledWith(expect.stringMatching(/--instruction-file/));
   });
 
   it('does not auto-detect the branch when config skips context generation (#1996)', async () => {

@@ -176,20 +176,36 @@
     "typeBindings": 10032997
   },
   "python/100/20": {
-    "fingerprint": "58adb2bc6b7ac24ab3dcd500ec3cd577d3e6853fd1a8e84f658f423677d6df50",
+    "fingerprint": "f71e8b80147c13f635f0a819be376f92542c05bd41a2aab735e83eb029fbc942",
     "nodes": 2299,
-    "edges": 2397,
-    "crossFileCalls": 99,
+    "edges": 2496,
+    "crossFileCalls": 198,
     "moduleTypeBindings": 0,
     "typeBindings": 4099
   },
   "python/1000/20": {
-    "fingerprint": "cba608259275ea5a0b7ece3e9b76680afe2c0c385f482d8a7325164fc4b4f8f0",
+    "fingerprint": "e2a5d32fa0fe316cb3f4e737d7ed94dcf0fb21a71d71038e5f69aff1a892fd16",
+    "nodes": 22999,
+    "edges": 24996,
+    "crossFileCalls": 1998,
+    "moduleTypeBindings": 0,
+    "typeBindings": 40999
+  },
+  "r/100/20": {
+    "fingerprint": "862f164acf5e0ddcd5fc1bf8a2f9f3ca29479e97f6bfc8f163abae61197fb334",
+    "nodes": 2299,
+    "edges": 2397,
+    "crossFileCalls": 99,
+    "moduleTypeBindings": 0,
+    "typeBindings": 2198
+  },
+  "r/1000/20": {
+    "fingerprint": "a2fd8b23407c2ee55a99d4754d87eb5297d98d71d94c15431ab0599a1d871883",
     "nodes": 22999,
     "edges": 23997,
     "crossFileCalls": 999,
     "moduleTypeBindings": 0,
-    "typeBindings": 40999
+    "typeBindings": 21998
   },
   "ruby/100/20": {
     "fingerprint": "a2472fd7ca5b2493d24a354b65cd605946b19a00d65df9d5d9788d44da50865c",

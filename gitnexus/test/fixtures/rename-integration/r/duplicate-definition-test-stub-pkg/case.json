@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the package function and its caller: a same-named stub in tests/testthat/ belongs to another load unit than the package R/ files (package layout, the load-unit rule decides).",
+  "categories": ["duplicate-definition", "package", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "R/foo.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

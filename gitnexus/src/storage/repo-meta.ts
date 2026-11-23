@@ -29,6 +29,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { UnresolvedOverloadSummary } from '../core/ingestion/scope-resolution/unresolved-overloads.js';
 import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
 import { resolveStoragePath } from './storage-resolver.js';
@@ -109,15 +110,58 @@ export type PersistedFtsSkipReason =
   | 'tuple-missing';
 
 export interface RepoMeta {
+  /** Physical compaction baseline; each repository/branch advances independently. */
+  graphCompaction?: import('../core/incremental/compaction-policy.js').GraphCompactionState;
+  relationshipIntegrity?: import('../core/graph/relationship-integrity.js').RelationshipIntegrityReceipt;
   repoPath: string;
   /** Complete index directory selected for this successful analysis. */
   storagePath?: string;
   /**
-   * Shared-store checkouts only (#3352): the graph this slot reads when it is
-   * not `<storagePath>/lbug` — a commit graph under the same store. Resolved
-   * and validated by `resolveGraphPath`.
+   * The graph this slot reads: an owned private generation basename, or an
+   * absolute shared commit graph under the same store (#3352). Resolved and
+   * validated by `resolveGraphPath`. Absent means legacy `<storagePath>/lbug`.
    */
   graphPath?: string;
+  /** A verified logical generation, published independently of optional vectors.
+   * Private incremental writes invalidate this receipt before mutating its file. */
+  graphGeneration?: {
+    version: 1;
+    id: string;
+    /** Digest of covered content, including uncommitted source changes. */
+    coveredContent: string;
+  };
+  /** Checkout-owned durable work. Progress lives in its bounded journal. */
+  embeddingJob?: {
+    version: 1;
+    identity: string;
+    graphGeneration: string;
+    /** Mutable artifact ownership is separate from this graph-bound job. */
+    artifactIdentity?: string;
+    spaceKey?: string;
+  };
+  /** Direct receipt for a retained legacy source; missing historical fields
+   * remain unknown. The source is immutable and separate from graphPath. */
+  legacyVectorSource?: string;
+  /** Published only after complete coverage, native durability and index validation. */
+  vectorGeneration?: {
+    version: 1;
+    identity: string;
+    /** Absent in older separate stores, whose artifact identity equaled the job. */
+    artifactIdentity?: string;
+    graphGeneration: string;
+    /** Explicit permission to serve this completed historical artifact against
+     * a newer graph. graphGeneration remains its original coverage receipt. */
+    preservedForGraph?: string;
+    vectorIdentity: string;
+    inputIdentity: string;
+    dimensions: number;
+    nodes: number;
+    chunks: number;
+    /** Deterministic input failures exhausted three attempts in this job. */
+    excludedNodes?: number;
+    exclusionReason?: 'input-rejected';
+    indexKind: 'hnsw' | 'exact';
+  };
   lastCommit: string;
   indexedAt: string;
   /** Missing on legacy metadata means the upstream-compatible `full` profile. */
@@ -247,6 +291,9 @@ export interface RepoMeta {
       status: 'vector-index' | 'exact-scan' | 'unavailable';
       exactScanLimit: number;
       reason?: string;
+      /** Native availability and coverage of the current selection differ. */
+      coverage?: 'current' | 'preserved' | 'unknown';
+      sourceGraphGeneration?: string;
     };
   };
   /**
@@ -285,6 +332,11 @@ export interface RepoMeta {
    * annotations. A changed value invalidates persisted JVM Route evidence.
    */
   springVendorPrefixes?: string;
+  /**
+   * Canonical declared route aliases + handler wrappers (`goRouterAliases`,
+   * `goHandlerWrappers`). A changed value invalidates persisted Route evidence.
+   */
+  routeHookConfig?: string;
   /**
    * The resolved GITNEXUS_FTS_CJK_SEGMENTATION mode ('none' | 'bigram') the
    * existing index's content/description columns were last written under
@@ -342,6 +394,12 @@ export interface RepoMeta {
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
   /**
+   * Final unresolved overload/implementation call sites, attributed by public
+   * candidate, caller and declaring-owner identity. A complete empty summary
+   * certifies measured-clean coverage; absence or invalid metadata is unverified.
+   */
+  unresolvedOverloads?: UnresolvedOverloadSummary;
+  /**
    * Files omitted from scope-resolution because their provider capture or
    * extraction step threw. The rest of each file may still be present in the
    * graph, so this is an index-completeness signal rather than a parse failure.
@@ -388,6 +446,14 @@ export interface RepoMeta {
    * Map keys are repo-relative paths.
    */
   fileHashes?: Record<string, string>;
+  /**
+   * Digest of the graph rows the index holds for each file, recorded only for
+   * repositories with an incremental resolution group. A group member whose
+   * new rows match its digest is not rewritten when a sibling changes. An
+   * entry is refreshed only when that file's rows are written; a missing entry
+   * means "unknown" and forces a rewrite.
+   */
+  fileRowDigests?: Record<string, string>;
   /**
    * Coverage policy used when `fileHashes` was recorded. `status` replays it
    * so analyze-time `--max-file-size` / `GITNEXUS_MAX_FILE_SIZE` cannot make
@@ -447,6 +513,8 @@ export interface RepoMeta {
    * to a known-good index.
    */
   incrementalInProgress?: {
+    /** Unique ownership fence for a prepared in-place graph publication. */
+    attemptId?: string;
     /** When the run started (epoch ms). */
     startedAt: number;
     /** Last dirty-flag refresh (epoch ms). */

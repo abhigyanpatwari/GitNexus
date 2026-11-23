@@ -17,6 +17,7 @@ import { localizeCliHelp } from './help-i18n.js';
 import { t } from './i18n/index.js';
 import { writeCommandBanner } from './command-banner.js';
 import { runProcessCliUpdateNotice } from './update-notice.js';
+import { memoryAutopilotDisabled } from '../core/ingestion/utils/effective-ram.js';
 
 const program = new Command();
 
@@ -99,12 +100,13 @@ program
       '(no-op when --index-only is also set).',
   )
   .option(
-    '--skip-agents-md',
-    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
+    '--instruction-file <file>',
+    'Write the GitNexus block to one instruction file instead of both AGENTS.md and CLAUDE.md: ' +
+      'either of those, or a repo-relative path such as .claude/CLAUDE.md.',
   )
   .option(
-    '--context-file <path>',
-    'Write the GitNexus context block to one repo-relative file instead of root AGENTS.md and CLAUDE.md.',
+    '--skip-agents-md',
+    'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md. Does not skip standard skills in .claude/skills or .agents/skills; use --skip-skills for those. Community skills from --skills are unaffected.',
   )
   .option(
     '--pdg',
@@ -125,8 +127,8 @@ program
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--self-commit',
-    'Auto-commit generated context file changes after analyze (opt-in, off by default). ' +
-      'Scoped to the selected context target(s) (never `git add -A`); no-ops if none exist, ' +
+    'Auto-commit generated instruction file changes after analyze (opt-in, off by default). ' +
+      'Scoped to the selected instruction file(s) (never `git add -A`); no-ops if none exist, ' +
       'none changed, or the repo has no git identity configured.',
   )
   .option(
@@ -181,6 +183,10 @@ program
     'Main-thread V8 heap size in MB for analyze (integer >= 200). Re-runs analyze with ' +
       'exactly this heap, overriding the RAM/cgroup auto-sizer and any --max-old-space-size ' +
       'pin; parse workers keep their own heap caps.',
+  )
+  .option(
+    '--resource-budget <mb>',
+    'Total analysis resource budget in MiB, including native pools, workers, model and supervisor.',
   )
   .option(
     '--workers <n>',
@@ -290,14 +296,48 @@ program
       process.env.GITNEXUS_EMBEDDING_DIMS = dimsEnvBaseline;
     }
   })
-  .action(
-    createAnalyzerLbugLazyAction(
+  .action(async (inputPath, options) => {
+    // The connected continuation only publishes the writer's prepared graph
+    // and embeds it. Its analyzer receipt is never used: the graph writer has
+    // already finalized provenance. Keep the native check, without repeating
+    // the complete analyzer identity snapshot in this separate process.
+    // An explicit heap budget without the budget-child marker always re-execs
+    // in ensureHeap before runFullAnalysis. Its parent receipt is unused too;
+    // the child still captures provenance before importing the analyzer.
+    const budgetSupervisor =
+      !options.watch &&
+      options.memoryBudget !== undefined &&
+      process.env.GITNEXUS_HEAP_LIMIT_SOURCE !== 'budget';
+    // An unconfigured automatic-heap parent also always re-execs with the
+    // admitted old/semi-space flags. Keep conservative capture for custom Node
+    // flags, manual heaps, test overrides and every analyzing child.
+    const autoSupervisor =
+      !options.watch &&
+      options.memoryBudget === undefined &&
+      process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
+      process.env.GITNEXUS_ANALYSIS_MANUAL_HEAP !== '1' &&
+      !memoryAutopilotDisabled() &&
+      process.env.GITNEXUS_TEST_RESPAWN_HEAP_MB === undefined &&
+      process.execArgv.length === 0 &&
+      !(process.env.NODE_OPTIONS ?? '').trim();
+    if (
+      budgetSupervisor ||
+      autoSupervisor ||
+      (process.env.GITNEXUS_ANALYSIS_CONTINUATION === '1' && process.connected)
+    ) {
+      await createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand')(
+        inputPath,
+        options,
+      );
+      return;
+    }
+    await createAnalyzerLbugLazyAction(
       () => import('../core/analyzer-identity.js'),
       () => import('./analyze.js'),
       'analyzeOrWatchCommandWithRunnerIdentity',
       import.meta.url,
-    ),
-  );
+    )(inputPath, options);
+  });
 
 program
   .command('index [path...]')
@@ -414,7 +454,7 @@ program
   .option('-f, --force', 'Force full regeneration even if up to date')
   .option(
     '--provider <provider>',
-    'LLM provider: minimax, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
+    'LLM provider: minimax, anthropic, openai, openrouter, azure, custom, cursor, claude, codex, opencode, or grok (default: minimax)',
   )
   .option('--model <model>', 'LLM model or deployment name (default: MiniMax-M3)')
   .option(
@@ -449,8 +489,8 @@ program
   .action(createLbugLazyAction(() => import('./wiki.js'), 'wikiCommand'));
 
 program
-  .command('augment <pattern>')
-  .description('Augment a search pattern with knowledge graph context (used by hooks)')
+  .command('augment <pattern...>')
+  .description('Augment search patterns with knowledge graph context (used by hooks)')
   .action(createLbugLazyAction(() => import('./augment.js'), 'augmentCommand'));
 
 program
@@ -522,10 +562,14 @@ program
   .option('--include-tests', 'Include test files in results')
   .option(
     '-l, --limit <n>',
-    'Max symbols per depth level (default: 100); explicit --limit also caps affected processes/modules/routes',
+    'Max symbols per depth level in callgraph mode (default: 30, GITNEXUS_IMPACT_DEFAULT_LIMIT=0 for all); explicit --limit also caps affected processes/modules/routes',
   )
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
+  .option(
+    '--max-tokens <n>',
+    'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 
 program

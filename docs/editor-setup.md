@@ -18,13 +18,23 @@
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                                                 | MCP          |
 
-> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query and do not carry the stale-index hint.
+> **Relocated Claude Code config:** if `CLAUDE_CONFIG_DIR` is set, `gitnexus setup` and `gitnexus uninstall` use it the way Claude Code does — the MCP entry goes to `$CLAUDE_CONFIG_DIR/.claude.json` and skills, hooks and `settings.json` under `$CLAUDE_CONFIG_DIR` — instead of `~/.claude.json` and `~/.claude/`. Run them from a shell where the variable has the value Claude Code sees.
+
+> **Full** means MCP tools + agent skills + hooks that enrich searches with graph context. **Claude Code** and **Codex** go deepest: their PreToolUse hooks enrich the search before it runs, and their PostToolUse hooks also detect a stale index after commits and prompt the agent to reindex. **Cursor**, **Antigravity**, and **Factory** augment from a post-tool hook only, so they enrich the result rather than the query. Of the three, only **Antigravity** also carries the stale-index hint[¹](#fn-antigravity-hooks).
+
+> In Claude Code, Codex and Antigravity the stale-index hint follows `git -C <dir>`: it checks the index of the repository the command ran in, and names that checkout when the agent works in another one.
+
+> A shell search can receive graph context when the first command runs `rg` or `grep`. A search after `&&`, `;`, `||` or `|`, such as `cd src && rg UserService .` or `git log | grep fix`, runs without graph augmentation. The bash parser accepts leading variable assignments such as `NO_COLOR=1 rg …`.
+>
+> Claude Code, Codex and Antigravity recognize `npx`, `bunx`, `sudo` and `git grep` in both shells. In bash they also recognize `env`, `time`, `nice`, `command`, `exec` and `xargs`. A wrapper option such as `sudo -u bob` or `npx --yes` skips augmentation. For `git grep`, use common options such as `-n`, `-i` or `-e` before the pattern or revision, and `--` before dash-prefixed paths. The parser skips Git-specific options and abbreviated long names. Cursor and Factory also recognize `pnpm`, `yarn` and `npm`. OpenCode recognizes direct searches only.
+>
+> On Windows, Claude Code and Codex add context only when bash and PowerShell read the same query. For example, `rg @Injectable src` and `grep -r Foo --include=*.{ts,tsx} src` receive none there. Claude Code, Codex and Antigravity can add context for up to three literal patterns, as in `rg -e FooService -e BarService`. The hooks parse the command without running a shell and skip patterns that the shell would expand, such as a leading `~`, `{a,b}` or `$(…)`.
 
 OpenCode's plugin uses the v1 `tool.execute.after` API: it enriches search results and adds a stale-index hint after git mutations. The integration is verified with OpenCode 1.19.5; OpenCode v2 uses a different plugin API.
 
 For Bash tools, the hooks recognize literal commands and known options; ambiguous shell constructs are skipped. Stale-index hints concern the current OpenCode project.
 
-Bash search augmentation requires `rg` or `grep` to be the first command. A search preceded by `cd`, such as `cd src && rg UserService .`, runs normally but receives no graph augmentation. Use a direct search command or OpenCode's `grep`/`glob` tools to get graph context.
+To get graph context for a search, use a direct search command or OpenCode's `grep`/`glob` tools.
 
 <a id="fn-antigravity-hooks"></a>
 

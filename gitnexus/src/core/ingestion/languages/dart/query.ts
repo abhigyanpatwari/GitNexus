@@ -104,6 +104,11 @@ const DART_SCOPE_QUERY = `
   (function_signature
     name: (identifier) @declaration.name) @declaration.function)
 
+(local_function_declaration
+  (lambda_expression
+    (function_signature
+      name: (identifier) @declaration.name) @declaration.function))
+
 ; ── Declarations — closure bound to a local ──────────────────────────────────
 ;
 ; var handler = (int x) => target(x);   /   var blk = (int y) { ... };
@@ -155,13 +160,28 @@ const DART_SCOPE_QUERY = `
 (constructor_signature
   name: (identifier) @declaration.name) @declaration.constructor
 
+; Executable members without a declaration capture still own their body locals.
+(method_signature (operator_signature) @dart.callable-body)
+(method_signature (factory_constructor_signature) @dart.callable-body)
+
 ; ── Declarations — getters / setters (Property, like the legacy DAG) ─────────
+; \`@dart.accessor\` is private to captures.ts: it marks the inner signature so
+; the accessor's body opens its own Function scope (its parameters and locals
+; must not leak into the enclosing Module / Class scope), while the graph keeps
+; the declaration a Property. A class field never carries it — a field is not
+; callable and has no body.
+(program
+  (getter_signature
+    name: (identifier) @declaration.name) @declaration.property @dart.accessor)
+(program
+  (setter_signature
+    name: (identifier) @declaration.name) @declaration.property @dart.accessor)
 (method_signature
   (getter_signature
-    name: (identifier) @declaration.name)) @declaration.property
+    name: (identifier) @declaration.name) @dart.accessor) @declaration.property
 (method_signature
   (setter_signature
-    name: (identifier) @declaration.name)) @declaration.property
+    name: (identifier) @declaration.name) @dart.accessor) @declaration.property
 
 ; ── Declarations — class fields ──────────────────────────────────────────────
 (declaration
@@ -233,6 +253,22 @@ const DART_SCOPE_QUERY = `
     (import_specification
       (configurable_uri) @import.source
       (identifier)? @import.alias))) @import.statement
+; \`import 'x.dart' deferred as p;\` is the grammar's second
+; \`import_specification\` branch: a bare \`(uri)\` (no \`configurable_uri\`
+; wrapper), the anonymous \`deferred\`/\`as\` tokens, then the alias
+; \`(identifier)\`. The pattern above never matches it, so the statement
+; produced no import capture at all. The prefix is a namespace handle like
+; the non-deferred \`as p\` form, with one exception: the language adds an
+; implicit \`loadLibrary()\` to a deferred prefix and loads the library with
+; \`hide loadLibrary\`, so \`p.loadLibrary\` never names a declaration of the
+; imported library. \`@import.deferred\` marks the prefix so \`captures.ts\`
+; can drop those references.
+(import_or_export
+  (library_import
+    (import_specification
+      (uri) @import.source
+      "deferred" @import.deferred
+      (identifier) @import.alias))) @import.statement
 (import_or_export
   (library_export
     (configurable_uri) @import.source)) @import.statement

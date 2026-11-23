@@ -111,6 +111,12 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
     if (parseIdentity.ok === false) {
       throw new Error(`Cannot verify test parser artifacts: ${parseIdentity.reason}`);
     }
+    const flat = getStoragePaths(tmpRepo.dbPath);
+    await fs.mkdir(flat.storagePath, { recursive: true });
+    const { initLbug, closeLbug } = await import('../../src/core/lbug/lbug-adapter.js');
+    await initLbug(flat.lbugPath, { skipFts: true });
+    await closeLbug();
+    const compactBytes = (await fs.stat(flat.lbugPath)).size;
     const metaFor = (branch: string): RepoMeta => ({
       repoPath: tmpRepo.dbPath,
       lastCommit: commit,
@@ -122,8 +128,8 @@ describe('fast-path restamp failure modes (#2364 F3)', () => {
       },
       runnerIdentity,
       parseCacheIdentity: { base: parseIdentity.identity.base },
+      graphCompaction: { version: 1, compactBytes, incrementalWrites: 0 },
     });
-    const flat = getStoragePaths(tmpRepo.dbPath);
     await rmCtx.realSaveMeta!(flat.storagePath, metaFor('main'));
     const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
     await rmCtx.realSaveMeta!(path.dirname(branch.metaPath), metaFor('feature/x'));

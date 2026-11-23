@@ -19,6 +19,7 @@ import { describe, it, expect } from 'vitest';
 import { resolveAmbiguousInheritanceBaseViaImports } from '../../../src/core/ingestion/scope-resolution/scope/walkers.js';
 import type { ImportEdge, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../../src/core/ingestion/model/scope-resolution-indexes.js';
+import { createEagerImportVisibility } from 'gitnexus-shared';
 
 const MODULE = 'scope:module' as ScopeId;
 const BASE = 'Handler';
@@ -56,7 +57,9 @@ function buildIndexes(
     qualifiedNames: { get: (n: string) => (n === BASE ? ids : []) },
     defs: { get: (id: string) => defsMap.get(id) },
     scopeTree: { getScope: (id: ScopeId) => (id === MODULE ? moduleScope : undefined) },
-    imports: new Map<ScopeId, readonly ImportEdge[]>([[MODULE, importEdges]]),
+    imports: createEagerImportVisibility(
+      new Map<ScopeId, readonly ImportEdge[]>([[MODULE, importEdges]]),
+    ),
   } as unknown as ScopeResolutionIndexes;
 }
 

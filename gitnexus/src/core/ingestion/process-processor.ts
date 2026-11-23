@@ -10,7 +10,8 @@
  * Processes help agents understand how features work through the codebase.
  */
 
-import type { GraphNode, NodeLabel, RelationshipType } from 'gitnexus-shared';
+import { createHash } from 'node:crypto';
+import type { NodeLabel, RelationshipType } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
 import { CommunityMembership } from './community-processor.js';
@@ -46,7 +47,7 @@ export const DEFAULT_CONFIG: ProcessDetectionConfig = {
 // ============================================================================
 
 export interface ProcessNode {
-  id: string; // "proc_handleLogin_createSession"
+  id: string; // "proc_<12-hex hash>_<sanitized entry name>"; optional collision suffix
   label: string; // "HandleLogin → CreateSession"
   heuristicLabel: string;
   processType: 'intra_community' | 'cross_community';
@@ -166,8 +167,6 @@ export const processProcesses = async (
 
   const callsEdges = buildCallsGraph(knowledgeGraph);
   const reverseCallsEdges = buildReverseCallsGraph(knowledgeGraph);
-  const nodeMap = new Map<string, GraphNode>();
-  for (const n of knowledgeGraph.iterNodes()) nodeMap.set(n.id, n);
 
   // Declared before Step 1 because `findEntryPoints` has a ceiling of its own
   // (`cfg.maxEntryPointCandidates`, default 200) and reports it through the same record.
@@ -344,8 +343,9 @@ export const processProcesses = async (
   // Step 5: Create process nodes
   const processes: ProcessNode[] = [];
   const steps: ProcessStep[] = [];
+  const usedProcessIds = new Set<string>();
 
-  limitedTraces.forEach((trace, idx) => {
+  limitedTraces.forEach((trace) => {
     const entryPointId = trace[0];
     const terminalId = trace[trace.length - 1];
 
@@ -362,13 +362,13 @@ export const processProcesses = async (
       communities.length > 1 ? 'cross_community' : 'intra_community';
 
     // Generate label
-    const entryNode = nodeMap.get(entryPointId);
-    const terminalNode = nodeMap.get(terminalId);
+    const entryNode = knowledgeGraph.getNode(entryPointId);
+    const terminalNode = knowledgeGraph.getNode(terminalId);
     const entryName = entryNode?.properties.name || 'Unknown';
     const terminalName = terminalNode?.properties.name || 'Unknown';
     const heuristicLabel = `${capitalize(entryName)} → ${capitalize(terminalName)}`;
 
-    const processId = `proc_${idx}_${sanitizeId(entryName)}`;
+    const processId = stableProcessId(entryPointId, terminalId, entryName, usedProcessIds);
 
     processes.push({
       id: processId,
@@ -928,6 +928,27 @@ const deduplicateByEndpoints = (traces: string[][]): string[][] => {
 // ============================================================================
 // HELPER: String utilities
 // ============================================================================
+
+/**
+ * Endpoint pairs already define process identity during deduplication.
+ * Colliding hash/name bases receive suffixes in trace order.
+ */
+export const stableProcessId = (
+  entryPointId: string,
+  terminalId: string,
+  entryName: string,
+  used: Set<string>,
+): string => {
+  const hash = createHash('sha1')
+    .update(`${entryPointId}\0${terminalId}`)
+    .digest('hex')
+    .slice(0, 12);
+  const base = `proc_${hash}_${sanitizeId(entryName)}`;
+  let id = base;
+  for (let n = 2; used.has(id); n++) id = `${base}_${n}`;
+  used.add(id);
+  return id;
+};
 
 const capitalize = (s: string): string => {
   if (!s) return s;

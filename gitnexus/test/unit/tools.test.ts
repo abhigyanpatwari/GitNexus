@@ -171,9 +171,10 @@ describe('GITNEXUS_TOOLS', () => {
     const queryTool = GITNEXUS_TOOLS.find((t) => t.name === 'query')!;
     const description = queryTool.inputSchema.properties.include_content.description;
     expect(description).toContain('Include source text retained for matching symbols');
-    expect(description).toContain(
-      'Content is sent once per symbol id, on its first process_symbols row; context({uid: "<id>", include_content: true}) returns it for any row.',
-    );
+    expect(description).toContain('once per (repository, symbol id), on its first surviving row');
+    expect(description).toContain('context({uid: "<id>", include_content: true})');
+    expect(description).toContain('in array mode add repo: "<row._repo>"');
+    expect(description).toContain('across the whole response');
   });
 
   it('query tool requires "search_query" parameter (renamed from "query" for #2175)', () => {
@@ -351,7 +352,16 @@ describe('GITNEXUS_TOOLS', () => {
       if (tool.name === 'list_repos') continue;
       if (GROUP_TOOLS.has(tool.name)) continue;
       expect(tool.inputSchema.properties.repo).toBeDefined();
-      expect(tool.inputSchema.properties.repo.type).toBe('string');
+      if (tool.name === 'query') {
+        expect(tool.inputSchema.properties.repo).toMatchObject({
+          type: ['string', 'array'],
+          items: { type: 'string', minLength: 1 },
+          minItems: 1,
+          maxItems: 10,
+        });
+      } else {
+        expect(tool.inputSchema.properties.repo.type).toBe('string');
+      }
       expect(tool.inputSchema.required).not.toContain('repo');
     }
   });

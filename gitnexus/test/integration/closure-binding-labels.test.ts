@@ -645,15 +645,15 @@ describeIfWorkerBuilt('a closure binding as a call SOURCE (#2699 part B)', () =>
         'int second() {\n  var handler = (int x) => other(x);\n  return handler(2);\n}\n',
     );
 
-    // The trailing `:5:9` / `:9:9` on the first and third edges is the CALL
+    // The trailing `:5:9:5:16` / `:9:9:9:16` on the first and third edges is the CALL
     // SITE, not part of the node id: invoking a closure binding is an indirect
     // call emitted by the callable-value-flow pass, which keys its edge by the
-    // invocation position. The direct `handler -> target` calls carry no such
+    // invocation span. The direct `handler -> target` calls carry no such
     // suffix. Do not "normalize" these away — they are different edge kinds.
     expect(targets).toEqual([
-      'rel:CALLS:Function:collide.dart:outer->Function:collide.dart:outer.handler@3:2:5:9',
+      'rel:CALLS:Function:collide.dart:outer->Function:collide.dart:outer.handler@3:2:5:9:5:16',
       'rel:CALLS:Function:collide.dart:outer.handler@3:2->Function:collide.dart:target',
-      'rel:CALLS:Function:collide.dart:second->Function:collide.dart:second.handler@7:2:9:9',
+      'rel:CALLS:Function:collide.dart:second->Function:collide.dart:second.handler@7:2:9:9:9:16',
       'rel:CALLS:Function:collide.dart:second.handler@7:2->Function:collide.dart:other',
     ]);
   });

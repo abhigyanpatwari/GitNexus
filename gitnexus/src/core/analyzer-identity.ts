@@ -46,10 +46,13 @@ import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 export const ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION = 4 as const;
 const BUILD_CANONICALIZATION = 'gitnexus-analyzer-build-v2' as const;
 const DEPENDENCY_RUNTIME_CANONICALIZATION = 'gitnexus-analyzer-dependency-runtime-v4' as const;
-const IDENTITY_CACHE_SCHEMA_VERSION = 6 as const;
+// v7 stores the raw content hash for readable dependency files.
+const IDENTITY_CACHE_SCHEMA_VERSION = 7 as const;
 const MAX_CACHE_ENTRIES = 100_000;
 const MAX_CACHE_FILE_BYTES = 64 * 1024 * 1024;
 const HASH_BUFFER_BYTES = 256 * 1024;
+// Hashing is synchronous. Each worker can reuse its own buffer across files.
+let hashReadBuffer: Buffer | undefined;
 const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/;
 
 export interface AnalyzerIdentityTraversalLimits {
@@ -441,9 +444,10 @@ function snapshotReadableFile(candidate: string): ReadableFileState {
   const link = lstatSync(candidate, { bigint: true });
   const target = link.isFile() ? link : statSync(candidate, { bigint: true });
   if (!target.isFile()) throw new Error(`Analyzer identity input is not a file: ${candidate}`);
+  const linkState = statState(link);
   return {
-    link: statState(link),
-    target: statState(target),
+    link: linkState,
+    target: target === link ? { ...linkState } : statState(target),
     ...(link.isSymbolicLink() ? { symlinkTarget: readlinkSync(candidate) } : {}),
   };
 }
@@ -544,7 +548,7 @@ function readStableFileWithinBudget(
   return stable;
 }
 
-/** Hash a stable file through a fixed-size buffer instead of materializing it. */
+/** Hash a stable file in bounded chunks. */
 function hashStableFile(candidate: string): {
   digest: string;
   state: ReadableFileState;
@@ -557,13 +561,21 @@ function hashStableFile(candidate: string): {
     try {
       descriptor = openSync(candidate, fsConstants.O_RDONLY);
       const openedBefore = statState(fstatSync(descriptor, { bigint: true }));
-      if (!isDeepStrictEqual(openedBefore, before.target)) continue;
+      // Windows path stats can report dev=0 while fstat reports the volume serial.
+      // Preserve openedBefore for the descriptor's before/after stability check.
+      const comparableOpened =
+        process.platform === 'win32' && before.target.dev === '0'
+          ? { ...openedBefore, dev: before.target.dev }
+          : openedBefore;
+      if (!isDeepStrictEqual(comparableOpened, before.target)) continue;
 
       const hash = createHash('sha256');
-      const buffer = Buffer.allocUnsafe(HASH_BUFFER_BYTES);
+      const buffer = (hashReadBuffer ??= Buffer.allocUnsafe(HASH_BUFFER_BYTES));
+      // Read up to one extra byte to detect growth, including for an initially empty file.
+      const readSize = Math.min(buffer.length, expectedBytes + 1);
       let bytes = 0;
       while (true) {
-        const read = readSync(descriptor, buffer, 0, buffer.length, null);
+        const read = readSync(descriptor, buffer, 0, readSize, null);
         if (read === 0) break;
         hash.update(buffer.subarray(0, read));
         bytes += read;
@@ -1636,20 +1648,12 @@ function hashRuntimeArtifact(
   }
 
   const stable = hashStableFile(artifact.absolutePath);
-  const digest = hashCanonicalFrames([
-    [
-      'runtime-payload-content-v1',
-      artifact.kind,
-      stable.state.symlinkTarget ?? '',
-      digestBytes(stable.digest),
-    ],
-  ]);
   options.onHashedInput?.({
     kind: 'runtime-artifact',
     path: artifact.absolutePath,
     bytes: stable.bytes,
   });
-  return { ...artifact, state: stable.state, digest };
+  return { ...artifact, state: stable.state, digest: stable.digest };
 }
 
 function compareEdges(a: RuntimeDependencyEdge, b: RuntimeDependencyEdge): number {
@@ -1725,11 +1729,22 @@ function hashDependencyRuntime(
       cachedArtifacts.get(artifactCacheKey(artifact)),
       options,
     );
+    const payloadDigest =
+      hashed.kind === 'unfollowed-symlink'
+        ? hashed.digest
+        : hashCanonicalFrames([
+            [
+              'runtime-payload-content-v1',
+              hashed.kind,
+              hashed.state.symlinkTarget ?? '',
+              digestBytes(hashed.digest),
+            ],
+          ]);
     updateCanonicalFrame(hash, [
       'runtime-artifact',
       artifact.canonicalPath,
       artifact.kind,
-      digestBytes(hashed.digest),
+      digestBytes(payloadDigest),
     ]);
     nextArtifacts.push(hashed);
   }
@@ -2157,6 +2172,19 @@ function identityCacheKey(
 
 const MAX_PROCESS_CACHE_ENTRIES = 12;
 const processIdentityCache = new Map<string, IdentityCachePayload>();
+
+/** Only successful runner validations enter this cache. Consumers must still
+ * match the current file state before reusing a content hash. */
+function cachedDependencyFileDigests(buildRoot: string) {
+  const files = new Map<string, { state: ReadableFileState; digest: string }>();
+  for (const cache of processIdentityCache.values()) {
+    if (cache.buildRoot !== buildRoot) continue;
+    for (const entry of cache.artifactEntries) {
+      if (entry.kind === 'file') files.set(entry.absolutePath, entry);
+    }
+  }
+  return files;
+}
 
 /** @internal Clear process-local reuse between simulated-process unit tests. */
 export function _clearAnalyzerIdentityProcessCacheForTests(): void {
@@ -2907,6 +2935,7 @@ export function finalizeAnalyzerRunnerIdentity(
 /** Narrow, non-loading artifact primitives shared by parser identity.
  * The analyzer receipt and its existing cache retain their separate contract. */
 export const analyzerIdentityArtifacts = {
+  cachedDependencyFileDigests,
   hashCanonicalFrames,
   hashStableFile,
   snapshotReadableFile,

@@ -173,4 +173,28 @@ describe('cleanCommand named branch empty-dir cleanup (#3331)', () => {
     await expect(fs.access(path.join(storagePath, 'branches'))).rejects.toBeTruthy();
     await expect(fs.access(path.join(storagePath, 'gitnexus.json'))).resolves.toBeUndefined();
   });
+
+  it.each(['branch', 'stale'])(
+    'cleans a damaged generation pointer through %s without following it',
+    async (mode) => {
+      const { getStoragePaths, saveMeta } = await import('../../src/storage/repo-manager.js');
+      const branchDir = path.dirname(getStoragePaths(repo, 'feature/x', storagePath).metaPath);
+      const outside = path.join(fixture.dbPath, 'external-sentinel');
+      await fs.writeFile(outside, 'keep external data');
+      const graphPath = 'lbug.generation.' + 'a'.repeat(32);
+      await fs.symlink(outside, path.join(branchDir, graphPath));
+      await saveMeta(branchDir, {
+        repoPath: repo,
+        lastCommit: 'aaa',
+        indexedAt: '2026-09-20T00:00:00.000Z',
+        branch: 'feature/x',
+        graphPath,
+      });
+      await cleanCommand(
+        mode === 'branch' ? { branch: 'feature/x', force: true } : { stale: true, force: true },
+      );
+      await expect(fs.access(branchDir)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(await fs.readFile(outside, 'utf8')).toBe('keep external data');
+    },
+  );
 });

@@ -3,8 +3,10 @@
 import json
 import subprocess
 import sys
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -12,6 +14,54 @@ import yaml
 from workflow_bench import oracle_assets, release_preflight, runner_tasks, task_assets
 from workflow_bench.proposer_sandbox import SandboxError
 from workflow_bench.sanitized_graph import SanitizedGraphSnapshot
+
+
+@pytest.mark.parametrize(("tool_ok", "wrote_marker"), [(True, True), (False, True), (True, False)])
+def test_zero_exit_from_claude_requires_a_successful_bash_result_and_workspace_write(monkeypatch, tool_ok, wrote_marker):
+    marker = "gitnexus-release-preflight"
+    reply = {"type": "tool_result", "tool_use_id": "toolu_mock_0", "content": marker, "is_error": not tool_ok}
+    provider = SimpleNamespace(base_url="http://127.0.0.1",
+                               requests=[SimpleNamespace(body={"messages": [{"role": "user", "content": [reply]}]})])
+    monkeypatch.setattr(release_preflight, "MockProvider", lambda *_: nullcontext(provider))
+
+    def prepare(*, clone, **_kwargs):
+        def run(*_args, **_kw):
+            if wrote_marker:
+                (clone / "bash-probe").write_text(marker)
+            return SimpleNamespace(ok=True, stderr_tail="")
+        return nullcontext(SimpleNamespace(run=run, claude_bin="claude", settings_json="{}", environment=lambda **_: {}))
+
+    monkeypatch.setattr(release_preflight, "prepare_sandbox", prepare)
+    if tool_ok and wrote_marker:
+        release_preflight.check_bash_tool(Path("claude"), Path("bwrap"))
+    else:
+        with pytest.raises(SandboxError, match="Bash failed its offline workspace check"):
+            release_preflight.check_bash_tool(Path("claude"), Path("bwrap"))
+
+
+@pytest.mark.parametrize(("problem", "expected"), [
+    ("", (True, True)), ("outer", (False, False)), ("inner", (True, False)), ("connection", None),
+])
+def test_native_probe_distinguishes_kernel_policy_from_broken_tools(monkeypatch, problem, expected):
+    def outer():
+        if problem == "outer":
+            raise SandboxError("bwrap: setting up uid map: Permission denied")
+        return Path("bwrap")
+
+    def inner(*_):
+        if problem == "inner":
+            raise SandboxError("bwrap: No permissions to create a new namespace")
+        if problem == "connection":
+            raise SandboxError("model fixture unavailable")
+
+    monkeypatch.setattr(release_preflight, "preflight_bubblewrap", outer)
+    monkeypatch.setattr(release_preflight, "require_claude_sandbox_helpers", lambda: None)
+    monkeypatch.setattr(release_preflight, "check_bash_tool", inner)
+    if expected is None:
+        with pytest.raises(SandboxError, match="model fixture unavailable"):
+            release_preflight.legacy_sandbox_support(Path("claude"))
+    else:
+        assert release_preflight.legacy_sandbox_support(Path("claude")) == expected
 
 
 @pytest.fixture
@@ -38,6 +88,7 @@ def prepared(monkeypatch, tmp_path):
     probes = []
     monkeypatch.setattr(release_preflight, "preflight_bubblewrap", lambda: Path("/fake/bwrap"))
     monkeypatch.setattr(release_preflight, "require_claude_sandbox_helpers", lambda: None)
+    monkeypatch.setattr(release_preflight, "check_bash_tool", lambda *_: None)
     monkeypatch.setattr(release_preflight, "trusted_gitnexus_runtime_mounts", lambda **_: ())
     monkeypatch.setattr(release_preflight, "check_task_controls", lambda *_a, **_kw: None)
     monkeypatch.setattr(task_assets, "_try_reflink", lambda *_: False)

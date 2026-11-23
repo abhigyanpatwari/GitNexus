@@ -733,6 +733,8 @@ def run_claude(
     plugin_dirs: Sequence[str] = (),
     progress_label: str | None = None,
     max_budget_usd: float | None = None,
+    isolated_client_config: bool = False,
+    required_mcp_servers: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Run one headless session and return its usage record."""
 
@@ -753,6 +755,8 @@ def run_claude(
     ]
     for plugin_dir in plugin_dirs:
         cmd += ["--plugin-dir", plugin_dir]
+    if isolated_client_config:
+        cmd += ["--setting-sources", "", "--no-session-persistence"]
     if settings_json is not None:
         cmd += ["--settings", settings_json]
     if strict_mcp_config:
@@ -833,6 +837,13 @@ def run_claude(
         event_stream_error = str(exc)
         data = {}
         event_offsets = None
+    if required_mcp_servers and event_stream_error is None:
+        init = next((event for event in events if event.get("type") == "system" and event.get("subtype") == "init"), {})
+        connected = {server.get("name") for server in init.get("mcp_servers", [])
+                     if isinstance(server, dict) and server.get("status") == "connected"}
+        missing = set(required_mcp_servers) - connected
+        if missing:
+            event_stream_error = "required MCP servers did not connect: " + ", ".join(sorted(missing))
     usage = data.get("usage") or {}
     subtype = data.get("subtype")
     well_formed = all(field in usage for field in USAGE_FIELDS)

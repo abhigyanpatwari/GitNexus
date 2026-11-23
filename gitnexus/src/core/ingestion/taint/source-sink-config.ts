@@ -119,6 +119,7 @@ export interface TaintMemberSourceEntry {
 export interface TaintCallResultSourceEntry {
   readonly type: 'call-result';
   readonly kind: SourceKind;
+  /** Exact conventional receiver paths, e.g. `request` or `ctx.request`. */
   readonly receivers: readonly string[];
   readonly methods: readonly string[];
 }

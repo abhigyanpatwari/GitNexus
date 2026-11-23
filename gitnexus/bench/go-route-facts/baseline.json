@@ -1,0 +1,114 @@
+{
+  "_what": "Go route-fact collection and serialized replay (#3750). Run node --expose-gc --import tsx bench/go-route-facts/measure.js --check.",
+  "_method": "Three 4x sizes; eight warmups, seven interleaved adaptive batches per size, median per-call time. Parsing, serialization and identity checks are untimed. manyParameters grows parameters and routes together. Serialized bytes exclude worker envelopes and heap.",
+  "_triage": "Check identities before timing. A normalized factor near 1 is linear; quadratic growth produces factors near 4 per adjacent size and 16 across the full range. Re-run timing failures on an idle machine; do not raise budgets or regenerate fingerprints to conceal regressions.",
+  "version": 1,
+  "sizes": [128, 512, 2048],
+  "budgets": {
+    "collect_ms": 1.5,
+    "replay_ms": 1.5,
+    "serialized_bytes": 1.15
+  },
+  "workloads": {
+    "noRoutes": [
+      {
+        "size": 128,
+        "routes": 0,
+        "candidates": 0,
+        "fingerprint": "95d423889096132b39fc71a1ac71377b51265e98194b64803edf5db1fe7bf7b1"
+      },
+      {
+        "size": 512,
+        "routes": 0,
+        "candidates": 0,
+        "fingerprint": "95d423889096132b39fc71a1ac71377b51265e98194b64803edf5db1fe7bf7b1"
+      },
+      {
+        "size": 2048,
+        "routes": 0,
+        "candidates": 0,
+        "fingerprint": "95d423889096132b39fc71a1ac71377b51265e98194b64803edf5db1fe7bf7b1"
+      }
+    ],
+    "direct": [
+      {
+        "size": 128,
+        "routes": 128,
+        "candidates": 128,
+        "fingerprint": "1db15d356dbdbf66795f95bedf9c241ac47e9de19140e169cdabf12f4ba64771"
+      },
+      {
+        "size": 512,
+        "routes": 512,
+        "candidates": 512,
+        "fingerprint": "8450e2f92cf78ce784f1412f52dead89ef7b994285643eef7da0f12ba646b83e"
+      },
+      {
+        "size": 2048,
+        "routes": 2048,
+        "candidates": 2048,
+        "fingerprint": "1d568993ecb20a35e23c21ffd2c89e8a6cbb4279e05252d1293fe510d5c92cdf"
+      }
+    ],
+    "wrapped": [
+      {
+        "size": 128,
+        "routes": 128,
+        "candidates": 128,
+        "fingerprint": "f687fcd72ed2b722e6fa2210761a2ae1a9d090db935ba526da65764b3397bb68"
+      },
+      {
+        "size": 512,
+        "routes": 512,
+        "candidates": 512,
+        "fingerprint": "be46370d5d280ab594de5099814be36f3faf2ddbabe997b7cddd0a8df8850e0b"
+      },
+      {
+        "size": 2048,
+        "routes": 2048,
+        "candidates": 2048,
+        "fingerprint": "a5728b94aed95cd572a76cc5c6c3515795fe5c84101fc852968271d728231545"
+      }
+    ],
+    "mixed": [
+      {
+        "size": 128,
+        "routes": 128,
+        "candidates": 128,
+        "fingerprint": "ae5a80d0b61dd6afb781ce1d763766ba42b91310d5b229bf271ea49958765dd2"
+      },
+      {
+        "size": 512,
+        "routes": 512,
+        "candidates": 512,
+        "fingerprint": "f930a0c5fb25631ca12c471bd8793d3fe7b354e2fcfa53accc11ea298496cf4e"
+      },
+      {
+        "size": 2048,
+        "routes": 2048,
+        "candidates": 2048,
+        "fingerprint": "b365479d3bfee17800dd01d748ebfa7e5fda39b8d650b1c04bb8bb75e81975f4"
+      }
+    ],
+    "manyParameters": [
+      {
+        "size": 128,
+        "routes": 128,
+        "candidates": 128,
+        "fingerprint": "7e39887e880c081eb858b5d4d43543ac9e79835434d93230f8ddda0dc3999984"
+      },
+      {
+        "size": 512,
+        "routes": 512,
+        "candidates": 512,
+        "fingerprint": "97afb59ccc0fcd32aaa569f97b8d9e6d190830b1c064b3bf9dfb17bfba30eedf"
+      },
+      {
+        "size": 2048,
+        "routes": 2048,
+        "candidates": 2048,
+        "fingerprint": "be631b09b19df157c595b057469cc2c72a2fc60fae7995e43657a81752a72b11"
+      }
+    ]
+  }
+}

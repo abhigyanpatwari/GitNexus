@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a roxygen2 @export tag on a NULL block names the function: the next document() exports the old name.",
+  "categories": ["namespace", "roxygen", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "R/a.R",
+    "startLine": 3
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "error",
+    "code": "unsupported_occurrence",
+    "planningStatus": "unsupported"
+  },
+  "edges": []
+}

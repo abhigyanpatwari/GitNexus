@@ -179,6 +179,18 @@ describe('release', () => {
 });
 
 describe('sweepStagingArtifacts', () => {
+  it('reclaims private generation stages and WALs while retaining published graphs', () => {
+    const generation = `lbug.generation.${'a'.repeat(32)}`;
+    const stage = `${generation}.staging.6e34c761-bf58-46cc-8b54-78d11607bc46`;
+    for (const name of [generation, `${generation}.wal`, stage, `${stage}.wal`])
+      writeFileSync(path.join(dir, name), 'graph');
+    sweepStagingArtifacts(dir);
+    expect(existsSync(path.join(dir, generation))).toBe(true);
+    expect(existsSync(path.join(dir, `${generation}.wal`))).toBe(true);
+    expect(existsSync(path.join(dir, stage))).toBe(false);
+    expect(existsSync(path.join(dir, `${stage}.wal`))).toBe(false);
+  });
+
   const recoveryStage = 'lbug.staging.6e34c761-bf58-46cc-8b54-78d11607bc46';
   const seedRecovery = (stagingFile = recoveryStage): void => {
     writeFileSync(

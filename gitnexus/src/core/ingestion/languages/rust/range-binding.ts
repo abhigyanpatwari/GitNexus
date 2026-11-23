@@ -602,7 +602,7 @@ function resolveImportedDef<V>(
     explicit.length > 0
       ? explicit
       : uniqueDefs(
-          (indexes.imports.get(moduleScope.id) ?? [])
+          (indexes.imports.edgesAt(moduleScope.id) ?? [])
             .filter(
               (e) =>
                 e.kind === 'wildcard-expanded' &&

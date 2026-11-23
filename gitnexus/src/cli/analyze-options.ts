@@ -14,6 +14,21 @@
  * back the other way put the two files, plus `core/run-analyze.ts`, in an
  * import cycle. `analyze.ts` re-exports the type for existing importers.
  */
+import type { RouteFrameworkAlias } from '../core/ingestion/language-provider.js';
+
+const defaultInstructionFiles: readonly string[] = ['AGENTS.md', 'CLAUDE.md'];
+/** Root `AGENTS.md` / `CLAUDE.md`, or one repo-relative path chosen by the user. */
+export type InstructionFile = string;
+
+export function isDefaultInstructionFile(name: string): boolean {
+  return defaultInstructionFiles.includes(name);
+}
+
+/** The files that receive the managed block: one selected target, else both root defaults. */
+export function selectedInstructionFiles(selected?: InstructionFile): InstructionFile[] {
+  return selected === undefined ? [...defaultInstructionFiles] : [selected];
+}
+
 export interface AnalyzeOptions {
   /** Keep this repository current with serialized incremental refreshes. */
   watch?: boolean;
@@ -42,8 +57,8 @@ export interface AnalyzeOptions {
   verbose?: boolean;
   /** Skip AGENTS.md and CLAUDE.md gitnexus block updates. */
   skipAgentsMd?: boolean;
-  /** Repo-relative replacement for the default AGENTS.md and CLAUDE.md context targets. */
-  contextFile?: string;
+  /** Single target for the managed block: `AGENTS.md`, `CLAUDE.md`, or a repo-relative path. */
+  instructionFile?: InstructionFile;
   /**
    * Build the control-flow-graph / PDG substrate (#2081 M1). Opt-in; off by
    * default. Threaded to both the worker (CFG build) and scope-resolution
@@ -63,9 +78,9 @@ export interface AnalyzeOptions {
    */
   stats?: boolean;
   /**
-   * Opt-in auto-commit of generated context changes this `analyze` run
-   * makes. Scoped to only the selected context target(s) (never `git add -A`); no-ops
-   * silently if no selected targets exist, none changed, or the commit step itself
+   * Opt-in auto-commit of any AGENTS.md/CLAUDE.md changes this `analyze` run
+   * makes. Scoped to only those two files (never `git add -A`); no-ops
+   * silently if neither exists, neither changed, or the commit step itself
    * fails (e.g. no git identity configured). See #2639.
    */
   selfCommit?: boolean;
@@ -127,6 +142,8 @@ export interface AnalyzeOptions {
    * Integer, minimum 200; CLI-only (not a `.gitnexusrc` key).
    */
   memoryBudget?: string;
+  /** Total process-family reservation, separate from the main V8 heap flag. */
+  resourceBudget?: string;
   /** Parse worker pool size (>=1); 0 is rejected (no sequential mode). */
   workers?: string;
   /** Process-detection process cap. Positive integer string; `0` is invalid. */
@@ -149,6 +166,16 @@ export interface AnalyzeOptions {
    * outside the built-in convention still produces `route_map` consumers.
    */
   fetchWrappers?: string[];
+  /**
+   * Router types reached through a wrapper package that are a framework's
+   * router root. Supplied via `.gitnexusrc` / `GITNEXUS_RC` `goRouterAliases`.
+   */
+  routeFrameworkAliases?: RouteFrameworkAlias[];
+  /**
+   * Handler-wrapper callees whose first argument is the route handler.
+   * Supplied via `.gitnexusrc` / `GITNEXUS_RC` `goHandlerWrappers`.
+   */
+  routeHandlerWrappers?: string[];
   /**
    * Explicit local Spring Boot Actuator snapshot input (#2418). Accepts a JSON
    * bundle or a directory containing endpoint JSON files. Disabled by default.

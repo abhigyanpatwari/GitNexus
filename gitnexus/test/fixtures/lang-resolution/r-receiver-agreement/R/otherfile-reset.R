@@ -1,0 +1,1 @@
+reset <- function() con <<- other()

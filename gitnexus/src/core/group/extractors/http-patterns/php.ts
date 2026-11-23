@@ -293,15 +293,13 @@ function resolveLocalStringLiteral(varNode: import('tree-sitter').SyntaxNode): s
   let cursor: import('tree-sitter').SyntaxNode = varNode;
 
   for (;;) {
-    let scope: import('tree-sitter').SyntaxNode | null = cursor.parent;
+    let stmt = cursor;
+    let scope = stmt.parent;
     while (scope && scope.type !== 'compound_statement' && scope.type !== 'program') {
-      scope = scope.parent;
+      stmt = scope;
+      scope = stmt.parent;
     }
     if (!scope) return null;
-
-    let stmt: import('tree-sitter').SyntaxNode | null = cursor;
-    while (stmt && stmt.parent !== scope) stmt = stmt.parent;
-    if (!stmt) return null;
 
     let sibling = stmt.previousNamedSibling;
     while (sibling) {

@@ -5,6 +5,7 @@ import {
   indexRowTable,
   indexRowType,
   resolveGateRows,
+  executeQuery,
   DEFAULT_FTS_STEMMER,
   type IndexCatalogSnapshot,
 } from '../lbug/lbug-adapter.js';
@@ -15,6 +16,7 @@ import {
   usesClassifiedLoadRemedy,
 } from '../lbug/extension-load-error.js';
 import { FTS_INDEXES, type FTSIndexDefinition } from './fts-schema.js';
+import { readEmptyFtsTables } from './fts-table-state.js';
 
 /**
  * Strip filesystem paths from a LadybugDB error before it reaches the HTTP
@@ -339,8 +341,11 @@ export async function createSearchFTSIndexes(
 ): Promise<FtsIndexBuildFailure[]> {
   const stemmer = getSearchFTSStemmer();
   const failures: FtsIndexBuildFailure[] = [];
-  for (const { table, indexName, properties } of options?.indexes ?? FTS_INDEXES) {
-    if (options?.tables && !options.tables.has(table)) continue;
+  const indexes = (options?.indexes ?? FTS_INDEXES).filter(
+    (index) => !options?.tables || options.tables.has(index.table),
+  );
+  const emptyTables = await readEmptyFtsTables(executeQuery, indexes);
+  for (const { table, indexName, properties } of indexes) {
     options?.onIndexStart?.(table, indexName);
     // Drop first so the live `properties` always win. `createFTSIndex` is
     // idempotent-by-name (skips when the index already exists), so without the
@@ -349,22 +354,16 @@ export async function createSearchFTSIndexes(
     // the old name+content index would silently persist. `dropFTSIndex` no-ops
     // when the index is absent (first-ever analyze) and clears the per-connection
     // memo so the create below actually runs.
-    // The cost DID show up in analyze profiles — 7.5s of a 31.7s edit loop on a
-    // 5350-file repo, `bench/analyze-phase-breakdown.md` — and a "skip when the
-    // index is already present" gate is NOT the answer, so don't reach for it.
-    // Every caller that reaches this loop has already dropped the indexes it
-    // passes in `tables`: the incremental writeback drops them because Ladybug
-    // cannot DML a table with a live FTS index (#2589), and a full rebuild
-    // builds into a fresh staging DB that never had one. A presence gate would
-    // therefore never fire. The cost is inherent — Ladybug's FTS is not
-    // incremental, so one changed row means re-tokenizing the whole table, and
-    // `File` alone is ~33MB of file content at ~10MB/s. The measured floor and
-    // the four exits that were tried and closed (narrow further, build
-    // concurrently, raise the connection thread count, drop `content`) are in
-    // that document.
+    // Populated tables still need complete re-tokenization; see
+    // bench/analyze-phase-breakdown.md. Empty tables have no searchable rows,
+    // but each native CREATE still costs hundreds of milliseconds (#3852).
+    // Drop any old index even for an empty table so stale postings cannot
+    // survive a repair. Verification and readers independently prove emptiness.
     try {
       await dropFTSIndex(table, indexName);
-      await createFTSIndex(table, indexName, [...properties], stemmer);
+      if (!emptyTables.has(table)) {
+        await createFTSIndex(table, indexName, [...properties], stemmer);
+      }
     } catch (e) {
       // The message, never the Error: holding the Error would pin its stack and
       // whatever the native binding attached to it, for up to one per table.
@@ -441,6 +440,7 @@ export async function verifySearchFTSIndexes(
   );
 
   const missing: string[] = [];
+  let emptyTables: Set<string> | undefined;
   for (const { table, indexName, properties } of indexes) {
     const valid = rows.some((row) => {
       // LADYBUGDB-CONTRACT: `property_names` is a named STRING[] column;
@@ -456,6 +456,15 @@ export async function verifySearchFTSIndexes(
       );
     });
     if (valid) continue;
+    // An absent index is valid only for a proven-empty table. An existing
+    // malformed/stale catalog entry still fails verification, even if empty.
+    const absent = !rows.some(
+      (row) => indexRowTable(row) === table && indexRowName(row) === indexName,
+    );
+    if (absent) {
+      emptyTables ??= await readEmptyFtsTables(executeQuery, indexes);
+      if (emptyTables.has(table)) continue;
+    }
     missing.push(`${table}.${indexName}`);
     if (!onMismatch) continue;
 

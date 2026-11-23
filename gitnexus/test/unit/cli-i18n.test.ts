@@ -47,10 +47,10 @@ describe('cli i18n', () => {
     }
   });
 
-  it('qualifies self-commit no-ops across all selected context files in Chinese', () => {
+  it('qualifies self-commit no-ops across all selected instruction files in Chinese', () => {
     setCliLanguage('zh-CN');
     const help = t('help.option.analyze.selfCommit');
-    expect(help).toContain('没有上下文文件存在');
+    expect(help).toContain('没有说明文件存在');
     expect(help).toContain('没有文件变更');
   });
 });

@@ -126,6 +126,26 @@ def test_gate_recomputes_measurements_instead_of_trusting_totals():
         validate_report(report, runtime_sha=SHA, task_set_digest=DIGEST, now=NOW)
 
 
+def test_proposal_reports_bind_usage_source_toolset_image_and_token_counts():
+    meta = {**metadata(), "executor": release_report.PROPOSAL_EXECUTOR, "usage_source": "fixture"}
+    measured = [dict(row, sandbox_backend="docker", executor=meta["executor"], usage_source="fixture",
+                     claude_version=release_report.PROPOSAL_CLIENT, worker_image=release_report.WORKER_IMAGE,
+                     runtime_sha=SHA, harness_sha=meta["harness_sha"], proposal_applied=True,
+                     input_tokens=11, output_tokens=7, cache_creation_input_tokens=0, cache_read_input_tokens=0)
+                for row in rows()]
+    report = build_report(measured, meta, now=NOW)
+    check = dict(runtime_sha=SHA, task_set_digest=DIGEST, now=NOW, expected_schema=release_report.PROPOSAL_SCHEMA)
+    validate_report(report, **check, expected_usage_source="fixture")
+    with pytest.raises(ValueError, match="usage source"):
+        validate_report(report, **check)
+    for changed in ({"usage_source": "anthropic"}, {"executor": None}, {"worker_image": "node:latest"},
+                    {"claude_version": "different"}, {"input_tokens": None}):
+        assert not build_report([{**measured[0], **changed}, *measured[1:]], meta, now=NOW)["complete"]
+    invalid = build_report([{**measured[0], "worker_image": [float("nan")]}, *measured[1:]], meta, now=NOW)
+    assert not invalid["complete"]
+    assert json.loads(json.dumps(invalid, allow_nan=False))["per_run"][0]["worker_image"] == [None]
+
+
 @pytest.mark.parametrize("exposure", [None, "readable", "none"])
 def test_mcp_measurements_require_host_recorded_socket_isolation(exposure):
     measured = rows()

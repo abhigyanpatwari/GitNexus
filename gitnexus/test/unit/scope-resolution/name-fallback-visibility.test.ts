@@ -91,6 +91,7 @@ const mkCaller = (
 ): ParsedFile =>
   ({
     filePath,
+    scopes: [],
     parsedImports: imports,
     referenceSites,
     localDefs,

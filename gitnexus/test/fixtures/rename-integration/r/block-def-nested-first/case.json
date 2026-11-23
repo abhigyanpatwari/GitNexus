@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the script function and its caller: a stub of the same name defined first inside an it() block nested in describe() binds in the it() block only; the enclosing describe() block neither defines the name nor calls it before a definition of its own.",
+  "categories": ["block-scope", "call-order", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "foo.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 2
+  },
+  "edges": []
+}

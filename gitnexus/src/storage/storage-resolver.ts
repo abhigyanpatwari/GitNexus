@@ -1,8 +1,10 @@
 import fs from 'fs';
-import fsp from 'fs/promises';
+import fsp, { type FileHandle } from 'fs/promises';
 import path from 'path';
+import { contentRetentionFromMeta } from '../core/content-retention.js';
 import { stripWindowsLongPathPrefix } from '../lib/utils.js';
 import { getGlobalDir } from './global-dir.js';
+import type { ContentRetention, RepoMeta } from './repo-meta.js';
 import {
   GITNEXUS_DIR,
   INDEX_METADATA_FILE,
@@ -41,12 +43,19 @@ export type StorageState =
 
 type MetadataFilename = typeof INDEX_METADATA_FILE | typeof LEGACY_METADATA_FILE;
 
+export interface DiscoveryStorage {
+  graphPath: string;
+  contentRetention: ContentRetention;
+}
+
 export interface StorageInspection {
   repoPath: string;
   storagePath: string;
   state: StorageState;
   hasCodeIndexDB: boolean;
   reason?: string;
+  /** Present only for an owned, usable slot inspected during discovery. */
+  discovery?: DiscoveryStorage;
 }
 
 export interface StorageRequirements {
@@ -90,6 +99,8 @@ interface RegistryStorageEntry {
 interface OwnershipMetadata {
   repoPath: string;
   storagePath?: string;
+  graphPath?: string;
+  contentRetention: ContentRetention;
 }
 
 type MetadataReadResult =
@@ -333,30 +344,7 @@ export const resolveStoragePath = (repoPath: string): string => {
   return defaultStoragePath(resolvedRepoPath);
 };
 
-const readOwnershipMetadata = async (
-  storagePath: string,
-  filename: MetadataFilename,
-): Promise<MetadataReadResult> => {
-  const storageRoot = path.resolve(storagePath);
-  const metadataPath = path.resolve(storageRoot, filename);
-  // Inline at the readFile sink — CodeQL does not treat a helper return as a
-  // js/path-injection sanitizer across calls (see handleFileRequest).
-  const metadataRel = path.relative(storageRoot, metadataPath);
-  if (metadataRel.startsWith('..') || path.isAbsolute(metadataRel)) {
-    return { state: 'invalid', reason: `${filename} is not contained in the storage directory.` };
-  }
-  let raw: string;
-  try {
-    raw = await fsp.readFile(metadataPath, 'utf-8');
-  } catch (error) {
-    return isMissingFilesystemError(error)
-      ? { state: 'absent' }
-      : {
-          state: 'invalid',
-          reason: `${filename} could not be read: ${filesystemErrorDetail(error)}`,
-        };
-  }
-
+const parseOwnershipMetadata = (raw: string, filename: string): MetadataReadResult => {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -389,13 +377,129 @@ const readOwnershipMetadata = async (
     };
   }
 
-  return { state: 'valid', value: { repoPath, storagePath: storagePathValue } };
+  return {
+    state: 'valid',
+    value: {
+      repoPath,
+      storagePath: storagePathValue,
+      graphPath: typeof record.graphPath === 'string' ? record.graphPath : undefined,
+      contentRetention: contentRetentionFromMeta(record as Pick<RepoMeta, 'contentRetention'>),
+    },
+  };
+};
+
+/** Reuse only the compact fields read from this exact metadata file version. */
+export class DiscoveryMetadataCache {
+  private readonly files = new Map<
+    string,
+    { identity: string; read: Promise<MetadataReadResult> }
+  >();
+
+  retainSlots(entries: readonly { storagePath: string }[]): void {
+    const liveSlots = new Set(
+      entries.flatMap(({ storagePath }) =>
+        typeof storagePath === 'string' ? [path.resolve(storagePath)] : [],
+      ),
+    );
+    for (const filename of this.files.keys()) {
+      if (!liveSlots.has(path.dirname(filename))) this.files.delete(filename);
+    }
+  }
+
+  async read(
+    file: FileHandle,
+    metadataPath: string,
+    identity: string,
+  ): Promise<MetadataReadResult> {
+    let cached = this.files.get(metadataPath);
+    if (cached?.identity !== identity) {
+      const read = fsp
+        .readFile(file, 'utf-8')
+        .then((raw) => parseOwnershipMetadata(raw, path.basename(metadataPath)));
+      cached = { identity, read };
+      this.files.set(metadataPath, cached);
+    }
+    let result: MetadataReadResult;
+    try {
+      result = await cached.read;
+      return result;
+    } finally {
+      if (result?.state !== 'valid' && this.files.get(metadataPath) === cached) {
+        this.files.delete(metadataPath);
+      }
+    }
+  }
+}
+
+const readOwnershipMetadata = async (
+  storagePath: string,
+  filename: MetadataFilename,
+  discovery?: DiscoveryMetadataCache,
+): Promise<MetadataReadResult> => {
+  const storageRoot = path.resolve(storagePath);
+  const metadataPath = path.resolve(storageRoot, filename);
+  const metadataRel = path.relative(storageRoot, metadataPath);
+  if (metadataRel.startsWith('..') || path.isAbsolute(metadataRel)) {
+    return { state: 'invalid', reason: `${filename} is not contained in the storage directory.` };
+  }
+  try {
+    if (!discovery)
+      return parseOwnershipMetadata(await fsp.readFile(metadataPath, 'utf-8'), filename);
+    // Ownership metadata historically follows symlinks, while graph routing never
+    // trusts a pointer from one. Make the open itself select the safe path.
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0);
+    const noFollow = fs.constants.O_NOFOLLOW ?? 0;
+    let linked = false;
+    let file: FileHandle;
+    try {
+      file = await fsp.open(metadataPath, flags | noFollow);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (!noFollow || (code !== 'ELOOP' && code !== 'EMLINK' && code !== 'EFTYPE')) throw error;
+      linked = true;
+      file = await fsp.open(metadataPath, flags);
+    }
+    try {
+      const stat = await file.stat({ bigint: true });
+      if (!stat.isFile())
+        return { state: 'invalid', reason: `${filename} must be a regular file.` };
+      if (!noFollow) {
+        const entry = await fsp.lstat(metadataPath, { bigint: true });
+        linked = entry.isSymbolicLink();
+        const current = linked ? await fsp.stat(metadataPath, { bigint: true }) : entry;
+        if (
+          !current.isFile() ||
+          stat.ino === 0n ||
+          current.ino !== stat.ino ||
+          current.dev !== stat.dev
+        ) {
+          return { state: 'invalid', reason: `EAGAIN: ${filename} changed during open.` };
+        }
+      }
+      const identity = `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+      const result = await discovery.read(file, metadataPath, identity);
+      if (linked && result.state === 'valid') {
+        return { state: 'valid', value: { ...result.value, graphPath: undefined } };
+      }
+      return result;
+    } finally {
+      await file.close();
+    }
+  } catch (error) {
+    return isMissingFilesystemError(error)
+      ? { state: 'absent' }
+      : {
+          state: 'invalid',
+          reason: `${filename} could not be read: ${filesystemErrorDetail(error)}`,
+        };
+  }
 };
 
 /** Check for the LadybugDB path independently from metadata ownership. */
 const inspectCodeIndexDB = async (
   storagePath: string,
-): Promise<{ present: boolean; transientCode?: string }> => {
+  metadata?: Pick<RepoMeta, 'graphPath'>,
+): Promise<{ present: boolean; graphPath?: string; transientCode?: string }> => {
   const resolved = validateConfiguredStoragePath(storagePath);
   const lbugPath = path.resolve(resolved, LBUG_DIRECTORY);
   const lbugRel = path.relative(resolved, lbugPath);
@@ -405,10 +509,10 @@ const inspectCodeIndexDB = async (
   // A shared-store checkout slot (#3352) may read a commit graph instead of
   // owning one; `resolveGraphPath` only returns a path inside the same store's
   // commit graphs, else the slot's own graph.
-  const graphPath = resolveGraphPath(resolved);
+  const graphPath = resolveGraphPath(resolved, metadata);
   try {
     await fsp.access(graphPath);
-    return { present: true };
+    return { present: true, graphPath };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException)?.code;
     return {
@@ -433,6 +537,7 @@ export const isTransientStorageInspection = (inspection: StorageInspection): boo
 export const inspectStoragePath = async (
   storagePath: string,
   repoPath: string,
+  discovery?: DiscoveryMetadataCache,
 ): Promise<StorageInspection> => {
   let context: Pick<StorageInspection, 'repoPath' | 'storagePath'>;
   try {
@@ -477,7 +582,18 @@ export const inspectStoragePath = async (
   context = { ...context, storagePath: inspectedStorage };
 
   const repositoryLocal = isRepositoryLocalStoragePath(context.repoPath, inspectedStorage);
-  let directoryEntries: string[];
+  const failedDirectoryInspection = (error: unknown): StorageInspection => {
+    if (isMissingFilesystemError(error)) {
+      return { ...context, state: 'missing', hasCodeIndexDB: false };
+    }
+    return {
+      ...context,
+      state: 'invalid_storage',
+      hasCodeIndexDB: false,
+      reason: `Storage directory could not be inspected: ${filesystemErrorDetail(error)}`,
+    };
+  };
+  let directoryEntries: string[] | undefined;
   let codeIndex: Awaited<ReturnType<typeof inspectCodeIndexDB>>;
   let primary: MetadataReadResult;
   try {
@@ -491,24 +607,33 @@ export const inspectStoragePath = async (
         reason: 'Storage path exists but is not a directory.',
       };
     }
+    const primaryRead = readOwnershipMetadata(inspectedStorage, INDEX_METADATA_FILE, discovery);
+    const graphRead = discovery
+      ? primaryRead.then((result) =>
+          inspectCodeIndexDB(inspectedStorage, result.state === 'valid' ? result.value : {}),
+        )
+      : inspectCodeIndexDB(inspectedStorage);
+    const inspectDirectory = async (): Promise<string[] | undefined> => {
+      if (!discovery) return fsp.readdir(inspectedStorage);
+      // Discovery needs directory read permission even when it can skip enumeration.
+      // fs.access does not check Windows ACLs. Ask Windows to open a directory reader.
+      if (process.platform === 'win32') {
+        const directory = await fsp.opendir(inspectedStorage);
+        await directory.close();
+      } else {
+        await fsp.access(inspectedStorage, fs.constants.R_OK | fs.constants.X_OK);
+      }
+    };
     const [entries, codeIndexResult, primaryResult] = await Promise.all([
-      fsp.readdir(inspectedStorage),
-      inspectCodeIndexDB(inspectedStorage),
-      readOwnershipMetadata(inspectedStorage, INDEX_METADATA_FILE),
+      inspectDirectory(),
+      graphRead,
+      primaryRead,
     ]);
     directoryEntries = entries;
     codeIndex = codeIndexResult;
     primary = primaryResult;
   } catch (error) {
-    if (isMissingFilesystemError(error)) {
-      return { ...context, state: 'missing', hasCodeIndexDB: false };
-    }
-    return {
-      ...context,
-      state: 'invalid_storage',
-      hasCodeIndexDB: false,
-      reason: `Storage directory could not be inspected: ${filesystemErrorDetail(error)}`,
-    };
+    return failedDirectoryInspection(error);
   }
 
   const hasCodeIndexDB = codeIndex.present;
@@ -528,7 +653,11 @@ export const inspectStoragePath = async (
   if (primary.state === 'valid') {
     metadata = primary.value;
   } else {
-    const legacy = await readOwnershipMetadata(context.storagePath, LEGACY_METADATA_FILE);
+    const legacy = await readOwnershipMetadata(
+      context.storagePath,
+      LEGACY_METADATA_FILE,
+      discovery,
+    );
     if (legacy.state === 'invalid') {
       return {
         ...context,
@@ -538,6 +667,11 @@ export const inspectStoragePath = async (
       };
     }
     if (legacy.state === 'absent') {
+      try {
+        directoryEntries ??= await fsp.readdir(inspectedStorage);
+      } catch (error) {
+        return failedDirectoryInspection(error);
+      }
       const hasNonLockEntries = directoryEntries.some((name) => !INDEX_LOCK_ARTIFACTS.has(name));
       return {
         ...context,
@@ -575,6 +709,14 @@ export const inspectStoragePath = async (
     state,
     hasCodeIndexDB,
     reason: reason ?? transientDBReason,
+    ...(discovery && state === 'owned' && codeIndex.graphPath
+      ? {
+          discovery: {
+            graphPath: codeIndex.graphPath,
+            contentRetention: metadata.contentRetention,
+          },
+        }
+      : {}),
   };
 };
 
@@ -599,10 +741,10 @@ export const inspectResolvedStorage = async (repoPath: string): Promise<StorageI
  * Inspect a registry-selected slot without allowing an environment override to
  * redirect the entry to another repository's storage.
  */
-export const inspectRegisteredStorage = async (entry: {
-  path: string;
-  storagePath: string;
-}): Promise<StorageInspection> => inspectStoragePath(entry.storagePath, entry.path);
+export const inspectRegisteredStorage = async (
+  entry: { path: string; storagePath: string },
+  discovery?: DiscoveryMetadataCache,
+): Promise<StorageInspection> => inspectStoragePath(entry.storagePath, entry.path, discovery);
 
 const requireInspectedStoragePath = (
   inspection: StorageInspection,

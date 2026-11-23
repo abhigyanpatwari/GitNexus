@@ -1,0 +1,17 @@
+{
+  "language": "r",
+  "description": "Rename the function only: in a non-portable R6 class (portable = FALSE) a method sees the members by bare name, so its call reaches the member and stays as written.",
+  "categories": ["r6", "class-scope", "positive"],
+  "target": {
+    "name": "helper",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 0
+  },
+  "newName": "assist",
+  "expect": {
+    "status": "success",
+    "edits": 1
+  },
+  "edges": []
+}

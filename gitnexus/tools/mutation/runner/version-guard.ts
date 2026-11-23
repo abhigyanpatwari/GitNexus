@@ -2,7 +2,7 @@
  * Version guard of the vitest5 runner (KTD2).
  *
  * At init the runner reads the Vitest resolved from the project root (the Stryker sandbox) and
- * refuses anything outside 5.0.x. The setup file and the plugin import Vitest from the plugin's
+ * refuses anything outside 5.0.x or 5.1.x. The setup file and the plugin import Vitest from the plugin's
  * own location; a second Vitest copy there is an error, because `inject` in the setup file then
  * reads another copy's provided context and returns undefined. Copies are compared by the real
  * path of their package.json, so a symlinked node_modules (the prepared copy) is one copy.
@@ -11,8 +11,8 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
-export const SUPPORTED_VITEST = '5.0.x';
-const SUPPORTED_VERSION = /^5\.0\.(?:0|[1-9]\d*)$/;
+export const SUPPORTED_VITEST = '5.0.x or 5.1.x';
+const SUPPORTED_VERSION = /^5\.[01]\.(?:0|[1-9]\d*)$/;
 
 export interface VitestInstall {
   version: string;

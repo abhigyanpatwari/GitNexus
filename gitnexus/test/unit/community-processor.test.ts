@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import * as crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +17,7 @@ import {
   buildCommunityProjection,
   buildIcebugWorkerSource,
   processCommunities,
+  stableCommunityIds,
   resolveCommunityDetectionEngine,
 } from '../../src/core/ingestion/community-processor.js';
 
@@ -40,6 +42,89 @@ function makeRel(
 ): GraphRelationship {
   return { id, sourceId, targetId, type, confidence: 1.0, reason: '' };
 }
+
+describe('stable community identity', () => {
+  it('uses the smallest member regardless of partition numbering or member order', () => {
+    const before = stableCommunityIds({ 'fn:b': 0, 'fn:a': 0, 'fn:c': 1, 'fn:d': 1 });
+    const after = stableCommunityIds({ 'fn:d': 7, 'fn:c': 7, 'fn:a': 9, 'fn:b': 9 });
+    expect(before.get(0)).toBe(after.get(9));
+    expect(before.get(1)).toBe(after.get(7));
+    expect(before.get(0)).toBe('comm_7efbeac6286b');
+    expect(before.get(0)).not.toBe(before.get(1));
+    expect(stableCommunityIds({}).size).toBe(0);
+  });
+
+  it('keeps identity when a non-minimal member is added but changes it when the anchor leaves', () => {
+    const before = stableCommunityIds({ 'fn:a': 0, 'fn:b': 0 }).get(0);
+    expect(stableCommunityIds({ 'fn:z': 5, 'fn:b': 5, 'fn:a': 5 }).get(5)).toBe(before);
+    expect(stableCommunityIds({ 'fn:b': 5, 'fn:z': 5 }).get(5)).not.toBe(before);
+  });
+
+  it('assigns collision suffixes in anchor order instead of partition order', () => {
+    const spy = vi.spyOn(crypto.Hash.prototype, 'digest').mockReturnValue('0'.repeat(40));
+    try {
+      const before = stableCommunityIds({ 'fn:z': 0, 'fn:a': 1, 'fn:m': 2 });
+      const after = stableCommunityIds({ 'fn:m': 7, 'fn:z': 8, 'fn:a': 9 });
+      expect([...before.values()]).toEqual([
+        'comm_000000000000',
+        'comm_000000000000_2',
+        'comm_000000000000_3',
+      ]);
+      expect(before.get(0)).toBe(after.get(8));
+      expect(before.get(1)).toBe(after.get(9));
+      expect(before.get(2)).toBe(after.get(7));
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  const disconnectedFlows = (groups: string[], genericLabels = false) => {
+    const graph = createKnowledgeGraph();
+    for (const group of groups) {
+      for (let i = 0; i < 3; i++) {
+        graph.addNode(
+          makeNode(
+            `fn:${group}${i}`,
+            `${group}${i}`,
+            'Function',
+            genericLabels ? 'src/flow.ts' : `src/${group}/flow.ts`,
+          ),
+        );
+      }
+      for (let i = 0; i < 2; i++) {
+        graph.addRelationship(makeRel(`${group}${i}`, `fn:${group}${i}`, `fn:${group}${i + 1}`));
+      }
+    }
+    return graph;
+  };
+
+  it('preserves existing communities and memberships when an unrelated flow is added or removed', async () => {
+    const before = await processCommunities(disconnectedFlows(['b', 'c']));
+    const after = await processCommunities(disconnectedFlows(['a', 'b', 'c']));
+    expect(before.communities).toHaveLength(2);
+    expect(after.communities).toHaveLength(3);
+    const existingMembers = new Set(before.memberships.map(({ nodeId }) => nodeId));
+    expect(after.memberships.filter(({ nodeId }) => existingMembers.has(nodeId))).toEqual(
+      before.memberships,
+    );
+    expect(after.rawMemberships?.filter(({ nodeId }) => existingMembers.has(nodeId))).toEqual(
+      before.rawMemberships,
+    );
+    expect(after.communities.filter(({ label }) => label !== 'A')).toEqual(before.communities);
+  });
+
+  it('preserves generic labels when an unrelated partition is added', async () => {
+    const before = await processCommunities(disconnectedFlows(['b', 'c'], true));
+    const after = await processCommunities(disconnectedFlows(['a', 'b', 'c'], true));
+    const communityFor = (result: typeof before, nodeId: string) => {
+      const id = result.memberships.find((member) => member.nodeId === nodeId)?.communityId;
+      return result.communities.find((community) => community.id === id);
+    };
+    expect(communityFor(before, 'fn:b0')?.label).toMatch(/^Cluster_/);
+    expect(communityFor(after, 'fn:b0')).toEqual(communityFor(before, 'fn:b0'));
+    expect(communityFor(after, 'fn:c0')).toEqual(communityFor(before, 'fn:c0'));
+  });
+});
 
 describe('community-processor', () => {
   describe('COMMUNITY_COLORS', () => {
@@ -306,8 +391,8 @@ describe('community-processor', () => {
             nodesProcessed: 2,
           });
           expect(result.memberships).toEqual([
-            { nodeId: 'fn:a', communityId: 'comm_0' },
-            { nodeId: 'fn:b', communityId: 'comm_0' },
+            { nodeId: 'fn:a', communityId: 'comm_7efbeac6286b' },
+            { nodeId: 'fn:b', communityId: 'comm_7efbeac6286b' },
           ]);
         } finally {
           vi.useRealTimers();
@@ -611,8 +696,8 @@ describe('community membership integrity', () => {
     expect(result.communities).toEqual([]);
     expect(result.memberships).toEqual([]);
     expect(result.rawMemberships).toEqual([
-      { nodeId: 'fn:a', communityId: 'comm_0' },
-      { nodeId: 'fn:b', communityId: 'comm_1' },
+      { nodeId: 'fn:a', communityId: 'comm_7efbeac6286b' },
+      { nodeId: 'fn:b', communityId: 'comm_6f8deabedc1a' },
     ]);
     expect(result.stats).toMatchObject({ totalCommunities: 2, nodesProcessed: 2 });
   });

@@ -34,6 +34,8 @@ RUN npm run build --prefix gitnexus-shared
 # tree-sitter-proto) and `prepare` (compiles TypeScript via scripts/build.js),
 # both of which need the source tree.
 COPY gitnexus ./gitnexus
+# setup packages the same small launcher the standalone Claude plugin uses.
+COPY gitnexus-claude-plugin/hooks/gitnexus-hook.js ./gitnexus-claude-plugin/hooks/gitnexus-hook.js
 RUN npm ci --prefix gitnexus
 
 # Drop dev dependencies for a smaller runtime layer.

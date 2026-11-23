@@ -109,6 +109,7 @@ import {
   cleanupOldKuzuFiles,
   getStoragePaths,
   loadMeta,
+  type DiscoveredRegistryEntry,
   type RegistryEntry,
 } from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
@@ -120,11 +121,6 @@ import {
   isLbugReady,
   closeLbug,
 } from '../../src/mcp/core/lbug-adapter.js';
-import {
-  DEFERRED_IMPORT_REASON_SUFFIX,
-  TYPE_ONLY_IMPORT_REASON_SUFFIX,
-} from '../../src/core/ingestion/scope-resolution/graph-bridge/imports-to-edges.js';
-import { DART_PACKAGE_IDENTITY_REASON } from '../../src/core/ingestion/languages/dart/package-dependencies.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -136,33 +132,6 @@ const MOCK_REPO_ENTRY = {
   lastCommit: 'abc1234567890',
   stats: { files: 10, nodes: 50, edges: 100, communities: 3, processes: 5 },
 };
-
-/**
- * The `( ... )` group guarded by `r.reason IS NULL OR`, as one whitespace-
- * collapsed string.
- *
- * The `check` query's reason exclusions are only correct INSIDE that
- * alternative — hoisted out, they would also drop every edge whose `reason` is
- * null, which is every producer that is not scope resolution. Substring
- * assertions cannot tell the two placements apart, so the group is extracted by
- * balancing parentheses from the guard to its own close.
- *
- * Returns `''` when the guard is absent, which fails the membership assertions
- * rather than passing vacuously.
- */
-function reasonNullAlternativeOf(query: string): string {
-  const flat = query.replace(/\s+/g, ' ');
-  const guard = 'r.reason IS NULL OR ';
-  const guardAt = flat.indexOf(guard);
-  const open = flat.indexOf('(', guardAt + guard.length);
-  if (guardAt < 0 || open < 0) return '';
-  let depth = 0;
-  for (let i = open; i < flat.length; i++) {
-    depth += Number(flat[i] === '(') - Number(flat[i] === ')');
-    if (depth === 0) return flat.slice(open + 1, i);
-  }
-  return '';
-}
 
 function setupSingleRepo() {
   (listRegisteredRepos as any).mockResolvedValue([MOCK_REPO_ENTRY]);
@@ -346,6 +315,7 @@ describe('LocalBackend.countRepos', () => {
     );
 
     await expect(backend.countRepos()).resolves.toBe(1);
+    expect(backend.cachedRepoCount()).toBe(0);
     expect(listRegisteredRepos).toHaveBeenCalledWith({ validate: true });
   });
 
@@ -788,36 +758,7 @@ describe('LocalBackend.callTool', () => {
       componentCount: 1,
       cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
     });
-    const query = (executeParameterized as any).mock.calls.at(-1)[1] as string;
-    expect(query).toContain("r.reason <> 'swift-scope: implicit module visibility'");
-    expect(query).toContain("r.reason <> 'markdown-link'");
-    // A cycle means "these modules cannot be initialized in any order", so
-    // edges that carry no initialization order are excluded too: deferred
-    // imports (`import()`, function-local) run later, and TypeScript
-    // `import type` is erased by `tsc` and never runs. `imports-to-edges.ts`
-    // tags both by reason suffix; dropping either clause from this query
-    // reports the standard cycle-BREAKING idioms as cycles.
-    // The exclusions must sit INSIDE the `reason IS NULL OR (...)` alternative,
-    // or an untagged edge — every producer that is not scope resolution — stops
-    // counting and the check goes quiet. Asserting the fragments appear
-    // *somewhere* does not pin that: a query with the `IS NULL OR` in one place
-    // and an `ENDS WITH` hoisted out of the group satisfies `toContain` while
-    // silently dropping those edges. So extract the balanced group and assert
-    // membership in it.
-    expect(reasonNullAlternativeOf(query)).toContain(
-      `NOT r.reason ENDS WITH '${DEFERRED_IMPORT_REASON_SUFFIX}'`,
-    );
-    expect(reasonNullAlternativeOf(query)).toContain(
-      `NOT r.reason ENDS WITH '${TYPE_ONLY_IMPORT_REASON_SUFFIX}'`,
-    );
-    expect(reasonNullAlternativeOf(query)).toContain("r.reason <> 'markdown-link'");
-    // Package-identity edges are IMPORTS metadata for incremental
-    // invalidation. They must be excluded inside this same group, before
-    // LIMIT, or they fill the 100000-row cap on a cycle-free graph.
-    expect(reasonNullAlternativeOf(query)).toContain(
-      `r.reason <> '${DART_PACKAGE_IDENTITY_REASON}'`,
-    );
-    expect(query).toContain('LIMIT 100001');
+    expect((executeParameterized as any).mock.calls.at(-1)[2]).toMatchObject({ limit: 100_001 });
   });
 
   it('uses the advertised cycles default when check arguments are omitted', async () => {
@@ -1586,9 +1527,42 @@ describe('LocalBackend.callTool', () => {
         .map((c: unknown[]) => String(c[1]))
         // The single-relType ADVISED_BY windows are keyed `ORDER BY uid` alone
         // (one category, nothing to starve) and are excluded by `r.type IN [`.
-        .filter((q: string) => /RETURN r\.type AS relType/.test(q) && /r\.type IN \[/.test(q));
+        .filter(
+          (q: string) =>
+            /RETURN (?:DISTINCT )?r\.type AS relType/.test(q) && /r\.type IN \[/.test(q),
+        );
       expect(windows).toHaveLength(5);
       expect(windows.filter((q: string) => /ORDER BY uid, relType/.test(q))).toHaveLength(5);
+    });
+
+    it.each([
+      ['Function', '(n:`Function` {id: $symId})'],
+      ['', '(n {id: $symId})'],
+      ['UnrecognizedLabel', '(n {id: $symId})'],
+    ])('anchors context reference windows safely for label %j', async (type, anchor) => {
+      (executeParameterized as any).mockImplementation(async (_repo: string, query: string) =>
+        query.includes('$uid')
+          ? [
+              {
+                id: 'Function:src/a.ts:target',
+                name: 'target',
+                type,
+                filePath: 'src/a.ts',
+                startLine: 1,
+                endLine: 9,
+              },
+            ]
+          : [],
+      );
+      await backend.callTool('context', { uid: 'Function:src/a.ts:target' });
+      const windows = (executeParameterized as any).mock.calls
+        .map((call: unknown[]) => String(call[1]))
+        .filter((query: string) => query.includes('RETURN DISTINCT r.type AS relType'));
+      expect(windows).toHaveLength(4);
+      for (const query of windows) {
+        expect(query).toContain(anchor);
+        expect(query.indexOf('RETURN DISTINCT')).toBeLessThan(query.indexOf('LIMIT 30'));
+      }
     });
 
     it('marks the match total as a LOWER BOUND when only the COUNT leg fails (#2787 review F3)', async () => {
@@ -4955,44 +4929,169 @@ describe('LocalBackend.listRepos', () => {
     );
   });
 
-  it('re-reads registry on each listRepos call', async () => {
+  it('reports unknown freshness without starting or waiting for Git', async () => {
     setupSingleRepo();
-    await backend.init();
-    await backend.listRepos();
-    await backend.listRepos();
-    // listRegisteredRepos called: once in init, once per listRepos
-    expect(listRegisteredRepos).toHaveBeenCalledTimes(3);
+    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
+    await vi.mocked(checkStalenessAsync).withImplementation(
+      () => new Promise(() => {}),
+      async () => {
+        const [full, page] = await Promise.all([
+          backend.listRepos(),
+          backend.callTool('list_repos', {}),
+        ]);
+        expect(full[0]?.staleness).toEqual({ status: 'unknown' });
+        expect(page.repositories).toEqual(full);
+        expect(checkStalenessAsync).not.toHaveBeenCalled();
+      },
+    );
   });
 
-  // #3256: `unknown` is listing-only (the hot read tools drop it; see
-  // tool-staleness.test.ts), so list_repos is where it must appear. `diverged`
-  // carries its hint and no invented count; `current` carries nothing.
-  it('reports unknown and diverged staleness on the listing (#3256)', async () => {
-    setupSingleRepo();
-    await backend.init();
-    const { checkStalenessAsync } = await import('../../src/core/git-staleness.js');
-    const check = checkStalenessAsync as unknown as ReturnType<typeof vi.fn>;
+  it('checks the checkout only for returned rows with verified full retention', async () => {
+    const availability = await import('../../src/core/content-retention.js');
+    const probe = vi.spyOn(availability, 'checkoutIsDirectory').mockResolvedValue(true);
+    const entries = ['a', 'b', 'c', 'd'].map(
+      (name): DiscoveredRegistryEntry => ({
+        ...MOCK_REPO_ENTRY,
+        name,
+        path: `/repos/${name}`,
+        remoteUrl: 'https://example.com/shared',
+        storagePath: `/slots/${name}`,
+        discovery:
+          name === 'd'
+            ? undefined
+            : {
+                contentRetention: name === 'c' ? 'symbol' : 'full',
+                graphPath: `/slots/${name}/lbug`,
+              },
+      }),
+    );
+    vi.mocked(listRegisteredRepos).mockResolvedValue(entries);
+    const visible = (repoPath: string) => repoPath !== '/repos/a';
     try {
-      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'unknown' });
-      expect((await backend.listRepos())[0].staleness).toEqual({ status: 'unknown' });
+      const first = await backend.listReposPage({ limit: 1 }, visible);
+      expect(first.pagination.total).toBe(3);
+      expect(first.repositories[0]).toMatchObject({ name: 'b', sourceAvailable: true });
+      expect(first.repositories[0]?.siblings?.map((repo) => repo.name)).toEqual(['c', 'd']);
+      expect(probe.mock.calls).toEqual([['/repos/b']]);
 
-      check.mockResolvedValue({
-        isStale: false,
-        commitsBehind: 0,
-        status: 'diverged',
-        hint: 'HEAD moved on',
-      });
-      expect((await backend.listRepos())[0].staleness).toEqual({
-        status: 'diverged',
-        hint: 'HEAD moved on',
-      });
-
-      check.mockResolvedValue({ isStale: false, commitsBehind: 0, status: 'current' });
-      expect((await backend.listRepos())[0].staleness).toBeUndefined();
+      const remaining = await backend.listReposPage({ limit: 2, offset: 1 }, visible);
+      expect(remaining.repositories.map((r) => [r.contentRetention, r.sourceAvailable])).toEqual([
+        ['symbol', false],
+        ['none', false],
+      ]);
+      expect(probe).toHaveBeenCalledTimes(1);
+      expect(loadMeta).not.toHaveBeenCalled();
     } finally {
-      // The module-level mock is shared; put back the factory's default.
-      check.mockResolvedValue({ isStale: false, commitsBehind: 0 });
+      probe.mockRestore();
     }
+  });
+
+  it.each([false, true])(
+    'handles a transient shared graph failure (storage slot moved: %s)',
+    async (moved) => {
+      const home = mkdtempSync(path.join(os.tmpdir(), 'gnx-discovery-graph-'));
+      vi.stubEnv('GITNEXUS_HOME', home);
+      const checkout = path.join(home, 'checkout');
+      const store = path.join(home, 'stores', 'test-store');
+      const firstSlot = path.join(store, 'checkouts', 'first');
+      const currentSlot = moved ? path.join(store, 'checkouts', 'second') : firstSlot;
+      const graph = (commit: string) => path.join(store, 'commits', commit + '-abcdef12', 'lbug');
+      const firstGraph = graph('1111111');
+      const secondGraph = graph('2222222');
+      const publish = (storagePath: string, graphPath: string) => {
+        const entry = { ...MOCK_REPO_ENTRY, path: checkout, storagePath };
+        mkdirSync(storagePath, { recursive: true });
+        mkdirSync(path.dirname(graphPath), { recursive: true });
+        writeFileSync(graphPath, '');
+        writeFileSync(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({
+            repoPath: checkout,
+            storagePath,
+            graphPath,
+            indexedAt: entry.indexedAt,
+          }),
+        );
+        writeFileSync(path.join(home, 'registry.json'), JSON.stringify([entry]));
+      };
+      try {
+        mkdirSync(checkout);
+        const storage = await vi.importActual<typeof import('../../src/storage/repo-manager.js')>(
+          '../../src/storage/repo-manager.js',
+        );
+        await vi
+          .mocked(listRegisteredRepos)
+          .withImplementation(storage.listRegisteredRepos, async () => {
+            publish(firstSlot, firstGraph);
+            expect((await backend.listRepos())[0]?.sourceAvailable).toBe(true);
+            const warm = await backend.resolveRepo(checkout);
+            await (backend as any).ensureInitialized(warm);
+            expect(initLbug).toHaveBeenCalledWith(firstGraph, firstGraph);
+            lbugMocks.closeLbug.mockClear();
+
+            publish(currentSlot, secondGraph);
+            const access = fsPromises.access.bind(fsPromises);
+            const failure = vi
+              .spyOn(fsPromises, 'access')
+              .mockImplementation(async (file, mode) => {
+                if (file === secondGraph)
+                  throw Object.assign(new Error('temporary graph error'), { code: 'EIO' });
+                return access(file, mode);
+              });
+            try {
+              expect((await backend.listReposPage()).repositories[0]).toMatchObject({
+                storagePath: currentSlot,
+                contentRetention: 'none',
+                sourceAvailable: false,
+              });
+              expect(failure).toHaveBeenCalledWith(secondGraph);
+              if (moved) expect(closeLbug).toHaveBeenCalledWith(firstGraph);
+              else expect(closeLbug).not.toHaveBeenCalledWith(firstGraph);
+            } finally {
+              failure.mockRestore();
+            }
+
+            expect((await backend.listRepos())[0]?.sourceAvailable).toBe(true);
+            expect(closeLbug).toHaveBeenCalledWith(firstGraph);
+            expect((await backend.resolveRepo(checkout)).lbugPath).toBe(secondGraph);
+          });
+      } finally {
+        vi.unstubAllEnvs();
+        rmSync(home, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('an older completion renders its own page and preserves the newer route and pool', async () => {
+    const oldEntry = { ...MOCK_REPO_ENTRY, name: 'old' };
+    const newEntry = {
+      ...MOCK_REPO_ENTRY,
+      name: 'new',
+      path: '/repos/new',
+      storagePath: '/slots/new',
+    };
+    let finishOld!: (rows: RegistryEntry[]) => void;
+    const slowRead = new Promise<RegistryEntry[]>((resolve) => {
+      finishOld = resolve;
+    });
+    vi.mocked(listRegisteredRepos).mockReturnValueOnce(slowRead).mockResolvedValue([newEntry]);
+
+    const oldPage = backend.listReposPage();
+    expect((await backend.listReposPage()).repositories[0]?.name).toBe('new');
+    const handle = await backend.resolveRepo(newEntry.path);
+    await (backend as any).ensureInitialized(handle);
+    expect(initLbug).toHaveBeenCalledWith(handle.lbugPath, handle.lbugPath);
+
+    finishOld([oldEntry]);
+    expect((await oldPage).repositories[0]?.name).toBe('old');
+    expect(backend.getContext('new')?.projectName).toBe('new');
+    expect((await backend.resolveRepo(newEntry.path)).id).toBe(handle.id);
+    expect(listRegisteredRepos).toHaveBeenCalledTimes(2);
+    expect(closeLbug).not.toHaveBeenCalledWith(handle.lbugPath);
+
+    vi.mocked(listRegisteredRepos).mockResolvedValue([]);
+    expect(await backend.listRepos()).toEqual([]);
+    expect(closeLbug).toHaveBeenCalledWith(handle.lbugPath);
   });
 });
 
@@ -5229,6 +5328,29 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
     expect(new Set(collected)).toEqual(new Set(entries.map((e) => e.path))); // exact set
   });
 
+  it('sorts pages by name while the full listing and off-page siblings keep path order', async () => {
+    const entries = [
+      { name: 'middle', path: '/repos/1' },
+      { name: 'alpha', path: '/repos/2' },
+      { name: 'zeta', path: '/repos/0' },
+    ].map((repo) => ({
+      ...MOCK_REPO_ENTRY,
+      ...repo,
+      storagePath: `${repo.path}/.gitnexus`,
+      remoteUrl: 'https://example.com/shared',
+    }));
+    vi.mocked(listRegisteredRepos).mockResolvedValue(entries);
+
+    expect((await backend.listRepos()).map((repo) => repo.name)).toEqual([
+      'zeta',
+      'middle',
+      'alpha',
+    ]);
+    const page = await backend.listReposPage({ limit: 2 });
+    expect(page.repositories.map((repo) => repo.name)).toEqual(['alpha', 'middle']);
+    expect(page.repositories[1]?.siblings?.map((repo) => repo.name)).toEqual(['zeta', 'alpha']);
+  });
+
   it('orders pages deterministically by name then path, stable across calls', async () => {
     // Scrambled input order; two entries deliberately SHARE a name (collision)
     // and must be tie-broken by path, never collapsed.
@@ -5333,12 +5455,12 @@ describe('cypher result formatting', () => {
     expect(result.markdown).not.toMatch(/\n[^|]/);
   });
 
-  it('returns empty array as-is', async () => {
+  it('formats empty results with the same object shape as populated results (#3952)', async () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
       query: 'MATCH (n:Function) RETURN n.name LIMIT 0',
     });
-    expect(result).toEqual([]);
+    expect(result).toMatchObject({ markdown: '', row_count: 0 });
   });
 
   it('returns error object when cypher fails', async () => {
@@ -5625,16 +5747,26 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(res).not.toHaveProperty('error');
   });
 
-  it('evicts an opened branch pool when the repo leaves the registry (#2106 R3)', async () => {
-    // Open the branch pool via a tool call (ensureInitialized records its key).
-    await backend.callTool('query', { query: 'auth', repo: 'multi', branch: 'feature/x' });
-    lbugMocks.closeLbug.mockClear();
-    // Unregister the repo, then trigger a refresh (init re-reads the registry).
-    (listRegisteredRepos as any).mockResolvedValue([]);
-    await backend.init();
-    const closedPaths = lbugMocks.closeLbug.mock.calls.map((c: any[]) => String(c[0]));
-    expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
-  });
+  it.each(['lbug', `lbug.generation.${'a'.repeat(32)}`])(
+    'keeps the open branch pool for %s until the repo leaves the registry (#2106 R3)',
+    async (filename) => {
+      const slot = path.dirname(branchLbug);
+      const graph = path.join(slot, filename);
+      if (filename !== 'lbug') {
+        writeFileSync(graph, 'stub');
+        writeFileSync(path.join(slot, 'gitnexus.json'), JSON.stringify({ graphPath: filename }));
+      }
+      await backend.callTool('query', { query: 'auth', repo: 'multi', branch: 'feature/x' });
+      expect(lbugMocks.initLbug).toHaveBeenCalledWith(graph, graph);
+      lbugMocks.closeLbug.mockClear();
+      await backend.callTool('list_repos', {});
+      expect(lbugMocks.closeLbug).not.toHaveBeenCalledWith(graph);
+
+      vi.mocked(listRegisteredRepos).mockResolvedValue([]);
+      await backend.init();
+      expect(lbugMocks.closeLbug).toHaveBeenCalledWith(graph);
+    },
+  );
 });
 
 // #2655 review: the per-index tool-staleness cache must key by lbugPath, not
@@ -5795,11 +5927,122 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     });
     expect(tabular).toMatchObject({ row_count: 1, staleness: { commitsBehind: 3 } });
 
-    // Empty result -> formatCypherAsMarkdown passes the raw array through unchanged.
+    // Empty results use the same envelope, including freshness, as populated tables.
     lbugMocks.executeParameterized.mockResolvedValueOnce([]);
-    const raw = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
-    expect(Array.isArray(raw)).toBe(true);
-    expect(raw).toHaveLength(0);
+    const empty = await backend.callTool('cypher', { statement: 'MATCH (n) RETURN n', repo: 'r' });
+    expect(empty).toMatchObject({
+      markdown: '',
+      row_count: 0,
+      staleness: { commitsBehind: 3 },
+    });
+    for (const rows of [[1, null, 'legacy'], [{}]]) {
+      lbugMocks.executeParameterized.mockResolvedValueOnce(rows);
+      const nonTabular = await backend.callTool('cypher', {
+        statement: 'MATCH (n) RETURN n',
+        repo: 'r',
+      });
+      expect(Array.isArray(nonTabular)).toBe(true);
+      expect(nonTabular).toEqual(rows);
+      expect(nonTabular).not.toHaveProperty('graph_integrity');
+    }
+  });
+
+  describe.each(['query', 'impact'] as const)('%s ingestion provenance', (method) => {
+    it.each([
+      [
+        'verified',
+        {
+          status: 'verified',
+          scope: 'source-reference-ingestion',
+          checkedSites: 7,
+          unverifiedEdges: 0,
+          duplicatesSuppressed: 2,
+          note: expect.stringContaining('checked before writing'),
+        },
+      ],
+      [
+        'missing',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('analyze --force'),
+        },
+      ],
+      [
+        'malformed',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('analyze --force'),
+        },
+      ],
+      [
+        'generation-unknown',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('Retry the tool'),
+        },
+      ],
+      [
+        'replaced',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('Retry the tool'),
+        },
+      ],
+      [
+        'metadata-unreadable',
+        {
+          status: 'unverified',
+          scope: 'source-reference-ingestion',
+          note: expect.stringContaining('metadata could not be read. Retry the tool'),
+        },
+      ],
+    ] as const)('reports %s with the correct recovery action', async (state, expected) => {
+      const storagePath = mkdtempSync(path.join(os.tmpdir(), 'gn-integrity-dispatch-'));
+      const receipt = { version: 1, checkedSites: 7, unverifiedEdges: 0, duplicatesSuppressed: 2 };
+      vi.spyOn(backend as any, method).mockResolvedValue({ ok: true });
+      const selected = {
+        ...handle,
+        storagePath,
+        lbugPath: path.join(storagePath, 'lbug'),
+        generationUnknown: state === 'generation-unknown',
+      };
+      try {
+        writeFileSync(
+          path.join(storagePath, 'meta.json'),
+          JSON.stringify({
+            repoPath: selected.repoPath,
+            indexedAt: selected.indexedAt,
+            lastCommit: selected.lastCommit,
+            ...(state === 'missing'
+              ? {}
+              : {
+                  relationshipIntegrity:
+                    state === 'malformed' ? { ...receipt, checkedSites: -1 } : receipt,
+                }),
+            ...(state === 'replaced' ? { graphPath: 'generations/new/lbug' } : {}),
+          }),
+        );
+        if (state === 'metadata-unreadable')
+          writeFileSync(path.join(storagePath, 'meta.json'), '{invalid json');
+        vi.spyOn(backend, 'selectToolRepository').mockResolvedValue(selected as any);
+        const result = await backend.callTool(method, {
+          repo: 'r',
+          search_query: 'x',
+          target: 'x',
+          direction: 'upstream',
+        });
+        expect(result.graph_integrity).toEqual(expected);
+        expect(result.staleness?.lastCommit).toBe(
+          ['generation-unknown', 'replaced'].includes(state) ? '' : handle.lastCommit,
+        );
+      } finally {
+        rmSync(storagePath, { recursive: true, force: true });
+      }
+    });
   });
 
   // F3: drift guard — exactly the four read tools route through stalenessForTool;

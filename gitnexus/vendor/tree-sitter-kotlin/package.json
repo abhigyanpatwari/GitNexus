@@ -1,12 +1,12 @@
 {
   "name": "tree-sitter-kotlin",
-  "version": "0.4.0-g1852ea1",
+  "version": "0.4.0-gd6af96d",
   "description": "Kotlin grammar for tree-sitter",
   "repository": "https://github.com/fwcd/tree-sitter-kotlin",
   "license": "MIT",
   "main": "bindings/node/index.js",
   "types": "bindings/node/index.d.ts",
-  "_vendoredBy": "gitnexus — upstream generated src/ and bindings/node/binding.cc copied byte-for-byte from https://github.com/fwcd/tree-sitter-kotlin@1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1. GitNexus keeps its synchronous CommonJS loader and hardened binding.gyp. Prebuilds are rebuilt from these sources by build-tree-sitter-prebuilds.yml. Do not edit generated C by hand.",
+  "_vendoredBy": "gitnexus - re-vendored from fwcd/tree-sitter-kotlin@d6af96d2e23ef0a8ff5ab512864378cf08fba311 by grammar-update-monitor on ABI 14. Source-build inputs (parser.c/scanner.c/src/) refreshed; the GitNexus-hardened binding.gyp + synchronous loader + vendor README + prebuilds are preserved (prebuilds are rebuilt by build-tree-sitter-prebuilds.yml on this version change). No scripts/dependencies here (#836/#1728).",
   "peerDependencies": {
     "tree-sitter": "0.25.1"
   },
@@ -15,5 +15,5 @@
       "optional": true
     }
   },
-  "_upstreamCommit": "1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1"
+  "_upstreamCommit": "d6af96d2e23ef0a8ff5ab512864378cf08fba311"
 }

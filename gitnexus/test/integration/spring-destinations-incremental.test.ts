@@ -186,8 +186,13 @@ describe.skipIf(isWin)('Destination across a second, incremental analyze', () =>
   }, 180_000);
 
   it('REMOVES a destination whose last referrer is gone, leaving no orphan', async () => {
-    await fs.rm(path.join(srcDir(), 'ShipmentPublisher.java'));
-    commit('drop-publisher');
+    // Remove the last topic reference while retaining its source file to
+    // exercise selective orphan cleanup after a source modification.
+    await fs.writeFile(
+      path.join(srcDir(), 'ShipmentPublisher.java'),
+      LATE_PUBLISHER.replace('kafkaTemplate.send("shipments.v1", payload);', ''),
+    );
+    commit('drop-topic-reference');
 
     const { incremental } = await analyze();
     expect(incremental).toBe(true);

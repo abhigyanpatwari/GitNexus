@@ -147,6 +147,7 @@ describe('#3747 member edges only name emitted owners', () => {
       expect(member).toBeDefined();
       expect(result.relationships.filter((edge) => edge.targetId === member?.id)).toEqual([
         {
+          originFilePath: 'ctx.mjs',
           id: `DEFINES:File:ctx.mjs->${member?.id}`,
           sourceId: 'File:ctx.mjs',
           targetId: member?.id,

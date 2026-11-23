@@ -21,6 +21,8 @@ const { native } = vi.hoisted(() => {
   const native = {
     calls: {
       constructions: [] as Array<'ro' | 'rw'>,
+      bufferPools: [] as unknown[],
+      threads: [] as unknown[],
       checkpoints: 0,
       refusalProbes: 0,
     },
@@ -31,6 +33,8 @@ const { native } = vi.hoisted(() => {
     reset(options: { refuseFirst?: boolean; refuseOnOpen?: boolean } = {}) {
       native.seq = 0;
       native.calls.constructions = [];
+      native.calls.bufferPools = [];
+      native.calls.threads = [];
       native.calls.checkpoints = 0;
       native.calls.refusalProbes = 0;
       native.refuseFirst = options.refuseFirst ?? true;
@@ -51,13 +55,14 @@ vi.mock('@ladybugdb/core', () => {
     index: number;
     constructor(
       _path: unknown,
-      _bufferManagerSize: unknown,
+      bufferManagerSize: unknown,
       _compression: unknown,
       readOnly = false,
     ) {
       this.role = readOnly ? 'ro' : 'rw';
       this.index = native.seq++;
       native.calls.constructions.push(this.role);
+      native.calls.bufferPools.push(bufferManagerSize);
       // Open-time path: `createLbugDatabase` / `openLbugConnection` never
       // call init(); a 0.19 constructor refusal must surface here.
       if (this.index === 0 && this.role === 'ro' && native.refuseOnOpen) {
@@ -82,7 +87,12 @@ vi.mock('@ladybugdb/core', () => {
     getErrorMessage: async () => '',
   };
   class Connection {
-    constructor(private db: Database) {}
+    constructor(
+      private db: Database,
+      threads?: number,
+    ) {
+      native.calls.threads.push(threads);
+    }
     async query(text: string) {
       refuseIfVictim(this.db, text);
       return emptyResult;
@@ -100,7 +110,7 @@ vi.mock('@ladybugdb/core', () => {
   return { ...mod, default: mod, lbug: mod };
 });
 
-import { closeLbug, withLbugDb } from '../../src/core/lbug/lbug-adapter.js';
+import { closeLbug, initLbug, withLbugDb } from '../../src/core/lbug/lbug-adapter.js';
 
 describe('direct adapter self-heals a refused read-only probe (forced refusal)', () => {
   let dbPath: string;
@@ -154,4 +164,17 @@ describe('direct adapter self-heals a refused read-only probe (forced refusal)',
     expect(native.calls.checkpoints).toBe(1);
     expect(native.calls.refusalProbes).toBe(0);
   });
+
+  it.each([false, true])(
+    'retains analyzer resource limits through recovery (constructor refusal=%s)',
+    async (refuseOnOpen) => {
+      native.reset({ refuseFirst: !refuseOnOpen, refuseOnOpen });
+      const bufferPoolBytes = 64 * 1024 * 1024;
+      await initLbug(dbPath, { readOnly: true, skipFts: true, bufferPoolBytes, threads: 2 });
+      expect(native.calls.constructions).toEqual(['ro', 'rw', 'ro']);
+      expect(native.calls.bufferPools).toEqual([bufferPoolBytes, bufferPoolBytes, bufferPoolBytes]);
+      expect(native.calls.threads).toEqual(refuseOnOpen ? [2, 2] : [2, 2, 2]);
+      expect(native.calls.checkpoints).toBe(1);
+    },
+  );
 });

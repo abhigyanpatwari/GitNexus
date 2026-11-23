@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, readFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
+import { deserialize, serialize } from 'node:v8';
 import {
   inspectV8Cache,
   internGraphStrings,
@@ -22,6 +23,113 @@ describe('v8 cache envelope', () => {
     expect(graph.m.get('k')).toBe(graph.a);
     expect([...pool.keys()].sort()).toEqual(['dup', 'k']);
     expect(pool.get('dup')).toBe('dup');
+  });
+
+  it('visits only own enumerable string properties, including null-prototype records', () => {
+    const pool = new Map<string, string>();
+    const inherited = { inherited: 'prototype-only' };
+    const graph = Object.assign(Object.create(inherited) as Record<PropertyKey, unknown>, {
+      hasOwnProperty: 'own-value',
+      nested: Object.assign(Object.create(null) as Record<string, string>, {
+        value: 'nested-value',
+      }),
+    });
+    const symbol = Symbol('hidden');
+    graph[symbol] = 'symbol-only';
+    Object.defineProperty(graph, 'hidden', { value: 'non-enumerable' });
+
+    internGraphStrings(graph, pool);
+
+    expect([...pool.keys()]).toEqual(['own-value', 'nested-value']);
+    expect(Object.hasOwn(graph, 'inherited')).toBe(false);
+    expect(Object.getPrototypeOf(graph)).toBe(inherited);
+    expect(Object.getPrototypeOf(graph.nested)).toBeNull();
+    expect(graph[symbol]).toBe('symbol-only');
+    expect(graph.hidden).toBe('non-enumerable');
+  });
+
+  it('preserves cycles, shared objects, and collection order while interning', () => {
+    const pool = new Map<string, string>();
+    const shared = { text: 'shared-value' };
+    const graph = {
+      shared,
+      aliases: [shared] as unknown[],
+      map: new Map<unknown, unknown>(),
+      set: new Set<unknown>(),
+    };
+    graph.aliases.push(graph);
+    graph.map.set(shared, graph).set('map-key', shared);
+    graph.set.add(graph).add(shared).add('set-value');
+
+    expect(internGraphStrings(graph, pool)).toBe(graph);
+
+    expect(graph.aliases[0]).toBe(shared);
+    expect(graph.aliases[1]).toBe(graph);
+    expect(graph.map.get(shared)).toBe(graph);
+    expect(graph.map.get('map-key')).toBe(shared);
+    expect([...graph.map.keys()]).toEqual([shared, 'map-key']);
+    expect([...graph.set]).toEqual([graph, shared, 'set-value']);
+    expect([...pool.keys()]).toEqual(['shared-value', 'map-key', 'set-value']);
+  });
+
+  it('preserves shared leaf records, scalar values, and binary data after deserialization', () => {
+    const leaf = {
+      text: 'shared-value',
+      zero: -0,
+      nan: NaN,
+      count: 3n,
+      enabled: false,
+      empty: null,
+      missing: undefined,
+    };
+    const graph = {
+      name: 'root',
+      first: leaf,
+      second: leaf,
+      list: [leaf] as unknown[],
+      bytes: new Uint8Array([0, 128, 255]),
+    };
+    graph.list.push(graph);
+    const restored = deserialize(serialize(graph)) as typeof graph;
+    const pool = new Map<string, string>();
+
+    expect(internGraphStrings(restored, pool)).toBe(restored);
+
+    expect(restored).toEqual(graph);
+    expect(restored.first).toBe(restored.second);
+    expect(restored.list[0]).toBe(restored.first);
+    expect(restored.list[1]).toBe(restored);
+    expect(Object.is(restored.first.zero, -0)).toBe(true);
+    expect([...pool.keys()]).toEqual(['root', 'shared-value']);
+  });
+
+  it('interns a shared leaf record once regardless of its reference count', () => {
+    const leaf = Object.fromEntries(
+      Array.from({ length: 100 }, (_, i) => [`key${i}`, `value${i}`]),
+    );
+    const graph = deserialize(serialize(Array(100).fill(leaf))) as (typeof leaf)[];
+    const pool = new Map<string, string>();
+    const get = vi.spyOn(pool, 'get');
+
+    internGraphStrings(graph, pool);
+
+    expect(get).toHaveBeenCalledTimes(100);
+    expect(pool.size).toBe(100);
+    expect(graph.every((record) => record === graph[0])).toBe(true);
+  });
+
+  it('revisits a graph on later calls with a new pool or new strings', () => {
+    const graph = { text: 'first' };
+    const first = new Map<string, string>();
+    internGraphStrings(graph, first);
+    graph.text = 'second';
+    const second = new Map<string, string>();
+
+    internGraphStrings(graph, second);
+    internGraphStrings(graph, first);
+
+    expect([...first.keys()]).toEqual(['first', 'second']);
+    expect([...second.keys()]).toEqual(['second']);
   });
 
   it('round-trips a live graph including Maps', async () => {

@@ -45,6 +45,7 @@ import {
   resolveQualifiedClassSpelling,
   findEnclosingClassDef,
   findExportedDef,
+  namespaceImportAllowsMember,
   findExportedDefByName,
   findExportedDefIncludingImportedNames,
   findReceiverTypeBinding,
@@ -111,6 +112,9 @@ interface ResolveCompoundReceiverOptions {
    * matches the returned class and reads the arguments off that spelling.
    */
   readonly recordReceiverType?: ReceiverTypeRecorder;
+  /** Owners of declaration-anchored types under this provider's lookup hooks.
+   *  A receiver pass may share this map while its scope bindings are immutable. */
+  readonly declaredReceiverOwners?: WeakMap<TypeRef, SymbolDefinition | null>;
   /** When true (default), if method lookup fails on the receiver's
    *  class, walk its fields and try the lookup on each field's class.
    *  Phase-9C "unified fixpoint" — Python-shaped heuristic. */
@@ -331,6 +335,16 @@ function resolveConstructionExpressionClass(
       )
         return undefined;
       const namespaceMatches = namespaceFiles
+        .filter((targetFile) =>
+          namespaceImportAllowsMember(
+            inScope,
+            namespaceName,
+            exportedName,
+            scopes,
+            options.lookupPosition,
+            targetFile,
+          ),
+        )
         .map((targetFile) =>
           options.namespaceExportsIncludeImportedNames === true
             ? findExportedDefIncludingImportedNames(
@@ -499,15 +513,42 @@ function classOfDeclaredType(
   // exactly this `TypeRef`'s own anchor, and taking it as a parameter is what
   // would let a sixth quietly not — which is the hole this helper exists to
   // close, one level up.
+  // The report keeps the spelling it always had, whichever lookup answers: it
+  // is read only for type ARGUMENTS (#2912), and the qualified spelling has none.
+  const spelling = erasedTypeApplication(typeRef) ?? typeRef.rawName;
+  // The cascade can omit the provider's stripper. Its answer may differ from
+  // the folded lookup of the same declaration. Fallback observers also need
+  // the actual lookup at each site to record whether its binding was grounded.
+  const owners =
+    stripDecoration === options.stripTypePreservingDecoration &&
+    options.onNameFallback === undefined
+      ? options.declaredReceiverOwners
+      : undefined;
+  const cached = owners?.get(typeRef);
+  if (cached !== undefined) {
+    return noteReceiverType(options.recordReceiverType, spelling, cached ?? undefined);
+  }
+  // An awaitable WRAPPER never names an owner. A spelling the language can
+  // unwrap under `await` (`Future<User>`, carried whole by a provider that
+  // keeps the wrapper so a member of the un-awaited value is not typed as a
+  // member of the result) is container evidence about what the position
+  // YIELDS, not a class the position IS. Erasing its arguments and binding the
+  // head name would let a workspace class that happens to share the wrapper's
+  // name — an SDK stub, a mock — capture every such receiver, and the
+  // unique-name fallback would then hand `(await f).save()` the stub's `save`.
+  // The position keeps its declared spelling, so an `await` step still
+  // advances it; a member folded directly off it declines. A language that
+  // strips the wrapper at capture time answers no await route and is unchanged.
+  if (options.elementTypeOf?.(spelling, { kind: 'await' }) !== undefined) {
+    owners?.set(typeRef, null);
+    return undefined;
+  }
   const lookup: ClassBindingLookup = {
     position: typeRef.lookupPosition,
     purpose: typeRef.lookupPurpose ?? 'type',
     onNameFallback: options.onNameFallback,
     qualifiedTypeSpellings: options.qualifiedTypeSpellings,
   };
-  // The report keeps the spelling it always had, whichever lookup answers: it
-  // is read only for type ARGUMENTS (#2912), and the qualified spelling has none.
-  const spelling = erasedTypeApplication(typeRef) ?? typeRef.rawName;
   const qualified = classOfQualifiedTypeSpelling(
     typeRef,
     scopes,
@@ -525,6 +566,7 @@ function classOfDeclaredType(
           lookup,
         )
       : (qualified ?? undefined);
+  owners?.set(typeRef, def ?? null);
   return noteReceiverType(options.recordReceiverType, spelling, def);
 }
 
@@ -742,11 +784,13 @@ function boundCalleeReturnType(
   inScope: ScopeId,
   scopes: ScopeResolutionIndexes,
   position: TypeRef['lookupPosition'],
+  index: WorkspaceResolutionIndex,
 ): TypeRef | undefined {
   const claim = lookupNameClaim(inScope, name, scopes, { position, purpose: 'value' });
   const identities = new Set(claim.bindings.map((binding) => binding.def.nodeId));
   return identities.size === 1 && identities.has(fnDef.nodeId)
-    ? producerTypeRef(fnDef.nodeId, scopes)
+    ? (producerTypeRef(fnDef.nodeId, scopes) ??
+        index.declaredReturnTypeByCallableId.get(fnDef.nodeId))
     : undefined;
 }
 
@@ -966,12 +1010,46 @@ function foldReceiverChainState(
     // unwrapping step. Folding an ordinary member off it would look the member
     // up on the PREVIOUS class — a wrong owner, silently.
     //
-    // `await` IS identity, and soundly so: every language whose capture layer
-    // reduces the wrapper has ALREADY done it by the time a binding reaches the
-    // fold (TypeScript strips `Promise<X>`, C# strips `Task<X>`), and awaiting a
-    // value that is NOT a thenable yields that same value — so both regimes land
-    // on the identical answer and there is nothing to distinguish.
-    if (step.kind === 'await') continue;
+    // The language is asked FIRST whether the position's declared spelling is
+    // an awaitable it can unwrap (`elementTypeOf`, route `await`). A language
+    // that keeps the wrapper WHOLE in the binding (so that a member called on
+    // the un-awaited value cannot be typed as a member of the result) answers,
+    // and the step advances to what the wrapper yields, exactly as the index
+    // step does below — whether or not a class was found for the position: a
+    // class found for an awaitable spelling can only be a workspace class that
+    // shares the wrapper's name, never the value the await produces.
+    //
+    // When the language declines, `await` IS identity, and soundly so: every
+    // language whose capture layer reduces the wrapper has ALREADY done it by
+    // the time a binding reaches the fold (TypeScript strips `Promise<X>`, C#
+    // strips `Task<X>`), and awaiting a value that is NOT a thenable yields
+    // that same value — so both regimes land on the identical answer and there
+    // is nothing to distinguish. A provider without the route answers
+    // `undefined` and the step stays identity.
+    if (step.kind === 'await') {
+      const declared = current.declaredType;
+      const awaited =
+        declared === undefined ? undefined : options.elementTypeOf?.(declared, { kind: 'await' });
+      if (awaited === undefined) continue;
+      const scopeForLookup = current.declaredAtScope ?? inScope;
+      current = {
+        def: findClassBindingInScope(
+          scopeForLookup,
+          awaited,
+          scopes,
+          options.stripTypePreservingDecoration,
+          {
+            onNameFallback: options.onNameFallback,
+            position: current.lookupPosition,
+            purpose: 'type',
+          },
+        ),
+        declaredType: awaited,
+        declaredAtScope: scopeForLookup,
+        lookupPosition: current.lookupPosition,
+      };
+      continue;
+    }
     if (step.kind === 'index') {
       // An index step is NOT identity, and that asymmetry with `await` above is
       // the whole point. `await` on a non-promise is a no-op; a subscript on a
@@ -999,17 +1077,46 @@ function foldReceiverChainState(
         declared === undefined ? undefined : options.elementTypeOf?.(declared, { kind: 'index' });
       if (element === undefined) return undefined;
       const scopeForLookup = current.declaredAtScope ?? inScope;
-      const elementClass = findClassBindingInScope(
-        scopeForLookup,
-        element,
-        scopes,
-        options.stripTypePreservingDecoration,
-        {
-          onNameFallback: options.onNameFallback,
-          position: current.lookupPosition,
-          purpose: 'type',
-        },
-      );
+      // A dotted element (`Outer.Inner[]` → `Outer.Inner`) is a qualified
+      // spelling written where the container was declared, so it takes the
+      // provider's qualified route exactly as a declared type of that spelling
+      // would, and that route's refusal (`null`) is final. Without the hook, or
+      // when it supplies no qualified spelling, the lookup is unchanged.
+      const qualifiedElement = element.includes('.')
+        ? classOfQualifiedTypeSpelling(
+            {
+              rawName: element,
+              declaredSpelling: element,
+              declaredAtScope: scopeForLookup,
+              lookupPosition: current.lookupPosition,
+              lookupPurpose: 'type',
+              source: 'annotation',
+            },
+            scopes,
+            options.qualifiedTypeLookupSpelling,
+            {
+              position: current.lookupPosition,
+              purpose: 'type',
+              onNameFallback: options.onNameFallback,
+              qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+            },
+            options.namespaceMemberVisible,
+          )
+        : undefined;
+      const elementClass =
+        qualifiedElement === undefined
+          ? findClassBindingInScope(
+              scopeForLookup,
+              element,
+              scopes,
+              options.stripTypePreservingDecoration,
+              {
+                onNameFallback: options.onNameFallback,
+                position: current.lookupPosition,
+                purpose: 'type',
+              },
+            )
+          : (qualifiedElement ?? undefined);
       if (elementClass === undefined) return undefined;
       current = {
         def: elementClass,
@@ -1333,7 +1440,8 @@ export function resolveCompoundReceiverClass(
         const retType =
           findReceiverTypeBinding(inScope, fnExpr, scopes, {
             position: options.lookupPosition,
-          }) ?? boundCalleeReturnType(fnDef, fnExpr, inScope, scopes, options.lookupPosition);
+          }) ??
+          boundCalleeReturnType(fnDef, fnExpr, inScope, scopes, options.lookupPosition, index);
         const viaReturn =
           retType === undefined ? undefined : classOfReturnType(retType, scopes, options);
         if (viaReturn !== undefined) return viaReturn;

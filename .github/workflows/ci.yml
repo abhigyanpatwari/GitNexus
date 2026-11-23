@@ -2,7 +2,6 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   workflow_call:
 
@@ -42,6 +41,18 @@ jobs:
     uses: ./.github/workflows/ci-tests.yml
     permissions:
       contents: read
+
+  sonar:
+    name: SonarQube
+    needs: tests
+    if: >-
+      !cancelled() && github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/sonarqube.yml
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
 
   e2e:
     uses: ./.github/workflows/ci-e2e.yml

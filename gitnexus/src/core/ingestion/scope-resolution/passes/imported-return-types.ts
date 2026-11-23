@@ -40,6 +40,7 @@
  */
 
 import type {
+  BindingRef,
   ImportEdge,
   ParsedFile,
   Scope,
@@ -51,13 +52,20 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { definitionIdPosition } from '../utils/definition-id.js';
-import { followedStep } from '../../utils/type-ref-chain.js';
+import {
+  followedStep,
+  type AwaitedFollow,
+  type QualifiedYield,
+} from '../../utils/type-ref-chain.js';
 import {
   lookupBindingsAt,
   lookupNameClaim,
   findReceiverTypeBinding,
   namesAtScope,
   namespaceTypeBindingFor,
+  isClassLike,
+  namespaceImportAllowsMember,
+  findClassBindingInScope,
 } from '../scope/walkers.js';
 
 /** Definition identity → its own type fact; built once, facts read lazily after propagation. */
@@ -131,6 +139,38 @@ export function producerTypeRef(
     : scopes.scopeTree.getScope(owner.scope)?.typeBindings.get(owner.name);
 }
 
+/** Per run, per frozen binding array: the bindings whose definition owns a type fact. */
+const producerBindingsByArray = new WeakMap<
+  ScopeResolutionIndexes,
+  WeakMap<readonly BindingRef[], readonly BindingRef[]>
+>();
+
+/**
+ * The bindings `producerTypeRef` can answer for, in their original order; for
+ * every other binding it returns `undefined`. The owner table never changes
+ * once built, and a frozen array never changes, so the subset is computed once
+ * per array. Until the table exists every binding is walked, so the same first
+ * `producerTypeRef` call builds it, against the same type facts.
+ */
+function producerCandidateBindings(
+  bindings: readonly BindingRef[],
+  scopes: ScopeResolutionIndexes,
+): readonly BindingRef[] {
+  const owners = typeFactOwners.get(scopes);
+  if (owners === undefined || !Object.isFrozen(bindings)) return bindings;
+  let byArray = producerBindingsByArray.get(scopes);
+  if (byArray === undefined) {
+    byArray = new WeakMap();
+    producerBindingsByArray.set(scopes, byArray);
+  }
+  let owned = byArray.get(bindings);
+  if (owned === undefined) {
+    owned = bindings.filter((binding) => owners.has(binding.def.nodeId));
+    byArray.set(bindings, owned);
+  }
+  return owned;
+}
+
 /**
  * Max chain depth for the post-finalize re-follow. Effective end-to-end
  * depth is roughly 2× this number, because chain-following runs once
@@ -178,8 +218,8 @@ function namespaceLocalNames(scopes: ScopeResolutionIndexes): ReadonlySet<string
   let names = namespaceLocalNamesByIndexes.get(scopes);
   if (names === undefined) {
     const collected = new Set<string>();
-    for (const edges of scopes.imports.values()) {
-      for (const edge of edges) {
+    for (const scope of scopes.imports.scopes()) {
+      for (const edge of scopes.imports.edgesAt(scope) ?? []) {
         if (bindsTargetModule(edge)) collected.add(edge.localName);
       }
     }
@@ -225,6 +265,7 @@ export function namespaceCallReturnType(
   }
   const claim = lookupNameClaim(inScope, head, scopes, { position, purpose: 'value' });
   if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
+  if (!namespaceImportAllowsMember(inScope, head, member, scopes, position)) return undefined;
   const targets = new Set<ScopeId>();
   for (const edge of claim.imports) {
     if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
@@ -234,12 +275,78 @@ export function namespaceCallReturnType(
   const [target] = targets;
   if (targets.size !== 1 || target === undefined) return undefined;
   const module = scopes.scopeTree.getScope(target);
+  const exports =
+    module === undefined ? undefined : scopes.namespaceExportsByFile?.get(module.filePath);
+  if (exports !== undefined) {
+    const def = exports.get(member);
+    return def === undefined ? undefined : producerTypeRef(def.nodeId, scopes);
+  }
   const returned = module?.typeBindings.get(member);
   return module !== undefined &&
     returned?.source === 'return-annotation' &&
     isModuleOwnReturn(returned, module, member)
     ? returned
     : undefined;
+}
+
+/**
+ * A QUALIFIED awaited yield (`models.User`) read in the PRODUCER's scope — the
+ * module whose return annotation wrote it. `models` must be a namespace import
+ * there (not a local), bind exactly one target module, and that module must
+ * itself declare a class-like `User`; the yield is then the bare class name
+ * anchored at that module, which the consumer resolves as a plain name. Any
+ * other situation declines: resolving the prefix through the CONSUMER's import
+ * map would let a same-named prefix there (`import 'decoy.dart' as models;`)
+ * pick a different class, and a missing edge is the better outcome. One hop
+ * only — `a.b.C` is not a namespace-import spelling.
+ */
+export function qualifiedYieldAt(
+  spelling: string,
+  producerScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+): QualifiedYield | undefined {
+  const [, head, member] = QUALIFIED_MEMBER_RE.exec(spelling) ?? [];
+  if (head === undefined || member === undefined || !namespaceLocalNames(scopes).has(head)) {
+    return undefined;
+  }
+  const claim = lookupNameClaim(producerScope, head, scopes, { purpose: 'value' });
+  if (claim.bindings.some((binding) => binding.origin === 'local')) return undefined;
+  if (!namespaceImportAllowsMember(producerScope, head, member, scopes)) return undefined;
+  const targets = new Set<ScopeId>();
+  for (const edge of claim.imports) {
+    if (bindsTargetModule(edge) && edge.targetModuleScope !== undefined) {
+      targets.add(edge.targetModuleScope);
+    }
+  }
+  const candidates = new Map<string, QualifiedYield>();
+  for (const target of targets) {
+    const targetModule = scopes.scopeTree.getScope(target);
+    if (
+      targetModule === undefined ||
+      !namespaceImportAllowsMember(
+        producerScope,
+        head,
+        member,
+        scopes,
+        undefined,
+        targetModule.filePath,
+      )
+    )
+      continue;
+    const exports = scopes.namespaceExportsByFile?.get(targetModule.filePath);
+    const defs =
+      exports === undefined
+        ? (targetModule.bindings.get(member) ?? [])
+            .filter((binding) => binding.origin === 'local')
+            .map((binding) => binding.def)
+        : [exports.get(member)].filter((def): def is SymbolDefinition => def !== undefined);
+    for (const def of defs) {
+      const owner = scopes.moduleScopes.get(def.filePath);
+      if (isClassLike(def.type) && owner !== undefined)
+        candidates.set(def.nodeId, { rawName: member, declaredAtScope: owner });
+    }
+  }
+  return candidates.size === 1 ? candidates.values().next().value : undefined;
 }
 
 /** `ScopeResolver.resolveQualifiedCallee` bound to one resolution pass. */
@@ -297,6 +404,7 @@ export function followChainPostFinalize(
   fromScopeId: ScopeId,
   scopes: ScopeResolutionIndexes,
   resolveCallee?: QualifiedCalleeResolver,
+  awaited?: AwaitedFollow,
 ): TypeRef {
   let current = start;
   const visited = new Set<string>();
@@ -313,13 +421,19 @@ export function followChainPostFinalize(
       // against its own imports. Stop at the call rather than hand it over.
       if (
         returned === undefined ||
-        returned.rawName.includes('.') ||
+        (returned.rawName.includes('.') &&
+          !(
+            depth === 0 &&
+            start.awaited === true &&
+            awaited?.yields(returned.declaredSpelling ?? returned.rawName) !== undefined
+          )) ||
         visited.has(returned.rawName)
       ) {
         return current;
       }
       visited.add(returned.rawName);
-      current = followedStep(start, returned);
+      // The await hop is the FIRST step only: callee → its awaited result.
+      current = followedStep(start, returned, depth === 0 ? awaited : undefined);
       continue;
     }
     const claim = lookupNameClaim(lookupScope, current.rawName, scopes, {
@@ -329,7 +443,7 @@ export function followChainPostFinalize(
     let next = claim.typeBinding;
     if (next === undefined || claim.bindings.some((binding) => binding.origin !== 'local')) {
       const candidates = new Map<string, TypeRef>();
-      for (const binding of claim.bindings) {
+      for (const binding of producerCandidateBindings(claim.bindings, scopes)) {
         // A member exposed through an import bucket must not replace a
         // return fact anchored on the module's own free function.
         if (binding.def.type === 'Method' && next?.source === 'return-annotation') {
@@ -371,9 +485,54 @@ export function followChainPostFinalize(
     if (next === undefined) return current;
     if (visited.has(next.rawName)) return current;
     visited.add(next.rawName);
-    current = followedStep(start, next);
+    current = followedStep(start, next, depth === 0 ? awaited : undefined);
   }
   return current;
+}
+
+/** `followChainPostFinalize` for one pass, bound to its hooks. */
+export interface ChainFollower {
+  follow(start: TypeRef, fromScopeId: ScopeId): TypeRef;
+  /** Forget what was learned: the pass calls it after every type-binding write. */
+  clear(): void;
+}
+
+/**
+ * A pass can follow one `TypeRef` object many times: a provider that copies a
+ * module's type facts into every sibling module shares the objects, and each
+ * copy is followed again. This remembers the heads whose first step stopped,
+ * by the scope that step read. That step reads only the head, that scope, the
+ * pass's callee hook and the indexes, so it stops again until a write changes
+ * the indexes. A head that came back unchanged stopped at its first step: a
+ * later step returns a new object, unless the head is awaited
+ * (`followedStep` may return it), so an awaited head is never remembered.
+ */
+export function createChainFollower(
+  scopes: ScopeResolutionIndexes,
+  resolveCallee?: QualifiedCalleeResolver,
+  awaited?: AwaitedFollow,
+): ChainFollower {
+  let stopped = new Map<TypeRef, Set<ScopeId>>();
+  return {
+    follow(start, fromScopeId) {
+      // A read in the declaration's own scope is common for parameters and
+      // locals. Start tracking the head when another scope actually shares it.
+      if (start.awaited === true || start.declaredAtScope === fromScopeId)
+        return followChainPostFinalize(start, fromScopeId, scopes, resolveCallee, awaited);
+      const firstScope = start.declaredAtScope ?? fromScopeId;
+      const known = stopped.get(start);
+      if (known?.has(firstScope) === true) return start;
+      const followed = followChainPostFinalize(start, fromScopeId, scopes, resolveCallee, awaited);
+      if (followed === start) {
+        if (known === undefined) stopped.set(start, new Set([firstScope]));
+        else known.add(firstScope);
+      }
+      return followed;
+    },
+    clear() {
+      if (stopped.size > 0) stopped = new Map();
+    },
+  };
 }
 
 /**
@@ -398,16 +557,60 @@ export function propagateImportedReturnTypes(
   index: WorkspaceResolutionIndex,
   resolveQualifiedCallee?: ScopeResolver['resolveQualifiedCallee'],
   allFilePaths?: ReadonlySet<string>,
+  elementTypeOf?: ScopeResolver['elementTypeOf'],
+  lookupOwnedMethods?: (ownerId: string, name: string) => readonly SymbolDefinition[],
 ): void {
   const moduleScopeByFile = index.moduleScopeByFile;
-  const resolveCallee = bindQualifiedCalleeResolver(
+  // An awaited binding takes what the followed return type yields under
+  // `await` — the provider's route, bound once here; see `followedStep`.
+  const awaited: AwaitedFollow | undefined =
+    elementTypeOf === undefined
+      ? undefined
+      : {
+          yields: (type) => elementTypeOf(type, { kind: 'await' }),
+          resolveQualified: (spelling, producerScope) =>
+            qualifiedYieldAt(spelling, producerScope, indexes),
+        };
+  const qualifiedCallee = bindQualifiedCalleeResolver(
     resolveQualifiedCallee,
     indexes,
     index,
     parsedFiles,
     allFilePaths,
   );
+  const resolveCallee: QualifiedCalleeResolver | undefined =
+    lookupOwnedMethods === undefined
+      ? qualifiedCallee
+      : (callee, inScope, position, argumentsText) => {
+          const qualified = qualifiedCallee?.(callee, inScope, position, argumentsText);
+          if (qualified !== undefined) return qualified;
+          const [, receiver, member] = QUALIFIED_MEMBER_RE.exec(callee) ?? [];
+          if (receiver === undefined || member === undefined) return undefined;
+          const type = findReceiverTypeBinding(inScope, receiver, indexes, {
+            position,
+            purpose: 'value',
+          });
+          if (
+            type === undefined ||
+            elementTypeOf?.(type.declaredSpelling ?? type.rawName, { kind: 'await' }) !== undefined
+          )
+            return undefined;
+          const owner = findClassBindingInScope(
+            type.declaredAtScope,
+            type.rawName,
+            indexes,
+            undefined,
+            { purpose: 'type' },
+          );
+          if (owner === undefined) return undefined;
+          for (const id of [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)]) {
+            const methods = lookupOwnedMethods(id, member);
+            if (methods.length > 0) return methods.length === 1 ? methods[0] : undefined;
+          }
+          return undefined;
+        };
   const scopesByFile = new Map(parsedFiles.map((file) => [file.filePath, file.scopes]));
+  const follower = createChainFollower(indexes, resolveCallee, awaited);
 
   // Walk SCCs in reverse-topological order (`indexes.sccs` is leaves-
   // first per `tarjanSccs`). For each file we mirror import bindings
@@ -460,16 +663,12 @@ export function propagateImportedReturnTypes(
 
             // Chain-follow inside the source module so we mirror the
             // terminal type, not an intermediate intra-source reference.
-            const terminal = followChainPostFinalize(
-              sourceTypeRef,
-              sourceModule.id,
-              indexes,
-              resolveCallee,
-            );
+            const terminal = follower.follow(sourceTypeRef, sourceModule.id);
 
             // Mutating typeBindings is safe because draftToScope
             // produced a non-frozen Map (Contract Invariant I3/I8).
             (importerScope.typeBindings as Map<string, TypeRef>).set(localName, terminal);
+            follower.clear();
             // First-write-wins for the local alias: if the same
             // `localName` was registered multiple times via
             // `mergeBindings` (rare; happens with conflicting
@@ -487,9 +686,10 @@ export function propagateImportedReturnTypes(
       // later (closer-to-root) SCC will see x's terminal type rather
       // than an intra-module call ref.
       for (const [name, ref] of importerModule.typeBindings) {
-        const resolved = followChainPostFinalize(ref, importerModule.id, indexes, resolveCallee);
+        const resolved = follower.follow(ref, importerModule.id);
         if (resolved !== ref) {
           (importerModule.typeBindings as Map<string, TypeRef>).set(name, resolved);
+          follower.clear();
         }
       }
     }
@@ -503,9 +703,10 @@ export function propagateImportedReturnTypes(
     for (const scope of parsed.scopes) {
       if (scope.id === moduleScopeId) continue;
       for (const [name, ref] of scope.typeBindings) {
-        const resolved = followChainPostFinalize(ref, scope.id, indexes, resolveCallee);
+        const resolved = follower.follow(ref, scope.id);
         if (resolved !== ref) {
           (scope.typeBindings as Map<string, TypeRef>).set(name, resolved);
+          follower.clear();
         }
       }
     }

@@ -6,7 +6,7 @@
  * and validates per-class prefix resolution, multi-class handling, and
  * all HTTP method annotations.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import { extractSpringRoutes } from '../../src/core/ingestion/route-extractors/spring.js';
@@ -16,6 +16,25 @@ function parse(code: string): Parser.Tree {
   parser.setLanguage(Java);
   return parser.parse(code);
 }
+
+it('compiles Spring queries on first use and reuses them across files', async () => {
+  vi.resetModules();
+  const compile = vi.spyOn(Parser, 'Query');
+  try {
+    const spring = await import('../../src/core/ingestion/route-extractors/spring.js');
+    expect(compile).not.toHaveBeenCalled();
+
+    const source = '@RestController class C { @GetMapping("/x") String x() { return ""; } }';
+    expect(spring.extractSpringTypes(parse(source), 'C.java')).toHaveLength(1);
+    expect(compile).toHaveBeenCalledTimes(1);
+    for (const file of ['app/C.java', 'test/C.java']) {
+      expect(spring.extractSpringRoutes(parse(source), file)).toHaveLength(1);
+      expect(compile).toHaveBeenCalledTimes(2);
+    }
+  } finally {
+    compile.mockRestore();
+  }
+});
 
 describe('extractSpringRoutes', () => {
   it('extracts method-level routes with class-level @RequestMapping prefix', () => {

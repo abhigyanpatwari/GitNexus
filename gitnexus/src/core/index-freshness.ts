@@ -6,6 +6,7 @@ export const INDEX_INCOMPLETE_REASONS = [
   'incremental-in-progress',
   'embedding-checkpoint-pending',
   'embedding-count-unverified',
+  'embedding-job-pending',
   'graph-write-collapsed',
   'scope-extraction-unverified',
   'scope-extraction-failed',
@@ -137,6 +138,7 @@ export function getIndexIncompleteReasons(
         RepoMeta,
         | 'incrementalInProgress'
         | 'embeddingCheckpoint'
+        | 'embeddingJob'
         | 'graphWriteCollapsed'
         | 'scopeExtractionFailures'
         | 'scopeExtractionReceipt'
@@ -172,5 +174,18 @@ export function getIndexIncompleteReasons(
         : 'embedding-checkpoint-pending',
     );
   }
+  if (meta?.embeddingJob) reasons.push('embedding-job-pending');
   return reasons;
+}
+
+/** Embedding debt does not invalidate a published graph or require parsing. */
+export function getGraphIncompleteReasons(
+  meta: Parameters<typeof getIndexIncompleteReasons>[0],
+): IndexIncompleteReason[] {
+  return getIndexIncompleteReasons(meta).filter(
+    (reason) =>
+      reason !== 'embedding-checkpoint-pending' &&
+      reason !== 'embedding-count-unverified' &&
+      reason !== 'embedding-job-pending',
+  );
 }

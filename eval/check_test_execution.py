@@ -8,7 +8,29 @@ import sys
 import xml.etree.ElementTree as ET
 
 
-RECEIPTS = ("pytest-locked.xml", "pytest-ubuntu.xml", "pytest-windows.xml")
+LINUX = ("ubuntu-22.04", "ubuntu-24.04", "ubuntu-26.04")
+RECEIPTS = (
+    "pytest-locked.xml",
+    *(f"pytest-{host}.xml" for host in LINUX),
+    "pytest-windows.xml",
+)
+PROPOSAL_CASES = {
+    "test_offline_worker_credentials_namespaces_and_readonly_checkout",
+    "test_offline_worker_exits_when_the_controller_dies",
+    "test_all_pinned_proposal_graders",
+    "test_native_paired_proposal_cost_and_grading",
+}
+
+
+def require_native_proposals(path: Path) -> None:
+    passed = {
+        case.get("name") for case in ET.parse(path).iter("testcase")
+        if case.get("classname") == "tests.test_proposal_evaluation"
+        and not any(case.find(status) is not None for status in ("skipped", "failure", "error"))
+    }
+    missing = PROPOSAL_CASES - passed
+    if missing:
+        raise ValueError(f"{path.name} needs a passing native execution of {', '.join(sorted(missing))}")
 
 
 def reconcile(reports: list[Path], expected_files: list[str]) -> dict:
@@ -105,6 +127,8 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     expected = [p.relative_to(root).as_posix() for p in (root / "tests").rglob("test_*.py")]
     report = reconcile([directory / name for name in RECEIPTS], expected)
+    for host in LINUX:
+        require_native_proposals(directory / f"pytest-{host}.xml")
     output.write_text(json.dumps(report), encoding="utf-8")
     print(
         f"Eval execution: {report['numPassedTests']}/{report['numTotalTests']} passed; "

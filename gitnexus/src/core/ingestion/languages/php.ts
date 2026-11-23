@@ -15,6 +15,7 @@ import {
   phpBindingScopeFor,
   phpImportOwningScope,
   phpReceiverBinding,
+  phpScopeOwnsReceivers,
 } from './php/index.js';
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -329,4 +330,7 @@ export const phpProvider = defineLanguage({
   bindingScopeFor: phpBindingScopeFor,
   importOwningScope: phpImportOwningScope,
   receiverBinding: phpReceiverBinding,
+  // A declined PHPDoc `@param` shadows its name in the declaring callable's
+  // scope (`phpDeclinedDocParamsCapture`), so no other evidence types it.
+  scopeOwnsReceivers: phpScopeOwnsReceivers,
 });

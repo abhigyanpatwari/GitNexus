@@ -1,0 +1,18 @@
+{
+  "language": "r",
+  "description": "Refuse when a top-level call of the name runs before the definition: it reaches the attached package function, not the definition being renamed.",
+  "categories": ["call-order", "masking", "negative", "unchanged-on-error"],
+  "target": {
+    "name": "filter",
+    "kind": "Function",
+    "file": "a.R",
+    "startLine": 2
+  },
+  "newName": "my_filter",
+  "expect": {
+    "status": "error",
+    "code": "ambiguous_reference",
+    "planningStatus": "blocked"
+  },
+  "edges": []
+}

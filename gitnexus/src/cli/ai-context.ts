@@ -14,8 +14,16 @@ import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { isEnoent } from './editor-targets.js';
+import {
+  isDefaultInstructionFile,
+  selectedInstructionFiles,
+  type InstructionFile,
+} from './analyze-options.js';
+import {
+  assertInstructionFileTargetSafe,
+  resolveInstructionFileTarget,
+} from './instruction-file-target.js';
 import { logger } from '../core/logger.js';
-import { assertContextFileTargetSafe, resolveContextFileTarget } from './context-file-target.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -32,7 +40,9 @@ interface RepoStats {
 
 export interface AIContextOptions {
   skipAgentsMd?: boolean;
-  contextFile?: string;
+  instructionFile?: InstructionFile;
+  /** Explicit analysis refreshes displayed counts. Background updates avoid count-only writes. */
+  refreshCounts?: boolean;
   noStats?: boolean;
   skipSkills?: boolean;
   /**
@@ -53,6 +63,9 @@ export interface AIContextOptions {
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
 const GITNEXUS_END_MARKER = '<!-- gitnexus:end -->';
+// Matches the template and lean headers, including wrapped Markdown counts.
+const STATS_LINE_PATTERN =
+  /^((?:This project is )?(?:Indexed as|indexed by GitNexus as)) (\*\*[^*\n]+\*\*)(\s+\(\d+\s+symbols,\s+\d+\s+relationships,\s+\d+\s+execution\s+flows\))?/m;
 
 /**
  * Find the index of a section marker that occupies its own line.
@@ -79,6 +92,30 @@ function findSectionMarkerIndex(content: string, marker: string, startFrom = 0):
     idx = content.indexOf(marker, idx + 1);
   }
   return -1;
+}
+
+/**
+ * Locate one selected instruction file. Root `AGENTS.md` / `CLAUDE.md` keep
+ * their existing behavior (including a user's own symlink between them). A
+ * custom target is re-validated here, at the write site, so a caller that
+ * bypasses the CLI still cannot escape the repository or follow a symlink.
+ */
+async function resolveSelectedInstructionFile(
+  repoPath: string,
+  selected: InstructionFile,
+): Promise<{ name: string; filePath: string; custom: boolean }> {
+  if (isDefaultInstructionFile(selected)) {
+    return { name: selected, filePath: path.join(repoPath, selected), custom: false };
+  }
+  const { relative, absolute } = resolveInstructionFileTarget(repoPath, selected);
+  await assertInstructionFileTargetSafe(repoPath, relative);
+  return { name: relative, filePath: absolute, custom: true };
+}
+
+export async function hasInstructionBlock(filePath: string): Promise<boolean> {
+  const content = await fs.readFile(filePath, 'utf8').catch(() => '');
+  const start = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+  return start >= 0 && findSectionMarkerIndex(content, GITNEXUS_END_MARKER, start) >= 0;
 }
 
 /**
@@ -132,6 +169,8 @@ function regressionReviewGuidance(defaultBranch: string, runner?: string): strin
  *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
 export interface GitNexusContentOptions {
   generatedSkills?: GeneratedSkillInfo[];
+  /** Managed block from this file, used when community skills were not regenerated. */
+  previousSection?: string;
   groupNames?: string[];
   noStats?: boolean;
   skipSkills?: boolean;
@@ -156,6 +195,16 @@ export interface GitNexusContentOptions {
   hasSpringActuator?: boolean;
 }
 
+function retainedCommunitySkillRows(section: string, noStats?: boolean): string {
+  const rows =
+    section.match(
+      /^\| Work in the [^\n|]+ area(?: \(\d+ symbols\))?[ \t]*\|[ \t]*`\.claude\/skills\/[^/`\n]+\/SKILL\.md`[ \t]*\|[ \t]*$/gm,
+    ) ?? [];
+  return rows
+    .map((row) => (noStats ? row.replace(/ \(\d+ symbols\)(?=[ \t]*\|)/, '') : row))
+    .join('\n');
+}
+
 export function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
@@ -172,17 +221,12 @@ export function generateGitNexusContent(
     hasSpringActuator = false,
   } = opts;
   const generatedRows =
-    generatedSkills && generatedSkills.length > 0
-      ? generatedSkills
-          .map(
-            (s) =>
-              // The per-cluster count is as volatile as the header parenthetical,
-              // so --no-stats drops it too (#2907) — otherwise the flag that
-              // promises "omit volatile symbol counts" left a churning one behind.
-              `| Work in the ${s.label} area${noStats ? '' : ` (${s.symbolCount} symbols)`} | \`.claude/skills/${s.name}/SKILL.md\` |`,
-          )
-          .join('\n')
-      : '';
+    generatedSkills
+      ?.map(
+        (s) =>
+          `| Work in the ${s.label} area${noStats ? '' : ` (${s.symbolCount} symbols)`} | \`.claude/skills/${s.name}/SKILL.md\` |`,
+      )
+      .join('\n') ?? retainedCommunitySkillRows(opts.previousSection ?? '', noStats);
 
   // Standard skill rows reference files installed by installSkills(). When
   // --skip-skills suppresses that install, these rows must be omitted — else
@@ -305,6 +349,102 @@ async function fileExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * A fence opener, optionally behind the list-item or block-quote markers that
+ * open on the same line (`- ```sh`): group 1 is that marker prefix, group 2
+ * the fence, group 3 the info string.
+ */
+const FENCE_OPENER = /^((?: {0,3}(?:>[ \t]?|(?:[-+*]|\d{1,9}[.)])[ \t]))*) {0,3}(`{3,}|~{3,})(.*)$/;
+
+/**
+ * A line that cannot be the text of a setext heading: an ATX heading, a block
+ * quote, a list item, or a thematic break (also the shape of a setext `---`
+ * underline). A row of `=` under one of these is paragraph text, not a title.
+ */
+const NOT_SETEXT_TEXT =
+  /^ {0,3}(?:#{1,6}(?:[ \t]|$)|>|(?:[-+*]|\d{1,9}[.)])(?:[ \t]|$)|([-*_])[ \t]*(?:\1[ \t]*){2,}$)/;
+
+/**
+ * Whether `markdown` has a title of its own: an ATX `# Title`, a setext title
+ * underlined with `=`, or a `title` key in closed YAML front matter (which
+ * markdownlint's MD025 counts as the document title). Fenced code, HTML
+ * comments and the rest of the front matter can contain heading examples
+ * without giving the file a title.
+ */
+function hasTopLevelHeading(markdown: string): boolean {
+  const lines = markdown.replace(/^\uFEFF/, '').split('\n');
+  let start = 0;
+  if (/^---[ \t]*$/.test(lines[0])) {
+    const end = lines.findIndex((line, i) => i > 0 && /^---[ \t]*$/.test(line));
+    if (end !== -1) {
+      // markdownlint's default `front_matter_title` pattern.
+      if (lines.slice(1, end).some((line) => /^\s*"?title"?\s*[:=]/i.test(line))) return true;
+      start = end + 1;
+    }
+  }
+  // `inside` is set for a fence opened in a list item or block quote: the
+  // shape a later line must have to still belong to that container.
+  let fence: { char: string; length: number; inside?: RegExp } | undefined;
+  let inComment = false;
+  let previous = '';
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (fence?.inside && line.trim() !== '' && !fence.inside.test(line)) {
+      // The list item or block quote ended, and with it any fence still open
+      // inside (one closed deeper than three spaces is not seen as closed
+      // below); this line is ordinary content again.
+      fence = undefined;
+    }
+    if (fence) {
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) {
+        fence = undefined;
+      }
+      previous = '';
+      continue;
+    }
+    if (inComment || /^ {0,3}<!--/.test(line)) {
+      inComment = !line.includes('-->');
+      previous = '';
+      continue;
+    }
+    const opener = FENCE_OPENER.exec(line);
+    // Backtick fence info strings cannot contain backticks (CommonMark §4.5).
+    if (opener && (opener[2][0] !== '`' || !opener[3].includes('`'))) {
+      const inside =
+        opener[1] === ''
+          ? undefined
+          : opener[1].includes('>')
+            ? /^ {0,3}>/
+            : new RegExp(`^ {${line.indexOf(opener[2])}}`);
+      fence = { char: opener[2][0], length: opener[2].length, inside };
+      previous = '';
+      continue;
+    }
+    if (/^ {0,3}#(?:[ \t]|$)/.test(line)) return true;
+    if (
+      /^ {0,3}=+[ \t]*$/.test(line) &&
+      previous.trim() !== '' &&
+      !NOT_SETEXT_TEXT.test(previous)
+    ) {
+      return true;
+    }
+    previous = line;
+  }
+  return false;
+}
+
+/**
+ * The block opens with a level-1 heading, which is right for a file GitNexus
+ * creates. Inside a file that already has its own title, a second level-1
+ * heading breaks markdownlint's MD025 (single-title), so the block's headings
+ * move down one level there (#2774). Every line of the block that starts with
+ * `#` is one of its own headings.
+ */
+function nestUnderExistingTitle(block: string, surrounding: string): string {
+  return hasTopLevelHeading(surrounding) ? block.replace(/^(#{1,5}) /gm, '#$1 ') : block;
+}
+
+/**
  * Replace the block's volatile counts — the header parenthetical and the
  * per-cluster symbol counts in the skills table — with fixed placeholders, so
  * two renderings that differ only in those numbers compare equal.
@@ -324,28 +464,25 @@ function stripVolatileCounts(section: string): string {
  * Create or update GitNexus section in a file
  * - If file doesn't exist: create with GitNexus content
  * - If file exists without GitNexus section: append
- * - If file exists with GitNexus section: replace that section, UNLESS the only
- *   delta is the volatile counts (#2907). AGENTS.md and CLAUDE.md are the agent
- *   guides teams commit, and the counts move with any code change, so a
- *   count-only rewrite dirties a tracked file on every reindex for no reader
- *   benefit. Live counts stay available from `gitnexus status` and
- *   `gitnexus://repo/{name}/context`; the committed block keeps whichever
- *   numbers it was last materially updated with.
+ * - Replace an existing section on material changes. Explicit analysis also
+ *   refreshes displayed counts. Background updates skip count-only writes (#2907).
  */
 async function upsertGitNexusSection(
   filePath: string,
-  content: string,
+  render: (previousSection?: string) => string,
   projectName: string,
   stats: RepoStats,
   noStats?: boolean,
+  refreshCounts = false,
 ): Promise<'created' | 'updated' | 'appended' | 'preserved'> {
+  const comparable = refreshCounts ? (section: string) => section : stripVolatileCounts;
   const exists = await fileExists(filePath);
 
   if (!exists) {
     // Same `.trim() + '\n'` shape the update paths write. Creating without the
     // trailing newline made the NEXT analyze dirty a freshly committed file
     // even at unchanged counts, purely to append it (#2907).
-    await fs.writeFile(filePath, content.trim() + '\n', 'utf-8');
+    await fs.writeFile(filePath, render().trim() + '\n', 'utf-8');
     return 'created';
   }
 
@@ -409,9 +546,6 @@ async function upsertGitNexusSection(
       // drop the parenthetical but still refresh the project name so renames
       // propagate.
       const newStatsInner = `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`;
-      const statsLine = noStats
-        ? `Indexed as **${projectName}**`
-        : `Indexed as **${projectName}** (${newStatsInner})`;
 
       // Match either canonical phrasing at line start (`^` with `m` flag) so we
       // cannot replace prose embedded mid-paragraph. Deliberately no `$`: text
@@ -419,18 +553,25 @@ async function upsertGitNexusSection(
       // The parenthetical is optional so a count-free line left by a prior
       // --no-stats run still matches — letting the name refresh, and letting
       // counts return if --no-stats is later dropped.
-      const statsPattern = /^(?:Indexed as|indexed by GitNexus as) \*\*[^*]+\*\*(?: \([^)]+\))?/m;
+      const statsMatch = existingSection.match(STATS_LINE_PATTERN);
 
-      if (statsPattern.test(existingSection)) {
-        const updatedSection = existingSection.replace(statsPattern, statsLine);
-        // Count-only delta — leave the committed lean block alone (#2907). A
-        // project rename, or --no-stats dropping the parenthetical, still writes.
-        if (stripVolatileCounts(updatedSection) === stripVolatileCounts(existingSection)) {
+      if (statsMatch) {
+        const statsPrefix = statsMatch[1];
+        const customParenthetical =
+          !statsMatch[3] &&
+          /^\s*\(/.test(existingSection.slice(statsMatch.index! + statsMatch[0].length));
+        const statsLine =
+          noStats || customParenthetical
+            ? `${statsPrefix} **${projectName}**`
+            : `${statsPrefix} **${projectName}** (${newStatsInner})`;
+        const updatedSection = existingSection.replace(STATS_LINE_PATTERN, () => statsLine);
+        // Background refreshes preserve count-only changes in lean blocks (#2907).
+        if (comparable(updatedSection) === comparable(existingSection)) {
           return repairLineEndings();
         }
         const before = existingContent.substring(0, startIdx);
         const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-        await writeWithLineEnding(filePath, (before + updatedSection + after).trim() + '\n', eol);
+        await writeWithLineEnding(filePath, before + updatedSection + after, eol);
         return 'updated';
       }
       // Keep marker present but no stats line matched. Section is preserved
@@ -441,18 +582,26 @@ async function upsertGitNexusSection(
 
     // No keep marker — replace existing section with full verbose content,
     // unless the counts are the only thing that moved (#2907).
-    if (stripVolatileCounts(existingSection) === stripVolatileCounts(content)) {
-      return repairLineEndings();
-    }
     const before = existingContent.substring(0, startIdx);
     const after = existingContent.substring(endIdx + GITNEXUS_END_MARKER.length);
-    const newContent = before + content + after;
-    await writeWithLineEnding(filePath, newContent.trim() + '\n', eol);
+    // The write below trims the file, which can change what its first lines
+    // are (a blank line before front matter, an indented first line), so the
+    // title is looked for in the text as it will be written.
+    const placed = nestUnderExistingTitle(render(existingSection), before.trimStart() + after);
+    if (comparable(existingSection) === comparable(placed)) {
+      return repairLineEndings();
+    }
+    const newContent = before + placed + after;
+    const countOnly =
+      refreshCounts && stripVolatileCounts(existingSection) === stripVolatileCounts(placed);
+    await writeWithLineEnding(filePath, countOnly ? newContent : newContent.trim() + '\n', eol);
     return 'updated';
   }
 
-  // Append new section
-  const newContent = existingContent.trim() + '\n\n' + content + '\n';
+  // Append new section, deciding its heading level from the trimmed text that
+  // is written rather than the text that was read.
+  const kept = existingContent.trim();
+  const newContent = kept + '\n\n' + nestUnderExistingTitle(render(), kept) + '\n';
   await writeWithLineEnding(filePath, newContent, eol);
   return 'appended';
 }
@@ -649,24 +798,6 @@ Use GitNexus tools to accomplish this task.
   };
 }
 
-/** Whether a selected target needs its initial GitNexus block on an up-to-date run. */
-export async function contextFileNeedsGeneration(
-  repoPath: string,
-  contextFile: string,
-): Promise<boolean> {
-  const { relative, absolute } = resolveContextFileTarget(repoPath, contextFile);
-  await assertContextFileTargetSafe(repoPath, relative);
-  let content: string;
-  try {
-    content = await fs.readFile(absolute, 'utf-8');
-  } catch (err) {
-    if (isEnoent(err)) return true;
-    throw err;
-  }
-  const start = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
-  return start === -1 || findSectionMarkerIndex(content, GITNEXUS_END_MARKER, start) === -1;
-}
-
 /**
  * Generate AI context files after indexing
  */
@@ -708,38 +839,39 @@ export async function generateAIContextFiles(
     logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
   }
 
-  const content = generateGitNexusContent(projectName, stats, {
-    generatedSkills,
-    groupNames,
-    noStats: options?.noStats,
-    skipSkills: options?.skipSkills,
-    runnerPath,
-    defaultBranch: options?.defaultBranch ?? 'main',
-    hasPdg: options?.hasPdg ?? false,
-    hasSpringActuator: options?.hasSpringActuator ?? false,
-  });
+  const render = (previousSection?: string) =>
+    generateGitNexusContent(projectName, stats, {
+      generatedSkills,
+      previousSection,
+      groupNames,
+      noStats: options?.noStats,
+      skipSkills: options?.skipSkills,
+      runnerPath,
+      defaultBranch: options?.defaultBranch ?? 'main',
+      hasPdg: options?.hasPdg ?? false,
+      hasSpringActuator: options?.hasSpringActuator ?? false,
+    });
   const createdFiles: string[] = [];
+  const instructionFiles = selectedInstructionFiles(options?.instructionFile);
 
-  if (!options?.skipAgentsMd) {
-    const targets = options?.contextFile ? [options.contextFile] : ['AGENTS.md', 'CLAUDE.md'];
-    for (const target of targets) {
-      const { relative, absolute } = resolveContextFileTarget(repoPath, target);
-      if (options?.contextFile) {
-        await assertContextFileTargetSafe(repoPath, relative);
-        await fs.mkdir(path.dirname(absolute), { recursive: true });
-      }
+  if (options?.skipAgentsMd) {
+    for (const name of instructionFiles) {
+      createdFiles.push(`${name} (skipped via --skip-agents-md)`);
+    }
+  } else {
+    for (const selected of instructionFiles) {
+      const { name, filePath, custom } = await resolveSelectedInstructionFile(repoPath, selected);
+      if (custom) await fs.mkdir(path.dirname(filePath), { recursive: true });
       const result = await upsertGitNexusSection(
-        absolute,
-        content,
+        filePath,
+        render,
         projectName,
         stats,
         options?.noStats,
+        options?.refreshCounts,
       );
-      createdFiles.push(`${relative} (${result})`);
+      createdFiles.push(`${name} (${result})`);
     }
-  } else {
-    createdFiles.push('AGENTS.md (skipped via --skip-agents-md)');
-    createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
   // Install standard skills directly under .claude/skills/ (unless --skip-skills)
@@ -787,7 +919,7 @@ export async function generateAIContextFiles(
 
 /**
  * Refresh the regression-review target inside the GitNexus block of an
- * already-generated context file, in place (#1996 P2, #3509).
+ * already-generated AGENTS.md / CLAUDE.md, in place (#1996 P2, #3509).
  *
  * The `alreadyUpToDate` analyze fast path returns before the normal
  * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
@@ -805,13 +937,12 @@ export async function generateAIContextFiles(
 export async function refreshBaseRefLine(
   repoPath: string,
   defaultBranch: string,
-  options?: { skipAgentsMd?: boolean; contextFile?: string },
+  options?: Pick<AIContextOptions, 'skipAgentsMd' | 'instructionFile'>,
 ): Promise<{ files: string[] }> {
   if (options?.skipAgentsMd) return { files: [] };
   const updated: string[] = [];
-  for (const target of options?.contextFile ? [options.contextFile] : ['AGENTS.md', 'CLAUDE.md']) {
-    const { relative: name, absolute: filePath } = resolveContextFileTarget(repoPath, target);
-    if (options?.contextFile) await assertContextFileTargetSafe(repoPath, name);
+  for (const selected of selectedInstructionFiles(options?.instructionFile)) {
+    const { name, filePath } = await resolveSelectedInstructionFile(repoPath, selected);
     if (!(await fileExists(filePath))) continue;
     let content: string;
     try {
@@ -856,6 +987,96 @@ export async function refreshBaseRefLine(
       );
     }
     if (newBlock === block) continue; // no base_ref line present, or already current
+    const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
+    try {
+      await fs.writeFile(filePath, newContent, 'utf-8');
+      updated.push(name);
+    } catch {
+      // best-effort — never fail analyze over a context refresh
+    }
+  }
+  return { files: updated };
+}
+
+/**
+ * Refresh the volatile counts inside an already-generated block, in place
+ * (#3618).
+ *
+ * The `alreadyUpToDate` analyze fast path returns before
+ * {@link generateAIContextFiles}, so `--no-stats` had no effect on any repo that
+ * was already indexed: the block kept its `(N symbols, N relationships, N
+ * execution flows)` parenthetical however often the flag was passed. Like
+ * {@link refreshBaseRefLine} this is a surgical edit, not a regeneration, so
+ * community-skill rows written by a prior `--skills` run survive.
+ *
+ * Restore missing counts from `stats` when `--no-stats` is dropped (#1706).
+ * An explicit analyze also updates existing figures, preserving custom spacing.
+ * Best-effort: a missing file, missing/blank block or unmatched header line is
+ * silently skipped, and nothing is written unless the line actually changes.
+ *
+ * shortcut: per-skill counts in an existing skills table are only dropped under
+ * `--no-stats`, never restored — the fast path has no per-skill numbers, and
+ * the next re-index regenerates them.
+ */
+export async function refreshStatsLine(
+  repoPath: string,
+  stats: RepoStats,
+  options?: Pick<
+    AIContextOptions,
+    'noStats' | 'skipAgentsMd' | 'instructionFile' | 'refreshCounts'
+  >,
+): Promise<{ files: string[] }> {
+  if (options?.skipAgentsMd) return { files: [] };
+  const noStats = options?.noStats === true;
+  // `alreadyUpToDate` hands us `meta.stats ?? {}`; restoring from that would
+  // print zeros, so a repo whose index predates `stats` keeps its count-free
+  // block until a real re-index.
+  const counts =
+    typeof stats.nodes === 'number'
+      ? `${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows`
+      : undefined;
+  if (!noStats && counts === undefined) return { files: [] };
+  const skillCountPattern = /^(\| Work in the .+? area) \(\d+ symbols\)(?=[ \t]*\|)/gm;
+  const updated: string[] = [];
+  for (const selected of selectedInstructionFiles(options?.instructionFile)) {
+    const { name, filePath } = await resolveSelectedInstructionFile(repoPath, selected);
+    if (!(await fileExists(filePath))) continue;
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const startIdx = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+    if (startIdx === -1) continue;
+    const endIdx = findSectionMarkerIndex(content, GITNEXUS_END_MARKER, startIdx);
+    if (endIdx === -1 || endIdx <= startIdx) continue;
+    const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
+    const block = content.substring(startIdx, blockEnd);
+    let newBlock = block.replace(
+      STATS_LINE_PATTERN,
+      (
+        match,
+        prefix: string,
+        project: string,
+        existingCounts: string | undefined,
+        offset: number,
+      ) => {
+        // An unrecognized parenthetical may already contain counts. Do not
+        // prepend a second tuple just because the optional capture missed it.
+        if (existingCounts === undefined && /^\s*\(/.test(block.slice(offset + match.length))) {
+          return match;
+        }
+        if (noStats) return `${prefix} ${project}`;
+        if (existingCounts === undefined) return `${prefix} ${project} (${counts})`;
+        if (!options?.refreshCounts) return match;
+        const values = [stats.nodes, stats.edges ?? 0, stats.processes ?? 0];
+        let i = 0;
+        return `${prefix} ${project}${existingCounts.replace(/\d+/g, () => String(values[i++]))}`;
+      },
+    );
+    if (noStats) newBlock = newBlock.replace(skillCountPattern, '$1');
+    if (newBlock === block) continue;
     const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
     try {
       await fs.writeFile(filePath, newContent, 'utf-8');

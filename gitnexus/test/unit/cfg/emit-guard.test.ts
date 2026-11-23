@@ -6,6 +6,7 @@ import { createSemanticModel } from '../../../src/core/ingestion/model/semantic-
 import type { ScopeResolver } from '../../../src/core/ingestion/scope-resolution/contract/scope-resolver.js';
 import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
+import { ScopeShardReadError } from '../../../src/storage/scope-index-store.js';
 import { _captureLogger } from '../../../src/core/logger.js';
 
 // #2099 F4 — the per-element cfgSideChannel guard at the scope-resolution emit
@@ -182,6 +183,17 @@ describe('cfgSideChannel emit guard (#2099 F4)', () => {
     expect(() => emitWith([hostile])).not.toThrow();
     expect(warns()).toHaveLength(1);
     expect(warns()[0]).toContain('CFG emission failed');
+  });
+
+  it('propagates a backing-store failure through the per-file emission guard', () => {
+    const failure = new ScopeShardReadError('missing scope shard');
+    const block = {
+      ...validCfg.blocks[0],
+      get index(): number {
+        throw failure;
+      },
+    };
+    expect(() => emitWith([{ ...validCfg, blocks: [block] }])).toThrow(failure);
   });
 
   it('a well-formed channel emits blocks + edges identically (regression guard)', () => {

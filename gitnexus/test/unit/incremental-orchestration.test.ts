@@ -43,6 +43,7 @@ import {
 } from '../helpers/embedding-seed.js';
 import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
 import { RebuildReasonCollector } from '../../src/core/rebuild-reasons.js';
+import { MAX_INCREMENTAL_WRITES } from '../../src/core/incremental/compaction-policy.js';
 import { SCHEMA_FINGERPRINT } from '../../src/core/lbug/schema.js';
 import {
   isLanguageAvailable,
@@ -59,6 +60,7 @@ import {
   SPRING_ROUTE_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 import { springVendorPrefixesKey } from '../../src/core/ingestion/frameworks/spring/vendor-prefixes.js';
+import { routeHookConfigKey } from '../../src/core/ingestion/route-hook-config.js';
 import {
   decodeSpringAopReason,
   SPRING_AOP_EVIDENCE_ID_PREFIX,
@@ -563,6 +565,83 @@ const JAVA_DI_FIXTURE: ReadonlyArray<readonly [string, string]> = [
 ];
 
 describe('runFullAnalysis — incremental orchestration', () => {
+  it('adds and removes name-only calls between untouched files when a competing definition changes', async () => {
+    const repo = await setupMiniRepo();
+    vi.stubEnv('GITNEXUS_HOME', path.join(repo.dbPath, '.git', 'gitnexus-home'));
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const { LocalBackend } = await import('../../src/mcp/local/local-backend.js');
+      const checkImpact = async () => {
+        const backend = new LocalBackend();
+        try {
+          expect(await backend.init()).toBe(true);
+          const result = await backend.callTool('impact', {
+            repo: repo.dbPath,
+            target: 'dispatchEvent',
+            direction: 'upstream',
+            maxDepth: 1,
+          });
+          expect(result).toMatchObject({
+            summary: { direct: 1 },
+            byDepth: { 1: [{ filePath: 'bound.js' }] },
+          });
+        } finally {
+          await backend.disconnect();
+        }
+      };
+      const competing = path.join(repo.dbPath, 'shadow.js');
+      const definition = 'export function dispatchEvent(x) { return x }';
+      await writeFile(path.join(repo.dbPath, 'core.js'), definition);
+      await writeFile(competing, definition);
+      await writeFile(
+        path.join(repo.dbPath, 'bundle.js'),
+        'export function loose(x) { return dispatchEvent(x) }',
+      );
+      await writeFile(
+        path.join(repo.dbPath, 'bound.js'),
+        'import { dispatchEvent } from "./core.js"; export function bound(x) { return dispatchEvent(x) }',
+      );
+      gitCommitAll(repo.dbPath, 'add competing definitions');
+      const analyze = async (force = false) => {
+        const logs: string[] = [];
+        await runFullAnalysis(
+          repo.dbPath,
+          { force, skipAgentsMd: true, skipFts: true },
+          { onProgress() {}, onLog: (line) => logs.push(line) },
+        );
+        if (!force) {
+          expect(logs.join('\n')).toContain('Incremental: changed=');
+          expect(logs.join('\n')).not.toContain('switching to a full DB write');
+        }
+        await adapter.initLbug(getStoragePaths(repo.dbPath).lbugPath);
+        try {
+          return await adapter.executeQuery(
+            "MATCH (a:Function)-[r:CodeRelation]->(b:Function) WHERE b.filePath = 'core.js' AND r.type = 'CALLS' RETURN a.name AS caller, r.reason AS reason ORDER BY caller",
+          );
+        } finally {
+          await adapter.closeLbug();
+        }
+      };
+      const bound = { caller: 'bound', reason: 'import-resolved' };
+      const baseline = await analyze(true);
+      expect(baseline).toEqual([bound]);
+      await rm(competing);
+      gitCommitAll(repo.dbPath, 'remove competing definition');
+      const unique = await analyze();
+      expect(unique).toEqual([bound, { caller: 'loose', reason: 'global-name-fallback' }]);
+      await checkImpact();
+      expect(await analyze(true)).toEqual(unique);
+      await checkImpact();
+      await writeFile(competing, definition);
+      gitCommitAll(repo.dbPath, 'restore competing definition');
+      expect(await analyze()).toEqual(baseline);
+    } finally {
+      vi.unstubAllEnvs();
+      await repo.cleanup();
+    }
+  }, 120_000);
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
@@ -617,8 +696,8 @@ describe('runFullAnalysis — incremental orchestration', () => {
     'selects a %s custom context target on the same-commit fast path without --name',
     async (state) => {
       const repo = await setupMiniRepo();
-      const contextFile = '.claude/CLAUDE.md';
-      const target = path.join(repo.dbPath, contextFile);
+      const instructionFile = '.claude/CLAUDE.md';
+      const target = path.join(repo.dbPath, instructionFile);
       const skillRow = '| custom-skill | Keep this community skill |';
       const prompt = '# Project instructions\n';
       const registryName = state.endsWith('-alias')
@@ -650,21 +729,20 @@ describe('runFullAnalysis — incremental orchestration', () => {
         );
         const second = await runFullAnalysis(
           repo.dbPath,
-          { contextFile, skipSkills: true },
+          { instructionFile, skipSkills: true },
           { onProgress: () => {} },
         );
         expect(second.alreadyUpToDate).toBe(true);
-        expect(second.repoName).toBe(first.repoName);
         const content = await readFile(target, 'utf-8');
         expect(content.match(/<!-- gitnexus:start -->/g)).toHaveLength(1);
         if (state === 'generated') {
           expect(content).toBe(initial);
-          await refreshBaseRefLine(repo.dbPath, 'develop', { contextFile });
+          await refreshBaseRefLine(repo.dbPath, 'develop', { instructionFile });
           const refreshed = await readFile(target, 'utf-8');
           expect(refreshed).toContain(skillRow);
           expect(refreshed).toContain('fetch target branch "develop"');
         } else {
-          expect(content).toContain(first.repoName);
+          expect(content).toContain(registryName ?? first.repoName);
           if (state.startsWith('prompt-only')) expect(content).toContain(prompt);
           if (registryName) expect(content).toContain(registryName);
         }
@@ -705,7 +783,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
           repo.dbPath,
           {
             branch,
-            contextFile: '.claude/CLAUDE.md',
+            instructionFile: '.claude/CLAUDE.md',
             skipAgentsMd: mode === 'skip-agents',
             skipSkills: true,
           },
@@ -1001,6 +1079,43 @@ describe('runFullAnalysis — incremental orchestration', () => {
         [SPRING_NON_HTTP_HANDLERS_FEATURE.id]: SPRING_NON_HTTP_HANDLERS_FEATURE.version,
         [SPRING_ROUTE_BINDINGS_FEATURE.id]: SPRING_ROUTE_BINDINGS_FEATURE.version,
       });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('rebuilds when the declared route aliases or handler wrappers change', async () => {
+    const repo = await setupSpringBeanIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const config = {
+        skipAgentsMd: true,
+        routeHookConfig: {
+          routeFrameworkAliases: [
+            { importPath: 'example.com/infra/pkg', type: 'Engine', framework: 'gin' },
+          ],
+          routeHandlerWrappers: ['common.Wrapper'],
+        },
+      };
+      await runFullAnalysis(repo.dbPath, config, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      expect((await loadMeta(storagePath))?.routeHookConfig).toBe(
+        routeHookConfigKey(config.routeHookConfig),
+      );
+
+      const steady = await runFullAnalysis(repo.dbPath, config, { onProgress: () => {} });
+      expect(steady.alreadyUpToDate).toBe(true);
+
+      const logs: string[] = [];
+      const rebuilt = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+      expect(rebuilt.alreadyUpToDate).toBeUndefined();
+      expect(rebuilt.rebuildReasons).toContain('route-hook-config');
+      expect(logs.join('\n')).toContain('no longer configured');
+      expect((await loadMeta(storagePath))?.routeHookConfig).toBe(routeHookConfigKey());
     } finally {
       await repo.cleanup();
     }
@@ -1652,97 +1767,96 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
-  // U4 / KTD10 (tri-review 4669518496): a SURGICAL preserve-mode run (below
-  // both valve gates) must keep embedding rows in lockstep with their files
-  // now that deleteNodesForFiles really deletes embedding rows via the
-  // nodeId join:
-  //   - changed-file rows are deleted with their nodes and RESTORED from the
-  //     cache (the old insert-all restore lost them when a surviving row's
-  //     PK conflict aborted the rest of the batch),
-  //   - deleted-file rows are gone (join-delete) and NOT resurrected by the
-  //     restore (live-graph filter),
-  //   - unchanged rows are untouched (restore-scope filter, no conflicts),
-  //   - a LEGACY ORPHAN row — stranded while the embedding delete was a
-  //     no-op, unreachable by the node join forever — is swept by exact id
-  //     (this shipping review, FIX 3).
-  it('surgical incremental run keeps embedding rows in lockstep: changed restored, deleted gone, unchanged intact, legacy orphan swept (tri-review 4669518496 KTD10 + FIX 3)', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const CHANGED_FILE = 'src/logger.ts';
-      const UNCHANGED_FILE = 'src/db.ts';
-      const DELETED_FILE = 'src/formatter.ts';
-      // A fabricated nodeId no graph will ever contain: the P2-1-era no-op
-      // delete left rows like this stranded in real DBs (schema version
-      // stays 6, so they are still out there).
-      const LEGACY_ORPHAN_NODE_ID = 'Function:src/ghost.ts:ghost:1';
+  it.each(['compact-delete', 'selective-delete', 'selective-modify'] as const)(
+    'keeps embedding rows in lockstep across %s, including legacy orphans',
+    async (mode) => {
+      const repo = await setupMiniRepo();
+      try {
+        const CHANGED_FILE = 'src/logger.ts';
+        const UNCHANGED_FILE = 'src/db.ts';
+        const DELETED_FILE = 'src/formatter.ts';
+        // A fabricated nodeId no graph will ever contain: the P2-1-era no-op
+        // delete left rows like this stranded in real DBs (schema version
+        // stays 6, so they are still out there).
+        const LEGACY_ORPHAN_NODE_ID = 'Function:src/ghost.ts:ghost:1';
 
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
-      const { storagePath } = getStoragePaths(repo.dbPath);
-      const idsByFile = await seedEmbeddingsForFiles(
-        repo.dbPath,
-        [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE],
-        3,
-      );
-      for (const fp of [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE]) {
-        expect((idsByFile.get(fp) ?? []).length).toBeGreaterThan(0);
+        const { storagePath } = getStoragePaths(repo.dbPath);
+        const idsByFile = await seedEmbeddingsForFiles(
+          repo.dbPath,
+          [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE],
+          3,
+        );
+        for (const fp of [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE]) {
+          expect((idsByFile.get(fp) ?? []).length).toBeGreaterThan(0);
+        }
+        await seedEmbeddingForNodeId(repo.dbPath, LEGACY_ORPHAN_NODE_ID);
+        const seededTotal = [...idsByFile.values()].flat().length + 1;
+        await stampEmbeddingCount(storagePath, seededTotal);
+        if (mode === 'compact-delete') {
+          const meta = (await loadMeta(storagePath))!;
+          await saveMeta(storagePath, {
+            ...meta,
+            graphCompaction: {
+              ...meta.graphCompaction!,
+              incrementalWrites: MAX_INCREMENTAL_WRITES,
+            },
+          });
+        }
+
+        // Append a comment in every mode so node line numbers stay stable.
+        // Delete another file only in the delete variants, then commit the edits.
+        const target = path.join(repo.dbPath, CHANGED_FILE);
+        await writeFile(
+          target,
+          (await readFile(target, 'utf-8')) + '\n// embeddings parity touch\n',
+          'utf-8',
+        );
+        if (mode !== 'selective-modify') await rm(path.join(repo.dbPath, DELETED_FILE));
+        gitCommitAll(repo.dbPath, mode);
+
+        const logs: string[] = [];
+        const run = await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true },
+          { onProgress: () => {}, onLog: (m) => logs.push(m) },
+        );
+        expect(run.alreadyUpToDate).toBeUndefined();
+        expect(run.incrementalStats?.writeMode).toBe(
+          mode === 'compact-delete' ? 'full' : 'incremental',
+        );
+        if (mode !== 'compact-delete') {
+          expect(logs.join('\n')).not.toContain('switching to a full DB write');
+          const expectedSweepCount =
+            1 + (mode === 'selective-delete' ? (idsByFile.get(DELETED_FILE) ?? []).length : 0);
+          expect(logs.join('\n')).toContain(
+            `Swept ${expectedSweepCount} cached embedding row(s) with no live owning node`,
+          );
+        }
+
+        const after = await loadMeta(storagePath);
+        expect(after!.incrementalInProgress).toBeUndefined();
+        const expectedSurvivors = [
+          ...(idsByFile.get(CHANGED_FILE) ?? []),
+          ...(idsByFile.get(UNCHANGED_FILE) ?? []),
+          ...(mode === 'selective-modify' ? (idsByFile.get(DELETED_FILE) ?? []) : []),
+        ];
+        // stats.embeddings excludes deleted-file rows and the legacy orphan.
+        expect(after!.stats?.embeddings).toBe(expectedSurvivors.length);
+        // Exact surviving nodeId set — pins all four behaviors at once (a
+        // batch-abort loss, a leaked deleted-file row, a dropped unchanged
+        // row, or a lingering legacy orphan each break set equality).
+        expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(
+          [...expectedSurvivors].sort(),
+        );
+      } finally {
+        await repo.cleanup();
       }
-      await seedEmbeddingForNodeId(repo.dbPath, LEGACY_ORPHAN_NODE_ID);
-      const seededTotal = [...idsByFile.values()].flat().length + 1;
-      await stampEmbeddingCount(storagePath, seededTotal);
-
-      // One file modified (comment-only, appended at EOF so node ids keep
-      // their line numbers), one file deleted — committed so lastCommit moves.
-      const target = path.join(repo.dbPath, CHANGED_FILE);
-      await writeFile(
-        target,
-        (await readFile(target, 'utf-8')) + '\n// embeddings parity touch\n',
-        'utf-8',
-      );
-      await rm(path.join(repo.dbPath, DELETED_FILE));
-      gitCommitAll(repo.dbPath, 'modify logger + delete formatter');
-
-      const logs: string[] = [];
-      const run = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {}, onLog: (m) => logs.push(m) },
-      );
-      expect(run.alreadyUpToDate).toBeUndefined();
-      // 7-file repo — far below the 50-file valve floor: this MUST have been
-      // the surgical write plan, or every assertion below is vacuously about
-      // the escalated path instead.
-      expect(logs.join('\n')).not.toContain('switching to a full DB write');
-
-      // The surgical run swept the fabricated legacy orphan by exact id
-      // (FIX 3). The logged count also includes DELETED_FILE's cached rows —
-      // live-graph rejects whose DB rows were already join-deleted with the
-      // file, so their exact-id DELETEs match nothing (documented no-op).
-      const expectedSweepCount = 1 + (idsByFile.get(DELETED_FILE) ?? []).length;
-      expect(logs.join('\n')).toContain(
-        `Swept ${expectedSweepCount} cached embedding row(s) with no live owning node`,
-      );
-
-      const after = await loadMeta(storagePath);
-      expect(after!.incrementalInProgress).toBeUndefined();
-      const expectedSurvivors = [
-        ...(idsByFile.get(CHANGED_FILE) ?? []),
-        ...(idsByFile.get(UNCHANGED_FILE) ?? []),
-      ];
-      // stats.embeddings excludes both the deleted-file rows AND the swept
-      // legacy orphan.
-      expect(after!.stats?.embeddings).toBe(expectedSurvivors.length);
-      // Exact surviving nodeId set — pins all four behaviors at once (a
-      // batch-abort loss, a leaked deleted-file row, a dropped unchanged
-      // row, or a lingering legacy orphan each break set equality).
-      expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(
-        [...expectedSurvivors].sort(),
-      );
-    } finally {
-      await repo.cleanup();
-    }
-  }, 600_000);
+    },
+    600_000,
+  );
 
   // #2409 defect 2 (dirty-flag recovery parks WAL/shadow sidecars before any
   // open) is covered in incremental-dirty-recovery.test.ts — its own file so
