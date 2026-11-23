@@ -1,0 +1,21 @@
+gitnexus/bench/typescript-ingestion/baseline.json
+  s_676b35bc218cc9::t_b3aa015dfd34b3 9-13,17-20,27-31,35-38,45-49,53-56
+gitnexus/bench/typescript-ingestion/module-fixtures.mjs
+  s_676b35bc218cc9::t_c359cfa003f849 37-38,46-47,70-73
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "01f042e93eb90222a8e2b23f27cbd8576c7fb5b1",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
