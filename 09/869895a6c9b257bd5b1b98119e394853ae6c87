@@ -1,0 +1,31 @@
+gitnexus/bench/file-result-reuse/baseline.json
+  s_676b35bc218cc9::t_1a925d9f92b69a 6-9
+gitnexus/bench/file-result-reuse/benchmark.js
+  s_676b35bc218cc9::t_501f21a6137823 36,367-371,741-746,749-772,824
+gitnexus/bench/lexical-lookup/reference-migration.mjs
+  s_676b35bc218cc9::t_2dc3806b8aa015 8-11,127-128,135-137,155,160,166,168-173
+gitnexus/bench/lib/reference-additions.mjs
+  s_676b35bc218cc9::t_2acf877f0c12bd 1-23
+gitnexus/bench/v8-sidecar/check.mjs
+  s_676b35bc218cc9::t_fa024f7e026404 5,58-62
+gitnexus/test/unit/cache-interning-benchmark.test.ts
+  s_676b35bc218cc9::t_3759ceaa2d5ab0 3,7,191,199-209,224-262
+gitnexus/test/unit/parse-cache-benchmark-gates.test.ts
+  s_676b35bc218cc9::t_dbbf6e6c72e0a7 25,80,92-101
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "09869895a6c9b257bd5b1b98119e394853ae6c87",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
