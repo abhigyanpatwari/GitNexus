@@ -24,10 +24,10 @@ fingerprints, and normalized growth within the reviewed budgets.
 The corpus exercises Map destructuring, `instanceof` guards, and TypeScript
 and JavaScript module ownership. Competing owners use the same member names.
 The module fixtures cover conflicting and agreeing export paths, explicit
-re-exports, nested namespaces, local and default export aliases, private names,
-unbound star exports, and TypeScript type-only exports. Each caller is compared
-by exact graph ID. A missing or wrong target is reported by case family, and
-negative controls require an empty target set.
+re-exports, nested namespaces, local, quoted, and default export aliases,
+private names, unbound star exports, and TypeScript type-only exports. Each
+caller is compared by exact graph ID. A missing or wrong target is reported by
+case family, and negative controls require an empty target set.
 
 | Shape | Independent units | Batches per unit |
 | ----- | ----------------: | ---------------: |
@@ -67,28 +67,28 @@ same installed dependencies, and Node 26.9.0 on macOS arm64.
 
 | Shape | Exact target sets on main | Exact target sets on the candidate |
 | ----- | ------------------------: | ---------------------------------: |
-| Small |                 256 / 656 |                          656 / 656 |
-| Wide  |             1,024 / 2,624 |                      2,624 / 2,624 |
-| Dense |            4,096 / 10,496 |                    10,496 / 10,496 |
+| Small |                 256 / 688 |                          688 / 688 |
+| Wide  |             1,024 / 2,752 |                      2,752 / 2,752 |
+| Dense |            4,096 / 11,008 |                    11,008 / 11,008 |
 
-Across the three shapes, the candidate recovers 5,376 missing expected edges
-and removes 4,368 unexpected edges. Its normalized capture growth was 1.08
-for breadth and 0.86 for density. Cold pipeline growth was 0.56 and 0.70 on
+Across the three shapes, the candidate recovers 6,048 missing expected edges
+and removes 4,368 unexpected edges. Its normalized capture growth was 1.03
+for breadth and 0.94 for density. Cold pipeline growth was 0.43 and 0.65 on
 the same axes. This run overlapped other local validation. Raw timings in the
 evaluation data are diagnostic. Warm replay reused 153 files and parsed zero. The
 edited replay parsed two files and reused 151.
 
 Cold database publication on pinned GitNexus source was measured with the
-final production code at `0e80a3105`. Both builds parsed 1,243 files and reopened
+final production code at `b558b4d37`. Both builds parsed 1,243 files and reopened
 1,247 persisted file nodes. The samples ran in main, candidate, candidate,
 main order while other local validation was active.
 
-| Runtime   | Publication samples |  Median | Persisted call edges between functions and methods |
-| --------- | ------------------: | ------: | -------------------------------------------------: |
-| Main      |    66.36 s, 66.76 s | 66.56 s |                                             32,327 |
-| Candidate |    67.86 s, 66.02 s | 66.94 s |                                             32,373 |
+| Runtime   | Publication samples |   Median | Persisted call edges between functions and methods |
+| --------- | ------------------: | -------: | -------------------------------------------------: |
+| Main      |   88.50 s, 112.17 s | 100.33 s |                                             32,327 |
+| Candidate |    98.21 s, 96.44 s |  97.32 s |                                             32,373 |
 
-The publication median increased by 0.6% in this comparison. The repeated
+The publication median was 3.0% lower in this comparison. The repeated
 call fingerprints were stable within each build. The source tree measures
 publication cost and graph changes, while the generated fixtures supply the
 expected-target oracle.

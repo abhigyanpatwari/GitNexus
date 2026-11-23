@@ -36,6 +36,8 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
         const hidden = `hidden${unit}_${batch}`;
         const localName = `localOnly${batch}`;
         const publicName = `publicAlias${batch}`;
+        const quotedName = `quoted-${batch}`;
+        const forwardedQuoted = `quoted export ${batch}`;
         const wildcardName = `${prefix}Wildcard${unit}_${batch}`;
         const entity = `Entity${batch}`;
         const leftOwner = `Function:${file('left')}:${name}`;
@@ -45,15 +47,18 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
           `function ${hidden}() {}`,
           `function ${localName}() {}`,
           `export { ${localName} as ${publicName} };`,
+          `export { ${localName} as '${quotedName}' };`,
           `export function ${wildcardName}() {}`,
         );
         right.push(`export function ${name}() {}`);
         forward.push(`export { ${name} } ${from('left')}`);
+        forward.push(`export { '${quotedName}' as "${forwardedQuoted}" } ${from('left')}`);
         overrides.push(`export { ${name} } ${from('right')}`);
         imports.push(
           `import { ${name} as conflict${batch} } ${from('ambiguous')}`,
           `import { ${name} as sameOwner${batch} } ${from('diamond')}`,
           `import { ${name} as explicitOwner${batch} } ${from('override')}`,
+          `import { '${forwardedQuoted}' as quoted${batch} } ${from('forward')}`,
         );
         moduleCase(`ambiguous${batch}`, `() { conflict${batch}(); }`, []);
         moduleCase(`diamond${batch}`, `() { sameOwner${batch}(); }`, [leftOwner]);
@@ -71,6 +76,9 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
           `Function:${file('left')}:${localName}`,
         ]);
         moduleCase(`privateLocal${batch}`, `() { pack.${localName}(); }`, []);
+        moduleCase(`quotedAlias${batch}`, `() { quoted${batch}(); }`, [
+          `Function:${file('left')}:${localName}`,
+        ]);
         moduleCase(`unboundStar${batch}`, `() { ${wildcardName}(); }`, [], 'namespace');
         moduleCase(`hidden${batch}`, `() { operations.${hidden}(); }`, []);
         moduleCase(`unbound${batch}`, `() { operations.${name}(); }`, [], 'namespace');
