@@ -448,18 +448,22 @@ export function synthesizeTsLocalImports(
   const calls: LocatedNode[] = [];
   const writes: WriteSite[] = [];
   const bindingWrites: Array<LocatedNode & { readonly name: string }> = [];
-  const narrowing = createInstanceofNarrowingCollector();
+  // The operator is a literal token. Files without it need no per-node guard tracking.
+  const narrowing = root.text.includes('instanceof')
+    ? createInstanceofNarrowingCollector()
+    : undefined;
   const recordWrite = (node: SyntaxNode, scope: LexicalScope, target: SyntaxNode | null) => {
     const write = readWriteSite(node, scope, target);
     if (!write) return;
     writes.push(write);
-    narrowing.writes.push(write);
+    narrowing?.writes.push(write);
   };
   const uninitializedVarClaims = new Set<NameClaim>();
   const declarations: LocatedNode[] = [];
   const equalsImports: LocatedNode[] = [];
+  const scopeTags = Object.entries(SCOPE_TAGS);
   for (let i = 0; i < out.length; i++) {
-    for (const [tag, kind] of Object.entries(SCOPE_TAGS)) {
+    for (const [tag, kind] of scopeTags) {
       const anchor = out[i][tag];
       if (anchor)
         scopes.set(scopeKey(anchor.range, kind), {
@@ -496,22 +500,20 @@ export function synthesizeTsLocalImports(
   ];
   while (pending.length) {
     const { node, parent } = pending.pop()!;
-    const range = rangeOf(node);
-    const key = rangeKey(range);
     const kind = nodeScopeKind(node);
-    let scope = kind ? scopes.get(scopeKey(range, kind)) : undefined;
-    if (!scope && extraBlock(node)) {
+    let scope = kind ? scopes.get(scopeKey(rangeOf(node), kind)) : undefined;
+    if (kind === 'Block' && !scope && extraBlock(node)) {
       const anchor = nodeToCapture('@scope.block', node);
       scope = { anchor, kind: 'Block', matchIndex: out.length, claims: [], names: new Set() };
-      scopes.set(scopeKey(range, 'Block'), scope);
+      scopes.set(scopeKey(anchor.range, 'Block'), scope);
       out.push({ '@scope.block': anchor });
     }
     if (scope && scope !== parent) scope.parent = parent;
     if (scope) scope.node = node;
     const current = scope ?? parent;
-    if (node.type === 'import_statement') scopesAt.set(key, current);
+    if (node.type === 'import_statement') scopesAt.set(rangeKey(rangeOf(node)), current);
 
-    narrowing.observe(node, current);
+    narrowing?.observe(node, current);
 
     if (FUNCTION_TYPES.has(node.type)) {
       // JSDoc parameter type facts are anchored on the enclosing function.
@@ -661,7 +663,7 @@ export function synthesizeTsLocalImports(
       if (owner) bindingWrites.push({ node, scope: owner, name: name.text });
     }
   }
-  narrowing.emit(scopes.values(), filePath, out);
+  narrowing?.emit(scopes.values(), filePath, out);
 
   const validRequireCalls = new Map<number, Set<string>>();
   const declarationByValue = new Map(
