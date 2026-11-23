@@ -1,0 +1,70 @@
+{
+  "cap": 32,
+  "shapes": {
+    "small": {
+      "sites": 64,
+      "keyRegistrations": 8,
+      "sourceBytes": 4589,
+      "workload": "bf9cfc7dad7eac2754872d87d197a4ea9b3db2806f62ce0eba227d7dd38f48d2",
+      "graph": {
+        "exact": 64,
+        "speculative": 512,
+        "registrations": 9,
+        "control": 2,
+        "targets": "7381d56000db5e0a16163218996c408c07f9cf6b3df22a7eea81e11d685d0db5"
+      }
+    },
+    "wide": {
+      "sites": 256,
+      "keyRegistrations": 8,
+      "sourceBytes": 16265,
+      "workload": "6748e36b3703eca3b032057938a0d043bfd8bbc8dea5e8b99a357945348b1d7f",
+      "graph": {
+        "exact": 256,
+        "speculative": 2048,
+        "registrations": 9,
+        "control": 2,
+        "targets": "ffed5736eba1a0ce34dbb85a7344e39648126d5289f380bb3d1c50bf35e83d86"
+      }
+    },
+    "dense": {
+      "sites": 64,
+      "keyRegistrations": 32,
+      "sourceBytes": 6239,
+      "workload": "ef5e772652c4973bb22272e0e04a63e25c73a4d7df0693966ca8040073415b3a",
+      "graph": {
+        "exact": 64,
+        "speculative": 2048,
+        "registrations": 33,
+        "control": 2,
+        "targets": "ff79bb8be0f26de06ded7fb8fcef7322a314c466765e902a34e8740a0d934926"
+      }
+    },
+    "wideDense": {
+      "sites": 256,
+      "keyRegistrations": 32,
+      "sourceBytes": 17915,
+      "workload": "2f51133487cb17984241c46cd063ecc78d97856e9bd803ff1e8e3a5e77a258c8",
+      "graph": {
+        "exact": 256,
+        "speculative": 8192,
+        "registrations": 33,
+        "control": 2,
+        "targets": "9bc257c9bcbcd8a33bb193d97bdf25a08f050e3423346fa343a1145edb7452e6"
+      }
+    },
+    "overCap": {
+      "sites": 256,
+      "keyRegistrations": 33,
+      "sourceBytes": 17984,
+      "workload": "d5df8a2d1f5aeb709b5abe8004134d974fe5e228776c0b8b8ac87a137a3db791",
+      "graph": {
+        "exact": 256,
+        "speculative": 0,
+        "registrations": 34,
+        "control": 2,
+        "targets": "694df52f458b43bd884da68d7d0ce71e991cac694d36b940f4500a82fb807a7d"
+      }
+    }
+  }
+}

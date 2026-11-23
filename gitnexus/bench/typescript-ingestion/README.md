@@ -1,0 +1,94 @@
+# TypeScript ingestion correctness and scaling
+
+From `gitnexus/`, build the runtime and check the reviewed baseline:
+
+```sh
+npm run build
+node bench/typescript-ingestion/measure.mjs --check
+```
+
+To compare the same workload across two clean builds, run this harness against
+each package with the same locked dependencies and Node version. Keep timing
+runs serial while the machine is idle.
+
+```sh
+node bench/typescript-ingestion/measure.mjs --root /path/to/built/original/gitnexus --observe
+node bench/typescript-ingestion/measure.mjs --root /path/to/built/candidate/gitnexus --check
+```
+
+`--observe` records the original build's mismatches without failing on them.
+The report includes their counts and exact source and destination IDs.
+`--check` requires every expected target set, the workload and graph
+fingerprints, and normalized growth within the reviewed budgets.
+
+The corpus exercises Map destructuring, `instanceof` guards, and TypeScript
+and JavaScript module ownership. Competing owners use the same member names.
+The module fixtures cover conflicting and agreeing export paths, explicit
+re-exports, nested namespaces, default exports, private names, and TypeScript
+type-only exports. Each caller is compared by exact graph ID. A missing or
+wrong target is reported by case family, and negative controls require an
+empty target set.
+
+| Shape | Independent units | Batches per unit |
+| --- | ---: | ---: |
+| Small | 8 | 2 |
+| Wide | 32 | 2 |
+| Dense | 32 | 8 |
+
+Five measured capture samples use pre-parsed ASTs. Three measured cold
+pipeline samples include worker parsing and resolution through in-memory
+graph construction. The harness rotates shape order and takes the median.
+Growth is the ratio of time per case across shapes. The 1.5 budget allows
+timing variance as input grows fourfold. It applies to this synthetic
+workload. The report also gives cumulative process peak RSS.
+
+A durable cache replay checks cold and warm graph equality. The harness edits
+one receiver fixture and one barrel, then compares the replayed graph with a
+fresh graph and verifies the three changed targets. See the separate
+[property-dispatch benchmark](../typescript-property-dispatch/README.md) for
+speculative call fan-out.
+
+To time database publication on a real source tree, select one commit for both
+runtimes. This archives GitNexus's tracked CLI and shared source, analyzes it
+with two parse workers in a temporary index, and reopens the persisted graph.
+FTS and embeddings are disabled. Treat this as an observation because native
+database throughput varies by machine.
+
+```sh
+node bench/typescript-ingestion/measure-index.mjs --ref SHA --root /path/to/built/original/gitnexus
+node bench/typescript-ingestion/measure-index.mjs --ref SHA
+```
+
+## Measured comparison
+
+[Evaluation data](evaluation.json) records the samples, workload fingerprints,
+and runtime parse identities. The comparison uses `fcde41a8` as its base, the
+same installed dependencies, and Node 26.9.0 on macOS arm64.
+
+| Shape | Exact target sets on main | Exact target sets on the candidate | Cold pipeline median on main and the candidate |
+| --- | ---: | ---: | ---: |
+| Small | 208 / 528 | 528 / 528 | 1,330 ms → 1,493 ms |
+| Wide | 832 / 2,112 | 2,112 / 2,112 | 2,271 ms → 2,637 ms |
+| Dense | 3,328 / 8,448 | 8,448 / 8,448 | 5,782 ms → 6,218 ms |
+
+Across the three shapes, the candidate recovers 4,032 missing expected edges
+and removes 4,032 unexpected edges. Its normalized capture growth was 0.87
+for breadth and 0.96 for density. Cold pipeline growth was 0.44 and 0.59 on
+the same axes. This run overlapped other local validation, so the absolute
+medians are observations. Warm replay reused 153 files and parsed zero. The
+edited replay parsed two files and reused 151.
+
+Cold database publication on pinned GitNexus source produced the following
+observations. Both builds parsed 1,243 files and reopened 1,247 persisted file
+nodes. The samples ran in main, candidate, candidate, main order while other
+local validation was active.
+
+| Runtime | Publication samples | Median | Persisted call edges between functions and methods |
+| --- | ---: | ---: | ---: |
+| Main | 44.06 s, 50.42 s | 47.24 s | 32,327 |
+| Candidate | 55.00 s, 52.06 s | 53.53 s | 32,373 |
+
+The publication median increased by 13.3% in this comparison. The repeated
+call fingerprints were stable within each build. The source tree measures
+publication cost and graph changes, while the generated fixtures supply the
+expected-target oracle.

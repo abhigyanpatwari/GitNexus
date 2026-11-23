@@ -1,0 +1,300 @@
+{
+  "sourceBase": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
+  "node": "v26.9.0",
+  "platform": "darwin-arm64",
+  "workloads": {
+    "small": "36607dac6cdeffe531cde390dfdebc560d5d405d1b1513651f9ce24b86091ec9",
+    "wide": "0d2d7e6e447b9eafdfaec936f281e2e82c7e5083da5c9d46ef36d7430dd2a16b",
+    "dense": "4005c2ccc00a286e81291dee51a889facd871fe6f1ced85d3afeeb29e1a9be09"
+  },
+  "original": {
+    "parseIdentity": "sha256:a7c277be18b9707bbe6a81b2405c71d29c2653578a0137f4f44eaac0dc3f92bb",
+    "peakRssKiB": 559872,
+    "shapes": {
+      "small": {
+        "captureMs": [132.014, 131.03, 128.416, 132.035, 129.407],
+        "coldPipelineMs": [1413.928, 1330.204, 1179.225],
+        "byFamily": {
+          "map": {
+            "cases": 96,
+            "exact": 32,
+            "missingEdges": 64,
+            "unexpectedEdges": 64
+          },
+          "instanceof": {
+            "cases": 80,
+            "exact": 32,
+            "missingEdges": 0,
+            "unexpectedEdges": 48
+          },
+          "tsModules": {
+            "cases": 208,
+            "exact": 80,
+            "missingEdges": 80,
+            "unexpectedEdges": 48
+          },
+          "jsModules": {
+            "cases": 144,
+            "exact": 64,
+            "missingEdges": 48,
+            "unexpectedEdges": 32
+          }
+        },
+        "targetFingerprint": "7c10e4bfe2e6fc8e18a5bd0541006a7f5b9f3b0f990a2b44f19fe778f704fab7"
+      },
+      "wide": {
+        "captureMs": [718.637, 514.241, 517.925, 514.636, 556.795],
+        "coldPipelineMs": [2270.661, 2322.498, 2251.942],
+        "byFamily": {
+          "map": {
+            "cases": 384,
+            "exact": 128,
+            "missingEdges": 256,
+            "unexpectedEdges": 256
+          },
+          "instanceof": {
+            "cases": 320,
+            "exact": 128,
+            "missingEdges": 0,
+            "unexpectedEdges": 192
+          },
+          "tsModules": {
+            "cases": 832,
+            "exact": 320,
+            "missingEdges": 320,
+            "unexpectedEdges": 192
+          },
+          "jsModules": {
+            "cases": 576,
+            "exact": 256,
+            "missingEdges": 192,
+            "unexpectedEdges": 128
+          }
+        },
+        "targetFingerprint": "54e34041cf807c155a4f990b70684e173c8f40dfe8a086bb3489f0da5cf9aba0"
+      },
+      "dense": {
+        "captureMs": [2165.877, 1944.79, 1988.573, 1936.927, 1921.401],
+        "coldPipelineMs": [5781.824, 7460.183, 5747.605],
+        "byFamily": {
+          "map": {
+            "cases": 1536,
+            "exact": 512,
+            "missingEdges": 1024,
+            "unexpectedEdges": 1024
+          },
+          "instanceof": {
+            "cases": 1280,
+            "exact": 512,
+            "missingEdges": 0,
+            "unexpectedEdges": 768
+          },
+          "tsModules": {
+            "cases": 3328,
+            "exact": 1280,
+            "missingEdges": 1280,
+            "unexpectedEdges": 768
+          },
+          "jsModules": {
+            "cases": 2304,
+            "exact": 1024,
+            "missingEdges": 768,
+            "unexpectedEdges": 512
+          }
+        },
+        "targetFingerprint": "5396bcd60c1ba8b207b6e9e8bf8ed611970eccfaedf3889e6396599141ade9ed"
+      }
+    },
+    "growth": {
+      "breadthCapturePerCase": 0.9881791762095031,
+      "breadthColdPipelinePerCase": 0.42675055679651497,
+      "densityCapturePerCase": 0.9387404805479171,
+      "densityColdPipelinePerCase": 0.6365792713586585
+    },
+    "replay": {
+      "coldParsed": 153,
+      "warmParsed": 0,
+      "cacheHits": 153,
+      "editedTargets": [
+        ["Function:cases0.ts:elision0", "Method:owners.ts:Key.save#0"],
+        ["Function:cases0.ts:guarded0", "Method:owners.ts:Value.save#0"],
+        ["Function:ts0-entry.ts:explicit0", "Function:ts0-left.ts:publish0"]
+      ],
+      "editedParsed": 2,
+      "editedCacheHits": 151
+    }
+  },
+  "candidate": {
+    "parseIdentity": "sha256:6ca95a65e0762e450b53352560eaddaf600138124d08f22397067e0854051a15",
+    "peakRssKiB": 587360,
+    "shapes": {
+      "small": {
+        "captureMs": [157.257, 139.949, 196.139, 193.226, 185.463],
+        "coldPipelineMs": [1492.587, 1381.501, 1599.752],
+        "byFamily": {
+          "map": {
+            "cases": 96,
+            "exact": 96,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "instanceof": {
+            "cases": 80,
+            "exact": 80,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "tsModules": {
+            "cases": 208,
+            "exact": 208,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "jsModules": {
+            "cases": 144,
+            "exact": 144,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          }
+        },
+        "targetFingerprint": "cb14d0b3031786cdf83be1894e2b5e9eb1e684b850f28291f554402b44cbe1b5"
+      },
+      "wide": {
+        "captureMs": [575.795, 569.724, 643.679, 648.797, 751.957],
+        "coldPipelineMs": [2332.872, 2637.191, 2803.777],
+        "byFamily": {
+          "map": {
+            "cases": 384,
+            "exact": 384,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "instanceof": {
+            "cases": 320,
+            "exact": 320,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "tsModules": {
+            "cases": 832,
+            "exact": 832,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "jsModules": {
+            "cases": 576,
+            "exact": 576,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          }
+        },
+        "targetFingerprint": "14cee542e43e3888dac5b6947fd6ded6ecf64cd703afa47cf07486575ff9ab3d"
+      },
+      "dense": {
+        "captureMs": [2110.922, 2336.176, 2478.968, 2956.554, 3077.207],
+        "coldPipelineMs": [6127.808, 6217.768, 6531.321],
+        "byFamily": {
+          "map": {
+            "cases": 1536,
+            "exact": 1536,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "instanceof": {
+            "cases": 1280,
+            "exact": 1280,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "tsModules": {
+            "cases": 3328,
+            "exact": 3328,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          },
+          "jsModules": {
+            "cases": 2304,
+            "exact": 2304,
+            "missingEdges": 0,
+            "unexpectedEdges": 0
+          }
+        },
+        "targetFingerprint": "383479a456150d4637a304125c3fad0da6c6da8b6ee0489b0a37e5f2280b5de7"
+      }
+    },
+    "growth": {
+      "breadthCapturePerCase": 0.8676666774019629,
+      "breadthColdPipelinePerCase": 0.4417147932093882,
+      "densityCapturePerCase": 0.9628116895954011,
+      "densityColdPipelinePerCase": 0.5894309607290871
+    },
+    "replay": {
+      "coldParsed": 153,
+      "warmParsed": 0,
+      "cacheHits": 153,
+      "editedTargets": [
+        ["Function:cases0.ts:elision0", "Method:owners.ts:Key.save#0"],
+        ["Function:cases0.ts:guarded0", "Method:owners.ts:Value.save#0"],
+        ["Function:ts0-entry.ts:explicit0", "Function:ts0-left.ts:publish0"]
+      ],
+      "editedParsed": 2,
+      "editedCacheHits": 151
+    }
+  },
+  "candidateSource": "e7c6aa22614b489528e5afee06091b54227dabd6",
+  "realIndex": {
+    "sampleOrder": ["original", "candidate", "candidate", "original"],
+    "original": {
+      "publicationMs": [44059.557, 50422.34],
+      "medianPublicationMs": 47240.9485,
+      "peakRssKiB": [2035888, 1489008],
+      "stats": {
+        "files": 1247,
+        "nodes": 40930,
+        "edges": 121485,
+        "communities": 1283,
+        "processes": 823,
+        "embeddings": 0
+      },
+      "reparsedFiles": 1243,
+      "persistedFiles": 1247,
+      "functionAndMethodCallEdges": 32327,
+      "functionAndMethodCallFingerprint": "b6cbc08db5cd41a3fdf01b7cc9aef2f45fa33c742f5c68e9ed78e10348640a0e",
+      "revision": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
+      "sourceCommit": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
+      "sourceFingerprint": "8d4a0ada2c33e51f2477fc18ef3f6c7a0767928a77a7f2f12812604562340c46",
+      "workerPoolSize": 2
+    },
+    "candidate": {
+      "publicationMs": [55004.8, 52058.625],
+      "medianPublicationMs": 53531.7125,
+      "peakRssKiB": [1789136, 1595840],
+      "stats": {
+        "files": 1247,
+        "nodes": 40943,
+        "edges": 121698,
+        "communities": 1298,
+        "processes": 822,
+        "embeddings": 0
+      },
+      "reparsedFiles": 1243,
+      "persistedFiles": 1247,
+      "functionAndMethodCallEdges": 32373,
+      "functionAndMethodCallFingerprint": "0ff42a10f836f110e3f74447c49e0ba04a11d4b88049c5ac66f8aa8b6561fc36",
+      "revision": "e7c6aa22614b489528e5afee06091b54227dabd6",
+      "sourceCommit": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
+      "sourceFingerprint": "8d4a0ada2c33e51f2477fc18ef3f6c7a0767928a77a7f2f12812604562340c46",
+      "workerPoolSize": 2
+    }
+  },
+  "propertyDispatch": {
+    "identicalTargets": true,
+    "registrationCap": 32
+  },
+  "baselineCheck": {
+    "breadthCapturePerCase": 0.9302251413911493,
+    "breadthColdPipelinePerCase": 0.47213770377523123,
+    "densityCapturePerCase": 1.0052556425844665,
+    "densityColdPipelinePerCase": 0.6084226435841447
+  }
+}
