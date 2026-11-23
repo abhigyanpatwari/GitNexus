@@ -280,6 +280,9 @@ const LBUG_NATIVE = [
   'test/integration/group/graphql-resolve-symbol.test.ts',
   // Runs the route extractor's two symbol queries against a real engine.
   'test/integration/http-route-symbol-batch.test.ts',
+  // Group sync leases a real pool entry across extraction; the idle sweep and
+  // LRU eviction it guards against close native handles.
+  'test/integration/group/sync-extraction-lease.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
