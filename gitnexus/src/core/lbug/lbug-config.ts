@@ -7,6 +7,8 @@ import { execFileSync } from 'child_process';
 import { isMainThread } from 'worker_threads';
 import type lbug from '@ladybugdb/core';
 import { logger } from '../logger.js';
+import { effectiveRamBytes } from '../ingestion/utils/effective-ram.js';
+import { QUERY_MAX_RSS_ENV, resolveQueryRssBudgetBytes } from './query-memory-guard.js';
 
 // ─── Windows non-ASCII path workaround (#1811) ───────────────────────────────
 //
@@ -340,10 +342,12 @@ const resolveCheckpointThreshold = (): number => {
  * on very large working sets for a machine that stays alive: 2 GiB is
  * ~40× the GitNexus self-index, while the native 80%-of-RAM default let a
  * `detect_changes` call grow a 105 MiB on-disk index to 19.5 GiB RSS and
- * OOM-kill the reporter's session. The `min` with 80% of `os.totalmem()`
- * keeps sub-2.5-GiB machines at the native-equivalent bound (no regression
- * there); the 64 MiB floor keeps tiny containers above any plausible
- * native minimum pool size.
+ * OOM-kill the reporter's session. The `min` with 80% of effective RAM
+ * (`effectiveRamBytes`: a real cgroup limit when it is smaller than physical
+ * RAM) bounds sub-2.5-GiB machines and containers; the 64 MiB floor keeps
+ * tiny containers above any plausible native minimum pool size. The hintless
+ * default is further kept under the read query memory budget
+ * (defaultReadPoolBytes).
  */
 const DEFAULT_BUFFER_POOL_CAP = 2 * 1024 * 1024 * 1024;
 const BUFFER_POOL_FLOOR = 64 * 1024 * 1024;
@@ -353,9 +357,9 @@ const BUFFER_POOL_FLOOR = 64 * 1024 * 1024;
 // ("buffer pool is full and no memory could be freed") on any non-trivial repo,
 // and even the ~1800-file GitNexus checkout needs ≥256 MiB. So the adaptive
 // size never drops a repo below this — a distinct, higher floor than
-// BUFFER_POOL_FLOOR, which only guards defaultBufferPoolSize on tiny-RAM
-// machines. It is still clamped up to defaultBufferPoolSize, so a machine whose
-// default is below this floor keeps its default rather than over-committing.
+// BUFFER_POOL_FLOOR, which only guards the RAM-derived bounds on tiny-RAM
+// machines. It is still clamped to scaledAnalyzePoolCap, so a machine whose
+// cap is below this floor keeps its cap rather than over-committing.
 const ADAPTIVE_POOL_FLOOR = 256 * 1024 * 1024;
 
 const parseBufferPoolSize = (raw: string | undefined): number | undefined => {
@@ -407,27 +411,70 @@ export const granuleRatio = (pageSize: number | undefined = getOsPageSize()): nu
   return Math.max(1, Math.floor(pageSize / LBUG_ASSUMED_FRAME_SIZE));
 };
 
+/** The #2557 bound: min(2 GiB, 80% of effective RAM), never below the floor. */
+const ramBoundedPoolCap = (effectiveRam: number): number =>
+  Math.min(DEFAULT_BUFFER_POOL_CAP, Math.max(BUFFER_POOL_FLOOR, Math.floor(effectiveRam * 0.8)));
+
+// Memory a reader needs beyond its buffer pool: the V8 heap, the database's
+// fixed native memory at open, and query scratch. Half the query memory
+// budget, clamped to this range.
+const READ_POOL_HEADROOM_MIN = 256 * 1024 * 1024;
+const READ_POOL_HEADROOM_MAX = 1024 * 1024 * 1024;
+
+/**
+ * Hintless pool size for `effectiveRam` bytes of memory and a read query
+ * memory budget of `guardBudget` bytes: the #2557 bound, further limited to
+ * the budget minus headroom so the pool by itself stays well under the
+ * budget. The rest of the process (fixed native memory per open database,
+ * connections, query results) still counts against the budget, so this does
+ * not by itself keep a reader under it. With 4 GiB or more of effective RAM
+ * and the default budget, the #2557 bound wins, so large hosts keep the
+ * 2 GiB default. Pure, so tests can table it without stubs.
+ */
+export const defaultReadPoolBytes = (effectiveRam: number, guardBudget: number): number => {
+  const headroom = Math.min(
+    READ_POOL_HEADROOM_MAX,
+    Math.max(READ_POOL_HEADROOM_MIN, Math.floor(guardBudget / 2)),
+  );
+  return Math.min(
+    ramBoundedPoolCap(effectiveRam),
+    Math.max(BUFFER_POOL_FLOOR, guardBudget - headroom),
+  );
+};
+
 /**
  * Hintless pool default — MCP serve, doctor, native-check, any open without a
- * per-run hint. Deliberately UNSCALED (#2557): the pool is an eager native
- * allocation at DB open, so a page-size-scaled default would hand a
- * long-lived `gitnexus mcp` on a 16 KiB/64 KiB host up to 80% of RAM — the
- * exact OOM exposure the 2 GiB cap was added to remove.
+ * per-run hint. Sized from effective RAM (a real cgroup limit when it is
+ * smaller than physical RAM) and the read query memory budget
+ * (`GITNEXUS_QUERY_MAX_RSS_MB`; with the guard disabled, the default budget),
+ * so a reader in a small container on a large node does not get a pool sized
+ * for the node. Deliberately UNSCALED (#2557): the pool is a native
+ * allocation that can grow to its full size, so a page-size-scaled default
+ * would let a long-lived `gitnexus mcp` on a 16 KiB/64 KiB host grow to 80% of
+ * RAM — the exact OOM exposure the 2 GiB cap was added to remove.
  */
-const defaultBufferPoolSize = (): number =>
-  Math.min(DEFAULT_BUFFER_POOL_CAP, Math.max(BUFFER_POOL_FLOOR, Math.floor(os.totalmem() * 0.8)));
+const defaultBufferPoolSize = (): number => {
+  const ram = effectiveRamBytes();
+  const budget =
+    resolveQueryRssBudgetBytes(process.env[QUERY_MAX_RSS_ENV], ram) ??
+    resolveQueryRssBudgetBytes(undefined, ram) ??
+    ram;
+  return defaultReadPoolBytes(ram, budget);
+};
 
 /**
  * Upper bound for the ANALYZE-path (hinted) pool: the #2557 cap scaled by the
- * granule ratio, still bounded by 80% of RAM. Scaling only this bound — and
- * not defaultBufferPoolSize — is what lets the #2631 fix take effect during
- * the bulk COPY without touching hintless opens: with an unscaled cap the
- * min() below would clamp the scaled COPY floor straight back to 2 GiB.
+ * granule ratio, still bounded by 80% of effective RAM. No query-budget term:
+ * writes during analyze are outside the read query memory guard. Scaling only
+ * this bound — and not defaultBufferPoolSize — is what lets the #2631 fix take
+ * effect during the bulk COPY without touching hintless opens: with an
+ * unscaled cap the min() below would clamp the scaled COPY floor straight back
+ * to 2 GiB.
  */
 const scaledAnalyzePoolCap = (pageSize: number | undefined): number =>
   Math.min(
     DEFAULT_BUFFER_POOL_CAP * granuleRatio(pageSize),
-    Math.max(BUFFER_POOL_FLOOR, Math.floor(os.totalmem() * 0.8)),
+    Math.max(BUFFER_POOL_FLOOR, Math.floor(effectiveRamBytes() * 0.8)),
   );
 
 /**
@@ -435,10 +482,11 @@ const scaledAnalyzePoolCap = (pageSize: number | undefined): number =>
  * scaledAnalyzePoolCap]. The lower bound keeps LadybugDB's COPY viable
  * (scaled because the granule accounting inflates consumption on non-4K
  * hosts, see granuleRatio); the upper bound means the hint can never exceed
- * the page-size-scaled #2557 cap or 80% of RAM — and on a machine whose cap
- * is below the COPY floor, the cap wins, so the pool is never over-committed.
- * On 4 KiB hosts (ratio 1) this is byte-identical to clamping against the
- * hintless default.
+ * the page-size-scaled #2557 cap or 80% of effective RAM — and on a machine
+ * whose cap is below the COPY floor, the cap wins, so the pool is never
+ * over-committed. On 4 KiB hosts (ratio 1) the upper bound is the unscaled
+ * #2557 bound; the hintless default can sit below it because it also leaves
+ * room under the read query memory budget, which writes do not answer to.
  */
 const clampBufferPool = (bytes: number, pageSize: number | undefined = getOsPageSize()): number =>
   Math.min(
@@ -470,8 +518,8 @@ const POOL_BYTES_PER_ELEMENT = 4 * 1024;
  * budget per OS-page-sized granule, so the same graph consumes up to
  * pageSize/4096 × the budget it needs on x86. On 4 KiB hosts the ratio is 1
  * and this is byte-identical to the pre-#2631 behavior. The estimate is never
- * above the page-size-scaled #2557 cap bounded by 80% of RAM, never below the
- * scaled COPY-safety floor; the hintless default stays unscaled.
+ * above the page-size-scaled #2557 cap bounded by 80% of effective RAM, never
+ * below the scaled COPY-safety floor; the hintless default stays unscaled.
  *
  * `pageSize` is a test seam (the pageSizeDoctorLines convention); production
  * callers omit it and get the memoized real OS page size.
@@ -521,9 +569,9 @@ export const setBufferPoolSizeHint = (bytes: number | undefined): void => {
  * `GITNEXUS_LBUG_BUFFER_POOL_SIZE` (bytes) overrides everything; `0` is a
  * deliberate escape hatch that restores LadybugDB's native unbounded
  * 80%-of-RAM default. With no env override, a per-run `setBufferPoolSizeHint`
- * (clamped to [floor, default]) sizes the pool to the repo; otherwise the
- * default. Resolved at call time (not module load) so tests can stub the env
- * var, the hint, and `os.totalmem`.
+ * (clamped to [COPY floor, scaledAnalyzePoolCap]) sizes the pool to the repo;
+ * otherwise the default. Resolved at call time (not module load) so tests can
+ * stub the env vars, the hint, `os.totalmem`, and `process.constrainedMemory`.
  */
 const resolveBufferManagerSize = (): number => {
   const raw = process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
