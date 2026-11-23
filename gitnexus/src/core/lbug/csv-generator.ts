@@ -36,7 +36,7 @@ export const DECLARED_RELATION_PAIRS = parseRelationSchemaPairs(RELATION_SCHEMA)
  * enabler). When `GITNEXUS_SORT_GRAPH_OUTPUT` is set, nodes and relationships
  * are emitted sorted by their (unique, dedup-key) graph `id` rather than in
  * graph-insertion order, making the CSV a pure function of the graph's node/edge
- * SET instead of of emit order. Default off returns the iterator untouched, so
+ * SET instead of emit order. Default off returns the iterator untouched, so
  * the bytes are identical to today. With it on, a windowed/out-of-core emit
  * (the later windowed-resolve work) need only reproduce the same edge SET, not the global insertion order —
  * which removes "CSV row order == Map insertion order" as a byte-identical
