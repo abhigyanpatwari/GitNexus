@@ -127,6 +127,8 @@ vi.mock('../../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../../src/core/lbug/lbug-config.js', () => ({
+  readBufferPoolExhaustionRemedy: () => undefined,
+  withReadBufferPoolRemedy: (err: unknown) => err,
   // Track concurrently-open Databases: a fresh fake per open, decrement on close.
   createLbugDatabase: vi.fn(() => {
     openCounter.live += 1;

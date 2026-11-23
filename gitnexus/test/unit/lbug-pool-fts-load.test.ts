@@ -37,6 +37,8 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 }));
 
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
+  readBufferPoolExhaustionRemedy: () => undefined,
+  withReadBufferPoolRemedy: (err: unknown) => err,
   createLbugDatabase: createLbugDatabaseMock,
   toNativeSafePath: vi.fn((p: string) => p),
   isWalCorruptionError: vi.fn(() => false),

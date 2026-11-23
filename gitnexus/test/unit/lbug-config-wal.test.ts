@@ -584,6 +584,20 @@ describe('bufferPoolExhaustionRemedy (#2631)', () => {
   const EXHAUSTION =
     'Buffer manager exception: Unable to allocate memory! The buffer pool is full and no memory could be freed!';
 
+  it('names the writable pool the COPY ran with, not the smaller reader pool', () => {
+    _setOsPageSizeForTests(4096);
+    const restoreHost = pinUnconstrainedHost();
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(1024 * 1024 * 1024);
+    try {
+      // 1 GiB: writer min(2 GiB, 80%) = 819 MiB; reader 384 MiB.
+      expect(bufferPoolExhaustionRemedy(EXHAUSTION)).toContain('(819 MiB)');
+    } finally {
+      totalmemSpy.mockRestore();
+      restoreHost();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('names the override knob for the exhaustion error', () => {
     _setOsPageSizeForTests(4096);
     const remedy = bufferPoolExhaustionRemedy(EXHAUSTION);

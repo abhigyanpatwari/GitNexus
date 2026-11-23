@@ -21,7 +21,7 @@ import {
   probeVectorExtensionLoad,
 } from '../core/lbug/native-check.js';
 import {
-  getEffectiveBufferPoolSize,
+  getEffectiveBufferPoolSizes,
   getOsPageSize,
   isPageSizeAwareLadybug,
 } from '../core/lbug/lbug-config.js';
@@ -177,10 +177,10 @@ export function pageSizeDoctorLines(
 /**
  * The hintless buffer-pool doctor line (#2631) — the pool the next Database
  * open in THIS process would get. Same plain-params testable-helper shape as
- * pageSizeDoctorLines above. `pool` is getEffectiveBufferPoolSize() (a
- * writable open) and `readPool` is getEffectiveBufferPoolSize('read'); when
- * they differ, both are printed and named. `0` is the pass-through sentinel
- * for LadybugDB's native 80%-of-RAM default, never printed as "0 MiB".
+ * pageSizeDoctorLines above. `pool` and `readPool` are the writable and
+ * read-only values from getEffectiveBufferPoolSizes(); when they differ, both
+ * are printed and named. `0` is the pass-through sentinel for LadybugDB's
+ * native 80%-of-RAM default, never printed as "0 MiB".
  * `envRaw` (the raw GITNEXUS_LBUG_BUFFER_POOL_SIZE value) marks
  * operator-supplied absolute values as "(env override)" — no scaling suffix:
  * the hintless default is deliberately unscaled (#2557), and an env value is
@@ -295,12 +295,9 @@ export const doctorCommand = async () => {
   }
   // Hintless buffer pool for the next writable and read-only DB open (#2631).
   // Literal label like the page size line above (no i18n key).
+  const pools = getEffectiveBufferPoolSizes();
   console.log(
-    poolSizeDoctorLine(
-      getEffectiveBufferPoolSize(),
-      process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE,
-      getEffectiveBufferPoolSize('read'),
-    ),
+    poolSizeDoctorLine(pools.write, process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE, pools.read),
   );
   const nativeCheck = checkLbugNative();
   console.log(nativeStatusLine(nativeCheck));

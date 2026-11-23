@@ -25,6 +25,7 @@ import {
   createLbugDatabase,
   isWalCorruptionError,
   readBufferPoolExhaustionRemedy,
+  withReadBufferPoolRemedy,
   sleep,
   throwIfStorageVersionMismatch,
   toNativeSafePath,
@@ -777,9 +778,10 @@ function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
 
 type InitLbugAttempt = { status: 'done'; reopened: boolean } | { status: 'retry'; error: Error };
 
-function ladybugUnavailableError(repoId: string, err: Error | undefined): Error {
-  // A pool too small to open this index is not a rebuild in progress.
-  const remedy = err ? readBufferPoolExhaustionRemedy(err.message) : undefined;
+function ladybugUnavailableError(repoId: string, err: Error | undefined, reserved: boolean): Error {
+  // A pool too small to open this index is not a rebuild in progress. An
+  // explicit reservation is not resized by the env knob the remedy names.
+  const remedy = err && !reserved ? readBufferPoolExhaustionRemedy(err.message) : undefined;
   if (remedy) {
     return new Error(`LadybugDB could not open ${repoId}: ${err?.message} ${remedy}`, {
       cause: err,
@@ -831,7 +833,7 @@ export const initLbug = async (
     if (attempt === LOCK_RETRY_ATTEMPTS) break;
     await sleep(LOCK_RETRY_DELAY_MS * attempt);
   }
-  throw ladybugUnavailableError(repoId, lastError);
+  throw ladybugUnavailableError(repoId, lastError, reservation !== undefined);
 };
 
 const initLbugInner = async (
@@ -1053,7 +1055,7 @@ async function doInitLbug(
         ) {
           return { status: 'retry', error: lastError };
         }
-        throw ladybugUnavailableError(repoId, lastError);
+        throw ladybugUnavailableError(repoId, lastError, artifactOptions !== undefined);
       }
     }
   }
@@ -1490,10 +1492,9 @@ export const executeParameterized = async (
           cause: err,
         });
       }
-      const message = err instanceof Error ? err.message : String(err);
-      const remedy = readBufferPoolExhaustionRemedy(message);
-      if (remedy) throw new Error(`${message} ${remedy}`, { cause: err });
-      throw err;
+      // An explicit reservation (the vector lane) is not resized by the env
+      // knob the remedy names, so its errors pass through unchanged.
+      throw entry.artifactOptions ? err : withReadBufferPoolRemedy(err);
     } finally {
       // Close the native QueryResult cursor(s) before returning the connection —
       // getAll() drains rows but does not release the native cursor, so without

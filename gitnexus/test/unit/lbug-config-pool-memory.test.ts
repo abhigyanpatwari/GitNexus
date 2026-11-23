@@ -207,14 +207,16 @@ describe('default buffer pool under container memory limits', () => {
     ['a limit above RAM', 8 * GiB, 16 * GiB],
     ['the cgroup v1 sentinel', HOST, CGROUP_V1_UNLIMITED],
     ['UINT64_MAX', HOST, 2 ** 64],
-  ])('sizes from the same available memory the query guard uses: %s', (_label, total, limit) => {
+  ])('sizes from min(physical RAM, a real container limit): %s', (_label, total, limit) => {
     runOn(total, limit);
-    // query-memory-guard.ts: totalMem = min(os.totalmem(), constrainedMemory() || Infinity)
-    const guardTotalMem = Math.min(
+    // The query guard documents the same rule for its budget. It has no
+    // exported seam for its own memory reading, so this pins the rule, not the
+    // guard's implementation.
+    const availableRam = Math.min(
       os.totalmem(),
       process.constrainedMemory() || Number.POSITIVE_INFINITY,
     );
-    expect(effectiveRamBytes()).toBe(guardTotalMem);
+    expect(effectiveRamBytes()).toBe(availableRam);
   });
 
   it('bounds the analyze hint by 80% of the container limit', () => {

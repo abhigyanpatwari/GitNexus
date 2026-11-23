@@ -68,6 +68,7 @@ import {
   isWalCorruptionError,
   throwIfStorageVersionMismatch,
   bufferPoolExhaustionRemedy,
+  withReadBufferPoolRemedy,
   openLbugConnection,
   sleep,
   toNativeSafePath,
@@ -859,7 +860,8 @@ export const withLbugDb = async <T>(
       // reopen cycle would only add 4-5s of tail latency without changing
       // the outcome (both layers consult the same isDbBusyError matcher).
       if (!isDbBusyError(err) || isOpenRetryExhausted(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
-        throw err;
+        // Read-only opens here are hintless, so a full pool is the reader pool.
+        throw readOnly ? withReadBufferPoolRemedy(err) : err;
       }
       // Close stale connection inside the session lock to prevent race conditions
       // with concurrent operations that might acquire the lock between cleanup steps

@@ -426,13 +426,14 @@ const READ_POOL_HEADROOM_MAX = 1024 * 1024 * 1024;
 /**
  * Hintless read-only pool size for `effectiveRam` bytes of memory and a read
  * query memory budget of `guardBudget` bytes: the #2557 bound, further limited
- * to the budget minus headroom. Above about 430 MiB of effective RAM that
- * leaves at least 256 MiB of the budget outside one database's pool; below it
- * the 64 MiB floor wins. The bound is per database: each open database has its
- * own pool and its own fixed native memory, and both count against the one
- * budget, so this does not by itself keep a reader under it. With 4 GiB or
- * more of effective RAM and the default budget, the #2557 bound wins, so large
- * hosts keep the 2 GiB default. Pure, so tests can table it without stubs.
+ * to the budget minus headroom. When the budget is at least 320 MiB (about
+ * 430 MiB of effective RAM at the default budget), that leaves at least 256 MiB
+ * of it outside one database's pool; below that the 64 MiB floor wins. The
+ * bound is per database: each open database has its own pool and its own fixed
+ * native memory, and both count against the one budget, so this does not by
+ * itself keep a reader under it. With 4 GiB or more of effective RAM and the
+ * default budget, the #2557 bound wins, so large hosts keep the 2 GiB default.
+ * Pure, so tests can table it without stubs.
  */
 export const defaultReadPoolBytes = (effectiveRam: number, guardBudget: number): number => {
   const headroom = Math.min(
@@ -592,7 +593,10 @@ export const setBufferPoolSizeHint = (bytes: number | undefined): void => {
  * the open is read-only). Resolved at call time (not module load) so tests can
  * stub the env vars, the hint, `os.totalmem`, and `process.constrainedMemory`.
  */
-const resolveBufferManagerSize = (access: BufferPoolAccess = 'write'): number => {
+const resolveBufferManagerSize = (
+  access: BufferPoolAccess = 'write',
+  warnInvalid = true,
+): number => {
   const raw = process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
   if (raw === undefined) {
     return bufferPoolSizeHint !== undefined
@@ -603,7 +607,7 @@ const resolveBufferManagerSize = (access: BufferPoolAccess = 'write'): number =>
   if (parsed !== undefined) return parsed;
   // Non-empty but unparseable input: warn the operator and fall back —
   // mirrors the GITNEXUS_WAL_CHECKPOINT_THRESHOLD env path above.
-  if (raw.trim().length > 0) {
+  if (warnInvalid && raw.trim().length > 0) {
     logger.warn(
       { rawValue: raw, fallback: defaultBufferPoolSize(access) },
       `Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE=${raw}; expected integer >= 0 (bytes; 0 restores the native 80%-of-RAM default); falling back to the platform default pool size.`,
@@ -623,6 +627,15 @@ const resolveBufferManagerSize = (access: BufferPoolAccess = 'write'): number =>
  */
 export const getEffectiveBufferPoolSize = (access: BufferPoolAccess = 'write'): number =>
   resolveBufferManagerSize(access);
+
+/**
+ * Both hintless defaults at once, for doctor: an invalid
+ * GITNEXUS_LBUG_BUFFER_POOL_SIZE is reported once, not once per kind.
+ */
+export const getEffectiveBufferPoolSizes = (): { write: number; read: number } => ({
+  write: resolveBufferManagerSize('write'),
+  read: resolveBufferManagerSize('read', false),
+});
 
 /**
  * Matches the engine's buffer-pool exhaustion throw (buffer_manager.cpp:
@@ -668,20 +681,37 @@ export const bufferPoolExhaustionRemedy = (
 };
 
 /**
- * Remedy for buffer-pool exhaustion on a read-only open or read query, or
+ * Remedy for buffer-pool exhaustion on a hintless read-only open or query, or
  * undefined when `message` is not that class. The pool also bounds the memory
- * one read can use, and the read-only default is kept under the read query
- * memory budget, so a large read can exhaust it; retrying does not help.
+ * one open or query can use, and the read-only default is kept under the read
+ * query memory budget, so a large query can fill it; retrying does not help.
+ * Callers with an explicit pool reservation must not use it: the env knob it
+ * names does not resize those pools.
+ *
+ * Several error classifiers key on message text (the read-only write
+ * rejection, busy/lock, missing-table, WAL, storage-version, timeout). The
+ * wording here avoids all of them, so a wrapped error keeps the class of the
+ * engine text it carries.
  */
 export const readBufferPoolExhaustionRemedy = (message: string): string | undefined => {
   if (!BUFFER_POOL_EXHAUSTION_RE.test(message)) return undefined;
-  const pool = resolveBufferManagerSize('read');
+  const pool = resolveBufferManagerSize('read', false);
   const poolLabel = pool === 0 ? "LadybugDB's native 80%-of-RAM default" : formatMiB(pool);
   return (
-    `The LadybugDB buffer pool for read-only databases (${poolLabel}) is too small for this read; ` +
-    `retrying does not help. Set GITNEXUS_LBUG_BUFFER_POOL_SIZE=<bytes> to raise it, and raise ` +
-    `${QUERY_MAX_RSS_ENV} with it if the query memory limit then stops the process.`
+    `The reader buffer pool (${poolLabel}) filled up; retrying does not help. ` +
+    `Raise it with GITNEXUS_LBUG_BUFFER_POOL_SIZE=<bytes>, and keep it and ` +
+    `${QUERY_MAX_RSS_ENV} below the container memory limit.`
   );
+};
+
+/**
+ * `err` with the reader-pool remedy appended (engine text first, `err` kept as
+ * `cause`), or `err` itself when it is not buffer-pool exhaustion.
+ */
+export const withReadBufferPoolRemedy = (err: unknown): unknown => {
+  const message = err instanceof Error ? err.message : String(err);
+  const remedy = readBufferPoolExhaustionRemedy(message);
+  return remedy ? new Error(`${message} ${remedy}`, { cause: err }) : err;
 };
 
 /**
