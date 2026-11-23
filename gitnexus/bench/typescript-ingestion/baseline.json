@@ -6,54 +6,54 @@
         "files": 153,
         "loops": 96,
         "guards": 80,
-        "moduleCases": 416,
-        "cases": 592,
-        "sourceBytes": 66803,
-        "expectedEdges": 384,
-        "fingerprint": "e5179d109136b72b12550b7f3f4544c5d3885f43ecbb0134bb8b0a453aa7e89f"
+        "moduleCases": 480,
+        "cases": 656,
+        "sourceBytes": 72371,
+        "expectedEdges": 416,
+        "fingerprint": "c75d32e5af6b0b509971f80613c9cac8008c8c24575ed2529f9299991b833e36"
       },
       "tupleBindings": 112,
       "narrowingBindings": 48,
-      "captureFingerprint": "46e431580f7dd5a46e247b8f2be9b076da48b1f136848cb1fda056d4cae127df",
-      "graphFingerprint": "c5188855ac272c2bad7417d247e48058d03f9a8898afaa026cc0a947f082c57f",
-      "targetFingerprint": "8753b4d680a3dd73e04ff05b413716b81d11fedc2038f00ebb30f554f5ffb0d5",
-      "resolvedEdges": 384
+      "captureFingerprint": "df60abe6954f2589678d68034bf243309e8d824fc1e7acab4f6b2584ae852ca6",
+      "graphFingerprint": "b71adbd8a96aceaf67b55e01df0fa8270a6b00541765ef95d16b78642873c987",
+      "targetFingerprint": "a254431c5dae60627bca861745061b0ec453714e828714fa06fe5ca3501aa0cd",
+      "resolvedEdges": 416
     },
     "wide": {
       "workload": {
         "files": 609,
         "loops": 384,
         "guards": 320,
-        "moduleCases": 1664,
-        "cases": 2368,
-        "sourceBytes": 267997,
-        "expectedEdges": 1536,
-        "fingerprint": "d57c2dfec00b70b39eaf17d60ee84a158692774a1f8d683b02f52edae00b1c7d"
+        "moduleCases": 1920,
+        "cases": 2624,
+        "sourceBytes": 290269,
+        "expectedEdges": 1664,
+        "fingerprint": "122f4af32b4201d54da62990854f04e178a14ab66b0709e20e7e0fbfbcfb44d8"
       },
       "tupleBindings": 448,
       "narrowingBindings": 192,
-      "captureFingerprint": "6b830679d797d1af096919f74f43dd535a041618f3d88d16258acfb19d3c3d6f",
-      "graphFingerprint": "c73dd984390b9b155d4bd796133d82c116fa47e14484453637d987fb2d225029",
-      "targetFingerprint": "ba1dd504492f34e2961d3e491b3cf17344312badb22e437dbcc3daa5a2518c8e",
-      "resolvedEdges": 1536
+      "captureFingerprint": "66515c1bc6315cebbfcd3352f7c858e6a925f77156a2807420662fff943e918d",
+      "graphFingerprint": "96626a7700f37e858a6d8f46cf4b7ed1d8ff25afca849f7d8b06d67574a625bb",
+      "targetFingerprint": "e533bfb96d68c48af9c51389c282f664ba8f5925709fe3f9d57a386ba782264c",
+      "resolvedEdges": 1664
     },
     "dense": {
       "workload": {
         "files": 609,
         "loops": 1536,
         "guards": 1280,
-        "moduleCases": 6656,
-        "cases": 9472,
-        "sourceBytes": 973609,
-        "expectedEdges": 6144,
-        "fingerprint": "7f448416e6043a95aa769bc7f4a8863ac49d1ae354d8154d3cebd66ba0e9e217"
+        "moduleCases": 7680,
+        "cases": 10496,
+        "sourceBytes": 1062697,
+        "expectedEdges": 6656,
+        "fingerprint": "1640667af7b1fcb35438aa8c3124f4c818f3c2d1df9eeb288c321bc1c8edd9db"
       },
       "tupleBindings": 1792,
       "narrowingBindings": 768,
-      "captureFingerprint": "72aa17101eec1e6558ea0cb42580aa50e1802f760cd10c25aa7173ae0ef2304b",
-      "graphFingerprint": "f8ddce3e5ff48b587aceb3d83ba9574c497a668ad3dd9e0f2c93bd357c345d5f",
-      "targetFingerprint": "ebd6c4edb97a7152ff2915e66697469c0040beee97359b5c7760c8fdd2badf1d",
-      "resolvedEdges": 6144
+      "captureFingerprint": "95206e9b9e0354867f7b07cae4b3ce52ae06ca1db3782d938942e585f60f8de6",
+      "graphFingerprint": "bbaa65f02e7a466564918a8ad6fd73d331c8b77a8b7e72efa1053850cd6d649d",
+      "targetFingerprint": "6d28a3cc947fdbd1f65efa2cdb2448ec2e559ccdf97bd279352fb9f11a20550c",
+      "resolvedEdges": 6656
     }
   },
   "budgets": {

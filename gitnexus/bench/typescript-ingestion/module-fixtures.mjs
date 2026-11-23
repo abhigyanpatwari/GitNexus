@@ -34,6 +34,8 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
       for (let batch = 0; batch < batches; batch++) {
         const name = `publish${batch}`;
         const hidden = `hidden${unit}_${batch}`;
+        const localName = `localOnly${batch}`;
+        const publicName = `publicAlias${batch}`;
         const wildcardName = `${prefix}Wildcard${unit}_${batch}`;
         const entity = `Entity${batch}`;
         const leftOwner = `Function:${file('left')}:${name}`;
@@ -41,6 +43,8 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
         left.push(
           `export function ${name}() {}`,
           `function ${hidden}() {}`,
+          `function ${localName}() {}`,
+          `export { ${localName} as ${publicName} };`,
           `export function ${wildcardName}() {}`,
         );
         right.push(`export function ${name}() {}`);
@@ -63,6 +67,10 @@ export function addModuleFixtures(sources, expectTargets, units, batches) {
         moduleCase(`aliasDefault${batch}`, '() { operations.publicDefault(); }', [
           `Function:${file('left')}:localDefault`,
         ]);
+        moduleCase(`aliasLocal${batch}`, `() { pack.${publicName}(); }`, [
+          `Function:${file('left')}:${localName}`,
+        ]);
+        moduleCase(`privateLocal${batch}`, `() { pack.${localName}(); }`, []);
         moduleCase(`unboundStar${batch}`, `() { ${wildcardName}(); }`, [], 'namespace');
         moduleCase(`hidden${batch}`, `() { operations.${hidden}(); }`, []);
         moduleCase(`unbound${batch}`, `() { operations.${name}(); }`, [], 'namespace');

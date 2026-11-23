@@ -24,16 +24,16 @@ fingerprints, and normalized growth within the reviewed budgets.
 The corpus exercises Map destructuring, `instanceof` guards, and TypeScript
 and JavaScript module ownership. Competing owners use the same member names.
 The module fixtures cover conflicting and agreeing export paths, explicit
-re-exports, nested namespaces, default aliases, private names, unbound star
-exports, and TypeScript type-only exports. Each caller is compared by exact graph ID. A missing or
-wrong target is reported by case family, and negative controls require an
-empty target set.
+re-exports, nested namespaces, local and default export aliases, private names,
+unbound star exports, and TypeScript type-only exports. Each caller is compared
+by exact graph ID. A missing or wrong target is reported by case family, and
+negative controls require an empty target set.
 
 | Shape | Independent units | Batches per unit |
-| --- | ---: | ---: |
-| Small | 8 | 2 |
-| Wide | 32 | 2 |
-| Dense | 32 | 8 |
+| ----- | ----------------: | ---------------: |
+| Small |                 8 |                2 |
+| Wide  |                32 |                2 |
+| Dense |                32 |                8 |
 
 Five measured capture samples use pre-parsed ASTs. Three measured cold
 pipeline samples include worker parsing and resolution through in-memory
@@ -66,29 +66,29 @@ and runtime parse identities. The comparison uses `fcde41a8` as its base, the
 same installed dependencies, and Node 26.9.0 on macOS arm64.
 
 | Shape | Exact target sets on main | Exact target sets on the candidate |
-| --- | ---: | ---: |
-| Small | 224 / 592 | 592 / 592 |
-| Wide | 896 / 2,368 | 2,368 / 2,368 |
-| Dense | 3,584 / 9,472 | 9,472 / 9,472 |
+| ----- | ------------------------: | ---------------------------------: |
+| Small |                 256 / 656 |                          656 / 656 |
+| Wide  |             1,024 / 2,624 |                      2,624 / 2,624 |
+| Dense |            4,096 / 10,496 |                    10,496 / 10,496 |
 
-Across the three shapes, the candidate recovers 4,704 missing expected edges
-and removes 4,368 unexpected edges. Its normalized capture growth was 0.98
-for breadth and 0.88 for density. Cold pipeline growth was 0.52 and 0.70 on
+Across the three shapes, the candidate recovers 5,376 missing expected edges
+and removes 4,368 unexpected edges. Its normalized capture growth was 1.08
+for breadth and 0.86 for density. Cold pipeline growth was 0.56 and 0.70 on
 the same axes. This run overlapped other local validation. Raw timings in the
 evaluation data are diagnostic. Warm replay reused 153 files and parsed zero. The
 edited replay parsed two files and reused 151.
 
-Cold database publication on pinned GitNexus source was measured at the initial
-implementation commit `e7c6aa226`. Both builds parsed 1,243 files and reopened 1,247 persisted file
-nodes. The samples ran in main, candidate, candidate, main order while other
-local validation was active.
+Cold database publication on pinned GitNexus source was measured with the
+final production code at `0e80a3105`. Both builds parsed 1,243 files and reopened
+1,247 persisted file nodes. The samples ran in main, candidate, candidate,
+main order while other local validation was active.
 
-| Runtime | Publication samples | Median | Persisted call edges between functions and methods |
-| --- | ---: | ---: | ---: |
-| Main | 44.06 s, 50.42 s | 47.24 s | 32,327 |
-| Candidate | 55.00 s, 52.06 s | 53.53 s | 32,373 |
+| Runtime   | Publication samples |  Median | Persisted call edges between functions and methods |
+| --------- | ------------------: | ------: | -------------------------------------------------: |
+| Main      |    66.36 s, 66.76 s | 66.56 s |                                             32,327 |
+| Candidate |    67.86 s, 66.02 s | 66.94 s |                                             32,373 |
 
-The publication median increased by 13.3% in this comparison. The repeated
+The publication median increased by 0.6% in this comparison. The repeated
 call fingerprints were stable within each build. The source tree measures
 publication cost and graph changes, while the generated fixtures supply the
 expected-target oracle.

@@ -3,17 +3,20 @@
   "node": "v26.9.0",
   "platform": "darwin-arm64",
   "workloads": {
-    "small": "e5179d109136b72b12550b7f3f4544c5d3885f43ecbb0134bb8b0a453aa7e89f",
-    "wide": "d57c2dfec00b70b39eaf17d60ee84a158692774a1f8d683b02f52edae00b1c7d",
-    "dense": "7f448416e6043a95aa769bc7f4a8863ac49d1ae354d8154d3cebd66ba0e9e217"
+    "small": "c75d32e5af6b0b509971f80613c9cac8008c8c24575ed2529f9299991b833e36",
+    "wide": "122f4af32b4201d54da62990854f04e178a14ab66b0709e20e7e0fbfbcfb44d8",
+    "dense": "1640667af7b1fcb35438aa8c3124f4c818f3c2d1df9eeb288c321bc1c8edd9db"
   },
   "original": {
     "parseIdentity": "sha256:a7c277be18b9707bbe6a81b2405c71d29c2653578a0137f4f44eaac0dc3f92bb",
-    "peakRssKiB": 665808,
+    "peakRssKiB": 685952,
     "shapes": {
       "small": {
-        "captureMs": [179.732, 148.267, 170.223, 146.072, 178.564],
-        "coldPipelineMs": [1852.0, 1352.153, 1221.6],
+        "captureMs": [
+          241.13808299999982, 317.89545799999905, 324.96050000000105, 249.7192920000016,
+          197.45058300000164
+        ],
+        "coldPipelineMs": [1887.7680840000103, 1548.9744169999904, 1582.775375000012],
         "byFamily": {
           "map": {
             "cases": 96,
@@ -28,23 +31,25 @@
             "unexpectedEdges": 48
           },
           "tsModules": {
-            "cases": 240,
-            "exact": 96,
-            "missingEdges": 96,
+            "cases": 272,
+            "exact": 112,
+            "missingEdges": 112,
             "unexpectedEdges": 48
           },
           "jsModules": {
-            "cases": 176,
-            "exact": 64,
-            "missingEdges": 64,
+            "cases": 208,
+            "exact": 80,
+            "missingEdges": 80,
             "unexpectedEdges": 48
           }
         },
         "targetFingerprint": "532cd7cc4b6ae2ae06a2d1a239bf752b7b452276df2ca27989d0b89c142c5234"
       },
       "wide": {
-        "captureMs": [905.091, 660.249, 743.407, 621.961, 747.528],
-        "coldPipelineMs": [2585.849, 2454.021, 2334.366],
+        "captureMs": [
+          1189.175166, 1487.1823750000003, 1227.934083, 967.0541249999987, 818.2557919999999
+        ],
+        "coldPipelineMs": [3988.8435420000023, 2802.387750000009, 3516.9156250000087],
         "byFamily": {
           "map": {
             "cases": 384,
@@ -59,23 +64,26 @@
             "unexpectedEdges": 192
           },
           "tsModules": {
-            "cases": 960,
-            "exact": 384,
-            "missingEdges": 384,
+            "cases": 1088,
+            "exact": 448,
+            "missingEdges": 448,
             "unexpectedEdges": 192
           },
           "jsModules": {
-            "cases": 704,
-            "exact": 256,
-            "missingEdges": 256,
+            "cases": 832,
+            "exact": 320,
+            "missingEdges": 320,
             "unexpectedEdges": 192
           }
         },
         "targetFingerprint": "2051748dc7f5bb8b49f9e311a4734e9bfed1d9309b97ca4ce3bae3e5c21d3a6b"
       },
       "dense": {
-        "captureMs": [2891.49, 2214.84, 2908.537, 2494.438, 2368.57],
-        "coldPipelineMs": [7678.669, 7171.283, 6107.722],
+        "captureMs": [
+          3215.7030000000013, 3587.6734579999993, 4441.8866670000025, 3504.0942499999983,
+          3311.9746669999986
+        ],
+        "coldPipelineMs": [8956.240291999995, 9469.743415999998, 9706.290542000002],
         "byFamily": {
           "map": {
             "cases": 1536,
@@ -90,15 +98,15 @@
             "unexpectedEdges": 768
           },
           "tsModules": {
-            "cases": 3840,
-            "exact": 1536,
-            "missingEdges": 1536,
+            "cases": 4352,
+            "exact": 1792,
+            "missingEdges": 1792,
             "unexpectedEdges": 768
           },
           "jsModules": {
-            "cases": 2816,
-            "exact": 1024,
-            "missingEdges": 1024,
+            "cases": 3328,
+            "exact": 1280,
+            "missingEdges": 1280,
             "unexpectedEdges": 768
           }
         },
@@ -106,10 +114,10 @@
       }
     },
     "growth": {
-      "breadthCapturePerCase": 1.091811618062026,
-      "breadthColdPipelinePerCase": 0.4537245950534348,
-      "densityCapturePerCase": 0.8388536721559227,
-      "densityColdPipelinePerCase": 0.7305646797757782
+      "breadthCapturePerCase": 1.1905119108698983,
+      "breadthColdPipelinePerCase": 0.5554982217549319,
+      "densityCapturePerCase": 0.7366648644763235,
+      "densityColdPipelinePerCase": 0.673156852888671
     },
     "replay": {
       "coldParsed": 153,
@@ -125,12 +133,15 @@
     }
   },
   "candidate": {
-    "parseIdentity": "sha256:89905b4c8f8bccb1611fbbf3f9e5921b019c4810bb36031cb862968e7155f999",
-    "peakRssKiB": 679552,
+    "parseIdentity": "sha256:ed99ce4ce3801eb3e238216d4c5ac7bd9cad22693a0d70e1fee7bda9cd657c15",
+    "peakRssKiB": 720416,
     "shapes": {
       "small": {
-        "captureMs": [353.385, 235.103, 255.066, 171.204, 236.517],
-        "coldPipelineMs": [2961.008, 1943.719, 1961.172],
+        "captureMs": [
+          154.85216600000058, 198.96579099999872, 184.18625000000065, 273.13945799999783,
+          251.54175000000032
+        ],
+        "coldPipelineMs": [1978.6587080000027, 1576.3201249999984, 1346.1638340000063],
         "byFamily": {
           "map": {
             "cases": 96,
@@ -145,23 +156,26 @@
             "unexpectedEdges": 0
           },
           "tsModules": {
-            "cases": 240,
-            "exact": 240,
+            "cases": 272,
+            "exact": 272,
             "missingEdges": 0,
             "unexpectedEdges": 0
           },
           "jsModules": {
-            "cases": 176,
-            "exact": 176,
+            "cases": 208,
+            "exact": 208,
             "missingEdges": 0,
             "unexpectedEdges": 0
           }
         },
-        "targetFingerprint": "8753b4d680a3dd73e04ff05b413716b81d11fedc2038f00ebb30f554f5ffb0d5"
+        "targetFingerprint": "a254431c5dae60627bca861745061b0ec453714e828714fa06fe5ca3501aa0cd"
       },
       "wide": {
-        "captureMs": [1093.804, 925.988, 911.413, 909.237, 944.71],
-        "coldPipelineMs": [5034.954, 3784.27, 4102.254],
+        "captureMs": [
+          883.7392500000005, 808.3662089999998, 800.7990409999984, 862.7738329999993,
+          1147.5692920000001
+        ],
+        "coldPipelineMs": [3518.0015420000054, 3540.384416000001, 2879.053874999998],
         "byFamily": {
           "map": {
             "cases": 384,
@@ -176,23 +190,26 @@
             "unexpectedEdges": 0
           },
           "tsModules": {
-            "cases": 960,
-            "exact": 960,
+            "cases": 1088,
+            "exact": 1088,
             "missingEdges": 0,
             "unexpectedEdges": 0
           },
           "jsModules": {
-            "cases": 704,
-            "exact": 704,
+            "cases": 832,
+            "exact": 832,
             "missingEdges": 0,
             "unexpectedEdges": 0
           }
         },
-        "targetFingerprint": "ba1dd504492f34e2961d3e491b3cf17344312badb22e437dbcc3daa5a2518c8e"
+        "targetFingerprint": "e533bfb96d68c48af9c51389c282f664ba8f5925709fe3f9d57a386ba782264c"
       },
       "dense": {
-        "captureMs": [4122.273, 3957.334, 3247.41, 2989.338, 3225.321],
-        "coldPipelineMs": [11492.358, 13505.785, 11158.532],
+        "captureMs": [
+          3233.0368750000007, 2891.3099170000005, 2934.1232500000006, 2961.987874999999,
+          3751.8144580000007
+        ],
+        "coldPipelineMs": [9507.746584, 10003.854875000005, 9841.971416999993],
         "byFamily": {
           "map": {
             "cases": 1536,
@@ -207,26 +224,26 @@
             "unexpectedEdges": 0
           },
           "tsModules": {
-            "cases": 3840,
-            "exact": 3840,
+            "cases": 4352,
+            "exact": 4352,
             "missingEdges": 0,
             "unexpectedEdges": 0
           },
           "jsModules": {
-            "cases": 2816,
-            "exact": 2816,
+            "cases": 3328,
+            "exact": 3328,
             "missingEdges": 0,
             "unexpectedEdges": 0
           }
         },
-        "targetFingerprint": "ebd6c4edb97a7152ff2915e66697469c0040beee97359b5c7760c8fdd2badf1d"
+        "targetFingerprint": "6d28a3cc947fdbd1f65efa2cdb2448ec2e559ccdf97bd279352fb9f11a20550c"
       }
     },
     "growth": {
-      "breadthCapturePerCase": 0.9787739753094559,
-      "breadthColdPipelinePerCase": 0.5229339397648562,
-      "densityCapturePerCase": 0.8767418169064661,
-      "densityColdPipelinePerCase": 0.7003684681528588
+      "breadthCapturePerCase": 1.0840730819400066,
+      "breadthColdPipelinePerCase": 0.5579452876045735,
+      "densityCapturePerCase": 0.8582747186191034,
+      "densityColdPipelinePerCase": 0.6994007321700015
     },
     "replay": {
       "coldParsed": 153,
@@ -241,13 +258,19 @@
       "editedCacheHits": 151
     }
   },
-  "candidateSource": "b5c1ad2747a10fbed9f91c82f9c7f2804ba9a686",
+  "candidateSource": "0e80a31050bb43e8c61237ad211d482c1c5706d3",
   "realIndex": {
     "sampleOrder": ["original", "candidate", "candidate", "original"],
     "original": {
-      "publicationMs": [44059.557, 50422.34],
-      "medianPublicationMs": 47240.9485,
-      "peakRssKiB": [2035888, 1489008],
+      "publicationMs": [66360.793125, 66758.263292],
+      "medianPublicationMs": 66559.5282085,
+      "peakRssKiB": [2001984, 1860192],
+      "revision": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
+      "sourceCommit": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
+      "sourceFingerprint": "8d4a0ada2c33e51f2477fc18ef3f6c7a0767928a77a7f2f12812604562340c46",
+      "workerPoolSize": 2,
+      "reparsedFiles": 1243,
+      "persistedFiles": 1247,
       "stats": {
         "files": 1247,
         "nodes": 40930,
@@ -256,19 +279,19 @@
         "processes": 823,
         "embeddings": 0
       },
-      "reparsedFiles": 1243,
-      "persistedFiles": 1247,
       "functionAndMethodCallEdges": 32327,
-      "functionAndMethodCallFingerprint": "b6cbc08db5cd41a3fdf01b7cc9aef2f45fa33c742f5c68e9ed78e10348640a0e",
-      "revision": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
-      "sourceCommit": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
-      "sourceFingerprint": "8d4a0ada2c33e51f2477fc18ef3f6c7a0767928a77a7f2f12812604562340c46",
-      "workerPoolSize": 2
+      "functionAndMethodCallFingerprint": "b6cbc08db5cd41a3fdf01b7cc9aef2f45fa33c742f5c68e9ed78e10348640a0e"
     },
     "candidate": {
-      "publicationMs": [55004.8, 52058.625],
-      "medianPublicationMs": 53531.7125,
-      "peakRssKiB": [1789136, 1595840],
+      "publicationMs": [67856.840125, 66016.57975],
+      "medianPublicationMs": 66936.70993750001,
+      "peakRssKiB": [1845648, 1970224],
+      "revision": "0e80a31050bb43e8c61237ad211d482c1c5706d3",
+      "sourceCommit": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
+      "sourceFingerprint": "8d4a0ada2c33e51f2477fc18ef3f6c7a0767928a77a7f2f12812604562340c46",
+      "workerPoolSize": 2,
+      "reparsedFiles": 1243,
+      "persistedFiles": 1247,
       "stats": {
         "files": 1247,
         "nodes": 40943,
@@ -277,14 +300,8 @@
         "processes": 822,
         "embeddings": 0
       },
-      "reparsedFiles": 1243,
-      "persistedFiles": 1247,
       "functionAndMethodCallEdges": 32373,
-      "functionAndMethodCallFingerprint": "0ff42a10f836f110e3f74447c49e0ba04a11d4b88049c5ac66f8aa8b6561fc36",
-      "revision": "e7c6aa22614b489528e5afee06091b54227dabd6",
-      "sourceCommit": "fcde41a8fdd6cab84c77ebf82ad6bfe8fe47e04e",
-      "sourceFingerprint": "8d4a0ada2c33e51f2477fc18ef3f6c7a0767928a77a7f2f12812604562340c46",
-      "workerPoolSize": 2
+      "functionAndMethodCallFingerprint": "0ff42a10f836f110e3f74447c49e0ba04a11d4b88049c5ac66f8aa8b6561fc36"
     }
   },
   "propertyDispatch": {
@@ -292,9 +309,9 @@
     "registrationCap": 32
   },
   "baselineCheck": {
-    "breadthCapturePerCase": 1.02615471789323,
-    "breadthColdPipelinePerCase": 0.44487601576520686,
-    "densityCapturePerCase": 0.9153002130441696,
-    "densityColdPipelinePerCase": 0.5619141635552617
+    "breadthCapturePerCase": 0.9688686211140898,
+    "breadthColdPipelinePerCase": 0.5205349850155107,
+    "densityCapturePerCase": 0.9156069865994503,
+    "densityColdPipelinePerCase": 0.6309437183051567
   }
 }
