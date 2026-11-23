@@ -1,0 +1,55 @@
+gitnexus/bench/file-result-reuse/baseline.json
+  s_3661dd8603713a::t_c06a1dc0a29736 3-39
+gitnexus/bench/file-result-reuse/benchmark.js
+  s_3661dd8603713a::t_a0e671ac06a08e 119,359-370,372-383,388,698
+gitnexus/bench/lexical-lookup/expected-references.json
+  s_b9690234122db7::t_dc300270bd6c81 1-6
+gitnexus/bench/lexical-lookup/measure.mjs
+  s_3661dd8603713a::t_172f697ea8e818 109
+gitnexus/bench/lexical-lookup/reference-migration.mjs
+  s_3661dd8603713a::t_9dbc4e9751f81f 18-20,120-121,151-166
+gitnexus/bench/v8-sidecar/check.mjs
+  s_3661dd8603713a::t_eb1b79300f91bf 7-10,87-90,93-98
+gitnexus/test/unit/parse-cache-benchmark-gates.test.ts
+  s_3661dd8603713a::t_ca27ddc2eba17e 1,5,72-98
+gitnexus/bench/typescript-ingestion/README.md
+  s_676b35bc218cc9::t_ee89301a496fcc 27-28,68-78,81-82,95-99
+gitnexus/bench/typescript-ingestion/baseline.json
+  s_676b35bc218cc9::t_299be6aef979f5 9-13,17-20,27-31,35-38,45-49,53-56
+gitnexus/bench/typescript-ingestion/module-fixtures.mjs
+  s_676b35bc218cc9::t_8a685f8fb04b6d 11-14,18,37,41-45,63-66
+gitnexus/test/unit/cache-interning-benchmark.test.ts
+  s_676b35bc218cc9::t_496601e459775a 188-221
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "21ab2ac9711b53a2757c14a55d4e661a701accb0",
+  "prompts": {},
+  "sessions": {
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
