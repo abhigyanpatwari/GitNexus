@@ -46,6 +46,7 @@ import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-grammars.js';
 import { KOTLIN_HTTP_PLUGIN } from '../../../src/core/group/extractors/http-patterns/kotlin.js';
+import { runProjectScan } from '../../../src/core/group/extractors/http-patterns/index.js';
 import type { HttpLanguagePlugin } from '../../../src/core/group/extractors/http-patterns/types.js';
 
 // Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
@@ -473,13 +474,13 @@ class OrderController : OrderApi {
 }
 `,
     };
-    const detections =
-      plugin.scanProject?.(
-        Object.entries(files).map(([filePath, source]) => ({
-          filePath,
-          tree: parseSource(new Parser(), source),
-        })),
-      ) ?? [];
+    const detections = runProjectScan(
+      plugin,
+      Object.entries(files).map(([filePath, source]) => ({
+        filePath,
+        tree: parseSource(new Parser(), source),
+      })),
+    );
     expect(
       detections.flatMap((file) =>
         file.detections

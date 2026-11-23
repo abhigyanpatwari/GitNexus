@@ -177,9 +177,27 @@ export interface HttpLanguagePlugin {
    */
   scan(tree: Parser.Tree, repoContext?: RepoContext, fileRel?: string): HttpDetection[];
   /**
-   * Optional project-level scan hook for language rules that require
-   * multiple files, such as Java controllers inheriting Spring mappings
-   * from annotated interfaces.
+   * Optional project-level scan for language rules that require multiple
+   * files, such as Java controllers inheriting Spring mappings from annotated
+   * interfaces. Plugins whose grammars form one project family (JS, TS, TSX)
+   * share the same object, which is how the orchestrator pools them.
    */
-  scanProject?(files: readonly HttpScanInput[], repoContext?: RepoContext): HttpFileDetections[];
+  projectScan?: HttpProjectScan;
+}
+
+/**
+ * Two-phase project scan. `collect` runs once per file while its tree is
+ * alive and reduces it to plain data; `resolve` then runs the cross-file pass
+ * over those facts. Splitting the two lets the orchestrator drop each tree as
+ * soon as its file is done instead of holding every tree of the family until
+ * the cross-file pass.
+ */
+export interface HttpProjectScan<TFacts = unknown> {
+  /**
+   * Reduce ONE parsed file to plain data. The result must not hold the tree,
+   * a syntax node, or anything else that cannot cross a structured clone.
+   */
+  collect(input: HttpScanInput, repoContext?: RepoContext): TFacts;
+  /** Cross-file pass over the collected facts, in scan order. */
+  resolve(facts: readonly TFacts[], repoContext?: RepoContext): HttpFileDetections[];
 }

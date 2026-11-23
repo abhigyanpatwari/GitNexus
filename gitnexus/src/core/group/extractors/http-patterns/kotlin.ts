@@ -6,12 +6,7 @@ import {
   unquoteLiteral,
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
-import type {
-  HttpDetection,
-  HttpFileDetections,
-  HttpLanguagePlugin,
-  HttpScanInput,
-} from './types.js';
+import type { HttpDetection, HttpLanguagePlugin, HttpProjectScan } from './types.js';
 import {
   findEnclosingClass,
   intersectSpringHttpMethods,
@@ -1157,7 +1152,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
   // ─── Provider via interface inheritance (Spring interface-based controller) ─
   // Pattern: `@RestController class X(...) : XApi` where the route annotations
   // live on the `XApi` interface and the controller's `override fun` carries
-  // none. Java resolves this in `scanProject` (scanSpringProject); this is the
+  // none. Java resolves this in `projectScan` (JAVA_PROJECT_SCAN); this is the
   // Kotlin port. tree-sitter-kotlin models BOTH class and interface as
   // `class_declaration`; the `interface` keyword token distinguishes them.
   const KOTLIN_TYPE_DECLARATION_PATTERNS = compilePatterns({
@@ -1334,10 +1329,10 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
   // `SharedSpringType` view and delegates. kotlinClassIsController handles every
   // controller form (bare, paired, and the arg-form `@RestController("bean")`)
   // via the `modifiers` `annotation`/`constructor_invocation` shape.
-  const scanKotlinProject = (files: readonly HttpScanInput[]): HttpFileDetections[] =>
-    scanSpringInheritanceProject(
-      files.flatMap((f) => collectKotlinSpringTypes(f.filePath, f.tree)),
-    );
+  const kotlinProjectScan: HttpProjectScan<SharedSpringType[]> = {
+    collect: ({ filePath, tree }) => collectKotlinSpringTypes(filePath, tree),
+    resolve: (facts) => scanSpringInheritanceProject(facts.flat()),
+  };
 
   return {
     name: 'kotlin-http',
@@ -1600,7 +1595,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
         if (enclosingClass && classesWithUnfoldablePrefix.has(enclosingClass.id)) continue;
         // A @(Get|...)Mapping on a (non-Feign) interface declares a route
         // *contract*, not a route this service serves — the implementing
-        // @RestController is the provider, emitted via scanProject's interface
+        // @RestController is the provider, emitted via projectScan's interface
         // inheritance. Java drops these implicitly (findEnclosingClass returns
         // null for an interface_declaration); tree-sitter-kotlin models an
         // interface as a class_declaration, so skip it explicitly here.
@@ -1796,7 +1791,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
 
       return out;
     },
-    scanProject: scanKotlinProject,
+    projectScan: kotlinProjectScan,
   };
 }
 

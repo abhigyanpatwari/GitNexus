@@ -12,7 +12,7 @@ import {
 import type {
   HttpDetection,
   HttpLanguagePlugin,
-  HttpScanInput,
+  HttpProjectScan,
   HttpFileDetections,
   RepoContext,
 } from './types.js';
@@ -527,29 +527,48 @@ function frameworkDetection(route: FrameworkRoute, facts: FrameworkRouteFacts): 
   };
 }
 
-/** One project family for JS, TS and TSX, using the already parsed group trees. */
-function scanNodeProject(
-  files: readonly HttpScanInput[],
+/** What `collect` keeps of one JS/TS file: the scope view and its route facts. */
+interface NodeFileFacts {
+  readonly filePath: string;
+  readonly entry: { parsed: ParsedFile; facts: FrameworkRouteFacts | null } | null;
+}
+
+/** Reduce one parsed file to its scope view and framework route facts. */
+function collectNodeFileFacts(
+  { filePath: rawPath, tree }: { filePath: string; tree: Parser.Tree },
+  repoContext?: RepoContext,
+): NodeFileFacts {
+  const filePath = normalizeRel(rawPath);
+  const context = repoContext as NodeRepoContext | undefined;
+  if (context?.configurationAvailable === false) return { filePath, entry: null };
+  const provider = getProviderForFile(filePath);
+  if (!provider) return { filePath, entry: null };
+  let parsed: ParsedFile | undefined;
+  try {
+    parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
+    if (!parsed) return { filePath, entry: null };
+    return { filePath, entry: { parsed, facts: extractFrameworkRouteFacts(tree, parsed) } };
+  } catch {
+    // A malformed file contributes no framework facts; other files survive.
+    return { filePath, entry: parsed ? { parsed, facts: null } : null };
+  }
+}
+
+/** One project family for JS, TS and TSX, over the facts collected per file. */
+function resolveNodeProject(
+  collected: readonly NodeFileFacts[],
   repoContext?: RepoContext,
 ): HttpFileDetections[] {
   const context = repoContext as NodeRepoContext | undefined;
   if (context?.configurationAvailable === false) return [];
   const parsedFiles: ParsedFile[] = [];
   const facts = new Map<string, FrameworkRouteFacts>();
-  for (const { filePath: rawPath, tree } of files) {
-    const filePath = normalizeRel(rawPath);
-    const provider = getProviderForFile(filePath);
-    if (!provider) continue;
-    try {
-      const parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
-      if (!parsed) continue;
-      parsedFiles.push(parsed);
-      facts.set(filePath, extractFrameworkRouteFacts(tree, parsed));
-    } catch {
-      // A malformed file contributes no framework facts; other files survive.
-    }
+  for (const { filePath, entry } of collected) {
+    if (!entry) continue;
+    parsedFiles.push(entry.parsed);
+    if (entry.facts) facts.set(filePath, entry.facts);
   }
-  const filePaths = context?.files ?? new Set(files.map((file) => normalizeRel(file.filePath)));
+  const filePaths = context?.files ?? new Set(collected.map((file) => file.filePath));
   const routes = resolveFrameworkRoutePaths([...facts.values()], (fromFile, specifier) => {
     const resolver =
       getLanguageFromFilename(fromFile) === SupportedLanguages.JavaScript
@@ -574,6 +593,12 @@ function scanNodeProject(
   }
   return [...detections].map(([filePath, found]) => ({ filePath, detections: found }));
 }
+
+/** Shared by the three JS/TS plugins, so the orchestrator pools them as one family. */
+const NODE_PROJECT_SCAN: HttpProjectScan<NodeFileFacts> = {
+  collect: collectNodeFileFacts,
+  resolve: resolveNodeProject,
+};
 
 /** The repo facts to resolve against, or null when there was no pre-pass. */
 function resolveFactsFor(
@@ -722,7 +747,8 @@ function scanBundle(
         : bundle === TSX_BUNDLE
           ? 'routes.tsx'
           : 'routes.ts';
-    out.push(...(scanNodeProject([{ filePath, tree }])[0]?.detections ?? []));
+    const local = NODE_PROJECT_SCAN.resolve([NODE_PROJECT_SCAN.collect({ filePath, tree })]);
+    out.push(...(local[0]?.detections ?? []));
   }
 
   // Consumer: fetch with options { method: 'X' }
@@ -934,7 +960,7 @@ export const JAVASCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'javascript-http',
   language: JavaScript,
   prepareRepo: buildNodeRepoContext,
-  scanProject: scanNodeProject,
+  projectScan: NODE_PROJECT_SCAN,
   scan: (tree, repoContext, fileRel) => scanBundle(JAVASCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
@@ -942,7 +968,7 @@ export const TYPESCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'typescript-http',
   language: TypeScript.typescript,
   prepareRepo: buildNodeRepoContext,
-  scanProject: scanNodeProject,
+  projectScan: NODE_PROJECT_SCAN,
   scan: (tree, repoContext, fileRel) => scanBundle(TYPESCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
@@ -950,6 +976,6 @@ export const TSX_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'tsx-http',
   language: TypeScript.tsx,
   prepareRepo: buildNodeRepoContext,
-  scanProject: scanNodeProject,
+  projectScan: NODE_PROJECT_SCAN,
   scan: (tree, repoContext, fileRel) => scanBundle(TSX_BUNDLE, tree, repoContext, fileRel),
 };

@@ -15,6 +15,7 @@ import {
 } from '../../src/core/ingestion/route-extractors/kotlin-const-resolver.js';
 import { joinPath } from '../../src/core/ingestion/route-extractors/spring-shared.js';
 import { KOTLIN_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/kotlin.js';
+import { runProjectScan } from '../../src/core/group/extractors/http-patterns/index.js';
 
 let Kotlin: Parser.Language | null = null;
 try {
@@ -715,8 +716,8 @@ class VendorController {
   });
 
   it('keeps aliased class method constraints in inherited group contracts', () => {
-    expect(KOTLIN_HTTP_PLUGIN?.scanProject).toBeDefined();
-    if (!KOTLIN_HTTP_PLUGIN?.scanProject) throw new Error('expected Kotlin project scanner');
+    expect(KOTLIN_HTTP_PLUGIN?.projectScan).toBeDefined();
+    if (!KOTLIN_HTTP_PLUGIN?.projectScan) throw new Error('expected Kotlin project scanner');
     const tree = parse(`
 @WinRequestMapping(path = "/contract", method = [RequestMethod.GET])
 interface Contract {
@@ -731,7 +732,7 @@ class VendorController : Contract {
 }
 `);
 
-    const detections = KOTLIN_HTTP_PLUGIN.scanProject([
+    const detections = runProjectScan(KOTLIN_HTTP_PLUGIN, [
       { filePath: 'VendorController.kt', tree },
     ]).flatMap((file) => file.detections);
 
