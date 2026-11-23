@@ -48,7 +48,7 @@ describe('pooled query memory guard process boundary', () => {
       },
     );
     expect(result.code).toBe(70);
-    expect(result.stderr).toContain('GitNexus stopped: process memory reached');
+    expect(result.stderr).toContain('GitNexus stopped: process memory (RSS) reached');
     expect(result.stderr).toContain('RETURN $privateValue AS n');
     expect(result.stderr).not.toContain('never-log-this-value');
   }, 30_000);

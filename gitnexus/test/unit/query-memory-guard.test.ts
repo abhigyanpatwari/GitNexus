@@ -112,6 +112,12 @@ describe('createQueryMemoryGuard', () => {
     h.setRss(1500);
     h.guard.begin('RETURN 1');
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+    expect(h.deps.onBreach).toHaveBeenCalledWith({
+      memoryBytes: 1500 * MIB,
+      measurement: 'rss',
+      budgetBytes: 1000 * MIB,
+      activeQueries: [{ label: 'RETURN 1', startBytes: 1500 * MIB, runningMs: 0 }],
+    });
   });
 
   it('checks memory growth when a query ends between sampler ticks', () => {
@@ -120,6 +126,12 @@ describe('createQueryMemoryGuard', () => {
     h.setRss(1500);
     h.guard.end(t, 1);
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+    expect(h.deps.onBreach).toHaveBeenCalledWith({
+      memoryBytes: 1500 * MIB,
+      measurement: 'rss',
+      budgetBytes: 1000 * MIB,
+      activeQueries: [{ label: 'RETURN 1', startBytes: 500 * MIB, runningMs: 0 }],
+    });
   });
 
   it('reports a breach with every running query once RSS passes the budget', () => {
@@ -462,7 +474,7 @@ describe('formatBreachMessage', () => {
   it('says when every query started with more than half of the memory in use', () => {
     const msg = rssBreach(17 * GIB, [15 * GIB, 16 * GIB]);
     expect(msg).toContain(
-      'RSS was already 15.0 GB or more when each query listed below started, more than half of it.',
+      'RSS was already 15.0 GB or more when each query listed below started. That memory',
     );
     expect(msg).toContain(
       'not attributable to those queries (for example source parsing or earlier work in the same process)',
@@ -479,8 +491,17 @@ describe('formatBreachMessage', () => {
   it('blames the queries at exactly half and clears them just above it', () => {
     expect(rssBreach(16 * GIB, [8 * GIB])).toContain('while running a graph query');
     const above = rssBreach(16 * GIB, [8 * GIB + MIB]);
-    expect(above).toContain('more than half of it');
     expect(above).not.toContain('while running a graph query');
+    // Rounded, the floor equals half of the reached value; the text must not
+    // claim more than the printed numbers show.
+    expect(above).toContain('reached 16.0 GB');
+    expect(above).toContain('RSS was already 8.0 GB or more');
+    expect(above).not.toContain('more than half');
+  });
+
+  it('rounds the start floor down so "or more" stays true', () => {
+    const msg = rssBreach(16.5 * GIB, [8.29 * GIB]);
+    expect(msg).toContain('RSS was already 8.2 GB or more');
   });
 
   it('uses the lowest start memory, not the oldest query', () => {

@@ -260,7 +260,8 @@ Orchestrator: `.github/workflows/ci.yml`.
 ## Query memory limit
 
 **Symptom:** a CLI, MCP, or HTTP server process exits with code **70** and
-`GitNexus stopped: process memory reached …` on stderr.
+`GitNexus stopped: process memory (RSS) reached …` or, on macOS,
+`GitNexus stopped: physical footprint reached …` on stderr.
 
 The pooled-read guard detected memory above its process-wide budget. Native
 query allocations are outside both V8's heap limit and LadybugDB's buffer pool.
@@ -268,6 +269,13 @@ The Node binding cannot interrupt them, so the guard exits the process to
 release memory. Every request in that process is interrupted; restart the
 CLI/server or reconnect the MCP client. A read-only query does not require a
 reindex after this exit.
+
+The message lists each running query with its RSS at start and its running time.
+If it says the memory "is not attributable to those queries", more than half of
+the RSS was already in use when every listed query started. Look at what the
+process did before those queries, such as source parsing or earlier work, before
+you blame a query. After a physical-footprint breach, the start RSS cannot show
+how much of the footprint was already in use.
 
 To diagnose a repeat, set `GITNEXUS_QUERY_TRACE=1` in the query/server environment
 and retain stderr. It includes query text but not bound parameters. Review the

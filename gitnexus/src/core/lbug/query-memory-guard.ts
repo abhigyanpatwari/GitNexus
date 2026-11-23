@@ -111,6 +111,8 @@ export interface QueryMemoryGuard {
 
 export function formatBreachMessage(breach: QueryMemoryBreach): string {
   const gb = (n: number) => (n / (1024 * MIB)).toFixed(1);
+  // Rounded down, so "X GB or more" stays true.
+  const gbAtLeast = (n: number) => (Math.floor((n / (1024 * MIB)) * 10) / 10).toFixed(1);
   // `startBytes` is RSS. Growth and the pre-existing share are only computed
   // against an RSS breach: the footprint counts compressed and swapped pages
   // that RSS does not, so the two cannot be subtracted.
@@ -140,9 +142,9 @@ export function formatBreachMessage(breach: QueryMemoryBreach): string {
       `footprint was in use before these queries started.`;
   } else if (floorBytes > breach.memoryBytes * PREEXISTING_MEMORY_SHARE) {
     headline =
-      `${reached}. RSS was already ${gb(floorBytes)} GB or more when each query listed ` +
-      `below started, more than half of it. That memory is not attributable to those ` +
-      `queries (for example source parsing or earlier work in the same process).`;
+      `${reached}. RSS was already ${gbAtLeast(floorBytes)} GB or more when each query ` +
+      `listed below started. That memory is not attributable to those queries (for ` +
+      `example source parsing or earlier work in the same process).`;
   } else {
     headline = `${reached}, while running a graph query.`;
   }
