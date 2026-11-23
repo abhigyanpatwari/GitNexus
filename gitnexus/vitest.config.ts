@@ -191,6 +191,9 @@ export default defineConfig({
             // the wiki's graph queries executed by a real engine rather than a
             // fake that answers on `query.includes(...)`.
             'test/integration/wiki-graph-queries-engine.test.ts',
+            // Native @ladybugdb/core: tool calls through createMCPServer against
+            // a real graph, with engine failures injected below the pool.
+            'test/integration/mcp-tool-fault-class.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             // Publication reconciliation uses real native COPY/checkpoints.
             'test/unit/incremental-write-integrity.test.ts',
@@ -294,6 +297,7 @@ export default defineConfig({
             'test/integration/impact-ambiguous-blast-radius.test.ts',
             'test/integration/detect-changes-path-anchoring.test.ts',
             'test/integration/wiki-graph-queries-engine.test.ts',
+            'test/integration/mcp-tool-fault-class.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-write-integrity.test.ts',
             'test/unit/incremental-orchestration.test.ts',

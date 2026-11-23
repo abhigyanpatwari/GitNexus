@@ -31,6 +31,7 @@ import {
   REPO_SCOPED_TOOLS,
 } from './tools.js';
 import { installGlobalStdoutSentinel } from './stdio-context.js';
+import { createFaultScope, faultOf, markFault } from '../core/fault-class.js';
 import type { LocalBackend, McpToolCallContext } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
 import {
@@ -62,6 +63,25 @@ import {
 } from './response-filter.js';
 
 /**
+ * `_meta` key with the fault class of a failed `tools/call`: `client` when the
+ * caller can fix the call, `server` for engine, storage and server faults. It
+ * is set on `isError` results and on results that report `{ error }`, and is
+ * absent on success, so a proxy or gateway in front of the server can tell the
+ * two apart without parsing the text.
+ */
+export const MCP_FAULT_META_KEY = 'io.github.abhigyanpatwari.gitnexus/fault';
+
+/** A tool result that reports a failure as `{ error }` instead of throwing. */
+function hasToolError(value: unknown): boolean {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    'error' in value &&
+    (value as { error?: unknown }).error !== undefined
+  );
+}
+
+/**
  * Next-step hints appended to tool responses.
  *
  * Agents often stop after one tool call. These hints guide them to the
@@ -81,12 +101,7 @@ export function getNextStepHint(
   const repoPath = repo || '{name}';
 
   if ((toolName === 'query' || toolName === 'search') && Array.isArray(repo)) {
-    const failed =
-      toolResult !== null &&
-      typeof toolResult === 'object' &&
-      'error' in toolResult &&
-      toolResult.error !== undefined;
-    const hint = failed
+    const hint = hasToolError(toolResult)
       ? 'Resolve the reported error before retrying this search.'
       : `For a returned symbol, use context({uid: "<id>", repo: "<row._repo>"}) to inspect its references and processes.${args?.include_content === true ? ' Source previews marked content_truncated are incomplete; use context({uid: "<id>", repo: "<row._repo>", include_content: true}) or read_file with a bounded line range for more.' : ''}`;
     return toolName === 'search' ? `\n\n---\n**Next:** ${hint}` : hint;
@@ -327,6 +342,8 @@ export function createMCPServer(
   server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: args } = request.params;
     let maxTokens: number | undefined;
+    // Collects the classes of errors the tool catches and returns as results.
+    const faultScope = createFaultScope();
 
     try {
       const typedArgs = args as Record<string, unknown> | undefined;
@@ -353,9 +370,11 @@ export function createMCPServer(
           ? refreshProgress(request.params._meta?.progressToken, extra)
           : undefined;
       const rawResult = applyMcpResponseFilter(
-        await (callContext
-          ? scopedBackend.callTool(name, backendArgs, callContext)
-          : scopedBackend.callTool(name, backendArgs)),
+        await faultScope.run(() =>
+          callContext
+            ? scopedBackend.callTool(name, backendArgs, callContext)
+            : scopedBackend.callTool(name, backendArgs),
+        ),
         responseFilter,
       );
       const hint = getNextStepHint(
@@ -366,9 +385,19 @@ export function createMCPServer(
       );
       // Trim whole impact records to the budget so the JSON stays valid; the
       // byte cap below remains the backstop for everything else.
-      const result = isImpact
-        ? shapeImpactForAgent(rawResult, maxTokens, Buffer.byteLength(hint, 'utf8'))
-        : rawResult;
+      let result = rawResult;
+      if (isImpact) {
+        try {
+          result = shapeImpactForAgent(rawResult, maxTokens, Buffer.byteLength(hint, 'utf8'));
+        } catch (error) {
+          // The budget is the caller's only when the call set maxTokens; the
+          // GITNEXUS_MCP_DEFAULT_MAX_TOKENS default is the operator's.
+          if (error instanceof ImpactBudgetExceededError) {
+            markFault(error, typedArgs?.maxTokens !== undefined ? 'client' : 'server');
+          }
+          throw error;
+        }
+      }
       const resultText =
         name === 'query' && result !== null && typeof result === 'object' && !Array.isArray(result)
           ? JSON.stringify({ ...result, next: hint })
@@ -381,6 +410,14 @@ export function createMCPServer(
             text: applyMcpMaxTokens(resultText, maxTokens),
           },
         ],
+        // A returned error is the caller's unless the tool reported a server fault.
+        ...(hasToolError(rawResult)
+          ? {
+              _meta: {
+                [MCP_FAULT_META_KEY]: faultScope.fault() === 'server' ? 'server' : 'client',
+              },
+            }
+          : {}),
       };
     } catch (error) {
       return {
@@ -394,6 +431,8 @@ export function createMCPServer(
           },
         ],
         isError: true,
+        // A thrown error carries its class; an unclassified one is unexpected.
+        _meta: { [MCP_FAULT_META_KEY]: faultOf(error) ?? 'server' },
       };
     }
   });
