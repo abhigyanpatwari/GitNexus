@@ -1,0 +1,29 @@
+gitnexus/bench/file-result-reuse/benchmark.js
+  s_676b35bc218cc9::t_fe88023391daba 30,37,634,744,823
+gitnexus/bench/lib/identity-guard.mjs
+  s_676b35bc218cc9::t_310c31d6a42429 7-9
+gitnexus/bench/typescript-ingestion/measure-index.mjs
+  s_676b35bc218cc9::t_436e5793499fb4 11,27,32,49
+gitnexus/bench/typescript-ingestion/measure.mjs
+  s_676b35bc218cc9::t_54f90215365b6b 9-10,179-180,369,444
+gitnexus/bench/typescript-property-dispatch/measure.mjs
+  s_676b35bc218cc9::t_ca4d5285385297 9-10,94-100,103-107,170
+gitnexus/test/unit/parse-cache-benchmark-gates.test.ts
+  s_676b35bc218cc9::t_8a53d6df08ee60 6-7,75-82
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "406a92c31ad66b986cc1a51dd9dbc7e95495a59c",
+  "prompts": {},
+  "sessions": {
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
