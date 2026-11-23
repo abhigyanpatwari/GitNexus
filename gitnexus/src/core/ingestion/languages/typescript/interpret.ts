@@ -295,8 +295,15 @@ export function tsQualifiedTypeLookupSpelling(
   if (!written?.includes('.') || typeRef.rawName.includes('.') || scopes === undefined) {
     return undefined;
   }
-  const spelling = canonicalTypeScriptName(normalizeBindingType(written)).replace(/\s*\.\s*/g, '.');
-  if (!QUALIFIED_NAME.test(spelling) || !spelling.endsWith(`.${typeRef.rawName}`)) return undefined;
+  // Consume each whitespace run once and remove runs adjoining a dot.
+  const spelling = canonicalTypeScriptName(normalizeBindingType(written)).replace(
+    /\s+/g,
+    (space: string, offset: number, text: string) =>
+      text[offset - 1] === '.' || text[offset + space.length] === '.' ? '' : space,
+  );
+  if (!QUALIFIED_NAME.test(spelling) || !spelling.endsWith(`.${typeRef.rawName.trim()}`)) {
+    return undefined;
+  }
   const module = moduleScopeIdOf(typeRef.declaredAtScope, scopes);
   if (module === null) return undefined;
   const root = spelling.slice(0, spelling.indexOf('.'));
