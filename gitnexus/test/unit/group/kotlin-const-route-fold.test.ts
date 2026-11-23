@@ -67,8 +67,11 @@ const parseSource = (p: Parser, src: string): Parser.Tree => {
 };
 
 /** prepareRepo + a 3-argument scan over every file; contracts of one role. */
-function contracts(files: Record<string, string>, role: 'provider' | 'consumer'): string[] {
-  const ctx = plugin.prepareRepo?.({
+async function contracts(
+  files: Record<string, string>,
+  role: 'provider' | 'consumer',
+): Promise<string[]> {
+  const ctx = await plugin.prepareRepo?.({
     repoPath: '/virtual',
     files: Object.keys(files),
     parser: new Parser(),
@@ -84,8 +87,10 @@ function contracts(files: Record<string, string>, role: 'provider' | 'consumer')
   return out.sort();
 }
 
-const providers = (files: Record<string, string>): string[] => contracts(files, 'provider');
-const consumers = (files: Record<string, string>): string[] => contracts(files, 'consumer');
+const providers = (files: Record<string, string>): Promise<string[]> =>
+  contracts(files, 'provider');
+const consumers = (files: Record<string, string>): Promise<string[]> =>
+  contracts(files, 'consumer');
 
 const CONSTS = 'src/main/kotlin/com/example/app/api/ApiPaths.kt';
 const CONTROLLER = 'src/main/kotlin/com/example/app/web/OrderController.kt';
@@ -100,9 +105,9 @@ object ApiPaths {
 `;
 
 describeKotlin('Kotlin constant-valued Spring routes (group plugin)', () => {
-  it('folds a qualified reference in a positional argument', () => {
+  it('folds a qualified reference in a positional argument', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -118,9 +123,9 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('folds a standalone top-level val from another file', () => {
+  it('folds a standalone top-level val from another file', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: `package com.example.app.api
 
 val ORDERS = "/api/v1/orders"
@@ -139,9 +144,9 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('folds declarations imported through a package star', () => {
+  it('folds declarations imported through a package star', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: `package com.example.app.api
 
 const val ORDERS = "/api/v1/orders"
@@ -166,9 +171,9 @@ class OrderController {
     ).toEqual(['GET /api/v1/items', 'GET /api/v1/orders']);
   });
 
-  it('folds object members imported through a classifier star', () => {
+  it('folds object members imported through a classifier star', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -184,9 +189,9 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('prefers same-package sibling declarations over package-star imports', () => {
+  it('prefers same-package sibling declarations over package-star imports', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: `package com.example.app.api
 const val ORDERS = "/imported"
 object ApiPaths {
@@ -215,9 +220,9 @@ class OrderController {
     ).toEqual(['GET /local', 'GET /local/items']);
   });
 
-  it('folds a constant imported through a nested object', () => {
+  it('folds a constant imported through a nested object', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: `package com.example.app.api
 
 object Outer {
@@ -240,9 +245,9 @@ class OrderController {
     ).toEqual(['GET /nested/orders']);
   });
 
-  it('folds a named `value =` / `path =` argument and an inline concatenation', () => {
+  it('folds a named `value =` / `path =` argument and an inline concatenation', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -261,9 +266,9 @@ class OrderController {
     ).toEqual(['DELETE /api/v1/orders', 'POST /api/v1/orders/create']);
   });
 
-  it('folds a fully-qualified reference and a single-name import', () => {
+  it('folds a fully-qualified reference and a single-name import', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -282,9 +287,9 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders', 'PUT /api/v1/orders']);
   });
 
-  it('ignores a non-route named argument', () => {
+  it('ignores a non-route named argument', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -300,9 +305,9 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('suppresses every method route under a CONSTANT class prefix', () => {
+  it('suppresses every method route under a CONSTANT class prefix', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -322,14 +327,14 @@ class OrderController {
     ).toEqual([]);
   });
 
-  it('suppresses them just the same when the class prefix is a NAMED argument', () => {
+  it('suppresses them just the same when the class prefix is a NAMED argument', async () => {
     // `@RequestMapping(value = ApiPaths.BASE)` takes the other branch of
     // `kotlinRouteArgumentExpression` (read the key, then take `namedChild(1)`)
     // than the positional case above. Both must reach the same verdict: a
     // regression in the named branch would let the class escape suppression and
     // publish every method under it unprefixed.
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -389,43 +394,46 @@ class OrderController {
     ['a function call', 'buildPath()', '\nfun buildPath(): String = ApiPaths.BASE\n'],
     ['an interpolated string', '"${ApiPaths.BASE}"', ''],
     ['an if expression', 'if (USE_V2) "/api/v2" else "/api/v1"', '\nconst val USE_V2 = false\n'],
-  ])('suppresses every method route under a class prefix that is %s', (_label, prefix, decls) => {
-    expect(providers(controllerWithPrefix(prefix, decls))).toEqual([]);
-  });
+  ])(
+    'suppresses every method route under a class prefix that is %s',
+    async (_label, prefix, decls) => {
+      expect(await providers(controllerWithPrefix(prefix, decls))).toEqual([]);
+    },
+  );
 
-  it('keeps both routes when that same class prefix is a plain literal', () => {
+  it('keeps both routes when that same class prefix is a plain literal', async () => {
     // The control for the table above: same two methods, same helper, a prefix
     // the extractor can resolve. Without it an empty result there would be
     // indistinguishable from the fixture failing to produce routes at all.
-    expect(providers(controllerWithPrefix('"/api"'))).toEqual([
+    expect(await providers(controllerWithPrefix('"/api"'))).toEqual([
       'GET /api/api/v1/orders',
       'GET /api/literal',
     ]);
   });
 
-  it('keeps the resolvable arm of a PARTLY resolvable class prefix', () => {
+  it('keeps the resolvable arm of a PARTLY resolvable class prefix', async () => {
     // Kotlin's vararg spelling. `/lit` is a real prefix the application really
     // serves, so the routes under it are derivable and must survive; only the
     // `ApiPaths.BASE` arm is missing from the result, exactly as it was before
     // constant folding existed. Marking the class unfoldable here would trade a
     // wrong route for a missing one, which is not the bargain suppression makes.
-    expect(providers(controllerWithPrefix('"/lit", ApiPaths.BASE'))).toEqual([
+    expect(await providers(controllerWithPrefix('"/lit", ApiPaths.BASE'))).toEqual([
       'GET /lit/api/v1/orders',
       'GET /lit/literal',
     ]);
     // Same shape spelled as one collection argument.
-    expect(providers(controllerWithPrefix('["/lit", ApiPaths.BASE]'))).toEqual([
+    expect(await providers(controllerWithPrefix('["/lit", ApiPaths.BASE]'))).toEqual([
       'GET /lit/api/v1/orders',
       'GET /lit/literal',
     ]);
   });
 
-  it('does not treat a @RequestMapping without a path argument as a prefix', () => {
+  it('does not treat a @RequestMapping without a path argument as a prefix', async () => {
     // `produces` is not a path, so this class has no prefix — not an
     // unresolvable one. Suppressing here would drop routes that are correct and
     // complete as written.
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -442,7 +450,7 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('does not treat an EMPTY class path array as an unresolvable prefix', () => {
+  it('does not treat an EMPTY class path array as an unresolvable prefix', async () => {
     // `@RequestMapping(arrayOf())` designates NO prefix — Spring maps the class
     // at the application root — so `/literal` really is served at `/literal`.
     // Treating it as an unresolvable prefix suppressed every route under the
@@ -450,7 +458,7 @@ class OrderController {
     // in. The arithmetic behind that: an empty array has no elements, and "no
     // element is a literal" is trivially true of an empty set, so the class read
     // as unresolvable. "No prefix" is not "an unresolvable prefix".
-    expect(providers(controllerWithPrefix('arrayOf()'))).toEqual([
+    expect(await providers(controllerWithPrefix('arrayOf()'))).toEqual([
       'GET /api/v1/orders',
       'GET /literal',
     ]);
@@ -490,18 +498,18 @@ class OrderController : OrderApi {
     ).toEqual(['GET /orders']);
   });
 
-  it('still suppresses a NON-empty array whose only element is a constant', () => {
+  it('still suppresses a NON-empty array whose only element is a constant', async () => {
     // The control for the empty `arrayOf()` case: an array that DOES designate
     // a prefix still suppresses when that prefix is unknowable.
-    expect(providers(controllerWithPrefix('arrayOf(ApiPaths.BASE)'))).toEqual([]);
+    expect(await providers(controllerWithPrefix('arrayOf(ApiPaths.BASE)'))).toEqual([]);
   });
 
-  it('does not treat an EMPTY @FeignClient(path) array as an unresolvable path', () => {
+  it('does not treat an EMPTY @FeignClient(path) array as an unresolvable path', async () => {
     // Same distinction on the consumer side, where the governing-prefix guard is
     // its own set: `path = arrayOf()` adds no prefix, so the remote URL is
     // exactly the method's own path and the consumer is knowable.
     expect(
-      consumers({
+      await consumers({
         [CLIENT]: `package com.example.app.client
 
 @FeignClient(name = "orders", path = arrayOf())
@@ -514,9 +522,9 @@ interface OrderClient {
     ).toEqual(['GET /orders']);
   });
 
-  it('still applies a LITERAL class prefix to a folded method path', () => {
+  it('still applies a LITERAL class prefix to a folded method path', async () => {
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: `package com.example.app.web
 
@@ -533,9 +541,9 @@ class OrderController {
     ).toEqual(['GET /api/v1/api/v1/orders']);
   });
 
-  it('emits nothing when the constant cannot be resolved', () => {
+  it('emits nothing when the constant cannot be resolved', async () => {
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 import com.example.app.api.ApiPaths
@@ -569,9 +577,9 @@ class OrderController {
     expect(plugin.scan(tree).filter((d) => d.role === 'provider')).toEqual([]);
   });
 
-  it('folds a constant method path on a @FeignClient interface', () => {
+  it('folds a constant method path on a @FeignClient interface', async () => {
     expect(
-      consumers({
+      await consumers({
         [CONSTS]: CONSTS_SRC,
         [CLIENT]: `package com.example.app.client
 
@@ -587,7 +595,7 @@ interface OrderClient {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('drops a @FeignClient consumer whose interface prefix is a CONSTANT', () => {
+  it('drops a @FeignClient consumer whose interface prefix is a CONSTANT', async () => {
     // In tree-sitter-kotlin an `interface` is a `class_declaration`, so the
     // suppression rule reaches a Feign interface too — and it must, for the same
     // reason it reaches a controller: the prefix is not knowable here, so the
@@ -608,12 +616,12 @@ interface OrderClient {
 }
 `,
     };
-    expect(consumers(files)).toEqual([]);
+    expect(await consumers(files)).toEqual([]);
     // Control: the identical interface with a LITERAL prefix is still detected,
     // so the empty result above is the suppression rule and not a blind spot in
     // Feign detection itself.
     expect(
-      consumers({
+      await consumers({
         ...files,
         [CLIENT]: files[CLIENT].replace(
           '@RequestMapping(ApiPaths.BASE)',
@@ -623,7 +631,7 @@ interface OrderClient {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('drops a @FeignClient consumer whose `path` argument is a CONSTANT', () => {
+  it('drops a @FeignClient consumer whose `path` argument is a CONSTANT', async () => {
     // `path` is the Feign client's own prefix and is never a `@RequestMapping`,
     // so the class-prefix analysis cannot see it. Left unchecked, this interface
     // falls through to the no-prefix fallback and publishes a remote call to
@@ -642,23 +650,23 @@ interface OrderClient {
 }
 `,
     };
-    expect(consumers(files)).toEqual([]);
+    expect(await consumers(files)).toEqual([]);
     // Control: the same interface with a LITERAL `path` is still detected.
     expect(
-      consumers({
+      await consumers({
         ...files,
         [CLIENT]: files[CLIENT].replace('path = ApiPaths.BASE', 'path = "/svc"'),
       }),
     ).toEqual(['GET /svc/api/v1/orders']);
   });
 
-  it('lets a literal @FeignClient(path) outrank a CONSTANT @RequestMapping', () => {
+  it('lets a literal @FeignClient(path) outrank a CONSTANT @RequestMapping', async () => {
     // `path` wins over `@RequestMapping` when the URL is assembled, so it has to
     // win when resolvability is judged too — otherwise an interface whose real
     // prefix is perfectly knowable loses its consumer to a `@RequestMapping`
     // that never governed it.
     expect(
-      consumers({
+      await consumers({
         [CONSTS]: CONSTS_SRC,
         [CLIENT]: `package com.example.app.client
 
@@ -675,7 +683,7 @@ interface OrderClient {
     ).toEqual(['GET /svc/orders']);
   });
 
-  it('drops a @RequestLine consumer under an unresolvable interface prefix', () => {
+  it('drops a @RequestLine consumer under an unresolvable interface prefix', async () => {
     // `@RequestLine` carries its own verb and path but is still prefixed by the
     // interface, and it resolves through the same "path wins" fallback chain as
     // the `@(Get|…)Mapping` lane — so an unresolvable governing prefix leaves
@@ -694,10 +702,10 @@ interface OrderClient {
 }
 `,
     };
-    expect(consumers(files)).toEqual([]);
+    expect(await consumers(files)).toEqual([]);
     // Control: a literal interface prefix still yields the prefixed consumer.
     expect(
-      consumers({
+      await consumers({
         ...files,
         [CLIENT]: files[CLIENT].replace(
           '@RequestMapping(ApiPaths.BASE)',
@@ -707,13 +715,13 @@ interface OrderClient {
     ).toEqual(['GET /lit/list']);
   });
 
-  it('judges @RequestLine and @(Get|…)Mapping alike on ONE interface', () => {
+  it('judges @RequestLine and @(Get|…)Mapping alike on ONE interface', async () => {
     // Both lanes read the same prefix through the same fallback chain, so they
     // must reach the same verdict on it. A guard on only one of them lets the
     // interface suppress one route and publish the other under the very same
     // unresolvable prefix — a self-inconsistency visible in a single scan.
     expect(
-      consumers({
+      await consumers({
         [CONSTS]: CONSTS_SRC,
         [CLIENT]: `package com.example.app.client
 
@@ -733,7 +741,7 @@ interface OrderClient {
     ).toEqual([]);
   });
 
-  it('folds across files when repository keys use Windows separators', () => {
+  it('folds across files when repository keys use Windows separators', async () => {
     // The orchestrator's file list comes from glob v13, which has no
     // `posix: true` and joins with the platform separator, so on Windows both
     // `prepareRepo({files})` and `scan(tree, ctx, rel)` see
@@ -750,7 +758,7 @@ interface OrderClient {
     // simulates the whole bug.
     const winKey = (rel: string): string => rel.replace(/\//g, '\\');
     expect(
-      providers({
+      await providers({
         [winKey(CONSTS)]: CONSTS_SRC,
         [winKey(CONTROLLER)]: `package com.example.app.web
 
@@ -766,7 +774,7 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('treats a constant that folds to "" as the class prefix itself', () => {
+  it('treats a constant that folds to "" as the class prefix itself', async () => {
     // `const val ROOT = ""` is Spring's idiom for "the collection root", and
     // `joinPath` resolves it against the class prefix exactly as it resolves the
     // literal `@PostMapping("")` beside it. The fold used to collapse `''` into
@@ -776,7 +784,7 @@ class OrderController {
     // constant alone would pass against any chosen convention rather than
     // pinning the two spellings together.
     expect(
-      providers({
+      await providers({
         [CONSTS]: `package com.example.app.api
 
 object ApiPaths {
@@ -801,7 +809,7 @@ class OrderController {
     ).toEqual(['GET /api/', 'POST /api/']);
   });
 
-  it('serves the same route whichever of two same-named objects is declared first', () => {
+  it('serves the same route whichever of two same-named objects is declared first', async () => {
     // `A.ROUTE = BASE + "/m"` means `A.BASE`. Recording every object member
     // under its bare name too made that operand resolve through whichever
     // same-named sibling was walked LAST, so reordering two objects — a change
@@ -825,18 +833,22 @@ class OrderController {
     const B = `object B {
     const val BASE = "/wrong"
 }`;
-    expect(providers({ [CONTROLLER]: controllerWith(`${A}\n\n${B}`) })).toEqual(['GET /right/m']);
-    expect(providers({ [CONTROLLER]: controllerWith(`${B}\n\n${A}`) })).toEqual(['GET /right/m']);
+    expect(await providers({ [CONTROLLER]: controllerWith(`${A}\n\n${B}`) })).toEqual([
+      'GET /right/m',
+    ]);
+    expect(await providers({ [CONTROLLER]: controllerWith(`${B}\n\n${A}`) })).toEqual([
+      'GET /right/m',
+    ]);
   });
 
-  it('reads a bare route constant from the import, not from a local object member', () => {
+  it('reads a bare route constant from the import, not from a local object member', async () => {
     // Bare `ORDERS` in this file is the IMPORT: `object Local` binds
     // `Local.ORDERS` and nothing else. A bare key for the object member is a
     // binding Kotlin does not have, and it outranked the import because the fold
     // consults literals before imports — publishing a path the service does not
     // serve.
     expect(
-      providers({
+      await providers({
         [CONSTS]: `package com.example.app.api
 
 object ApiPaths {
@@ -861,13 +873,13 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('keeps a companion constant readable under its bare name', () => {
+  it('keeps a companion constant readable under its bare name', async () => {
     // The control for the test above, and the reason object members and
     // companion members are keyed differently: a companion's members ARE in
     // scope unqualified throughout the enclosing class, which is precisely where
     // route annotations sit.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 @RestController
@@ -884,12 +896,12 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('resolves a bare companion constant inside a nested class', () => {
+  it('resolves a bare companion constant inside a nested class', async () => {
     // Declaration extraction and reference-site qualification must agree on
     // the full owner path. `ORDERS` here means `Outer.Inner.ORDERS`, not the
     // nonexistent top-level `Inner.ORDERS`.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 @RestController
@@ -908,7 +920,7 @@ class Outer {
     ).toEqual(['GET /nested/orders']);
   });
 
-  it('folds through the file that declares the package, not one whose path imitates it', () => {
+  it('folds through the file that declares the package, not one whose path imitates it', async () => {
     // The decoy's PATH ends with the imported FQN, but it declares
     // `package x.com.example.app.api` — a different declaration. Choosing the
     // candidate by path let it win, and because it declares the same member the
@@ -916,7 +928,7 @@ class Outer {
     // authority; the path is only a tie-break among files that already declare
     // the right one.
     expect(
-      providers({
+      await providers({
         'src/generated/Constants.kt': `package com.example.app.api
 
 object ApiPaths {
@@ -943,7 +955,7 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('emits nothing when a test-source copy duplicates a production constant', () => {
+  it('emits nothing when a test-source copy duplicates a production constant', async () => {
     // Same package, same object, different value, and only the copy follows the
     // `<package>/<Name>.kt` convention — so a file-name tie-break folded a
     // test-only path into a production route. Two declarations of one
@@ -951,7 +963,7 @@ class OrderController {
     // is no route: preferring the production source set would be a guess about
     // build configuration this layer cannot see.
     expect(
-      providers({
+      await providers({
         'src/main/kotlin/generated/RoutePaths.kt': `package com.example.app.api
 
 object ApiPaths {
@@ -978,9 +990,9 @@ class OrderController {
     ).toEqual([]);
   });
 
-  it('keeps an unfoldable production twin in duplicate-FQN detection', () => {
+  it('keeps an unfoldable production twin in duplicate-FQN detection', async () => {
     expect(
-      providers({
+      await providers({
         'src/main/kotlin/generated/RoutePaths.kt': `package com.example.app.api
 
 object ApiPaths {
@@ -1007,7 +1019,7 @@ class OrderController {
     ).toEqual([]);
   });
 
-  it('resolves a bare reference by the class it sits in, not by declaration order', () => {
+  it('resolves a bare reference by the class it sits in, not by declaration order', async () => {
     // A companion member is bound unqualified inside its enclosing class BODY
     // and nowhere else. Recorded under a file-level bare key it landed in the
     // same namespace as top-level declarations and, because companions are
@@ -1019,7 +1031,7 @@ class OrderController {
     // one would also pass on an implementation that simply dropped companions,
     // and a fixture with only the right one would pass on the old file-wide key.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 const val ORDERS = "/top"
@@ -1043,9 +1055,9 @@ class OrderController {
     ).toEqual(['GET /companion', 'GET /top']);
   });
 
-  it('does not publish a top-level route for an unfoldable companion binding', () => {
+  it('does not publish a top-level route for an unfoldable companion binding', async () => {
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 const val ORDERS = "/top"
@@ -1070,13 +1082,13 @@ class OtherController {
     ).toEqual(['GET /top']);
   });
 
-  it('gives two colliding companions each their own class', () => {
+  it('gives two colliding companions each their own class', async () => {
     // Kotlin scopes each companion's members to its own class, so the two
     // references below mean different constants even though they are spelled
     // identically. One file-level namespace could only answer last-wins: both
     // read `/h2`, and swapping the two classes flipped both to `/h1`.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 @RestController
@@ -1103,13 +1115,13 @@ class SecondController {
     ).toEqual(['GET /h1', 'GET /h2']);
   });
 
-  it('folds a top-level initializer at file level even when a companion shares the name', () => {
+  it('folds a top-level initializer at file level even when a companion shares the name', async () => {
     // `ROUTE`'s initializer is TOP-LEVEL, so its scope chain is empty and its
     // operand `BASE` means the top-level `BASE`. With a file-wide companion key
     // the empty chain left the operand bare and the companion answered it,
     // publishing `/comp/m` where the application serves `/top/m`.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 const val BASE = "/top"
@@ -1131,7 +1143,7 @@ class OrderController {
     ).toEqual(['GET /top/m']);
   });
 
-  it('folds through a package whose segment is backtick-quoted on one side only', () => {
+  it('folds through a package whose segment is backtick-quoted on one side only', async () => {
     // `` package com.example.app.`api` `` and `package com.example.app.api` are
     // the same package to the compiler — the quotes are lexical syntax, not part
     // of the name. Comparing the two verbatim rejected the one real candidate
@@ -1155,21 +1167,21 @@ object ApiPaths {
 `;
     // Declaration quoted, import plain.
     expect(
-      providers({
+      await providers({
         [CONSTS]: quotedDeclaration,
         [CONTROLLER]: controller('com.example.app.api.ApiPaths'),
       }),
     ).toEqual(['GET /api/v1/orders']);
     // Import quoted, declaration plain.
     expect(
-      providers({
+      await providers({
         [CONSTS]: CONSTS_SRC,
         [CONTROLLER]: controller('com.example.app.`api`.ApiPaths'),
       }),
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('folds a same-file top-level `val` even when the file imports nothing', () => {
+  it('folds a same-file top-level `val` even when the file imports nothing', async () => {
     // Three conditions have to line up for this to break, which is why a
     // realistic controller never hit it: the constant is a top-level non-`const`
     // `val` (so `isKotlinConstantFile` rejects the file and the pre-pass never
@@ -1178,7 +1190,7 @@ object ApiPaths {
     // remaining chance, and it used to admit the extraction only when the file
     // had imports — throwing away the very constants the route needs.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 val PATH = "/orders"
@@ -1194,12 +1206,12 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('folds a backtick-quoted constant declared in its own file', () => {
+  it('folds a backtick-quoted constant declared in its own file', async () => {
     // The gate decides whether a file is parsed into the repo map at all, so a
     // gate that rejects backticks silently drops a constant the resolver can
     // fold — a cross-file reference to it then floors to skip.
     expect(
-      providers({
+      await providers({
         [CONSTS]: `package com.example.app.api
 
 object ApiPaths {
@@ -1220,12 +1232,12 @@ class OrderController {
     ).toEqual(['GET /api/v1/orders']);
   });
 
-  it('resolves a PARTIALLY qualified reference against the enclosing scopes', () => {
+  it('resolves a PARTIALLY qualified reference against the enclosing scopes', async () => {
     // `Inner.Q` carries an owner, but not its whole one: the key is
     // `Outer.Inner.Q`. Treating any dotted reference as already complete looked
     // for a key nothing declares and dropped the route.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 @RestController
@@ -1242,13 +1254,13 @@ object Outer {
     ).toEqual(['GET /orders']);
   });
 
-  it('binds a partially qualified reference to the NESTED owner, not a top-level twin', () => {
+  it('binds a partially qualified reference to the NESTED owner, not a top-level twin', async () => {
     // The severe half of the same defect. Kotlin binds `ApiPaths` to the nested
     // object, so the route is `/inner`. Left unqualified, `ApiPaths.ORDERS`
     // matched the TOP-LEVEL object instead and published `/orders` — a path the
     // application does not serve, which is worse than the dropped route above.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 object ApiPaths {
@@ -1269,13 +1281,13 @@ class OrderController {
     ).toEqual(['GET /inner']);
   });
 
-  it('resolves a partially qualified reference inside an INITIALIZER too', () => {
+  it('resolves a partially qualified reference inside an INITIALIZER too', async () => {
     // The same rule on the other side. `ROUTE = Inner.Q + "/m"` sits in
     // `Outer`'s body, so `Inner.Q` means `Outer.Inner.Q` there. Fixing only the
     // reference site would leave the two halves disagreeing about what a dotted
     // name means — the asymmetry that produced the earlier defects here.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 object Outer {
@@ -1296,13 +1308,13 @@ class OrderController {
     ).toEqual(['GET /orders/m']);
   });
 
-  it('folds a partially qualified reference regardless of its sibling operands', () => {
+  it('folds a partially qualified reference regardless of its sibling operands', async () => {
     // Control for the allocation gate: it must not decide the result. Gating on
     // "some operand is bare" made this same `Inner.Q` fold only because `SUFFIX`
     // sits beside it, while `Inner.Q` alone did not — the same reference
     // resolving differently by the company it keeps.
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 @RestController
@@ -1321,9 +1333,9 @@ object Outer {
     ).toEqual(['GET /orders/list']);
   });
 
-  it('leaves literal routes unchanged and emits each exactly once', () => {
+  it('leaves literal routes unchanged and emits each exactly once', async () => {
     expect(
-      providers({
+      await providers({
         [CONTROLLER]: `package com.example.app.web
 
 @RestController

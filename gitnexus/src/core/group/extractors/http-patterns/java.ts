@@ -1,5 +1,6 @@
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
+import { createTreeReleaser } from '../../../tree-sitter/native-tree-release.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -876,7 +877,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       content,
     );
   },
-  prepareRepo(args) {
+  async prepareRepo(args) {
     // Build the repo-wide Java string-constant map once per extract() run
     // (mirrors the Python binding's cost-gated pre-pass). A cheap content
     // gate keeps literal-only repos at zero parses: only files containing a
@@ -894,6 +895,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       string,
       import('../../../ingestion/route-extractors/constant-resolver.js').ModuleConstants
     >();
+    const releaseTrees = createTreeReleaser();
     for (const rel of args.files) {
       if (!rel.endsWith('.java')) continue;
       try {
@@ -914,6 +916,8 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         if (!src || !isJavaConstantFile(src)) {
           continue;
         }
+        // Lets the previous iterations' dropped trees be freed.
+        await releaseTrees();
         const tree = args.parseSource(args.parser, src);
         if (!tree) continue;
         const mc = extractJavaModuleConstants(tree);

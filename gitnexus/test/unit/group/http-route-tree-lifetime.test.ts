@@ -413,6 +413,29 @@ const MIXED_CONTRACTS_WITH_GRAPH_ROUTE = MIXED_CONTRACTS.map((key) =>
     : key,
 ).sort();
 
+/** `prepareRepo` inputs whose content gates admit every file to the parse pass. */
+const PREPARE_PASS_FILES: Array<[string, (i: number) => [string, string]]> = [
+  [
+    'x.java',
+    (i) => [
+      `src/C${i}.java`,
+      `public class C${i} {\n  public static final String P = "/java/${i}";\n}\n`,
+    ],
+  ],
+  ['x.kt', (i) => [`src/C${i}.kt`, `object C${i} {\n    const val P = "/kt/${i}"\n}\n`]],
+  [
+    'x.py',
+    (i) => [
+      `app/m${i}.py`,
+      `from fastapi import APIRouter\nrouter = APIRouter()\napp.include_router(router, prefix="/py/${i}")\n`,
+    ],
+  ],
+  [
+    'x.ts',
+    (i) => [`web/c${i}.ts`, `import axios from 'axios';\nexport const c${i} = axios.create();\n`],
+  ],
+];
+
 describe('HTTP source scan tree lifetime', () => {
   let tmpDir: string;
 
@@ -496,6 +519,31 @@ describe('HTTP source scan tree lifetime', () => {
     expect(probe.parseTurns.length).toBe(4 * BULK);
     expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
   });
+
+  it.each(PREPARE_PASS_FILES)(
+    'yields to the event loop between parse batches in the %s prepareRepo pass',
+    async (sample, makeFile) => {
+      const plugin = getPluginForFile(sample);
+      if (!plugin?.prepareRepo) throw new Error(`expected a prepareRepo pass for ${sample}`);
+      const files = new Map(Array.from({ length: BULK }, (_, i) => makeFile(i)));
+
+      await countingTurns(async () =>
+        plugin.prepareRepo?.({
+          repoPath: tmpDir,
+          files: [...files.keys()],
+          parser: new Parser(),
+          readFile: (rel) => files.get(rel) ?? null,
+          parseSource: (parser, src) => {
+            probe.parseTurns.push(probe.turn);
+            return parser.parse(src);
+          },
+        }),
+      );
+
+      expect(probe.parseTurns.length).toBe(BULK);
+      expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
+    },
+  );
 
   it('rejects project-scan facts that hold a syntax node', async () => {
     writeMixedFixture(tmpDir);

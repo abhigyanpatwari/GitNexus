@@ -153,7 +153,9 @@ export interface HttpLanguagePlugin {
    * Optional pre-pass: walk the relevant files in the repo and produce
    * an opaque context that `scan` can use to resolve cross-file facts.
    * Implementations must not throw — return undefined on any error so
-   * the orchestrator falls back to context-less scanning.
+   * the orchestrator falls back to context-less scanning. A pre-pass that
+   * parses many files is async and awaits a tree releaser after each parse
+   * (`createTreeReleaser`), so their native tree memory is freed as it goes.
    */
   prepareRepo?(args: {
     repoPath: string;
@@ -161,7 +163,7 @@ export interface HttpLanguagePlugin {
     parser: Parser;
     readFile: (rel: string) => string | null;
     parseSource: (parser: Parser, src: string) => Parser.Tree | null;
-  }): RepoContext | undefined;
+  }): RepoContext | undefined | Promise<RepoContext | undefined>;
   /**
    * Scan a parsed tree and return zero or more HTTP detections. Plugins
    * must not throw — they should swallow per-match errors so a single

@@ -1,5 +1,6 @@
 import type Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../../tree-sitter/vendored-grammars.js';
+import { createTreeReleaser } from '../../../tree-sitter/native-tree-release.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -1337,7 +1338,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
   return {
     name: 'kotlin-http',
     language,
-    prepareRepo(args) {
+    async prepareRepo(args) {
       // Build the repo-wide Kotlin string-constant map and import index once per
       // extract() run. The orchestrator hands over a bare Parser with no language
       // bound; bind Kotlin explicitly or `parseSource` spins to its whole time
@@ -1349,6 +1350,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
         // per-file try/catch below then skips everything harmlessly.
       }
       const constants = new Map<string, ModuleConstants>();
+      const releaseTrees = createTreeReleaser();
       for (const rel of args.files) {
         if (!rel.endsWith('.kt') && !rel.endsWith('.kts')) continue;
         try {
@@ -1360,6 +1362,8 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
           // rare file that actually references a constant. A gate that also
           // matched `import …` would parse the entire repository here.
           if (!src || !isKotlinConstantFile(src)) continue;
+          // Lets the previous iterations' dropped trees be freed.
+          await releaseTrees();
           const tree = args.parseSource(args.parser, src);
           if (!tree) continue;
           const mc = extractKotlinModuleConstants(tree);

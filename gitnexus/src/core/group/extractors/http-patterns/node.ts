@@ -18,6 +18,7 @@ import type {
 } from './types.js';
 import { getProviderForFile } from '../../../ingestion/languages/index.js';
 import { extractParsedFile } from '../../../ingestion/scope-extractor-bridge.js';
+import { createTreeReleaser } from '../../../tree-sitter/native-tree-release.js';
 import { extractFrameworkRouteFacts } from '../../../ingestion/route-extractors/framework-route-facts.js';
 import { resolveFrameworkRoutePaths } from '../../../ingestion/route-extractors/framework-route-paths.js';
 import type {
@@ -459,10 +460,13 @@ async function buildNodeRepoContext(args: {
   }
 
   if (sawAxios) {
+    const releaseTrees = createTreeReleaser();
     for (const { rel, language } of eligible) {
       try {
         const content = args.readFile(rel);
         if (content === null) continue;
+        // Lets the previous iterations' dropped trees be freed.
+        await releaseTrees();
         // `parseSource` belongs INSIDE the guard: `safe-parse.ts` throws
         // `ParseTimeoutError` and makes catching it a per-caller obligation, and
         // `prepareRepo` is contractually non-throwing. One escape here left the

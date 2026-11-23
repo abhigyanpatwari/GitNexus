@@ -142,7 +142,7 @@ describe('FastAPI composed route constants — ingestion↔group parity (#2391 R
       p.setLanguage(Python);
       return p.parse(src);
     };
-    const ctx = PYTHON_HTTP_PLUGIN.prepareRepo?.({
+    const ctx = await PYTHON_HTTP_PLUGIN.prepareRepo?.({
       repoPath: '/test-repo',
       files: Object.keys(files),
       parser,
