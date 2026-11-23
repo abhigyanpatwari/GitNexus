@@ -1,0 +1,91 @@
+gitnexus-shared/src/scope-resolution/exclusive-reexports.ts
+  s_178fe5f2bc5b0d::t_429d1d69235db8 1-213
+gitnexus-shared/src/scope-resolution/finalize-algorithm.ts
+  s_178fe5f2bc5b0d::t_a010ec8967879e 38,275,291-292,393-415,419-423,467-469,494-500,574-578,637,950-951,1046,1054-1070,1103-1124,2094-2095
+gitnexus-shared/src/scope-resolution/symbol-definition.ts
+  s_3661dd8603713a::t_175b0cabdc2706 142-143
+gitnexus-shared/src/scope-resolution/types.ts
+  s_3661dd8603713a::t_eb215791b06aef 384-386,544-545
+gitnexus/bench/scope-capture/baselines.json
+  s_178fe5f2bc5b0d::t_20e5505471dc79 263,285-286
+gitnexus/src/core/ingestion/finalize-orchestrator.ts
+  s_178fe5f2bc5b0d::t_a56b118104b735 169-171
+gitnexus/src/core/ingestion/languages/javascript/callable-visibility.ts
+  s_3661dd8603713a::t_ba4a64b2bc9faf 11,13,17-27
+gitnexus/src/core/ingestion/languages/javascript/captures.ts
+  s_178fe5f2bc5b0d::t_693e57d442ee9d 46,1082-1086,1189-1195
+gitnexus/src/core/ingestion/languages/typescript/captures.ts
+  s_178fe5f2bc5b0d::t_e4dbd1b6169419 42,623-627,746-752,795-797,1032,1039-1045
+gitnexus/src/core/ingestion/languages/typescript/import-decomposer.ts
+  s_3661dd8603713a::t_a21cf99c0b4a15 54-55,161-177,363-364,369,372-374,384-388,392,395-410,422,562-564,585-586
+gitnexus/src/core/ingestion/languages/typescript/interpret.ts
+  s_178fe5f2bc5b0d::t_09dcde6f0420b2 25-26,59,130,145,151,154,158,162,221,270-299
+gitnexus/src/core/ingestion/languages/typescript/module-exports.ts
+  s_3661dd8603713a::t_1146c4bfe74993 18
+gitnexus/src/core/ingestion/languages/typescript/query.ts
+  s_3661dd8603713a::t_0ec0a2f4348ed8 834,875,910,941,1081,1126,1161,1212,1237,1262,1287,1312
+gitnexus/src/core/ingestion/languages/typescript/scope-resolver.ts
+  s_3661dd8603713a::t_de216251140bd2 23,99
+gitnexus/src/core/ingestion/model/scope-resolution-indexes.ts
+  s_3661dd8603713a::t_4a7d2db8f5e170 48,61-62
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_178fe5f2bc5b0d::t_b402e6d80f16b2 782,809,2023
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_3661dd8603713a::t_ad45928d113f7f 916,918-922,975
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_178fe5f2bc5b0d::t_e2d054ac247352 1265-1270
+gitnexus/src/core/ingestion/scope-resolution/scope/namespace-targets.ts
+  s_3661dd8603713a::t_f4aae318869aa5 94,147
+gitnexus/src/core/ingestion/scope-resolution/scope/walkers.ts
+  s_178fe5f2bc5b0d::t_1ce2ca7b08e721 1064,1071-1089,1113
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_178fe5f2bc5b0d::t_183688b04302d2 42-43,264,286-288,302,327-344
+gitnexus/test/integration/resolvers/javascript-module-ownership.test.ts
+  s_3661dd8603713a::t_837393a00b7264 1-90
+gitnexus/test/integration/resolvers/typescript-instanceof-boundaries.test.ts
+  s_3661dd8603713a::t_bf6135fc3d0d61 1-145
+gitnexus/test/integration/resolvers/typescript-module-ownership.test.ts
+  s_178fe5f2bc5b0d::t_949fe66df7d450 1-179
+gitnexus/test/unit/scope-resolution/typescript/typescript-identifier-imports.test.ts
+  s_3661dd8603713a::t_5b5302fd42a6b2 75-77,79-80,84-85,87-88,91,94
+gitnexus/test/unit/scope-resolution/typescript/typescript-imports.test.ts
+  s_3661dd8603713a::t_5b0ef48ac445bc 186,197,207,214,225,376,414
+gitnexus/src/core/ingestion/languages/typescript/local-loaders.ts
+  s_676b35bc218cc9::t_e8e6e513f5a367 11,45-60,117-121,123,185-300,310,315,317-320,377-407,448-456,465,469-470,472-477,558-596,599
+gitnexus/test/integration/resolvers/typescript-map-tuple-positions.test.ts
+  s_676b35bc218cc9::t_17e6baf8015c21 1-73
+gitnexus/test/unit/scope-resolution/typescript/typescript-capture-order.test.ts
+  s_676b35bc218cc9::t_f3199de6081718 24-25,35-36,38,108,110-118,123-131
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "e7c6aa22614b489528e5afee06091b54227dabd6",
+  "prompts": {},
+  "sessions": {
+    "s_178fe5f2bc5b0d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15bafdb9-7c6c-4d9c-8e9f-53fbc01c0876",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
