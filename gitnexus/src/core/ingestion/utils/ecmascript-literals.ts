@@ -23,7 +23,12 @@ export function decodeStringLiteral(raw: string): string | null {
     const char = body[index];
     if (char !== '\\') {
       if (delimiter !== '`' && (char === '\n' || char === '\r')) return null;
-      decoded += char;
+      if (char === '\r') {
+        if (body[index + 1] === '\n') index++;
+        decoded += '\n';
+      } else {
+        decoded += char;
+      }
       continue;
     }
 

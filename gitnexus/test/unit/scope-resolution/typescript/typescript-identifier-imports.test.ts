@@ -59,6 +59,58 @@ describe('ECMAScript identifier spellings at module boundaries', () => {
     expect([...typescriptModuleExports(parsed)]).toEqual([['calculate', definition]]);
   });
 
+  it('forwards imported bindings with the original module and per-specifier erasure', () => {
+    const parsed = parse(`
+      import './init';
+      import main, { type Item, run, unused } from './leaf';
+      import * as ns from './other';
+      export { main as start, Item as Public, type run as Signature, ns as "module object" };
+    `);
+    const forwarded = parsed.parsedImports.filter((entry) => entry.exportsOnly);
+    expect(forwarded).toMatchObject([
+      { kind: 'reexport', localName: 'start', importedName: 'default', targetRaw: './leaf' },
+      {
+        kind: 'reexport',
+        localName: 'Public',
+        importedName: 'Item',
+        targetRaw: './leaf',
+        typeOnly: true,
+      },
+      {
+        kind: 'reexport',
+        localName: 'Signature',
+        importedName: 'run',
+        targetRaw: './leaf',
+        typeOnly: true,
+      },
+      { kind: 'namespace', localName: 'module object', targetRaw: './other' },
+    ]);
+    expect(forwarded[0]).not.toHaveProperty('typeOnly');
+    expect(forwarded[3]).not.toHaveProperty('typeOnly');
+  });
+
+  it('keeps erased aliases out of the value names and preserves a separately exported value', () => {
+    const exports = typescriptModuleExports(
+      parse(String.raw`
+      class Impl {}
+      export type { Impl as "P\u0075blic" };
+      export function live() {}
+      export { type live as Erased };
+    `),
+    );
+    expect([...exports.keys()].sort()).toEqual(['Erased', 'Public', 'live']);
+    expect(exports.get('Public')).toMatchObject({
+      qualifiedName: 'Impl',
+      namedExports: [],
+      typeOnlyExports: ['Public'],
+    });
+    expect(exports.get('live')).toBe(exports.get('Erased'));
+    expect(exports.get('live')).toMatchObject({
+      namedExports: ['live'],
+      typeOnlyExports: ['Erased'],
+    });
+  });
+
   it('does not publish an ambiguous canonical name under any escaped spelling', () => {
     const parsed = parse(String.raw`
 export function calculate() { return 1; }

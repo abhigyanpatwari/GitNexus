@@ -160,9 +160,11 @@ export function interpretTsImport(captures: CaptureMatch): ParsedImport | null {
     case 'reexport-namespace': {
       // `export * as ns from './m'` publishes the target module object.
       if (sourceCap === undefined || aliasCap === undefined) return null;
+      const alias = canonicalModuleExportName(aliasCap.text);
+      if (alias === null) return null;
       return {
         kind: 'namespace',
-        localName: canonicalTypeScriptName(aliasCap.text),
+        localName: alias,
         importedName: sourceCap.text,
         targetRaw: sourceCap.text,
         ...typeOnly,
@@ -290,7 +292,7 @@ const QUALIFIED_NAME =
 export function tsQualifiedTypeLookupSpelling(
   typeRef: TypeRef,
   scopes?: ScopeResolutionIndexes,
-): string | undefined {
+): string | null | undefined {
   const written = typeRef.declaredSpelling;
   if (!written?.includes('.') || typeRef.rawName.includes('.') || scopes === undefined) {
     return undefined;
@@ -305,10 +307,12 @@ export function tsQualifiedTypeLookupSpelling(
     return undefined;
   }
   const module = moduleScopeIdOf(typeRef.declaredAtScope, scopes);
-  if (module === null) return undefined;
+  if (module === null) return null;
   const root = spelling.slice(0, spelling.indexOf('.'));
-  const claim = lookupNameClaim(module, root, scopes, { purpose: 'type' });
-  return claim.imports.some((edge) => edge.kind === 'namespace') ? spelling : undefined;
+  const claim = lookupNameClaim(typeRef.declaredAtScope, root, scopes, { purpose: 'type' });
+  return claim.scope?.id === module && claim.imports.some((edge) => edge.kind === 'namespace')
+    ? spelling
+    : null;
 }
 
 /** Types that carry no discriminating information for chain resolution.

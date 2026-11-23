@@ -19,6 +19,15 @@ export { original as exposed };
 export function direct() {}
 export { direct as additional };
 `,
+    'local-types.ts': `
+class Impl { save() {} }
+function hidden() {}
+export type { Impl as Public };
+export { type hidden };
+export function directValue() {}
+export type { directValue as Erased };
+`,
+    'local-types-forward.ts': "export * from './local-types.js';",
     'alias-forward.ts': "export * from './local-alias.js';",
     'wrapped.ts': `
 function wrap(fn: () => void) { return fn; }
@@ -26,6 +35,20 @@ function callback() {}
 export { callback as exposed };
 export default wrap(function callback() {});
 `,
+    'import-forward.ts': `import { publish as original, Entity } from './left.js';
+      import * as packageObject from './left.js';
+      export { original as run, Entity as K, packageObject as api };
+      export * from './competitor.js';`,
+    'competitor.ts': 'export function run() {} export class K { save() {} }',
+    'quote-namespace.ts': 'export * as "other object" from "./left.js";',
+    'spaces.ts': `import * as pack from './left.js';
+      export namespace Inner { export namespace pack { export class Entity { save() {} } }
+        export function shadowed(v: pack.Entity) { v.save(); } }
+      class Entity { save() {} }
+      export namespace Models { export class Entity { save() {} } }
+      export function local(v: Models.Entity) { v.save(); }
+      export function outer(v: pack.Entity) { v.save(); }`,
+    'mixed-owners.ts': "export type * from './right.js'; export * from './left.js';",
     'first.ts': "export { publish } from './left.js';",
     'second.ts': "export * from './right.js';",
     'ambiguous.ts': `
@@ -66,6 +89,33 @@ export function wrongLocal() {
     'namespace-twin.ts': "export * as operations from './left.js';",
     'namespace-diamond.ts': "export * from './namespace.js';\nexport * from './namespace-twin.js';",
     'entry.ts': `
+import type { Public } from './local-types-forward.js';
+import { hidden, Erased, directValue } from './local-types-forward.js';
+import * as localTypes from './local-types.js';
+export function useTypeAlias(x: Public) { x.save(); }
+export function useDirectValue() { directValue(); }
+export function erasedLocalCalls() {
+  // @ts-expect-error The function name is exported only as a type.
+  hidden();
+  // @ts-expect-error The alias is exported only as a type.
+  Erased();
+  // @ts-expect-error Namespace access cannot recover an erased value.
+  localTypes.hidden();
+  // @ts-expect-error The class alias is exported only as a type.
+  new localTypes.Public();
+  // @ts-expect-error The imported class alias has no runtime constructor.
+  new Public();
+}
+import { run as forwarded } from './import-forward.js';
+import * as via from './import-forward.js';
+import { "other object" as quotedNamespace } from './quote-namespace.js';
+import { publish as runtimeStar } from './mixed-owners.js';
+export function callForwarded() { forwarded(); }
+export function callForwardedNamespace() { via.run(); }
+export function useForwardedObject() { via.api.publish(); }
+export function useForwardedType(v: via.K) { v.save(); }
+export function useQuotedNamespace() { quotedNamespace.publish(); }
+export function useRuntimeStar() { runtimeStar(); }
 import { publish as ambiguous } from './ambiguous.js';
 import { publish as reversed } from './reversed.js';
 import { publish as same } from './same.js';
@@ -159,6 +209,17 @@ export function privateNamespace() {
     ['entry.ts:firstNamespace', [publishLeft]],
     ['entry.ts:forwardedNamespace', ['Function:left.ts:defaultExport']],
     ['entry.ts:namedDefault', []],
+    ['entry.ts:useTypeAlias', ['Method:local-types.ts:Impl.save#0']],
+    ['entry.ts:useDirectValue', ['Function:local-types.ts:directValue']],
+    ['entry.ts:erasedLocalCalls', []],
+    ['entry.ts:callForwarded', [publishLeft]],
+    ['entry.ts:callForwardedNamespace', [publishLeft]],
+    ['entry.ts:useForwardedObject', [publishLeft]],
+    ['entry.ts:useForwardedType', ['Method:left.ts:Entity.save#0']],
+    ['entry.ts:useQuotedNamespace', [publishLeft]],
+    ['entry.ts:useRuntimeStar', [publishLeft]],
+    ['spaces.ts:outer', ['Method:left.ts:Entity.save#0']],
+    ['spaces.ts:local', []],
     ['entry.ts:dualDefault', ['Function:dual.ts:dual']],
     ['entry.ts:namedAliasOfDefault', ['Function:default-alias.ts:implementation']],
     ['entry.ts:privateAliasImplementation', []],
@@ -189,6 +250,21 @@ export function privateNamespace() {
       .map(({ rel }) => rel.targetId)
       .sort();
     expect(actual).toEqual(expected);
+  });
+
+  it('refuses the outer import for a shadowed qualified parameter', () => {
+    const calls = getRelationships(result(), 'CALLS')
+      .filter(({ source }) => source === 'shadowed')
+      .map(({ rel }) => rel.targetId);
+    expect(calls).not.toContain('Method:left.ts:Entity.save#0');
+  });
+
+  it('keeps the quoted namespace dependency', () => {
+    expect(
+      getRelationships(result(), 'IMPORTS')
+        .filter(({ sourceFilePath }) => sourceFilePath === 'quote-namespace.ts')
+        .map(({ targetFilePath }) => targetFilePath),
+    ).toEqual(['left.ts']);
   });
 
   it('reports both owners for each conflicting barrel', () => {
@@ -235,6 +311,8 @@ function original() {}
 function defaultImpl() {}
 function literalEscape() {}
 function ordinary() {}
+function astral() {}
+export { astral as "\u{1F600}", \u006friginal as escapedLocal };
 export { original as "pub\x6cic-name", defaultImpl as 'default', literalEscape as '\\u0061', ordinary as a };
 `,
     [`barrel.${extension}`]: `export { 'public-name' as "another name" } from './local.${suffix}';`,
@@ -242,6 +320,9 @@ export { original as "pub\x6cic-name", defaultImpl as 'default', literalEscape a
 import * as namespace from './local.${suffix}';
 import primary, { 'public-name' as direct, '\\u0061' as escape, '\u{0000061}' as padded } from './local.${suffix}';
 import { 'another name' as forwarded } from './barrel.${suffix}';
+import { "\uD83D\uDE00" as emoji, escapedLocal } from './local.${suffix}';
+export function useAstral() { emoji(); }
+export function useEscapedLocal() { escapedLocal(); }
 export function useDirect() { direct(); }
 export function useDefault() { primary(); }
 export function useLiteralEscape() { escape(); }
@@ -256,6 +337,8 @@ export function hiddenName() {
 
   it.each([
     ['useDirect', 'original'],
+    ['useAstral', 'astral'],
+    ['useEscapedLocal', 'original'],
     ['useDefault', 'defaultImpl'],
     ['useLiteralEscape', 'literalEscape'],
     ['usePaddedEscape', 'ordinary'],

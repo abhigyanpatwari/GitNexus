@@ -86,7 +86,8 @@ describe('parse-cache performance acceptance', () => {
     );
     const expected = graphExpectations[0];
     const pair = report().warmup;
-    pair.baseline.provenance.runtimeHead = expected.baselineRevision;
+    pair.baseline.provenance.runtimeHead = 'a'.repeat(40);
+    pair.baseline.provenance.runtimeSourceTrees = expected.baselineSourceTrees;
     pair.candidate.provenance.runtimeSourceTrees = expected.candidateSourceTrees;
     for (const variant of ['baseline', 'candidate'] as const) {
       const trial = pair[variant];

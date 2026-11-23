@@ -45,6 +45,19 @@ const source =
 const head = (repo) =>
   execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
 assert.equal(head(baseline), head(candidate));
+const corpusRevision = head(baseline);
+const corpusTrees = execFileSync(
+  'git',
+  [
+    'rev-parse',
+    corpusRevision + ':gitnexus/src/core/ingestion',
+    corpusRevision + ':gitnexus-shared/src/scope-resolution',
+  ],
+  { cwd: baseline, encoding: 'utf8' },
+)
+  .trim()
+  .split('\n')
+  .join(':');
 for (const repo of isWorker ? [] : [baseline, candidate]) {
   assert.equal(
     execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }),
@@ -88,6 +101,7 @@ function saveResults(repo) {
     JSON.stringify(
       {
         head: head(repo),
+        corpusTrees,
         node: process.version,
         lifecycle,
         pairs,
@@ -106,7 +120,7 @@ function saveResults(repo) {
   );
 }
 function verifyPair(before, after, repo) {
-  const receipt = assertGraphParity(before, after, repo, head(repo));
+  const receipt = assertGraphParity(before, after, repo, corpusTrees);
   graphParity.push({ baselineName: before.name, candidateName: after.name, ...receipt });
   saveResults(repo);
 }

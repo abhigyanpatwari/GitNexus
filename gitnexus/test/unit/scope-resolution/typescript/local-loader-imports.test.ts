@@ -32,6 +32,21 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
     return extractParsedFile(provider, wrap(source, extension), `app.${extension}`)!;
   }
 
+  it('uses the second Map slot and stops narrowing after assignment', () => {
+    const parsed = extract(`
+      function consume(entries, repo) {
+        for (const [, value] of entries) value.save();
+        if (repo instanceof Key) { repo.before(); repo = other; repo.after(); }
+      }`);
+    const bindings = parsed.scopes.flatMap((scope) => [...scope.typeBindings.entries()]);
+    expect(bindings.filter(([name]) => name === 'value').map(([, type]) => type.rawName)).toContain(
+      '__MAP_TUPLE_1__:entries',
+    );
+    expect(
+      bindings.filter(([name, type]) => name === 'repo' && type.rawName === 'Key'),
+    ).toHaveLength(1);
+  });
+
   it('keeps module and function ownership when their source ranges coincide', () => {
     const parsed = extract('function sole(require) { const ns = require("./blocked"); }');
     const module = parsed.scopes.find((scope) => scope.kind === 'Module')!;
@@ -187,6 +202,18 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
         .map((claim) => claim.name),
     ).toEqual(['imported']);
   });
+});
+
+it('tracks guarded JavaScript member uses in a Vue script', () => {
+  const captures = emitVueScopeCaptures(
+    '<script>function use(x) { if (x instanceof A) { x.first(); x = b; x.last(); } }</script>',
+    'Guard.vue',
+  );
+  expect(
+    captures
+      .filter((match) => match['@type-binding.instanceof-narrow'])
+      .map((match) => match['@type-binding.type'].text),
+  ).toEqual(['A']);
 });
 
 it('recognizes TypeScript import-equals as a module namespace binding', () => {

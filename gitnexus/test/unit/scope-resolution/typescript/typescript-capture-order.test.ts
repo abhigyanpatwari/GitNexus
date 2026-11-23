@@ -39,6 +39,40 @@ describe('TypeScript synthesized capture order', () => {
     );
   });
 
+  describe('guards after writes to the receiver', () => {
+    it.each([
+      ['sequence', 'if (x instanceof A) { x.before(), x = b, x.after(); }', ['before']],
+      ['unbraced loop', 'if (x instanceof A) for (; run(); x.after()) { x = b; }', []],
+      [
+        'type assertion',
+        'if (x instanceof A) { x.before(); (<any>x) = b; x.after(); }',
+        ['before'],
+      ],
+      [
+        'satisfies',
+        'if (x instanceof A) { x.before(); (x satisfies A) = b; x.after(); }',
+        ['before'],
+      ],
+      [
+        'closure',
+        'function replace() { x = b; } if (x instanceof A) { replace(); x.after(); }',
+        [],
+      ],
+      ['shadow', 'if (x instanceof A) { { let x = b; x.after(); } x.before(); }', ['before']],
+      ['write before guard', 'x = b; if (x instanceof A) { x.before(); }', ['before']],
+      ['hoisted write', 'if (x instanceof A) { x.before(); var x = b; x.after(); }', ['before']],
+    ] as const)('keeps the proven member uses for %s', (_name, body, expected) => {
+      const source = `function run(x: A | B, b: B) { ${body} }`;
+      const names = emitTsScopeCaptures(source, 'guard.ts')
+        .filter((match) => match['@type-binding.instanceof-narrow'])
+        .map((match) => {
+          const column = match['@type-binding.name'].range.endCol;
+          return source.slice(column + 1, source.indexOf('(', column));
+        });
+      expect(names).toEqual(expected);
+    });
+  });
+
   it('keeps parents before nested classes and visits sibling classes right to left', () => {
     const captures = emitTsScopeCaptures(
       `class First extends Left {}

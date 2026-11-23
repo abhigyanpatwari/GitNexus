@@ -1,3 +1,4 @@
+/** Compute each module's public names from its local and forwarded declarations. */
 import type { SymbolDefinition } from './symbol-definition.js';
 import type { ImportEdge, ParsedImport } from './types.js';
 
@@ -10,6 +11,7 @@ export interface PublishedExport {
 
 interface AmbiguousExport {
   readonly candidates: readonly [string, string];
+  readonly typeOnly?: true;
 }
 
 type ExportState = PublishedExport | AmbiguousExport;
@@ -22,6 +24,7 @@ export interface ExclusiveModuleExports {
   readonly ambiguities: ReadonlyArray<{
     readonly filePath: string;
     readonly name: string;
+    /** Two lexicographically smallest conflicting declaration IDs. */
     readonly candidateDefIds: readonly string[];
   }>;
 }
@@ -51,19 +54,36 @@ function identity(exported: PublishedExport): string {
 /** A deterministic refusal needs two witnesses, regardless of how many paths repeat them. */
 function merge(previous: ExportState | undefined, next: ExportState): ExportState {
   if (previous === undefined) return next;
-  if ('candidates' in previous) return previous;
-  if ('candidates' in next) return next;
-  if (identity(previous) === identity(next))
-    return previous.typeOnly && !next.typeOnly ? next : previous;
-
-  // Preserve the evidence policy for unmarked variables in legacy inputs.
-  const weakPrevious = previous.def.type === 'Variable' && previous.def.isExported === undefined;
-  const weakNext = next.def.type === 'Variable' && next.def.isExported === undefined;
-  if (weakPrevious || weakNext) {
-    if (weakPrevious !== weakNext) return weakPrevious ? next : previous;
+  if (!!previous.typeOnly !== !!next.typeOnly) return previous.typeOnly ? next : previous;
+  if (
+    !('candidates' in previous) &&
+    !('candidates' in next) &&
+    identity(previous) === identity(next)
+  )
     return previous;
-  }
-  return { candidates: [previous.def.nodeId, next.def.nodeId] };
+
+  // An unmarked variable (including an ambient declaration) is weaker than a
+  // marked export. Equal weak claims use a stable owner across file orders.
+  const weakPrevious =
+    !('candidates' in previous) &&
+    previous.def.type === 'Variable' &&
+    previous.def.isExported === undefined;
+  const weakNext =
+    !('candidates' in next) && next.def.type === 'Variable' && next.def.isExported === undefined;
+  if (weakPrevious && weakNext)
+    return compareCodeUnits(previous.def.nodeId, next.def.nodeId) <= 0 ? previous : next;
+  if (weakPrevious || weakNext) return weakPrevious ? next : previous;
+
+  const witnesses = new Set('candidates' in previous ? previous.candidates : [previous.def.nodeId]);
+  for (const id of 'candidates' in next ? next.candidates : [next.def.nodeId]) witnesses.add(id);
+  const [first, second] = [...witnesses].sort(compareCodeUnits);
+  if (
+    'candidates' in previous &&
+    previous.candidates[0] === first &&
+    previous.candidates[1] === second
+  )
+    return previous;
+  return { candidates: [first, second], typeOnly: previous.typeOnly };
 }
 
 /**
@@ -73,8 +93,7 @@ function merge(previous: ExportState | undefined, next: ExportState): ExportStat
  * ambiguous origins propagate through cycles without selecting a winner.
  *
  * The queue sends changes only to directives that consume the name. A known
- * export can gain a value route or become ambiguous, and an ambiguity is
- * terminal. Path construction is bounded by the caller's provenance limit.
+ * export can gain a value route or more precise ambiguity witnesses. Path construction is bounded by the caller's provenance limit.
  */
 export function buildExclusiveModuleExports(
   locals: ReadonlyMap<string, Exports>,
@@ -145,6 +164,17 @@ export function buildExclusiveModuleExports(
     }
   }
 
+  // A type-only local reserves its public spelling and propagates the same
+  // erasure evidence as an explicit type-only forward.
+  for (const [file, definitions] of locals) {
+    for (const [name, def] of definitions) {
+      if (!def.typeOnlyExports?.includes(name)) continue;
+      let reserved = explicit.get(file);
+      if (!reserved) explicit.set(file, (reserved = new Set()));
+      reserved.add(name);
+      publish(file, name, { def, via: EMPTY_VIA, typeOnly: true });
+    }
+  }
   for (const [file, name, seed] of namespaceSeeds) publish(file, name, seed);
   for (const file of new Set([...byStar.keys(), ...byName.keys()])) {
     const namedReads = byName.get(file);
@@ -165,7 +195,9 @@ export function buildExclusiveModuleExports(
         reader.file,
         exported,
         'candidates' in state
-          ? state
+          ? reader.typeOnly && !state.typeOnly
+            ? { ...state, typeOnly: true }
+            : state
           : { ...state, via: via!, typeOnly: reader.typeOnly || state.typeOnly },
       );
     for (const reader of byName.get(source)?.get(name) ?? []) deliver(reader, reader.exported!);
@@ -183,7 +215,7 @@ export function buildExclusiveModuleExports(
         ambiguities.push({
           filePath,
           name,
-          candidateDefIds: [...state.candidates].sort(compareCodeUnits),
+          candidateDefIds: state.candidates,
         });
       }
     }

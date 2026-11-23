@@ -28,6 +28,7 @@ export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string,
         if (name !== null) publish(name, definition);
       }
     }
+    for (const name of definition.typeOnlyExports ?? []) publish(name, definition);
   }
   for (const name of ambiguous) exports.delete(name);
   // Indexing only the marked defs picks the same callable winner a named import

@@ -208,7 +208,7 @@ describe('cache interning performance gate', () => {
       };
     });
     expect(() =>
-      indexingMetrics({ ...report, head, graphParity: withAdditions }, 'fresh'),
+      indexingMetrics({ ...report, corpusTrees: head, graphParity: withAdditions }, 'fresh'),
     ).not.toThrow();
     expect(() => indexingMetrics({ ...report, graphParity: withAdditions }, 'fresh')).toThrow(
       'Unknown reference corpus',
@@ -216,9 +216,9 @@ describe('cache interning performance gate', () => {
     const tampered = withAdditions.map((receipt, i) =>
       i === 1 ? { ...receipt, additions: { ...additions, sha256: 'invented' } } : receipt,
     );
-    expect(() => indexingMetrics({ ...report, head, graphParity: tampered }, 'fresh')).toThrow(
-      'Unexpected added reference receipt',
-    );
+    expect(() =>
+      indexingMetrics({ ...report, corpusTrees: head, graphParity: tampered }, 'fresh'),
+    ).toThrow('Unexpected added reference receipt');
   });
 
   it('rejects exact parity when every pinned reference addition is absent', async () => {
@@ -231,7 +231,7 @@ describe('cache interning performance gate', () => {
     expect(() => assertGraphParity({ graph }, { graph }, '.', head)).toThrow(
       'Missing expected added reference receipt',
     );
-    expect(() => indexingMetrics({ ...report, head }, 'fresh')).toThrow(
+    expect(() => indexingMetrics({ ...report, corpusTrees: head }, 'fresh')).toThrow(
       'Missing expected added reference receipt',
     );
   });

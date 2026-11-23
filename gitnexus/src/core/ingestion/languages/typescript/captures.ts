@@ -35,12 +35,7 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
-import {
-  collectEsmExportEvidence,
-  esmExportVerdict,
-  isEsmDefaultExport,
-  namedEsmPublications,
-} from '../../ts-js-export-marker.js';
+import { collectEsmExportEvidence, addEsmExportMarkerCaptures } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
@@ -443,7 +438,7 @@ export function emitTsScopeCaptures(
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'import_statement') ??
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'export_statement');
       if (stmtNode !== null) {
-        const decomposed = splitImportStatement(stmtNode);
+        const decomposed = splitImportStatement(stmtNode, exportEvidence);
         for (const d of decomposed) out.push(d);
       }
       // If decomposition yielded nothing (malformed/bare anchor), drop
@@ -727,36 +722,7 @@ export function emitTsScopeCaptures(
     // `@declaration.is-exported`: a verdict for every declaration the file's
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
-    const declNameNode = groupedNodes['@declaration.name'];
-    if (exportEvidence !== undefined && declNameNode !== undefined) {
-      const verdict = esmExportVerdict(declNameNode, exportEvidence);
-      if (verdict !== undefined) {
-        grouped['@declaration.is-exported'] = syntheticCapture(
-          '@declaration.is-exported',
-          declNameNode,
-          verdict ? 'true' : 'false',
-        );
-      }
-      const isDefault = verdict === true && isEsmDefaultExport(declNameNode, exportEvidence);
-      if (isDefault) {
-        grouped['@declaration.is-default-export'] = syntheticCapture(
-          '@declaration.is-default-export',
-          declNameNode,
-          'true',
-        );
-      }
-      const namedExports =
-        verdict === true
-          ? namedEsmPublications(declNameNode, exportEvidence, isDefault)
-          : undefined;
-      if (namedExports !== undefined) {
-        grouped['@declaration.named-exports'] = syntheticCapture(
-          '@declaration.named-exports',
-          declNameNode,
-          JSON.stringify(namedExports),
-        );
-      }
-    }
+    addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 
@@ -797,9 +763,7 @@ export function emitTsScopeCaptures(
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
-  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out, {
-    narrowInstanceof: true,
-  });
+  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
   return out;
@@ -1032,7 +996,7 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
  * type bindings so `v` resolves like a `Map` iterator tuple element.
  * Uses sentinel `__MAP_TUPLE_i__:rhs` consumed by compound-receiver.
  */
-function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
+export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
   for (const node of relevantNodesRightFirst(root, ['for_in_statement'])) {
     if (node.childForFieldName('operator')?.type !== 'of') continue;
     const left = node.childForFieldName('left');

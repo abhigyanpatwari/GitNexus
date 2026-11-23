@@ -391,6 +391,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
     }
   }
   const topLevelOnly = hooks.namedImportsBindTopLevelOnly === true;
+  // Filtered wildcards keep their provider's name selection and propagation rules.
   const moduleExports =
     hooks.wildcardCollisionIsAmbiguous === true && hooks.filterWildcardNames === undefined
       ? buildExclusiveModuleExports(
@@ -1053,9 +1054,9 @@ function tryFinalize(
 
   // A published name is not a local binding. Retain the statement's actual
   // file dependency, even when its publication is ambiguous or absent.
-  if (draft.source.exportsOnly === true) {
+  if (draft.source.exportsOnly === true && moduleExports !== undefined) {
     const named = draft.source.kind === 'reexport';
-    const inherited = named ? moduleExports?.get(targetFile, draft.source.importedName) : undefined;
+    const inherited = named ? moduleExports.get(targetFile, draft.source.importedName) : undefined;
     return {
       ...draft.base,
       kind: 'side-effect',

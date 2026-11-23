@@ -24,6 +24,12 @@ export function ordinary(entries: Map<Key, Value>) {
     value.save();
   }
 }
+export function keyOnly(entries: Map<Key, Value>) {
+  for (const [key, value] of entries) key.save();
+}
+export function valueOnly(entries: Map<Key, Value>) {
+  for (const [key, value] of entries) value.save();
+}
 export function elision(entries: Map<Key, Value>) {
   for (const [, /* skip the key */ value] of entries) value.save();
 }
@@ -54,6 +60,8 @@ export function forIn(entries: Map<Key, Value>) {
   const value = 'Method:owners.ts:Value.save#0';
   it.each([
     ['ordinary', [key, value]],
+    ['keyOnly', [key]],
+    ['valueOnly', [value]],
     ['elision', [value]],
     ['nested', [value]],
     ['defaultKey', [value]],

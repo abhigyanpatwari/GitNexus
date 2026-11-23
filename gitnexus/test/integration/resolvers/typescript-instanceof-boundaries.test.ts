@@ -9,6 +9,7 @@ export class Key {
   before() {}
   save() {}
 }
+export class Other { save() {} }
 export class Value {
   kind = 'value' as const;
   before() {}
@@ -16,9 +17,9 @@ export class Value {
 }
 `,
     'entry.ts': `
-import { Key, Value } from './owners.js';
+import { Key, Other, Value } from './owners.js';
 
-export function branches(repo: Key | Value) {
+export function branches(repo: Key | Value | Other) {
   if (repo instanceof Key) { repo.before(); }
   else { repo.save(); }
 }

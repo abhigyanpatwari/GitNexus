@@ -364,7 +364,8 @@ export function validatePair(pair) {
     candidate.provenance.runtimeHead !== baseline.provenance.runtimeHead
       ? benchmarkBaseline.graphExpectations?.find(
           (entry) =>
-            entry.baselineRevision === baseline.provenance.runtimeHead &&
+            Array.isArray(entry.baselineSourceTrees) &&
+            isDeepStrictEqual(entry.baselineSourceTrees, baseline.provenance.runtimeSourceTrees) &&
             Array.isArray(entry.candidateSourceTrees) &&
             isDeepStrictEqual(
               entry.candidateSourceTrees,

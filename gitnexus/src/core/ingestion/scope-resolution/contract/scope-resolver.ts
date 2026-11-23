@@ -1038,7 +1038,7 @@ export interface ScopeResolver {
    * language whose wildcard import is `#include`, `require` or a package
    * fan-out, the same name in two files is an overload set or a redeclaration,
    * and refusing it would delete real edges (C++ arity-narrowed overloads
-   * across two headers). Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
+   * across two headers). With unfiltered wildcards, finalize builds the module's\n   * public export surface and uses it for namespace chains and named imports. Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
    */
   readonly exclusiveWildcardReexports?: boolean;
 
@@ -1254,10 +1254,9 @@ export interface ScopeResolver {
    * edge the current module's scope binds under that name; a hop that is
    * ambiguous — two files behind one handle disagree, or a name is both a
    * type and a republished module — resolves nothing rather than picking a
-   * first match. Off, the receiver-bound paths (Case 1, Case 2's
-   * namespace-qualified class, Case 3) keep their one-hop lookups exactly
-   * as they are, so no existing edge moves; Zig opts in (PR #1432 review,
-   * 8.10), whose module system is nothing but nested `const` handles.
+   * first match. Providers with an exclusive public export surface also walk
+   * published namespaces. Other providers keep their one-hop lookups unless
+   * they enable this flag, as Zig does for its nested module handles.
    */
   readonly resolveNamespaceChains?: boolean;
 

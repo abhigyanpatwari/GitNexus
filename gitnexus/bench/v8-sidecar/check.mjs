@@ -56,7 +56,7 @@ export function indexingMetrics(report, lifecycle) {
     assert.deepEqual(candidate.graph.nodes, baseline.graph.nodes, 'Semantic nodes differ');
     const receipt = receipts.get(baseline.name);
     assertReferenceAdditionReceipt(
-      report.head,
+      report.corpusTrees,
       receipt,
       candidate.graph.edges.count - baseline.graph.edges.count,
     );

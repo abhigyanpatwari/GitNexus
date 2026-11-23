@@ -69,6 +69,12 @@ import {
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
 
+import type { EsmExportEvidence } from '../../ts-js-export-marker.js';
+import {
+  canonicalModuleExportName,
+  decodeIdentifierEscapes,
+} from '../../utils/ecmascript-literals.js';
+
 type ImportKind =
   | 'default'
   | 'named'
@@ -182,11 +188,50 @@ function isRecoveredTypeOnlyStar(node: SyntaxNode): boolean {
  *   - `export_statement` (w/ source) : re-exports
  *   - `call_expression` (import fn)  : dynamic `import()`
  */
-export function splitImportStatement(stmtNode: SyntaxNode): CaptureMatch[] {
-  if (stmtNode.type === 'import_statement') return splitImport(stmtNode);
+export function splitImportStatement(
+  stmtNode: SyntaxNode,
+  exportEvidence?: EsmExportEvidence,
+): CaptureMatch[] {
+  if (stmtNode.type === 'import_statement') {
+    const matches = splitImport(stmtNode);
+    if (exportEvidence?.localSpecifiers && stmtNode.parent?.type === 'program') {
+      return matches.concat(forwardedImportMatches(matches, exportEvidence.localSpecifiers));
+    }
+    return matches;
+  }
   if (stmtNode.type === 'export_statement') return splitReexport(stmtNode);
   if (stmtNode.type === 'call_expression') return splitDynamicImport(stmtNode);
   return [];
+}
+
+/** A local export of an imported binding forwards the original module entry. */
+function forwardedImportMatches(
+  imports: readonly CaptureMatch[],
+  specifiers: NonNullable<EsmExportEvidence['localSpecifiers']>,
+): CaptureMatch[] {
+  const forwarded: CaptureMatch[] = [];
+  for (const match of imports) {
+    const kind = match['@import.kind'].text;
+    if (kind === 'side-effect') continue;
+    const name = match['@import.name'].text;
+    const local = match['@import.alias']?.text ?? name;
+    const aliases = specifiers.get(decodeIdentifierEscapes(local));
+    for (const { publicName, typeOnly } of aliases ?? []) {
+      const namespace = kind === 'namespace';
+      forwarded.push(
+        buildImportMatch(publicName, {
+          kind: namespace ? 'reexport-namespace' : 'reexport-alias',
+          source: match['@import.source'].text,
+          name,
+          alias: publicName.text,
+          atNode: publicName,
+          typeOnly: typeOnly || match['@import.type-only'] !== undefined,
+        }),
+      );
+      if (namespace) forwarded.push(buildNamespaceDeclarationMatch(publicName, publicName));
+    }
+  }
+  return forwarded;
 }
 
 // ─── static imports ─────────────────────────────────────────────────────
@@ -395,8 +440,19 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
     // JavaScript's grammar represents `default` as an anonymous token here.
     const aliasId =
       findChild(namespaceExport, 'identifier') ??
+      findChild(namespaceExport, 'string') ??
       namespaceExport.children.find((child) => child.type === 'default');
-    if (aliasId === undefined) return [];
+    if (aliasId === undefined || canonicalModuleExportName(aliasId.text) === null) {
+      return [
+        buildImportMatch(stmtNode, {
+          kind: 'side-effect',
+          source,
+          name: '',
+          atNode: namespaceExport,
+          typeOnly: statementTypeOnly,
+        }),
+      ];
+    }
     return [
       buildImportMatch(stmtNode, {
         kind: 'reexport-namespace',
@@ -583,6 +639,15 @@ function buildNamespaceDeclarationMatch(
     '@declaration.namespace': nodeToCapture('@declaration.namespace', namespaceExportNode),
     '@declaration.name': nodeToCapture('@declaration.name', aliasId),
     '@declaration.binding-name': syntheticCapture('@declaration.binding-name', aliasId, ''),
+    ...(aliasId.type === 'string'
+      ? {
+          '@declaration.named-exports': syntheticCapture(
+            '@declaration.named-exports',
+            aliasId,
+            JSON.stringify([aliasId.text]),
+          ),
+        }
+      : {}),
     '@declaration.is-exported': syntheticCapture('@declaration.is-exported', aliasId, 'true'),
   };
 }

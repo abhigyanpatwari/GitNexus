@@ -204,9 +204,14 @@ function unwrapWriteTarget(target: SyntaxNode | null): SyntaxNode | null {
   while (
     target?.type === 'parenthesized_expression' ||
     target?.type === 'non_null_expression' ||
-    target?.type === 'as_expression'
+    target?.type === 'as_expression' ||
+    target?.type === 'satisfies_expression' ||
+    target?.type === 'type_assertion'
   ) {
-    target = target.namedChildren.find((child) => child.type !== 'comment') ?? null;
+    target =
+      target.namedChildren.find(
+        (child) => child.type !== 'comment' && child.type !== 'type_arguments',
+      ) ?? null;
   }
   return target;
 }
@@ -249,6 +254,9 @@ function narrowingCutoff(guard: InstanceofGuard, writes: readonly SyntaxNode[]):
   }
   const write = writes[low];
   if (!write || write.startIndex >= consequence.endIndex) return consequence.endIndex;
+  if (consequence.type !== 'statement_block' && consequence.type !== 'expression_statement') {
+    return consequence.startIndex;
+  }
   let statement = write;
   if (statement.id === consequence.id) return consequence.startIndex;
   for (
@@ -415,19 +423,18 @@ export function synthesizeTsLocalImports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
-  options?: { readonly narrowInstanceof: boolean },
 ): ReadonlyMap<number, ReadonlySet<string>> {
   const scopes = new Map<string, LexicalScope>();
   const scopesAt = new Map<string, LexicalScope>();
   const calls: LocatedNode[] = [];
   const writes: WriteSite[] = [];
   const bindingWrites: Array<LocatedNode & { readonly name: string }> = [];
-  const narrowing = options?.narrowInstanceof ? createInstanceofNarrowingCollector() : undefined;
+  const narrowing = createInstanceofNarrowingCollector();
   const recordWrite = (node: SyntaxNode, scope: LexicalScope, target: SyntaxNode | null) => {
     const write = readWriteSite(node, scope, target);
     if (!write) return;
     writes.push(write);
-    narrowing?.writes.push(write);
+    narrowing.writes.push(write);
   };
   const uninitializedVarClaims = new Set<NameClaim>();
   const declarations: LocatedNode[] = [];
@@ -485,7 +492,7 @@ export function synthesizeTsLocalImports(
     const current = scope ?? parent;
     if (node.type === 'import_statement') scopesAt.set(key, current);
 
-    narrowing?.observe(node, current);
+    narrowing.observe(node, current);
 
     if (FUNCTION_TYPES.has(node.type)) {
       // JSDoc parameter type facts are anchored on the enclosing function.
@@ -635,7 +642,7 @@ export function synthesizeTsLocalImports(
       if (owner) bindingWrites.push({ node, scope: owner, name: name.text });
     }
   }
-  narrowing?.emit(scopes.values(), filePath, out);
+  narrowing.emit(scopes.values(), filePath, out);
 
   const validRequireCalls = new Map<number, Set<string>>();
   const declarationByValue = new Map(

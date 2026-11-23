@@ -141,6 +141,8 @@ export interface SymbolDefinition {
   isDefaultExport?: boolean;
   /** Explicit names of an aliased or default binding. Empty for default-only bindings. */
   namedExports?: readonly string[];
+  /** Canonical public names that bind this declaration only in type positions. */
+  typeOnlyExports?: readonly string[];
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)

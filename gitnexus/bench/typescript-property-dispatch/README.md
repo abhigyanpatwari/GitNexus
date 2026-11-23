@@ -23,9 +23,7 @@ dispatch can still reach its registered function.
 | 256 | 33 | 256 | 0 |
 
 At or below the registration cap the speculative edge count is call sites
-times distinct registrations. Above the cap the entire key is skipped. Both
-the pristine and TypeScript ingestion builds produced the same identities
-on this corpus. The timings are three cold worker-ingestion samples per
+times distinct registrations. Above the cap the entire key is skipped. The timings are three cold worker-ingestion samples per
 shape after warmup. They include parsing and resolution, with graph publication
 and derived phases outside the timer. Peak RSS is for the process across
 all shapes. The check gates deterministic workload and edge identities.

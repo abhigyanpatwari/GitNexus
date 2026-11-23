@@ -93,7 +93,6 @@ call fingerprints were stable within each build. The source tree measures
 publication cost and graph changes, while the generated fixtures supply the
 expected-target oracle.
 
-The parse-reuse benchmark on the pinned CLI source corpus measures 173 added
-ingestion relationships. Its five phases have exact graph expectations for
-both runtimes. The sparse lexical-lookup corpus measures 107 added references
-and verifies their exact identities while preserving every baseline row.
+The parse-reuse comparison against `302969291` adds 257 ingestion relationships on the frozen CLI source corpus. All existing relationship rows were preserved. `file-result-reuse/baseline.json` records the two source tree IDs for each runtime, the corpus digest, and the five exact graph fingerprints per runtime. To refresh those expectations, run the baseline and candidate on the same base `gitnexus/src` directory, compare their graph rows, and record each phase's digest and counts. Other inputs use strict equality.
+
+The sparse lexical-lookup corpus adds 107 relationships. Its manifest is keyed by the Git tree IDs of `gitnexus/src/core/ingestion` and `gitnexus-shared/src/scope-resolution`. The parity check compares every existing row and verifies the count and digest of the additions.
