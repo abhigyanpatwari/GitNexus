@@ -32,7 +32,7 @@ function checkDifferences(fixture, differences) {
   const file = fixture.differences
     ? new URL(fixture.differences, import.meta.url)
     : path.join(fixture.dir, 'known-differences.txt');
-  if (!existsSync(file) || process.argv.includes('--strict')) {
+  if ((!fixture.differences && !existsSync(file)) || process.argv.includes('--strict')) {
     if (differences.length) throw new Error(differences.join('\n'));
     return;
   }

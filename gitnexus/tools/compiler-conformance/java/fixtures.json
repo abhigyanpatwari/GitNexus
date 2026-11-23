@@ -1,6 +1,14 @@
 {
   "compiler-conformance/java-annotated-lambda-array": 1,
   "compiler-conformance/java-anonymous-implicit-array": 4,
+  "compiler-conformance/java-array-method-return-identity": {
+    "sites": 10,
+    "rejections": {
+      "ambiguous": 1,
+      "receiver-unresolved": 1
+    }
+  },
+  "compiler-conformance/java-callback-qualified-lookalike": 14,
   "compiler-conformance/java-contextual-declaration-identity": 3,
   "compiler-conformance/java-contextual-local-element-identity": 2,
   "compiler-conformance/java-invalid-overloads": {
@@ -24,13 +32,25 @@
   },
   "compiler-conformance/java-qualified-type-root-shadow": 1,
   "compiler-conformance/java-r3-inherited-member-root": 3,
+  "compiler-conformance/java-r4-sam-on-demand": 14,
+  "compiler-conformance/java-r4-variable-named-proof-root": 7,
+  "compiler-conformance/java-r4-variable-named-root": 11,
   "compiler-conformance/java-r5-non-ascii-spelling": 7,
   "compiler-conformance/java-r6-annotated-producer-returns": 15,
+  "compiler-conformance/java-r6-sam-callee-scope": 4,
+  "compiler-conformance/java-r6-shadow-root": 10,
   "compiler-conformance/java-receiver-alias": 4,
   "compiler-conformance/java-review-followups-inherited-root": 2,
   "compiler-conformance/java-review-followups-nested-fqn": 4,
   "compiler-conformance/java-review-followups-per-reference": 2,
   "compiler-conformance/java-review-followups-r5-anonymous-this": 4,
+  "compiler-conformance/java-sam-object-identity": {
+    "sites": 5,
+    "rejections": {
+      "inapplicable": 1
+    }
+  },
+  "compiler-conformance/java-sam-split-package": 8,
   "java/java-consumer-before-provider": 2,
   "java/java-cross-file": 3,
   "lang-resolution/java-ambiguous": 0,

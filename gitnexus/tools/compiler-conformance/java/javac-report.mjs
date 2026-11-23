@@ -46,7 +46,7 @@ export function javacReports(fixtures) {
       report.declarations.push({ file, kind: label, name, ...(binaryName && { binaryName }) });
     } else {
       assert.ok(
-        ['resolved', 'ambiguous', 'inapplicable'].includes(kind),
+        ['resolved', 'ambiguous', 'inapplicable', 'receiver-unresolved'].includes(kind),
         'Unknown javac record ' + kind,
       );
       const [file, start, end, caller, target, description] = read(6);

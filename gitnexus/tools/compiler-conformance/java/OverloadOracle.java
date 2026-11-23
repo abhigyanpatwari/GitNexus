@@ -169,6 +169,30 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         return super.visitNewClass(call, caller);
     }
 
+    private Optional<Diagnostic<? extends JavaFileObject>> callError(CompilationUnitTree unit, MethodInvocationTree call) {
+        var positions = trees.getSourcePositions();
+        var select = call.getMethodSelect();
+        return errors.stream().filter(d -> d.getSource().equals(unit.getSourceFile())
+                && d.getStartPosition() == positions.getStartPosition(unit, select)
+                && (d.getEndPosition() == positions.getEndPosition(unit, select)
+                    || d.getEndPosition() == positions.getEndPosition(unit, call))).findFirst();
+    }
+
+    // javac can assign a recovery return type after rejecting the call that
+    // produces a receiver. That type cannot establish a downstream method target.
+    private boolean hasRejectedReceiver(CompilationUnitTree unit, ExpressionTree select) {
+        ExpressionTree receiver = select;
+        while (true) {
+            if (receiver instanceof MemberSelectTree member) receiver = member.getExpression();
+            else if (receiver instanceof ArrayAccessTree array) receiver = array.getExpression();
+            else if (receiver instanceof ParenthesizedTree parens) receiver = parens.getExpression();
+            else if (receiver instanceof MethodInvocationTree producer) {
+                if (callError(unit, producer).isPresent()) return true;
+                receiver = producer.getMethodSelect();
+            } else return false;
+        }
+    }
+
     @Override public Void visitMethodInvocation(MethodInvocationTree call, MethodTree caller) {
         var select = call.getMethodSelect();
         var name = select instanceof MemberSelectTree member
@@ -183,12 +207,12 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
             var positions = trees.getSourcePositions();
             var start = positions.getStartPosition(unit, call);
             var end = positions.getEndPosition(unit, call);
-            var diagnostic = errors.stream().filter(d -> d.getSource().equals(unit.getSourceFile())
-                    && d.getStartPosition() == positions.getStartPosition(unit, select)
-                    && (d.getEndPosition() == positions.getEndPosition(unit, select)
-                        || d.getEndPosition() == end)).findFirst();
+            var diagnostic = callError(unit, call);
             // An invalid call can still have a recovery declaration. Classify its diagnostic first.
             var status = diagnostic.map(OverloadOracle::rejection).orElse("resolved");
+            if (diagnostic.isEmpty() && !errors.isEmpty() && hasRejectedReceiver(unit, select)) {
+                status = "receiver-unresolved";
+            }
             diagnostic.ifPresent(errors::remove);
             var target = "";
             var signature = "";

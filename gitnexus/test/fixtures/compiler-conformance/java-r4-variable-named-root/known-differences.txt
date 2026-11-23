@@ -1,0 +1,5 @@
+# GitNexus suppresses the locally shadowed receiver and lacks a source span for a callback registration.
+Missing from GitNexus: app/Handler.java:4:24..4:47 resolved app/Handler.java#3:2 (app.Handler.accept(cb.UserCb))
+Missing from GitNexus: app/LocalClass.java:6:4..6:12 resolved app/LocalClass.java#4:32 (models.User.save())
+Missing from GitNexus: edge app/LocalClass.java#3:2 -> app/LocalClass.java#4:32
+Unexpected in GitNexus: app/LocalClass.java:6:4..6:12 receiver-unresolved

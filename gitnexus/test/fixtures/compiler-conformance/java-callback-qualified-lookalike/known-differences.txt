@@ -1,0 +1,30 @@
+# A workspace type named java obscures the JDK package. GitNexus suppresses calls through several shadowed container types.
+Missing from GitNexus: edge p/App.java#3:2 -> p/Other.java#2:21
+Missing from GitNexus: edge p/App.java#3:2 -> p/java.java#10:6
+Missing from GitNexus: edge p/App.java#4:2 -> p/Other.java#2:21
+Missing from GitNexus: edge p/App.java#4:2 -> p/java.java#10:6
+Missing from GitNexus: edge p/App.java#5:2 -> p/Other.java#2:21
+Missing from GitNexus: edge p/App.java#5:2 -> p/Other.java#2:43
+Missing from GitNexus: edge p/App.java#5:2 -> p/java.java#10:6
+Missing from GitNexus: edge p/App.java#6:2 -> p/Other.java#2:21
+Missing from GitNexus: edge p/App.java#7:2 -> p/Other.java#2:21
+Missing from GitNexus: p/App.java:3:42..3:79 resolved p/java.java#10:6 (p.java.util.List.forEach(java.util.function.Consumer<? super p.Other>))
+Missing from GitNexus: p/App.java:3:66..3:78 resolved p/Other.java#2:21 (p.Other.save())
+Missing from GitNexus: p/App.java:4:44..4:103 resolved p/java.java#10:6 (p.java.util.List.forEach(java.util.function.Consumer<? super p.Other>))
+Missing from GitNexus: p/App.java:4:88..4:99 resolved p/Other.java#2:21 (p.Other.save())
+Missing from GitNexus: p/App.java:5:51..5:112 resolved p/java.java#10:6 (p.java.util.List.forEach(java.util.function.Consumer<? super p.Other>))
+Missing from GitNexus: p/App.java:5:75..5:111 resolved p/Other.java#2:43 (p.Other.forEach(java.util.function.Consumer<p.Other>))
+Missing from GitNexus: p/App.java:5:98..5:110 resolved p/Other.java#2:21 (p.Other.save())
+Missing from GitNexus: p/App.java:6:71..6:83 resolved p/Other.java#2:21 (p.Other.save())
+Missing from GitNexus: p/App.java:7:88..7:100 resolved p/Other.java#2:21 (p.Other.save())
+Missing from GitNexus: p/App.java:8:56..8:100 resolved p/java.java#15:6 (p.java.util.Map.forEach(java.util.function.BiConsumer<p.Other,p.Other>))
+Unexpected in GitNexus: ok/App.java:2:42..2:79 receiver-unresolved
+Unexpected in GitNexus: p/App.java:3:42..3:79 overload-unknown
+Unexpected in GitNexus: p/App.java:3:66..3:78 receiver-unresolved
+Unexpected in GitNexus: p/App.java:4:44..4:103 overload-unknown
+Unexpected in GitNexus: p/App.java:5:51..5:112 overload-unknown
+Unexpected in GitNexus: p/App.java:5:75..5:111 receiver-unresolved
+Unexpected in GitNexus: p/App.java:5:98..5:110 receiver-unresolved
+Unexpected in GitNexus: p/App.java:6:71..6:83 receiver-type-unresolved
+Unexpected in GitNexus: p/App.java:7:88..7:100 receiver-type-unresolved
+Unexpected in GitNexus: p/App.java:9:37..9:74 receiver-unresolved

@@ -72,7 +72,7 @@ The runner also compares source type identities, ordinary method names and count
 
 [The fixture manifest](java/fixtures.json) reuses projects outside the discovery directory and pins the number of compiler sites for migrated tests. A fixture can select method families or compare only type declarations when collapsed overloads give GitNexus a different method inventory. The manifest records why eleven shared projects run in Vitest. They exercise incomplete Java, invalid source layouts, or duplicate types across module boundaries. The runner automatically includes new `lang-resolution/java-*` source projects. The [generated matrix](java/conversion-matrix.mjs) independently pins all 100 argument ranges across 20 overload pairs.
 
-Four fixtures record existing disagreements. The overload cases have a `known-differences.txt` alongside the source. Two shared projects point to difference files from the manifest to preserve their benchmark input trees. CI prints the exact differences and fails if one appears, changes, or disappears unexpectedly. To fail on every disagreement, including the recorded ones, run `npm run test:conformance:java -- --strict`.
+Fixtures with existing disagreements record them in `known-differences.txt` alongside the source. Two shared projects point to difference files from the manifest to preserve their benchmark input trees. CI prints the exact differences and fails if one appears, changes, or disappears unexpectedly. To fail on every disagreement, including the recorded ones, run `npm run test:conformance:java -- --strict`.
 
 To compare another analyzer against javac, run the following from this directory. Omit the method names to report all invocations with source declarations.
 

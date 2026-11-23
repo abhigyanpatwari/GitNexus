@@ -1,0 +1,3 @@
+# The registrations lack call-site ranges. The lambda bodies resolve in the callee declaration scope.
+Missing from GitNexus: d/Caller.java:3:27..3:49 resolved c/Api.java#1:30 (c.Api.run(c.Generic<c.Item>))
+Missing from GitNexus: d/Importer.java:4:29..4:51 resolved c/Api.java#1:30 (c.Api.run(c.Generic<c.Item>))
