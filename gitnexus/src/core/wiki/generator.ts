@@ -12,7 +12,7 @@
 
 import fs from 'fs/promises';
 import path from 'path';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 import {
   initWikiDb,
@@ -1232,8 +1232,13 @@ export class WikiGenerator {
 
   private getCurrentCommit(): string {
     try {
-      return execSync('git rev-parse HEAD', {
+      // argv form, not `execSync('git …')`: the shell form makes the CHILD
+      // resolve `git` against its own PATH, which fails outright on Windows
+      // once the environment block is too large to pass intact. See `runGit`
+      // in `storage/git.ts` for the measurements.
+      return execFileSync('git', ['rev-parse', 'HEAD'], {
         cwd: this.repoPath,
+        stdio: ['ignore', 'pipe', 'ignore'],
         windowsHide: true,
       })
         .toString()

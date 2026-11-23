@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { execSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -17,13 +17,18 @@ import {
   getCoreExcludesFilePath,
 } from '../../src/storage/git.js';
 
-// Mock child_process.execSync
+// Mock child_process.execFileSync. Every git call goes through the argv form
+// (`execFileSync('git', [...])`) rather than a shell string: a shell form has
+// the CHILD resolve `git` against its own PATH, which fails outright when the
+// environment block is too large to pass intact on Windows (see `runGit` in
+// src/storage/git.ts). Asserting the argv shape here keeps that regression
+// from coming back unnoticed.
 vi.mock('child_process', () => ({
-  execSync: vi.fn(),
+  execFileSync: vi.fn(),
   spawnSync: vi.fn(),
 }));
 
-const mockExecSync = vi.mocked(execSync);
+const mockExecFileSync = vi.mocked(execFileSync);
 const mockSpawnSync = vi.mocked(spawnSync);
 
 describe('git utilities', () => {
@@ -33,27 +38,32 @@ describe('git utilities', () => {
 
   describe('isGitRepo', () => {
     it('returns true when inside a git work tree', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from(''));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from(''));
       expect(isGitRepo('/project')).toBe(true);
-      expect(mockExecSync).toHaveBeenCalledWith('git rev-parse --is-inside-work-tree', {
-        cwd: '/project',
-        stdio: 'ignore',
-        windowsHide: true,
-      });
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['rev-parse', '--is-inside-work-tree'],
+        {
+          cwd: '/project',
+          stdio: 'ignore',
+          windowsHide: true,
+        },
+      );
     });
 
     it('returns false when not a git repo', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('not a git repo');
       });
       expect(isGitRepo('/not-a-repo')).toBe(false);
     });
 
     it('passes the correct cwd', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from(''));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from(''));
       isGitRepo('/some/path');
-      expect(mockExecSync).toHaveBeenCalledWith(
-        expect.any(String),
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        expect.any(Array),
         expect.objectContaining({ cwd: '/some/path' }),
       );
     });
@@ -61,80 +71,87 @@ describe('git utilities', () => {
 
   describe('getCurrentCommit', () => {
     it('returns trimmed commit hash', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('abc123def\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('abc123def\n'));
       expect(getCurrentCommit('/project')).toBe('abc123def');
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['rev-parse', 'HEAD'],
+        expect.objectContaining({ cwd: '/project' }),
+      );
     });
 
     it('returns empty string on error', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('not a git repo');
       });
       expect(getCurrentCommit('/not-a-repo')).toBe('');
     });
 
     it('trims whitespace from output', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('  sha256hash  \n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('  sha256hash  \n'));
       expect(getCurrentCommit('/project')).toBe('sha256hash');
     });
   });
 
   describe('getDefaultBranch (#243)', () => {
     it('strips the origin/ prefix from the symbolic ref', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('origin/develop\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('origin/develop\n'));
       expect(getDefaultBranch('/project')).toBe('develop');
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'git symbolic-ref --short refs/remotes/origin/HEAD',
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'],
         expect.objectContaining({ cwd: '/project', windowsHide: true }),
       );
     });
 
     it('handles a branch name that itself contains a slash', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('origin/release/1.2\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('origin/release/1.2\n'));
       expect(getDefaultBranch('/project')).toBe('release/1.2');
     });
 
     it('returns null when origin/HEAD is not set (git throws)', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('fatal: ref refs/remotes/origin/HEAD is not a symbolic ref');
       });
       expect(getDefaultBranch('/no-origin-head')).toBeNull();
     });
 
     it('returns null on empty output', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('\n'));
       expect(getDefaultBranch('/project')).toBeNull();
     });
   });
 
   describe('getCurrentBranch (#2106)', () => {
     it('returns the checked-out branch name', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('feature/login\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('feature/login\n'));
       expect(getCurrentBranch('/project')).toBe('feature/login');
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'git rev-parse --abbrev-ref HEAD',
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['rev-parse', '--abbrev-ref', 'HEAD'],
         expect.objectContaining({ cwd: '/project', windowsHide: true }),
       );
     });
 
     it('returns null for a detached HEAD (literal "HEAD")', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('HEAD\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('HEAD\n'));
       expect(getCurrentBranch('/ci-checkout')).toBeNull();
     });
 
     it('returns null when not a git repo (git throws)', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('fatal: not a git repository');
       });
       expect(getCurrentBranch('/not-a-repo')).toBeNull();
     });
 
     it('returns null on empty output', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('\n'));
       expect(getCurrentBranch('/project')).toBeNull();
     });
 
     it('preserves a slash in the branch name (slugging happens elsewhere)', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('release/1.2\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('release/1.2\n'));
       expect(getCurrentBranch('/project')).toBe('release/1.2');
     });
   });
@@ -206,7 +223,7 @@ describe('git utilities', () => {
 
   describe('getGitRoot', () => {
     it('returns resolved path on success', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/d/Projects/MyRepo\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/d/Projects/MyRepo\n'));
       const result = getGitRoot('/d/Projects/MyRepo/src');
       expect(result).toBeTruthy();
       // path.resolve normalizes the git output
@@ -214,23 +231,24 @@ describe('git utilities', () => {
     });
 
     it('returns null when not in a git repo', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('not a git repo');
       });
       expect(getGitRoot('/not-a-repo')).toBeNull();
     });
 
     it('calls git rev-parse --show-toplevel', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/repo\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/repo\n'));
       getGitRoot('/repo/src');
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'git rev-parse --show-toplevel',
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['rev-parse', '--show-toplevel'],
         expect.objectContaining({ cwd: '/repo/src' }),
       );
     });
 
     it('preserves path whitespace while removing the trailing newline', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/repo \n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/repo \n'));
       const result = getGitRoot('/repo/src');
       expect(result).not.toBeNull();
       expect(result).toBe(path.resolve('/repo '));
@@ -246,7 +264,7 @@ describe('git utilities', () => {
         fs.mkdirSync(nested, { recursive: true });
 
         expect(findGitRootByDotGit(nested)).toBe(path.resolve(tmpDir));
-        expect(mockExecSync).not.toHaveBeenCalled();
+        expect(mockExecFileSync).not.toHaveBeenCalled();
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -256,7 +274,7 @@ describe('git utilities', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-nonrepo-'));
       try {
         expect(findGitRootByDotGit(tmpDir)).toBeNull();
-        expect(mockExecSync).not.toHaveBeenCalled();
+        expect(mockExecFileSync).not.toHaveBeenCalled();
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -273,7 +291,7 @@ describe('git utilities', () => {
         fs.mkdirSync(nested, { recursive: true });
 
         expect(findGitRootByDotGit(nested)).toBe(path.resolve(tmpDir));
-        expect(mockExecSync).not.toHaveBeenCalled();
+        expect(mockExecFileSync).not.toHaveBeenCalled();
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -282,7 +300,7 @@ describe('git utilities', () => {
     it('returns null when the input path does not exist', () => {
       const missing = path.join(os.tmpdir(), `gitnexus-missing-${Date.now()}-${Math.random()}`);
       expect(findGitRootByDotGit(missing)).toBeNull();
-      expect(mockExecSync).not.toHaveBeenCalled();
+      expect(mockExecFileSync).not.toHaveBeenCalled();
     });
 
     it('walks from a file input by starting at its parent directory', () => {
@@ -294,7 +312,7 @@ describe('git utilities', () => {
         fs.writeFileSync(filePath, 'export {};\n');
 
         expect(findGitRootByDotGit(filePath)).toBe(path.resolve(tmpDir));
-        expect(mockExecSync).not.toHaveBeenCalled();
+        expect(mockExecFileSync).not.toHaveBeenCalled();
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
@@ -360,10 +378,11 @@ describe('git utilities', () => {
 
   describe('getGitInfoExcludePath (#2606)', () => {
     it('joins info/exclude onto the absolute git-common-dir', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/repo/.git\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/repo/.git\n'));
       expect(getGitInfoExcludePath('/repo')).toBe(path.join('/repo/.git', 'info', 'exclude'));
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'git rev-parse --path-format=absolute --git-common-dir',
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['rev-parse', '--path-format=absolute', '--git-common-dir'],
         expect.objectContaining({ cwd: '/repo', windowsHide: true }),
       );
     });
@@ -371,14 +390,14 @@ describe('git utilities', () => {
     it('resolves the worktree-shared common dir, not a per-worktree one', () => {
       // $GIT_COMMON_DIR is the same for the main checkout and every linked
       // worktree, so a worktree's info/exclude resolves to the shared main repo.
-      mockExecSync.mockReturnValueOnce(Buffer.from('/repo/.git\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/repo/.git\n'));
       expect(getGitInfoExcludePath('/repo/.worktrees/feature')).toBe(
         path.join('/repo/.git', 'info', 'exclude'),
       );
     });
 
     it('returns null when not inside a git repository', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('not a git repo');
       });
       expect(getGitInfoExcludePath('/not-a-repo')).toBeNull();
@@ -401,16 +420,17 @@ describe('git utilities', () => {
     });
 
     it('returns the configured core.excludesFile value', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/home/user/.gitignore_global\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/home/user/.gitignore_global\n'));
       expect(getCoreExcludesFilePath('/repo')).toBe('/home/user/.gitignore_global');
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'git config --get --type=path core.excludesFile',
+      expect(mockExecFileSync).toHaveBeenCalledWith(
+        'git',
+        ['config', '--get', '--type=path', 'core.excludesFile'],
         expect.objectContaining({ cwd: '/repo', windowsHide: true }),
       );
     });
 
     it("falls back to git's documented default ($XDG_CONFIG_HOME/git/ignore) when unset", () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('key not set'); // git config --get exits 1 when unset
       });
       process.env.XDG_CONFIG_HOME = '/home/user/.config';
@@ -423,7 +443,7 @@ describe('git utilities', () => {
     });
 
     it('falls back to the default even when git is unavailable entirely', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('git: command not found');
       });
       process.env.XDG_CONFIG_HOME = '/home/user/.config';
@@ -439,38 +459,38 @@ describe('git utilities', () => {
   // fromPath so a second call never spawns a second subprocess (#2606).
   describe('getGitInfoExcludePath / getCoreExcludesFilePath caching (#2606)', () => {
     it('getGitInfoExcludePath only spawns git once for repeated calls with the same fromPath', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/cached-repo/.git\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/cached-repo/.git\n'));
       const first = getGitInfoExcludePath('/cached-repo');
       const second = getGitInfoExcludePath('/cached-repo');
       expect(first).toBe(path.join('/cached-repo/.git', 'info', 'exclude'));
       expect(second).toBe(first);
-      expect(mockExecSync).toHaveBeenCalledTimes(1);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     });
 
     it('getGitInfoExcludePath caches a null result too (not-a-git-repo stays cheap)', () => {
-      mockExecSync.mockImplementationOnce(() => {
+      mockExecFileSync.mockImplementationOnce(() => {
         throw new Error('not a git repo');
       });
       expect(getGitInfoExcludePath('/cached-non-repo')).toBeNull();
       expect(getGitInfoExcludePath('/cached-non-repo')).toBeNull();
-      expect(mockExecSync).toHaveBeenCalledTimes(1);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     });
 
     it('getCoreExcludesFilePath only spawns git once for repeated calls with the same fromPath', () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/home/user/.gitignore_global\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/home/user/.gitignore_global\n'));
       const first = getCoreExcludesFilePath('/cached-repo-2');
       const second = getCoreExcludesFilePath('/cached-repo-2');
       expect(first).toBe('/home/user/.gitignore_global');
       expect(second).toBe(first);
-      expect(mockExecSync).toHaveBeenCalledTimes(1);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(1);
     });
 
     it("a different fromPath is not served from another path's cache entry", () => {
-      mockExecSync.mockReturnValueOnce(Buffer.from('/repo-a/.git\n'));
-      mockExecSync.mockReturnValueOnce(Buffer.from('/repo-b/.git\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/repo-a/.git\n'));
+      mockExecFileSync.mockReturnValueOnce(Buffer.from('/repo-b/.git\n'));
       expect(getGitInfoExcludePath('/repo-a')).toBe(path.join('/repo-a/.git', 'info', 'exclude'));
       expect(getGitInfoExcludePath('/repo-b')).toBe(path.join('/repo-b/.git', 'info', 'exclude'));
-      expect(mockExecSync).toHaveBeenCalledTimes(2);
+      expect(mockExecFileSync).toHaveBeenCalledTimes(2);
     });
   });
 });

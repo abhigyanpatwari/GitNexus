@@ -1,4 +1,4 @@
-import { execFileSync, execSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { statSync, existsSync, lstatSync, realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -10,6 +10,41 @@ import { GITNEXUS_MANAGED_PATH_EXCLUDES, isGitNexusManagedPath } from './gitnexu
 
 const chompGitOutput = (value: Buffer): string => value.toString().replace(/\r?\n$/, '');
 const GIT_PATH_LIST_MAX_BUFFER = 64 * 1024 * 1024;
+
+/**
+ * Run `git` with an argv array — never a single shell string.
+ *
+ * `execSync('git …')` goes through the platform shell, so the *child* has to
+ * resolve the bare name `git` against the environment it was handed. When the
+ * Windows environment block is too large to pass intact, `cmd.exe` gets a
+ * corrupted copy — PATH truncated to empty, or truncated far enough to lose the
+ * git directory — and every `execSync` git call fails with `'git' is not
+ * recognized` and status 1. That status is indistinguishable, in the catch
+ * blocks below, from git's own non-zero answers, so a checkout that *is* a
+ * worktree gets reported as one that is not: `isGitRepo` false,
+ * `getCurrentCommit` empty, `getCurrentBranch` null, and `status` prints
+ * "Not a git repository."
+ *
+ * `execFileSync` resolves `git` through the PARENT's PATH before spawning and
+ * passes the resulting absolute path to `CreateProcess`, so the child never
+ * reads PATH itself. This is the form every other git call in this file already
+ * used (`isWorkingTreeDirty`, `getCurrentCheckout`, `listLocalHeads`,
+ * `commitDistanceToHead`); the functions still on `execSync` were the only ones
+ * that could fail this way, which is exactly what was observed: in one process,
+ * `getCurrentCheckout` returned the commit and branch while the sibling
+ * `getCurrentCommit` returned `''` and `getCurrentBranch` returned `null`.
+ *
+ * Measured on Windows against a real git worktree: at a 16,679-character
+ * environment block `execSync` returned status 1 while `execFileSync` returned
+ * the commit hash from the same cwd. At a 5,702-character block both succeeded,
+ * so the trigger is environment size, not the git command.
+ *
+ * Keep git out of the shell: no argument here needs shell expansion, and the
+ * shell form additionally lets a repo-controlled value reach the command line
+ * unquoted.
+ */
+const runGit = (args: readonly string[], cwd: string): Buffer =>
+  execFileSync('git', args, { cwd, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
 
 /**
  * True when the working tree has uncommitted changes that analyze would
@@ -269,7 +304,7 @@ export const selfCommitContextFiles = (
 
 export const isGitRepo = (repoPath: string): boolean => {
   try {
-    execSync('git rev-parse --is-inside-work-tree', {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
       cwd: repoPath,
       stdio: 'ignore',
       windowsHide: true,
@@ -307,18 +342,10 @@ export const commitDistanceToHead = (repoPath: string, ancestor: string): number
 
 export const getCurrentCommit = (repoPath: string): string => {
   try {
-    return execSync('git rev-parse HEAD', {
-      cwd: repoPath,
-      // Suppress stderr -- without an explicit stdio option, Node's execSync
-      // forwards the child's stderr to the parent process (documented behaviour).
-      // When repoPath is not inside a git worktree, git prints
-      // "fatal: not a git repository" to stderr, which leaks to the user's
-      // terminal even though the error is caught here (#1172).
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
-      .toString()
-      .trim();
+    // runGit discards stderr by default. Without that, git prints
+    // "fatal: not a git repository" to the parent's terminal even though the
+    // error is caught here (#1172).
+    return runGit(['rev-parse', 'HEAD'], repoPath).toString().trim();
   } catch {
     return '';
   }
@@ -376,13 +403,7 @@ export const stripUrlCredentials = (url: string): string =>
 export const getRemoteUrl = (repoPath: string): string | undefined => {
   let raw: string;
   try {
-    raw = execSync('git config --get remote.origin.url', {
-      cwd: repoPath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
-      .toString()
-      .trim();
+    raw = runGit(['config', '--get', 'remote.origin.url'], repoPath).toString().trim();
   } catch {
     return undefined;
   }
@@ -425,12 +446,8 @@ export const getGitRoot = (fromPath: string): string | null => {
 
   try {
     const raw = chompGitOutput(
-      execSync('git rev-parse --show-toplevel', {
-        cwd: fromPath,
-        // Suppress stderr -- see getCurrentCommit comment and #1172.
-        stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true,
-      }),
+      // stderr suppressed -- see getCurrentCommit comment and #1172.
+      runGit(['rev-parse', '--show-toplevel'], fromPath),
     );
     // On Windows, git returns /d/Projects/Foo — path.resolve normalizes to D:\Projects\Foo
     return path.resolve(raw);
@@ -469,11 +486,7 @@ export const getGitRoot = (fromPath: string): string | null => {
 export const getCanonicalRepoRoot = (fromPath: string): string | null => {
   try {
     const commonDir = chompGitOutput(
-      execSync('git rev-parse --path-format=absolute --git-common-dir', {
-        cwd: fromPath,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true,
-      }),
+      runGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], fromPath),
     );
     if (!commonDir) return null;
     // Common dir is `<repo>/.git` for both the main checkout and all
@@ -513,11 +526,7 @@ export const getGitInfoExcludePath = (fromPath: string): string | null => {
   let result: string | null;
   try {
     const commonDir = chompGitOutput(
-      execSync('git rev-parse --path-format=absolute --git-common-dir', {
-        cwd: fromPath,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true,
-      }),
+      runGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], fromPath),
     );
     result = commonDir ? path.join(path.resolve(commonDir), 'info', 'exclude') : null;
   } catch {
@@ -544,11 +553,7 @@ export const getCoreExcludesFilePath = (fromPath: string): string => {
   let result: string | undefined;
   try {
     const configured = chompGitOutput(
-      execSync('git config --get --type=path core.excludesFile', {
-        cwd: fromPath,
-        stdio: ['ignore', 'pipe', 'ignore'],
-        windowsHide: true,
-      }),
+      runGit(['config', '--get', '--type=path', 'core.excludesFile'], fromPath),
     );
     if (configured) result = configured;
   } catch {
@@ -665,11 +670,7 @@ export const hasGitDir = (dirPath: string): boolean => {
  */
 export const getRemoteOriginUrl = (repoPath: string): string | null => {
   try {
-    const url = execSync('git config --get remote.origin.url', {
-      cwd: repoPath,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
+    const url = runGit(['config', '--get', 'remote.origin.url'], repoPath)
       .toString()
       .trim();
     return url || null;
@@ -690,14 +691,10 @@ export const getRemoteOriginUrl = (repoPath: string): string | null => {
  */
 export const getDefaultBranch = (repoPath: string): string | null => {
   try {
-    const ref = execSync('git symbolic-ref --short refs/remotes/origin/HEAD', {
-      cwd: repoPath,
-      // Suppress stderr -- see getCurrentCommit comment and #1172. Without it,
-      // git prints "fatal: ref refs/remotes/origin/HEAD is not a symbolic ref"
-      // to the user's terminal on repos that never set origin/HEAD.
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
+    // stderr suppressed -- see getCurrentCommit comment and #1172. Without it,
+    // git prints "fatal: ref refs/remotes/origin/HEAD is not a symbolic ref"
+    // to the user's terminal on repos that never set origin/HEAD.
+    const ref = runGit(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], repoPath)
       .toString()
       .trim();
     if (!ref) return null;
@@ -719,12 +716,8 @@ export const getDefaultBranch = (repoPath: string): string | null => {
  */
 export const getCurrentBranch = (repoPath: string): string | null => {
   try {
-    const branch = execSync('git rev-parse --abbrev-ref HEAD', {
-      cwd: repoPath,
-      // Suppress stderr -- see getCurrentCommit comment and #1172.
-      stdio: ['ignore', 'pipe', 'ignore'],
-      windowsHide: true,
-    })
+    // stderr suppressed -- see getCurrentCommit comment and #1172.
+    const branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoPath)
       .toString()
       .trim();
     if (!branch || branch === 'HEAD') return null;
