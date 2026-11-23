@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { logger } from '../../logger.js';
 import { createQuarantine } from './quarantine.js';
+import { spawnWithOwnHeapLimit } from './worker-heap-limit.js';
 
 /**
  * Worker IPC uses Node's native `worker.postMessage(value, transferList)`
@@ -1113,27 +1114,32 @@ export const createWorkerPool = (
   const stallTracker = options?.stallMsProbe
     ? { read: options.stallMsProbe, stop: (): void => undefined }
     : startHeartbeatStallTracker();
+  // The heap lease makes `maxOldGenerationSizeMb` the cap V8 enforces even
+  // when the main process runs under a `--max-old-space-size` flag.
   const spawnWorker =
     options?.workerFactory ??
     ((url: URL) =>
-      new Worker(url, {
-        // Piped (not inherited) stdio: stderr for crash capture (#1741),
-        // stdout because inherited stdout triggers silent startup crashes on
-        // some hosts (see forwardWorkerStdout).
-        stdout: true,
-        stderr: true,
-        workerData: workerStoreData,
-        // The CFG visitors build per-function control-flow graphs by RECURSIVE
-        // descent over the tree-sitter AST, so deeply-nested source overflows
-        // the worker thread's call stack. A worker's stack is governed by
-        // `resourceLimits.stackSizeMb` (Node default 4 MB) — the main process's
-        // `--stack-size` flag does NOT propagate to worker threads — so raise it
-        // here. This pushes the overflow threshold from ~1.5k to several-k
-        // nesting levels (far beyond any hand-written code); a deeper machine-
-        // generated nest is still caught per-function (buildFunctionCfg's R4
-        // try/catch) and only that function's PDG is skipped, never a crash.
-        resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: workerHeapCapMb },
-      }));
+      spawnWithOwnHeapLimit(
+        () =>
+          new Worker(url, {
+            // Piped (not inherited) stdio: stderr for crash capture (#1741),
+            // stdout because inherited stdout triggers silent startup crashes on
+            // some hosts (see forwardWorkerStdout).
+            stdout: true,
+            stderr: true,
+            workerData: workerStoreData,
+            // The CFG visitors build per-function control-flow graphs by RECURSIVE
+            // descent over the tree-sitter AST, so deeply-nested source overflows
+            // the worker thread's call stack. A worker's stack is governed by
+            // `resourceLimits.stackSizeMb` (Node default 4 MB) — the main process's
+            // `--stack-size` flag does NOT propagate to worker threads — so raise it
+            // here. This pushes the overflow threshold from ~1.5k to several-k
+            // nesting levels (far beyond any hand-written code); a deeper machine-
+            // generated nest is still caught per-function (buildFunctionCfg's R4
+            // try/catch) and only that function's PDG is skipped, never a crash.
+            resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: workerHeapCapMb },
+          }),
+      ));
   /** Spawn + wire stdio capture/forwarding in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {
     const worker = spawnWorker(url);

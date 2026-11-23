@@ -869,8 +869,8 @@ If analyze says the repository doesn't fit, do what the message says:
 
 To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
-the auto-sizer and any `--max-old-space-size` pin. Node also applies this
-process-wide heap flag to parser workers, overriding their per-worker limits.
+the auto-sizer and any `--max-old-space-size` pin. Parser workers keep their
+own heap caps: the pool clears this process-wide flag while it starts each one.
 
 Use `--resource-budget <MiB>` to admit the complete analyzer process family,
 including the frontend, main heap, workers, native pools, embedding model, input
