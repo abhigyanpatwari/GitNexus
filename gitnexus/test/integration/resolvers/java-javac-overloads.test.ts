@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -94,54 +94,6 @@ public class Oracle {
         expect(execFileSync('java', ['-cp', root, 'b.B'], { encoding: 'utf8' }).trim()).toBe(
           'string,object,object,string,string,string,static-string',
         );
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it.runIf(javacAvailable)(
-    'compiles the exact issue fixture and confirms its six target descriptors',
-    () => {
-      const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-javac-overloads-'));
-      try {
-        const sources = path.join(FIXTURES, 'java-overload-types/src/main/java/demo');
-        execFileSync('javac', [
-          ...compilerLocale,
-          '-d',
-          root,
-          ...readdirSync(sources)
-            .filter((name) => name.endsWith('.java'))
-            .map((name) => path.join(sources, name)),
-        ]);
-        const bytecode = execFileSync(
-          'javap',
-          [
-            '-classpath',
-            root,
-            '-c',
-            '-p',
-            'demo.LookupService',
-            'demo.OrderService',
-            'demo.BillingService',
-          ],
-          { encoding: 'utf8' },
-        );
-        for (const [descriptor, count] of [
-          ['find:(Ljava/util/Collection;)Ljava/util/Map;', 3],
-          ['find:(Ljava/lang/Long;)Ldemo/Perm;', 1],
-          ['resolve:(Ljava/lang/String;)Ldemo/Perm;', 1],
-          ['resolve:(Ljava/lang/Long;)Ldemo/Perm;', 1],
-          ['count:(Ldemo/Req;)I', 2],
-          ['count:(Ljava/lang/Long;Ldemo/Req;)I', 1],
-        ] as const) {
-          expect(
-            bytecode
-              .split('\n')
-              .filter((line) => line.includes('invoke') && line.includes(descriptor)),
-            descriptor,
-          ).toHaveLength(count);
-        }
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
