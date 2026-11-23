@@ -689,6 +689,14 @@ ${unboundCallableQuery('definition.function')}
   name: (property_identifier) @name
   value: (function_expression)) @definition.method
 
+(public_field_definition
+  name: (private_property_identifier) @name
+  value: (arrow_function)) @definition.method
+
+(public_field_definition
+  name: (private_property_identifier) @name
+  value: (function_expression)) @definition.method
+
 ; CJS property-assignment exports (#2723) — see JAVASCRIPT_QUERIES for the
 ; rationale and for why the receiver is pinned to \`exports\`/\`module.exports\`.
 ; Mirrored here because \`.ts\` files in a CommonJS package use the same form.
@@ -1335,6 +1343,10 @@ ${unboundCallableQuery('definition.function')}
 (field_definition
   property: (property_identifier) @name) @definition.property
 
+; Private class fields: #address = ...
+(field_definition
+  property: (private_property_identifier) @name) @definition.property
+
 ; Object-literal keys of a NAMED object (A1/A5). Idiomatic JS models config as
 ; an object literal, not a class, so without these the fields of an options bag
 ; have no node and "who reads/writes this setting?" answers a confident zero.
@@ -1421,6 +1433,14 @@ ${unboundCallableQuery('definition.function')}
 
 (field_definition
   property: (property_identifier) @name
+  value: (function_expression)) @definition.method
+
+(field_definition
+  property: (private_property_identifier) @name
+  value: (arrow_function)) @definition.method
+
+(field_definition
+  property: (private_property_identifier) @name
   value: (function_expression)) @definition.method
 
 ; Write access: obj.field = value
