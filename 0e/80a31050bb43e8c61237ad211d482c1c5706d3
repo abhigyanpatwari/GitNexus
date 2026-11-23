@@ -1,0 +1,33 @@
+gitnexus-shared/src/scope-resolution/symbol-definition.ts
+  s_3661dd8603713a::t_35b665dbfd4c51 142
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_3661dd8603713a::t_58a0f5501b5e69 335-348
+gitnexus/test/integration/resolvers/javascript-module-ownership.test.ts
+  s_676b35bc218cc9::t_ecc1ff3c00662b 37-49,68-69,78-84,101-107
+gitnexus/test/integration/resolvers/typescript-module-ownership.test.ts
+  s_676b35bc218cc9::t_f567848aae8dae 16-28,84-85,110-122,163-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0e80a31050bb43e8c61237ad211d482c1c5706d3",
+  "prompts": {},
+  "sessions": {
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
