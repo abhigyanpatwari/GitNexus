@@ -289,12 +289,16 @@ The default buffer pool of each read-only database is sized under this budget,
 leaving headroom for the rest of the process (a 1 GiB container gets a 384 MiB
 pool). The pool is per database, and each open database also holds fixed native
 memory outside the pool, so a small container should serve one repository per
-process: for MCP, set [`GITNEXUS_MCP_ALLOWED_REPOS`](docs/mcp-reference.md) to
-one repository; `gitnexus serve` has no such setting and keeps up to 5 graph
-databases open.
-The pool also bounds the memory one read can use: a read that fails with
-"buffer pool is full" needs `GITNEXUS_LBUG_BUFFER_POOL_SIZE` raised, together
-with `GITNEXUS_QUERY_MAX_RSS_MB`.
+process. For MCP, including `gitnexus serve`'s `/api/mcp`, set
+[`GITNEXUS_MCP_ALLOWED_REPOS`](docs/mcp-reference.md) to one repository; this
+also disables the group tools. The REST routes of `gitnexus serve` have no such
+limit, and their reads (`/api/query`, `/api/graph`, `/api/search`) use the same
+default pool but are not watched by this guard.
+
+The pool also bounds the memory one read can use. A read that fails with
+"buffer pool is full" names the remedy: raise `GITNEXUS_LBUG_BUFFER_POOL_SIZE`,
+and keep it and `GITNEXUS_QUERY_MAX_RSS_MB` below the container memory limit.
+Vector search uses a fixed pool reservation that this setting does not change.
 
 RSS is checked at query start/end and every 200 ms while reads run. On macOS,
 queries lasting at least one second also sample physical footprint at most
