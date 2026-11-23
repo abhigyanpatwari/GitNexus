@@ -1,11 +1,13 @@
 /**
  * Fault class of failed `tools/call` responses, through the real handler and
  * SDK client: `_meta["io.github.abhigyanpatwari.gitnexus/fault"]` is `client`
- * or `server` on every error (thrown or returned as `{ error }`), absent on
- * success, and the response text is the same as before the key existed.
+ * or `server` on every `isError` result and every result with a top-level
+ * `error`, absent on success, and the response text is the same as before the
+ * key existed.
  *
  * The fault-class module is imported dynamically where a test needs it, so
- * the text-compatibility tests also run against a server without the module.
+ * this file also loads against an older server.ts that does not import the
+ * module; the text-compatibility tests then run unchanged against it.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -275,5 +277,145 @@ describe('tools/call fault class', () => {
       await client.close();
       await server.close();
     }
+  });
+});
+
+describe('tools/call arguments of the wrong JSON type', () => {
+  it.each([
+    ['context', { name: 'auth', repo: 5 }, 'repo', 'a number'],
+    ['cypher', { statement: 'RETURN 1', repo: { name: 'x' } }, 'repo', 'an object'],
+    ['context', { name: 5 }, 'name', 'a number'],
+    ['context', { name: ['a'] }, 'name', 'an array'],
+    ['rename', { symbol_name: 5, new_name: 'b' }, 'symbol_name', 'a number'],
+    // A value the server used to ignore, and one it used to coerce with String().
+    ['impact', { target: 'auth', direction: 5 }, 'direction', 'a number'],
+    ['route_map', { route: {} }, 'route', 'an object'],
+  ] as const)('%s %j is rejected as a client fault', async (tool, args, key, actual) => {
+    const backend = mockBackend(async () => ({ result: 'ok' }));
+    const response = await callTool(backend, tool, args);
+    expect(response.isError).toBe(true);
+    expect(response.text).toBe(
+      `Error: Argument "${key}" for tool "${tool}" must be a string, not ${actual}. The advertised inputSchema declares type "string".`,
+    );
+    expect(response.meta?.[KEY]).toBe('client');
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [5, 'a number'],
+    [{}, 'an object'],
+    [true, 'a boolean'],
+  ] as const)(
+    'a union of string and array given %j is rejected as a client fault',
+    async (repo, actual) => {
+      const backend = mockBackend(async () => ({ result: 'ok' }));
+      const response = await callTool(backend, 'query', { search_query: 'auth', repo });
+      expect(response).toMatchObject({
+        isError: true,
+        text: `Error: Argument "repo" for tool "query" must be a string or an array, not ${actual}. The advertised inputSchema declares type ["string","array"].`,
+      });
+      expect(response.meta?.[KEY]).toBe('client');
+      expect(backend.callTool).not.toHaveBeenCalled();
+    },
+  );
+
+  it('an array property given a string is rejected as a client fault', async () => {
+    const backend = mockBackend(async () => ({ result: 'ok' }));
+    const response = await callTool(backend, 'impact', {
+      target: 'auth',
+      direction: 'upstream',
+      relationTypes: 'CALLS',
+    });
+    expect(response).toMatchObject({
+      isError: true,
+      text: 'Error: Argument "relationTypes" for tool "impact" must be an array, not a string. The advertised inputSchema declares type "array".',
+    });
+    expect(response.meta?.[KEY]).toBe('client');
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['context', { name: 'auth', repo: null }],
+    ['query', { search_query: 'auth', include_content: 'true' }],
+    ['impact', { target: 'auth', direction: 'upstream', summaryOnly: 'true' }],
+    ['query', { search_query: 'auth', repo: 'x' }],
+    ['query', { search_query: 'auth', repo: ['x'] }],
+  ] as const)('%s %j still reaches the backend unchanged', async (tool, args) => {
+    const backend = mockBackend(async () => ({ result: 'ok' }));
+    const response = await callTool(backend, tool, args);
+    expect(response).not.toHaveProperty('isError');
+    expect(response.meta).toBeUndefined();
+    expect(backend.callTool).toHaveBeenCalledTimes(1);
+    expect(backend.callTool.mock.calls[0][1]).toMatchObject(args);
+  });
+});
+
+describe('JSON type rule branches', () => {
+  const schema = {
+    noType: { enum: ['a', 'b'] },
+    anyOf: { anyOf: [{ type: 'string' }] },
+    emptyTypes: { type: [] },
+    nullable: { type: ['string', 'null'] },
+    union: { type: ['string', 'array'] },
+    list: { type: 'array', items: { type: 'string' } },
+  };
+
+  it.each([
+    ['a property without a type', { noType: 5 }],
+    ['an anyOf property', { anyOf: 5 }],
+    ['an empty type list', { emptyTypes: 5 }],
+    ['a union with a member outside string and array', { nullable: 5 }],
+    ['null on a union', { union: null }],
+    ['null on an array property', { list: null }],
+  ])('leaves %s unchecked', async (_label, args) => {
+    const { assertKnownMcpToolArguments } = await import('../../src/mcp/tool-arguments.js');
+    expect(() => assertKnownMcpToolArguments('synthetic', args, schema)).not.toThrow();
+  });
+
+  it('rejects a value outside a string and array union', async () => {
+    const { assertKnownMcpToolArguments } = await import('../../src/mcp/tool-arguments.js');
+    expect(() => assertKnownMcpToolArguments('synthetic', { union: 5 }, schema)).toThrow(
+      'Argument "union" for tool "synthetic" must be a string or an array, not a number. The advertised inputSchema declares type ["string","array"].',
+    );
+  });
+
+  it.each([
+    ['search', { search_query: 5 }, 'search_query'],
+    ['explore', { name: 5 }, 'name'],
+  ] as const)('legacy %s checks the schema it shares', async (tool, args, key) => {
+    const backend = mockBackend(async () => ({ result: 'ok' }));
+    const response = await callTool(backend, tool, args);
+    expect(response.isError).toBe(true);
+    expect(response.text).toContain(`Argument "${key}" for tool "${tool}" must be a string`);
+    expect(response.meta?.[KEY]).toBe('client');
+  });
+
+  it('read-only mode still checks argument types', async () => {
+    vi.stubEnv('GITNEXUS_MCP_READ_ONLY', '1');
+    const backend = mockBackend(async () => ({ result: 'ok' }));
+    const rejected = await callTool(backend, 'context', { name: 5 });
+    expect(rejected.isError).toBe(true);
+    expect(rejected.meta?.[KEY]).toBe('client');
+    const passed = await callTool(backend, 'query', { search_query: 'auth', repo: null });
+    expect(passed).not.toHaveProperty('isError');
+    expect(backend.callTool).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tool-name lookups ignore Object.prototype', () => {
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])('%s', async (name) => {
+    const { assertKnownMcpToolArguments, foldNumericToolArgumentAliases, schemaSourceToolName } =
+      await import('../../src/mcp/tool-arguments.js');
+    expect(schemaSourceToolName(name)).toBe(name);
+    expect(foldNumericToolArgumentAliases(name, { a: 1 })).toEqual({ params: { a: 1 } });
+    expect(() =>
+      assertKnownMcpToolArguments(name, { x: 'y' }, { x: { type: 'string' } }),
+    ).not.toThrow();
+  });
+
+  it('legacy aliases still resolve', async () => {
+    const { schemaSourceToolName } = await import('../../src/mcp/tool-arguments.js');
+    expect(schemaSourceToolName('search')).toBe('query');
+    expect(schemaSourceToolName('explore')).toBe('context');
   });
 });

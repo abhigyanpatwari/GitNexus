@@ -354,9 +354,21 @@ withTestLbugDB(
         expect(response.meta?.[KEY]).toBe('server');
       });
 
-      it('a vector query without a loadable VECTOR extension is a server fault', async () => {
+      it.each([
+        [
+          'throws',
+          () =>
+            vi
+              .mocked(loadVectorExtension)
+              .mockRejectedValueOnce(new Error('dlopen failed: synthetic')),
+        ],
+        [
+          'reports it unavailable',
+          () => vi.mocked(loadVectorExtension).mockResolvedValueOnce(false),
+        ],
+      ])('a vector query whose VECTOR loader %s is a server fault', async (_label, failLoad) => {
         await warm();
-        vi.mocked(loadVectorExtension).mockRejectedValueOnce(new Error('dlopen failed: synthetic'));
+        failLoad();
         const response = await callThroughServer(backend, 'cypher', {
           statement:
             "CALL QUERY_VECTOR_INDEX('CodeEmbedding', 'code_embedding_idx', [0.1, 0.2], 3) RETURN *",
@@ -391,6 +403,50 @@ withTestLbugDB(
           vi.unstubAllEnvs();
           await fs.rm(home, { recursive: true, force: true });
         }
+      });
+
+      // Values the schema types loosely keep working: null for an omitted string,
+      // and string flags for boolean properties, which are not type-checked. Each
+      // call answers like its canonical form, apart from timings and the `next`
+      // hint, which names the repo when the call did.
+      const body = (text: string) =>
+        JSON.parse(text.split('\n\n---')[0], (key, value) =>
+          key === 'timing' || key === 'next' ? undefined : value,
+        );
+      it.each([
+        ['context', { name: 'login', repo: null }, { name: 'login' }],
+        // A single-repository query reads include_content by truthiness.
+        [
+          'query',
+          { search_query: 'login', include_content: 'true' },
+          { search_query: 'login', include_content: true },
+        ],
+        [
+          'impact',
+          { target: 'validate', direction: 'upstream', summaryOnly: 'true' },
+          { target: 'validate', direction: 'upstream', summaryOnly: true },
+        ],
+        ['query', { search_query: 'login', repo: 'fault-class-repo' }, { search_query: 'login' }],
+      ] as const)('%s %j still succeeds without a fault key', async (tool, args, canonical) => {
+        const response = await callThroughServer(backend, tool, args);
+        expect(response).not.toHaveProperty('isError');
+        expect(response.meta).toBeUndefined();
+        const result = body(response.text);
+        expect(result).not.toHaveProperty('error');
+        expect(result).toEqual(body((await callThroughServer(backend, tool, canonical)).text));
+      });
+
+      it('query with a repo array still succeeds without a fault key', async () => {
+        const response = await callThroughServer(backend, 'query', {
+          search_query: 'login',
+          repo: ['fault-class-repo'],
+        });
+        expect(response).not.toHaveProperty('isError');
+        expect(response.meta).toBeUndefined();
+        const result = body(response.text);
+        expect(result).not.toHaveProperty('error');
+        expect(result.repos).toEqual([path.resolve('/fault-class/repo')]);
+        expect(result.process_symbols.map((s: { id: string }) => s.id)).toEqual(['func:login']);
       });
 
       // Expected texts are literals: the bytes the handler produced before the

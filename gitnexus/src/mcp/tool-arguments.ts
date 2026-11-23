@@ -6,7 +6,8 @@
  * produced a well-formed answer computed from the server default — no error,
  * no warning. This module is the single dispatch-time check that the keys a
  * caller sent are ones the advertised schema (or an unpublished handler alias)
- * actually reads.
+ * actually reads, and that a value for a `string` or `array` property (or a
+ * union of only those) has a declared JSON type.
  */
 
 import { findToolDefinition } from './tools.js';
@@ -48,8 +49,13 @@ export const TOOL_NUMERIC_ARGUMENT_ALIASES: Readonly<
   trace: [{ canonical: 'maxDepth', aliases: ['depth'] }],
 };
 
+/** Look a tool name up without reaching Object.prototype (`constructor`, `toString`). */
+function ownEntry<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 export function schemaSourceToolName(toolName: string): string {
-  return LEGACY_TOOL_SCHEMA_SOURCE[toolName] ?? toolName;
+  return ownEntry(LEGACY_TOOL_SCHEMA_SOURCE, toolName) ?? toolName;
 }
 
 export function advertisedToolPropertyNames(toolName: string): string[] | undefined {
@@ -99,11 +105,17 @@ function formatUnknownArgumentError(
 
 /**
  * Reject top-level tool arguments that are neither advertised nor an
- * unpublished handler alias. `advertisedProperties` should be the schema the
- * caller actually saw (`tools/list` after read-only / repository-policy
- * scrubbing). When it is omitted, the tool's canonical schema is used
- * (`findToolDefinition`: `GITNEXUS_TOOLS`, plus the opt-in `refresh_index`).
- * Tools with no schema (legacy `overview`) are left unchecked.
+ * unpublished handler alias, and values whose JSON type is not declared by a
+ * property typed `string`, `array`, or a union of only those two. The check
+ * lets `null` through; the tool decides what `null` means. Properties whose
+ * type includes number, integer, boolean or object, properties without a
+ * `type`, and array items are not type-checked. `advertisedProperties` should
+ * be the schema the caller actually saw (`tools/list` after read-only /
+ * repository-policy scrubbing). When it is omitted, the tool's canonical
+ * schema is used (`findToolDefinition`: `GITNEXUS_TOOLS`, plus the opt-in
+ * `refresh_index`). Tools with no schema (legacy `overview`) are left
+ * unchecked here; LocalBackend rejects their unknown names and non-string
+ * `repo` itself.
  */
 export function assertKnownMcpToolArguments(
   toolName: string,
@@ -111,20 +123,43 @@ export function assertKnownMcpToolArguments(
   advertisedProperties?: Record<string, unknown>,
 ): void {
   if (!args) return;
-  const propertyNames =
-    advertisedProperties !== undefined
-      ? Object.keys(advertisedProperties)
-      : advertisedToolPropertyNames(toolName);
-  if (!propertyNames) return;
+  const properties =
+    advertisedProperties ??
+    findToolDefinition(schemaSourceToolName(toolName))?.inputSchema.properties;
+  if (!properties) return;
+  const propertyNames = Object.keys(properties);
 
   const unpublished =
-    UNPUBLISHED_TOOL_ARGUMENT_ALIASES[toolName] ??
-    UNPUBLISHED_TOOL_ARGUMENT_ALIASES[schemaSourceToolName(toolName)] ??
+    ownEntry(UNPUBLISHED_TOOL_ARGUMENT_ALIASES, toolName) ??
+    ownEntry(UNPUBLISHED_TOOL_ARGUMENT_ALIASES, schemaSourceToolName(toolName)) ??
     [];
   const allowed = new Set([...propertyNames, ...unpublished]);
   const unknownKeys = Object.keys(args).filter((key) => !allowed.has(key));
-  if (unknownKeys.length === 0) return;
-  throw clientError(formatUnknownArgumentError(toolName, unknownKeys, propertyNames));
+  if (unknownKeys.length > 0) {
+    throw clientError(formatUnknownArgumentError(toolName, unknownKeys, propertyNames));
+  }
+  for (const [key, value] of Object.entries(args)) {
+    if (value === null || value === undefined || !Object.hasOwn(properties, key)) continue;
+    const declared = (properties[key] as { type?: unknown } | undefined)?.type;
+    const types = typeof declared === 'string' ? [declared] : declared;
+    if (!Array.isArray(types) || types.length === 0) continue;
+    if (!types.every((type) => type === 'string' || type === 'array')) continue;
+    const actual = jsonTypeOf(value);
+    if (!types.includes(actual)) {
+      throw clientError(
+        `Argument "${key}" for tool "${toolName}" must be ${types.map(withArticle).join(' or ')}, not ${withArticle(actual)}. ` +
+          `The advertised inputSchema declares type ${JSON.stringify(declared)}.`,
+      );
+    }
+  }
+}
+
+function jsonTypeOf(value: unknown): string {
+  return Array.isArray(value) ? 'array' : typeof value;
+}
+
+function withArticle(jsonType: string): string {
+  return /^[aeiou]/u.test(jsonType) ? `an ${jsonType}` : `a ${jsonType}`;
 }
 
 /**
@@ -136,7 +171,7 @@ export function foldNumericToolArgumentAliases(
   toolName: string,
   params: Record<string, unknown>,
 ): { params: Record<string, unknown> } | { error: string } {
-  const definitions = TOOL_NUMERIC_ARGUMENT_ALIASES[toolName];
+  const definitions = ownEntry(TOOL_NUMERIC_ARGUMENT_ALIASES, toolName);
   if (!definitions) return { params };
 
   const normalized = { ...params };
