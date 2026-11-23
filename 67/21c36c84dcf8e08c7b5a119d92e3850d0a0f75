@@ -1,0 +1,29 @@
+gitnexus/src/core/ingestion/languages/typescript/interpret.ts
+  s_3661dd8603713a::t_3c19a56866e7af 298-306
+gitnexus/test/integration/resolvers/typescript-module-ownership.test.ts
+  s_676b35bc218cc9::t_6b5f7d6168d52c 126,175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6721c36c84dcf8e08c7b5a119d92e3850d0a0f75",
+  "prompts": {},
+  "sessions": {
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
