@@ -10,7 +10,10 @@ import {
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
+import {
+  _clearAnalyzerIdentityProcessCacheForTests,
+  resolveAnalyzerRunnerIdentity,
+} from '../../src/core/analyzer-identity.js';
 import { finalizeParseCacheIdentity } from '../../src/core/parse-cache-identity.js';
 import { createParseIdentityFixture } from '../helpers/parse-cache-identity-fixture.js';
 
@@ -228,11 +231,21 @@ describe('parse cache artifact identity', () => {
       );
     }
     const binaryPath = realpathSync.native(path.join(analyzed.root, binary));
+    const cacheDirectory = path.join(analyzed.root, 'identity-cache');
     const analyzerReads: string[] = [];
     resolveAnalyzerRunnerIdentity(analyzed.moduleUrl, {
+      cacheDirectory,
       onHashedInput: (input) => analyzerReads.push(input.path),
     });
     expect(analyzerReads).toContain(binaryPath);
+
+    _clearAnalyzerIdentityProcessCacheForTests();
+    const restoredReads: string[] = [];
+    resolveAnalyzerRunnerIdentity(analyzed.moduleUrl, {
+      cacheDirectory,
+      onHashedInput: (input) => restoredReads.push(input.path),
+    });
+    expect(restoredReads).toEqual([]);
 
     const parserReads: string[] = [];
     const options = { onHashedInput: (input: { path: string }) => parserReads.push(input.path) };
