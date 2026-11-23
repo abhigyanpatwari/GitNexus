@@ -23,6 +23,7 @@ import {
 import { crossRepoCompleteness } from './completeness.js';
 import { recordedMatchStages, recordedRepoList } from './completeness.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
+import { reportCaughtFault, reportFault } from '../fault-class.js';
 import {
   fileMatchesServicePrefix,
   normalizeServicePrefix,
@@ -296,6 +297,8 @@ async function loadContractRegistryResilient(
   try {
     raw = await fsp.readFile(filePath, 'utf-8');
   } catch (e) {
+    // A group that was never synced has no registry yet; group_sync creates it.
+    reportFault((e as NodeJS.ErrnoException).code === 'ENOENT' ? 'client' : 'server');
     if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
       return { ok: false, error: `No contracts.json for this group. Run group_sync first.` };
     }
@@ -306,10 +309,12 @@ async function loadContractRegistryResilient(
   try {
     root = JSON.parse(raw);
   } catch {
+    reportFault('server');
     return { ok: false, error: 'contracts.json is not valid JSON' };
   }
 
   if (!root || typeof root !== 'object' || Array.isArray(root)) {
+    reportFault('server');
     return { ok: false, error: 'contracts.json has an invalid root object' };
   }
 
@@ -512,6 +517,7 @@ export class GroupService {
     try {
       config = await loadGroupConfig(groupDir);
     } catch (err) {
+      reportCaughtFault(err);
       if (err instanceof GroupNotFoundError)
         return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
       throw err;
@@ -539,6 +545,7 @@ export class GroupService {
     try {
       config = await loadGroupConfig(groupDir);
     } catch (err) {
+      reportCaughtFault(err);
       if (err instanceof GroupNotFoundError)
         return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
       throw err;
@@ -562,6 +569,7 @@ export class GroupService {
         // expects. `SyncOptions.verbose` stays for the CLI, which can see them.
       });
     } catch (err) {
+      reportCaughtFault(err);
       if (err instanceof RegistryAmbiguousTargetError) {
         return { error: formatGroupSyncAmbiguousError(err) };
       }
@@ -713,6 +721,7 @@ export class GroupService {
     try {
       config = await loadGroupConfig(groupDir);
     } catch (e) {
+      reportCaughtFault(e);
       if (e instanceof GroupNotFoundError)
         return {
           group: name,
@@ -758,6 +767,7 @@ export class GroupService {
 
             return { repoPath, registryName, payload };
           } catch (e) {
+            reportCaughtFault(e);
             return {
               repoPath,
               registryName,
@@ -820,6 +830,7 @@ export class GroupService {
     try {
       config = await loadGroupConfig(groupDir);
     } catch (err) {
+      reportCaughtFault(err);
       if (err instanceof GroupNotFoundError)
         return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
       throw err;
@@ -921,6 +932,7 @@ export class GroupService {
     try {
       config = await loadGroupConfig(groupDir);
     } catch (err) {
+      reportCaughtFault(err);
       if (err instanceof GroupNotFoundError)
         return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
       throw err;

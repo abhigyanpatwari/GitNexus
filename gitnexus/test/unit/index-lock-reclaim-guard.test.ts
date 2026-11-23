@@ -7,6 +7,12 @@ import {
   IndexLockTimeoutError,
   type IndexLockHandle,
 } from '../../src/storage/index-lock.js';
+import {
+  getGroupSyncLockDir,
+  GROUP_SYNC_LOCK_TIMEOUT_MS,
+  withGroupSyncLock,
+} from '../../src/core/group/group-lock.js';
+import { faultOf } from '../../src/core/fault-class.js';
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>();
@@ -251,10 +257,92 @@ it('caps guard wait by the remaining acquisition budget after waiting on a workl
   expect(error).toBeInstanceOf(IndexLockTimeoutError);
   expect(error.guardPath).toBeUndefined();
   expect(error.holderKnown).toBe(true);
+  expect(error.liveHolder).toBe(true);
   expect(error.holder.token).toBe(first.record.token);
   expect(Date.now() - start).toBe(200);
   first.release();
 });
+
+it('does not count a foreign-host holder as live when the guard wait times out', async () => {
+  const foreign = {
+    v: 1,
+    pid: process.pid,
+    hostname: `${os.hostname()}-foreign`,
+    startTime: null,
+    token: 'foreign-holder',
+    invocationId: 'foreign-holder',
+    acquiredAt: '',
+  };
+  fs.writeFileSync(lockPath, JSON.stringify(foreign));
+  const pending = acquireIndexLock(dir, {
+    timeoutMs: 200,
+    pollMs: 10,
+    onWaitStart: () => fs.writeFileSync(guardPath, 'orphan'),
+  }).catch((e) => e);
+  await vi.runAllTimersAsync();
+  const error = await pending;
+  expect(error).toBeInstanceOf(IndexLockTimeoutError);
+  expect(error.guardPath).toBeUndefined();
+  expect(error.holderKnown).toBe(true);
+  expect(error.holder.token).toBe('foreign-holder');
+  // Its liveness is unknowable from here, so it proves nothing.
+  expect(error.liveHolder).toBe(false);
+});
+
+it('does not count a holder seen earlier as live once a later inspection no longer sees it', async () => {
+  const live = await acquireIndexLock(dir);
+  let guardReleases = 0;
+  vi.mocked(fs.unlinkSync).mockImplementation((p) => {
+    actual.unlinkSync(p);
+    // Our second inspection found the lock unreadable; then a guard is orphaned.
+    if (p === guardPath && ++guardReleases === 2) actual.writeFileSync(guardPath, 'orphan');
+  });
+  const pending = acquireIndexLock(dir, {
+    timeoutMs: 200,
+    pollMs: 10,
+    onWaitStart: () => actual.writeFileSync(lockPath, '{'),
+  }).catch((e) => e);
+  await vi.runAllTimersAsync();
+  const error = await pending;
+  expect(guardReleases).toBe(2);
+  expect(error).toBeInstanceOf(IndexLockTimeoutError);
+  expect(error.guardPath).toBeUndefined();
+  // The message still names the holder the wait was for.
+  expect(error.holderKnown).toBe(true);
+  expect(error.holder.token).toBe(live.record.token);
+  expect(error.liveHolder).toBe(false);
+});
+
+it.each([
+  ['still holds the lock', 'client', false],
+  ['released the lock after the last inspection', 'server', true],
+] as const)(
+  'a group sync that times out while a live holder %s is a %s fault',
+  async (_label, fault, releases) => {
+    const lockDir = getGroupSyncLockDir(dir);
+    const lockFile = path.join(lockDir, 'analyze.lock');
+    const holder = await acquireIndexLock(lockDir);
+    const start = Date.now();
+    vi.mocked(fs.unlinkSync).mockImplementation((p) => {
+      actual.unlinkSync(p);
+      // The final inspection has just dropped its guard; the holder lets go now.
+      if (
+        releases &&
+        p === `${lockFile}.guard` &&
+        Date.now() - start >= GROUP_SYNC_LOCK_TIMEOUT_MS &&
+        actual.existsSync(lockFile)
+      )
+        actual.unlinkSync(lockFile);
+    });
+    const pending = withGroupSyncLock(dir, async () => 'ran').catch((e) => e);
+    await vi.runAllTimersAsync();
+    const error = await pending;
+    expect(error).toMatchObject({ reason: 'timeout' });
+    expect(error.message).toContain(`Held by pid ${process.pid}`);
+    expect(error.cause.holder.token).toBe(holder.record.token);
+    expect(faultOf(error)).toBe(fault);
+  },
+);
 
 it('releases the guard before returning a workload handle', async () => {
   const handle = await acquireIndexLock(dir);

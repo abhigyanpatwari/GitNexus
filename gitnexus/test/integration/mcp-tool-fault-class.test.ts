@@ -13,6 +13,10 @@
  * I9 pins the response text with literals recorded before the fault key
  * existed; like every call here, it runs against the current server only.
  */
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import lbug from '@ladybugdb/core';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -31,6 +35,10 @@ import {
 } from '../fixtures/local-backend-seed.js';
 
 const KEY = 'io.github.abhigyanpatwari.gitnexus/fault';
+const GROUP_FIXTURE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '../fixtures/group/group.yaml',
+);
 
 vi.mock('../../src/storage/repo-manager.js', async (importActual) => ({
   ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
@@ -356,6 +364,33 @@ withTestLbugDB(
         expect(response).not.toHaveProperty('isError');
         expect(JSON.parse(response.text.split('\n\n---')[0]).error).toEqual(expect.any(String));
         expect(response.meta?.[KEY]).toBe('server');
+      });
+
+      it('group-mode impact with a bridge that cannot be opened is a server fault', async () => {
+        const home = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-fault-group-'));
+        try {
+          const groupDir = path.join(home, 'groups', 'fault-group');
+          await fs.mkdir(groupDir, { recursive: true });
+          const fixture = await fs.readFile(GROUP_FIXTURE, 'utf8');
+          await fs.writeFile(
+            path.join(groupDir, 'group.yaml'),
+            fixture
+              .replace(/^name: .*$/m, 'name: fault-group')
+              .replace(/^repos:\n(?:  .*\n)+/m, 'repos:\n  app/main: fault-class-repo\n'),
+          );
+          await fs.writeFile(path.join(groupDir, 'bridge.lbug'), 'not a database');
+          vi.stubEnv('GITNEXUS_HOME', home);
+          const response = await callThroughServer(backend, 'impact', {
+            target: 'validate',
+            direction: 'upstream',
+            repo: '@fault-group',
+          });
+          expect(response.text).toContain('Could not open bridge.lbug');
+          expect(response.meta?.[KEY]).toBe('server');
+        } finally {
+          vi.unstubAllEnvs();
+          await fs.rm(home, { recursive: true, force: true });
+        }
       });
 
       // Expected texts are literals: the bytes the handler produced before the

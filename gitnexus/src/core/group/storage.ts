@@ -4,6 +4,7 @@ import * as path from 'node:path';
 import type { ContractRegistry } from './types.js';
 import { writeFileAtomic } from '../../storage/fs-atomic.js';
 import { getGlobalDir } from '../../storage/global-dir.js';
+import { clientError } from '../fault-class.js';
 
 export const CONTRACTS_FILE = 'contracts.json';
 
@@ -19,7 +20,7 @@ const GROUP_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
 
 export function validateGroupName(name: string): void {
   if (!GROUP_NAME_RE.test(name)) {
-    throw new Error(
+    throw clientError(
       `Invalid group name "${name}". Names must start with a letter or digit and contain only [a-zA-Z0-9_-].`,
     );
   }

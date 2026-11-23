@@ -24,6 +24,7 @@
  */
 
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
+import { reportCaughtFault } from '../fault-class.js';
 import { getGroupDir } from './storage.js';
 import {
   bridgeProvenanceUnknown,
@@ -758,6 +759,7 @@ export async function runGroupTrace(
   try {
     config = await loadGroupConfig(groupDir);
   } catch (e) {
+    reportCaughtFault(e);
     if (e instanceof GroupNotFoundError) {
       return {
         status: 'error',
@@ -786,7 +788,8 @@ export async function runGroupTrace(
         try {
           const handle = await deps.port.resolveRepo(registryName);
           return { repoPath, registryName, handle };
-        } catch {
+        } catch (err) {
+          reportCaughtFault(err);
           return { repoPath, failed: true };
         }
       },
@@ -798,6 +801,10 @@ export async function runGroupTrace(
     if ('failed' in m) unreachableMembers.push(m.repoPath);
     else members.push(m);
   }
+  // Every failure was reported as it was caught, as `resolveGroupRepo` does, so
+  // a server fault wins whatever order the members failed in. A later error
+  // result then carries it, since the trace ran on incomplete group data; a
+  // result without an error carries no fault class at all.
   if (members.length === 0) {
     return {
       status: 'error',

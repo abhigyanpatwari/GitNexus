@@ -194,6 +194,8 @@ export default defineConfig({
             // Native @ladybugdb/core: tool calls through createMCPServer against
             // a real graph, with engine failures injected below the pool.
             'test/integration/mcp-tool-fault-class.test.ts',
+            // Opens a bridge.lbug that is not a database with the native engine.
+            'test/unit/group-fault-class.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             // Publication reconciliation uses real native COPY/checkpoints.
             'test/unit/incremental-write-integrity.test.ts',
@@ -298,6 +300,7 @@ export default defineConfig({
             'test/integration/detect-changes-path-anchoring.test.ts',
             'test/integration/wiki-graph-queries-engine.test.ts',
             'test/integration/mcp-tool-fault-class.test.ts',
+            'test/unit/group-fault-class.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-write-integrity.test.ts',
             'test/unit/incremental-orchestration.test.ts',

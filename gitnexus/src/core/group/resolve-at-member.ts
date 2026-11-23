@@ -3,6 +3,7 @@
  */
 
 import { loadGroupConfig } from './config-parser.js';
+import { reportCaughtFault } from '../fault-class.js';
 import { getDefaultGitnexusDir, getGroupDir } from './storage.js';
 
 export async function resolveAtGroupMemberRepoPath(
@@ -29,6 +30,7 @@ export async function resolveAtGroupMemberRepoPath(
     }
     return { ok: true, repoPath: keys[0]! };
   } catch (e) {
+    reportCaughtFault(e);
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }

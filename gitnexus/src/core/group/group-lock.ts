@@ -78,6 +78,7 @@ import {
   type IndexLockHandle,
 } from '../../storage/index-lock.js';
 import { logger } from '../logger.js';
+import { markFault, type FaultClass } from '../fault-class.js';
 
 /** Lock-directory name inside the group directory. Never the group dir itself. */
 export const GROUP_SYNC_LOCK_DIRNAME = 'sync-lock';
@@ -105,10 +106,20 @@ export type GroupSyncLockFailure = 'timeout' | 'lock-free' | 'unavailable';
 export class GroupSyncLockError extends Error {
   readonly reason: GroupSyncLockFailure;
   readonly groupDir: string;
-  constructor(reason: GroupSyncLockFailure, groupDir: string, message: string, cause?: unknown) {
+  constructor(
+    reason: GroupSyncLockFailure,
+    groupDir: string,
+    message: string,
+    cause?: unknown,
+    // Another sync holding the lock is a conflict the caller can retry later;
+    // a broken lock is the server's. The throw site knows which (a stuck guard,
+    // a lock without a live holder) and passes it.
+    fault: FaultClass = reason === 'timeout' ? 'client' : 'server',
+  ) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = 'GroupSyncLockError';
     this.reason = reason;
+    markFault(this, fault);
     this.groupDir = groupDir;
   }
 }
@@ -158,6 +169,7 @@ export const withGroupSyncLock = async <T>(
             `(${getGroupSyncLockDir(groupDir)}). ${err.message} ` +
             `Nothing was written and this group was not synced.`,
           err,
+          'server',
         );
       }
       throw new GroupSyncLockError(
@@ -177,6 +189,10 @@ export const withGroupSyncLock = async <T>(
           `Nothing was written and this group was not synced. ` +
           `Re-run once the other sync of this group has finished.`,
         err,
+        // Only a holder proven alive makes this a conflict the caller can
+        // retry; a foreign-host record, whose liveness is unknowable, and a
+        // malformed or vanishing lock that never cleared are the server's.
+        err.liveHolder ? 'client' : 'server',
       );
     }
     throw new GroupSyncLockError(

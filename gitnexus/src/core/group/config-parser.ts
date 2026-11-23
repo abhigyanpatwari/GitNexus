@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { markFault } from '../fault-class.js';
 import type {
   ContractRole,
   GroupConfig,
@@ -137,7 +138,33 @@ export class GroupNotFoundError extends Error {
   constructor(public readonly groupName: string) {
     super(`Group "${groupName}" not found`);
     this.name = 'GroupNotFoundError';
+    markFault(this, 'client');
   }
+}
+
+/** The file-name length limit (NAME_MAX) of common filesystems. */
+const MAX_FILE_NAME_BYTES = 255;
+
+/**
+ * Whether the nearest existing level of `groupDir` (`<home>/groups/<name>`),
+ * checked up to the GitNexus home it is built under, is not a directory or
+ * cannot be inspected.
+ */
+async function groupPathBlocked(
+  fsp: typeof import('node:fs/promises'),
+  path: typeof import('node:path'),
+  groupDir: string,
+): Promise<boolean> {
+  let dir = groupDir;
+  const failure = (err: unknown) => err as NodeJS.ErrnoException;
+  for (let level = 0; level < 3; level++, dir = path.dirname(dir)) {
+    const entry = await fsp.stat(dir).catch(failure);
+    if (!(entry instanceof Error)) return !entry.isDirectory();
+    if (entry.code !== 'ENOENT') return true;
+    const link = await fsp.lstat(dir).catch(failure);
+    if (!(link instanceof Error) || link.code !== 'ENOENT') return true;
+  }
+  return false;
 }
 
 export async function loadGroupConfig(groupDir: string): Promise<GroupConfig> {
@@ -149,7 +176,20 @@ export async function loadGroupConfig(groupDir: string): Promise<GroupConfig> {
     content = await fsp.readFile(yamlPath, 'utf-8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      // Windows reports ENOENT, not ENOTDIR, when the group directory or one of
+      // its ancestors is a file: that is broken storage, not a missing group.
+      if (await groupPathBlocked(fsp, path, groupDir)) throw err;
       throw new GroupNotFoundError(path.basename(groupDir));
+    }
+    // The server builds this path; the caller supplies only the group name, which
+    // GROUP_NAME_RE restricts to safe characters but not in length. Only a name that
+    // is itself over the file-name limit is the caller's; an over-long root or any
+    // other error is a server fault.
+    if (
+      (err as NodeJS.ErrnoException).code === 'ENAMETOOLONG' &&
+      Buffer.byteLength(path.basename(groupDir)) > MAX_FILE_NAME_BYTES
+    ) {
+      throw markFault(err, 'client');
     }
     throw err;
   }

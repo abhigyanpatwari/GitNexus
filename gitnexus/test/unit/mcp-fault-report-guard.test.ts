@@ -19,8 +19,19 @@
  *   `null` turned into an error later); those sites report explicitly and
  *   have their own tests;
  * - an error object built by a helper called from the handler (other than
- *   the rename result builder), or under a computed key;
+ *   the rename result builder), under a computed key, or under a quoted key
+ *   (`{ "error": … }`: string contents are masked);
+ * - a literal that is an operand of `||`/`&&`, an array element, a `yield`
+ *   operand or a call argument (a call argument is excluded on purpose, so
+ *   log records and HTTP error bodies are not counted), except the argument of
+ *   a returned `Promise.resolve(…)` or `resolve(…)`; a literal passed through
+ *   any other helper, `Promise.reject(…)` or a stored promise is not seen;
+ * - a named callback (`p.catch(toError)`) or a call with type arguments
+ *   (`p.then<A, B>(ok, onError)`);
  * - whether a report is reached at run time (loops, early `throw`).
+ * The per-file site counts below are pinned, but they count only the sites
+ * this scan recognises: they notice a recognised handler added or removed,
+ * not a handler written in one of the forms above.
  *
  * Structural (source-scanned) rather than behavioural: the sites are spread
  * over dozens of private methods, most only reachable with a failing engine.
@@ -32,10 +43,21 @@ import { describe, expect, it } from 'vitest';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SRC = path.resolve(__dirname, '../../src');
-const SCANNED_ROOTS = ['mcp'];
+// Group mode (`repo: "@group"`, group_* tools) is on the tools/call path too.
+const SCANNED_ROOTS = ['mcp', path.join('core', 'group')];
 
 const REGEX_PREFIX_CHARS = '(,=:[!&|?{};+-*%<>~^';
-const REGEX_PREFIX_WORDS = new Set(['return', 'typeof', 'case', 'in', 'of', 'void', 'throw']);
+const REGEX_PREFIX_WORDS = new Set([
+  'return',
+  'typeof',
+  'case',
+  'in',
+  'of',
+  'void',
+  'throw',
+  'await',
+  'yield',
+]);
 
 /** Blank out comments, string, template and regex literal text, keeping offsets. */
 function maskSource(src: string): string {
@@ -53,42 +75,54 @@ function maskSource(src: string): string {
   const blankUntil = (isEnd: () => boolean) => {
     while (i < src.length && !isEnd()) blank(src[i] === '\\' ? 2 : 1);
   };
-  while (i < src.length) {
-    const c = src[i];
-    if (src.startsWith('//', i)) {
-      blankUntil(() => src[i] === '\n');
-    } else if (src.startsWith('/*', i)) {
-      blankUntil(() => src.startsWith('*/', i));
-      blank(2);
-    } else if (c === "'" || c === '"') {
-      keep();
-      blankUntil(() => src[i] === c);
-      keep();
-    } else if (c === '`') {
-      keep();
-      let depth = 0;
-      while (i < src.length && !(depth === 0 && src[i] === '`')) {
-        if (src[i] === '\\') blank(2);
-        else if (src.startsWith('${', i)) (depth++, keep(2));
-        else if (depth > 0 && src[i] === '}') (depth--, keep());
-        else if (depth > 0) keep();
-        else blank();
+  /** Mask code to the end, or inside `${…}` to the brace that closes it. */
+  const code = (interpolation: boolean) => {
+    let braces = 0;
+    while (i < src.length) {
+      const c = src[i];
+      if (interpolation && c === '}' && braces === 0) return;
+      if (src.startsWith('//', i)) {
+        blankUntil(() => src[i] === '\n');
+      } else if (src.startsWith('/*', i)) {
+        blankUntil(() => src.startsWith('*/', i));
+        blank(2);
+      } else if (c === "'" || c === '"') {
+        keep();
+        blankUntil(() => src[i] === c);
+        keep();
+      } else if (c === '`') {
+        template();
+      } else if (c === '/' && startsRegex(out)) {
+        keep();
+        let inClass = false;
+        blankUntil(() => {
+          if (src[i] === '\n' || (!inClass && src[i] === '/')) return true;
+          if (src[i] === '[') inClass = true;
+          else if (src[i] === ']') inClass = false;
+          return false;
+        });
+        keep();
+      } else {
+        if (c === '{') braces++;
+        else if (c === '}') braces--;
+        keep();
       }
-      keep();
-    } else if (c === '/' && startsRegex(out)) {
-      keep();
-      let inClass = false;
-      blankUntil(() => {
-        if (src[i] === '\n' || (!inClass && src[i] === '/')) return true;
-        if (src[i] === '[') inClass = true;
-        else if (src[i] === ']') inClass = false;
-        return false;
-      });
-      keep();
-    } else {
-      keep();
     }
-  }
+  };
+  /** Blank a template's text; each `${…}` is code, masked like any other. */
+  const template = () => {
+    keep();
+    while (i < src.length && src[i] !== '`') {
+      if (src[i] === '\\') blank(2);
+      else if (src.startsWith('${', i)) {
+        keep(2);
+        code(true);
+        keep();
+      } else blank();
+    }
+    keep();
+  };
+  code(false);
   return out;
 }
 
@@ -171,7 +205,12 @@ function handlers(masked: string): Handler[] {
 /** Whether an object literal preceded by `before` is a value: returned, assigned, nested, or an arrow body. */
 function isResultLiteral(before: string): boolean {
   if (/\breturn$|=>$|[^=!<>]=$|[:?]$/.test(before)) return true;
-  return before.endsWith('(') && before.slice(0, -1).trimEnd().endsWith('=>');
+  // A parenthesised literal, `return ({ error })` or an arrow body `=> ({ error })`,
+  // and a literal resolved as the result: `return Promise.resolve({ error })`.
+  return (
+    before.endsWith('(') &&
+    /(\breturn|=>)\s*(?:(?:Promise\.)?resolve)?$/.test(before.slice(0, -1).trimEnd())
+  );
 }
 
 /** Offsets in `[start, end)` where an `{ error }` result is built. */
@@ -268,6 +307,18 @@ describe('MCP fault report guard', () => {
       "async function l() { try { await x(); } catch (e) { if (a) { return { error: 1 }; } reportFault('server'); } }",
       'async function m() { try { await x(); } catch (e) { logger.warn({ error: e }); return null; } }',
       "async function n() { try { await x(); } catch (e) { reportCaughtFault(e); return { repo, result: { error: 'x' } }; } }",
+      "async function o() { try { await x(); } catch (e) { log('x; reportFault(1)'); return { error: 1 }; } }",
+      "async function q() { try { await x(); } catch (e) {\n // done; reportFault('server');\n return { error: 1 }; } }",
+      'async function r() { try { await x(); } catch (e) { return ({ error: 1 }); } }',
+      "async function s() { try { await x(); } catch (e) { reportFault('server'); return ({ error: 1 }); } }",
+      'async function t() { try { await x(); } catch (e) { return Promise.resolve({ error: 1 }); } }',
+      'async function u() { try { await x(); } catch (e) { reportCaughtFault(e); return Promise.resolve({ error: 1 }); } }',
+      'const v = new Promise((resolve) => { try { x(); } catch (e) { return resolve({ error: 1 }); } });',
+      // Interpolations are code: a block or a quoted brace inside one does not end it.
+      'const w = `${invoke({ x: 1 }, () => { try { f(); } catch (e) { return { error: e }; } })}`;',
+      "const y = `${g('}') + p.catch((e) => ({ error: e }))}`;",
+      // A regex after `await` is masked, so a report spelled inside it does not count.
+      'async function z() { try { await x(); } catch (e) { await /;reportFault(.*)/.test(s); return { error: e }; } }',
     ].join('\n');
     expect(catchToResultSites('fixture.ts', src)).toEqual([
       { location: 'fixture.ts:1', reports: false },
@@ -281,16 +332,35 @@ describe('MCP fault report guard', () => {
       { location: 'fixture.ts:11', reports: false },
       { location: 'fixture.ts:12', reports: false },
       { location: 'fixture.ts:14', reports: true },
+      // A report inside a string or a comment is not a report.
+      { location: 'fixture.ts:15', reports: false },
+      { location: 'fixture.ts:16', reports: false },
+      { location: 'fixture.ts:19', reports: false },
+      { location: 'fixture.ts:20', reports: true },
+      { location: 'fixture.ts:21', reports: false },
+      { location: 'fixture.ts:22', reports: true },
+      { location: 'fixture.ts:23', reports: false },
+      { location: 'fixture.ts:24', reports: false },
+      { location: 'fixture.ts:25', reports: false },
+      { location: 'fixture.ts:26', reports: false },
     ]);
   });
 
-  it('finds the known catch-to-result sites', () => {
-    const files = new Set(scannedSites().map((site) => site.location.split(':')[0]));
-    expect(files).toContain(path.join('mcp', 'local', 'local-backend.ts'));
-    expect(files).toContain(path.join('mcp', 'local', 'rename', 'rename-plan.ts'));
-    expect(
-      scannedSites().filter((site) => site.location.includes('local-backend.ts')).length,
-    ).toBeGreaterThanOrEqual(14);
+  it('finds the known catch-to-result sites in every scanned file', () => {
+    const counts: Record<string, number> = {};
+    for (const site of scannedSites()) {
+      const file = site.location.split(':')[0].split(path.sep).join('/');
+      counts[file] = (counts[file] ?? 0) + 1;
+    }
+    expect(counts, 'A handler was added or removed: review it, then update these counts').toEqual({
+      'core/group/cross-impact.ts': 4,
+      'core/group/cross-trace.ts': 1,
+      'core/group/resolve-at-member.ts': 1,
+      'core/group/service.ts': 9,
+      'mcp/local/local-backend.ts': 14,
+      'mcp/local/pdg-impact.ts': 1,
+      'mcp/local/rename/rename-plan.ts': 3,
+    });
   });
 
   it('every catch that returns an error result reports its fault class', () => {

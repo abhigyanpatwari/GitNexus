@@ -18,6 +18,7 @@ import type {
 } from './types.js';
 import type { GroupRepoHandle, GroupToolPort } from './service.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
+import { reportCaughtFault, reportFault } from '../fault-class.js';
 import {
   fileMatchesServicePrefix,
   normalizeServicePrefix,
@@ -286,6 +287,7 @@ async function resolveGroupRepo(
   try {
     return await port.resolveRepo(registryName);
   } catch (e) {
+    reportCaughtFault(e);
     return { error: e instanceof Error ? e.message : String(e) };
   }
 }
@@ -298,9 +300,10 @@ async function safeLocalImpact(
 ): Promise<{ value: unknown; timedOut: boolean }> {
   const safeTimeoutMs = clampTimeout(timeoutMs);
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const impactP = port.impact(repo, impactParams).catch((err) => ({
-    error: err instanceof Error ? err.message : String(err),
-  }));
+  const impactP = port.impact(repo, impactParams).catch((err) => {
+    reportCaughtFault(err);
+    return { error: err instanceof Error ? err.message : String(err) };
+  });
   const timeoutP = new Promise<'timeout'>((resolve) => {
     timer = setTimeout(() => resolve('timeout'), safeTimeoutMs);
   });
@@ -510,7 +513,9 @@ export async function ensureBridgeReady(
   const dbPath = path.join(groupDir, 'bridge.lbug');
   try {
     await fsp.access(dbPath);
-  } catch {
+  } catch (e) {
+    // A group that was never synced has no bridge yet; group_sync creates it.
+    reportFault((e as NodeJS.ErrnoException).code === 'ENOENT' ? 'client' : 'server');
     return {
       error: `No bridge.lbug in this group directory. Run gitnexus group sync (schema ${BRIDGE_SCHEMA_VERSION}).`,
     };
@@ -527,6 +532,10 @@ export async function ensureBridgeReady(
   // the OS handle isn't fully released before the next open races in.
   const handle = await getCachedBridgeReadOnly(groupDir);
   if (!handle) {
+    // The file exists and its recorded schema version is current or unknown (0),
+    // so this is a failed open. Reported here, per call: concurrent callers share
+    // one open and only see its result.
+    reportFault('server');
     return {
       error: `Could not open bridge.lbug read-only (schema ${BRIDGE_SCHEMA_VERSION}). Run gitnexus group sync.`,
     };
@@ -625,6 +634,7 @@ export async function runGroupImpact(
   try {
     config = await loadGroupConfig(groupDir);
   } catch (e) {
+    reportCaughtFault(e);
     if (e instanceof GroupNotFoundError)
       return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
     return { error: e instanceof Error ? e.message : String(e) };
