@@ -332,9 +332,20 @@ export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvid
   );
 }
 
-/** Public names of a known default binding, in addition to `default` itself. */
-export function namedExportsOfDefault(nameNode: SyntaxNode, evidence: EsmExportEvidence): string[] {
-  const names = new Set(evidence.namedExports?.get(nameNode.text));
+/** Explicit public spellings for an aliased or default binding. */
+export function namedEsmPublications(
+  nameNode: SyntaxNode,
+  evidence: EsmExportEvidence,
+  isDefault: boolean,
+): string[] | undefined {
+  const writtenNames = evidence.namedExports?.get(nameNode.text);
+  if (
+    !isDefault &&
+    (!writtenNames || (writtenNames.size === 1 && writtenNames.has(nameNode.text)))
+  ) {
+    return undefined;
+  }
+  const names = new Set(writtenNames);
   for (let declaration = nameNode.parent; declaration !== null; declaration = declaration.parent) {
     const statement = declaration.parent;
     if (

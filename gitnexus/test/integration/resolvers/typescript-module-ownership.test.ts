@@ -13,6 +13,19 @@ export default function defaultExport() {}
     'dual.ts': 'export default function dual() {}\nexport { dual };',
     'default-alias.ts':
       'export default function implementation() {}\nexport { implementation as exposed };',
+    'local-alias.ts': `
+function original() {}
+export { original as exposed };
+export function direct() {}
+export { direct as additional };
+`,
+    'alias-forward.ts': "export * from './local-alias.js';",
+    'wrapped.ts': `
+function wrap(fn: () => void) { return fn; }
+function callback() {}
+export { callback as exposed };
+export default wrap(function callback() {});
+`,
     'first.ts': "export { publish } from './left.js';",
     'second.ts': "export * from './right.js';",
     'ambiguous.ts': `
@@ -68,6 +81,8 @@ import { publish as mixed } from './mixed.js';
 import { publish as cycled } from './cycle-b.js';
 import { dual } from './dual-forward.js';
 import * as aliases from './default-alias.js';
+import * as localAliases from './alias-forward.js';
+import * as wrapper from './wrapped.js';
 
 export function ambiguousCall() { ambiguous(); }
 export function reversedCall() { reversed(); }
@@ -91,6 +106,19 @@ export function namedAliasOfDefault() { aliases.exposed(); }
 export function privateAliasImplementation() {
   // @ts-expect-error The lexical name was not exported.
   aliases.implementation();
+}
+export function namedAlias() { localAliases.exposed(); }
+export function hiddenLocalName() {
+  // @ts-expect-error Only the alias was exported.
+  localAliases.original();
+}
+export function directPublication() { localAliases.direct(); }
+export function additionalPublication() { localAliases.additional(); }
+export function wrapperDefault() { wrapper.default(); }
+export function wrapperAlias() { wrapper.exposed(); }
+export function hiddenWrapperCallback() {
+  // @ts-expect-error The expression's callback name is local to its body.
+  wrapper.callback();
 }
 export function nestedNamespace() { pack.api.publish(); }
 export function diamondNamespace() { diamond.publish(); }
@@ -132,6 +160,13 @@ export function privateNamespace() {
     ['entry.ts:dualDefault', ['Function:dual.ts:dual']],
     ['entry.ts:namedAliasOfDefault', ['Function:default-alias.ts:implementation']],
     ['entry.ts:privateAliasImplementation', []],
+    ['entry.ts:namedAlias', ['Function:local-alias.ts:original']],
+    ['entry.ts:hiddenLocalName', []],
+    ['entry.ts:directPublication', ['Function:local-alias.ts:direct']],
+    ['entry.ts:additionalPublication', ['Function:local-alias.ts:direct']],
+    ['entry.ts:wrapperDefault', ['Function:wrapped.ts:wrapped']],
+    ['entry.ts:wrapperAlias', ['Function:wrapped.ts:callback']],
+    ['entry.ts:hiddenWrapperCallback', []],
     ['entry.ts:nestedNamespace', [publishLeft]],
     ['entry.ts:diamondNamespace', [publishLeft]],
     ['entry.ts:qualifiedType', ['Method:left.ts:Entity.save#0']],

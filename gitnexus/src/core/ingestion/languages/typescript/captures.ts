@@ -39,7 +39,7 @@ import {
   collectEsmExportEvidence,
   esmExportVerdict,
   isEsmDefaultExport,
-  namedExportsOfDefault,
+  namedEsmPublications,
 } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
@@ -608,8 +608,8 @@ export function emitTsScopeCaptures(
           fnNode,
           deriveDefaultExportHocName(filePath),
         );
-        // This declaration's name is synthetic, so the later query-name
-        // marker cannot see it. The HOC predicate already proves the export.
+        // The graph gives the exported wrapper a synthetic name. A named
+        // callback's binding is scoped to that function expression.
         grouped['@declaration.is-exported'] = syntheticCapture(
           '@declaration.is-exported',
           fnNode,
@@ -737,16 +737,23 @@ export function emitTsScopeCaptures(
           verdict ? 'true' : 'false',
         );
       }
-      if (verdict === true && isEsmDefaultExport(declNameNode, exportEvidence)) {
+      const isDefault = verdict === true && isEsmDefaultExport(declNameNode, exportEvidence);
+      if (isDefault) {
         grouped['@declaration.is-default-export'] = syntheticCapture(
           '@declaration.is-default-export',
           declNameNode,
           'true',
         );
+      }
+      const namedExports =
+        verdict === true
+          ? namedEsmPublications(declNameNode, exportEvidence, isDefault)
+          : undefined;
+      if (namedExports !== undefined) {
         grouped['@declaration.named-exports'] = syntheticCapture(
           '@declaration.named-exports',
           declNameNode,
-          JSON.stringify(namedExportsOfDefault(declNameNode, exportEvidence)),
+          JSON.stringify(namedExports),
         );
       }
     }

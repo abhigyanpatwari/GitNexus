@@ -35,6 +35,19 @@ function implementation() {}
 export default implementation;
 export { implementation as exposed };
 `,
+    'local-alias.js': `
+function original() {}
+export { original as exposed };
+export function direct() {}
+export { direct as additional };
+`,
+    'alias-forward.js': "export * from './local-alias.js';",
+    'wrapped.js': `
+function wrap(fn) { return fn; }
+function callback() {}
+export { callback as exposed };
+export default wrap(function callback() {});
+`,
     'forward.js': "export { model as api } from './namespace.js';",
     'default-object.js': "export * as default from './left.js';",
     'literal-object.js': "export * as 'other object' from './left.js';",
@@ -52,6 +65,8 @@ import * as pack from './forward.js';
 import defaultObject from './default-object.js';
 import { publish as wrongLiteral } from './literal-object.js';
 import { exposed } from './default-alias.js';
+import * as localAliases from './alias-forward.js';
+import * as wrapper from './wrapped.js';
 export function wrong() { choose(); }
 export function useSame() { same(); }
 export function useExplicit() { explicit(); }
@@ -60,6 +75,13 @@ export function useNestedNamespace() { pack.api.publish(); }
 export function useDefault() { api.default(); }
 export function useDefaultObject() { defaultObject.publish(); }
 export function useDefaultAlias() { exposed(); }
+export function useLocalAlias() { localAliases.exposed(); }
+export function useHiddenLocalName() { localAliases.original(); }
+export function useDirect() { localAliases.direct(); }
+export function useAdditional() { localAliases.additional(); }
+export function useWrapperDefault() { wrapper.default(); }
+export function useWrapperAlias() { wrapper.exposed(); }
+export function useHiddenWrapperCallback() { wrapper.callback(); }
 export function useWrongLiteral() { wrongLiteral(); }
 export function useDefaultAsNamed() { api.main(); }
 export function usePrivate() { api.privateMember(); }
@@ -76,6 +98,13 @@ export function shadowed(api) { api.publish(); }
     ['entry.js:useDefault', ['Function:left.js:main']],
     ['entry.js:useDefaultObject', ['Function:left.js:publish']],
     ['entry.js:useDefaultAlias', ['Function:default-alias.js:implementation']],
+    ['entry.js:useLocalAlias', ['Function:local-alias.js:original']],
+    ['entry.js:useHiddenLocalName', []],
+    ['entry.js:useDirect', ['Function:local-alias.js:direct']],
+    ['entry.js:useAdditional', ['Function:local-alias.js:direct']],
+    ['entry.js:useWrapperDefault', ['Function:wrapped.js:wrapped']],
+    ['entry.js:useWrapperAlias', ['Function:wrapped.js:callback']],
+    ['entry.js:useHiddenWrapperCallback', []],
     ['entry.js:useWrongLiteral', []],
     ['entry.js:useDefaultAsNamed', []],
     ['entry.js:usePrivate', []],

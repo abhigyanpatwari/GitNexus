@@ -139,7 +139,7 @@ export interface SymbolDefinition {
    * the declaration under its default-export key.
    */
   isDefaultExport?: boolean;
-  /** Additional public names of a default binding. An empty array denotes a default-only export. */
+  /** Explicit names of an aliased or default binding. Empty for default-only bindings. */
   namedExports?: readonly string[];
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
