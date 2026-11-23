@@ -78,8 +78,8 @@ the same axes. This run overlapped other local validation. Raw timings in the
 evaluation data are diagnostic. Warm replay reused 153 files and parsed zero. The
 edited replay parsed two files and reused 151.
 
-Cold database publication on pinned GitNexus source was measured with the
-final production code at `b558b4d37`. Both builds parsed 1,243 files and reopened
+Cold database publication on pinned GitNexus source used the quoted-export
+implementation at `b558b4d37`. Both builds parsed 1,243 files and reopened
 1,247 persisted file nodes. The samples ran in main, candidate, candidate,
 main order while other local validation was active.
 

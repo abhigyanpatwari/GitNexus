@@ -34,7 +34,7 @@
  * would mark every declaration in such a file exported.
  */
 
-import { canonicalModuleExportName } from './languages/typescript/identifiers.js';
+import { canonicalModuleExportName } from './utils/ecmascript-literals.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 
 export interface EsmExportEvidence {

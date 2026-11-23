@@ -1,18 +1,6 @@
-import { decodeJavaScriptStringLiteral } from './string-literals.js';
+import { decodeIdentifierEscapes } from '../../utils/ecmascript-literals.js';
 
 /** Decode ECMAScript identifier escapes without changing written graph identities. */
-export const canonicalTypeScriptName = (name: string): string =>
-  name.replace(
-    /\\u(?:\{([0-9a-fA-F]+)\}|([0-9a-fA-F]{4}))/g,
-    (escape, braced: string | undefined, fixed: string | undefined) => {
-      const value = Number.parseInt(braced ?? fixed!, 16);
-      return value <= 0x10ffff ? String.fromCodePoint(value) : escape;
-    },
-  );
+export const canonicalTypeScriptName = (name: string): string => decodeIdentifierEscapes(name);
 
-/** Read a written ModuleExportName as its runtime key. */
-export function canonicalModuleExportName(spelling: string): string | null {
-  if (spelling[0] !== '"' && spelling[0] !== "'") return canonicalTypeScriptName(spelling);
-  const decoded = decodeJavaScriptStringLiteral(spelling);
-  return decoded === null || /[\uD800-\uDFFF]/u.test(decoded) ? null : decoded;
-}
+export { canonicalModuleExportName } from '../../utils/ecmascript-literals.js';

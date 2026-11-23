@@ -123,6 +123,7 @@ export function hiddenWrapperCallback() {
 export function nestedNamespace() { pack.api.publish(); }
 export function diamondNamespace() { diamond.publish(); }
 export function qualifiedType(value: pack.api.Entity) { value.save(); }
+export function escapedQualifiedType(value: pack.api.\\u0045ntity) { value.save(); }
 class Unpublished { save() {} }
 // @ts-expect-error The imported module does not export Unpublished.
 export function missingQualifiedType(value: pack.api.Unpublished) { value.save(); }
@@ -170,6 +171,7 @@ export function privateNamespace() {
     ['entry.ts:nestedNamespace', [publishLeft]],
     ['entry.ts:diamondNamespace', [publishLeft]],
     ['entry.ts:qualifiedType', ['Method:left.ts:Entity.save#0']],
+    ['entry.ts:escapedQualifiedType', ['Method:left.ts:Entity.save#0']],
     ['entry.ts:missingQualifiedType', []],
     ['entry.ts:typeStarInstance', ['Method:left.ts:Entity.save#0']],
     ['entry.ts:typeNamespaceInstance', ['Method:left.ts:Entity.save#0']],

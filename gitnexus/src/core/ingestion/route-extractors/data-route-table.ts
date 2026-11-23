@@ -9,7 +9,7 @@
  */
 import type Parser from 'tree-sitter';
 import type { SyntaxNode } from 'tree-sitter';
-import { decodeJavaScriptStringLiteral } from '../languages/typescript/string-literals.js';
+import { decodeStringLiteral } from '../utils/ecmascript-literals.js';
 import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 
 export const DATA_ROUTE_TABLE_SOURCE = 'data-route-table';
@@ -45,14 +45,14 @@ export interface DataRouteTableRoute {
  * a literal around every `escape_sequence`.
  */
 export function plainString(node: SyntaxNode): string | null {
-  if (node.type === 'string') return decodeJavaScriptStringLiteral(node.text);
+  if (node.type === 'string') return decodeStringLiteral(node.text);
   if (
     node.type === 'template_string' &&
     node.namedChildren.every(
       (child) => child.type === 'string_fragment' || child.type === 'escape_sequence',
     )
   ) {
-    return decodeJavaScriptStringLiteral(node.text);
+    return decodeStringLiteral(node.text);
   }
   return null;
 }
