@@ -37,6 +37,17 @@ export function reassigned(repo: Key | Value) {
     repo.save();
   }
 }
+export function sequencedWrite(repo: Key | Value, replacement: Value) {
+  if (repo instanceof Key) { repo.before(), repo = replacement, repo.save(); }
+}
+export function unbracedSequence(repo: Key | Value, replacement: Value) {
+  if (repo instanceof Key) repo.before(), repo = replacement, repo.save();
+}
+export function loopSequence(repo: Key | Value, replacement: Value, repeat: boolean) {
+  if (repo instanceof Key) {
+    while (repeat) repo.before(), repo = replacement, repo.save();
+  }
+}
 export function conditionalWrite(repo: Key | Value, replace: boolean) {
   if (repo instanceof Key) {
     repo.before();
@@ -108,6 +119,9 @@ export function closureWrite(repo: Key | Value) {
     ['outside', []],
     ['unbraced', [keyBefore]],
     ['reassigned', [keyBefore]],
+    ['sequencedWrite', [keyBefore]],
+    ['unbracedSequence', [keyBefore]],
+    ['loopSequence', []],
     ['conditionalWrite', [keyBefore]],
     ['loopWrite', [keyBefore]],
     ['wrappedWrite', [keyBefore]],

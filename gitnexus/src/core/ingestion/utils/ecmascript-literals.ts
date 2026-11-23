@@ -58,7 +58,7 @@ export function decodeStringLiteral(raw: string): string | null {
         const close = body.indexOf('}', index + 2);
         if (close === -1) return null;
         const hex = body.slice(index + 2, close);
-        if (!/^[0-9A-Fa-f]{1,6}$/.test(hex)) return null;
+        if (hex.length === 0 || /[^0-9A-Fa-f]/.test(hex)) return null;
         const codePoint = Number.parseInt(hex, 16);
         if (codePoint > 0x10ffff) return null;
         decoded += String.fromCodePoint(codePoint);

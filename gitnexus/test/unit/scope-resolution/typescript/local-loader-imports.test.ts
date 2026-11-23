@@ -113,6 +113,26 @@ describe.each(variants)('$extension local loader extraction', ({ extension, prov
     expect(forwarded.parsedImports).toEqual([]);
   });
 
+  it('accounts for loop writes to the ambient loader and respects loop-local shadows', () => {
+    const reassigned = extract(`
+      function load(otherLoader) {
+        for (require of [otherLoader]) {}
+        const { run } = require('./blocked');
+        run();
+      }
+    `);
+    expect(reassigned.parsedImports).toEqual([]);
+
+    const shadowed = extract(`
+      function load(loaders) {
+        for (const require of loaders) { require('./shadowed'); }
+        const { run } = require('./genuine');
+        run();
+      }
+    `);
+    expect(shadowed.parsedImports.map((imp) => imp.targetRaw)).toEqual(['./genuine']);
+  });
+
   it('treats a named class expression as a local loader shadow without hiding the real loader', () => {
     const parsed = extract(`const Holder = class require {
       method() { const ns = require('./shadowed'); return ns.run(); }
@@ -311,6 +331,10 @@ describe('local-loader graph targets', () => {
         export function outsideBlock() { { const ns = require('./a'); } return ns.run(); }
         export function unresolved() { const root = require('./missing'); return root.run(); }
         export function mutated() { let ns = require('./a'); ns = factory; return ns.run(); }
+        export function loopMutated(replacements) {
+          let ns = require('./a');
+          for (ns of replacements) ns.run();
+        }
         export function conditional() { if (flag) { var ns = require('./a'); } return ns.run(); }
         export function before() { ns.run(); const ns = require('./a'); }
         export function blocked(require) { const ns = require('./a'); return ns.run(); }
@@ -318,6 +342,13 @@ describe('local-loader graph targets', () => {
         extension,
       );
       if (extension === 'ts' || extension === 'js') {
+        files[`${extension}/replaced.${extension}`] = `
+          export function replaced(otherLoader) {
+            for (require of [otherLoader]) {}
+            const { run } = require('./a');
+            return run();
+          }
+        `;
         files[`${extension}/forward.${extension}`] = `
           let { run: changed, stable } = require('./exports');
           changed = custom;
@@ -371,6 +402,18 @@ describe('local-loader graph targets', () => {
           .sort()
           .map((name) => [name, `${extension}/app.${extension}`]),
       );
+    },
+  );
+
+  it.each(['ts', 'js'])(
+    '%s refuses the module edge when a loop replaces the loader',
+    (extension) => {
+      const calls = getRelationships(result, 'CALLS').filter(
+        (edge) =>
+          edge.sourceFilePath === `${extension}/replaced.${extension}` &&
+          edge.targetFilePath === `${extension}/a.${extension}`,
+      );
+      expect(calls).toEqual([]);
     },
   );
 

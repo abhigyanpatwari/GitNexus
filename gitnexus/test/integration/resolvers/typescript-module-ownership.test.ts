@@ -240,11 +240,12 @@ export { original as "pub\x6cic-name", defaultImpl as 'default', literalEscape a
     [`barrel.${extension}`]: `export { 'public-name' as "another name" } from './local.${suffix}';`,
     [`entry.${extension}`]: String.raw`
 import * as namespace from './local.${suffix}';
-import primary, { 'public-name' as direct, '\\u0061' as escape } from './local.${suffix}';
+import primary, { 'public-name' as direct, '\\u0061' as escape, '\u{0000061}' as padded } from './local.${suffix}';
 import { 'another name' as forwarded } from './barrel.${suffix}';
 export function useDirect() { direct(); }
 export function useDefault() { primary(); }
 export function useLiteralEscape() { escape(); }
+export function usePaddedEscape() { padded(); }
 export function useBarrel() { forwarded(); }
 export function hiddenName() {
   // @ts-expect-error The local name was never published.
@@ -257,6 +258,7 @@ export function hiddenName() {
     ['useDirect', 'original'],
     ['useDefault', 'defaultImpl'],
     ['useLiteralEscape', 'literalEscape'],
+    ['usePaddedEscape', 'ordinary'],
     ['useBarrel', 'original'],
     ['hiddenName', null],
   ] as const)('emits only the exact targets for %s', (caller, target) => {
