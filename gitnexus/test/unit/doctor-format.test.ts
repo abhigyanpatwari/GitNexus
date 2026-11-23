@@ -311,6 +311,12 @@ describe('doctor pool-size line (#2631)', () => {
       `  ${padDisplayEnd('pool size', 10)}native 80% of RAM (env override)`,
     );
   });
+
+  it('names the writer and reader pools when the read-only default is smaller', () => {
+    expect(poolSizeDoctorLine(819 * MiB, undefined, 384 * MiB)).toBe(
+      `  ${padDisplayEnd('pool size', 10)}819 MiB writers, 384 MiB readers`,
+    );
+  });
 });
 
 // #2672: every failed check used to print "lbugjs.node missing", including the

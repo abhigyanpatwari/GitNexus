@@ -24,6 +24,7 @@ import { queryMemoryGuard } from './query-memory-guard.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
+  readBufferPoolExhaustionRemedy,
   sleep,
   throwIfStorageVersionMismatch,
   toNativeSafePath,
@@ -777,6 +778,13 @@ function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
 type InitLbugAttempt = { status: 'done'; reopened: boolean } | { status: 'retry'; error: Error };
 
 function ladybugUnavailableError(repoId: string, err: Error | undefined): Error {
+  // A pool too small to open this index is not a rebuild in progress.
+  const remedy = err ? readBufferPoolExhaustionRemedy(err.message) : undefined;
+  if (remedy) {
+    return new Error(`LadybugDB could not open ${repoId}: ${err?.message} ${remedy}`, {
+      cause: err,
+    });
+  }
   return new Error(
     `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
       `Retry later. (${err?.message || 'unknown error'})`,
@@ -1482,6 +1490,9 @@ export const executeParameterized = async (
           cause: err,
         });
       }
+      const message = err instanceof Error ? err.message : String(err);
+      const remedy = readBufferPoolExhaustionRemedy(message);
+      if (remedy) throw new Error(`${message} ${remedy}`, { cause: err });
       throw err;
     } finally {
       // Close the native QueryResult cursor(s) before returning the connection —

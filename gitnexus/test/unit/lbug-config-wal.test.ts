@@ -22,10 +22,10 @@ import { _captureLogger } from '../../src/core/logger.js';
 
 const DEFAULT_THRESHOLD = 64 * 1024 * 1024;
 
-// The default pool is sized from effective memory and the query memory budget.
-// Pin "no container limit" and the default budget so the pool expectations
-// below depend only on the stubbed os.totalmem, also on a CI runner inside a
-// memory-limited cgroup.
+// The default pool is sized from effective memory and, for read-only opens,
+// the query memory budget. Pin "no container limit" and the default budget so
+// the pool expectations below depend only on the stubbed os.totalmem, also on
+// a CI runner inside a memory-limited cgroup.
 const pinUnconstrainedHost = (): (() => void) => {
   const desc = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');
   Object.defineProperty(process, 'constrainedMemory', { configurable: true, value: () => 0 });
@@ -271,24 +271,21 @@ describe('createLbugDatabase buffer pool size (#2557)', () => {
 
   it.each([
     ['32 GiB machine caps at 2 GiB', 32 * GiB, 2 * GiB],
-    ['1 GiB machine leaves room under the query memory budget', GiB, 384 * 1024 * 1024],
-    ['64 MiB machine clamps up to the floor', 64 * 1024 * 1024, 64 * 1024 * 1024],
-  ])(
-    'defaults from totalmem when there is no container limit: %s',
-    (_label, totalmem, expected) => {
-      const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(totalmem);
-      try {
-        const Database = vi.fn(function (this: any) {});
-        const lbugModule = { Database } as any;
+    ['1 GiB machine keeps the native-equivalent 80% bound', GiB, Math.floor(0.8 * GiB)],
+    ['64 MiB container clamps up to the floor', 64 * 1024 * 1024, 64 * 1024 * 1024],
+  ])('defaults to min(2 GiB, max(64 MiB, 0.8 * totalmem)): %s', (_label, totalmem, expected) => {
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(totalmem);
+    try {
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
 
-        createLbugDatabase(lbugModule, '/tmp/lbug-pool');
+      createLbugDatabase(lbugModule, '/tmp/lbug-pool');
 
-        expect(bufferPoolArg(Database)).toBe(expected);
-      } finally {
-        totalmemSpy.mockRestore();
-      }
-    },
-  );
+      expect(bufferPoolArg(Database)).toBe(expected);
+    } finally {
+      totalmemSpy.mockRestore();
+    }
+  });
 
   it.each([
     ['1073741824', 1073741824],

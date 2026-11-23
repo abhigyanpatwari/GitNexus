@@ -116,6 +116,21 @@ describe('pool-adapter storage-version fail-fast and lock-retry backoff', () => 
     expect(createLbugDatabaseMock).toHaveBeenCalledTimes(1);
   });
 
+  it('names the pool override instead of "Retry later" when the pool is too small to open', async () => {
+    const repoId = 'pool-too-small';
+    touched.add(repoId);
+    createLbugDatabaseMock.mockImplementation(() => {
+      throw new Error(
+        'Buffer manager exception: Unable to allocate memory! The buffer pool is full and no memory could be freed!',
+      );
+    });
+
+    const error = await initLbug(repoId, dbPathFor(repoId)).catch((e) => e);
+    expect(error.message).toContain('LadybugDB could not open pool-too-small');
+    expect(error.message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+    expect(error.message).not.toContain('Retry later');
+  });
+
   it('does not hold withPoolLock across lock-retry sleep — another repo can init during backoff', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
 

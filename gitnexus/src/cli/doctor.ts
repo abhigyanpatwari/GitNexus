@@ -177,15 +177,24 @@ export function pageSizeDoctorLines(
 /**
  * The hintless buffer-pool doctor line (#2631) — the pool the next Database
  * open in THIS process would get. Same plain-params testable-helper shape as
- * pageSizeDoctorLines above. `pool` is getEffectiveBufferPoolSize(): `0` is
- * the pass-through sentinel for LadybugDB's native 80%-of-RAM default, never
- * printed as "0 MiB". `envRaw` (the raw GITNEXUS_LBUG_BUFFER_POOL_SIZE value)
- * marks operator-supplied absolute values as "(env override)" — no scaling
- * suffix: the hintless default is deliberately unscaled (#2557), and an env
- * value is absolute, so a "×N" note would misdescribe both.
+ * pageSizeDoctorLines above. `pool` is getEffectiveBufferPoolSize() (a
+ * writable open) and `readPool` is getEffectiveBufferPoolSize('read'); when
+ * they differ, both are printed and named. `0` is the pass-through sentinel
+ * for LadybugDB's native 80%-of-RAM default, never printed as "0 MiB".
+ * `envRaw` (the raw GITNEXUS_LBUG_BUFFER_POOL_SIZE value) marks
+ * operator-supplied absolute values as "(env override)" — no scaling suffix:
+ * the hintless default is deliberately unscaled (#2557), and an env value is
+ * absolute, so a "×N" note would misdescribe both.
  */
-export function poolSizeDoctorLine(pool: number, envRaw: string | undefined): string {
-  const value = pool === 0 ? 'native 80% of RAM' : `${Math.round(pool / (1024 * 1024))} MiB`;
+export function poolSizeDoctorLine(
+  pool: number,
+  envRaw: string | undefined,
+  readPool: number = pool,
+): string {
+  const format = (bytes: number) =>
+    bytes === 0 ? 'native 80% of RAM' : `${Math.round(bytes / (1024 * 1024))} MiB`;
+  const value =
+    readPool === pool ? format(pool) : `${format(pool)} writers, ${format(readPool)} readers`;
   const envNote = envRaw !== undefined && envRaw.trim().length > 0 ? ' (env override)' : '';
   return `  ${padDisplayEnd('pool size', 10)}${value}${envNote}`;
 }
@@ -284,10 +293,14 @@ export const doctorCommand = async () => {
   for (const line of pageSizeDoctorLines(getOsPageSize(), fingerprint.ladybugdb)) {
     console.log(line);
   }
-  // Hintless buffer pool for the next DB open (#2631). Literal label like
-  // the page size line above (no i18n key).
+  // Hintless buffer pool for the next writable and read-only DB open (#2631).
+  // Literal label like the page size line above (no i18n key).
   console.log(
-    poolSizeDoctorLine(getEffectiveBufferPoolSize(), process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE),
+    poolSizeDoctorLine(
+      getEffectiveBufferPoolSize(),
+      process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE,
+      getEffectiveBufferPoolSize('read'),
+    ),
   );
   const nativeCheck = checkLbugNative();
   console.log(nativeStatusLine(nativeCheck));

@@ -5,9 +5,11 @@ import {
   defaultReadPoolBytes,
   estimateBufferPool,
   getEffectiveBufferPoolSize,
+  readBufferPoolExhaustionRemedy,
   setBufferPoolSizeHint,
   _setOsPageSizeForTests,
 } from '../../src/core/lbug/lbug-config.js';
+import { effectiveRamBytes } from '../../src/core/ingestion/utils/effective-ram.js';
 import {
   QUERY_MAX_RSS_ENV,
   resolveQueryRssBudgetBytes,
@@ -15,9 +17,10 @@ import {
 import { _captureLogger } from '../../src/core/logger.js';
 
 // The default LadybugDB buffer pool is sized from effective memory (a real
-// cgroup limit when it is smaller than physical RAM) and kept under the read
-// query memory budget, so a reader in a small container on a large node does
-// not get a pool sized for the node.
+// cgroup limit when it is smaller than physical RAM), so a process in a small
+// container on a large node does not get a pool sized for the node. Read-only
+// opens are further kept under the read query memory budget; writable opens
+// (bridge writes, FTS repair, WAL replay) are outside that guard and are not.
 
 const MiB = 1024 * 1024;
 const GiB = 1024 * MiB;
@@ -41,14 +44,17 @@ const defaultBudget = (ram: number): number => resolveQueryRssBudgetBytes(undefi
 describe('default buffer pool under container memory limits', () => {
   let restoreConstrained: (() => void) | undefined;
 
-  const hintlessPool = (): number => {
+  const hintlessPool = (readOnly: boolean): number => {
     const Database = vi.fn(function (this: unknown) {});
     createLbugDatabase(
       { Database } as unknown as Parameters<typeof createLbugDatabase>[0],
       '/tmp/lbug-pool-memory',
+      { readOnly },
     );
     return (Database.mock.calls[0] as unknown[])[1] as number;
   };
+  const readerPool = (): number => hintlessPool(true);
+  const writerPool = (): number => hintlessPool(false);
 
   const runOn = (totalmem: number, constrained: number | undefined): void => {
     vi.spyOn(os, 'totalmem').mockReturnValue(totalmem);
@@ -83,20 +89,36 @@ describe('default buffer pool under container memory limits', () => {
     expect(defaultReadPoolBytes(ram, defaultBudget(ram))).toBe(expected);
   });
 
-  it('a 1 GiB container on a large node gets a pool well under the query memory budget', () => {
+  it('a read-only open in a 1 GiB container on a large node gets a pool well under the query memory budget', () => {
     runOn(HOST, GiB);
-    const pool = hintlessPool();
+    const pool = readerPool();
     expect(pool).toBe(384 * MiB);
     expect(pool).toBeLessThanOrEqual(defaultBudget(GiB) - 256 * MiB);
+    expect(getEffectiveBufferPoolSize('read')).toBe(pool);
+  });
+
+  it('a writable open in a 1 GiB container gets 80% of the container, not the read budget', () => {
+    runOn(HOST, GiB);
+    const pool = writerPool();
+    expect(pool).toBe(Math.floor(0.8 * GiB));
     expect(getEffectiveBufferPoolSize()).toBe(pool);
+    expect(getEffectiveBufferPoolSize('write')).toBe(pool);
+  });
+
+  it(`${QUERY_MAX_RSS_ENV} does not shrink a writable open`, () => {
+    runOn(HOST, GiB);
+    vi.stubEnv(QUERY_MAX_RSS_ENV, '512');
+    expect(writerPool()).toBe(Math.floor(0.8 * GiB));
+    expect(readerPool()).toBe(256 * MiB);
   });
 
   it.each([
-    ['4 GiB', 4 * GiB, 2 * GiB],
-    ['2 GiB', 2 * GiB, 768 * MiB],
-  ])('a %s container on a large node', (_label, limit, expected) => {
+    ['4 GiB', 4 * GiB, 2 * GiB, 2 * GiB],
+    ['2 GiB', 2 * GiB, 768 * MiB, Math.floor(0.8 * 2 * GiB)],
+  ])('a %s container on a large node', (_label, limit, reader, writer) => {
     runOn(HOST, limit);
-    expect(hintlessPool()).toBe(expected);
+    expect(readerPool()).toBe(reader);
+    expect(writerPool()).toBe(writer);
   });
 
   it.each([
@@ -106,21 +128,26 @@ describe('default buffer pool under container memory limits', () => {
     ['reports UINT64_MAX', 2 ** 64],
   ])('keeps the 2 GiB default on a large host when constrainedMemory %s', (_label, value) => {
     runOn(HOST, value);
-    expect(hintlessPool()).toBe(2 * GiB);
+    expect(readerPool()).toBe(2 * GiB);
+    expect(writerPool()).toBe(2 * GiB);
   });
 
   it('ignores a limit above physical RAM', () => {
     runOn(8 * GiB, 16 * GiB);
-    expect(hintlessPool()).toBe(2 * GiB);
+    expect(readerPool()).toBe(2 * GiB);
+    expect(writerPool()).toBe(2 * GiB);
   });
 
   it.each([
     ['256 MiB', 256 * MiB, 64 * MiB],
     ['512 MiB', 512 * MiB, 128 * MiB],
-  ])('a tiny %s container keeps at least the 64 MiB floor', (_label, limit, expected) => {
-    runOn(HOST, limit);
-    expect(hintlessPool()).toBe(expected);
-  });
+  ])(
+    'a read-only open in a tiny %s container keeps at least the 64 MiB floor',
+    (_label, limit, expected) => {
+      runOn(HOST, limit);
+      expect(readerPool()).toBe(expected);
+    },
+  );
 
   it.each([
     ['1073741824', 1073741824],
@@ -128,7 +155,9 @@ describe('default buffer pool under container memory limits', () => {
   ])('GITNEXUS_LBUG_BUFFER_POOL_SIZE=%s still wins in a 1 GiB container', (raw, expected) => {
     runOn(HOST, GiB);
     vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', raw);
-    expect(hintlessPool()).toBe(expected);
+    expect(readerPool()).toBe(expected);
+    expect(writerPool()).toBe(expected);
+    expect(getEffectiveBufferPoolSize('read')).toBe(expected);
     expect(getEffectiveBufferPoolSize()).toBe(expected);
   });
 
@@ -137,7 +166,8 @@ describe('default buffer pool under container memory limits', () => {
     try {
       runOn(HOST, GiB);
       vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', 'abc');
-      expect(hintlessPool()).toBe(384 * MiB);
+      expect(readerPool()).toBe(384 * MiB);
+      expect(writerPool()).toBe(Math.floor(0.8 * GiB));
       const warn = cap
         .records()
         .find(
@@ -153,22 +183,45 @@ describe('default buffer pool under container memory limits', () => {
 
   it.each([
     ['512', 256 * MiB],
+    [' 512 ', 256 * MiB],
     ['0', 384 * MiB],
     ['4096', Math.floor(0.8 * GiB)],
+    // Values the guard rejects fall back to its default budget.
+    ['abc', 384 * MiB],
+    ['-5', 384 * MiB],
+    ['   ', 384 * MiB],
+    // A fractional MiB is a real (tiny) budget for the guard; the pool floor wins.
+    ['0.5', 64 * MiB],
   ])(
-    `follows ${QUERY_MAX_RSS_ENV}=%s in a 1 GiB container (0 disables the guard, not the sizing)`,
+    `follows ${QUERY_MAX_RSS_ENV}=%j in a 1 GiB container (0 disables the guard, not the sizing)`,
     (raw, expected) => {
       runOn(HOST, GiB);
       vi.stubEnv(QUERY_MAX_RSS_ENV, raw);
-      expect(hintlessPool()).toBe(expected);
+      expect(readerPool()).toBe(expected);
     },
   );
+
+  it.each([
+    ['a 1 GiB container', HOST, GiB],
+    ['no limit', HOST, 0],
+    ['a limit above RAM', 8 * GiB, 16 * GiB],
+    ['the cgroup v1 sentinel', HOST, CGROUP_V1_UNLIMITED],
+    ['UINT64_MAX', HOST, 2 ** 64],
+  ])('sizes from the same available memory the query guard uses: %s', (_label, total, limit) => {
+    runOn(total, limit);
+    // query-memory-guard.ts: totalMem = min(os.totalmem(), constrainedMemory() || Infinity)
+    const guardTotalMem = Math.min(
+      os.totalmem(),
+      process.constrainedMemory() || Number.POSITIVE_INFINITY,
+    );
+    expect(effectiveRamBytes()).toBe(guardTotalMem);
+  });
 
   it('bounds the analyze hint by 80% of the container limit', () => {
     runOn(HOST, GiB);
     expect(estimateBufferPool(10_000_000)).toBe(Math.floor(0.8 * GiB));
     setBufferPoolSizeHint(8 * GiB);
-    expect(hintlessPool()).toBe(Math.floor(0.8 * GiB));
+    expect(writerPool()).toBe(Math.floor(0.8 * GiB));
   });
 
   it('lets the analyze cap win over the COPY floor in a 256 MiB container', () => {
@@ -176,18 +229,19 @@ describe('default buffer pool under container memory limits', () => {
     expect(estimateBufferPool(41)).toBe(Math.floor(0.8 * 256 * MiB));
   });
 
-  it('keeps the hintless default unscaled on 64 KiB pages in a 1 GiB container', () => {
+  it('keeps the hintless defaults unscaled on 64 KiB pages in a 1 GiB container', () => {
     runOn(HOST, GiB);
     _setOsPageSizeForTests(65536);
-    expect(hintlessPool()).toBe(384 * MiB);
+    expect(readerPool()).toBe(384 * MiB);
+    expect(writerPool()).toBe(Math.floor(0.8 * GiB));
     expect(estimateBufferPool(41, 65536)).toBe(Math.floor(0.8 * GiB));
   });
 
-  it('stays at least 256 MiB under the default query budget for every container from 768 MiB to 4 GiB', () => {
+  it('keeps a read-only pool at least 256 MiB under the default query budget for every container from 768 MiB to 4 GiB', () => {
     const totalmem = vi.spyOn(os, 'totalmem').mockReturnValue(HOST);
     for (let limit = 768 * MiB; limit <= 4 * GiB; limit += 64 * MiB) {
       restoreConstrained = setConstrainedMemory(limit);
-      expect(getEffectiveBufferPoolSize(), `limit ${limit / MiB} MiB`).toBeLessThanOrEqual(
+      expect(getEffectiveBufferPoolSize('read'), `limit ${limit / MiB} MiB`).toBeLessThanOrEqual(
         defaultBudget(limit) - 256 * MiB,
       );
       restoreConstrained();
@@ -196,9 +250,20 @@ describe('default buffer pool under container memory limits', () => {
     restoreConstrained = setConstrainedMemory(0);
     for (let ram = 4 * GiB; ram <= 64 * GiB; ram += 4 * GiB) {
       totalmem.mockReturnValue(ram);
-      expect(getEffectiveBufferPoolSize(), `host ${ram / GiB} GiB`).toBe(
-        Math.min(2 * GiB, Math.floor(0.8 * ram)),
-      );
+      const legacy = Math.min(2 * GiB, Math.floor(0.8 * ram));
+      expect(getEffectiveBufferPoolSize('read'), `host ${ram / GiB} GiB`).toBe(legacy);
+      expect(getEffectiveBufferPoolSize('write'), `host ${ram / GiB} GiB`).toBe(legacy);
     }
+  });
+
+  it('names GITNEXUS_LBUG_BUFFER_POOL_SIZE for read-path pool exhaustion and ignores other errors', () => {
+    runOn(HOST, GiB);
+    const remedy = readBufferPoolExhaustionRemedy(
+      'Buffer manager exception: Unable to allocate memory! The buffer pool is full and no memory could be freed!',
+    );
+    expect(remedy).toContain('384 MiB');
+    expect(remedy).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+    expect(remedy).toContain(QUERY_MAX_RSS_ENV);
+    expect(readBufferPoolExhaustionRemedy('Could not set lock on file')).toBeUndefined();
   });
 });

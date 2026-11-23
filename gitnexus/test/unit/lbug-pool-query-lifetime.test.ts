@@ -21,7 +21,8 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   loadFTSExtension: async () => false,
   loadVectorExtension: async () => false,
 }));
-vi.mock('../../src/core/lbug/query-memory-guard.js', () => ({
+vi.mock('../../src/core/lbug/query-memory-guard.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/lbug/query-memory-guard.js')>()),
   queryMemoryGuard: { begin, end },
 }));
 
@@ -89,6 +90,18 @@ describe('pooled query native lifetime', () => {
     await expect(executeParameterized('query-lifetime', 'RETURN 1', {})).resolves.toEqual([
       { n: 1 },
     ]);
+  });
+
+  it('names the pool override when a pooled read exhausts the buffer pool', async () => {
+    const native = new Error(
+      'Buffer manager exception: Unable to allocate memory! The buffer pool is full and no memory could be freed!',
+    );
+    execute.mockRejectedValueOnce(native);
+    const error = await executeParameterized('query-lifetime', 'RETURN 1', {}).catch((e) => e);
+    expect(error.message).toContain('The buffer pool is full');
+    expect(error.message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+    expect(error.cause).toBe(native);
+    expect(end).toHaveBeenCalledTimes(1);
   });
 
   it('does not reuse timed-out connections while their native operations still run', async () => {
