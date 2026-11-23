@@ -2104,12 +2104,10 @@ export interface ScopeResolver {
    * from another package. Bare lookup remains available when this hook returns
    * no qualified spelling.
    *
-   * An import-relative qualifier must name a FILE-level import: it is looked up from the module
-   * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
-   * scope holds the binding, and the binding may carry the qualifier's own name
-   * — `vault *vault.Vault` as a field, parameter or local — which would shadow
-   * the import there. A language whose imports can be block-scoped needs a
-   * different anchor and must not return a spelling this rule would misread.
+   * A string names a file-level import and lookup starts at the enclosing module.
+   * This lets a parameter such as `vault *vault.Vault` share the import's name.
+   * A provider that binds imports lexically can return the scope that owns the
+   * visible namespace along with its spelling.
    *
    * The binding itself is deliberately NOT rewritten to keep the qualifier:
    * `rawName` has many readers, and the compound resolver reads a dotted one as
@@ -2123,7 +2121,7 @@ export interface ScopeResolver {
   readonly qualifiedTypeLookupSpelling?: (
     typeRef: TypeRef,
     scopes?: ScopeResolutionIndexes,
-  ) => string | null | undefined;
+  ) => string | { readonly spelling: string; readonly scope: ScopeId } | null | undefined;
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast

@@ -48,6 +48,16 @@ export default wrap(function callback() {});
       export namespace Models { export class Entity { save() {} } }
       export function local(v: Models.Entity) { v.save(); }
       export function outer(v: pack.Entity) { v.save(); }`,
+    'loaders.ts': `import * as mod from './left.js';
+      export async function useLocal() {
+        const mod = await import('./right.js');
+        const entity = new mod.Entity();
+        entity.save();
+      }
+      export function useOuter() {
+        const entity = new mod.Entity();
+        entity.save();
+      }`,
     'mixed-owners.ts': "export type * from './right.js'; export * from './left.js';",
     'first.ts': "export { publish } from './left.js';",
     'second.ts': "export * from './right.js';",
@@ -250,6 +260,19 @@ export function privateNamespace() {
       .map(({ rel }) => rel.targetId)
       .sort();
     expect(actual).toEqual(expected);
+  });
+
+  it.each([
+    ['useLocal', 'right.ts'],
+    ['useOuter', 'left.ts'],
+  ])('resolves the instance method through the namespace visible to %s', (caller, targetFile) => {
+    const methods = getRelationships(result(), 'CALLS')
+      .filter(
+        ({ rel }) =>
+          rel.sourceId === `Function:loaders.ts:${caller}` && rel.targetId.startsWith('Method:'),
+      )
+      .map(({ rel }) => rel.targetId);
+    expect(methods).toEqual([`Method:${targetFile}:Entity.save#0`]);
   });
 
   it('refuses the outer import for a shadowed qualified parameter', () => {

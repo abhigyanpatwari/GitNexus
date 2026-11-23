@@ -23,7 +23,7 @@ import type {
   TypeRef,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
-import { lookupNameClaim, moduleScopeIdOf } from '../../scope-resolution/scope/walkers.js';
+import { lookupNameClaim } from '../../scope-resolution/scope/walkers.js';
 import { canonicalModuleExportName, canonicalTypeScriptName } from './identifiers.js';
 
 /** Shared empty result for the non-type-only path — see `typeOnly` below. */
@@ -292,7 +292,7 @@ const QUALIFIED_NAME =
 export function tsQualifiedTypeLookupSpelling(
   typeRef: TypeRef,
   scopes?: ScopeResolutionIndexes,
-): string | null | undefined {
+): { spelling: string; scope: ScopeId } | null | undefined {
   const written = typeRef.declaredSpelling;
   if (!written?.includes('.') || typeRef.rawName.includes('.') || scopes === undefined) {
     return undefined;
@@ -306,12 +306,13 @@ export function tsQualifiedTypeLookupSpelling(
   if (!QUALIFIED_NAME.test(spelling) || !spelling.endsWith(`.${typeRef.rawName.trim()}`)) {
     return undefined;
   }
-  const module = moduleScopeIdOf(typeRef.declaredAtScope, scopes);
-  if (module === null) return null;
   const root = spelling.slice(0, spelling.indexOf('.'));
-  const claim = lookupNameClaim(typeRef.declaredAtScope, root, scopes, { purpose: 'type' });
-  return claim.scope?.id === module && claim.imports.some((edge) => edge.kind === 'namespace')
-    ? spelling
+  const claim = lookupNameClaim(typeRef.declaredAtScope, root, scopes, {
+    position: typeRef.lookupPosition,
+    purpose: typeRef.lookupPurpose ?? 'type',
+  });
+  return claim.scope && claim.imports.some((edge) => edge.kind === 'namespace')
+    ? { spelling, scope: claim.scope.id }
     : null;
 }
 

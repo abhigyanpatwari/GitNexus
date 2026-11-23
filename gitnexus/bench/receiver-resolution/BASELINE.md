@@ -1550,3 +1550,13 @@ The validated #3667 head `fb6316b90` is merged normally. Outside the three recei
 The R audit fixes add R fixtures whose untyped receivers end as `receiver-unresolved` drops: a constructor that types a name only when every binding of it agrees, typed private members, dotted class names and `with()` limits. The count arm moves from 141 to 161 call drops and from 175 to 195 across all kinds; reads (34) and writes (0) are unchanged. All 21 added drops are `.R` files (`callDropsByExtension..R` goes from absent to 21), and no other extension moves from the R change (the net is 20 because the merged Dart awaited-call fix, #3876, removed one `.dart` drop: no-chain and unknown each lose one). By shape: chain-field 57 to 64, no-chain 39 to 41, chain-call 31 to 34 and unclassified 13 to 21. By origin: in-program 53 to 60, unknown 64 to 69 and unclassified 2 to 10; external stays 22. The bench counts only `suppressed` outcomes with the reason `receiver-unresolved`, so the movement is that reason alone. No R arm is added to the shape corpora; only the count-arm numbers change. The baseline was refreshed with `--update-baseline` and `--check` passes.
 
 After merging upstream `40c69665e`, the combined fixture tree records 174 unresolved receiver calls and 34 unresolved reads. R accounts for 21 calls. The additional 13 calls come from upstream Java fixtures.
+
+### TypeScript Express fixture calls
+
+The `express-forwarded-registrations` fixture imports Express from outside the corpus.
+The resolver now records an unresolved receiver for `app.get` in `registerWebUI`
+and `mountSSEProgress`. Both calls were absent from the base graph and still have
+no in-repository target. The fixture's three existing call edges are preserved.
+This increases the all-language count from 174 to 176 unresolved calls, with
+34 unresolved reads. The dynamic-import fixture still links `feature.activate()`
+to its imported `Feature.activate` method.
