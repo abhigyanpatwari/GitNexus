@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -185,3 +185,80 @@ it.each(['execArgv', 'NODE_OPTIONS'] as const)(
   },
   25000,
 );
+
+it('quarantines a file that drives a worker past its enforced heap cap and keeps dispatching', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-worker-oom-'));
+  const worker = path.join(directory, 'oom-worker.cjs');
+  // big.ts allocates up to 1 GiB: past the 512 MiB cap, but well below the
+  // main's 3000 MiB limit that an uncapped worker would inherit.
+  fs.writeFileSync(
+    worker,
+    `
+    const { parentPort } = require('node:worker_threads');
+    let parsed = [];
+    parentPort.on('message', message => {
+      if (message.type === 'sub-batch') {
+        for (const file of message.files) {
+          parentPort.postMessage({ type: 'starting-file', path: file.path });
+          if (file.path === 'big.ts') {
+            const retained = [];
+            for (let mb = 0; mb < 1024; mb++) retained.push(new Array(131072).fill(mb));
+          }
+          parsed.push(file.path);
+        }
+        parentPort.postMessage({ type: 'progress', filesProcessed: message.files.length });
+        parentPort.postMessage({ type: 'sub-batch-done' });
+      }
+      if (message.type === 'flush') {
+        parentPort.postMessage({ type: 'result', data: { parsed } });
+        parsed = [];
+      }
+    });
+    parentPort.postMessage({ type: 'ready' });
+  `,
+  );
+  const factory = pathToFileURL(path.resolve('dist/core/ingestion/workers/worker-pool.js')).href;
+  const runner = `
+    import { createWorkerPool } from ${JSON.stringify(factory)};
+    const pool = createWorkerPool(new URL(${JSON.stringify(pathToFileURL(worker).href)}), 1, { heapLimitMb: 512 });
+    try {
+      const results = await pool.dispatch(['small.ts', 'big.ts', 'other.ts'].map((p) => ({ path: p, content: 'export const a = 1' })));
+      const stats = pool.getStats();
+      console.log('RESULT ' + JSON.stringify({
+        parsed: results.flatMap((result) => result.parsed).sort(),
+        quarantined: pool.getQuarantinedPaths(),
+        statsQuarantined: stats.quarantined,
+        slotGenerations: stats.slotGenerations,
+      }));
+    } finally {
+      await pool.terminate();
+    }
+  `;
+  const env = { ...process.env };
+  delete env.NODE_OPTIONS;
+  try {
+    const run = spawnSync(
+      process.execPath,
+      ['--max-old-space-size=3000', '--input-type=module', '--eval', runner],
+      { env, encoding: 'utf8', timeout: 60000 },
+    );
+    const output = `${run.stdout}\n${run.stderr}`;
+    expect(run.status, output).toBe(0);
+    const line = run.stdout.split('\n').find((l) => l.startsWith('RESULT ')) ?? '';
+    expect(line, output).not.toBe('');
+    const result = JSON.parse(line.slice('RESULT '.length)) as {
+      parsed: string[];
+      quarantined: string[];
+      statsQuarantined: number;
+      slotGenerations: number[];
+    };
+    expect(output).toContain('worker hit its 512MB heap cap');
+    expect(result.quarantined).toEqual(['big.ts']);
+    expect(result.statsQuarantined).toBe(1);
+    expect(result.slotGenerations[0]).toBeGreaterThanOrEqual(1);
+    // The files around the oversized one still reach the graph.
+    expect(result.parsed).toEqual(['other.ts', 'small.ts']);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+}, 90000);
