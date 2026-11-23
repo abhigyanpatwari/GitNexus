@@ -285,10 +285,16 @@ Set `GITNEXUS_QUERY_MAX_RSS_MB=<MiB>` to change the limit; `0` disables it. The
 default is max(8 GiB, 25% of available RAM), capped at 75% of available RAM,
 including a reported container/runtime constraint.
 
-The default database buffer pool is sized under this budget, leaving headroom
-for the rest of the process (a 1 GiB container gets a 384 MiB pool). The pool
-is per database, and each open database also holds fixed native memory outside
-the pool, so a small container should serve one repository per process.
+The default buffer pool of each read-only database is sized under this budget,
+leaving headroom for the rest of the process (a 1 GiB container gets a 384 MiB
+pool). The pool is per database, and each open database also holds fixed native
+memory outside the pool, so a small container should serve one repository per
+process: for MCP, set [`GITNEXUS_MCP_ALLOWED_REPOS`](docs/mcp-reference.md) to
+one repository; `gitnexus serve` has no such setting and keeps up to 5 graph
+databases open.
+The pool also bounds the memory one read can use: a read that fails with
+"buffer pool is full" needs `GITNEXUS_LBUG_BUFFER_POOL_SIZE` raised, together
+with `GITNEXUS_QUERY_MAX_RSS_MB`.
 
 RSS is checked at query start/end and every 200 ms while reads run. On macOS,
 queries lasting at least one second also sample physical footprint at most
