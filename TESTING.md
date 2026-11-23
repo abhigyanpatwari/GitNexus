@@ -85,6 +85,8 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 
 ## Scope-resolution tests
 
+Run `npm run test:conformance:java` from a built `gitnexus/` checkout with JDK 21 to compare Java overload selections with javac. Other compilers and analyzers can use the same standalone comparison command by emitting JSON reports. See the [call-resolution conformance guide](gitnexus/tools/compiler-conformance/README.md).
+
 Every language resolves calls and inheritance through the scope-resolution pipeline — the legacy call-resolution DAG and the per-language `REGISTRY_PRIMARY_<LANG>` flag were removed in RING4-1 (#942). Each language's resolver test lives at `test/integration/resolvers/<slug>.test.ts` and runs once, on the single scope-resolution path, as part of the normal `tests` job (`vitest test/**/*.test.ts`).
 
 Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/registry.ts` (`SCOPE_RESOLVERS`) and add the resolver test file — no workflow or config edit needed.

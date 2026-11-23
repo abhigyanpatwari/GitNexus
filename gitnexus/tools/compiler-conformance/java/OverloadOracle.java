@@ -8,13 +8,15 @@ import javax.tools.*;
 
 /** Attribute each fixture in its own javac task, all in the same JVM. */
 class OverloadOracle extends TreePathScanner<Void, MethodTree> {
+    private final int fixtureIndex;
     private final Path root;
     private final Set<String> families;
     private final Trees trees;
     private final List<Diagnostic<? extends JavaFileObject>> ambiguities;
 
-    private OverloadOracle(Path root, Set<String> families, Trees trees,
+    private OverloadOracle(int fixtureIndex, Path root, Set<String> families, Trees trees,
                            List<Diagnostic<? extends JavaFileObject>> ambiguities) {
+        this.fixtureIndex = fixtureIndex;
         this.root = root;
         this.families = families;
         this.trees = trees;
@@ -43,7 +45,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                     }
                     ambiguities.add(error);
                 }
-                var oracle = new OverloadOracle(root, Set.of(args[i + 1].split(",")),
+                var oracle = new OverloadOracle(i / 2, root, Set.of(args[i + 1].split(",")),
                         Trees.instance(task), ambiguities);
                 for (var unit : units) oracle.scan(unit, null);
                 if (!ambiguities.isEmpty()) throw new IllegalStateException("Unmatched " + ambiguities);
@@ -63,7 +65,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
 
     private String declaration(CompilationUnitTree unit, MethodTree method) {
         var start = trees.getSourcePositions().getStartPosition(unit, method);
-        return "def:" + file(unit) + "#" + position(unit, start) + ":Method:" + method.getName();
+        return file(unit) + "#" + position(unit, start);
     }
 
     @Override public Void visitMethod(MethodTree method, MethodTree enclosing) {
@@ -79,6 +81,10 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
             var positions = trees.getSourcePositions();
             var start = positions.getStartPosition(unit, call);
             var end = positions.getEndPosition(unit, call);
+            if (caller == null) {
+                throw new IllegalStateException(file(unit) + ":" + position(unit, start)
+                        + " has no enclosing source method or constructor for " + name);
+            }
             // On ambiguity, getElement can still return javac's recovery choice.
             var ambiguous = ambiguities.removeIf(d -> d.getSource().equals(unit.getSourceFile())
                     && d.getStartPosition() == positions.getStartPosition(unit, select)
@@ -94,9 +100,9 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                 target = declaration(path.getCompilationUnit(), method);
                 signature = element.getEnclosingElement() + "." + element;
             }
-            System.out.println(String.join("\t", root.getFileName().toString(), file(unit),
-                    position(unit, start), position(unit, end), name, declaration(unit, caller),
-                    target, signature));
+            System.out.print(String.join("\0", Integer.toString(fixtureIndex), file(unit),
+                    position(unit, start), position(unit, end), declaration(unit, caller),
+                    target, signature) + "\0");
         }
         return super.visitMethodInvocation(call, caller);
     }
