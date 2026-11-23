@@ -785,12 +785,17 @@ jobs:
           path: .vitest/timings
           key: test-timings-v1-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
 
-  # Branch protection still requires these six names from the three-shard
-  # matrix. Keep them as aggregate gates as the real matrix grows: every native
-  # shard, the complete execution audit, and the scope measurements must pass.
-  # These jobs only verify dependency results; tests run in cross-platform above.
+  # Branch protection requires these six aggregate checks (as required status
+  # checks on main). Their job names are deliberately distinct from the native
+  # shards above: these are audit mirrors that only verify dependency results
+  # (every native shard, the complete execution audit, and the scope
+  # measurements must pass) — no tests run here. Naming them like native
+  # shards made ~96% of "platform red" readings mirror-amplified failures
+  # (see ci-flaky diagnosis 2026-11-23), so the audit gate carries its own
+  # namespace. When renaming, update branch protection required checks in the
+  # same change.
   protected-platform-checks:
-    name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.check }}/3
+    name: "platform-evidence audit: ${{ matrix.os }} ${{ matrix.check }}/3"
     needs: [cross-platform, test-completeness, scope-resolution-benchmark]
     if: always()
     permissions: {}

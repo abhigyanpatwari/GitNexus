@@ -344,7 +344,7 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
         for check in matrix["check"]
     }
     assert names == {
-        f"tests / {platform} (platform-sensitive) {check}/3"
+        f"tests / platform-evidence audit: {platform} {check}/3"
         for platform in ("windows-latest", "macos-latest")
         for check in (1, 2, 3)
     }
