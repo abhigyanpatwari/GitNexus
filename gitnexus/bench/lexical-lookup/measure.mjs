@@ -46,18 +46,15 @@ const head = (repo) =>
   execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
 assert.equal(head(baseline), head(candidate));
 const corpusRevision = head(baseline);
-const corpusTrees = execFileSync(
-  'git',
-  [
-    'rev-parse',
-    corpusRevision + ':gitnexus/src/core/ingestion',
-    corpusRevision + ':gitnexus-shared/src/scope-resolution',
-  ],
-  { cwd: baseline, encoding: 'utf8' },
-)
-  .trim()
-  .split('\n')
-  .join(':');
+const corpusRoots = ['gitnexus/src/core/ingestion', 'gitnexus-shared/src/scope-resolution'];
+const treeIds = corpusRoots.map((root) =>
+  execFileSync('git', ['ls-tree', '-d', '--format=%(objectname)', corpusRevision, '--', root], {
+    cwd: baseline,
+    encoding: 'utf8',
+  }).trim(),
+);
+// Other corpora still run under the ordinary graph comparison rules.
+const corpusTrees = treeIds.every(Boolean) ? treeIds.join(':') : null;
 for (const repo of isWorker ? [] : [baseline, candidate]) {
   assert.equal(
     execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }),
