@@ -1,0 +1,175 @@
+.claude/skills/gitnexus-cli/SKILL.md
+  s_3661dd8603713a::t_9de28c58461c08 24-25,30,34-37,65,69-71,75-77,96
+GUARDRAILS.md
+  s_b9690234122db7::t_5f2df7c42ca911 55-60,76-77
+RUNBOOK.md
+  s_3661dd8603713a::t_4b9cb1d7f18208 49-59
+gitnexus-claude-plugin/skills/gitnexus-cli/SKILL.md
+  s_3661dd8603713a::t_3db4836cd2146e 22-26,30,32-36,54-57,65,67-74,76-79,96
+gitnexus-shared/src/scope-resolution/finalize-algorithm.ts
+  s_b9690234122db7::t_ddcb1991b210b5 376-377,397-403,414-415,433-499,595-597,599,631-643,657,660-667,671-676,679-684,698-700,702,708,713,729,743,753-841,861,868-871,876,883,895,914,920,923,932-960,1021-1049,1051-1059,1061-1062,1065-1066,1140-1168
+gitnexus-shared/src/scope-resolution/symbol-definition.ts
+  s_3661dd8603713a::t_e82c21b6d7f11c 110-113
+gitnexus-shared/src/scope-resolution/types.ts
+  s_3661dd8603713a::t_232eb309b53e68 122-125,127-211,219-252,269-276,279-280,300-305,327-339,351-357,362-370,387-389,411-414,430-433,529-559
+gitnexus/bench/scope-capture/baselines.json
+  s_b9690234122db7::t_d9c038f881e328 4,9,11-13,16-17,21,25,33-34,40-41,49,51,53,67-68,75,77-78,82-83,85,87-88,100-102,110,112-113,122-123,127,129,138,140-142,145,153-159,162,164-165,167-169,172,174,178-179,182-186,189-194,206-209,212,214-215,220,224-231
+gitnexus/skills/gitnexus-cli.md
+  s_3661dd8603713a::t_4c5c060c596f27 24-25,30,34-37,65,69-71,75-77,96
+gitnexus/src/cli/analyze.ts
+  s_3661dd8603713a::t_20ada9ccb86e90 53,366,399,405-420,563-572,614-620,671-672,695-702,773-785,1377,1442-1444,1536
+gitnexus/src/cli/status.ts
+  s_cf5f3d411d3365::t_9b2d5a9f3a340d 21,24-83,149,152-178,197,224-234
+gitnexus/src/cli/wiki.ts
+  s_3661dd8603713a::t_0dfa647649753d 21-22,28,69,74-75,79,84,224-231,237-247,264,292-295,302,309,312,320-322,355-362,451,454,465-469,477-479,481-485,488-492,512-520
+gitnexus/src/config/ignore-service.ts
+  s_3661dd8603713a::t_ec05f73ecd1001 2,6,37-39,44,62-74,81-88,115-116,134-141,326-329,369,382-395,405-406,448-451,456-458,465-497,586-589
+gitnexus/src/core/auto-sync/analysis-worker-launch.ts
+  s_cf5f3d411d3365::t_fcec8e2e047e55 1-210
+gitnexus/src/core/index-freshness.ts
+  s_cf5f3d411d3365::t_7f70018f532822 3,10-11,30-55,66-74,90,99-103,107-113,119,121,123-130,136-143,155-161
+gitnexus/src/core/ingestion/languages/python.ts
+  s_cf5f3d411d3365::t_e0ad4d1162e1f5 47-48,147,164-176
+gitnexus/src/core/ingestion/languages/typescript/query.ts
+  s_3661dd8603713a::t_e77d568fb2c040 178-179,186-187,190-191
+gitnexus/src/core/ingestion/pipeline-phases/parse.ts
+  s_cf5f3d411d3365::t_9c98085258f022 34,75-76,86-105
+gitnexus/src/core/ingestion/pipeline-phases/runner.ts
+  s_cf5f3d411d3365::t_e76db01d626c47 19-21,23,26,28-43,48,59-61,160-162,168,170-173,176-183,203
+gitnexus/src/core/ingestion/scope-extractor.ts
+  s_3661dd8603713a::t_fbfae64799efb9 37-54,83,101-105,111-112,114,129,207-214,709,727,966-1024,1027-1028,1031,1034-1041,1047-1055,1263-1268,1320,1337-1390,1778,1782-1785,1790-1793
+gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts
+  s_3661dd8603713a::t_fce337f63966f7 790
+gitnexus/src/core/ingestion/scope-resolution/passes/receiver-bound-calls.ts
+  s_3661dd8603713a::t_1e24222f90dac6 71,90-100,137,312-319,348-372,375,377-387,411-416,479-506,528-538,547-555,559-566,569-611,613-614,618-687,691-699,709-712,714-715,943,952,954,1057-1060,1068,1539-1542,1549-1550,1558-1559,1660,1668,1942-1947,1955,2227-2228,2236
+gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts
+  s_178fe5f2bc5b0d::t_24a32d0cea00d0 93,96,98-101,156-165,171,225-230,255-256,273,303-306,467-468,517-524,551,569,593,598-601,606,654,668,692,706,738-753,756,763-769,789-797,991-992,1037-1040,1241-1242,1660,1681
+gitnexus/src/core/ingestion/scope-resolution/scope/walkers.ts
+  s_178fe5f2bc5b0d::t_54a5b215b1bebd 26,34,44,506-543,552-555,592-594,630
+gitnexus/src/core/ingestion/workers/result-merge.ts
+  s_b9690234122db7::t_d78f2c196742aa 61-63,68
+gitnexus/src/core/lbug/graph-emit-sink.ts
+  s_cf5f3d411d3365::t_6fcd14152489a9 107,128,133-134,154,173-188,470,482-484,512
+gitnexus/src/core/lbug/pool-adapter.ts
+  s_cf5f3d411d3365::t_ab37367ac06b3e 22,138-141,375,915-1051,1137-1138,1152-1159,1164-1180,1183
+gitnexus/src/core/run-analyze.ts
+  s_3661dd8603713a::t_b403c7488849fd 12-13,16,25-26,39-41,51,67,72,74,142-145,148-154,172,175-176,191-194,199,467-471,481-503,555-562,589-695,1246,1256-1263,1265,1314-1320,1525-1549,1580-1593,1662-1710,1763-1792,1955-1973,2016-2018,2078-2099,2129-2132,2134-2137,2155-2158,2191-2192,2194-2199,2235-2241,2264-2269,2294,2310,2421-2427,2457-2487,2636-2643,2828,2854-2901,2916-2918,2926-2931,2950-2961,2991-2993,3006-3008,3068,3181,3209-3210,3262-3290,3296-3322,3324-3343,3353-3354,3356-3386,3789-3799,3815-3818,3834-3838,3890-3906,3908,3919-3928,4068-4070,4072-4073,4082,4129,4164-4169,4208-4212
+gitnexus/src/core/search/fts-indexes.ts
+  s_b9690234122db7::t_c3feb0049b673a 161-166,228-231,252,270-322,325,327,329,342-350,353,356-371,505-510,512-534
+gitnexus/src/core/wiki/generator.ts
+  s_3661dd8603713a::t_93f72977bea009 43,229-235
+gitnexus/src/mcp/resources.ts
+  s_cf5f3d411d3365::t_277209e95a517c 100-119,316-319,370,401-404,415-420
+gitnexus/src/mcp/server.ts
+  s_cf5f3d411d3365::t_4bc1cce76bc4ef 188-190,192-193,205-206
+gitnexus/src/server/analyze-launch.ts
+  s_cf5f3d411d3365::t_87ed13777772e1 49,198-203,208-269,338
+gitnexus/src/server/analyze-worker-core.ts
+  s_cf5f3d411d3365::t_841194f81d2f99 16-20
+gitnexus/src/server/analyze-worker-protocol.ts
+  s_cf5f3d411d3365::t_d728fe06f36877 1-73
+gitnexus/src/server/analyze-worker.ts
+  s_cf5f3d411d3365::t_41359532b27d11 9,15,20-27,66-73,75,77-83,92,96,98-106,126-128,152-157
+gitnexus/src/server/api.ts
+  s_cf5f3d411d3365::t_5377202829b65c 42,57-59,61,348-368,379-385,433,438-440,465-487,528-540,826-828,1408-1411,1422,1425-1426,1429-1438,1523,1536-1542,1601,1626-1631
+gitnexus/src/storage/git.ts
+  s_cf5f3d411d3365::t_4a8b3b590548dd 6-7,12,16-26,32,46-123,273-294,306-309,337-339,736-740,744-745,756-769,785-789,796-898
+gitnexus/src/storage/index-lock.ts
+  s_cf5f3d411d3365::t_3cbbbc1366c875 108-126,339-346
+gitnexus/src/storage/parse-cache.ts
+  s_b9690234122db7::t_6d8ce824aebe11 9-14,32,34,394-421,423-723,749-800,959,990-995,1038-1048,1151,1154-1155,1160
+gitnexus/src/storage/v8-sidecar.ts
+  s_b9690234122db7::t_c1874247b377b5 1-363
+gitnexus/test/integration/cfg/parse-cache-mixed.test.ts
+  s_b9690234122db7::t_8e26f39bbc55e4 8,15-17,20,71,79-81,108-110
+gitnexus/test/integration/cli-e2e.test.ts
+  s_cf5f3d411d3365::t_77224db7c5a364 1051-1247,1350,1428-1435
+gitnexus/test/integration/parse-impl-quarantine-cache-skip.test.ts
+  s_b9690234122db7::t_354fdd330163bf 76-80,187-221,258,326-328,331-333,339,399-401
+gitnexus/test/integration/spring-destinations-incremental.test.ts
+  s_b9690234122db7::t_085b9ac19e045b 1-202
+gitnexus/test/integration/spring-destinations-lbug.test.ts
+  s_b9690234122db7::t_bf874312663248 1-239
+gitnexus/test/unit/analyze-heap-respawn.test.ts
+  s_3661dd8603713a::t_ecebcc2dddbd0a 223-231
+gitnexus/test/unit/analyze-launch-collapse.test.ts
+  s_cf5f3d411d3365::t_167f68e0902278 1-237
+gitnexus/test/unit/analyze-worker-pool-size.test.ts
+  s_cf5f3d411d3365::t_1dcf8fed301f23 92-109
+gitnexus/test/unit/auto-sync-analysis-worker.test.ts
+  s_cf5f3d411d3365::t_6e7aceb0326bcb 1-232
+gitnexus/test/unit/fts-indexes.test.ts
+  s_b9690234122db7::t_651892d71e9392 36,45-47,50-55,69-78,107-131,144,151-183,194-233
+gitnexus/test/unit/git-utils.test.ts
+  s_cf5f3d411d3365::t_ca834512fc9b5e 192-200,202,258-331,931-1137
+gitnexus/test/unit/ignore-service.test.ts
+  s_3661dd8603713a::t_c4cfcbdb3e9ee5 207-208,229-234,247-253,264,272-273,327-385
+gitnexus/test/unit/incremental-fts-drop-ordering.test.ts
+  s_b9690234122db7::t_6aade37805012c 8-9,70,131-148
+gitnexus/test/unit/index-freshness-graph-collapse.test.ts
+  s_cf5f3d411d3365::t_dd2c865a3a9f0a 27-31,35-39,43,46-78,87-90,96-98,104-110,116-120,122-123,133,137-141,147-150,157-159,164,173-200,211-214,220-223,228-234,241,247-276
+gitnexus/test/unit/lbug/graph-emit-sink.test.ts
+  s_cf5f3d411d3365::t_387adc1e89d247 427-477
+gitnexus/test/unit/local-backend-embedding-dims-warn.test.ts
+  s_cf5f3d411d3365::t_84bf1180823ec7 18,28,126,231
+gitnexus/test/unit/method-props.test.ts
+  s_cf5f3d411d3365::t_783d45c1bc2d74 33
+gitnexus/test/unit/parse-impl-warm-cache-parsedfile-coverage.test.ts
+  s_b9690234122db7::t_02a07ee693c105 15-17,20,25-27,40-42,51-58,71,74,107,115-117,121-124,139,141-144,146,157,160,175,183-184,191-192,199-220,226,242,252-253,255-259,262-267,269-272,301-302,338,340,372,380,386-418,432,434-440,461-477,500-526,553
+gitnexus/test/unit/pipeline-runner.test.ts
+  s_cf5f3d411d3365::t_aace943c189d29 403-474
+gitnexus/test/unit/resources.test.ts
+  s_cf5f3d411d3365::t_a37e724482c770 399-402,545,566-586
+gitnexus/test/unit/run-analyze-fts-repair.test.ts
+  s_b9690234122db7::t_d8b96b6e5fae60 240,295,362-407,412,459,519,625,693,904,977,1136,1277,1558,1565-1566,1919,2166,2173-2174
+gitnexus/test/unit/scope-resolution/typescript/typescript-imports.test.ts
+  s_3661dd8603713a::t_9ef2044833fd35 96,103,226,281-416,479-480,542-547,554-556,558-570,573-574,586-591,601-602
+gitnexus/test/unit/status-content-drift.test.ts
+  s_cf5f3d411d3365::t_4388dce2c8a256 1-279
+gitnexus/test/unit/tools.test.ts
+  s_cf5f3d411d3365::t_e832a975ad809d 16-17,196-206,286-304,325-362,467-521
+gitnexus/test/unit/watch-paths.test.ts
+  s_cf5f3d411d3365::t_df834957036321 1-182
+package-lock.json
+  s_cf5f3d411d3365::t_d8ddfc10d0176f 333-335,414-416,946-948,955,1389-1391,1871-1873
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d2326712780e8e416fef56c8cd6ba35138b2196f",
+  "prompts": {},
+  "sessions": {
+    "s_178fe5f2bc5b0d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15bafdb9-7c6c-4d9c-8e9f-53fbc01c0876",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_cf5f3d411d3365": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a15aa0-da09-79e1-92df-c934d9299366",
+        "model": "gpt-6-astra"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
