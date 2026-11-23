@@ -1,0 +1,51 @@
+gitnexus/bench/typescript-ingestion/baseline.json
+  s_3661dd8603713a::t_480969d0aa67e3 1-65
+gitnexus/bench/typescript-ingestion/measure-index.mjs
+  s_3661dd8603713a::t_397e62ac62d1a9 1-133
+gitnexus/bench/typescript-ingestion/measure.mjs
+  s_178fe5f2bc5b0d::t_880c5c39c7a0f0 1-459
+gitnexus/bench/typescript-ingestion/module-fixtures.mjs
+  s_178fe5f2bc5b0d::t_c8d16881f7c93f 1-91
+gitnexus/bench/typescript-ingestion/README.md
+  s_676b35bc218cc9::t_24a98299d4a64c 1-94
+gitnexus/bench/typescript-ingestion/evaluation.json
+  s_676b35bc218cc9::t_24c23c17b5a082 1-300
+gitnexus/bench/typescript-property-dispatch/README.md
+  s_676b35bc218cc9::t_d881936d54041f 1-33
+gitnexus/bench/typescript-property-dispatch/baseline.json
+  s_676b35bc218cc9::t_3bc66c573c0b11 1-70
+gitnexus/bench/typescript-property-dispatch/measure.mjs
+  s_676b35bc218cc9::t_13e6ceee3921e2 1-175
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "42db4fd9ee0704c3fba2eb08e5d2842be6cc172d",
+  "prompts": {},
+  "sessions": {
+    "s_178fe5f2bc5b0d": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "15bafdb9-7c6c-4d9c-8e9f-53fbc01c0876",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
