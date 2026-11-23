@@ -52,6 +52,7 @@ import {
   type RenameSymbol,
   type OccurrenceEdit,
 } from './rename-plan.js';
+import { markFault } from '../../../core/fault-class.js';
 import { renameResolutionVersion, type RenameResolutionVersion } from './resolution-version.js';
 
 interface GraphRenamePlan extends RenamePlan {
@@ -387,16 +388,20 @@ export async function planGraphRename(
           });
     if (isIssue(replacementResult)) reject(replacementResult);
     for (const replacement of replacementResult as readonly RenameReplacement[]) {
+      // A provider that breaks its own span contract is the server's, whatever the code.
       if (
         replacement.start < 0 ||
         replacement.length <= 0 ||
         source.content.slice(replacement.start, replacement.start + replacement.length) !==
           replacement.oldText
       )
-        throw new RenameFailure(
-          'unsupported_occurrence',
-          `The provider returned an invalid source span in ${source.path}.`,
-          'unsupported',
+        throw markFault(
+          new RenameFailure(
+            'unsupported_occurrence',
+            `The provider returned an invalid source span in ${source.path}.`,
+            'unsupported',
+          ),
+          'server',
         );
       const edit: OccurrenceEdit = {
         file_path: source.path,
@@ -593,10 +598,13 @@ export async function planGraphRename(
       group.length &&
       group[group.length - 1]!.start + group[group.length - 1]!.length > edit.start
     ) {
-      throw new RenameFailure(
-        'unsupported_occurrence',
-        'Provider source rewrites overlap.',
-        'unsupported',
+      throw markFault(
+        new RenameFailure(
+          'unsupported_occurrence',
+          'Provider source rewrites overlap.',
+          'unsupported',
+        ),
+        'server',
       );
     }
     group.push(edit);

@@ -41,7 +41,13 @@ import {
   getLbugDbIdentity,
   pinRepo,
 } from '../../core/lbug/pool-adapter.js';
-import { clientError, markFault } from '../../core/fault-class.js';
+import {
+  clientError,
+  markFault,
+  markPathFault,
+  reportCaughtFault,
+  reportFault,
+} from '../../core/fault-class.js';
 import {
   parseQueryRepositories,
   mergeRepositoryQueries,
@@ -62,6 +68,8 @@ import {
 } from './query-result-integrity.js';
 import { queryConvexDispatchMetadata } from './convex-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
+import { missingCypherParameters } from './cypher-parameters.js';
+import { missingUnderLiveRoot } from './path-fault.js';
 import { toDisplayLine } from './line-display.js';
 import { shapeQueryProcessAttaches } from './query-process-attaches.js';
 import { LBUG_ID_PROBE_BATCH_SIZE, LBUG_QUERY_BATCH_SIZE } from '../../core/lbug/query-batch.js';
@@ -455,12 +463,39 @@ const TOOL_STRING_ALIASES: Readonly<Record<string, readonly StringAliasDefinitio
   trace: [{ canonical: 'from_file', aliases: ['file'] }],
 };
 
+/** Every tool name `callTool` dispatches, besides the `group_*` tools. */
+const DISPATCHED_TOOLS: ReadonlySet<string> = new Set([
+  'list_repos',
+  'query',
+  'cypher',
+  'context',
+  'explain',
+  'pdg_query',
+  'impact',
+  'detect_changes',
+  'check',
+  'rename',
+  'search',
+  'explore',
+  'overview',
+  'route_map',
+  'shape_check',
+  'tool_map',
+  'api_impact',
+  'trace',
+  'read_file',
+  'grep',
+  MCP_REFRESH_TOOL,
+]);
+
 function normalizeToolParams(
   method: string,
   params: unknown,
 ): { params: Record<string, unknown> } | { error: string } {
   const input = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
-  const definitions = TOOL_STRING_ALIASES[method];
+  const definitions = Object.hasOwn(TOOL_STRING_ALIASES, method)
+    ? TOOL_STRING_ALIASES[method]
+    : undefined;
   const normalized = { ...input };
   for (const { canonical, aliases } of definitions ?? []) {
     const keys = [canonical, ...aliases];
@@ -1450,6 +1485,34 @@ function detectChangesDiffArgs(selection: DetectChangesSelection): string[] {
 }
 
 /**
+ * Whether git says `ref` names no commit in `cwd` (`rev-parse --verify` exits 1).
+ * Exit 0, any other status, a signal or a missing git return false.
+ */
+function callerRefUnresolvable(
+  execFileSync: typeof import('child_process').execFileSync,
+  cwd: string,
+  ref: string | undefined,
+): boolean {
+  if (typeof ref !== 'string' || ref === '' || ref.startsWith('-')) return false;
+  try {
+    execFileSync(
+      'git',
+      ['rev-parse', '--verify', '--quiet', '--end-of-options', `${ref}^{commit}`],
+      {
+        cwd,
+        stdio: 'ignore',
+        timeout: 10_000,
+        windowsHide: true,
+      },
+    );
+    return false;
+  } catch (err) {
+    const { status, signal } = err as { status?: unknown; signal?: unknown };
+    return status === 1 && signal == null;
+  }
+}
+
+/**
  * Length of the path-derived suffix appended to a colliding repo id.
  * Exported so tests can pin the suffix shape without re-deriving the
  * literal; see `assignRepoId()` and the hashed-id resolution tier (#1658).
@@ -2385,6 +2448,10 @@ export class LocalBackend {
     branch?: string,
     options: { allowCwdDefault?: boolean; refreshRegistry?: boolean } = {},
   ): Promise<RepoHandle> {
+    // Untyped callers (a tool without a schema) can pass any JSON value here.
+    if (repoParam != null && typeof repoParam !== 'string') {
+      throw clientError('Parameter "repo" must be an indexed repository name or path.');
+    }
     const allowCwdDefault = options.allowCwdDefault === true;
     const mayRefresh = options.refreshRegistry !== false;
     let refreshed = false;
@@ -3219,6 +3286,11 @@ export class LocalBackend {
     if (Array.isArray(params?.repo) && method !== 'query' && method !== 'search') {
       return { error: 'Repository arrays are supported only by query (and legacy search).' };
     }
+    // Reject an unknown name before anything is looked up by it, so a name such
+    // as `constructor` cannot reach Object.prototype.
+    if (!method.startsWith('group_') && !DISPATCHED_TOOLS.has(method)) {
+      throw clientError(`Unknown tool: ${method}`);
+    }
     if (method === 'list_repos') {
       // Paginated tool surface (#2119). `listRepos()` is unchanged for internal
       // callers; the tool wraps it in { repositories, pagination } and forwards
@@ -3370,6 +3442,7 @@ export class LocalBackend {
       rcEmbeddings = await embeddingsFromGitnexusRc(repo.repoPath);
       if (maxFiles > 0) treeFiles = await countScanCandidates(repo.repoPath, maxFiles);
     } catch (err) {
+      reportCaughtFault(err);
       return { error: `Cannot refresh ${repo.name}: ${asSentence(err)}` };
     }
     const previous = await this.refreshSnapshot(repo);
@@ -3428,6 +3501,7 @@ export class LocalBackend {
         context.onProgress,
       );
     } catch (err) {
+      reportCaughtFault(err);
       const failure = err as {
         abandonedWorker?: boolean;
         workerExited?: Promise<void>;
@@ -3451,6 +3525,7 @@ export class LocalBackend {
     // Same verdict as `gitnexus analyze` and `serve`: most edges are missing,
     // so this is a failure, not a refresh.
     if (analysis.graphWriteCollapsed) {
+      reportFault('server');
       const { expected, persisted } = analysis.graphWriteCollapsed;
       return {
         error: `${repo.name} was indexed INCOMPLETELY: only ${persisted} of ${expected} expected relationships are readable, so queries will answer with missing edges. Run \`gitnexus analyze --force\` in the repository; if it recurs, check disk space and run \`gitnexus doctor\`.`,
@@ -3563,6 +3638,7 @@ export class LocalBackend {
     try {
       specifiers = parseQueryRepositories(params.repo);
     } catch (error) {
+      reportCaughtFault(error);
       return { error: (error as Error).message };
     }
     const rawQuery = resolveAliasString(params.search_query, params.query);
@@ -3601,6 +3677,7 @@ export class LocalBackend {
           )) as RepositoryQueryResult['result'];
           return { repo: repo.repoPath, name: repo.name, result };
         } catch (error) {
+          reportCaughtFault(error);
           return {
             repo: repo.repoPath,
             name: repo.name,
@@ -3663,6 +3740,7 @@ export class LocalBackend {
       if (!result.error) assertResponseIdentities(result);
       return result;
     } catch (err) {
+      reportCaughtFault(err);
       if (err instanceof SymbolIdentityError) {
         return { error: err.message, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
       }
@@ -4910,6 +4988,7 @@ export class LocalBackend {
     await this.ensureInitialized(repo);
 
     if (!isLbugReady(repo.lbugPath)) {
+      reportFault('server');
       return { error: 'LadybugDB not ready. Index may be corrupted.' };
     }
     if (request.params !== undefined && !isValidQueryParams(request.params)) {
@@ -4925,10 +5004,20 @@ export class LocalBackend {
       return { error: 'statement (or legacy query) parameter is required and cannot be empty.' };
     }
 
+    // Checked on the text before it runs, so the engine's uncategorized
+    // "Parameter x not found." can be told from an engine failure.
+    const missingParameter = missingCypherParameters(cypherText, request.params ?? {}).length > 0;
     try {
       const result = await executeParameterized(repo.lbugPath, cypherText, request.params ?? {});
       return result;
     } catch (err: any) {
+      // The statement is the caller's: an engine error from preparing or running
+      // it takes its engine exception category's class (a statement the engine
+      // rejects is the caller's, a storage or I/O failure the server's), an
+      // uncategorized one is the caller's only when the statement names a
+      // parameter the call did not pass, and pool and engine-open failures stay
+      // server faults.
+      reportCaughtFault(err, { clientQuery: true, missingParameter });
       const msg = err.message || 'Query failed';
       if (isReadOnlyDbError(err)) {
         return {
@@ -4937,6 +5026,7 @@ export class LocalBackend {
         };
       }
       if (isWalCorruptionError(err)) {
+        reportFault('server');
         return {
           error: msg,
           recoverySuggestion: WAL_RECOVERY_SUGGESTION,
@@ -5589,6 +5679,7 @@ export class LocalBackend {
       if (!result.error) assertResponseIdentities(result);
       return result;
     } catch (err: any) {
+      reportCaughtFault(err);
       const msg = (err instanceof Error ? err.message : String(err)) || 'Context query failed';
       if (err instanceof SymbolIdentityError) {
         return { error: msg, recoverySuggestion: SYMBOL_IDENTITY_RECOVERY_SUGGESTION };
@@ -6364,6 +6455,7 @@ export class LocalBackend {
     try {
       return await this._explainImpl(repo, params);
     } catch (err: any) {
+      reportCaughtFault(err);
       const msg = (err instanceof Error ? err.message : String(err)) || 'Explain query failed';
       if (isWalCorruptionError(err)) {
         return {
@@ -6675,6 +6767,7 @@ export class LocalBackend {
     try {
       return await this._pdgQueryImpl(repo, params);
     } catch (err: any) {
+      reportCaughtFault(err);
       const msg = (err instanceof Error ? err.message : String(err)) || 'pdg_query failed';
       if (isWalCorruptionError(err)) {
         return { error: msg, recoverySuggestion: WAL_RECOVERY_SUGGESTION };
@@ -7036,6 +7129,8 @@ export class LocalBackend {
         const providedResolved = path.resolve(params.worktree);
         const repoCanonical = getCanonicalRepoRoot(repo.repoPath);
         if (!repoCanonical) {
+          // The registered repository, not the caller's path: git or the checkout failed.
+          reportFault('server');
           return {
             error: `Could not determine canonical root for repo "${repo.repoPath}". Is git available?`,
           };
@@ -7062,6 +7157,16 @@ export class LocalBackend {
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err: any) {
+      // Only the caller's base_ref can make this the caller's fault. When git ran and
+      // failed a compare, ask git whether that ref names a commit: an unresolvable ref
+      // is the caller's; a resolvable one (a broken repository), a missing or killed
+      // git, or a failure outside a compare is the server's.
+      const rejectedCallerRef =
+        selection.scope === 'compare' &&
+        typeof err?.status === 'number' &&
+        err?.signal == null &&
+        callerRefUnresolvable(execFileSync, diffCwd!, selection.baseRef);
+      reportFault(rejectedCallerRef ? 'client' : 'server');
       return { error: `Git diff failed: ${err.message}` };
     }
 
@@ -7558,7 +7663,7 @@ export class LocalBackend {
       file_path: params.file_path,
     });
     if (lookupResult.status === 'ambiguous' || lookupResult.error) return lookupResult;
-    const unavailable = await this.fullSourceUnavailable(repo);
+    const unavailable = await this.unavailableSourceResult(repo);
     if (unavailable) return unavailable;
     // Read the indexed file and declaration inventory, without context()'s
     // ranked/truncated incoming edges. Current sources rebuild semantic scopes;
@@ -7613,6 +7718,7 @@ export class LocalBackend {
     try {
       return await this._traceImpl(repo, params);
     } catch (err: any) {
+      reportCaughtFault(err);
       return {
         status: 'error',
         error: (err instanceof Error ? err.message : String(err)) || 'Trace analysis failed',
@@ -7902,6 +8008,7 @@ export class LocalBackend {
       if (!result.error) assertResponseIdentities(result);
       return result;
     } catch (err: any) {
+      reportCaughtFault(err);
       // Return structured error instead of crashing (#321)
       const message =
         (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed';
@@ -10658,6 +10765,15 @@ export class LocalBackend {
     };
   }
 
+  /** fullSourceUnavailable for a tool that returns it as its result. */
+  private async unavailableSourceResult(
+    repo: RepoHandle,
+  ): Promise<Awaited<ReturnType<LocalBackend['fullSourceUnavailable']>>> {
+    const unavailable = await this.fullSourceUnavailable(repo);
+    if (unavailable?.reason === 'checkout-missing') reportFault('server');
+    return unavailable;
+  }
+
   /**
    * MCP read_file — repo-contained checkout read with an optional 0-indexed
    * line slice. The realpath re-check matches GET /api/file. The lexical
@@ -10673,7 +10789,7 @@ export class LocalBackend {
     if (typeof rawPath !== 'string' || rawPath === '') {
       return { error: 'Missing required argument "path" (repo-relative file path).' };
     }
-    const unavailable = await this.fullSourceUnavailable(repo);
+    const unavailable = await this.unavailableSourceResult(repo);
     if (unavailable) return unavailable;
     const toInteger = (v: unknown): number | undefined =>
       typeof v === 'number' && Number.isFinite(v) ? Math.trunc(v) : undefined;
@@ -10698,14 +10814,25 @@ export class LocalBackend {
     try {
       [realRoot, realFull] = await Promise.all([fs.realpath(repoRoot), fs.realpath(fullPath)]);
     } catch (err: any) {
-      if (err?.code === 'ENOENT') return { error: `File not found: ${rawPath}` };
-      throw err;
+      const callerPath = await missingUnderLiveRoot(err, repoRoot);
+      if (err?.code === 'ENOENT') {
+        reportFault(callerPath ? 'client' : 'server');
+        return { error: `File not found: ${rawPath}` };
+      }
+      if (err?.code === 'ENOTDIR' && !callerPath) throw err;
+      throw markPathFault(err);
     }
     const realRel = path.relative(realRoot, realFull);
     if (realRel === '..' || realRel.startsWith(`..${path.sep}`) || path.isAbsolute(realRel)) {
       return { error: 'Path traversal denied.' };
     }
-    const raw = await fs.readFile(realFull, 'utf-8');
+    let raw: string;
+    try {
+      raw = await fs.readFile(realFull, 'utf-8');
+    } catch (err) {
+      // A directory or other non-file path is the caller's; I/O and permissions are not.
+      throw markPathFault(err);
+    }
     const lines = raw.split('\n');
     if (startLine !== undefined) {
       if (endLine !== undefined && endLine < 0) {
@@ -10756,7 +10883,7 @@ export class LocalBackend {
       literal?: unknown;
     },
   ): Promise<any> {
-    const unavailable = await this.fullSourceUnavailable(repo);
+    const unavailable = await this.unavailableSourceResult(repo);
     if (unavailable) return unavailable;
     await this.ensureInitialized(repo);
     let parsed;
@@ -10769,6 +10896,8 @@ export class LocalBackend {
         literal: params?.literal,
       });
     } catch (err: any) {
+      // parseGrepQuery only validates the caller's arguments.
+      reportFault('client');
       return { error: err?.message || 'Invalid grep query.' };
     }
     const fileRows: Array<{ filePath?: string }> = await executeQuery(

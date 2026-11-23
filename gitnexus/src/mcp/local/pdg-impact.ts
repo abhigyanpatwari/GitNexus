@@ -9,6 +9,7 @@
 import path from 'path';
 import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { loadMeta } from '../../storage/repo-manager.js';
+import { reportFault } from '../../core/fault-class.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
 // Imported from the LEAF `callee-cell-format.js`, NOT from `cfg/emit.js` which
 // re-exports them: ESM evaluates a module to import any binding from it, and
@@ -1767,6 +1768,8 @@ export async function resolvePdgBlockAnchor(
     if (!/\bBinder exception: Cannot find property ownerId for owner\.\s*$/.test(message)) {
       throw error;
     }
+    // The index predates this query: the server must rebuild it.
+    reportFault('server');
     return {
       error: 'The PDG index schema predates executable ownership.',
       recoverySuggestion:
