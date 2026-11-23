@@ -1,0 +1,45 @@
+gitnexus/bench/typescript-ingestion/README.md
+  s_b9690234122db7::t_0fc0fb541cd402 81-82
+gitnexus/src/core/ingestion/languages/typescript/identifiers.ts
+  s_3661dd8603713a::t_dd690255cf09bc 1,4,6
+gitnexus/src/core/ingestion/route-extractors/data-route-table.ts
+  s_3661dd8603713a::t_8e17561a7a159a 12,48,55
+gitnexus/src/core/ingestion/ts-js-export-marker.ts
+  s_3661dd8603713a::t_1ac1c2c91273f0 37
+gitnexus/src/core/ingestion/utils/ecmascript-literals.ts
+  s_3661dd8603713a::t_6e279a86ea5b88 10,80-96
+gitnexus/test/integration/resolvers/typescript-module-ownership.test.ts
+  s_676b35bc218cc9::t_c5b07ad473eea0 126,174
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2c9c9f1529188bf25edeeb595c8122705002ab55",
+  "prompts": {},
+  "sessions": {
+    "s_3661dd8603713a": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1ac3232e-fd06-4341-a624-8ada83fdffeb",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_676b35bc218cc9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a1e117-30c5-7062-8c31-26ad7bea98a8",
+        "model": "unknown"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    },
+    "s_b9690234122db7": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d7e2464e-4bbc-45d0-83b7-0c8a1eb93ddc",
+        "model": "claude-fable-5-2"
+      },
+      "human_author": "Abhinav Pandey <abhinavpandey1230@gmail.com>"
+    }
+  }
+}
