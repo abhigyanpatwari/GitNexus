@@ -92,6 +92,23 @@ const setStreamIsTTY = (stream: NodeJS.WriteStream, value: boolean): (() => void
   };
 };
 
+// Admission on the mocked 16 GiB host (constrainedMemory 0) with the
+// supervisor's RSS pinned below its 192 MiB floor (pinSupervisorRss). The
+// family ceiling is 75% of RAM, and the main heap takes what the always-counted
+// embedding reservations leave, which exceed the one-worker parse reservation.
+const ADMITTED_TOTAL_MB = Math.floor(16384 * 0.75); // 12288
+const ADMITTED_MAIN_MB =
+  ADMITTED_TOTAL_MB -
+  (Math.ceil(ADMITTED_TOTAL_MB * 0.12) + // headroom 1475
+    192 + // supervisor floor
+    Math.floor(ADMITTED_TOTAL_MB * 0.15) + // graph pool 1843
+    Math.floor(ADMITTED_TOTAL_MB / 8) + // vector pool 1536
+    Math.floor(ADMITTED_TOTAL_MB / 32)); // embedding queues 384 -> 6858
+// The respawn gives that heap as old space plus three 128 MiB semi-spaces.
+const ADMITTED_OLD_SPACE_FLAG = `--max-old-space-size=${ADMITTED_MAIN_MB - 3 * 128}`;
+const pinSupervisorRss = () =>
+  vi.spyOn(process.memoryUsage, 'rss').mockReturnValue(100 * 1024 * 1024);
+
 describe('analyzeCommand heap respawn', () => {
   let initialNodeOptions: string | undefined;
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
@@ -99,9 +116,11 @@ describe('analyzeCommand heap respawn', () => {
   let restoreStdoutIsTTY: (() => void) | undefined;
   let restoreStderrIsTTY: (() => void) | undefined;
   let restoreConstrainedMemory: (() => void) | undefined;
+  let rssSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
+    rssSpy = pinSupervisorRss();
     delete process.env.GITNEXUS_MEMORY;
     vi.resetModules();
     spawnMock.mockReset();
@@ -125,6 +144,7 @@ describe('analyzeCommand heap respawn', () => {
     restoreStdoutIsTTY = undefined;
     restoreStderrIsTTY = undefined;
     restoreConstrainedMemory = undefined;
+    rssSpy.mockRestore();
     stdoutWriteSpy.mockRestore();
     stderrWriteSpy.mockRestore();
     if (initialNodeOptions === undefined) delete process.env.NODE_OPTIONS;
@@ -172,10 +192,10 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=3916');
+    expect(args).toContain(ADMITTED_OLD_SPACE_FLAG);
     expect(args).toContain('--max-semi-space-size=128');
-    expect(opts.env.NODE_OPTIONS).toContain('--max-old-space-size=3916');
-    expect(opts.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB).toBe('4300');
+    expect(opts.env.NODE_OPTIONS).toContain(ADMITTED_OLD_SPACE_FLAG);
+    expect(opts.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB).toBe(String(ADMITTED_MAIN_MB));
     expect(opts.env.NODE_OPTIONS).toContain('--max-semi-space-size=128');
     expect(opts.env.GITNEXUS_RESPAWN_PROGRESS_TTY).toBe('1');
   });
@@ -218,14 +238,16 @@ describe('analyzeCommand heap respawn', () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [, args, opts] = spawnMock.mock.calls[0];
-    expect(args).toContain('--max-old-space-size=3916');
+    expect(args).toContain(ADMITTED_OLD_SPACE_FLAG);
     // The auto flag is appended after the ambient value, so V8's
     // later-flag-wins semantics resolve to the admitted whole-heap cap.
-    expect(opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=3916')).toBeGreaterThan(
+    expect(opts.env.NODE_OPTIONS.indexOf(ADMITTED_OLD_SPACE_FLAG)).toBeGreaterThan(
       opts.env.NODE_OPTIONS.indexOf('--max-old-space-size=4096'),
     );
     const warn = cap.records().find((r) => r.msg.includes('pins the heap to 4096MB'));
-    expect(warn?.msg).toContain('Re-running analyze with the admitted 4300MB main heap');
+    expect(warn?.msg).toContain(
+      `Re-running analyze with the admitted ${ADMITTED_MAIN_MB}MB main heap`,
+    );
   });
 
   it('honors GITNEXUS_MEMORY=off: keeps the small ambient heap, silently (#2649)', async () => {
@@ -540,9 +562,11 @@ describe('ensureHeap --memory-budget (#3137)', () => {
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
   let stderrWriteSpy: ReturnType<typeof vi.spyOn>;
   let restoreConstrainedMemory: (() => void) | undefined;
+  let rssSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
+    rssSpy = pinSupervisorRss();
     initialSource = process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
     initialMemory = process.env.GITNEXUS_MEMORY;
     delete process.env.NODE_OPTIONS;
@@ -567,6 +591,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
   afterEach(() => {
     restoreConstrainedMemory?.();
     restoreConstrainedMemory = undefined;
+    rssSpy.mockRestore();
     stdoutWriteSpy.mockRestore();
     stderrWriteSpy.mockRestore();
     if (initialNodeOptions === undefined) delete process.env.NODE_OPTIONS;
@@ -795,7 +820,7 @@ describe('ensureHeap --memory-budget (#3137)', () => {
     expect({ args, source: opts.env.GITNEXUS_HEAP_LIMIT_SOURCE, records: cap.records() }).toEqual({
       args: [
         ...preserved,
-        '--max-old-space-size=3916',
+        ADMITTED_OLD_SPACE_FLAG,
         '--max-semi-space-size=128',
         '--stack-size=4096',
         ...process.argv.slice(1),
