@@ -40,6 +40,7 @@ interface Forwarding {
 
 const EMPTY_VIA: readonly string[] = Object.freeze([]);
 const EMPTY_EXPORTS: Exports = new Map();
+const compareCodeUnits = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
 function identity(exported: PublishedExport): string {
   return exported.namespaceTargetFile === undefined
@@ -179,11 +180,17 @@ export function buildExclusiveModuleExports(
   for (const [filePath, names] of states) {
     for (const [name, state] of names) {
       if ('candidates' in state && !explicit.get(filePath)?.has(name)) {
-        ambiguities.push({ filePath, name, candidateDefIds: [...state.candidates].sort() });
+        ambiguities.push({
+          filePath,
+          name,
+          candidateDefIds: [...state.candidates].sort(compareCodeUnits),
+        });
       }
     }
   }
-  ambiguities.sort((a, b) => a.filePath.localeCompare(b.filePath) || a.name.localeCompare(b.name));
+  ambiguities.sort(
+    (a, b) => compareCodeUnits(a.filePath, b.filePath) || compareCodeUnits(a.name, b.name),
+  );
 
   const values = new Map<string, Exports>();
   const valuesFor = (file: string): Exports => {

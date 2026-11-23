@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /** Measure a cold publication of GitNexus's own source with either built runtime. */
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -9,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
+import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
 import { fingerprintIds } from '../lib/identity-guard.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
@@ -24,12 +24,12 @@ assert.ok(
 );
 const root = path.resolve(values.root);
 const revParse = (cwd, ref) =>
-  execFileSync('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], {
+  runBenchmarkTool('git', ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], {
     cwd,
     encoding: 'utf8',
   }).trim();
 const sourceCommit = revParse(repository, values.ref);
-const archive = execFileSync(
+const archive = runBenchmarkTool(
   'git',
   [
     'archive',
@@ -46,7 +46,7 @@ const archive = execFileSync(
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-ts-index-bench-'));
 try {
   const source = fs.mkdirSync(path.join(temporary, 'source'), { recursive: true });
-  execFileSync('tar', ['-xf', '-', '-C', source], { input: archive });
+  runBenchmarkTool('tar', ['-xf', '-', '-C', source], { input: archive });
   process.env.GITNEXUS_HOME = path.join(temporary, 'home');
   process.env.GITNEXUS_STORAGE_PATH = path.join(temporary, 'index');
   const workerPoolSize = 2;

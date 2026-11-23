@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /** Measure property-dispatch expansion independently of TypeScript ingestion fixes. */
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { fingerprintIds } from '../lib/identity-guard.mjs';
+import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
+import { compareCodeUnits, fingerprintIds } from '../lib/identity-guard.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const { values } = parseArgs({
@@ -90,14 +90,21 @@ function inspect(graph, shape, cap) {
       for (const plugin of plugins) expectedSpeculative.push(`${source}->${plugin}`);
     }
   }
-  assert.deepEqual(exact.sort(), expectedExact.sort(), `${shape.name}: exact receiver targets`);
   assert.deepEqual(
-    speculative.sort(),
-    expectedSpeculative.sort(),
+    exact.sort(compareCodeUnits),
+    expectedExact.sort(compareCodeUnits),
+    `${shape.name}: exact receiver targets`,
+  );
+  assert.deepEqual(
+    speculative.sort(compareCodeUnits),
+    expectedSpeculative.sort(compareCodeUnits),
     `${shape.name}: speculative target sets`,
   );
-  assert.deepEqual(registrations.sort(), [...plugins, 'Function:hooks.ts:ready'].sort());
-  assert.deepEqual(control.sort(), [
+  assert.deepEqual(
+    registrations.sort(compareCodeUnits),
+    [...plugins, 'Function:hooks.ts:ready'].sort(compareCodeUnits),
+  );
+  assert.deepEqual(control.sort(compareCodeUnits), [
     'Function:hooks.ts:ready',
     'Property:hooks.ts:controls.onReady',
   ]);
@@ -160,7 +167,7 @@ try {
   console.log(
     'TS_PROPERTY_DISPATCH_RESULT ' +
       JSON.stringify({
-        revision: execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], {
+        revision: runBenchmarkTool('git', ['-C', root, 'rev-parse', 'HEAD'], {
           encoding: 'utf8',
         }).trim(),
         node: process.version,

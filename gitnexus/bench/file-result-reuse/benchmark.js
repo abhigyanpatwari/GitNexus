@@ -27,13 +27,14 @@
  * they are evidence, not portable wall-clock budgets. CI never rewrites them.
  */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
+import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
 
 const script = fileURLToPath(import.meta.url);
 const baselinePath = new URL('./baseline.json', import.meta.url);
@@ -630,7 +631,7 @@ export async function compareRuntimes(options) {
     if (!phase) {
       assert.equal(
         rows[0].runtimeHead,
-        execFileSync('git', ['-C', path.dirname(runtimes[variant]), 'rev-parse', 'HEAD'], {
+        runBenchmarkTool('git', ['-C', path.dirname(runtimes[variant]), 'rev-parse', 'HEAD'], {
           encoding: 'utf8',
         }).trim(),
         'Measured wrong runtime revision',
@@ -740,7 +741,7 @@ async function measure(values) {
   }
   const runtimeSourceRoots = ['gitnexus/src', 'gitnexus-shared/src'];
   const runtimeGit = (...args) =>
-    execFileSync('git', ['-C', path.dirname(dist), ...args], {
+    runBenchmarkTool('git', ['-C', path.dirname(dist), ...args], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim();
@@ -819,7 +820,7 @@ async function measure(values) {
           .update(await fs.readFile(new URL(import.meta.url)))
           .update(baselineBytes)
           .digest('hex'),
-        checkoutHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+        checkoutHead: runBenchmarkTool('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
         runtimeHead,
         runtimeSourceTrees,
         platform: process.platform,

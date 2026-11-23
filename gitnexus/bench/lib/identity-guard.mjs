@@ -4,6 +4,9 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 
+/** Code-unit order keeps benchmark identities independent of the system locale. */
+export const compareCodeUnits = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
 export function fingerprintIds(ids) {
   return crypto
     .createHash('sha256')

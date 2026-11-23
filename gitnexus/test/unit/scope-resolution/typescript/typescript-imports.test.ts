@@ -15,6 +15,7 @@ import {
   type TsResolveContext,
 } from '../../../../src/core/ingestion/languages/typescript/import-target.js';
 import * as importResolverUtils from '../../../../src/core/ingestion/utils/suffix-index.js';
+import { canonicalModuleExportName } from '../../../../src/core/ingestion/utils/ecmascript-literals.js';
 import { typescriptScopeResolver } from '../../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import type { SyntaxNode } from '../../../../src/core/ingestion/utils/ast-helpers.js';
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
@@ -49,6 +50,14 @@ function mockNode(
 }
 
 describe('interpretTsImport — static imports', () => {
+  it('rejects malformed and out-of-range escapes in quoted module names', () => {
+    expect([
+      canonicalModuleExportName('"\\u{}"'),
+      canonicalModuleExportName('"\\u{0g}"'),
+      canonicalModuleExportName('"\\u{0110000}"'),
+    ]).toEqual([null, null, null]);
+  });
+
   it('named: `import { X } from "./a"`', () => {
     const [imp, ...rest] = importsFor('import { X } from "./a";');
     expect(rest).toHaveLength(0);

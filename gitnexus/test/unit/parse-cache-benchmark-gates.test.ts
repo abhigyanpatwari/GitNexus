@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 const benchmark = new URL('../../bench/file-result-reuse/benchmark.js', import.meta.url);
 const { assessComparison, studentCritical, validatePair } = await import(benchmark.href);
+const tools = new URL('../../bench/lib/benchmark-tools.mjs', import.meta.url);
+const { runBenchmarkTool } = await import(tools.href);
 
 type Metric = { name: string; limit: number; passed: boolean; regressed: boolean };
 type Report = ReturnType<typeof report>;
@@ -70,6 +72,14 @@ const moderateNoise = [96, 104, 98, 102, 97, 103, 100];
 const wideNoise = [80, 90, 95, 100, 105, 110, 120];
 
 describe('parse-cache performance acceptance', () => {
+  it.each(['git', 'tar'])('uses system %s with an empty PATH', (name) => {
+    const output = runBenchmarkTool(name, ['--version'], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: '' },
+    });
+    expect(output).toContain(name);
+  });
+
   it('requires exact graph fingerprints on both sides of the reviewed corpus change', () => {
     const { graphExpectations } = JSON.parse(
       readFileSync(new URL('./baseline.json', benchmark), 'utf8'),

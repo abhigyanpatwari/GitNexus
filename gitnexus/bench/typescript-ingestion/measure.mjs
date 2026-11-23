@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /** Measure exact TypeScript and JavaScript ingestion targets using a built GitNexus package. */
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual, parseArgs } from 'node:util';
-import { fingerprintIds } from '../lib/identity-guard.mjs';
+import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
+import { compareCodeUnits, fingerprintIds } from '../lib/identity-guard.mjs';
 import { addModuleFixtures, barrelEdit } from './module-fixtures.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
@@ -176,8 +176,8 @@ function inspectTargets(result, expected, families) {
   const mismatches = [];
   const byFamily = {};
   for (const caller of new Set([...expected.keys(), ...actual.keys()])) {
-    const observed = (actual.get(caller) ?? []).sort();
-    const wanted = [...(expected.get(caller) ?? [])].sort();
+    const observed = (actual.get(caller) ?? []).sort(compareCodeUnits);
+    const wanted = [...(expected.get(caller) ?? [])].sort(compareCodeUnits);
     const family = families.get(caller);
     const counts = (byFamily[family] ??= {
       cases: 0,
@@ -366,7 +366,7 @@ try {
         ),
     )
     .map((edge) => [edge.sourceId, edge.targetId])
-    .sort();
+    .sort((a, b) => compareCodeUnits(a[0], b[0]) || compareCodeUnits(a[1], b[1]));
   const expectedEdits = [
     ['Function:cases0.ts:elision0', 'Method:owners.ts:Key.save#0'],
     ['Function:cases0.ts:guarded0', 'Method:owners.ts:Value.save#0'],
@@ -441,7 +441,7 @@ try {
       JSON.stringify({
         node: process.version,
         platform: `${process.platform}-${process.arch}`,
-        revision: execFileSync('git', ['-C', runtime, 'rev-parse', 'HEAD'], {
+        revision: runBenchmarkTool('git', ['-C', runtime, 'rev-parse', 'HEAD'], {
           encoding: 'utf8',
         }).trim(),
         parseIdentity: identity.identity.base,
