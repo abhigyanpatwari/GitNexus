@@ -8,14 +8,9 @@ permissions:
 
 jobs:
   java-compiler-conformance:
-    name: Java fixtures and compiler conformance (${{ matrix.shard }}/${{ strategy.job-total }})
+    name: Java compiler conformance
     runs-on: ubuntu-latest
-    needs: shard-plan
-    timeout-minutes: 35
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [1, 2, 3, 4]
+    timeout-minutes: 60
     env:
       GITNEXUS_REQUIRE_FTS: '1'
       GITNEXUS_REQUIRE_VECTOR: '1'
@@ -28,50 +23,36 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-      - uses: ./.github/actions/setup-gitnexus
-        with:
-          build: 'true'
-      - name: Compare overload targets with javac
-        if: matrix.shard == 1
+      - name: Enable source maps for conformance coverage
         working-directory: gitnexus
-        run: npm run test:conformance:java
+        run: |
+          jq '.compilerOptions.sourceMap = true' tsconfig.json > "$RUNNER_TEMP/java-tsconfig.json"
+          mv "$RUNNER_TEMP/java-tsconfig.json" tsconfig.json
+      # npm ci runs prepare, including the production build and shared-module rewrites.
+      - uses: ./.github/actions/setup-gitnexus
       - name: Ensure FTS + VECTOR extensions installed
         working-directory: gitnexus
         run: node --import tsx scripts/ensure-fts.ts
-      - name: Download frozen timing snapshot
-        uses: ./.github/actions/download-test-artifact
-        with:
-          name: shard-timing-input
-          path: gitnexus/.vitest/timings
-      - name: Run Java fixture tests with coverage
+      - name: Compare Java fixtures with javac and check GitNexus behavior
         working-directory: gitnexus
         env:
-          SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
-          BLOB: .vitest/blob/java-${{ matrix.shard }}.json
-        run: >-
-          npm test -- test/java/
-          --shard="$SHARD" --reporter=default --reporter=blob --outputFile.blob="$BLOB"
-          --coverage --coverage.thresholds.lines=0 --coverage.thresholds.functions=0
-          --coverage.thresholds.branches=0 --coverage.thresholds.statements=0
-      - name: Upload Java coverage blob
-        if: always()
-        uses: ./.github/actions/upload-test-artifact
-        with:
-          name: coverage-blob-java-${{ matrix.shard }}
-          path: gitnexus/.vitest/blob/
-          include-hidden-files: true
-      - name: Run Java fixture benchmarks serially
-        if: ${{ !cancelled() && matrix.shard == 1 }}
-        working-directory: gitnexus
-        env:
+          NODE_V8_COVERAGE: ${{ runner.temp }}/java-v8
+          GITNEXUS_BENCH: '1'
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-        run: npm run test:benchmarks -- --java
-      - name: Upload Java benchmark execution report
-        if: ${{ always() && matrix.shard == 1 }}
+        run: npm run test:conformance:java
+      - name: Report conformance coverage against TypeScript sources
+        working-directory: gitnexus
+        run: |
+          npx --no-install c8 report --merge-async --temp-directory="$RUNNER_TEMP/java-v8" \
+            --exclude-after-remap --include='src/**/*.ts' --reporter=lcovonly --reports-dir=coverage/java
+          awk '/^SF:/ { java = /^SF:src\/core\/ingestion\/languages\/java\/.+\.ts$/ }
+               java && /^DA:[0-9]+,[1-9][0-9]*$/ { hit = 1 }
+               END { exit !hit }' coverage/java/lcov.info
+      - name: Upload Java conformance LCOV
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: execution-java-benchmarks-${{ matrix.shard }}
-          path: gitnexus/java-benchmarks.json
+          name: java-conformance-coverage
+          path: gitnexus/coverage/java/lcov.info
 
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
@@ -487,7 +468,7 @@ jobs:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
           GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: >-
-          npm test -- test/unit/ test/integration/
+          npm test --
           --shard="$SHARD"
           --reporter=default
           --reporter=blob
@@ -550,6 +531,20 @@ jobs:
           --coverage.reporter=lcovonly
           --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
+      - name: Download Java conformance LCOV
+        id: java-lcov-download
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        uses: ./.github/actions/download-test-artifact
+        with:
+          name: java-conformance-coverage
+          path: ${{ runner.temp }}/java-conformance-coverage
+      - name: Add Java conformance to the CLI SonarQube report
+        id: java-lcov
+        if: ${{ !cancelled() && steps.java-lcov-download.outcome == 'success' }}
+        working-directory: gitnexus
+        run: |
+          test -s coverage/lcov.info
+          cat "$RUNNER_TEMP/java-conformance-coverage/lcov.info" >> coverage/lcov.info
       - name: Upload learned coverage timings
         uses: ./.github/actions/upload-test-artifact
         with:
@@ -589,7 +584,7 @@ jobs:
       # original test outcomes and let the scanner report any transfer failure.
       - name: Upload SonarQube coverage
         if: >-
-          !cancelled() && ((github.event_name == 'pull_request' &&
+          !cancelled() && steps.java-lcov.outcome == 'success' && ((github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.event_name == 'push' && github.ref == 'refs/heads/main'))
         continue-on-error: true
@@ -1836,7 +1831,7 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-        run: npm run test:benchmarks -- --exclude-java
+        run: npm run test:benchmarks
         working-directory: gitnexus
       - name: Upload benchmark execution report
         if: always()

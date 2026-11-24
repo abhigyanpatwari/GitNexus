@@ -1,0 +1,1 @@
+package i2; public class Holder { public static class Inner {} }

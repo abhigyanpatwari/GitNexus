@@ -1,0 +1,1 @@
+package other; public class User { public void save() {} }

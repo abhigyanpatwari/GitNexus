@@ -11,11 +11,27 @@
   "compiler-conformance/java-callback-qualified-lookalike": 14,
   "compiler-conformance/java-contextual-declaration-identity": 3,
   "compiler-conformance/java-contextual-local-element-identity": 2,
+  "compiler-conformance/java-copied-method-reference": {
+    "families": ["invoke"],
+    "sites": 1
+  },
   "compiler-conformance/java-dollar-digit-type-names": {
     "sites": 2,
     "constructors": true
   },
   "compiler-conformance/java-dollar-member-inheritance": 3,
+  "compiler-conformance/java-external-receiver": {
+    "sites": 0
+  },
+  "compiler-conformance/java-field-dispatch-counts": {
+    "sites": 4
+  },
+  "compiler-conformance/java-generic-field-control": {
+    "sites": 2
+  },
+  "compiler-conformance/java-generic-interface-bounds": {
+    "sites": 2
+  },
   "compiler-conformance/java-initializer-constructors": {
     "sites": 0,
     "constructors": true
@@ -28,6 +44,12 @@
     }
   },
   "compiler-conformance/java-local-binary-name-collision": 3,
+  "compiler-conformance/java-method-ownership": {
+    "sites": 0
+  },
+  "compiler-conformance/java-ordinary-run-method": {
+    "sites": 1
+  },
   "compiler-conformance/java-overload-access": 5,
   "compiler-conformance/java-overload-conformance": {
     "sites": 3,
@@ -48,6 +70,9 @@
   "compiler-conformance/java-r6-annotated-producer-returns": 15,
   "compiler-conformance/java-r6-sam-callee-scope": 4,
   "compiler-conformance/java-r6-shadow-root": 10,
+  "compiler-conformance/java-raw-generic-base": {
+    "sites": 0
+  },
   "compiler-conformance/java-receiver-alias": 4,
   "compiler-conformance/java-review-followups-inherited-root": 2,
   "compiler-conformance/java-review-followups-nested-fqn": 4,
@@ -62,6 +87,9 @@
   "compiler-conformance/java-sam-split-package": 8,
   "compiler-conformance/java-static-wildcard-inner-type": 2,
   "compiler-conformance/java-varargs-overload-identity": 7,
+  "compiler-conformance/java-worker-qualified-names": {
+    "sites": 0
+  },
   "java/java-consumer-before-provider": 2,
   "java/java-cross-file": 3,
   "lang-resolution/java-ambiguous": 0,
@@ -70,7 +98,7 @@
     "families": []
   },
   "lang-resolution/java-anon-extends-base": {
-    "vitestOnly": "Several public top-level classes occupy one file."
+    "compilerExclusion": "Several public top-level classes occupy one file."
   },
   "lang-resolution/java-anon-in-anon": {
     "sites": 0,
@@ -85,14 +113,14 @@
     "families": []
   },
   "lang-resolution/java-anonymous-class-scope": {
-    "vitestOnly": "Contains a deliberately unresolved Runnable method."
+    "compilerExclusion": "Contains a deliberately unresolved Runnable method."
   },
   "lang-resolution/java-assignment-chain": 4,
   "lang-resolution/java-builtin-name-legit-dispatch": 1,
   "lang-resolution/java-call-result-binding": 2,
   "lang-resolution/java-calls": 1,
   "lang-resolution/java-cast-receiver": {
-    "vitestOnly": "Decompiled casts include inconvertible receiver types."
+    "compilerExclusion": "Decompiled casts include inconvertible receiver types."
   },
   "lang-resolution/java-chain-call": 2,
   "lang-resolution/java-child-extends-parent": 1,
@@ -103,13 +131,13 @@
   "lang-resolution/java-constructor-type-inference": 2,
   "lang-resolution/java-deep-field-chain": 2,
   "lang-resolution/java-duplicate-fqn-modules": {
-    "vitestOnly": "Two modules declare the same fully qualified type."
+    "compilerExclusion": "Two modules declare the same fully qualified type."
   },
   "lang-resolution/java-duplicate-fqn-source-roots": {
-    "vitestOnly": "Multiple source roots declare the same fully qualified type."
+    "compilerExclusion": "Multiple source roots declare the same fully qualified type."
   },
   "lang-resolution/java-enum-constant-body": {
-    "vitestOnly": "Contains a deliberately unresolved call on an unrelated type."
+    "compilerExclusion": "Contains a deliberately unresolved call on an unrelated type."
   },
   "lang-resolution/java-enum-constant-same-name": 2,
   "lang-resolution/java-enum-static-call": 2,
@@ -127,7 +155,7 @@
   "lang-resolution/java-iface-extends": 0,
   "lang-resolution/java-import-package-evidence": 1,
   "lang-resolution/java-inherited-bare-call": {
-    "vitestOnly": "Several public top-level classes occupy one file."
+    "compilerExclusion": "Several public top-level classes occupy one file."
   },
   "lang-resolution/java-instanceof-pattern": 1,
   "lang-resolution/java-interface-default-method": 1,
@@ -141,7 +169,7 @@
   "lang-resolution/java-member-calls": 1,
   "lang-resolution/java-method-chain-binding": 3,
   "lang-resolution/java-method-chain-cross-class": {
-    "vitestOnly": "Uses a private field from an unrelated class."
+    "compilerExclusion": "Uses a private field from an unrelated class."
   },
   "lang-resolution/java-method-enrichment": 2,
   "lang-resolution/java-method-reference": {
@@ -172,7 +200,7 @@
   "lang-resolution/java-parent-resolution": 0,
   "lang-resolution/java-protected-overloads": 14,
   "lang-resolution/java-qualified-base": {
-    "vitestOnly": "Refers to an absent base package."
+    "compilerExclusion": "Refers to an absent base package."
   },
   "lang-resolution/java-qualified-constructor": {
     "sites": 0,
@@ -193,11 +221,11 @@
   "lang-resolution/java-this-dispatch": 3,
   "lang-resolution/java-this-field-chain": 7,
   "lang-resolution/java-unrelated-method-collision": {
-    "vitestOnly": "Several public top-level classes occupy one file."
+    "compilerExclusion": "Several public top-level classes occupy one file."
   },
   "lang-resolution/java-variadic-resolution": 4,
   "lang-resolution/java-virtual-dispatch": {
-    "vitestOnly": "Calls a subtype-only method through a supertype variable."
+    "compilerExclusion": "Calls a subtype-only method through a supertype variable."
   },
   "lang-resolution/java-wildcard-import": 1,
   "lang-resolution/java-wildcard-on-demand": 1,

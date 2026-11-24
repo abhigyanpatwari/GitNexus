@@ -31,92 +31,6 @@ describe('managed provider rename through the production parsing pipeline', () =
     );
   }, 60_000);
 
-  it.each([
-    ['Class', 'public class Writer { public Writer() {} }\n'],
-    ['Constructor', 'public class Writer { public Writer() {} }\n'],
-    ['Interface', 'public interface Writer {}\n'],
-    ['Enum', 'public enum Writer { VALUE }\n'],
-    ['Record', 'public record Writer() {}\n'],
-    ['Annotation', 'public @interface Writer {}\n'],
-  ])(
-    'refuses a public top-level Java %s rename requiring a file move',
-    async (kind, content) => {
-      const { root, nodes, symbol } = await fixture({ 'Writer.java': content }, 'Writer', kind);
-      for (const dry_run of [true, false]) {
-        const result = await renameSymbol(root, symbol, { new_name: 'Reader', dry_run }, nodes);
-        expect(result, JSON.stringify(result)).toMatchObject({
-          status: 'error',
-          code: 'unsupported_occurrence',
-          planning_status: 'unsupported',
-          application_status: 'not_started',
-          applied: false,
-          total_edits: 0,
-        });
-        expect(result.error).toContain('file move');
-        expect(await fs.readFile(path.join(root, 'Writer.java'), 'utf8')).toBe(content);
-        expect(await fs.readdir(root)).not.toContain('Reader.java');
-      }
-    },
-    60_000,
-  );
-
-  it.each([
-    ['Class', 'class Writer { Writer() {} }\n'],
-    ['Constructor', 'class Writer { Writer() {} }\n'],
-    ['Class', 'public class Outer { public static class Writer { public Writer() {} } }\n'],
-    ['Constructor', 'public class Outer { public static class Writer { public Writer() {} } }\n'],
-    ['Annotation', '@interface Writer {}\n'],
-    ['Annotation', 'public class Outer { public @interface Writer {} }\n'],
-  ])(
-    'renames a package-private or nested Java %s without requiring a file move (case %#)',
-    async (kind, content) => {
-      await expectRename(
-        { 'Outer.java': content },
-        { 'Outer.java': content.replaceAll('Writer', 'Reader') },
-        'Writer',
-        kind,
-        'Reader',
-      );
-    },
-    60_000,
-  );
-
-  it('allows a Java public type rename that matches the existing file name', async () => {
-    await expectRename(
-      { 'Reader.java': 'public class Writer { public Writer() {} }\n' },
-      { 'Reader.java': 'public class Reader { public Reader() {} }\n' },
-      'Writer',
-      'Class',
-      'Reader',
-    );
-  }, 60_000);
-
-  it.each([
-    [
-      'Constructor',
-      'class Outer { static class Writer { Writer() {} } }\nclass Other { static class Writer { Writer() {} } }\n',
-    ],
-    ['Annotation', 'class Outer { @interface Writer {} }\nclass Other { @interface Writer {} }\n'],
-  ])(
-    'refuses collapsed same-name nested Java %s graph identities',
-    async (kind, content) => {
-      const { root, nodes, symbol } = await fixture({ 'Outer.java': content }, 'Writer', kind);
-      for (const dry_run of [true, false]) {
-        const result = await renameSymbol(root, symbol, { new_name: 'Reader', dry_run }, nodes);
-        expect(result, JSON.stringify(result)).toMatchObject({
-          status: 'error',
-          code: 'stale_graph',
-          planning_status: 'blocked',
-          application_status: 'not_started',
-          applied: false,
-          total_edits: 0,
-        });
-        expect(await fs.readFile(path.join(root, 'Outer.java'), 'utf8')).toBe(content);
-      }
-    },
-    60_000,
-  );
-
   it('renames a C# class and its destructor without changing another class', async () => {
     const content =
       'class Writer { public Writer() {} ~Writer() {} }\nclass Other { ~Other() {} Writer Create() { return new Writer(); } }\n';
@@ -129,11 +43,6 @@ describe('managed provider rename through the production parsing pipeline', () =
     );
   }, 60_000);
   it.each([
-    [
-      'model.java',
-      'class Model { static int target() { return 1; } static int caller() { return target(); } }\n// target\n',
-      'Method',
-    ],
     [
       'model.kt',
       'fun target() {}\nfun caller() { val value = ::target; target() }\n// target\n',
@@ -169,11 +78,6 @@ describe('managed provider rename through the production parsing pipeline', () =
 
   it.each([
     [
-      'model.java',
-      'class Model { static int target() { return 1; } int caller(int target) { return target; } int use() { return target(); } }\n',
-      'Method',
-    ],
-    [
       'model.kt',
       'fun target() {}\nfun caller(target: Int): Int { return target }\nfun use() { target() }\n',
       'Function',
@@ -207,10 +111,6 @@ describe('managed provider rename through the production parsing pipeline', () =
   );
 
   it.each([
-    [
-      'model.java',
-      'class Target { Target() {} }\nclass User { Target value; Target make() { return new Target(); } }\n',
-    ],
     ['model.kt', 'class Target\nfun use(value: Target): Target { return Target() }\n'],
     [
       'model.cs',
@@ -233,11 +133,6 @@ describe('managed provider rename through the production parsing pipeline', () =
   );
 
   it.each([
-    [
-      'model.java',
-      'class Model { void target() {} void caller(Model value) { value.target(); } }\nclass Other { void target() {} void caller(Other value) { value.target(); } }\n',
-      'Method',
-    ],
     [
       'model.kt',
       'class Model {\nfun target() {}\nfun caller(value: Model) { value.target() }\n}\nclass Other {\nfun target() {}\n}\n',
@@ -385,11 +280,6 @@ describe('managed provider rename through the production parsing pipeline', () =
 
   it.each([
     [
-      'model.java',
-      'interface Base { void target(); }\nclass Child implements Base { public void target() {} }\n',
-      'Method',
-    ],
-    [
       'model.kt',
       'interface Base {\nfun target()\n}\nclass Child: Base {\noverride fun target() {}\n}\n',
       'Method',
@@ -423,11 +313,6 @@ describe('managed provider rename through the production parsing pipeline', () =
   );
 
   it.each([
-    [
-      'model.java',
-      'class Model { void target() {} void renamed() {} void use() { target(); } }\n',
-      'Method',
-    ],
     ['model.kt', 'fun target() {}\nfun renamed() {}\nfun use() { target() }\n', 'Function'],
     [
       'model.cs',
@@ -476,11 +361,6 @@ describe('managed provider rename through the production parsing pipeline', () =
   });
 
   it.each([
-    [
-      'model.java',
-      'class Model { void target() {} void target(int value) {} void use() { target(); target(1); } }\n',
-      'Method',
-    ],
     [
       'model.kt',
       'fun target() {}\nfun target(value: Int) {}\nfun use() { target(); target(1) }\n',

@@ -1,0 +1,21 @@
+{
+  "diagnostics": {"compiler.err.doesnt.exist": 3},
+  "calls": [
+    {"caller": "Method:app/Static.java:Static.param#1", "member": "save", "published": [], "compilerTargets": ["Inner/User.java#1:35"], "source": ["app/Static.java#4:2"]},
+    {"caller": "Method:app/Static.java:Static.local#0", "member": "save", "published": [], "compilerTargets": ["Inner/User.java#1:35"], "source": ["app/Static.java#5:2"]},
+    {"caller": "Method:app/ViaDerived.java:ViaDerived.param#1", "member": "save", "published": [], "compilerTargets": ["Inner/User.java#1:35"], "source": ["app/ViaDerived.java#3:19"]},
+    {"caller": "Method:app/Control.java:Control.param#1", "member": "save", "source": ["app/Control.java#3:2"]},
+    {"caller": "Method:app/Control.java:Control.local#0", "member": "save", "source": ["app/Control.java#4:2"]},
+    {"caller": "Method:app/Known.java:Known.param#1", "member": "save", "source": ["app/Known.java#3:14"]},
+    {"caller": "Method:side/Static.java:Static.pass#2", "member": "take", "published": [], "compilerTargets": ["side/Sink.java#3:2"], "source": ["side/Static.java#3:15"]},
+    {"caller": "Method:side/Control.java:Control.pass#2", "member": "take", "source": ["side/Control.java#2:16"]},
+    {"caller": "Method:side/WithMath.java:WithMath.param#1", "member": "save", "source": ["side/WithMath.java#7:2"]},
+    {"caller": "Method:side/WithMath.java:WithMath.pass#1", "member": "take", "source": ["side/WithMath.java#6:2"]}
+  ],
+  "nodes": [
+    "Method:app/Static.java:Static.local#0",
+    "Method:app/Static.java:Static.param#1",
+    "Method:app/ViaDerived.java:ViaDerived.param#1",
+    "Method:side/Static.java:Static.pass#2"
+  ]
+}

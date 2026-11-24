@@ -1,0 +1,9 @@
+{
+  "diagnostics": {},
+  "onDemand": {
+    "status": "matches JLS 7.5.2: ignored",
+    "extraEdges": [
+      "CALLS Method:viaNew -> Class:src/app/T.java:T"
+    ]
+  }
+}

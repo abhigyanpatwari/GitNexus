@@ -1,0 +1,1 @@
+package app; import b.Util.Lib; public class Named { void named() { new Lib().run(); Lib.make(); } }

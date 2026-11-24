@@ -1,0 +1,1 @@
+package i2; public class GBase { public @interface Getter {} }

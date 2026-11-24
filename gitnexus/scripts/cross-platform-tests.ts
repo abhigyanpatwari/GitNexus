@@ -203,9 +203,8 @@ const LBUG_NATIVE = [
   'test/integration/embedding-vector-store.test.ts',
   'test/integration/legacy-vector-reuse-index.test.ts',
   'test/integration/legacy-vector-export.test.ts',
-  'test/java/java-overload-impact-persistence.test.ts',
   'test/integration/dangling-owner-edges.test.ts',
-  'test/java/impact-private-type-file-seed.test.ts',
+  'test/integration/impact-private-type-file-seed.test.ts',
   'test/integration/impact-private-type-source.test.ts',
   // Inline-handler findings must survive native persistence and cold explain
   // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
@@ -213,14 +212,13 @@ const LBUG_NATIVE = [
   // Real indexing/MCP previews include tracked/untracked edits, file-symlink
   // retargets and staging failures; the helper runs in a separate native process.
   'test/integration/rename-preview-plan.test.ts',
-  'test/java/rename-provider-matrix.test.ts',
+  'test/integration/rename-provider-matrix.test.ts',
   'test/integration/rename-provider-c.test.ts',
   'test/integration/rename-provider-cobol.test.ts',
   'test/integration/rename-provider-cpp.test.ts',
   'test/integration/rename-provider-csharp.test.ts',
   'test/integration/rename-provider-dart.test.ts',
   'test/integration/rename-provider-go.test.ts',
-  'test/java/rename-provider-java.test.ts',
   'test/integration/rename-provider-javascript.test.ts',
   'test/integration/rename-provider-kotlin.test.ts',
   'test/integration/rename-provider-objective-c.test.ts',
@@ -242,7 +240,7 @@ const LBUG_NATIVE = [
   // Dirty snapshot freshness depends on native FTS, Git paths and file reads.
   'test/integration/analyze-dirty-snapshot.test.ts',
   'test/integration/incremental-worktree-context.test.ts',
-  'test/java/lbug-core-adapter.test.ts',
+  'test/integration/lbug-core-adapter.test.ts',
   // Native COPY, cached vectors and cold shared-store readers vary by platform.
   'test/integration/embedding-identity-integrity.test.ts',
   'test/integration/shared-store-embedding-reuse.test.ts',
@@ -258,7 +256,7 @@ const LBUG_NATIVE = [
   'test/integration/lbug-interrupted-checkpoint-recovery.test.ts',
   'test/integration/lbug-checkpoint-accounting.test.ts',
   'test/integration/lbug-rel-copy-page-padding.test.ts',
-  'test/java/lbug-incremental-search.test.ts',
+  'test/integration/lbug-incremental-search.test.ts',
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
   'test/integration/go-incremental-method-owners.test.ts',
@@ -278,14 +276,12 @@ const LBUG_NATIVE = [
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
-  // Runs the route extractor's two symbol queries against a real engine.
-  'test/java/http-route-symbol-batch.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
   'test/integration/search-pool.test.ts',
-  'test/java/fts-description-search.test.ts',
+  'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
   // Publication, cold readers and sidecar handling depend on native filesystem behavior.
@@ -333,7 +329,6 @@ const SPAWN_CLI = [
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
-  'test/java/skills-e2e.test.ts',
   // Spawns the real CLI across hermetic HOME/USERPROFILE homes to exercise the
   // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
   // run on the Windows/macOS matrix, not just the Ubuntu full suite.
@@ -408,10 +403,8 @@ const WORKER_THREADS = [
   // warm parse-cache and ParsedFile-store path (#2982).
   'test/integration/cfg/adonis-taint.test.ts',
   'test/integration/function-local-identity.test.ts',
-  'test/java/java-imported-return-types.test.ts',
-  'test/java/resolvers/java-overload-jls.test.ts',
   'test/unit/community-processor.test.ts',
-  'test/java/worker-pool.test.ts',
+  'test/integration/worker-pool.test.ts',
   'test/integration/worker-pool-admission.test.ts',
   'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
@@ -421,9 +414,6 @@ const WORKER_THREADS = [
   'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
   'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
-  // Lombok accessor, constructor-DI and workspace-proof facts through a real
-  // parse worker (cold) and the warm cache replay.
-  'test/java/java-lombok-worker-cache.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
@@ -431,8 +421,8 @@ const NATIVE_ADDON_SMOKE = [
   // bunx skips the native install copy; recover it before recording identity.
   'test/unit/lbug-native-check.test.ts',
   'test/unit/lazy-action.test.ts',
-  'test/java/tree-sitter-languages.test.ts',
-  'test/java/parsing.test.ts',
+  'test/integration/tree-sitter-languages.test.ts',
+  'test/integration/parsing.test.ts',
   'test/integration/pipeline.test.ts',
   'test/integration/pipeline-graph-golden.test.ts',
   'test/unit/parser-loader.test.ts',
@@ -449,8 +439,6 @@ const FILESYSTEM = [
   'test/unit/dart-package-imports.test.ts',
   // Verify the same capture is reused by native parsing and scope resolution.
   'test/integration/resolvers/dart.test.ts',
-  // Exercise non-ASCII Java package paths and file names on each platform.
-  'test/java/java-non-ascii-names.test.ts',
   // Cargo membership uses path normalization, descriptor validation, symlinks,
   // and Rust native parsing (including long Windows source strings).
   'test/unit/scope-resolution/rust-cargo-targets.test.ts',
@@ -459,7 +447,7 @@ const FILESYSTEM = [
   // mounts — are Windows- and macOS-flavored, and the permission-based case
   // skips itself where chmod cannot block a delete, so run it everywhere.
   'test/unit/parsedfile-store.test.ts',
-  'test/java/filesystem-walker.test.ts',
+  'test/integration/filesystem-walker.test.ts',
   'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/unit/watch-external-config.test.ts',

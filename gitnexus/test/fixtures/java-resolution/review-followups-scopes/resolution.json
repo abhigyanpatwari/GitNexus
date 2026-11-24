@@ -1,0 +1,18 @@
+{
+  "diagnostics": {"compiler.err.prob.found.req": 1},
+  "calls": [
+    {"caller": "Method:Switches.java:Switches.groupLocalEndsWithSwitch#", "member": "save", "source": ["Switches.java#3:2"]},
+    {"caller": "Method:Switches.java:Switches.groupLocalInsideSwitch#", "member": "save", "source": ["Switches.java#8:2"]},
+    {"caller": "Record:Records.java:Rec", "member": "save", "published": ["Method:Model.java:User.save#0"], "compilerTargets": [], "source": []},
+    {"caller": "Method:Comments.java:Comments.parameter#", "member": "save", "source": ["Comments.java#2:2"]},
+    {"caller": "Method:Comments.java:Comments.local#", "member": "save", "source": ["Comments.java#4:2"]},
+    {"caller": "Method:Aliases.java:Aliases.nestedCopy#", "member": "save", "source": ["Aliases.java#2:2"]},
+    {"caller": "Method:Aliases.java:Aliases.deeplyNestedCopy#", "member": "save", "source": ["Aliases.java#6:2"]},
+    {"caller": "Method:Aliases.java:Aliases.lambdaCopy#", "member": "save", "source": ["Aliases.java#10:2"]},
+    {"caller": "Method:Aliases.java:Aliases.reassignedBeforeCopy#", "member": "save", "published": [], "compilerTargets": ["Model.java#1:13"], "source": ["Aliases.java#14:2"]},
+    {"caller": "Method:Aliases.java:Aliases.reassignedLaterInLoop#", "member": "save", "published": [], "compilerTargets": ["Model.java#1:13"], "source": ["Aliases.java#18:2"]},
+    {"caller": "Method:Aliases.java:Aliases$1.m#", "member": "save", "source": ["Aliases.java#26:6"]},
+    {"caller": "Method:Aliases.java:Aliases.outerRedeclaration#", "member": "save", "source": ["Aliases.java#29:2"]},
+    {"caller": "Method:Aliases.java:Aliases.outerRedeclaration#", "member": "store", "source": ["Aliases.java#29:2"]}
+  ]
+}

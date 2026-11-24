@@ -1,0 +1,13 @@
+{
+  "diagnostics": {"compiler.err.ref.ambiguous": 1},
+  "calls": [
+    {"caller": "Method:s/OnDemand.java:OnDemand.run#1", "member": "save", "source": ["s/OnDemand.java#3:24"]},
+    {"caller": "Method:s/Single.java:Single.run#1", "member": "save", "source": ["s/Single.java#3:22"]},
+    {"caller": "Method:p/Routes.java:Routes.viaField#0", "member": "save", "source": ["p/Routes.java#5:2"]},
+    {"caller": "Method:p/Routes.java:Routes.viaThis#0", "member": "save", "source": ["p/Routes.java#6:2"]},
+    {"caller": "Method:p/Routes.java:Routes.viaLocal#0", "member": "save", "source": ["p/Routes.java#7:2"]},
+    {"caller": "Method:s/Plain.java:Plain.run#1", "member": "save", "source": ["s/Plain.java#2:21"]},
+    {"caller": "Method:s/Ambiguous.java:Ambiguous.run#1", "member": "save", "source": ["s/Ambiguous.java#4:25"], "targets": 0},
+    {"caller": "Method:p/Inherits.java:Inherits.run#1", "member": "save", "source": ["p/Inherits.java#2:37"]}
+  ]
+}

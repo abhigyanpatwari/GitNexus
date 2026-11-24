@@ -1,0 +1,1 @@
+package b; public class Node { public void visitB() {} }

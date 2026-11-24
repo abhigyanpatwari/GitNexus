@@ -1,0 +1,15 @@
+{
+  "diagnostics": {"compiler.err.cant.infer.local.var.type": 1, "compiler.err.cant.resolve.location": 1, "compiler.err.cant.resolve.location.args": 1},
+  "calls": [
+    {"caller": "Method:Main.java:App.beforeLocal#0", "member": "save", "source": ["Main.java#7:2"]},
+    {"caller": "Method:Main.java:App.afterLocal#0", "member": "save", "source": ["Main.java#8:2"]},
+    {"caller": "Method:Main.java:App.afterNested#0", "member": "save", "source": ["Main.java#9:2"]},
+    {"caller": "Method:Main.java:App.beforeNested#0", "member": "save", "source": ["Main.java#10:2"]},
+    {"caller": "Method:Main.java:App.withinNested#0", "member": "save", "source": ["Main.java#11:2"]},
+    {"caller": "Method:Main.java:App.afterFor#0", "member": "save", "source": ["Main.java#16:2"]},
+    {"caller": "Method:Main.java:App.siblingBlocks#0", "member": "userOnly", "source": ["Main.java#12:2"]},
+    {"caller": "Method:Main.java:App.siblingBlocks#0", "member": "repoOnly", "source": ["Main.java#12:2"]},
+    {"caller": "Method:Main.java:App.unknownShadow#0", "member": "save", "source": ["Main.java#17:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.invalidSelfRead#0", "member": "save", "source": ["Main.java#18:2"], "targets": 0}
+  ]
+}

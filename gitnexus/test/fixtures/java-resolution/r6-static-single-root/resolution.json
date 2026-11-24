@@ -1,0 +1,19 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location": 2, "compiler.err.doesnt.exist": 2, "compiler.err.ref.ambiguous": 1, "compiler.err.static.imp.only.classes.and.interfaces": 1},
+  "calls": [
+    {"caller": "Method:q/Use.java:Use.run#1", "member": "save", "source": ["q/Use.java#4:2"]},
+    {"caller": "Method:q/Use.java:Use.local#0", "member": "save", "source": ["q/Use.java#5:2"]},
+    {"caller": "Method:q/ConstUse.java:ConstUse.run#1", "member": "save", "source": ["q/ConstUse.java#3:17"]},
+    {"caller": "Method:q/Use.java:Use.pass#1", "member": "take", "source": ["q/Use.java#8:2"]},
+    {"caller": "Method:q/ExtUse.java:ExtUse.run#1", "member": "save", "published": [], "compilerTargets": ["q/Inner.java#2:50"], "source": ["q/ExtUse.java#3:15"]},
+    {"caller": "Method:q/DerivedUse.java:DerivedUse.run#1", "member": "save", "published": [], "compilerTargets": ["q/Inner.java#2:50"], "source": ["q/DerivedUse.java#3:19"]},
+    {"caller": "Method:q/HiddenUse.java:HiddenUse.run#1", "member": "save", "published": [], "compilerTargets": ["q/Inner.java#2:50"], "source": ["q/HiddenUse.java#3:18"]},
+    {"caller": "Method:q/TwoUse.java:TwoUse.run#1", "member": "save", "source": ["q/TwoUse.java#4:15"], "targets": 0}
+  ],
+  "nodes": [
+    "Method:q/DerivedUse.java:DerivedUse.run#1",
+    "Method:q/ExtUse.java:ExtUse.run#1",
+    "Method:q/HiddenUse.java:HiddenUse.run#1",
+    "Method:q/TwoUse.java:TwoUse.run#1"
+  ]
+}

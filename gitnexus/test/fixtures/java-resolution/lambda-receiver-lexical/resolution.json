@@ -1,0 +1,12 @@
+{
+  "diagnostics": {"compiler.err.prob.found.req": 8},
+  "calls": [
+    {"caller": "Method:Main.java:App.sibling#0", "member": "save", "source": ["Main.java#7:4"], "targets": 2},
+    {"caller": "Method:Main.java:App.unknown#0", "member": "audit", "source": ["Main.java#11:4"], "targets": 0},
+    {"caller": "Method:Main.java:App.unknownList#0", "member": "audit", "source": ["Main.java#12:4"], "targets": 0},
+    {"caller": "Method:Main.java:App.nested#0", "member": "audit", "source": ["Main.java#13:4"], "targets": 0},
+    {"caller": "Method:Main.java:App.nested#0", "member": "save", "source": ["Main.java#13:4"]},
+    {"caller": "Method:Main.java:App.lexicalThis#0", "member": "own", "source": ["Main.java#14:4"]},
+    {"caller": "Method:Main.java:App.afterLambda#0", "member": "audit", "source": ["Main.java#15:4"]}
+  ]
+}

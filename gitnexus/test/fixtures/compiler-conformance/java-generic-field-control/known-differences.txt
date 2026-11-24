@@ -1,0 +1,2 @@
+# The published edge selects the javac declaration. Its aggregate graph ID omits the call range.
+Missing from GitNexus: A.java:9:28..9:45 resolved A.java#3:20 (Repo.save(T))

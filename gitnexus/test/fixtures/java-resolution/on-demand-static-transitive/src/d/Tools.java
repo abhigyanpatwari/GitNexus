@@ -1,0 +1,1 @@
+package d; public class Tools { public static void helper() {} public static class Inner { public static void in() {} } }

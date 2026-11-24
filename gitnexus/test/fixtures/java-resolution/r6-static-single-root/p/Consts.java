@@ -1,0 +1,1 @@
+package p; public class Consts { public static final int Inner = 1; }

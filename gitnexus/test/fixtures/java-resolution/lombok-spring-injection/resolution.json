@@ -1,0 +1,11 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve": 7, "compiler.err.cant.resolve.location": 5, "compiler.err.doesnt.exist": 27},
+  "relationships": [
+    {"type": "INJECTS", "projection": "#{rel.sourceId}->#{rel.targetId} | #{rel.reason}", "where": {"op": "startsWith", "key": "rel.sourceId", "value": "Class:c1/"}, "expected": ["Class:c1/ClashAutowired.java:ClashAutowired->Class:c1/PrimaryStore1.java:PrimaryStore1 | Spring DI: @Autowired constructor ClashAutowired parameter chosen: Store1; qualifier \"primary\""]},
+    {"type": "INJECTS", "projection": "#{rel.sourceId}->#{rel.targetId} | #{rel.reason}", "where": {"op": "startsWith", "key": "rel.sourceId", "value": "Class:c2/"}, "expected": ["Class:c2/ClashInject.java:ClashInject->Class:c2/Clock2.java:Clock2 | Spring DI: @Inject constructor ClashInject parameter chosen: Clock2"]},
+    {"type": "INJECTS", "projection": "#{rel.sourceId}->#{rel.targetId} | #{rel.reason}", "where": {"op": "startsWith", "key": "rel.sourceId", "value": "Class:c3/"}, "expected": ["Class:c3/ClashOfTwo.java:ClashOfTwo->Class:c3/Clock3.java:Clock3 | Spring DI: @Autowired constructor ClashOfTwo parameter chosen: Clock3"]},
+    {"type": "INJECTS", "projection": "#{rel.sourceId}->#{rel.targetId} | #{rel.reason}", "where": {"op": "startsWith", "key": "rel.sourceId", "value": "Class:c4/"}, "expected": []},
+    {"type": "INJECTS", "projection": "#{rel.sourceId}->#{rel.targetId} | #{rel.reason}", "where": {"op": "startsWith", "key": "rel.sourceId", "value": "Class:n1/"}, "expected": ["Class:n1/NoClashAutowired.java:NoClashAutowired->Class:n1/Audit5.java:Audit5 | Spring DI: @Autowired constructor NoClashAutowired parameter audit: Audit5", "Class:n1/NoClashAutowired.java:NoClashAutowired->Class:n1/Clock5.java:Clock5 | Spring DI: @Autowired constructor NoClashAutowired parameter chosen: Clock5"]},
+    {"type": "INJECTS", "projection": "#{rel.sourceId}->#{rel.targetId} | #{rel.reason}", "where": {"op": "startsWith", "key": "rel.sourceId", "value": "Class:n2/"}, "expected": ["Class:n2/NoClashGenerated.java:NoClashGenerated->Class:n2/Clock6.java:Clock6 | Spring DI: constructor NoClashGenerated parameter clock: Clock6"]}
+  ]
+}

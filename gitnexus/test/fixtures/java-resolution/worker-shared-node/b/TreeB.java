@@ -1,0 +1,1 @@
+package b; import a.Node; public class TreeB { public Node next() { return new Node(); } }

@@ -1,0 +1,1 @@
+package app; import b.*; public class Star { void star() { new Lib().run(); Lib.make(); } }

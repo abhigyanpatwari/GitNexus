@@ -1,0 +1,1 @@
+package b;  public class TreeB { public Node next() { return new Node(); } }

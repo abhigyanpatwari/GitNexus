@@ -1,0 +1,1 @@
+package c4; @org.springframework.stereotype.Component public class Clock4 {}

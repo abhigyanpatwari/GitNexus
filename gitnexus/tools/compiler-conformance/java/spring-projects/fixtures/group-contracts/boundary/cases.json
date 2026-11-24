@@ -1,0 +1,38 @@
+[
+  {
+    "name": "test_detect_pom_xml_marker_returns_boundary",
+    "project": "pom-xml-marker-returns-boundary",
+    "expected": [
+      {
+        "servicePath": "microservices/billing",
+        "serviceName": "billing",
+        "markers": ["pom.xml"],
+        "confidence": 0.75
+      }
+    ]
+  },
+  {
+    "name": "test_detect_build_gradle_marker_returns_boundary",
+    "project": "build-gradle-marker-returns-boundary",
+    "expected": [
+      {
+        "servicePath": "modules/gateway",
+        "serviceName": "gateway",
+        "markers": ["build.gradle"],
+        "confidence": 0.75
+      }
+    ]
+  },
+  {
+    "name": "test_detect_skips_target_directory",
+    "project": "skips-target-directory",
+    "expected": [
+      {
+        "servicePath": "services/api",
+        "serviceName": "api",
+        "markers": ["go.mod"],
+        "confidence": 0.75
+      }
+    ]
+  }
+]

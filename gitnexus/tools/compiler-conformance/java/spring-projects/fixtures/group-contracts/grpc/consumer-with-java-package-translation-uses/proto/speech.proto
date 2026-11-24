@@ -1,0 +1,6 @@
+syntax = "proto3";
+package google.cloud.speech.v1;
+option java_package = "com.google.cloud.speech.v1";
+service Speech {
+    rpc Recognize (RecognizeRequest) returns (RecognizeResponse);
+}

@@ -1,0 +1,1 @@
+package c1; @org.springframework.stereotype.Repository public class OtherStore1 implements Store1 {}

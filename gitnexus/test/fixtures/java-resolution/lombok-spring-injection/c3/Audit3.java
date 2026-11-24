@@ -1,0 +1,1 @@
+package c3; @org.springframework.stereotype.Component public class Audit3 {}

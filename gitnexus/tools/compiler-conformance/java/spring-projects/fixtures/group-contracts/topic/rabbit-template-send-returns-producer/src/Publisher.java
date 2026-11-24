@@ -1,0 +1,1 @@
+rabbitTemplate.convertAndSend("order-exchange", "order.new", payload);

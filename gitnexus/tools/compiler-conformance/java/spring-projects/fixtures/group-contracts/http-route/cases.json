@@ -1,0 +1,2176 @@
+[
+  {
+    "name": "extracts routes from Route/HANDLES_ROUTE graph + source scan for method",
+    "project": "routes-from-route-handles-route-graph-source",
+    "graphRoute": "/api/v2/users"
+  },
+  {
+    "name": "supplements graph providers with source-scan providers from other files",
+    "project": "supplements-graph-providers-with-source-scan",
+    "graphRoute": "/api/v2/users",
+    "sourceRoute": {
+      "filePath": "cmd/server.go",
+      "contractId": "http::*::/api/health",
+      "handler": "healthHandler"
+    }
+  },
+  {
+    "name": "extracts Spring @GetMapping annotation",
+    "project": "spring-getmapping-annotation",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/v2/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/v2/users",
+          "pathSegments": ["api", "v2", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/v2/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "create"
+        },
+        "symbolName": "create",
+        "confidence": 0.8,
+        "meta": {
+          "method": "POST",
+          "path": "/api/v2/users",
+          "pathSegments": ["api", "v2", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/v2/users/{param}",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "getById"
+        },
+        "symbolName": "getById",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/v2/users/{param}",
+          "pathSegments": ["api", "v2", "users", "{param}"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Spring class-level @RequestMapping(path = \"/api\")",
+    "project": "spring-class-level-requestmapping-path-api",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/v3/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/v3/users",
+          "pathSegments": ["api", "v3", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Spring class-level @RequestMapping(value = \"/api\")",
+    "project": "spring-class-level-requestmapping-value-api",
+    "expected": [
+      {
+        "contractId": "http::GET::/orders/list",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/OrderController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/orders/list",
+          "pathSegments": ["orders", "list"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Spring method-level @GetMapping(value = \"/users\") (named value)",
+    "project": "spring-method-level-getmapping-value-users",
+    "expected": [
+      {
+        "contractId": "http::GET::/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/users",
+          "pathSegments": ["users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Spring method-level @GetMapping(path = \"/users\") (named path)",
+    "project": "spring-method-level-getmapping-path-users",
+    "expected": [
+      {
+        "contractId": "http::GET::/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/users",
+          "pathSegments": ["users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Spring method-level @PostMapping(path = \"/users\") (named path)",
+    "project": "spring-method-level-postmapping-path-users",
+    "expected": [
+      {
+        "contractId": "http::POST::/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "create"
+        },
+        "symbolName": "create",
+        "confidence": 0.8,
+        "meta": {
+          "method": "POST",
+          "path": "/users",
+          "pathSegments": ["users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "combines class named-arg prefix with method positional path",
+    "project": "combines-class-named-arg-prefix-with-method",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users",
+          "pathSegments": ["api", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "combines class positional prefix with method named-arg path",
+    "project": "combines-class-positional-prefix-with-method",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users",
+          "pathSegments": ["api", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "emits a root provider for pathless @GetMapping without leaking produces",
+    "project": "emits-a-root-provider-for-pathless",
+    "expected": [
+      {
+        "contractId": "http::GET::/",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/MisleadingController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/",
+          "pathSegments": [],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "emits exactly one provider for @GetMapping(name = \"...\", value = \"/users\")",
+    "project": "emits-exactly-one-provider-for-getmapping",
+    "expected": [
+      {
+        "contractId": "http::GET::/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/users",
+          "pathSegments": ["users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "uses `path` (not non-route key) as class prefix when both appear",
+    "project": "uses-path-not-non-route-key-as-class-prefix",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "list"
+        },
+        "symbolName": "list",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users",
+          "pathSegments": ["api", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "does not emit annotated Java interfaces as concrete Spring provider routes",
+    "project": "does-not-emit-annotated-java-interfaces-as",
+    "expected": []
+  },
+  {
+    "name": "inherits Spring interface route mappings when controller methods omit annotations",
+    "project": "inherits-spring-interface-route-mappings",
+    "expected": [
+      {
+        "contractId": "http::GET::/status",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/StatusController.java",
+          "name": "getStatus"
+        },
+        "symbolName": "getStatus",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/status",
+          "pathSegments": ["status"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "combines controller class mapping with inherited interface method mapping",
+    "project": "combines-controller-class-mapping-with",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "listUsers"
+        },
+        "symbolName": "listUsers",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users",
+          "pathSegments": ["api", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "does not duplicate inherited Spring prefixes already present on the controller",
+    "project": "does-not-duplicate-inherited-spring-prefixes",
+    "expected": [
+      {
+        "contractId": "http::GET::/open/ai/query",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/DataReleaseFacadeImpl.java",
+          "name": "query"
+        },
+        "symbolName": "query",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/open/ai/query",
+          "pathSegments": ["open", "ai", "query"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "still combines distinct inherited Spring prefixes that share a leading segment",
+    "project": "still-combines-distinct-inherited-spring",
+    "expected": [
+      {
+        "contractId": "http::GET::/open/open/ai/query",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/DataReleaseFacadeImpl.java",
+          "name": "query"
+        },
+        "symbolName": "query",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/open/open/ai/query",
+          "pathSegments": ["open", "open", "ai", "query"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "keeps a controller prefix when a prefix-less interface method starts with the same path",
+    "project": "keeps-a-controller-prefix-when-a-prefix-less",
+    "expected": [
+      {
+        "contractId": "http::GET::/users/users/{param}",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/UserController.java",
+          "name": "getUser"
+        },
+        "symbolName": "getUser",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/users/users/{param}",
+          "pathSegments": ["users", "users", "{param}"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "skips ambiguous inherited routes when interfaces share a simple name",
+    "project": "skips-ambiguous-inherited-routes-when",
+    "expected": []
+  },
+  {
+    "name": "extracts fully-qualified Java route annotations (#2254 FQN follow-through)",
+    "project": "fully-qualified-java-route-annotations-2254",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/users",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/FqnController.java",
+          "name": "users"
+        },
+        "symbolName": "users",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users",
+          "pathSegments": ["api", "users"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts FQN OpenFeign consumers + two-segment FQN, with anti-overreach",
+    "project": "fqn-openfeign-consumers-two-segment-fqn-with",
+    "expected": [
+      {
+        "contractId": "http::GET::/v2/items",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/QualifiedClient.java",
+          "name": "items"
+        },
+        "symbolName": "items",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/v2/items",
+          "pathSegments": ["v2", "items"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/QualifiedClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Java Spring RestTemplate, WebClient and OkHttp literal calls",
+    "project": "java-spring-resttemplate-webclient-and",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/users/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/ApiClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/users/{param}/details",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/ApiClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users/{param}/details",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/users",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/ApiClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/api/users",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-web-client"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/ApiClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Java RestTemplate URI.create(...) static paths",
+    "project": "java-resttemplate-uri-create-static-paths",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/uri-users/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/UriClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/uri-users/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/uri-users/{param}/details",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/UriClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/api/uri-users/{param}/details",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Java RestTemplate UriComponentsBuilder fluent-chain paths",
+    "project": "java-resttemplate-uricomponentsbuilder",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/builder-users/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/BuilderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/builder-users/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/base/sub",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/BuilderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/base/sub",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/external-users",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/BuilderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/external-users",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      }
+    ]
+  },
+  {
+    "name": "strips a query string baked into a UriComponentsBuilder seed (#2268)",
+    "project": "strips-a-query-string-baked-into-a",
+    "expected": [
+      {
+        "contractId": "http::GET::/base/sub",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/QuerySeedClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/base/sub",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/y",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/QuerySeedClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/y",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      }
+    ]
+  },
+  {
+    "name": "resolves a UriComponentsBuilder argument passed to restTemplate.exchange (#2268)",
+    "project": "resolves-a-uricomponentsbuilder-argument",
+    "expected": [
+      {
+        "contractId": "http::PUT::/api/exchange-users",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/ExchangeBuilderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "PUT",
+          "path": "/api/exchange-users",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      }
+    ]
+  },
+  {
+    "name": "appends UriComponentsBuilder .path() verbatim per Spring semantics (#2268)",
+    "project": "appends-uricomponentsbuilder-path-verbatim",
+    "expected": [
+      {
+        "contractId": "http::GET::/apinoslash",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/PathClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/apinoslash",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/svc/withslash",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/PathClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/svc/withslash",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/trail/seg",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/PathClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/trail/seg",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/first-value/end",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/PathClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/first-value/end",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/ext",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/PathClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/ext",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      },
+      {
+        "contractId": "http::GET::/empty",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/PathClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/empty",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-rest-template"
+        }
+      }
+    ]
+  },
+  {
+    "name": "does not overflow on a pathological UriComponentsBuilder chain (#2268)",
+    "project": "does-not-overflow-on-a-pathological",
+    "expected": []
+  },
+  {
+    "name": "infers Java OkHttp verbs from sibling Request.Builder calls",
+    "project": "infers-java-okhttp-verbs-from-sibling",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::HEAD::/api/orders/head",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "HEAD",
+          "path": "/api/orders/head",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/orders",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/api/orders",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::PUT::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "PUT",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::DELETE::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "DELETE",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::PATCH::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "PATCH",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/bare-build",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/bare-build",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      }
+    ]
+  },
+  {
+    "name": "does not emit a contract for an empty-string verb literal (#2268)",
+    "project": "does-not-emit-a-contract-for-an-empty-string",
+    "expected": []
+  },
+  {
+    "name": "extracts OkHttp chains with a builder call before .url(), with anti-overreach (#2268)",
+    "project": "okhttp-chains-with-a-builder-call-before-url",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/pre-url",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpPreUrl.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/pre-url",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/verb-first",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OkHttpPreUrl.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/api/verb-first",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Java WebClient long-form method(HttpMethod.X).uri(...) — #2254 parity",
+    "project": "java-webclient-long-form-method-httpmethod-x",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/get",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/LongFormClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/get",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-web-client"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/post",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/LongFormClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/api/post",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-web-client"
+        }
+      },
+      {
+        "contractId": "http::PUT::/api/put",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/LongFormClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "PUT",
+          "path": "/api/put",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-web-client"
+        }
+      },
+      {
+        "contractId": "http::DELETE::/api/delete",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/LongFormClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "DELETE",
+          "path": "/api/delete",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-web-client"
+        }
+      },
+      {
+        "contractId": "http::PATCH::/api/users/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/LongFormClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "PATCH",
+          "path": "/api/users/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-web-client"
+        }
+      }
+    ]
+  },
+  {
+    "name": "does NOT match Java WebClient long-form with a variable-bound verb",
+    "project": "does-not-match-java-webclient-long-form-with",
+    "expected": []
+  },
+  {
+    "name": "handles Java array-form annotation paths ({\"/x\"}, key = {\"/x\"})",
+    "project": "handles-java-array-form-annotation-paths-x-key-x",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/products/{param}",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/ProductController.java",
+          "name": "get"
+        },
+        "symbolName": "get",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/api/products/{param}",
+          "pathSegments": ["api", "products", "{param}"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::POST::/orders/search",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OrdersClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/orders/search",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts OpenFeign clients as consumers, not providers",
+    "project": "openfeign-clients-as-consumers-not-providers",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OrderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/orders",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OrderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/api/orders",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Spring HTTP Interface @(Get|...)Exchange clients as consumers",
+    "project": "spring-http-interface-get-exchange-clients",
+    "expected": [
+      {
+        "contractId": "http::GET::/items/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/InventoryApi.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "GET",
+          "path": "/items/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-http-interface"
+        }
+      },
+      {
+        "contractId": "http::POST::/items/search",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/InventoryApi.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "POST",
+          "path": "/items/search",
+          "extractionStrategy": "source_scan",
+          "framework": "spring-http-interface"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts OpenFeign clients without an interface path prefix",
+    "project": "openfeign-clients-without-an-interface-path-prefix",
+    "expected": [
+      {
+        "contractId": "http::GET::/health",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HealthClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/health",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "does not treat @FeignClient text in an interface body as a Feign annotation",
+    "project": "does-not-treat-feignclient-text-in-an",
+    "expected": []
+  },
+  {
+    "name": "extracts OpenFeign clients with @RequestMapping interface prefixes",
+    "project": "openfeign-clients-with-requestmapping",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/inventory/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/InventoryClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/inventory/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "prefers @FeignClient(path=...) over @RequestMapping prefixes on OpenFeign clients",
+    "project": "prefers-feignclient-path-over-requestmapping",
+    "expected": [
+      {
+        "contractId": "http::GET::/feign-path/orders",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/PrecedenceClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/feign-path/orders",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts native @RequestLine consumers on @FeignClient interfaces",
+    "project": "native-requestline-consumers-on-feignclient",
+    "expected": [
+      {
+        "contractId": "http::POST::/ai/summarize",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/AiClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "POST",
+          "path": "/ai/summarize",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      },
+      {
+        "contractId": "http::GET::/ai/health",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/AiClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "GET",
+          "path": "/ai/health",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "joins @FeignClient(path=...) prefix with @RequestLine paths",
+    "project": "joins-feignclient-path-prefix-with",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OrderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "GET",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      },
+      {
+        "contractId": "http::DELETE::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OrderClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "DELETE",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "strips query strings from @RequestLine values when forming contract IDs",
+    "project": "strips-query-strings-from-requestline-values",
+    "expected": [
+      {
+        "contractId": "http::GET::/search",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/SearchClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "GET",
+          "path": "/search",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts native @RequestLine on a plain interface without @FeignClient (Feign.builder())",
+    "project": "native-requestline-on-a-plain-interface",
+    "expected": [
+      {
+        "contractId": "http::POST::/ai/summarization",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/BigModelClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "POST",
+          "path": "/ai/summarization",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      },
+      {
+        "contractId": "http::GET::/ai/concurrent",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/BigModelClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "GET",
+          "path": "/ai/concurrent",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "mixes @RequestLine and @GetMapping methods on the same @FeignClient interface",
+    "project": "mixes-requestline-and-getmapping-methods-on",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/spring-style",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/MixedClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/api/spring-style",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/native-style",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/MixedClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "GET",
+          "path": "/api/native-style",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts @RequestLine values written with the named \"value\" argument",
+    "project": "-requestline-values-written-with-the-named",
+    "expected": [
+      {
+        "contractId": "http::POST::/create",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/NamedArgClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.75,
+        "meta": {
+          "method": "POST",
+          "path": "/create",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "ignores @RequestLine whose named argument is not \"value\"",
+    "project": "ignores-requestline-whose-named-argument-is",
+    "expected": []
+  },
+  {
+    "name": "ignores @RequestLine values that are not a \"VERB /path\" line",
+    "project": "ignores-requestline-values-that-are-not-a",
+    "expected": []
+  },
+  {
+    "name": "ignores @RequestLine on a class method (Feign proxies are interfaces only)",
+    "project": "ignores-requestline-on-a-class-method-feign",
+    "expected": []
+  },
+  {
+    "name": "prefers @FeignClient(path=...) over @RequestMapping when @RequestMapping appears first",
+    "project": "prefers-feignclient-path-over-requestmapping-when-requestmapping-appears-first",
+    "expected": [
+      {
+        "contractId": "http::GET::/feign-path/orders",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/ReversedPrecedenceClient.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/feign-path/orders",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "a @FeignClient API interface implemented by a controller yields both a consumer and a provider (Java)",
+    "project": "a-feignclient-api-interface-implemented-by-a",
+    "expected": [
+      {
+        "contractId": "http::GET::/warehouses/{param}/stock",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/controller/WarehouseController.java",
+          "name": "listStock"
+        },
+        "symbolName": "listStock",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/warehouses/{param}/stock",
+          "pathSegments": ["warehouses", "{param}", "stock"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::GET::/warehouses/{param}/stock",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/rest/WarehouseApi.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "GET",
+          "path": "/warehouses/{param}/stock",
+          "extractionStrategy": "source_scan",
+          "framework": "openfeign"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Java and Apache HttpClient literal request construction",
+    "project": "java-and-apache-httpclient-literal-request",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/users/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClients.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/users/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/users",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClients.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "POST",
+          "path": "/api/users",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClients.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "apache-http-client"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/orders",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClients.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "POST",
+          "path": "/api/orders",
+          "extractionStrategy": "source_scan",
+          "framework": "apache-http-client"
+        }
+      },
+      {
+        "contractId": "http::PUT::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClients.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "PUT",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "apache-http-client"
+        }
+      },
+      {
+        "contractId": "http::DELETE::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClients.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "DELETE",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "apache-http-client"
+        }
+      },
+      {
+        "contractId": "http::PATCH::/api/orders/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClients.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "PATCH",
+          "path": "/api/orders/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "apache-http-client"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Java HttpClient HEAD, .method(), and default-GET forms",
+    "project": "java-httpclient-head-method-and-default-get-forms",
+    "expected": [
+      {
+        "contractId": "http::HEAD::/api/users/head",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "HEAD",
+          "path": "/api/users/head",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::PATCH::/api/users/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "PATCH",
+          "path": "/api/users/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/default-users/{param}",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientVerbs.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/default-users/{param}",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      }
+    ]
+  },
+  {
+    "name": "extracts Java HttpClient verbs across intervening builder calls (#2268)",
+    "project": "java-httpclient-verbs-across-intervening",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/hdr",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientIntervening.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/hdr",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::PUT::/api/tmo",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientIntervening.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "PUT",
+          "path": "/api/tmo",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::DELETE::/api/hdr-verb",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientIntervening.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "DELETE",
+          "path": "/api/hdr-verb",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/verb-then-hdr",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientIntervening.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "POST",
+          "path": "/api/verb-then-hdr",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/unbuilt",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientIntervening.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/unbuilt",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/pre-uri",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientIntervening.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/pre-uri",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      },
+      {
+        "contractId": "http::GET::/api/ctor",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/HttpClientIntervening.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/ctor",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      }
+    ]
+  },
+  {
+    "name": "passes through a non-standard HttpClient .method(\"VERB\") verb (#2268)",
+    "project": "passes-through-a-non-standard-httpclient",
+    "expected": [
+      {
+        "contractId": "http::REPORT::/api/report",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/CustomVerb.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "REPORT",
+          "path": "/api/report",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      }
+    ]
+  },
+  {
+    "name": "handles HttpClient constructor-URI override and rejects non-newBuilder .uri (#2268)",
+    "project": "handles-httpclient-constructor-uri-override",
+    "expected": [
+      {
+        "contractId": "http::GET::/api/override-wins",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/CtorOverride.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "GET",
+          "path": "/api/override-wins",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      }
+    ]
+  },
+  {
+    "name": "resolves the last verb when a chain sets two (runtime last-wins) (#2268)",
+    "project": "resolves-the-last-verb-when-a-chain-sets-two",
+    "expected": [
+      {
+        "contractId": "http::POST::/api/ok-two",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/TwoVerb.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.7,
+        "meta": {
+          "method": "POST",
+          "path": "/api/ok-two",
+          "extractionStrategy": "source_scan",
+          "framework": "okhttp"
+        }
+      },
+      {
+        "contractId": "http::POST::/api/hc-two",
+        "type": "http",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/TwoVerb.java",
+          "name": "fetch"
+        },
+        "symbolName": "fetch",
+        "confidence": 0.65,
+        "meta": {
+          "method": "POST",
+          "path": "/api/hc-two",
+          "extractionStrategy": "source_scan",
+          "framework": "java-http-client"
+        }
+      }
+    ]
+  },
+  {
+    "name": "emits one contract per element of a multi-element Java path array",
+    "project": "emits-one-contract-per-element-of-a-multi",
+    "expected": [
+      {
+        "contractId": "http::GET::/base/one/primary",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/AliasController.java",
+          "name": "get"
+        },
+        "symbolName": "get",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/base/one/primary",
+          "pathSegments": ["base", "one", "primary"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::GET::/base/two/primary",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/AliasController.java",
+          "name": "get"
+        },
+        "symbolName": "get",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/base/two/primary",
+          "pathSegments": ["base", "two", "primary"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::GET::/base/one/alias",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/AliasController.java",
+          "name": "get"
+        },
+        "symbolName": "get",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/base/one/alias",
+          "pathSegments": ["base", "one", "alias"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      },
+      {
+        "contractId": "http::GET::/base/two/alias",
+        "type": "http",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/AliasController.java",
+          "name": "get"
+        },
+        "symbolName": "get",
+        "confidence": 0.8,
+        "meta": {
+          "method": "GET",
+          "path": "/base/two/alias",
+          "pathSegments": ["base", "two", "alias"],
+          "extractionStrategy": "source_scan",
+          "framework": "spring"
+        }
+      }
+    ]
+  }
+]

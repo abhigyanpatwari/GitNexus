@@ -111,12 +111,6 @@
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
     {
-      "a": "test/java/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > emits METHOD_IMPLEMENTS from DbLookup.find(int) \u2192 ILookup.find(int)",
-      "b": "test/java/resolvers/java.test.ts#Java same-arity overloads (worker path) > METHOD_IMPLEMENTS edges match interface methods \u2014 sequential path",
-      "category": "integration-same-fixture",
-      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
-    },
-    {
       "a": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M1\u2192M2 stamp upgrade (#2082 M2, pure) > an identical resolved M2 config compares equal (steady state keeps incremental)",
       "b": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M2\u2192M3 stamp upgrade (#2083 M3 U5, pure) > an identical resolved M3 config compares equal (steady state keeps incremental)",
       "category": "import-initialization",
@@ -195,7 +189,7 @@
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
     {
-      "a": "test/java/tree-sitter-languages.test.ts#Tree-sitter multi-language parsing > unhappy path > handles empty string file path",
+      "a": "test/integration/tree-sitter-languages.test.ts#Tree-sitter multi-language parsing > unhappy path > handles empty string file path",
       "b": "test/unit/ingestion-utils.test.ts#getLanguageFromFilename > unsupported > returns null for empty string",
       "category": "irrelevant-setup",
       "basis": "Both import getLanguageFromFilename from gitnexus-shared, pass empty string and assert toBeNull. Loading a parser in an unrelated beforeAll does not change this pure function."

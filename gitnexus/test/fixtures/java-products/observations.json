@@ -1,0 +1,320 @@
+{
+  "../compiler-conformance/java-field-dispatch-counts": [
+    {
+      "type": "CALLS",
+      "from": "runField",
+      "to": "save",
+      "projection": "filePath",
+      "exact": [
+        "BaseImpl.java",
+        "MockRepo.java",
+        "Repo.java",
+        "SubImpl.java",
+        "UserRepo.java"
+      ]
+    },
+    {
+      "type": "CALLS",
+      "from": "runParam",
+      "to": "save",
+      "projection": "filePath",
+      "exact": [
+        "BaseImpl.java",
+        "MockRepo.java",
+        "Repo.java",
+        "SubImpl.java",
+        "UserRepo.java"
+      ]
+    }
+  ],
+  "../compiler-conformance/java-generic-field-control": [
+    {
+      "type": "CALLS",
+      "from": "runControl",
+      "to": "save",
+      "projection": "id",
+      "exact": [
+        "Method:A.java:Plain.save#1",
+        "Method:A.java:PlainRepo.save#1"
+      ]
+    },
+    {
+      "type": "CALLS",
+      "from": "runGeneric",
+      "to": "save",
+      "projection": "id",
+      "exact": [
+        "Method:A.java:Repo.save#1",
+        "Method:A.java:UserRepo.save#1"
+      ]
+    }
+  ],
+  "unbounded-generic-field": [
+    {
+      "type": "CALLS",
+      "from": "runWildcard",
+      "to": "save",
+      "projection": "id",
+      "exact": [
+        "Method:A.java:Repo.save#1",
+        "Method:A.java:UserRepo.save#1"
+      ]
+    },
+    {
+      "type": "CALLS",
+      "from": "runRaw",
+      "to": "save",
+      "projection": "id",
+      "exact": [
+        "Method:A.java:Repo.save#1",
+        "Method:A.java:UserRepo.save#1"
+      ]
+    }
+  ],
+  "../compiler-conformance/java-generic-interface-bounds": [
+    {
+      "type": "CALLS",
+      "from": "run",
+      "to": "check",
+      "projection": "filePath",
+      "includes": [
+        "StringValidator.java"
+      ],
+      "excludes": [
+        "NumberValidator.java"
+      ]
+    },
+    {
+      "type": "CALLS",
+      "from": "runAny",
+      "to": "check",
+      "projection": "filePath",
+      "includes": [
+        "StringValidator.java",
+        "NumberValidator.java"
+      ]
+    }
+  ],
+  "../compiler-conformance/java-copied-method-reference": [
+    {
+      "type": "CALLS",
+      "from": "invoke",
+      "to": "target",
+      "reason": "callable-value-flow",
+      "projection": "name",
+      "includes": [
+        "target"
+      ]
+    }
+  ],
+  "../compiler-conformance/java-ordinary-run-method": [
+    {
+      "type": "CALLS",
+      "from": "entry",
+      "to": "Worker",
+      "reason": "callable-value-flow",
+      "projection": "name",
+      "exact": []
+    }
+  ],
+  "java-kotlin-accessor": [
+    {
+      "type": "node",
+      "label": "Method",
+      "name": "getName",
+      "file": "models/User.kt",
+      "properties": {
+        "synthetic": "kotlin-jvm"
+      }
+    },
+    {
+      "type": "CALLS",
+      "from": "consume",
+      "to": "getName",
+      "projection": "name",
+      "exact": []
+    }
+  ],
+  "main-and-test-source-roots": [
+    {
+      "type": "CALLS",
+      "fromFile": "beta/src/main/java/services/Service.java",
+      "to": "save",
+      "projection": "filePath",
+      "exact": [
+        "alpha/src/main/java/models/User.java"
+      ]
+    },
+    {
+      "type": "EXTENDS",
+      "from": "Child",
+      "projection": "filePath",
+      "exact": [
+        "alpha/src/main/java/parents/Base.java"
+      ]
+    },
+    {
+      "type": "EXTENDS",
+      "from": "ExternalChild",
+      "projection": "filePath",
+      "exact": []
+    },
+    {
+      "type": "CALLS",
+      "fromFile": "beta/src/test/java/services/TestService.java",
+      "to": "save",
+      "projection": "filePath",
+      "exact": [
+        "beta/src/test/java/models/User.java"
+      ]
+    },
+    {
+      "type": "EXTENDS",
+      "from": "TestChild",
+      "projection": "filePath",
+      "exact": [
+        "beta/src/test/java/parents/Base.java"
+      ]
+    },
+    {
+      "type": "EXTENDS",
+      "from": "D",
+      "projection": "filePath",
+      "excludes": [
+        "gamma/src/main/java/nested/B.java"
+      ]
+    }
+  ],
+  "qualified-anonymous-external": [
+    {
+      "type": "EXTENDS",
+      "fromFile": "java/p/Factory.java",
+      "projection": "filePath",
+      "excludes": [
+        "java/p/B.java"
+      ]
+    }
+  ],
+  "generic-arity-near-two": [
+    {
+      "type": "EXTENDS",
+      "from": "Child",
+      "projection": "filePath",
+      "exact": [
+        "far/src/main/java/p/Base.java"
+      ]
+    }
+  ],
+  "generic-arity-near-plain": [
+    {
+      "type": "EXTENDS",
+      "from": "Child",
+      "projection": "filePath",
+      "exact": [
+        "far/src/main/java/p/Base.java"
+      ]
+    }
+  ],
+  "generic-arity-incompatible": [
+    {
+      "type": "EXTENDS",
+      "from": "Child",
+      "projection": "filePath",
+      "exact": []
+    }
+  ],
+  "../compiler-conformance/java-raw-generic-base": [
+    {
+      "type": "EXTENDS",
+      "from": "Child",
+      "projection": "filePath",
+      "exact": [
+        "model/src/main/java/p/Base.java"
+      ]
+    }
+  ],
+  "../lang-resolution/java-write-access": [
+    {
+      "type": "ACCESSES",
+      "to": "name",
+      "projection": "label",
+      "includes": [
+        "Property"
+      ],
+      "only": "Property"
+    },
+    {
+      "type": "ACCESSES",
+      "to": "address",
+      "projection": "label",
+      "includes": [
+        "Property"
+      ],
+      "only": "Property"
+    }
+  ],
+  "closure-field": [
+    {
+      "type": "CALLS",
+      "projection": "id",
+      "exact": [
+        "Function:A.java:A.handler"
+      ]
+    }
+  ],
+  "../compiler-conformance/java-method-ownership": [
+    {
+      "type": "HAS_METHOD",
+      "from": "Logger",
+      "projection": "name",
+      "exact": [
+        "info",
+        "error"
+      ]
+    },
+    {
+      "type": "HAS_METHOD",
+      "from": "Formatter",
+      "projection": "name",
+      "exact": [
+        "format",
+        "escape"
+      ]
+    },
+    {
+      "type": "HAS_METHOD",
+      "from": "Validator",
+      "projection": "name",
+      "exact": [
+        "validate",
+        "getMessage"
+      ]
+    },
+    {
+      "type": "HAS_METHOD",
+      "from": "EmailValidator",
+      "projection": "name",
+      "exact": [
+        "validate",
+        "getMessage",
+        "checkFormat"
+      ]
+    },
+    {
+      "type": "HAS_METHOD",
+      "from": "Repository",
+      "projection": "name",
+      "exact": [
+        "save"
+      ]
+    },
+    {
+      "type": "HAS_METHOD",
+      "from": "UserRepository",
+      "projection": "name",
+      "exact": [
+        "save"
+      ]
+    }
+  ]
+}

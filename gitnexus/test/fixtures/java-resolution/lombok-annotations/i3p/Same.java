@@ -1,0 +1,1 @@
+package i3p; import lombok.Getter; public class Same extends PkgBase { @Getter String name; }

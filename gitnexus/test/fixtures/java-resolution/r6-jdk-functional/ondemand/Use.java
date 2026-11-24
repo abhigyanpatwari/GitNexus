@@ -1,0 +1,1 @@
+package ondemand; class Use { void go() { Api.run(user -> user.save()); } }

@@ -1,0 +1,1 @@
+package i3q; import lombok.Getter; public class Cross extends i3p.PkgBase { @Getter String name; }

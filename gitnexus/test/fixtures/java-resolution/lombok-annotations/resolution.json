@@ -1,0 +1,23 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve": 15, "compiler.err.cant.resolve.location": 5, "compiler.err.cant.resolve.location.args": 14, "compiler.err.doesnt.exist": 35, "compiler.err.not.def.public.cant.access": 1, "compiler.err.report.access": 1},
+  "calls": [
+    {"caller": "Method:i1/Svc.java:Svc.account#1", "member": "*", "published": ["Method:i1/Account.java:Account.getName#0"], "compilerTargets": [], "source": ["i1/Svc.java#2:2"]},
+    {"caller": "Method:i1/Svc.java:Svc.customer#1", "member": "*", "published": ["Method:i1/Customer.java:Customer.getEmail#0"], "compilerTargets": [], "source": ["i1/Svc.java#3:2"]},
+    {"caller": "Method:i1/Svc.java:Svc.conf#1", "member": "*", "source": ["i1/Svc.java#4:2"], "targets": 0},
+    {"caller": "Method:i2/Svc.java:Svc.ex#1", "member": "*", "published": ["Method:i2/Ex.java:Ex.getCode#0"], "compilerTargets": [], "source": ["i2/Svc.java#2:2"]},
+    {"caller": "Method:i2/Svc.java:Svc.dto#1", "member": "*", "source": ["i2/Svc.java#3:2"], "targets": 0},
+    {"caller": "Method:i2/Svc.java:Svc.unsure#1", "member": "*", "source": ["i2/Svc.java#4:2"], "targets": 0},
+    {"caller": "Method:i2/Svc.java:Svc.shadowed#1", "member": "*", "source": ["i2/Svc.java#5:2"], "targets": 0},
+    {"caller": "Method:i3q/Svc.java:Svc.privateBase#1", "member": "*", "published": ["Method:i3p/Model.java:Model.getName#0"], "compilerTargets": [], "source": ["i3q/Svc.java#2:2"]},
+    {"caller": "Method:i3q/Svc.java:Svc.crossPackage#1", "member": "*", "published": ["Method:i3q/Cross.java:Cross.getName#0"], "compilerTargets": [], "source": ["i3q/Svc.java#3:2"]},
+    {"caller": "Method:i3q/Svc.java:Svc.samePackage#1", "member": "*", "source": ["i3q/Svc.java#4:2"], "targets": 0},
+    {"caller": "Method:i4/Caller.java:Caller.consumer#1", "member": "*", "source": ["i4/Caller.java#2:2"], "targets": 0},
+    {"caller": "Method:i4/Caller.java:Caller.control#1", "member": "*", "published": ["Method:i4/Control.java:Control.getRepo#0"], "compilerTargets": [], "source": ["i4/Caller.java#3:2"]},
+    {"caller": "Method:i6/Caller.java:Caller.f#1", "member": "*", "source": ["i6/Caller.java#1:27"], "targets": 0},
+    {"caller": "Method:i8/Caller.java:Caller.f#1", "member": "*", "source": ["i8/Caller.java#1:27"], "targets": 0}
+  ],
+  "relationships": [
+    {"type": "INJECTS", "projection": "#{rel.sourceId}->#{rel.targetId}", "expected": ["Class:i4/Control.java:Control->Class:i4/Store4.java:Store4", "Class:i5/FieldDefaultsSvc.java:FieldDefaultsSvc->Class:i5/Helper.java:Helper", "Class:i5/S.java:S->Class:i5/Clock.java:Clock", "Class:i7/BuilderGen.java:BuilderGen->Class:i7/Store7.java:Store7", "Class:i7/BuilderSvc.java:BuilderSvc->Class:i7/Store7.java:Store7"]}
+  ],
+  "synthetic": {"i1/Account.java": ["Method:i1/Account.java:Account.getName#0", "Method:i1/Account.java:Account.getTags#0", "Method:i1/Account.java:Account.setName#1", "Method:i1/Account.java:Account.setTags#1"], "i2/Dto.java": ["Method:i2/Dto.java:Dto.getId#0", "Method:i2/Dto.java:Dto.getName#0", "Method:i2/Dto.java:Dto.setName#1"], "i2/Unsure.java": ["Method:i2/Unsure.java:Unsure.getId#0", "Method:i2/Unsure.java:Unsure.getName#0", "Method:i2/Unsure.java:Unsure.setName#1"], "i2/GModel.java": [], "i3p/Same.java": [], "i4/Consumer.java": [], "i6/E.java": [], "i8/Model.java": []}
+}

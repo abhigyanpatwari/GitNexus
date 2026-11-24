@@ -1,4 +1,5 @@
-import { expect } from 'vitest';
+import { fixtureGitExecutable } from './git-executable.js';
+import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -25,13 +26,7 @@ export function runSkillsCli(cwd: string, timeoutMs = 45000) {
  * Returns the tmp directory path.
  */
 export function createFixtureRepo(prefix: string, files: Record<string, string>): string {
-  // Use an absolute executable so the fixture directory cannot shadow Git.
-  const git =
-    process.env.GIT_EXECUTABLE ??
-    (process.platform === 'win32'
-      ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git', 'cmd', 'git.exe')
-      : '/usr/bin/git');
-  if (!path.isAbsolute(git)) throw new Error('GIT_EXECUTABLE must be an absolute path');
+  const git = fixtureGitExecutable();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skills-e2e-${prefix}-`));
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = path.join(tmpDir, relPath);
@@ -56,8 +51,9 @@ export function createFixtureRepo(prefix: string, files: Record<string, string>)
 
 export function assertSkillsCliSucceeded(result: ReturnType<typeof runSkillsCli>) {
   if (result.error) throw result.error;
-  expect(
+  assert.equal(
     result.status,
+    0,
     [
       result.signal
         ? `analyze --skills terminated by ${result.signal}`
@@ -65,7 +61,7 @@ export function assertSkillsCliSucceeded(result: ReturnType<typeof runSkillsCli>
       `stdout: ${result.stdout?.slice(-500)}`,
       `stderr: ${result.stderr?.slice(-500)}`,
     ].join('\n'),
-  ).toBe(0);
+  );
 }
 
 /**
@@ -89,7 +85,7 @@ export function assertSkillFiles(
 ): boolean {
   assertSkillsCliSucceeded(result);
 
-  expect(fs.existsSync(path.join(tmpDir, '.gitnexus'))).toBe(true);
+  assert.equal(fs.existsSync(path.join(tmpDir, '.gitnexus')), true);
 
   const skillsRoot = path.join(tmpDir, '.claude', 'skills');
   if (!fs.existsSync(skillsRoot)) {
@@ -118,16 +114,16 @@ export function assertSkillFiles(
     }
   }
 
-  expect(skillFiles.length).toBeGreaterThanOrEqual(minSkills);
+  assert.ok(skillFiles.length >= minSkills);
 
   for (const skillPath of skillFiles) {
     const content = fs.readFileSync(skillPath, 'utf-8');
-    expect(content.startsWith('---')).toBe(true);
-    expect(content).toContain('name:');
-    expect(content).toContain('description:');
-    expect(content).toContain('## Key Files');
-    expect(content).toContain('## How to Explore');
-    expect(content.length).toBeGreaterThan(200);
+    assert.equal(content.startsWith('---'), true);
+    assert.ok(content.includes('name:'));
+    assert.ok(content.includes('description:'));
+    assert.ok(content.includes('## Key Files'));
+    assert.ok(content.includes('## How to Explore'));
+    assert.ok(content.length > 200);
   }
 
   return true;
@@ -147,16 +143,16 @@ export function assertContextFiles(result: ReturnType<typeof runSkillsCli>, tmpD
     fs.readdirSync(skillsRoot).some((entry) => entry.startsWith('gitnexus-area-'));
 
   const claudePath = path.join(tmpDir, 'CLAUDE.md');
-  expect(fs.existsSync(claudePath)).toBe(true);
+  assert.equal(fs.existsSync(claudePath), true);
   if (skillsGenerated) {
     const claudeContent = fs.readFileSync(claudePath, 'utf-8');
-    expect(claudeContent).toContain('.claude/skills/gitnexus-area-');
+    assert.ok(claudeContent.includes('.claude/skills/gitnexus-area-'));
   }
 
   const agentsPath = path.join(tmpDir, 'AGENTS.md');
-  expect(fs.existsSync(agentsPath)).toBe(true);
+  assert.equal(fs.existsSync(agentsPath), true);
   if (skillsGenerated) {
     const agentsContent = fs.readFileSync(agentsPath, 'utf-8');
-    expect(agentsContent).toContain('.claude/skills/gitnexus-area-');
+    assert.ok(agentsContent.includes('.claude/skills/gitnexus-area-'));
   }
 }

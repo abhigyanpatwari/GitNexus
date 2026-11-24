@@ -1,0 +1,23 @@
+{
+  "diagnostics": {"compiler.err.cant.apply.symbol": 2, "compiler.err.cant.resolve.location.args": 5, "compiler.err.report.access": 1},
+  "calls": [
+    {"caller": "Method:Main.java:App.cloneChain#", "member": "save", "source": ["Main.java#30:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.partialCloneChain#", "member": "save", "source": ["Main.java#31:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.arrayProducerReceiver#", "member": "save", "source": ["Main.java#35:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.copyArrayNegative#", "member": "save", "source": ["Main.java#38:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.inapplicableExplicit#", "member": "save", "source": ["Main.java#26:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.inaccessibleExplicit#", "member": "save", "source": ["Main.java#27:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.parenthesizedArray#", "member": "save", "source": ["Main.java#36:2"]},
+    {"caller": "Method:Main.java:App.copyArray#", "member": "save", "source": ["Main.java#37:2"]},
+    {"caller": "Method:Main.java:App.factoryCopySnapshot#", "member": "save", "source": ["Main.java#39:2"]},
+    {"caller": "Method:Main.java:App.applicableExplicit#", "member": "save", "source": ["Main.java#28:2"]},
+    {"caller": "Method:Main.java:App.varargsExplicit#", "member": "save", "source": ["Main.java#29:2"]},
+    {"caller": "Method:Main.java:App.elementCloneChain#", "member": "save", "source": ["Main.java#32:2"]},
+    {"caller": "Method:Main.java:App.elementProducer#", "member": "save", "source": ["Main.java#33:2"]},
+    {"caller": "Method:Main.java:App.decoyElementProducer#", "member": "save", "source": ["Main.java#34:2"]},
+    {"caller": "Method:Qualified.java:Qualified.positive#", "member": "save", "source": ["Qualified.java#3:2"]},
+    {"caller": "Method:Qualified.java:Qualified.negative#", "member": "save", "source": ["Qualified.java#4:2"], "targets": 0},
+    {"caller": "Method:Main.java:Generic.bounded#", "member": "save", "source": ["Main.java#11:2"]},
+    {"caller": "Method:Main.java:App.inapplicableNoArg#", "member": "save", "source": ["Main.java#25:2"], "targets": 0}
+  ]
+}

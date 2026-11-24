@@ -1,0 +1,1 @@
+package mapping; class Use { void go() { Api.map(user -> user.name()); } }
