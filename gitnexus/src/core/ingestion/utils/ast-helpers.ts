@@ -787,10 +787,51 @@ const javaIdentityCandidatesBelow = (root: SyntaxNode): SyntaxNode[] => {
   return candidates.sort((left, right) => left.startIndex - right.startIndex);
 };
 
+/** Group ordinary declarations by lexical type, including members of a
+ * generated owner. Only literal dollar-digit names can occupy an ordinal. */
+const javaDeclaredBinaryNameMembers = (root: SyntaxNode, generated: readonly SyntaxNode[]) => {
+  const members = new Map<string, SyntaxNode[]>();
+  const named =
+    root.descendantsOfType?.([
+      ...JAVA_NAMED_TYPE_NODE_LABELS.keys(),
+      'annotation_type_declaration',
+    ]) ?? [];
+  if (!named.some((type) => /\$\d/.test(type.childForFieldName?.('name')?.text ?? '')))
+    return members;
+  if (JAVA_ANON_HOST_TYPES.has(root.type)) named.unshift(root);
+  const types = new Set([...named, ...generated].map(javaHostKey));
+  for (const type of named) {
+    if (isJavaLocalTypeNode(type)) continue;
+    let owner = type.parent;
+    while (owner && !types.has(javaHostKey(owner))) owner = owner.parent;
+    const key = owner ? javaHostKey(owner) : '';
+    const siblings = members.get(key);
+    if (siblings) siblings.push(type);
+    else members.set(key, [type]);
+  }
+  return members;
+};
+
 const buildJavaTypeIdentityState = (root: SyntaxNode): JavaTypeIdentityState => {
   const ordinalByStart = new Map<number, number>();
   const sequenceCounts = new Map<string, number>();
-  for (const candidate of javaIdentityCandidatesBelow(root)) {
+  const occupied = new Set<string>();
+  const namesByHost = new Map<string, string>();
+  const candidates = javaIdentityCandidatesBelow(root);
+  const members = javaDeclaredBinaryNameMembers(root, candidates);
+
+  // javac enters named members when it enters their owner, before attributing
+  // method bodies. A later source declaration can therefore reserve an ordinal.
+  function enterType(hostKey: string, binaryName: string): void {
+    occupied.add(binaryName);
+    namesByHost.set(hostKey, binaryName);
+    for (const member of members.get(hostKey) ?? []) {
+      const name = member.childForFieldName?.('name')?.text;
+      if (name) enterType(javaHostKey(member), binaryName ? binaryName + '$' + name : name);
+    }
+  }
+  enterType('', '');
+  for (const candidate of candidates) {
     const host = nearestJavaEnclosingType(candidate);
     if (host === null) continue;
     const isAnonymous = isJavaAnonymousBodyNode(candidate);
@@ -798,8 +839,15 @@ const buildJavaTypeIdentityState = (root: SyntaxNode): JavaTypeIdentityState => 
     // Anonymous types deliberately use the empty sequence key; malformed named
     // declarations must not enter that sequence.
     if (!isAnonymous && !bindingName) continue;
-    const sequenceKey = `${javaHostKey(host)}:${bindingName}`;
-    const ordinal = (sequenceCounts.get(sequenceKey) ?? 0) + 1;
+    const hostKey = javaHostKey(host);
+    const sequenceKey = `${hostKey}:${bindingName}`;
+    let ordinal = (sequenceCounts.get(sequenceKey) ?? 0) + 1;
+    const hostName = namesByHost.get(hostKey);
+    if (hostName !== undefined) {
+      const prefix = hostName + '$';
+      while (occupied.has(prefix + ordinal + bindingName)) ordinal++;
+      enterType(javaHostKey(candidate), prefix + ordinal + bindingName);
+    }
     sequenceCounts.set(sequenceKey, ordinal);
     ordinalByStart.set(candidate.startIndex, ordinal);
   }

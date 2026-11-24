@@ -16,6 +16,10 @@
     "constructors": true
   },
   "compiler-conformance/java-dollar-member-inheritance": 3,
+  "compiler-conformance/java-initializer-constructors": {
+    "sites": 0,
+    "constructors": true
+  },
   "compiler-conformance/java-invalid-overloads": {
     "sites": 6,
     "rejections": {
@@ -23,6 +27,7 @@
       "inapplicable": 3
     }
   },
+  "compiler-conformance/java-local-binary-name-collision": 3,
   "compiler-conformance/java-overload-access": 5,
   "compiler-conformance/java-overload-conformance": {
     "sites": 3,
@@ -33,6 +38,7 @@
   "compiler-conformance/java-overload-lexical": 4,
   "compiler-conformance/java-overload-phases": 9,
   "compiler-conformance/java-private-nested-base": 1,
+  "compiler-conformance/java-protected-nested-base": 2,
   "compiler-conformance/java-qualified-type-root-shadow": 1,
   "compiler-conformance/java-r3-inherited-member-root": 3,
   "compiler-conformance/java-r4-sam-on-demand": 14,
@@ -54,6 +60,7 @@
     }
   },
   "compiler-conformance/java-sam-split-package": 8,
+  "compiler-conformance/java-static-wildcard-inner-type": 2,
   "compiler-conformance/java-varargs-overload-identity": 7,
   "java/java-consumer-before-provider": 2,
   "java/java-cross-file": 3,

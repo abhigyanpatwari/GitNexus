@@ -172,8 +172,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     private void constructorEdge(MethodTree caller) {
         var call = getCurrentPath();
         var unit = call.getCompilationUnit();
-        if (!families.contains("<init>") || (caller == null && !(call.getLeaf() instanceof MemberReferenceTree))
-                || trees.getSourcePositions().getEndPosition(unit, call.getLeaf()) < 0) return;
+        if (!families.contains("<init>") || trees.getSourcePositions().getEndPosition(unit, call.getLeaf()) < 0) return;
         var constructor = trees.getElement(call);
         var target = constructor == null ? null : trees.getPath(constructor);
         if (target == null) return;

@@ -15,8 +15,15 @@ export const JAVA_IDENTIFIER_PART_CHARS = String.raw`${JAVA_IDENTIFIER_START_CHA
 export const JAVA_IDENTIFIER = `[${JAVA_IDENTIFIER_START_CHARS}][${JAVA_IDENTIFIER_PART_CHARS}]*`;
 /** A dotted name with no whitespace or comments between its parts. */
 export const JAVA_QUALIFIED_NAME = `${JAVA_IDENTIFIER}(?:\\.${JAVA_IDENTIFIER})*`;
-/** Java allows whitespace and comments between the parts of a qualified name. */
-export const stripGaps = (text: string) => text.replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*|\s+/g, '');
+const nameGaps = new RegExp(
+  `([${JAVA_IDENTIFIER_PART_CHARS}])\\s+(?=[${JAVA_IDENTIFIER_PART_CHARS}])|\\s+`,
+  'gu',
+);
+/** Ignore spacing around punctuation while keeping separate identifier tokens separate. */
+export const stripGaps = (text: string) =>
+  text
+    .replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, ' ')
+    .replace(nameGaps, (_gap, preceding: string | undefined) => (preceding ? preceding + ' ' : ''));
 /** Identifier characters and dots only: a written name without type
  * arguments, whitespace or comments. It checks characters, not segments. */
 export const JAVA_DOTTED_SPELLING = new RegExp(`^[${JAVA_IDENTIFIER_PART_CHARS}.]+$`, 'u');

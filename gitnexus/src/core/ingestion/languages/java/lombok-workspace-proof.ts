@@ -245,11 +245,41 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     }
     return { types: [...types], external };
   };
+  const enclosingTypeNamed = (
+    owner: TypeEntry,
+    head: string,
+  ): TypeEntry | 'unknown' | undefined => {
+    if (owner.fact.typeParameters.includes(head)) return 'unknown';
+    const declared = owner.memberNames.has(head);
+    const inherited = declared ? undefined : namesOf(owner);
+    if (inherited?.unknown) return 'unknown';
+    if (!declared && !inherited?.names.has(head))
+      return owner.fact.simpleName === head ? owner : undefined;
+    const members = (inherited?.members ?? owner.members).filter(
+      (member) => member.fact.simpleName === head,
+    );
+    return members.length === 1 ? members[0] : 'unknown';
+  };
+  const lexicalBase = (entry: TypeEntry, raw: string, head: string): ResolvedBase | undefined => {
+    for (let owner = entry.parent; owner !== undefined; owner = owner.parent) {
+      const root = enclosingTypeNamed(owner, head);
+      if (root === undefined) continue;
+      if (root === 'unknown' || raw === head) return root;
+      const nested = (byFqn.get(fqnOf(root) + raw.slice(head.length)) ?? []).filter((target) =>
+        visible(entry, target),
+      );
+      return nested.length === 1 ? nested[0] : 'unknown';
+    }
+    return undefined;
+  };
   const resolveBase = (entry: TypeEntry, written: string): ResolvedBase => {
     const raw = eraseJavaTypeArguments(written).replace(/\s+/g, '');
     if (!JAVA_DOTTED_SPELLING.test(raw)) return 'unknown';
-    const imports = entry.facts.imports.filter((item) => !item.static && !item.wildcard);
     const head = raw.split('.')[0]!;
+    // Types in an enclosing body shadow both single imports and package names (JLS 6.4.1).
+    const lexical = lexicalBase(entry, raw, head);
+    if (lexical !== undefined) return lexical;
+    const imports = entry.facts.imports.filter((item) => !item.static && !item.wildcard);
     const explicit = imports.filter((item) => item.name.split('.').pop() === head);
     // A single-static-import of a member type shadows like a single-type import.
     const statics = staticImported(entry, head);
@@ -282,25 +312,12 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     if (explicit.length === 1) spellings = [explicit[0]!.name + raw.slice(head.length)];
     else if (raw.includes('.')) spellings = [raw];
     else {
-      spellings = [];
-      for (let owner = entry.parent; owner !== undefined; owner = owner.parent) {
-        if (owner.memberNames.has(raw)) {
-          spellings.push(
-            `${owner.packageName === '' ? '' : owner.packageName + '.'}${owner.fact.name}.${raw}`,
-          );
-          break;
-        }
-      }
-      if (spellings.length === 0) {
-        const same = `${entry.packageName === '' ? '' : entry.packageName + '.'}${raw}`;
-        if (byFqn.has(same)) spellings.push(same);
-        else
-          spellings.push(
-            ...entry.facts.imports
-              .filter((item) => item.wildcard && !item.static)
-              .map((item) => `${item.name.replace(/\.\*$/, '')}.${raw}`),
-          );
-      }
+      const same = `${entry.packageName === '' ? '' : entry.packageName + '.'}${raw}`;
+      spellings = byFqn.has(same)
+        ? [same]
+        : entry.facts.imports
+            .filter((item) => item.wildcard && !item.static)
+            .map((item) => `${item.name.replace(/\.\*$/, '')}.${raw}`);
     }
     const candidates = [
       ...new Set(

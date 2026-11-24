@@ -499,7 +499,7 @@ export function javaStaticOnDemandImportBringsNoType(
   return (
     owners.length === 1 &&
     owners[0]!.bases.length === 0 &&
-    (byFqn?.get(`${owner}.${name}`)?.length ?? 0) === 0
+    !byFqn?.get(`${owner}.${name}`)?.some((member) => member.static)
   );
 }
 

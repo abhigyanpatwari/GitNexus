@@ -7,6 +7,7 @@ import { createKnowledgeGraph } from '../../../../src/core/graph/graph.js';
 import { createSemanticModel } from '../../../../src/core/ingestion/model/semantic-model.js';
 import { runScopeResolution } from '../../../../src/core/ingestion/scope-resolution/pipeline/run.js';
 import { javaScopeResolver } from '../../../../src/core/ingestion/languages/java/scope-resolver.js';
+import { javaStaticOnDemandImportBringsNoType } from '../../../../src/core/ingestion/languages/java/qualified-type-bindings.js';
 import type { JavaCaptureSideChannel } from '../../../../src/core/ingestion/languages/java/capture-side-channel.js';
 
 const declarations = {
@@ -62,6 +63,31 @@ function rerun(source: string, cached: readonly ParsedFile[]) {
 const importing = (body: string) => `import models.*; class Main { ${body} }`;
 
 describe('Java AST-bound package on-demand dependencies (JLS 6.5, 7.5.2)', () => {
+  it('proves absence only for non-static members of a fully known owner', () => {
+    expect.assertions(4);
+    runScopeResolution(
+      {
+        graph: createKnowledgeGraph(),
+        model: createSemanticModel(),
+        files: [
+          {
+            path: 'p/Owner.java',
+            content: `package p;
+              class Owner { class Inner {} static class Nested {} interface Contract {} }
+              class Derived extends java.util.HashMap<String, String> {}`,
+          },
+        ],
+        onResolved: ({ indexes }) => {
+          expect(javaStaticOnDemandImportBringsNoType('p.Owner', 'Inner', indexes)).toBe(true);
+          expect(javaStaticOnDemandImportBringsNoType('p.Owner', 'Nested', indexes)).toBe(false);
+          expect(javaStaticOnDemandImportBringsNoType('p.Owner', 'Contract', indexes)).toBe(false);
+          expect(javaStaticOnDemandImportBringsNoType('p.Derived', 'Entry', indexes)).toBe(false);
+        },
+      },
+      javaScopeResolver,
+    );
+  });
+
   it.each([
     ['field type', 'User value;'],
     ['same-spelling value and type', 'User User;'],

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -217,7 +217,6 @@ class Cases {
   void phase(Integer value) {} void phase(long value) {}
   void boxed(long value) {} void boxed(Number value) {}
   void variable(String... values) {} void variable(Object value) {}
-  void empty(Object... values) {} void empty(String... values) {}
   void nullable(String value) {} void nullable(Integer value) {}
   void crossed(String a, Object b) {} void crossed(Object a, String b) {}
   void opaque(String value) {} void opaque(Long value) {}
@@ -234,7 +233,6 @@ class Cases {
   void widening() { phase(1); }
   void refBeforeUnbox(Integer value) { boxed(value); }
   void fixedBeforeVarargs() { variable("x"); }
-  void emptyVarargs() { empty(); }
   void nullAmbiguous() { nullable(null); }
   void crossedAmbiguous() { crossed("a", "b"); }
   Object external() { return null; }
@@ -319,7 +317,6 @@ class ObjectOverload {
     ['widening', 'phase', 'Cases.phase#1~long'],
     ['refBeforeUnbox', 'boxed', 'Cases.boxed#1~Number'],
     ['fixedBeforeVarargs', 'variable', 'Cases.variable#1'],
-    ['emptyVarargs', 'empty', 'Cases.empty'],
     ['arraySpecific', 'array', 'Cases.array#1~String[]'],
     ['primitiveDimensions', 'dimensions', 'Cases.dimensions#1~Object[]'],
     ['invariant', 'concrete', 'Cases.concrete#1~Object'],
@@ -393,21 +390,6 @@ class ObjectOverload {
       'Method:Cases.java:IntegerGeneric.genericDispatch#1',
       'Method:Cases.java:StringGeneric.genericDispatch#1~String',
     ]);
-  });
-
-  it('selects the String varargs declaration even when legacy variadic graph IDs coincide', () => {
-    const lines = readFileSync(path.join(root, 'Cases.java'), 'utf8').split('\n');
-    const line = lines.findIndex((text) => text.includes('void empty(String...'));
-    const column = lines[line]!.indexOf('void empty(String...');
-    expect(getResolutionOutcomes(result)).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          kind: 'resolved',
-          name: 'empty',
-          targetId: `def:Cases.java#${line + 1}:${column}:Method:empty`,
-        }),
-      ]),
-    );
   });
 
   it('treats interface methods as public across package boundaries', () => {

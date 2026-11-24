@@ -8,7 +8,17 @@ import {
   javaArrayElementType,
   javaTypeText,
   javaTrailingDimensions,
+  stripGaps,
 } from '../../../../src/core/ingestion/languages/java/type-spelling.js';
+
+it('removes qualified-name gaps without joining separate Java identifiers', () => {
+  expect(stripGaps(' p /* package */ . // qualifier\n Foo . Base ')).toBe('p.Foo.Base');
+  for (const gap of [' ', '/* gap */', ' // gap\n ']) {
+    const name = stripGaps(`pkg.𐐀Foo${gap}Bar.Baz`);
+    expect(name).toBe('pkg.𐐀Foo Bar.Baz');
+    expect(new RegExp('^' + JAVA_QUALIFIED_NAME + '$', 'u').test(name)).toBe(false);
+  }
+});
 
 describe('Java written array types', () => {
   it('removes nested type-use annotation arguments without consuming the type', () => {

@@ -54,14 +54,30 @@ function sharesTopLevelDeclaration(member: TypeEntry, owner: TypeEntry): boolean
   return javaRangeContains(top.fact.range, owner.fact.range);
 }
 
-function accessible(target: TypeEntry, owner: TypeEntry): boolean {
+function enclosingSubclassInheritsMember(
+  owner: TypeEntry,
+  member: TypeEntry,
+  inventory: JavaWorkspaceTypeInventory,
+): boolean {
+  // The extends clause is inside the bodies of the enclosing classes (JLS 6.6.2.1).
+  // Compare declarations since an enclosing class can hide the inherited name.
+  for (let enclosing = owner.parent; enclosing !== undefined; enclosing = enclosing.parent) {
+    if (inventory.namesOf(enclosing).members.includes(member)) return true;
+  }
+  return false;
+}
+
+function accessible(
+  target: TypeEntry,
+  owner: TypeEntry,
+  inventory: JavaWorkspaceTypeInventory,
+): boolean {
   if (!isJvmSourceVisible(owner.filePath, target.filePath)) return false;
   for (let type: TypeEntry | undefined = target; type !== undefined; type = type.parent) {
     const access = type.fact.modifiers;
-    if (
-      (access?.includes('private') && !sharesTopLevelDeclaration(type, owner)) ||
-      (type.packageName !== owner.packageName && !access?.includes('public'))
-    )
+    if (access?.includes('private') && !sharesTopLevelDeclaration(type, owner)) return false;
+    if (type.packageName === owner.packageName || access?.includes('public')) continue;
+    if (!access?.includes('protected') || !enclosingSubclassInheritsMember(owner, type, inventory))
       return false;
   }
   return true;
@@ -134,7 +150,7 @@ export function bindJavaQualifiedHeritage(
           fileRoots.set(root, available);
         }
         if (!available || !headerCanNamePackage(owner, root, file.moduleScope, inventory)) continue;
-        const visible = candidates.filter((candidate) => accessible(candidate, owner));
+        const visible = candidates.filter((candidate) => accessible(candidate, owner, inventory));
         if (visible.length !== 1) continue;
         const target = visible[0]!;
         if (target.parent === undefined && target.facts.types.length > 1) {
