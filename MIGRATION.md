@@ -91,15 +91,18 @@ RAM to preserve independently chosen heap and worker limits. Explicit heap,
 worker and pool overrides that do not fit now fail before work starts. Reduce
 those overrides, reduce concurrent analyses, use an HTTP embedding provider, or
 increase available RAM. `--memory-budget` remains a main-heap limit;
-`--resource-budget` sets the process-family ceiling and cannot exceed RAM.
-Parser workers keep their own heap caps, even under a process heap flag, and
-admission charges each worker that cap plus native memory. The main heap is
+`--resource-budget` sets the ceiling for parser and embedding reservations
+and cannot exceed RAM. Community-detection workers have separate heaps.
+Parser workers keep their own heap caps under the numeric old-space and
+semi-space flags set by the CLI. Admission reserves each worker's old-space
+cap plus 128 MiB for its young generation and native allocations. The main heap is
 sized first; automatic worker count fills what remains and may rise compared
 with earlier versions. Explicit worker counts must fit beside the main heap.
 Earlier versions ran parser workers with the main heap limit by accident; they
-now run at their admitted cap (512 MiB on common hosts). Files above roughly
-2 MB, or large explicit sub-batches, can exceed it and are quarantined; raise
-`GITNEXUS_WORKER_HEAP_MB` together with `--max-file-size`.
+now run at their admitted cap. Automatic sizing divides the remaining parser
+budget among workers, with a 512 MiB minimum old-space cap. A file larger
+than roughly 2 MB or a large explicit sub-batch can exceed the cap and
+trigger quarantine. Raise `GITNEXUS_WORKER_HEAP_MB` when raising `--max-file-size`.
 
 If a superseded or unverifiable `analysis-publication.json` blocks recovery,
 stop every reader and writer and back up the complete storage slot first.

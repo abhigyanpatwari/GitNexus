@@ -7,7 +7,7 @@ import { expect, it } from 'vitest';
 import { budgetHeapSizing } from '../../src/cli/analyze.js';
 import { resolveAnalysisResourceBudget } from '../../src/core/analysis-resource-budget.js';
 
-it.each(['execArgv', 'NODE_OPTIONS'] as const)(
+it.each(['execArgv', 'NODE_OPTIONS', 'quoted NODE_OPTIONS'] as const)(
   'admits the real main and worker heaps under flags from %s',
   (source) => {
     const resources = resolveAnalysisResourceBudget({
@@ -57,6 +57,9 @@ it.each(['execArgv', 'NODE_OPTIONS'] as const)(
     const env = { ...process.env };
     delete env.NODE_OPTIONS;
     if (source === 'NODE_OPTIONS') env.NODE_OPTIONS = flags.join(' ');
+    if (source === 'quoted NODE_OPTIONS') {
+      env.NODE_OPTIONS = flags.map((flag) => flag.replace(/=(\d+)$/, '="$1"')).join(' ');
+    }
     try {
       const output = execFileSync(
         process.execPath,
@@ -84,6 +87,43 @@ it.each(['execArgv', 'NODE_OPTIONS'] as const)(
     } finally {
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  },
+  25000,
+);
+
+it
+  .skipIf(!process.allowedNodeEnvironmentFlags.has('--max-old-space-size-percentage'))
+  .each(['execArgv', 'NODE_OPTIONS'])(
+  'enforces the parser cap with a percentage pin in %s',
+  (source) => {
+    const lease = pathToFileURL(
+      path.resolve('dist/core/ingestion/workers/worker-heap-limit.js'),
+    ).href;
+    const runner = `
+    import { spawnWithOwnHeapLimit } from ${JSON.stringify(lease)};
+    import { Worker } from 'node:worker_threads';
+    const source = "import { parentPort } from 'node:worker_threads'; import v8 from 'node:v8'; parentPort.postMessage(v8.getHeapStatistics().heap_size_limit)";
+    const worker = spawnWithOwnHeapLimit(() => new Worker(new URL('data:text/javascript,' + encodeURIComponent(source)), {
+      resourceLimits: { maxOldGenerationSizeMb: 64, maxYoungGenerationSizeMb: 12 }
+    }));
+    worker.once('message', bytes => console.log(bytes / 1024 ** 2));
+  `;
+    const flag = '--max-old-space-size-percentage=50';
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    if (source === 'NODE_OPTIONS') env.NODE_OPTIONS = flag;
+    const args = [
+      ...(source === 'execArgv' ? [flag] : []),
+      '--input-type=module',
+      '--eval',
+      runner,
+    ];
+    const measured = execFileSync(process.execPath, args, {
+      env,
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+    expect(Number(measured.trim())).toBe(76);
   },
   25000,
 );
@@ -220,7 +260,7 @@ it('quarantines a file that drives a worker past its enforced heap cap and keeps
   const factory = pathToFileURL(path.resolve('dist/core/ingestion/workers/worker-pool.js')).href;
   const runner = `
     import { createWorkerPool } from ${JSON.stringify(factory)};
-    const pool = createWorkerPool(new URL(${JSON.stringify(pathToFileURL(worker).href)}), 1, { heapLimitMb: 512 });
+    const pool = createWorkerPool(new URL(${JSON.stringify(pathToFileURL(worker).href)}), 1, { heapLimitMb: 512, requireDrain: true });
     try {
       const results = await pool.dispatch(['small.ts', 'big.ts', 'other.ts'].map((p) => ({ path: p, content: 'export const a = 1' })));
       const stats = pool.getStats();

@@ -137,6 +137,17 @@ describe('spawnWithOwnHeapLimit', () => {
     ]);
   });
 
+  it('keeps the second worker leased when the first reports a message during online', () => {
+    const first = spawnWithOwnHeapLimit(fakeWorker);
+    const second = spawnWithOwnHeapLimit(fakeWorker);
+    // EventEmitter already captured the online listeners when this emits message.
+    first.prependOnceListener('online', () => first.emit('message', { type: 'ready' }));
+    first.emit('online');
+    expect(setFlags.mock.calls).toEqual([['--max-old-space-size=0']]);
+    second.emit('online');
+    expect(setFlags).toHaveBeenLastCalledWith('--max-old-space-size=3000');
+  });
+
   it('releases the lease when the spawn throws', () => {
     expect(() =>
       spawnWithOwnHeapLimit(() => {

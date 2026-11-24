@@ -50,6 +50,11 @@ vi.mock('os', async () => {
   return { ...mocked, default: mocked };
 });
 
+vi.mock('../../src/core/analysis-host-resources.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/analysis-host-resources.js')>()),
+  analysisSupervisorReservation: () => 192 * 1024 ** 2,
+}));
+
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
   closeLbugBeforeExit: vi.fn(async () => undefined),
@@ -93,7 +98,7 @@ const setStreamIsTTY = (stream: NodeJS.WriteStream, value: boolean): (() => void
 };
 
 // Admission on the mocked 16 GiB host (constrainedMemory 0) with the
-// supervisor's RSS pinned below its 192 MiB floor (pinSupervisorRss). The
+// supervisor reservation pinned to 192 MiB. The
 // family ceiling is 75% of RAM, and the main heap takes what the always-counted
 // embedding reservations leave, which exceed the one-worker parse reservation.
 const ADMITTED_TOTAL_MB = Math.floor(16384 * 0.75); // 12288
@@ -106,8 +111,6 @@ const ADMITTED_MAIN_MB =
     Math.floor(ADMITTED_TOTAL_MB / 32)); // embedding queues 384 -> 6858
 // The respawn gives that heap as old space plus three 128 MiB semi-spaces.
 const ADMITTED_OLD_SPACE_FLAG = `--max-old-space-size=${ADMITTED_MAIN_MB - 3 * 128}`;
-const pinSupervisorRss = () =>
-  vi.spyOn(process.memoryUsage, 'rss').mockReturnValue(100 * 1024 * 1024);
 
 describe('analyzeCommand heap respawn', () => {
   let initialNodeOptions: string | undefined;
@@ -116,11 +119,9 @@ describe('analyzeCommand heap respawn', () => {
   let restoreStdoutIsTTY: (() => void) | undefined;
   let restoreStderrIsTTY: (() => void) | undefined;
   let restoreConstrainedMemory: (() => void) | undefined;
-  let rssSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
-    rssSpy = pinSupervisorRss();
     delete process.env.GITNEXUS_MEMORY;
     vi.resetModules();
     spawnMock.mockReset();
@@ -144,12 +145,45 @@ describe('analyzeCommand heap respawn', () => {
     restoreStdoutIsTTY = undefined;
     restoreStderrIsTTY = undefined;
     restoreConstrainedMemory = undefined;
-    rssSpy.mockRestore();
     stdoutWriteSpy.mockRestore();
     stderrWriteSpy.mockRestore();
     if (initialNodeOptions === undefined) delete process.env.NODE_OPTIONS;
     else process.env.NODE_OPTIONS = initialNodeOptions;
   });
+
+  it.each([
+    [undefined, undefined],
+    ['1', '2'],
+  ] as const)(
+    'selects allocator arenas for the admitted parser count with --workers %s',
+    async (workers, expected) => {
+      const os = (await import('node:os')).default;
+      const cpus = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
+      const native = await import('../../src/core/lbug/native-check.js');
+      const libc = vi.spyOn(native, 'hostGlibcVersion').mockReturnValue('2.41');
+      vi.stubEnv('MALLOC_ARENA_MAX', undefined);
+      vi.stubEnv('GLIBC_TUNABLES', undefined);
+      vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', undefined);
+      vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', undefined);
+      try {
+        mockSpawnExit();
+        const { analyzeCommand } = await import('../../src/cli/analyze.js');
+        await analyzeCommand(undefined, {
+          pdg: true,
+          resourceBudget: '6144',
+          memoryBudget: '1600',
+          workers,
+        });
+        expect(spawnMock).toHaveBeenCalledOnce();
+        const child = spawnMock.mock.calls[0][2].env;
+        expect(child.MALLOC_ARENA_MAX).toBe(process.platform === 'linux' ? expected : undefined);
+      } finally {
+        cpus.mockRestore();
+        libc.mockRestore();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it('defers npm subprocess probes until the admitted working process', async () => {
     delete process.env.NODE_OPTIONS;
@@ -291,6 +325,9 @@ describe('analyzeCommand heap respawn', () => {
     expect(parseMaxOldSpaceMb('--max-semi-space-size=128')).toBeNull();
     expect(parseMaxOldSpaceMb('')).toBeNull();
     expect(parseMaxOldSpaceMb('--max-old-space-size=0')).toBeNull();
+    expect(parseMaxOldSpaceMb('--max-old-space-size="1536"')).toBe(1536);
+    expect(parseMaxOldSpaceMb('--require "module --max-old-space-size=800"')).toBeNull();
+    expect(parseMaxOldSpaceMb(['--eval', '--max-old-space-size=800'])).toBeNull();
     // V8 treats - and _ interchangeably in flag names, and Node accepts a
     // space-separated value in NODE_OPTIONS; every spelling of the pin must
     // be honored instead of silently overridden.
@@ -562,11 +599,9 @@ describe('ensureHeap --memory-budget (#3137)', () => {
   let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
   let stderrWriteSpy: ReturnType<typeof vi.spyOn>;
   let restoreConstrainedMemory: (() => void) | undefined;
-  let rssSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     initialNodeOptions = process.env.NODE_OPTIONS;
-    rssSpy = pinSupervisorRss();
     initialSource = process.env.GITNEXUS_HEAP_LIMIT_SOURCE;
     initialMemory = process.env.GITNEXUS_MEMORY;
     delete process.env.NODE_OPTIONS;
@@ -591,7 +626,6 @@ describe('ensureHeap --memory-budget (#3137)', () => {
   afterEach(() => {
     restoreConstrainedMemory?.();
     restoreConstrainedMemory = undefined;
-    rssSpy.mockRestore();
     stdoutWriteSpy.mockRestore();
     stderrWriteSpy.mockRestore();
     if (initialNodeOptions === undefined) delete process.env.NODE_OPTIONS;

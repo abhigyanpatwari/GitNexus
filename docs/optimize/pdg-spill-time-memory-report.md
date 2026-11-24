@@ -1,6 +1,6 @@
 # Cold PDG indexing on a 6 GiB budget
 
-The analyzer now selects a single native database writer for PDG builds with one parser worker and an explicit budget of 6 GiB or less. [Cold builds with the automatic settings](#cold-builds-with-the-automatic-settings)
+The analyzer now selects a single native database writer for PDG builds with an explicit budget of 6 GiB or less and either automatic parser concurrency or one requested worker. The CLI applies the two-arena glibc default only when admission selects one parser worker. [Cold builds with the automatic settings](#cold-builds-with-the-automatic-settings)
 
 Two subsequent Linux cold builds met both targets with a 384 MiB database pool and two glibc allocator arenas. [Measurements and reproduction command](#incremental-pdg-and-the-6-gib-release-workload)
 
@@ -96,7 +96,7 @@ GITNEXUS_LBUG_BUFFER_POOL_SIZE=402653184 MALLOC_ARENA_MAX=2 \
 
 ## Cold builds with the automatic settings
 
-The graph writer uses one native database thread for COPY and full-text indexing under this budget. On Linux with glibc, the CLI also starts its graph writer with two allocator arenas unless the operator has set `MALLOC_ARENA_MAX` or `glibc.malloc.arena_max`. The database buffer pool continues to use its normal sizing policy. The writer selection is shared across languages.
+The graph writer uses one native database thread for COPY and full-text indexing under this budget. On Linux with glibc, the CLI also starts its graph writer with two allocator arenas when one parser worker is admitted, unless the operator has set `MALLOC_ARENA_MAX` or `glibc.malloc.arena_max`. The database buffer pool continues to use its normal sizing policy. The writer selection is shared across languages.
 
 These cold runs used the same sanitized source, release runtime and 24-CPU Linux host. Each run started with an empty graph and parser cache, using `--force --pdg --workers 1 --resource-budget 6144` without allocator or pool overrides in the invoking environment. The unchanged PR control was `88488bbd0`. The target was 365 seconds and 3,316 MiB peak process RSS.
 
@@ -111,3 +111,7 @@ These cold runs used the same sanitized source, release runtime and 24-CPU Linux
 The final build finished 26.06 seconds sooner and used 854.01 MiB less peak RSS than the control. Both combined runs reproduced the reference graph of 373,373 nodes and 835,148 relationships, all ten full-text indexes, and the ranked results of both search queries. The final build confines the allocator default to the writer child. The separate publication and embedding child inherits the operator's environment.
 
 The combined fixture for all 19 PDG languages produced the same 1,615 nodes and 2,963 relationships, including 1,308 basic blocks. Repeating the one-file incremental edit on the final build still exhausted the JavaScript heap during scope analysis. After the failure the published graph retained its original fingerprint.
+
+### Four-worker parse time
+
+Four cold PDG builds on Node 22.23.3 indexed the same 210 TypeScript ingestion files with four workers, a 6,144 MiB total budget and a 1,200 MiB main heap. From first dispatch to last completed chunk, the host allocator defaults took 14.36 and 17.90 seconds. Two glibc arenas took 19.44 and 20.15 seconds. The runs used defaults, two arenas, two arenas, then defaults on a shared host. All four produced 39,972 nodes and 119,734 edges.

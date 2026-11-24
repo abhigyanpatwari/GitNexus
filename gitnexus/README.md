@@ -869,23 +869,24 @@ If analyze says the repository doesn't fit, do what the message says:
 
 To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
-the auto-sizer and any `--max-old-space-size` pin. Parser workers keep their
-own heap caps: the pool clears the process-wide `--max-old-space-size` and
-`--max-semi-space-size` flags while it starts each one. Community-detection
-workers start the same way and keep the heap those flags give them.
+the auto-sizer and any `--max-old-space-size` pin. During parser startup,
+the pool temporarily clears `--max-old-space-size` and `--max-semi-space-size`
+so V8 can apply the worker's own limits. Community-detection workers request
+the inherited heap settings.
 
-Use `--resource-budget <MiB>` to admit the complete analyzer process family,
+Use `--resource-budget <MiB>` to set the reservation for parsing and embeddings,
 including the frontend, main heap, workers, native pools, embedding model, input
 queue, and headroom. An explicit heap or pool that cannot fit is rejected before
 work starts. Automatic sizing fixes the aggregate phase ceiling at 75% of
 effective process/container RAM, divided among concurrent auto-sync analyses.
 The main heap, workers, pools, and embedding reservations must fit that ceiling.
-Each parser worker reserves its own enforced heap cap plus 128 MiB of native
-memory. The automatic main heap takes what the pools, headroom and required
+Each parser worker reserves its old-space cap plus 128 MiB for the young
+generation and native allocations. The automatic main heap takes what the pools, headroom and required
 workers leave; automatic worker count then uses only the remainder, and explicit
 worker counts must fit beside the main heap.
-The reservation is not an operating-system RSS limit. `analyze --watch` accepts
-the same budget. To enlarge the main heap, use `--memory-budget`; increase
+Community-detection workers run outside these reservations. Process RSS can
+exceed the reserved total. `analyze --watch` accepts the same budget.
+To enlarge the main heap, use `--memory-budget`; increase
 `--resource-budget` as well if needed, within available RAM.
 
 `embeddings sync` runs in its current process and reserves its actual V8 heap
@@ -963,7 +964,7 @@ npx gitnexus analyze
 
 Values above **32768 KB (32 MB)** are clamped to the tree-sitter parser ceiling; invalid values fall back to the 512 KB default with a one-time warning. When an override is active, `analyze` prints the effective threshold in its startup banner (e.g. `GITNEXUS_MAX_FILE_SIZE: effective threshold 2048KB (default 512KB)`).
 
-Parser workers run at their admitted heap cap, which is 512 MiB on common hosts. Files above roughly 2 MB, or large explicit sub-batches (`GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES`), can exceed it: the worker stops with `worker hit its <N>MB heap cap` and the file is quarantined, so it is missing from the graph. Raise the cap with `GITNEXUS_WORKER_HEAP_MB` when you raise `--max-file-size`.
+Parser workers have a 512 MiB minimum old-space cap. Their automatic cap depends on the memory left after sizing the main heap and on how many workers share it. Files above roughly 2 MB, or large explicit sub-batches (`GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES`), can exceed it: the worker stops with `worker hit its <N>MB heap cap` and the file is quarantined, so it is missing from the graph. Raise the cap with `GITNEXUS_WORKER_HEAP_MB` when you raise `--max-file-size`.
 
 ### Code under a dot directory is missing
 

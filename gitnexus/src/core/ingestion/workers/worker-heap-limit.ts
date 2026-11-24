@@ -27,15 +27,15 @@
  */
 import v8 from 'node:v8';
 import type { ResourceLimits, Worker } from 'node:worker_threads';
+import { readNodeSizeFlag } from '../../../lib/node-size-flag.js';
 
 const MIB = 1024 * 1024;
-const OLD_SPACE_FLAG = /--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)/g;
+const OLD_SPACE_FLAG = 'max-old-space-size';
 const OLD_SPACE_PERCENTAGE_FLAG = /--max[-_]old[-_]space[-_]size[-_]percentage\b/;
-const SEMI_SPACE_FLAG = /--max[-_]semi[-_]space[-_]size(?:=|\s+)(\d+)/g;
+const SEMI_SPACE_FLAG = 'max-semi-space-size';
 
-function lastFlagMb(flags: string, flag: RegExp): number {
-  const matches = [...flags.matchAll(flag)];
-  return matches.length === 0 ? 0 : Number(matches[matches.length - 1][1]);
+function lastFlagMb(flags: string, flag: string): number {
+  return readNodeSizeFlag(flags, flag) ?? 0;
 }
 
 /**

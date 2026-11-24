@@ -396,13 +396,16 @@ flowchart TD
 
 ### Analysis resource admission and resumable status
 
-Automatic analysis admits every phase within a fixed ceiling of 75% of effective
-process/container RAM. The main heap is sized first; each parser worker is
-capped and charged its own heap plus native memory. Use
-`--resource-budget <MiB>` for a strict phase reservation covering the supervisor,
-main heap, workers, native pools, queues and embedding model. The two phases do
-not overlap. `--memory-budget` alone changes the main heap without removing parser
-workers; with a strict total budget, incompatible overrides fail before work.
+Automatic analysis reserves up to 75% of effective process/container RAM for
+parsing and embeddings. These phases run separately. Each reservation includes
+the supervisor, main heap, and native pools. Parsing adds each worker’s heap
+and native allowance. Embedding adds queues and the model.
+Community-detection workers and isolates started by user preloads are outside
+these reservations.
+
+Use `--resource-budget <MiB>` to set the reservation ceiling. Admission sizes
+the main heap first. A larger `--memory-budget` can leave room for fewer parser
+workers, and new embedding work must fit when watch mode checks admission again.
 Embedding thread settings are validated only when embeddings are requested or pending.
 
 `status --json` reports `index.graphStatus` for a checkout,

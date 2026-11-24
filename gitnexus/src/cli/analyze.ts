@@ -12,6 +12,7 @@ import path from 'path';
 import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
+import { readNodeSizeFlag } from '../lib/node-size-flag.js';
 import cliProgress from 'cli-progress';
 import { formatAnalyzeFtsSkipSummary } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
@@ -616,7 +617,7 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
     (process.env.GITNEXUS_ANALYSIS_MANUAL_HEAP === '1' ||
       (process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
         (memoryAutopilotDisabled() ||
-          parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
+          parseMaxOldSpaceMb(process.execArgv) !== null ||
           (parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') ?? 0) >= RESPAWN_HEAP_MB)))
   );
 }
@@ -630,8 +631,9 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
 export function manualHeapAdmission(): { mainHeapMb?: number; mainHeapLimitMb?: number } {
   const limitMb = Math.ceil(v8.getHeapStatistics().heap_size_limit / 1024 ** 2);
   const pinned =
-    parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
-    parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') !== null;
+    (readNodeSizeFlag(process.execArgv, 'max-old-space-size') ??
+      readNodeSizeFlag(process.env.NODE_OPTIONS ?? '', 'max-old-space-size') ??
+      0) > 0;
   return pinned ? { mainHeapMb: limitMb } : { mainHeapLimitMb: limitMb };
 }
 
@@ -640,22 +642,8 @@ export function manualHeapAdmission(): { mainHeapMb?: number; mainHeapLimitMb?: 
  * when absent/unparseable. Last occurrence wins, matching V8's own
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
  */
-export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
-  return parseV8SizeFlagMb(nodeOptions, 'max-old-space-size');
-}
-
-/**
- * Last value (MB) of a V8 `--<name>` size flag in a flag string. V8 accepts
- * `-` and `_` interchangeably in flag names, and Node accepts a
- * space-separated value — honor every spelling instead of silently
- * overriding it (#2649 review).
- */
-function parseV8SizeFlagMb(flags: string, name: string): number | null {
-  const stem = name.split('-').join('[-_]');
-  const matches = [...flags.matchAll(new RegExp(`--${stem}(?:=|\\s+)(\\d+)`, 'g'))];
-  if (matches.length === 0) return null;
-  const mb = Number(matches[matches.length - 1][1]);
-  return Number.isFinite(mb) && mb > 0 ? mb : null;
+export function parseMaxOldSpaceMb(nodeOptions: string | readonly string[]): number | null {
+  return readNodeSizeFlag(nodeOptions, 'max-old-space-size') || null;
 }
 
 export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
@@ -715,11 +703,13 @@ export interface BudgetHeapDecision {
 export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
   const { budgetMb, autoCapMb } = input;
   const sizing = budgetHeapSizing(budgetMb);
-  const execFlags = input.execArgv.join(' ');
-  const pinnedMb = parseMaxOldSpaceMb(execFlags) ?? parseMaxOldSpaceMb(input.nodeOptions);
+  const pinnedMb =
+    (readNodeSizeFlag(input.execArgv, 'max-old-space-size') ??
+      readNodeSizeFlag(input.nodeOptions, 'max-old-space-size')) ||
+    null;
   const semiSpaceMb =
-    parseV8SizeFlagMb(execFlags, 'max-semi-space-size') ??
-    parseV8SizeFlagMb(input.nodeOptions, 'max-semi-space-size');
+    readNodeSizeFlag(input.execArgv, 'max-semi-space-size') ??
+    readNodeSizeFlag(input.nodeOptions, 'max-semi-space-size');
   // Only a budget-respawned child carries both the budget's old space and its
   // semi-space, so only it is exactly at the budget. A pin that merely equals
   // the budget leaves V8's young generation on top (a 2000MB pin is a 2048MB
@@ -857,7 +847,7 @@ export async function ensureHeap(
   // (test harnesses, scripts, supervisors that track a single PID) rely on
   // a quiet, single-process run.
   if (memoryAutopilotDisabled()) return false;
-  if (parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null) return false;
+  if (parseMaxOldSpaceMb(process.execArgv) !== null) return false;
 
   const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
   if (ambientHeapMb !== null) {
@@ -1472,7 +1462,9 @@ const analyzeCommandImpl = async (
     // a nested heap respawn with a slightly different allocation.
     process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB = String(resources.mainHeapMb);
     process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES = String(supervisorBytes);
-    limitMallocArenas = isConstrainedPdgBuild(options.pdg, resources);
+    // This child parses before writing the graph. Two glibc arenas were measured with one worker.
+    limitMallocArenas =
+      resources.parse.workers === 1 && isConstrainedPdgBuild(options.pdg, resources);
     if (
       !manualHeap &&
       (await ensureHeap({

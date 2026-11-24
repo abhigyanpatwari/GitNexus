@@ -694,7 +694,7 @@ The parser pool enforces each worker's own heap cap, so a worker reserves that
 cap plus native memory; the automatic main heap is sized first, beside the
 required workers, and automatic worker count uses what remains. Explicit limits never expand the family
 ceiling; combinations that cannot fit fail admission.
-This bounds reservations, not operating-system RSS.
+Community-detection workers request the inherited V8 limits and sit outside the parser and embedding reservations. Process RSS can exceed the reserved total.
 
 **Options:** `--force` (rebuild regardless), `--embeddings` (opt-in, resumable), `--skipGit`, `--noStats`.
 
