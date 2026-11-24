@@ -1,6 +1,6 @@
 {
   "compiler-conformance/java-annotated-lambda-array": 1,
-  "compiler-conformance/java-annotated-qualified-bases": 2,
+  "compiler-conformance/java-annotated-qualified-bases": 4,
   "compiler-conformance/java-anonymous-implicit-array": 4,
   "compiler-conformance/java-array-method-return-identity": {
     "sites": 10,

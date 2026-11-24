@@ -16,7 +16,10 @@ import {
 import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 import { getJavaOverloadFacts } from './overload-argument-facts.js';
 import { getJavaPackageFact } from './package-facts.js';
-import { splitJavaTypeArguments } from './overload-types.js';
+import {
+  JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES,
+  splitJavaTypeArguments,
+} from './overload-types.js';
 import { eraseJavaTypeArguments, JAVA_IDENTIFIER } from './type-spelling.js';
 import {
   hasJavaSamePackageType,
@@ -495,7 +498,12 @@ export function javaStaticOnDemandImportBringsNoType(
 ): boolean {
   const byFqn = namedTypesByFqnByIndexes.get(indexes);
   const owners = byFqn?.get(owner) ?? [];
-  if (byFqn !== undefined && owners.length === 0 && owner === 'java.lang.Math') return true;
+  if (
+    byFqn !== undefined &&
+    owners.length === 0 &&
+    JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES.has(owner)
+  )
+    return true;
   return (
     owners.length === 1 &&
     owners[0]!.bases.length === 0 &&

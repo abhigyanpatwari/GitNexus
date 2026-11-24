@@ -143,9 +143,9 @@ export function bindJavaQualifiedHeritage(
             !KNOWN_JAVA_PLATFORM_TYPES.has('java.lang.' + root) &&
             !owner.facts.imports.some((item) => {
               const name = stripGaps(item.name);
-              return item.wildcard
-                ? item.static || (inventory.packageTypes.get(name)?.has(root) ?? true)
-                : name.split('.').at(-1) === root;
+              if (!item.wildcard) return name.split('.').at(-1) === root;
+              if (item.static) return inventory.staticMemberType(owner, name, root) !== false;
+              return inventory.packageTypes.get(name)?.has(root) ?? true;
             });
           fileRoots.set(root, available);
         }

@@ -117,6 +117,10 @@ const parameterizedJdk = new Set([
   'java.util.HashMap',
 ]);
 const finalJdk = new Set(['java.lang.String', ...Object.values(boxes)]);
+/** Platform owners whose static on-demand imports are known to introduce no member types. */
+export const JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES: ReadonlySet<string> = new Set([
+  'java.lang.Math',
+]);
 export const KNOWN_JAVA_PLATFORM_TYPES = new Set([
   ...Object.keys(jdkParents),
   'java.util.Arrays',

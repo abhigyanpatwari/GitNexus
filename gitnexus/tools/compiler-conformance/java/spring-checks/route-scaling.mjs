@@ -84,8 +84,7 @@ ${impls}
    * (read → parse → worker extractSpringTypes → cross-file inheritance pass →
    * graph) is exercised exactly as a real analyze would be.
    */
-  function writeSpringRepo(pairCount) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-inherit-bench-${pairCount}-`));
+  function writeSpringRepo(dir, pairCount) {
     const apiDir = path.join(dir, 'api');
     const webDir = path.join(dir, 'web');
     fs.mkdirSync(apiDir, {
@@ -130,7 +129,6 @@ ${impls}
 `,
       );
     }
-    return dir;
   }
 
   /**
@@ -225,8 +223,9 @@ ${impls}
     const scales = [100, 250, 500];
     const results = [];
     for (const pairs of scales) {
-      const dir = writeSpringRepo(pairs);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-inherit-bench-${pairs}-`));
       try {
+        writeSpringRepo(dir, pairs);
         const start = Date.now();
         const result = await runPipelineFromRepo(dir, () => {}, {
           workerUrlForTest: DIST_WORKER_URL,

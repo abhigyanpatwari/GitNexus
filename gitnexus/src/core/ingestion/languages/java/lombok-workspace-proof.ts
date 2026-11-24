@@ -16,6 +16,7 @@ import {
   collectJavaCaptureSideChannel,
 } from './capture-side-channel.js';
 import { getJavaPackageFact } from './package-facts.js';
+import { JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES } from './overload-types.js';
 import { bindJavaQualifiedHeritage } from './qualified-heritage.js';
 import {
   getJavaOverloadFacts,
@@ -390,6 +391,28 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     closed.set(entry, result);
     return result;
   };
+  const staticMemberType = (
+    from: Pick<TypeEntry, 'filePath' | 'packageName'>,
+    ownerName: string,
+    head: string,
+  ): JavaAnnotationProof => {
+    const owners = (byFqn.get(ownerName) ?? []).filter((target) => visible(from, target));
+    if (owners.length === 0 && JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES.has(ownerName))
+      return false;
+    if (owners.length !== 1) return 'uncertain';
+    const owner = owners[0]!;
+    let result: JavaAnnotationProof =
+      !isClosed(owner) || unmappedNames.get(owner.filePath)?.has(head) === true
+        ? 'uncertain'
+        : false;
+    for (const member of [...owner.members, ...namesOf(owner).members]) {
+      if (member.fact.simpleName !== head || !TYPE_NODES.has(member.fact.kind)) continue;
+      const imported = staticallyImportsMemberType(from, member);
+      if (imported === true) return true;
+      if (imported === 'uncertain') result = 'uncertain';
+    }
+    return result;
+  };
   /**
    * Whether a single-static-import of `head` in `from`'s file imports a member
    * type (JLS 7.5.3): `true` when a workspace owner declares or inherits an
@@ -408,28 +431,13 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       const name = stripGaps(item.name);
       const dot = name.lastIndexOf('.');
       if (dot < 0 || name.slice(dot + 1) !== head) continue;
-      const owners = (byFqn.get(name.slice(0, dot)) ?? []).filter((target) =>
-        visible(from, target),
-      );
-      // Outside the workspace, ambiguous, or named through an inherited member type.
-      if (owners.length !== 1) {
-        result = 'uncertain';
-        continue;
-      }
-      const owner = owners[0]!;
-      // A type fact without an extracted scope might be a member type missed here.
-      if (!isClosed(owner) || unmappedNames.get(owner.filePath)?.has(head) === true)
-        result = 'uncertain';
-      for (const member of [...owner.members, ...namesOf(owner).members]) {
-        if (member.fact.simpleName !== head || !TYPE_NODES.has(member.fact.kind)) continue;
-        const imported = staticallyImportsMemberType(from, member);
-        if (imported === true) return true;
-        if (imported === 'uncertain') result = 'uncertain';
-      }
+      const imported = staticMemberType(from, name.slice(0, dot), head);
+      if (imported === true) return true;
+      if (imported === 'uncertain') result = 'uncertain';
     }
     return result;
   };
-  return { byFile, packageTypes, namesOf, staticImportsType };
+  return { byFile, packageTypes, namesOf, staticImportsType, staticMemberType };
 }
 
 export type JavaWorkspaceTypeInventory = ReturnType<typeof workspaceInventory>;

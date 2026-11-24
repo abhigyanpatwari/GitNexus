@@ -230,8 +230,10 @@ class KotlinService${index} {
 `,
     ).join('\n');
   }
-  function writeMixedSpringAopRepo(serviceCount) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), `spring-aop-bench-${serviceCount}-`));
+  function createRepoDir(serviceCount) {
+    return fs.mkdtempSync(path.join(os.tmpdir(), `spring-aop-bench-${serviceCount}-`));
+  }
+  function writeMixedSpringAopRepo(root, serviceCount) {
     const javaCount = serviceCount / 2;
     const kotlinCount = serviceCount - javaCount;
     writeFixture(
@@ -270,11 +272,11 @@ public class BenchmarkAspect {
 }
 `,
     );
-    return root;
   }
   async function runMixedPipelineBenchmark(serviceCount) {
-    const root = writeMixedSpringAopRepo(serviceCount);
+    const root = createRepoDir(serviceCount);
     try {
+      writeMixedSpringAopRepo(root, serviceCount);
       const startedAt = performance.now();
       const result = await runPipelineFromRepo(root, () => {}, {
         skipGraphPhases: true,
@@ -341,9 +343,10 @@ public class BenchmarkAspect {
 
   // bounds aggregate edge work across multiple broad advices and reports truncation
   {
-    const root = writeMixedSpringAopRepo(20);
+    const root = createRepoDir(20);
     const progressMessages = [];
     try {
+      writeMixedSpringAopRepo(root, 20);
       const result = await runPipelineFromRepo(
         root,
         (progress) => progressMessages.push(progress.message),
@@ -372,9 +375,10 @@ public class BenchmarkAspect {
   }
   // bounds aggregate candidate inspections across multiple broad advices
   {
-    const root = writeMixedSpringAopRepo(20);
+    const root = createRepoDir(20);
     const progressMessages = [];
     try {
+      writeMixedSpringAopRepo(root, 20);
       const result = await runPipelineFromRepo(
         root,
         (progress) => progressMessages.push(progress.message),
