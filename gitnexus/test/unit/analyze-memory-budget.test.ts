@@ -126,4 +126,34 @@ describe('--memory-budget real-child smoke (256MB)', () => {
       respawn: false,
     });
   });
+
+  it('a command-line zero hides budget flags in NODE_OPTIONS, so that child respawns', async () => {
+    const { budgetHeapSizing, resolveBudgetHeap } = await vi.importActual<
+      typeof import('../../src/cli/analyze.js')
+    >('../../src/cli/analyze.js');
+    const { oldSpaceMb, semiSpaceMb } = budgetHeapSizing(256);
+    const nodeOptions = `--max-old-space-size=${oldSpaceMb} --max-semi-space-size=${semiSpaceMb}`;
+    const out = execFileSync(
+      process.execPath,
+      [
+        '--max-old-space-size=0',
+        '-e',
+        'process.stdout.write(JSON.stringify({ limit: require("v8").getHeapStatistics().heap_size_limit, execArgv: process.execArgv }))',
+      ],
+      { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: nodeOptions } },
+    );
+    const child = JSON.parse(out) as { limit: number; execArgv: string[] };
+    const decision = resolveBudgetHeap({
+      budgetMb: 256,
+      execArgv: child.execArgv,
+      nodeOptions,
+      autoCapMb: 13107,
+      autopilotDisabled: false,
+      inheritedSource: 'budget',
+    });
+
+    // The command line resets old space. NODE_OPTIONS still sets the budget's semi-space.
+    expect(child.limit / (1024 * 1024)).toBeGreaterThan(256);
+    expect(decision.respawn).toBe(true);
+  });
 });
