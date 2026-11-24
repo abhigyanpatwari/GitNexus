@@ -4291,24 +4291,39 @@ describe('Hook registry resolver compatibility', () => {
     }
   });
 
-  it('reads metadata from the pinned branch slot, not the flat index', () => {
+  it('checks the destination index after a branch switch even when HEAD stays at the same commit', () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-hook-home-'));
     const repoDir = path.join(homeDir, 'branch-meta-repo');
     const storagePath = path.join(homeDir, 'indexes', 'branch-meta-repo');
     const branch = 'feature/y';
     const branchSlug = `feature_y-${createHash('sha256').update(branch).digest('hex').slice(0, 8)}`;
     const branchDir = path.join(storagePath, 'branches', branchSlug);
+    const pinnedCommit = 'a'.repeat(40);
+    const switchAndRunHook = (target: string) => {
+      runGit(repoDir, ['switch', target]);
+      return runHook(
+        CJS_HOOK,
+        {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: `git switch ${target}` },
+          cwd: repoDir,
+        },
+        repoDir,
+        { registryHome: homeDir },
+      ).stdout;
+    };
     try {
       fs.mkdirSync(repoDir, { recursive: true });
       fs.mkdirSync(branchDir, { recursive: true });
       initRepoWithCommit(repoDir);
-      runGit(repoDir, ['checkout', '-b', branch]);
+      runGit(repoDir, ['branch', branch]);
       fs.writeFileSync(
         path.join(storagePath, 'gitnexus.json'),
         JSON.stringify({
           repoPath: repoDir,
           storagePath,
-          lastCommit: 'flat-commit',
+          lastCommit: runGit(repoDir, ['rev-parse', 'HEAD']).stdout.trim(),
           stats: {},
         }),
       );
@@ -4317,7 +4332,7 @@ describe('Hook registry resolver compatibility', () => {
         JSON.stringify({
           repoPath: repoDir,
           storagePath,
-          lastCommit: 'branch-commit',
+          lastCommit: pinnedCommit,
           stats: {},
         }),
       );
@@ -4330,12 +4345,16 @@ describe('Hook registry resolver compatibility', () => {
         },
       ]);
 
+      expect(parseHookOutput(switchAndRunHook(branch))?.additionalContext).toContain(
+        pinnedCommit.slice(0, 7),
+      );
       withRegistryHome(homeDir, () => {
         expect(findRegisteredRepoForTest(repoDir)).toMatchObject({
           lbugPath: path.join(branchDir, 'lbug'),
-          metadata: { lastCommit: 'branch-commit' },
+          metadata: { lastCommit: pinnedCommit },
         });
       });
+      expect(switchAndRunHook('-').trim()).toBe('');
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }

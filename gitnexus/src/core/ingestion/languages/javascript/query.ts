@@ -104,13 +104,19 @@ ${unboundCallableQuery('declaration.function')}
 (class
   name: (identifier) @declaration.name) @declaration.class @class.expression
 
-;; Declarations — methods (inside class bodies)
+;; Declarations — methods (inside class bodies), including private \`#name\` ones
 (method_definition
   name: (property_identifier) @declaration.name) @declaration.method
+
+(method_definition
+  name: (private_property_identifier) @declaration.name) @declaration.method
 
 ;; Declarations — class fields (JS uses field_definition, not public_field_definition)
 (field_definition
   property: (property_identifier) @declaration.name) @declaration.property
+
+(field_definition
+  property: (private_property_identifier) @declaration.name) @declaration.property
 
 ;; Object-literal keys of a NAMED object (A1/A5) — the scope-resolution half of
 ;; the same rule in TYPESCRIPT/JAVASCRIPT_QUERIES. The parse query mints the
@@ -770,6 +776,12 @@ ${unboundCallableQuery('declaration.function')}
       object: (_) @reference.receiver
       property: (property_identifier) @reference.name))) @reference.call.member
 
+;; Private member call: this.#m()
+(call_expression
+  function: (member_expression
+    object: (_) @reference.receiver
+    property: (private_property_identifier) @reference.name)) @reference.call.member
+
 ;; Constructor calls: new User() / new ns.User()
 (new_expression
   constructor: (identifier) @reference.name) @reference.call.constructor
@@ -789,10 +801,24 @@ ${unboundCallableQuery('declaration.function')}
     object: (_) @reference.receiver
     property: (property_identifier) @reference.name)) @reference.write.member
 
+(assignment_expression
+  left: (member_expression
+    object: (_) @reference.receiver
+    property: (private_property_identifier) @reference.name)) @reference.write.member
+
+(augmented_assignment_expression
+  left: (member_expression
+    object: (_) @reference.receiver
+    property: (private_property_identifier) @reference.name)) @reference.write.member
+
 ;; Read access: obj.field (in read context; captures.ts filters non-reads).
 (member_expression
   object: (_) @reference.receiver
   property: (property_identifier) @reference.name) @reference.read.member
+
+(member_expression
+  object: (_) @reference.receiver
+  property: (private_property_identifier) @reference.name) @reference.read.member
 
 ;; Value position (#2437): function identifier as object-literal property
 ;; value ({ emitScopeCaptures: emitHook }) or shorthand ({ emitHook }).

@@ -97,7 +97,7 @@ func Setup() {
     it.each([
       String.raw`"/\q"`,
       String.raw`"/\400"`,
-      String.raw`"/\uD800"`,
+      '"/\\uD800"',
       String.raw`"/\U00110000"`,
       String.raw`"/\x2"`,
       String.raw`"/\'"`,
