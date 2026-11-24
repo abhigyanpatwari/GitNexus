@@ -179,7 +179,24 @@ function writesFiles(binding, outer, mocked, seen = new Set()) {
   return walk(node.body, localBindings(node, outer));
 }
 
-/** Detect Java fixture I/O statically. Vitest setup also detects in-memory inputs to the Java parser. */
+function virtualJavaSource(node, bindings) {
+  if (node.type !== 'ObjectProperty') return undefined;
+  const key = node.computed ? literal(node.key, bindings) : nameOf(node.key);
+  const value = node.value;
+  const languageRow =
+    key === 'java' &&
+    value.type === 'ArrayExpression' &&
+    literal(value.elements[0], bindings) === 'java';
+  if (!languageRow && !(typeof key === 'string' && key.endsWith('.java'))) return undefined;
+  const source = literal(languageRow ? value.elements[1] : value, bindings);
+  return /\b(?:class|interface|enum|record)\s+[\p{L}$_]|\b(?:package|import)\s+[\w.$]+\s*;/u.test(
+    source,
+  )
+    ? key
+    : undefined;
+}
+
+/** Detect Java file fixtures and virtual source maps. Vitest setup also observes the parser. */
 export function javaFixtureUses(source, filename = 'suite.test.ts') {
   if (!/java|FIXTURES/i.test(source)) return [];
   const tree = parse(source, {
@@ -187,6 +204,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
     plugins: ['typescript', ...(filename.endsWith('x') ? ['jsx'] : [])],
   });
   const findings = [];
+  const inlineSources = [];
   const mocked = new Set();
   function findMocks(node) {
     if (
@@ -203,6 +221,13 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
   findMocks(tree.program);
   function visit(node, outer) {
     const bindings = localBindings(node, outer);
+    const virtual = virtualJavaSource(node, bindings);
+    if (virtual)
+      inlineSources.push({
+        line: node.loc.start.line,
+        method: 'inline Java source',
+        path: virtual,
+      });
     if (node.type === 'CallExpression' || node.type === 'NewExpression') {
       const callee = node.callee;
       const identifier = callee.type === 'Identifier';
@@ -253,7 +278,8 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
     for (const child of children(node)) visit(child, bindings);
   }
   visit(tree.program, new Map());
-  return findings;
+  const reportedPaths = new Set(findings.map((issue) => issue.path));
+  return [...findings, ...inlineSources.filter((issue) => !reportedPaths.has(issue.path))];
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
@@ -265,7 +291,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   }
   if (findings.length) {
     console.error(
-      'Run file-backed Java fixtures in compiler conformance:\n' +
+      'Run Java source fixtures in compiler conformance:\n' +
         findings.sort(compareCodeUnits).join('\n'),
     );
     process.exitCode = 1;

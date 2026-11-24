@@ -1,3 +1,4 @@
+import { createJvmPackageSiblingVisibility } from '../../../../../src/core/ingestion/languages/jvm/package-siblings.js';
 import type { ScopeResolutionIndexes } from '../../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import assert from 'node:assert/strict';
@@ -146,3 +147,151 @@ function moduleWithClass(
   }
   return { filePath, scopes } as unknown as ParsedFile;
 }
+
+function classDef(nodeId: string, filePath: string, qualifiedName: string): SymbolDefinition {
+  return { nodeId, filePath, type: 'Class', qualifiedName } as unknown as SymbolDefinition;
+}
+
+function jvmVisibility(facts: ReadonlyMap<string, JvmPackageFact>) {
+  return createJvmPackageSiblingVisibility({
+    languageLabel: 'JVM',
+    getPackageFact: (filePath) => facts.get(filePath),
+  });
+}
+
+/**
+ * `count` siblings of `com.example`, interleaved near/far so the retained set
+ * cannot be produced by simply truncating the input order: every odd index is
+ * a distant `vendor/` file, every even index sits beside the target. A working
+ * proximity sort keeps the near half; plain truncation would keep half of each.
+ */
+function interleavedPackage(
+  targetPath: string,
+  count: number,
+  moduleBinding?: (siblingName: string) => ReadonlyMap<string, unknown>,
+): { parsedFiles: ParsedFile[]; facts: Map<string, JvmPackageFact> } {
+  const facts = new Map<string, JvmPackageFact>();
+  facts.set(targetPath, { status: 'known', packageName: 'com.example' });
+  const parsedFiles = [moduleWithClass(targetPath, 0)];
+  for (let index = 0; index < count; index++) {
+    const isFar = index % 2 === 1;
+    const name = isFar ? `FarType${index}` : `NearType${index}`;
+    const filePath = isFar ? `vendor/generated/${name}.java` : `src/com/example/near/${name}.java`;
+    facts.set(filePath, { status: 'known', packageName: 'com.example' });
+    parsedFiles.push(
+      moduleWithClass(
+        filePath,
+        index + 1,
+        classDef(`class:${index}`, filePath, `com.example.${name}`),
+        moduleBinding?.(name),
+      ),
+    );
+  }
+  return { parsedFiles, facts };
+}
+
+function withMaxInjectedSiblings<T>(value: string | undefined, run: () => T): T {
+  const previous = process.env.GITNEXUS_MAX_INJECTED_SIBLINGS;
+  if (value === undefined) delete process.env.GITNEXUS_MAX_INJECTED_SIBLINGS;
+  else process.env.GITNEXUS_MAX_INJECTED_SIBLINGS = value;
+  try {
+    return run();
+  } finally {
+    if (previous === undefined) delete process.env.GITNEXUS_MAX_INJECTED_SIBLINGS;
+    else process.env.GITNEXUS_MAX_INJECTED_SIBLINGS = previous;
+  }
+}
+
+describe('JVM sibling injection cap (#2732)', () => {
+  const targetPath = 'src/com/example/Target.java';
+
+  it('keeps the nearest siblings, drops the rest, and injects exactly the cap', () => {
+    const { parsedFiles, facts } = interleavedPackage(targetPath, 10);
+    const visibility = jvmVisibility(facts);
+    const indexes = emptyIndexes();
+
+    withMaxInjectedSiblings('4', () =>
+      visibility.populateNamespaceSiblings(parsedFiles, indexes, {
+        fileContents: new Map(parsedFiles.map((parsed) => [parsed.filePath, 'class Type {}'])),
+      }),
+    );
+
+    const injected = indexes.bindingAugmentations.get('module:0');
+    assert.deepEqual([...(injected?.keys() ?? [])].sort(), [
+      'NearType0',
+      'NearType2',
+      'NearType4',
+      'NearType6',
+    ]);
+  });
+
+  it('marks a file whose sibling set was truncated as visibility-incomplete', () => {
+    const { parsedFiles, facts } = interleavedPackage(targetPath, 10);
+    const visibility = jvmVisibility(facts);
+
+    withMaxInjectedSiblings('4', () =>
+      visibility.populateNamespaceSiblings(parsedFiles, emptyIndexes(), {
+        fileContents: new Map(parsedFiles.map((parsed) => [parsed.filePath, 'class Type {}'])),
+      }),
+    );
+
+    // Spring bean/DI/conditional attribution keys off this flag; a truncated
+    // sibling set must never read as exact package visibility.
+    assert.equal(visibility.isVisibilityIncomplete(targetPath), true);
+  });
+
+  it('bounds type bindings by the same sibling set it bounded bindings by', () => {
+    // Each sibling module scope carries a type binding named after itself, so
+    // the merged set names exactly which siblings were treated as visible.
+    const { parsedFiles, facts } = interleavedPackage(
+      targetPath,
+      10,
+      (name) => new Map([[`Binding_${name}`, { source: 'import' }]]),
+    );
+    const visibility = jvmVisibility(facts);
+
+    withMaxInjectedSiblings('4', () =>
+      visibility.populateNamespaceSiblings(parsedFiles, emptyIndexes(), {
+        fileContents: new Map(parsedFiles.map((parsed) => [parsed.filePath, 'class Type {}'])),
+      }),
+    );
+
+    const targetModule = parsedFiles[0].scopes.find((scope) => scope.kind === 'Module');
+    assert.deepEqual([...(targetModule?.typeBindings.keys() ?? [])].sort(), [
+      'Binding_NearType0',
+      'Binding_NearType2',
+      'Binding_NearType4',
+      'Binding_NearType6',
+    ]);
+  });
+
+  it('injects every sibling and stays complete when the cap is disabled', () => {
+    const { parsedFiles, facts } = interleavedPackage(targetPath, 10);
+    const visibility = jvmVisibility(facts);
+    const indexes = emptyIndexes();
+
+    withMaxInjectedSiblings('0', () =>
+      visibility.populateNamespaceSiblings(parsedFiles, indexes, {
+        fileContents: new Map(parsedFiles.map((parsed) => [parsed.filePath, 'class Type {}'])),
+      }),
+    );
+
+    assert.equal(indexes.bindingAugmentations.get('module:0')?.size, 10);
+    assert.equal(visibility.isVisibilityIncomplete(targetPath), false);
+  });
+
+  it('applies the documented default of 200 when the env var is unset', () => {
+    const { parsedFiles, facts } = interleavedPackage(targetPath, 402);
+    const visibility = jvmVisibility(facts);
+    const indexes = emptyIndexes();
+
+    withMaxInjectedSiblings(undefined, () =>
+      visibility.populateNamespaceSiblings(parsedFiles, indexes, {
+        fileContents: new Map(parsedFiles.map((parsed) => [parsed.filePath, 'class Type {}'])),
+      }),
+    );
+
+    assert.equal(indexes.bindingAugmentations.get('module:0')?.size, 200);
+    assert.equal(visibility.isVisibilityIncomplete(targetPath), true);
+  });
+});

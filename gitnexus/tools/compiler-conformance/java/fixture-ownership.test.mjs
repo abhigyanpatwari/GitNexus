@@ -65,7 +65,7 @@ test('allows graph metadata, mocked paths, and file-backed projects in other lan
     import fs from 'node:fs';
     import { useFixture } from '../helpers.js';
     const locations = ['src/Main.java', 'Class:Example.java:Example'];
-    const virtual = { 'Example.java': 'class Example {}' };
+    const virtual = { 'Example.java': { line: 1 } };
     checkGraphLocations(virtual, locations);
     expect(report.languageForPath('Empty.java')).toBe('java');
     fs.writeFileSync('real.rs', 'fn main() {}');
@@ -75,6 +75,18 @@ test('allows graph metadata, mocked paths, and file-backed projects in other lan
   assert.deepEqual(
     javaFixtureUses("import fs from 'node:fs'; vi.mock('node:fs'); fs.readFileSync('Mock.java');"),
     [],
+  );
+});
+
+test('detects Java declarations in virtual file maps and language fixture tables', () => {
+  const uses = javaFixtureUses(`
+    const contents = { 'Example.java': 'package demo; class Example {}' };
+    const fixtures = { java: ['java', 'class Sample {}'], csharp: ['cs', 'class Sample {}'] };
+    const packages = { 'Example.java': 'demo', 'Else.java': 'org.example' };
+  `);
+  assert.deepEqual(
+    uses.map(({ path }) => path),
+    ['Example.java', 'java'],
   );
 });
 

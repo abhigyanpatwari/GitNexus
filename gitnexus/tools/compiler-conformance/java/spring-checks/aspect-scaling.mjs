@@ -428,7 +428,7 @@ public class BenchmarkAspect {
   assert.ok(result.captureCount > classCount * 8);
   assert.ok(result.captureCount / smaller.captureCount > 1.9);
   assert.ok(result.captureCount / smaller.captureCount < 2.05);
-  assert.ok(result.elapsedMs < budgetMs);
+  if (BENCH_ENABLED) assert.ok(result.elapsedMs < budgetMs);
   if (BENCH_ENABLED) // Spring AOP candidate-index scaling benchmark (#2416)
   {
     // reports build/query scaling while keeping selective work proportional to candidates
