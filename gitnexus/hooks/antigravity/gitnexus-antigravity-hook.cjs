@@ -13,7 +13,7 @@
  *     to surface text to the agent. Augmentation therefore runs in AfterTool,
  *     where `hookSpecificOutput.additionalContext` is appended to the tool
  *     result the agent sees.
- *   - Stale-index hints after git commit/merge/rebase/cherry-pick/pull are
+ *   - Stale-index hints after Git mutations are
  *     surfaced via the same `additionalContext` channel (so the agent reads
  *     them, not only the user) and mirrored to stderr for terminal users.
  *   - Stdin uses `tool_name`, `tool_input`, and `tool_response`
@@ -258,8 +258,7 @@ function toolSucceeded(toolResponse) {
  * Compute the additionalContext for a tool result, if any.
  *   1. Graph augment for search-like tools (search_file_content, glob,
  *      run_shell_command-with-rg/grep) that completed successfully.
- *   2. Stale-index hint after a successful git commit/merge/rebase/cherry-
- *      pick/pull.
+ *   2. Stale-index hint after a successful Git mutation.
  * Returns null when nothing is to be appended.
  */
 function buildAfterToolContext(input) {
