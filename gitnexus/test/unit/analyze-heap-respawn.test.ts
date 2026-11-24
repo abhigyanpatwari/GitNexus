@@ -164,7 +164,7 @@ describe('analyzeCommand heap respawn', () => {
       const cpus = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
       const native = await import('../../src/core/lbug/native-check.js');
       const libc = vi.spyOn(native, 'hostGlibcVersion').mockReturnValue('2.41');
-      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform') ?? {};
       vi.stubEnv('MALLOC_ARENA_MAX', operatorArenas);
       vi.stubEnv('GLIBC_TUNABLES', undefined);
       vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', undefined);
