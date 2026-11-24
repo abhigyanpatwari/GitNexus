@@ -202,34 +202,19 @@ async function verifyJavaDeclaredPackageImportResolution2910() {
   }
 }
 async function verifyJavaVariadicCallResolution() {
-  let result;
-  result = await runPipelineFromRepo(path.join(FIXTURES, 'java-variadic-resolution'), () => {});
-  // CALLS edges from within variadic method have valid sourceId (no ID mismatch)
-  {
-    const danglingSourceIds = [];
-    for (const rel of result.graph.iterRelationships()) {
-      if (rel.type !== 'CALLS') continue;
-      const sourceNode = result.graph.getNode(rel.sourceId);
-      if (!sourceNode) {
-        danglingSourceIds.push(rel.sourceId);
-        continue;
-      }
-      if (
-        sourceNode.properties.filePath === 'com/example/util/Logger.java' &&
-        !result.graph.getNode(rel.sourceId)
-      ) {
-        danglingSourceIds.push(rel.sourceId);
-      }
-    }
-    assert.deepEqual(danglingSourceIds, []);
-    const allDangling = [];
-    for (const rel of result.graph.iterRelationships()) {
-      if (!result.graph.getNode(rel.sourceId)) {
-        allDangling.push(`${rel.type}:${rel.sourceId}`);
-      }
-    }
-    assert.deepEqual(allDangling, []);
+  const { graph } = await runPipelineFromRepo(
+    path.join(FIXTURES, 'java-variadic-resolution'),
+    () => {},
+  );
+  let hasCalls = false;
+  for (const edge of graph.iterRelationships()) {
+    if (edge.type === 'CALLS') hasCalls = true;
+    assert.ok(
+      graph.getNode(edge.sourceId),
+      'Missing source ' + edge.sourceId + ' for ' + edge.type,
+    );
   }
+  assert.ok(hasCalls, 'Expected CALLS edges in the variadic fixture');
 }
 async function verifyJavaWildcardImportResolution() {
   let result;
