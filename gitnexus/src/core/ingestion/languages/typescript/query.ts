@@ -1308,6 +1308,18 @@ ${unboundCallableQuery('declaration.function')}
       object: (_) @reference.receiver
       property: (property_identifier) @reference.name))) @reference.call.member
 
+;; Private member call: \`this.#m()\`, and \`await this.#m<T>()\`.
+(call_expression
+  function: (member_expression
+    object: (_) @reference.receiver
+    property: (private_property_identifier) @reference.name)) @reference.call.member
+
+(call_expression
+  function: (await_expression
+    (member_expression
+      object: (_) @reference.receiver
+      property: (private_property_identifier) @reference.name))) @reference.call.member
+
 ;; References — constructor calls: \`new User()\` / \`new ns.User()\`.
 (new_expression
   constructor: (identifier) @reference.name) @reference.call.constructor
@@ -1327,6 +1339,16 @@ ${unboundCallableQuery('declaration.function')}
     object: (_) @reference.receiver
     property: (property_identifier) @reference.name)) @reference.write.member
 
+(assignment_expression
+  left: (member_expression
+    object: (_) @reference.receiver
+    property: (private_property_identifier) @reference.name)) @reference.write.member
+
+(augmented_assignment_expression
+  left: (member_expression
+    object: (_) @reference.receiver
+    property: (private_property_identifier) @reference.name)) @reference.write.member
+
 ;; References — read access: \`obj.field\` used in a read context.
 ;; Fires on EVERY member_expression; \`emitTsScopeCaptures\` filters out
 ;; contexts that shouldn't emit a read ACCESSES edge (LHS of assignment,
@@ -1337,6 +1359,10 @@ ${unboundCallableQuery('declaration.function')}
 (member_expression
   object: (_) @reference.receiver
   property: (property_identifier) @reference.name) @reference.read.member
+
+(member_expression
+  object: (_) @reference.receiver
+  property: (private_property_identifier) @reference.name) @reference.read.member
 
 ;; References — value position (#2437): a function identifier assigned as an
 ;; object-literal property value (\`{ emitScopeCaptures: emitCppScopeCaptures }\`)

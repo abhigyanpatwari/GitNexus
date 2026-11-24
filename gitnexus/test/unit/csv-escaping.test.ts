@@ -139,7 +139,7 @@ describe('sanitizeUTF8', () => {
   });
 
   it('strips lone surrogates', () => {
-    expect(sanitizeUTF8('hello\uD800world')).toBe('helloworld');
+    expect(sanitizeUTF8(`hello${String.fromCharCode(0xd800)}world`)).toBe('helloworld');
   });
 
   it('preserves valid supplementary Unicode characters', () => {
@@ -157,8 +157,8 @@ describe('graph identity CSV fidelity', () => {
       (char) => char !== '\t' && char !== '\n',
     ),
     '\x7F',
-    '\uD800',
-    '\uDFFF',
+    String.fromCharCode(0xd800),
+    String.fromCharCode(0xdfff),
     '\uFFFE',
     '\uFFFF',
   ])('rejects a character that CSV would alter: %j', (char) => {
@@ -213,19 +213,19 @@ describe('isBinaryContent', () => {
   // #2889 — every file enters through a lossy `utf-8` decode, so an embedded
   // binary payload reaches this function as U+FFFD, never as the raw bytes.
   it('returns true when >10% U+FFFD replacement characters', () => {
-    const decoded = 'a'.repeat(80) + '�'.repeat(20);
+    const decoded = 'a'.repeat(80) + '\uFFFD'.repeat(20);
     expect(isBinaryContent(decoded)).toBe(true);
   });
 
   it('counts U+FFFD toward the same threshold as control bytes', () => {
     // 5 control + 6 replacement = 11% of 100 — neither group crosses 10% alone.
-    const mixed = 'a'.repeat(89) + '\x01'.repeat(5) + '�'.repeat(6);
+    const mixed = 'a'.repeat(89) + '\x01'.repeat(5) + '\uFFFD'.repeat(6);
     expect(isBinaryContent(mixed)).toBe(true);
   });
 
   it('returns false for text carrying a few replacement characters', () => {
     // A mis-decoded latin-1 comment in an otherwise clean file stays indexable.
-    const mostlyText = 'a'.repeat(95) + '�'.repeat(5);
+    const mostlyText = 'a'.repeat(95) + '\uFFFD'.repeat(5);
     expect(isBinaryContent(mostlyText)).toBe(false);
   });
 });

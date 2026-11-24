@@ -141,7 +141,7 @@ describe('receiver-chain codec', () => {
       '|'.repeat(512),
       '1|' + '|'.repeat(400),
       '2|svc|c\u0000name',
-      '2|svc|c\uD800',
+      `2|svc|c${String.fromCharCode(0xd800)}`,
       `2|svc|c${'x'.repeat(MAX_RECEIVER_CHAIN_BYTES)}`,
       '1|'.repeat(300),
       {},

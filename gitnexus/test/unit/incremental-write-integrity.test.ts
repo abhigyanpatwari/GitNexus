@@ -590,7 +590,7 @@ describe('incremental graph identity before publication', () => {
       // own real persistence coverage in embedding-identity-integrity.test.ts.
       id: 'Function:src/Å.ts:王',
       label: 'Function',
-      properties: { name: '王\r\n\uD800', filePath: 'src/Å.ts' },
+      properties: { name: `王\r\n${String.fromCharCode(0xd800)}`, filePath: 'src/Å.ts' },
     });
     try {
       await adapter.initLbug(lbugPath, { skipFts: true });
