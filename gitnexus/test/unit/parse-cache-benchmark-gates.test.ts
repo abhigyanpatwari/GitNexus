@@ -1,7 +1,10 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const benchmark = new URL('../../bench/file-result-reuse/benchmark.js', import.meta.url);
-const { assessComparison, studentCritical } = await import(benchmark.href);
+const { assessComparison, studentCritical, validatePair } = await import(benchmark.href);
+const tools = new URL('../../bench/lib/benchmark-tools.mjs', import.meta.url);
+const { runBenchmarkTool } = await import(tools.href);
 
 type Metric = { name: string; limit: number; passed: boolean; regressed: boolean };
 type Report = ReturnType<typeof report>;
@@ -21,6 +24,7 @@ function report(pairs = 7, maxPairs = 7, candidateMs = [100]) {
       driverDigest: '2'.repeat(64),
       buildDigest: '3'.repeat(64),
       runtimeHead: '4'.repeat(40),
+      runtimeSourceTrees: ['5'.repeat(40), '6'.repeat(40)],
       node: process.version,
       workers: 2,
       platform: process.platform,
@@ -68,6 +72,53 @@ const moderateNoise = [96, 104, 98, 102, 97, 103, 100];
 const wideNoise = [80, 90, 95, 100, 105, 110, 120];
 
 describe('parse-cache performance acceptance', () => {
+  it.each(['git', 'tar'])('uses system %s with an empty PATH', (name) => {
+    const output = runBenchmarkTool(name, ['--version'], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: '' },
+    });
+    expect(output).toContain(name);
+  });
+
+  it('requires exact graph fingerprints on both sides of the reviewed corpus change', () => {
+    const { graphExpectations } = JSON.parse(
+      readFileSync(new URL('./baseline.json', benchmark), 'utf8'),
+    );
+    const expected = graphExpectations[0];
+    const pair = report().warmup;
+    pair.baseline.provenance.runtimeHead = 'a'.repeat(40);
+    pair.baseline.provenance.runtimeSourceTrees = expected.baselineSourceTrees;
+    pair.candidate.provenance.runtimeSourceTrees = expected.candidateSourceTrees;
+    for (const variant of ['baseline', 'candidate'] as const) {
+      const trial = pair[variant];
+      trial.provenance.sourceDigest = expected.sourceDigest;
+      trial.provenance.sourceFiles = expected.sourceFiles;
+      for (const row of trial.measurements) {
+        [row.parsedDigest, row.parsedNodes, row.parsedEdges] = expected[variant][row.kind];
+        if (row.kind === 'cold') row.reparsed = expected.sourceFiles;
+        row.hits = expected.sourceFiles - row.reparsed;
+      }
+    }
+    expect(() => validatePair(pair)).not.toThrow();
+    const unrelated = structuredClone(pair);
+    unrelated.candidate.provenance.runtimeHead = '7'.repeat(40);
+    unrelated.candidate.provenance.runtimeSourceTrees = ['8'.repeat(40), '9'.repeat(40)];
+    unrelated.candidate.measurements = structuredClone(unrelated.baseline.measurements);
+    expect(() => validatePair(unrelated)).not.toThrow();
+
+    const completeRegression = structuredClone(pair);
+    completeRegression.candidate.measurements = structuredClone(pair.baseline.measurements);
+    expect(() => validatePair(completeRegression)).toThrow('Unexpected candidate graph for cold');
+
+    const edit = pair.candidate.measurements[2];
+    edit.parsedDigest = 'd'.repeat(64);
+    expect(() => validatePair(pair)).toThrow('Unexpected candidate graph for edit');
+
+    edit.parsedDigest = expected.candidate.edit[0];
+    pair.candidate.provenance.sourceDigest = pair.baseline.provenance.sourceDigest = '9'.repeat(64);
+    expect(() => validatePair(pair)).toThrow('Graph parsedDigest differs for cold');
+  });
+
   it('keeps every phase, memory and cache-size gate at the five-percent budget', () => {
     const result = assessComparison(report());
     expect(result.passed).toBe(true);

@@ -1061,16 +1061,32 @@ export function findClassBindingInScope(
       const targetFiles = new Set(
         rootClaim.imports.flatMap((edge) =>
           edge.kind === 'namespace' && edge.targetFile !== null && edge.linkStatus !== 'unresolved'
-            ? [edge.targetFile]
+            ? [edge.namespaceTargetFile ?? edge.targetFile]
             : [],
         ),
       );
       const candidates = new Map<string, SymbolDefinition>();
       const memberName = receiverName.slice(rootName.length).replace(/^[.:]+/, '');
       for (const target of targetFiles) {
-        const exports = scopes.namespaceExportsByFile?.get(target);
-        if (exports === undefined) continue;
-        const def = exports.get(memberName);
+        const published = scopes.moduleExports;
+        let def: SymbolDefinition | undefined;
+        if (published === undefined) {
+          def = scopes.namespaceExportsByFile?.get(target)?.get(memberName);
+        } else {
+          let modulePath: string | undefined = target;
+          const segments = memberName.split('.');
+          for (const segment of segments.slice(0, -1)) {
+            const namespace =
+              modulePath === undefined ? undefined : published.get(modulePath, segment);
+            modulePath =
+              lookup?.purpose === 'value' && namespace?.typeOnly
+                ? undefined
+                : namespace?.namespaceTargetFile;
+          }
+          const exported =
+            modulePath === undefined ? undefined : published.get(modulePath, segments.at(-1)!);
+          if (lookup?.purpose !== 'value' || !exported?.typeOnly) def = exported?.def;
+        }
         if (
           def !== undefined &&
           isClassLike(def.type) &&
@@ -1094,6 +1110,7 @@ export function findClassBindingInScope(
             def !== undefined &&
             isClassLike(def.type) &&
             targetFiles.has(def.filePath) &&
+            scopes.moduleExports === undefined &&
             !scopes.namespaceExportsByFile?.has(def.filePath) &&
             namespaceImportAllowsMember(
               startScope,

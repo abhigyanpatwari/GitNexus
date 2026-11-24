@@ -114,9 +114,12 @@ describe('literal-collectors', () => {
       expect(hasNodeType(nodeTypes, 'parameter_declaration', SupportedLanguages.CPlusPlus)).toBe(
         true,
       );
-      // discriminator: resolution-layer literals are grammar nodes (snake_case /
-      // anonymous), never resolved-symbol PascalCase kinds like 'Class'/'Struct'.
-      expect(nodeTypes.some((n) => /^[A-Z]/.test(n.literal))).toBe(false);
+      // Tree-sitter's recovery node is uppercase. Keep collecting it and
+      // continue rejecting semantic kinds such as Class and Struct.
+      expect(hasNodeType(nodeTypes, 'ERROR', SupportedLanguages.TypeScript)).toBe(true);
+      expect(nodeTypes.filter((n) => n.literal !== 'ERROR' && /^[A-Z]/.test(n.literal))).toEqual(
+        [],
+      );
     });
 
     it('scans shared resolution files (type-env.ts) tagged with the full language set', () => {

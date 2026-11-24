@@ -57,8 +57,7 @@ import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
-import { canonicalizeWorkspaceBindings } from '../../scope-resolution/scope/canonicalize-bindings.js';
-import { canonicalTypeScriptName } from '../typescript/identifiers.js';
+import { canonicalizeEcmaWorkspaceBindings } from '../typescript/canonicalize-bindings.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import { vueProvider } from '../vue.js';
 import { loadTsconfigIndex } from '../typescript/tsconfig.js';
@@ -92,8 +91,7 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 }
 
 const vueScopeResolver: ScopeResolver = {
-  populateWorkspaceReferences: (parsedFiles) =>
-    canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
+  populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
   language: SupportedLanguages.Vue,
   languageProvider: vueProvider,
   importEdgeReason: 'vue-scope: import',

@@ -45,6 +45,7 @@ import type {
   DefIndex,
   FinalizedScc,
   FinalizeStats,
+  FinalizeOutput,
   ImportVisibility,
   MethodDispatchIndex,
   ModuleScopeIndex,
@@ -57,6 +58,8 @@ import type {
 } from 'gitnexus-shared';
 
 export interface ScopeResolutionIndexes {
+  /** Public module exports after re-export linking. */
+  readonly moduleExports?: FinalizeOutput['moduleExports'];
   /** Optional authoritative namespace exports, installed when the bundle is
    *  built, before return propagation. */
   readonly namespaceExportsByFile?: ReadonlyMap<string, ReadonlyMap<string, SymbolDefinition>>;

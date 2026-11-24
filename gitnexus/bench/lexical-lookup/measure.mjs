@@ -7,8 +7,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash } from 'node:crypto';
-import { execFileSync, fork } from 'node:child_process';
+import { fork } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
 import { assertGraphParity } from './reference-migration.mjs';
 const args = process.argv.slice(2);
 assert(
@@ -43,11 +44,21 @@ const control = 'gitnexus/src/semantic-bench-control.ts';
 const source =
   'export class SemanticBenchStore { save(): void {} load(): void {} }\nexport function semanticBenchUse(s: SemanticBenchStore) { s.save(); }\n';
 const head = (repo) =>
-  execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  runBenchmarkTool('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
 assert.equal(head(baseline), head(candidate));
+const corpusRevision = head(baseline);
+const corpusRoots = ['gitnexus/src/core/ingestion', 'gitnexus-shared/src/scope-resolution'];
+const treeIds = corpusRoots.map((root) =>
+  runBenchmarkTool('git', ['ls-tree', '-d', '--format=%(objectname)', corpusRevision, '--', root], {
+    cwd: baseline,
+    encoding: 'utf8',
+  }).trim(),
+);
+// Other corpora still run under the ordinary graph comparison rules.
+const corpusTrees = treeIds.every(Boolean) ? treeIds.join(':') : null;
 for (const repo of isWorker ? [] : [baseline, candidate]) {
   assert.equal(
-    execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }),
+    runBenchmarkTool('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }),
     '',
     'Checkout must be clean',
   );
@@ -88,6 +99,7 @@ function saveResults(repo) {
     JSON.stringify(
       {
         head: head(repo),
+        corpusTrees,
         node: process.version,
         lifecycle,
         pairs,
@@ -106,7 +118,7 @@ function saveResults(repo) {
   );
 }
 function verifyPair(before, after, repo) {
-  const receipt = assertGraphParity(before, after, repo);
+  const receipt = assertGraphParity(before, after, repo, corpusTrees);
   graphParity.push({ baselineName: before.name, candidateName: after.name, ...receipt });
   saveResults(repo);
 }

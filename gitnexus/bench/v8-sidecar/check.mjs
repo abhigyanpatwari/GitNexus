@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertReferenceAdditionReceipt } from '../lib/reference-additions.mjs';
 import { quantile } from '../mcp-query/statistics.mjs';
 
 export function assessPairs(pairs) {
@@ -54,6 +55,11 @@ export function indexingMetrics(report, lifecycle) {
   const checkGraph = (baseline, candidate) => {
     assert.deepEqual(candidate.graph.nodes, baseline.graph.nodes, 'Semantic nodes differ');
     const receipt = receipts.get(baseline.name);
+    assertReferenceAdditionReceipt(
+      report.corpusTrees,
+      receipt,
+      candidate.graph.edges.count - baseline.graph.edges.count,
+    );
     if (!receipt) {
       assert.equal(report.graphParity, undefined, 'Missing graph parity receipt');
       assert.deepEqual(
@@ -80,7 +86,10 @@ export function indexingMetrics(report, lifecycle) {
       baseline.graph,
       'Graph parity projection differs from baseline',
     );
-    assert(['exact', 'point-to-span'].includes(receipt.mode), 'Invalid graph parity mode');
+    assert(
+      ['exact', 'point-to-span', 'added-references'].includes(receipt.mode),
+      'Invalid graph parity mode',
+    );
     if (receipt.mode === 'exact')
       assert.deepEqual(candidate.graph, baseline.graph, 'Exact parity requires equal graphs');
   };
