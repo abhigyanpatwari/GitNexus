@@ -359,8 +359,8 @@ const BUFFER_POOL_FLOOR = 64 * 1024 * 1024;
 // and even the ~1800-file GitNexus checkout needs ≥256 MiB. So the adaptive
 // size never drops a repo below this — a distinct, higher floor than
 // BUFFER_POOL_FLOOR, which only guards defaultBufferPoolSize on tiny-RAM
-// machines. It is still clamped up to defaultBufferPoolSize, so a machine whose
-// default is below this floor keeps its default rather than over-committing.
+// machines. It is still clamped to scaledAnalyzePoolCap, so a machine whose
+// cap is below this floor keeps its cap rather than over-committing.
 const ADAPTIVE_POOL_FLOOR = 256 * 1024 * 1024;
 
 const parseBufferPoolSize = (raw: string | undefined): number | undefined => {

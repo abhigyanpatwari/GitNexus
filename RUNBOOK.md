@@ -295,9 +295,10 @@ also disables the group tools. `gitnexus serve`'s REST reads have no such limit;
 they use the same default pool but are not watched by this guard.
 
 The pool also bounds the memory one read can use. A read through MCP, the CLI or
-serve's REST routes that fails with "buffer pool is full" names the remedy:
-retry after concurrent reads finish, or raise `GITNEXUS_LBUG_BUFFER_POOL_SIZE`
-and keep it and `GITNEXUS_QUERY_MAX_RSS_MB` below the container memory limit.
+serve's REST routes (not group bridge reads) that fails with "buffer pool is
+full" names the remedy: retry after concurrent reads finish, or raise
+`GITNEXUS_LBUG_BUFFER_POOL_SIZE` and keep it and `GITNEXUS_QUERY_MAX_RSS_MB`
+below the container memory limit.
 Vector search uses a fixed pool reservation that this setting does not change.
 
 RSS is checked at query start/end and every 200 ms while reads run. On macOS,

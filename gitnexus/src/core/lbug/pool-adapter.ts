@@ -784,9 +784,9 @@ function ladybugUnavailableError(repoId: string, err: Error | undefined): Error 
   // (Opens with an explicit reservation rethrow raw before reaching here.)
   const remedy = err ? readBufferPoolExhaustionRemedy(err.message) : undefined;
   if (remedy) {
-    return new Error(`LadybugDB could not open ${repoId}: ${err?.message} ${remedy}`, {
-      cause: err,
-    });
+    return keepPoolErrorAsIs(
+      new Error(`LadybugDB could not open ${repoId}: ${err?.message} ${remedy}`, { cause: err }),
+    );
   }
   return new Error(
     `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
@@ -1014,7 +1014,9 @@ async function doInitLbug(
       dbCache.set(cacheKey, shared);
     } catch (err: unknown) {
       const lastError = err instanceof Error ? err : new Error(String(err));
-      if (artifactOptions) throw lastError;
+      // Marked like reserved-lane query errors: the env knob does not resize
+      // the reservation, so an outer read-only wrapper must not blame it.
+      if (artifactOptions) throw keepPoolErrorAsIs(lastError);
 
       // Not retryable: the on-disk file's storage version doesn't change
       // on its own. Fail immediately with an actionable message.

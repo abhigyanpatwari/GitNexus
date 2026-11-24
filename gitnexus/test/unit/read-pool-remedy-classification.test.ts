@@ -281,6 +281,36 @@ describe('reader buffer-pool remedy keeps the error class', () => {
         }),
       ).rejects.toBe(native);
     });
+
+    it('leaves a reserved-lane open failure from inside a read-only operation as the same object', async () => {
+      const native = new Error(ENGINE_TEXT);
+      createDb.mockImplementation(() => {
+        throw native;
+      });
+      await expect(
+        withLbugDb(
+          dbPath,
+          () =>
+            initLbug('vector-open-in-rest', dbPath, {
+              kind: 'vector',
+              bufferPoolBytes: 64 * 1024 * 1024,
+              threads: 1,
+            }),
+          { readOnly: true },
+        ),
+      ).rejects.toBe(native);
+    });
+
+    it('names the remedy once when a pool open failure passes through a read-only operation', async () => {
+      createDb.mockImplementation(() => {
+        throw new Error(ENGINE_TEXT);
+      });
+      const err = await withLbugDb(dbPath, () => initLbug('nested-open', dbPath), {
+        readOnly: true,
+      }).catch((e) => e);
+      expect(err.message).toContain('LadybugDB could not open nested-open');
+      expect(err.message.split('GITNEXUS_LBUG_BUFFER_POOL_SIZE')).toHaveLength(2);
+    });
   });
 
   it('wraps once: a wrapped or marked error comes back unchanged', () => {
