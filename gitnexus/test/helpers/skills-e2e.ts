@@ -54,6 +54,20 @@ export function createFixtureRepo(prefix: string, files: Record<string, string>)
   return tmpDir;
 }
 
+export function assertSkillsCliSucceeded(result: ReturnType<typeof runSkillsCli>) {
+  if (result.error) throw result.error;
+  expect(
+    result.status,
+    [
+      result.signal
+        ? `analyze --skills terminated by ${result.signal}`
+        : `analyze --skills exited with code ${result.status}`,
+      `stdout: ${result.stdout?.slice(-500)}`,
+      `stderr: ${result.stderr?.slice(-500)}`,
+    ].join('\n'),
+  ).toBe(0);
+}
+
 /**
  * Assert standard skill file properties:
  * 1. CLI exits 0
@@ -73,17 +87,7 @@ export function assertSkillFiles(
   tmpDir: string,
   minSkills = 1,
 ): boolean {
-  /* CI timeout tolerance */
-  if (result.status === null) return false;
-
-  expect(
-    result.status,
-    [
-      `analyze --skills exited with code ${result.status}`,
-      `stdout: ${result.stdout?.slice(0, 500)}`,
-      `stderr: ${result.stderr?.slice(0, 500)}`,
-    ].join('\n'),
-  ).toBe(0);
+  assertSkillsCliSucceeded(result);
 
   expect(fs.existsSync(path.join(tmpDir, '.gitnexus'))).toBe(true);
 
@@ -135,7 +139,7 @@ export function assertSkillFiles(
  * for the reserved direct-child namespace.
  */
 export function assertContextFiles(result: ReturnType<typeof runSkillsCli>, tmpDir: string) {
-  if (result.status === null) return;
+  assertSkillsCliSucceeded(result);
 
   const skillsRoot = path.join(tmpDir, '.claude', 'skills');
   const skillsGenerated =

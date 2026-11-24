@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
 import {
   assertContextFiles,
@@ -126,7 +126,7 @@ public class User {
    * Java repo with service/repository/model clusters.
    */
   it('generates skill files', () => {
-    assertSkillFiles(result, tmpDir);
+    expect(assertSkillFiles(result, tmpDir), 'Expected a Java community SKILL.md').toBe(true);
   }, 50000);
 
   /**

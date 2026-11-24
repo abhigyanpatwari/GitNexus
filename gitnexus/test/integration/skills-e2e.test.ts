@@ -8,7 +8,6 @@
  * generation and context file updates.
  *
  * Uses process.execPath (never 'node' string), no shell: true.
- * Accepts status === null (timeout) as valid on slow CI runners.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
@@ -18,6 +17,7 @@ import fs from 'fs';
 import {
   assertContextFiles,
   assertSkillFiles,
+  assertSkillsCliSucceeded,
   createFixtureRepo,
   runSkillsCli,
 } from '../helpers/skills-e2e.js';
@@ -2092,10 +2092,7 @@ export function createEntry(level: string, msg: string) {
     result2 = runSkillsCli(tmpDir);
     // 120s to match the other describe hooks in this file. This hook runs
     // runSkillsCli TWICE, each capped at 45s, so a 90s budget has no headroom
-    // over two worst-case analyzes plus fixture setup and git init — it times
-    // out the *hook* on slow Windows runners (the test below already tolerates
-    // an individual analyze hitting its own 45s timeout via status === null,
-    // but a hook timeout fails before that tolerance can apply).
+    // over two worst-case analyzes plus fixture setup and git init.
   }, 120000);
 
   afterAll(() => {
@@ -2108,25 +2105,8 @@ export function createEntry(level: string, msg: string) {
    * and CLAUDE.md still references generated skills.
    */
   it('second analyze --skills produces stable output', () => {
-    /* CI timeout tolerance */
-    if (result1.status === null || result2.status === null) return;
-
-    expect(
-      result1.status,
-      [
-        `first analyze --skills exited with code ${result1.status}`,
-        `stdout: ${result1.stdout?.slice(0, 500)}`,
-        `stderr: ${result1.stderr?.slice(0, 500)}`,
-      ].join('\n'),
-    ).toBe(0);
-    expect(
-      result2.status,
-      [
-        `second analyze --skills exited with code ${result2.status}`,
-        `stdout: ${result2.stdout?.slice(0, 500)}`,
-        `stderr: ${result2.stderr?.slice(0, 500)}`,
-      ].join('\n'),
-    ).toBe(0);
+    assertSkillsCliSucceeded(result1);
+    assertSkillsCliSucceeded(result2);
 
     const skillsRoot = path.join(tmpDir, '.claude', 'skills');
     expect(fs.existsSync(skillsRoot)).toBe(true);
