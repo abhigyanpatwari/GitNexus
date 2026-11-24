@@ -1038,7 +1038,9 @@ export interface ScopeResolver {
    * language whose wildcard import is `#include`, `require` or a package
    * fan-out, the same name in two files is an overload set or a redeclaration,
    * and refusing it would delete real edges (C++ arity-narrowed overloads
-   * across two headers). Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
+   * across two headers). With unfiltered wildcards, finalize builds the module's
+   * public export surface and uses it for namespace chains and named imports.
+   * Forwarded to `FinalizeHooks.wildcardCollisionIsAmbiguous`.
    */
   readonly exclusiveWildcardReexports?: boolean;
 
@@ -1254,10 +1256,9 @@ export interface ScopeResolver {
    * edge the current module's scope binds under that name; a hop that is
    * ambiguous — two files behind one handle disagree, or a name is both a
    * type and a republished module — resolves nothing rather than picking a
-   * first match. Off, the receiver-bound paths (Case 1, Case 2's
-   * namespace-qualified class, Case 3) keep their one-hop lookups exactly
-   * as they are, so no existing edge moves; Zig opts in (PR #1432 review,
-   * 8.10), whose module system is nothing but nested `const` handles.
+   * first match. Providers with an exclusive public export surface also walk
+   * published namespaces. Other providers keep their one-hop lookups unless
+   * they enable this flag, as Zig does for its nested module handles.
    */
   readonly resolveNamespaceChains?: boolean;
 
@@ -2105,12 +2106,10 @@ export interface ScopeResolver {
    * from another package. Bare lookup remains available when this hook returns
    * no qualified spelling.
    *
-   * An import-relative qualifier must name a FILE-level import: it is looked up from the module
-   * scope enclosing `declaredAtScope`, never from `declaredAtScope` itself. That
-   * scope holds the binding, and the binding may carry the qualifier's own name
-   * — `vault *vault.Vault` as a field, parameter or local — which would shadow
-   * the import there. A language whose imports can be block-scoped needs a
-   * different anchor and must not return a spelling this rule would misread.
+   * A string names a file-level import and lookup starts at the enclosing module.
+   * This lets a parameter such as `vault *vault.Vault` share the import's name.
+   * A provider that binds imports lexically can return the scope that owns the
+   * visible namespace along with its spelling.
    *
    * The binding itself is deliberately NOT rewritten to keep the qualifier:
    * `rawName` has many readers, and the compound resolver reads a dotted one as
@@ -2124,7 +2123,7 @@ export interface ScopeResolver {
   readonly qualifiedTypeLookupSpelling?: (
     typeRef: TypeRef,
     scopes?: ScopeResolutionIndexes,
-  ) => string | null | undefined;
+  ) => string | { readonly spelling: string; readonly scope: ScopeId } | null | undefined;
 
   /**
    * Whether the compound-receiver resolver should strip C-style cast

@@ -1894,6 +1894,12 @@ jobs:
       - name: Check Java ingestion correctness and scaling baseline
         run: node bench/java-ingestion/measure.mjs --check --output java-ingestion-benchmark.json
         working-directory: gitnexus
+      - name: Check TypeScript ingestion targets and scaling
+        run: node bench/typescript-ingestion/measure.mjs --check
+        working-directory: gitnexus
+      - name: Check TypeScript property dispatch targets and fan-out
+        run: node bench/typescript-property-dispatch/measure.mjs --check
+        working-directory: gitnexus
       - name: Upload scope-resolution measurements
         if: always()
         uses: ./.github/actions/upload-test-artifact
