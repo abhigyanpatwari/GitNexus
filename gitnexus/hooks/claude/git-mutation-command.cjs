@@ -1,6 +1,6 @@
 /**
  * Find the directories in which a shell command runs a git subcommand that
- * moves HEAD (commit, merge, rebase, cherry-pick, pull). The Claude-schema and
+ * can change the checkout or apply stashed changes. The Claude-schema and
  * Antigravity adapters check the index of each directory's repository for
  * staleness after such a command.
  *
@@ -60,7 +60,7 @@ const OTHER_REPO = String.raw`--(?:git-dir|work-tree)`;
 const MAX_GLOBAL_OPTIONS = 32;
 
 // The subcommand ends at a space or at the shell operator that follows it.
-const SUBCOMMAND = String.raw`\s+(?:commit|merge|rebase|cherry-pick|pull)(?=[\s;&|)]|$)`;
+const SUBCOMMAND = String.raw`\s+(?:commit|merge|rebase|cherry-pick|pull|checkout|switch|reset|am|revert|stash\s+(?:apply|pop|branch))(?=[\s;&|)]|$)`;
 
 function grammar(word) {
   // One global option. `changeDir` matches the path given to -C and `otherRepo`
