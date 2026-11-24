@@ -470,7 +470,7 @@ describe('streamAllCSVsToDisk', () => {
     // are already gone, replaced with U+FFFD. `MethCw` is the readable tail of
     // a Java constant-pool run — the marker that proves the payload, not just
     // the corruption around it, stayed out of the indexed column.
-    const DECODED_BINARY_DESCRIPTION = `用户服务 ${'�'.repeat(24)}MethCw`;
+    const DECODED_BINARY_DESCRIPTION = `用户服务 ${'\uFFFD'.repeat(24)}MethCw`;
     const CLEAN_DESCRIPTION = 'approves an inventory transfer';
 
     // `Method` has its own emission branch; `Function` falls to the `default:`
@@ -525,7 +525,7 @@ describe('streamAllCSVsToDisk', () => {
       for (const label of BRANCHES) {
         const csv = await fs.readFile(result.nodeFiles.get(label)!.csvPath, 'utf-8');
         expect(csv, label).not.toContain('MethCw');
-        expect(csv, label).not.toContain('�');
+        expect(csv, label).not.toContain('\uFFFD');
         // A clean description on the same branch is untouched, so the gate
         // cannot pass by emptying the column for everyone.
         expect(csv, label).toContain(CLEAN_DESCRIPTION);

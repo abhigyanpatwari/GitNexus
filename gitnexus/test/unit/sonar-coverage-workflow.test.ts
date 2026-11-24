@@ -9,10 +9,12 @@ type Step = {
   name?: string;
   run?: string;
   if?: string;
+  shell?: string;
+  env?: Record<string, string>;
   with?: Record<string, string>;
   'continue-on-error'?: boolean;
 };
-type Job = { if?: string; steps?: Step[] };
+type Job = { if?: string; steps?: Step[]; needs?: string[] };
 
 function readWorkflow(name: string) {
   const file = path.resolve(__dirname, '../../../.github/workflows', name + '.yml');
@@ -35,6 +37,72 @@ let temp: string;
 
 afterEach(() => {
   if (temp) rmSync(temp, { recursive: true, force: true });
+});
+
+describe.skipIf(process.platform === 'win32')('SonarQube gate', () => {
+  const scan = namedStep(scanner, 'SonarQube Scan');
+
+  it.each([
+    ['pull_request', '09:14:27.012 WARN  Advisory with ERROR in the message', 0, 0],
+    ['pull_request', '09:14:27.012 ERROR Failed to deserialize Protobuf message', 0, 1],
+    ['pull_request', '09:14:27.012 INFO  Quality gate failed', 2, 2],
+    ['workflow_run', '09:14:27.012 INFO  Complete', 0, 0],
+  ] as const)('checks scanner output and exit status for %s (%s)', (event, log, exit, expected) => {
+    // Run the workflow shell with a stand-in CLI and capture its actual arguments.
+    const cli = 'sonar-scanner() { printf "%s\\n" "$@" "$LOG"; return "$SCAN_EXIT"; }';
+    expect(scan.shell).toBe('bash'); // Actions enables pipefail for an explicit bash shell.
+    const result = spawnSync('bash', ['-eo', 'pipefail', '-c', cli + '\n' + scan.run], {
+      env: {
+        ...process.env,
+        GITHUB_EVENT_NAME: event,
+        MAIN_REVISION: 'abc123',
+        LOG: log,
+        SCAN_EXIT: String(exit),
+      },
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(expected);
+    expect(result.stdout).toContain(log);
+    expect(result.stdout).toContain('-Dsonar.qualitygate.wait=true');
+    if (event === 'workflow_run') {
+      expect(result.stdout).toContain('-Dsonar.branch.name=main');
+      expect(result.stdout).toContain('-Dsonar.scm.revision=abc123');
+    } else {
+      expect(result.stdout).not.toContain('-Dsonar.branch.name=');
+    }
+  });
+
+  it.each([
+    [true, 'success', 0],
+    [true, 'failure', 1],
+    [true, 'cancelled', 1],
+    [true, 'skipped', 1],
+    [false, 'skipped', 0],
+  ] as const)(
+    'requires Sonar success on eligible PRs (required %s, result %s)',
+    (required, sonar, expected) => {
+      const ci = readWorkflow('ci');
+      const gate = ci.jobs['ci-status'];
+      expect(gate.needs).toContain('sonar');
+      const check = namedStep(gate.steps ?? [], 'Check all jobs passed');
+      expect(check.env?.SONAR).toBe('${{ needs.sonar.result }}');
+      const eligible = ci.jobs.sonar.if?.replace('!cancelled() && ', '').trim();
+      expect(check.env?.SONAR_REQUIRED).toBe('${{ ' + eligible + ' }}');
+      if (!check.run) throw new Error('Missing CI gate script');
+      const result = spawnSync('bash', ['-eo', 'pipefail', '-c', check.run], {
+        env: {
+          ...process.env,
+          QUALITY: 'success',
+          TESTS: 'success',
+          E2E: 'skipped',
+          SONAR: sonar,
+          SONAR_REQUIRED: String(required),
+        },
+        encoding: 'utf8',
+      });
+      expect(result.status, result.stderr).toBe(expected);
+    },
+  );
 });
 
 describe('SonarQube coverage handoff', () => {

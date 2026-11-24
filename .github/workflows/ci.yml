@@ -137,7 +137,7 @@ jobs:
   # Single required check for branch protection.
   ci-status:
     name: CI Gate
-    needs: [quality, tests, e2e]
+    needs: [quality, tests, e2e, sonar]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -156,10 +156,17 @@ jobs:
           # so a resolver regression makes TESTS != success and blocks here.
           TESTS: ${{ needs.tests.result }}
           E2E: ${{ needs.e2e.result }}
+          SONAR: ${{ needs.sonar.result }}
+          SONAR_REQUIRED: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
           echo "Quality:        $QUALITY"
           echo "Tests:          $TESTS"
           echo "E2E:            $E2E"
+          echo "SonarQube:      $SONAR"
+          if [[ "$SONAR_REQUIRED" == true && "$SONAR" != success ]]; then
+            echo "::error::SonarQube analysis was required and finished with $SONAR"
+            exit 1
+          fi
           # A failed `abi-assert` job (#1922) inside the tests reusable
           # workflow makes TESTS != success, so this clause also blocks the
           # merge on a tree-sitter ABI mismatch.
