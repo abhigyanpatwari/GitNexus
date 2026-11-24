@@ -111,7 +111,7 @@ describe('embedding identity integrity (#3569)', () => {
     '   ',
     '\0broken',
     'bad\x01id',
-    'bad\uD800id',
+    `bad${String.fromCharCode(0xd800)}id`,
     'duplicate',
     'negative-chunk',
     'fractional-chunk',
@@ -237,7 +237,7 @@ describe('embedding identity integrity (#3569)', () => {
     '   ',
     'Function:bad\0id',
     'Function:bad\x01id',
-    'Function:bad\uD800id',
+    `Function:bad${String.fromCharCode(0xd800)}id`,
     'Function:bad\rid',
     'Function:bad\uFFFFid',
   ])('rejects malformed graph ID %j before CSV COPY', async (id) => {
