@@ -203,3 +203,78 @@ describe('spawnWithOwnHeapLimit', () => {
     expect(worker.listenerCount('online')).toBe(0);
   });
 });
+
+describe('spawnWithInheritedHeap', () => {
+  let execArgv: string[];
+  let nodeOptions: string | undefined;
+
+  // Whether a worker already started under the cleared flags is process state,
+  // so each case loads a fresh module.
+  const freshModule = async () => {
+    vi.resetModules();
+    return import('../../src/core/ingestion/workers/worker-heap-limit.js');
+  };
+
+  beforeEach(() => {
+    setFlags.mockClear();
+    execArgv = process.execArgv;
+    nodeOptions = process.env.NODE_OPTIONS;
+    process.execArgv = ['--max-old-space-size=3000', '--max-semi-space-size=64'];
+    delete process.env.NODE_OPTIONS;
+  });
+
+  afterEach(() => {
+    process.execArgv = execArgv;
+    if (nodeOptions === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = nodeOptions;
+  });
+
+  it('spawns plainly under the inherited flags when no worker has used the cleared ones', async () => {
+    const { spawnWithInheritedHeap } = await freshModule();
+    const limits: unknown[] = [];
+    const worker = spawnWithInheritedHeap((resourceLimits) => {
+      limits.push(resourceLimits);
+      return fakeWorker();
+    });
+    worker.emit('online');
+    expect(limits).toEqual([undefined]);
+    expect(setFlags).not.toHaveBeenCalled();
+  });
+
+  it('takes the lease with the inherited limits once a parser worker has used it', async () => {
+    const { spawnWithInheritedHeap, spawnWithOwnHeapLimit } = await freshModule();
+    spawnWithOwnHeapLimit(fakeWorker).emit('online');
+    setFlags.mockClear();
+
+    const writesAtSpawn: string[][] = [];
+    const limits: unknown[] = [];
+    const worker = spawnWithInheritedHeap((resourceLimits) => {
+      limits.push(resourceLimits);
+      writesAtSpawn.push(setFlags.mock.calls.map(([flags]) => flags));
+      return fakeWorker();
+    });
+    worker.emit('online');
+
+    const cleared = ['--max-old-space-size=0', '--max-semi-space-size=0'];
+    expect(limits).toEqual([{ maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 192 }]);
+    expect(writesAtSpawn).toEqual([cleared]);
+    expect(setFlags.mock.calls.map(([flags]) => flags)).toEqual([
+      ...cleared,
+      '--max-old-space-size=3000',
+      '--max-semi-space-size=64',
+    ]);
+  });
+
+  it('spawns plainly without heap flags, even after a parser worker started', async () => {
+    process.execArgv = [];
+    const { spawnWithInheritedHeap, spawnWithOwnHeapLimit } = await freshModule();
+    spawnWithOwnHeapLimit(fakeWorker).emit('online');
+    const limits: unknown[] = [];
+    spawnWithInheritedHeap((resourceLimits) => {
+      limits.push(resourceLimits);
+      return fakeWorker();
+    }).emit('online');
+    expect(limits).toEqual([undefined]);
+    expect(setFlags).not.toHaveBeenCalled();
+  });
+});

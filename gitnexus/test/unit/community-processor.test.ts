@@ -344,7 +344,10 @@ describe('community-processor', () => {
       }
     });
 
-    it('starts both community workers through the heap lease with their inherited heap', async () => {
+    it.each([
+      ['spawns both community workers plainly before any parser worker', false],
+      ['starts both community workers through the heap lease after a parser worker', true],
+    ])('%s', async (_label, parserWorkerStarted) => {
       const execArgv = process.execArgv;
       const nodeOptions = process.env.NODE_OPTIONS;
       process.execArgv = ['--max-old-space-size=3000'];
@@ -397,6 +400,13 @@ describe('community-processor', () => {
       });
 
       try {
+        if (parserWorkerStarted) {
+          // A parser worker has already started under the cleared flags.
+          const { spawnWithOwnHeapLimit } =
+            await import('../../src/core/ingestion/workers/worker-heap-limit.js');
+          spawnWithOwnHeapLimit(() => new EventEmitter() as unknown as Worker).emit('online');
+          flagWrites.length = 0;
+        }
         const { processCommunities: processCommunitiesWithMockWorker } =
           await import('../../src/core/ingestion/community-processor.js');
         const graph = createKnowledgeGraph();
@@ -406,6 +416,13 @@ describe('community-processor', () => {
 
         await processCommunitiesWithMockWorker(graph, undefined, { engine: 'icebug' });
 
+        if (!parserWorkerStarted) {
+          // As before the lease: the inherited flags give these workers their heap.
+          expect(limits).toEqual({ icebug: undefined, graphology: undefined });
+          expect(writesAtSpawn).toEqual({ icebug: [], graphology: [] });
+          expect(flagWrites).toEqual([]);
+          return;
+        }
         // Old space and three semi-spaces keep these workers' heaps where the
         // flags put them, although each starts with the flags cleared.
         const inherited = { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 192 };

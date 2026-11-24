@@ -14,16 +14,18 @@
  * returns, so a synchronous set-and-restore races it (measured: the main limit
  * leaked into roughly a third of workers). The flags therefore stay cleared
  * until every starting worker reports `online`, posts its first message, or
- * exits.
+ * exits. A Worker created in the analysis process without these helpers while
+ * a lease is open gets V8's default heap, so new Worker sites there must use
+ * them.
  *
- * Every Worker the analysis process creates goes through this lease: parser
- * workers with their own cap, and other workers with
- * `inheritedWorkerResourceLimits()`, which keeps the heap the flags gave them.
- * Node shares one built-in code cache between a process's isolates and accepts
- * an entry only under the V8 flag hash it was compiled with. A worker that
- * starts under the cleared flags recompiles the built-ins its startup needs
- * (measured: ~13 ms); later workers starting under the same cleared flags
- * reuse that work instead of recompiling it again under the restored ones.
+ * Parser workers start through the lease with their own cap. Other workers use
+ * `spawnWithInheritedHeap()`. Node shares one built-in code cache between a
+ * process's isolates and accepts an entry only under the V8 flag hash it was
+ * compiled with, so the first worker that starts under the cleared flags
+ * recompiles the built-ins its startup needs (measured: ~13 ms). A later worker
+ * reuses that work when it starts under the cleared flags too, and the main
+ * isolate's entries when it starts under the inherited ones; it therefore takes
+ * the lease only once a worker has already started under the cleared flags.
  */
 import v8 from 'node:v8';
 import type { ResourceLimits, Worker } from 'node:worker_threads';
@@ -68,11 +70,12 @@ export function inheritedSemiSpaceMb(
 }
 
 /**
- * Resource limits that give a Worker the heap the inherited flags would have
- * given it: old space from `--max-old-space-size` and a young generation of
- * three `--max-semi-space-size` semi-spaces. Workers without a cap of their own
- * pass these when spawned through `spawnWithOwnHeapLimit`, which clears the
- * flags. Undefined when the process set neither flag.
+ * Resource limits that give a Worker at least the heap the inherited flags
+ * would have given it: old space from `--max-old-space-size` and a young
+ * generation of three `--max-semi-space-size` semi-spaces. Under
+ * `--max-old-space-size-percentage` the old space is the main isolate's whole
+ * limit, which includes its young generation, so the worker gets slightly more.
+ * Undefined when the process set neither flag.
  */
 export function inheritedWorkerResourceLimits(
   execArgv: readonly string[] = process.execArgv,
@@ -89,6 +92,8 @@ export function inheritedWorkerResourceLimits(
 
 let startingWorkers = 0;
 let restoreFlags: string[] = [];
+// Set once a worker has started under the cleared flags in this process.
+let clearedFlagsUsed = false;
 
 /**
  * Run `spawn` with the process-wide heap flags cleared, so the worker's
@@ -104,6 +109,7 @@ export function spawnWithOwnHeapLimit<T extends Worker>(spawn: () => T): T {
     if (oldSpaceMb > 0) restoreFlags.push(`--max-old-space-size=${oldSpaceMb}`);
     if (semiSpaceMb > 0) restoreFlags.push(`--max-semi-space-size=${semiSpaceMb}`);
     for (const flag of restoreFlags) v8.setFlagsFromString(flag.replace(/=\d+$/, '=0'));
+    clearedFlagsUsed = true;
   }
   startingWorkers++;
   let released = false;
@@ -133,4 +139,18 @@ export function spawnWithOwnHeapLimit<T extends Worker>(spawn: () => T): T {
   worker.once('message', settle);
   worker.once('exit', settle);
   return worker;
+}
+
+/**
+ * Spawn a worker that has no heap cap of its own with the heap the inherited
+ * flags give it. Once a worker has started under the cleared flags in this
+ * process, this one does too, with `inheritedWorkerResourceLimits()`, so its
+ * startup reuses that worker's built-in compile. Otherwise it starts plainly
+ * under the inherited flags and reuses the main isolate's built-ins instead.
+ */
+export function spawnWithInheritedHeap<T extends Worker>(
+  spawn: (resourceLimits: ResourceLimits | undefined) => T,
+): T {
+  if (!clearedFlagsUsed) return spawn(undefined);
+  return spawnWithOwnHeapLimit(() => spawn(inheritedWorkerResourceLimits()));
 }

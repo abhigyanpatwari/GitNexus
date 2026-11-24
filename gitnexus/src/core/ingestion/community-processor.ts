@@ -21,10 +21,7 @@ import { Worker } from 'node:worker_threads';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
-import {
-  inheritedWorkerResourceLimits,
-  spawnWithOwnHeapLimit,
-} from './workers/worker-heap-limit.js';
+import { spawnWithInheritedHeap } from './workers/worker-heap-limit.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -522,13 +519,13 @@ export const runGraphologyLeiden = async (
 ): Promise<CommunityEngineResult> => {
   try {
     const details = await new Promise<LeidenDetailedResult>((resolve, reject) => {
-      // Started through the heap lease, like the parser workers, so its
-      // built-in startup reuses theirs; it keeps the heap the flags give it.
-      const worker = spawnWithOwnHeapLimit(
-        () =>
+      // Keeps the heap the inherited flags give it, and shares the parser
+      // workers' heap lease when one has run (see spawnWithInheritedHeap).
+      const worker = spawnWithInheritedHeap(
+        (resourceLimits) =>
           new Worker(GRAPHOLOGY_WORKER_SOURCE, {
             eval: true,
-            resourceLimits: inheritedWorkerResourceLimits(),
+            resourceLimits,
             workerData: {
               graphologyPath: _require.resolve('graphology'),
               leidenPath,
@@ -638,13 +635,13 @@ const runIcebugWorker = (
     throw new Error('optional icebug engine currently requires randomize=false');
   }
 
-  // Started through the heap lease, like the parser workers, so its built-in
-  // startup reuses theirs; it keeps the heap the flags give it.
-  const worker = spawnWithOwnHeapLimit(
-    () =>
+  // Keeps the heap the inherited flags give it, and shares the parser workers'
+  // heap lease when one has run (see spawnWithInheritedHeap).
+  const worker = spawnWithInheritedHeap(
+    (resourceLimits) =>
       new Worker(ICEBUG_WORKER_SOURCE, {
         eval: true,
-        resourceLimits: inheritedWorkerResourceLimits(),
+        resourceLimits,
         workerData: {
           nodeCount,
           indices: csr.indices,
