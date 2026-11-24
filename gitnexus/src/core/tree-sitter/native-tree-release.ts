@@ -20,9 +20,11 @@
  * allocating a new one leaves external memory that only a major GC can
  * release, so V8 runs one. The buffer has to be held: a buffer dropped at once
  * is still young, and V8 frees it with a minor GC that leaves the trees where
- * they are (measured: 20 nudges, no extra major GC). It is allocated without
- * zero-filling and above glibc's largest mmap threshold (32 MB), so its pages
- * are never touched: 0 MB of resident memory on Linux and macOS.
+ * they are (measured: 20 nudges, no extra major GC). By default it is allocated
+ * without zero-filling and above glibc's largest mmap threshold (32 MB), so its
+ * pages are never touched: 0 MB of resident memory on Linux and macOS. Under
+ * `--zero-fill-buffers` it is zero-filled (see `ZERO_FILL_BUFFERS`); that stays
+ * untouched on Linux, but on macOS about 130 MB becomes resident.
  *
  * The releaser nudges when RSS has grown by `NUDGE_RSS_GROWTH_BYTES` above the
  * lowest RSS seen since the last nudge, and at least every
@@ -46,7 +48,10 @@ export const NUDGE_RSS_GROWTH_BYTES = 32 * 1024 * 1024;
 /** Nudge at least this often (in yields), whatever RSS shows. */
 export const MAX_YIELDS_PER_NUDGE = 8;
 
-/** Above glibc's largest mmap threshold, so the allocation is mapped and never touched. */
+/**
+ * Above glibc's largest mmap threshold, so the allocation is mapped and, unless
+ * zero-filled on macOS (see `ZERO_FILL_BUFFERS`), never touched.
+ */
 const NUDGE_BYTES = 64 * 1024 * 1024;
 
 /**
@@ -80,16 +85,23 @@ export function splitNodeOptions(value: string): string[] {
 
 /**
  * Whether Node runs with `--zero-fill-buffers`, decided as Node decides it:
- * `NODE_OPTIONS` first, then the command line; dashes and underscores are the
- * same in the name; any `=value` still turns it on; and the last of
+ * `NODE_OPTIONS` first, then the command line; in `NODE_OPTIONS` Node stops at
+ * the first argument that is not an option (one that does not start with `-`,
+ * or a bare `-`) and ignores the rest; dashes and underscores are the same in
+ * the name; any `=value` still turns it on; and the last of
  * `--zero-fill-buffers` and `--no-zero-fill-buffers` wins.
  */
 export function zeroFillBuffersRequested(
   execArgv: readonly string[],
   nodeOptions: string | undefined,
 ): boolean {
+  const options: string[] = [];
+  for (const arg of splitNodeOptions(nodeOptions ?? '')) {
+    if (arg !== '' && (!arg.startsWith('-') || arg === '-')) break;
+    options.push(arg);
+  }
   let requested = false;
-  for (const arg of [...splitNodeOptions(nodeOptions ?? ''), ...execArgv]) {
+  for (const arg of [...options, ...execArgv]) {
     const name = arg.split('=', 1)[0].replace(/_/g, '-');
     if (name === '--zero-fill-buffers') requested = true;
     else if (name === '--no-zero-fill-buffers') requested = false;
@@ -114,7 +126,7 @@ const nudgeState: { held: ArrayBuffer | Buffer | null } = { held: null };
 export function nudgeV8(): void {
   // Drop the old buffer before allocating the new one. Its memory is freed only
   // by the GC this allocation starts, so both are allocated until then: 128 MB
-  // of address space, none of it touched.
+  // of address space, untouched except for zero-filled buffers on macOS.
   nudgeState.held = null;
   nudgeState.held = ZERO_FILL_BUFFERS
     ? new ArrayBuffer(NUDGE_BYTES)

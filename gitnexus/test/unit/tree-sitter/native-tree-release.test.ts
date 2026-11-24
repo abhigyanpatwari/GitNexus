@@ -179,9 +179,10 @@ describe('createTreeReleaser', () => {
   // Under --zero-fill-buffers a failed Buffer.allocUnsafeSlow aborts the process,
   // so nudgeV8 must use a plain ArrayBuffer there.
   it.each([
-    ['no flag', '', 1],
-    ['a quoted flag in NODE_OPTIONS', '"--zero_fill_buffers"', 0],
-  ])('nudgeV8 picks its allocation with %s', (_label, nodeOptions, expectedUnsafeAllocations) => {
+    ['no flag', {}, 1],
+    ['a quoted flag in NODE_OPTIONS', { nodeOptions: '"--zero_fill_buffers"' }, 0],
+    ['the flag on the command line', { nodeArgs: ['--zero-fill-buffers'] }, 0],
+  ])('nudgeV8 picks its allocation with %s', (_label, options, expectedUnsafeAllocations) => {
     const { unsafeAllocations } = runReleaserChild(
       `
       let unsafeAllocations = 0;
@@ -195,7 +196,7 @@ describe('createTreeReleaser', () => {
       nudgeV8();
       console.log(JSON.stringify({ unsafeAllocations }));
     `,
-      { nodeOptions },
+      options,
     );
     expect(unsafeAllocations).toBe(expectedUnsafeAllocations);
   });
@@ -220,6 +221,14 @@ describe('zeroFillBuffersRequested', () => {
     ['', ['--zero_fill_buffers=false'], true],
     ['--zero-fill-buffers', ['--no-zero-fill-buffers'], false],
     ['--no-zero-fill-buffers', ['--zero-fill-buffers'], true],
+    // Node stops reading NODE_OPTIONS at the first argument that is not an option.
+    ['--zero-fill-buffers x --no-zero-fill-buffers', [], true],
+    ['--zero-fill-buffers - --no-zero-fill-buffers', [], true],
+    ['x --zero-fill-buffers', [], false],
+    // An empty argument is not such a stop.
+    ['--zero-fill-buffers "" --no-zero-fill-buffers', [], false],
+    // Only spaces separate arguments.
+    ['\t--zero-fill-buffers', [], false],
   ];
 
   it.each(CASES)('NODE_OPTIONS=%s with %j gives %s', (nodeOptions, execArgv, expected) => {
