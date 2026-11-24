@@ -486,6 +486,10 @@ function preEmitInheritanceEdges(
     // walk per qualified site (#1982 perf). Both need the same enclosing class.
     const callerClass = findEnclosingClassDef(site.inScope, scopes);
     if (callerClass === undefined) continue;
+    if (site.unresolvedInheritanceBase) {
+      unresolvedInheritanceByClass.add(callerClass.nodeId);
+      continue;
+    }
 
     const targetDef =
       resolveInheritanceBaseInScope(

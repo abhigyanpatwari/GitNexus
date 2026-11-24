@@ -1,7 +1,6 @@
 import { compareCodeUnits } from '../compare.mjs';
 import { copyResolutionProject } from './graph-observations.mjs';
 import assert from 'node:assert/strict';
-import { isDeepStrictEqual } from 'node:util';
 import path from 'path';
 import fs from 'node:fs';
 import os from 'node:os';

@@ -27,7 +27,6 @@ import { getProvider } from '../../src/core/ingestion/languages/index.js';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
-import Java from 'tree-sitter-java';
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
@@ -249,54 +248,6 @@ describe('generic call extraction', () => {
     });
   });
 
-  describe('Java', () => {
-    const extractor = createCallExtractor(javaCallConfig);
-
-    it('extracts free function call', () => {
-      parser.setLanguage(Java);
-      const captures = extractCallCaptures(
-        parser,
-        'class A { void m() { doStuff(); } }',
-        SupportedLanguages.Java,
-      );
-      const match = captures.find((c) => c.calledName === 'doStuff');
-      expect(match).toBeDefined();
-      const result = extractor.extract(match!.callNode, match!.nameNode!);
-      expect(result).not.toBeNull();
-      expect(result!.calledName).toBe('doStuff');
-      expect(result!.callForm).toBe('free');
-    });
-
-    it('extracts member call with receiver', () => {
-      parser.setLanguage(Java);
-      const captures = extractCallCaptures(
-        parser,
-        'class A { void m() { user.save(); } }',
-        SupportedLanguages.Java,
-      );
-      const match = captures.find((c) => c.calledName === 'save');
-      expect(match).toBeDefined();
-      const result = extractor.extract(match!.callNode, match!.nameNode!);
-      expect(result).not.toBeNull();
-      expect(result!.callForm).toBe('member');
-      expect(result!.receiverName).toBe('user');
-    });
-
-    it('sets typeAsReceiverHeuristic', () => {
-      parser.setLanguage(Java);
-      const captures = extractCallCaptures(
-        parser,
-        'class A { void m() { User.find(); } }',
-        SupportedLanguages.Java,
-      );
-      const match = captures.find((c) => c.calledName === 'find');
-      expect(match).toBeDefined();
-      const result = extractor.extract(match!.callNode, match!.nameNode!);
-      expect(result).not.toBeNull();
-      expect(result!.typeAsReceiverHeuristic).toBe(true);
-    });
-  });
-
   describe('C#', () => {
     const extractor = createCallExtractor(csharpCallConfig);
 
@@ -418,82 +369,6 @@ describe('generic call extraction', () => {
       expect(result!.callForm).toBe('member');
       expect(result!.receiverName).toBe('user');
     });
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Language-specific call site extraction (Java :: method references)
-// ---------------------------------------------------------------------------
-
-describe('Java method_reference extraction', () => {
-  const parser = new Parser();
-  parser.setLanguage(Java);
-  const extractor = createCallExtractor(javaCallConfig);
-
-  it('extracts Type::new as constructor', () => {
-    const captures = extractCallCaptures(
-      parser,
-      'class A { void m() { stream.map(User::new); } }',
-      SupportedLanguages.Java,
-    );
-    // The method_reference should be captured as @call
-    const match = captures.find((c) => c.callNode.type === 'method_reference');
-    if (match) {
-      const result = extractor.extract(match.callNode, undefined);
-      expect(result).not.toBeNull();
-      expect(result!.calledName).toBe('User');
-      expect(result!.callForm).toBe('constructor');
-    }
-  });
-
-  it('extracts Type::method as member call', () => {
-    const captures = extractCallCaptures(
-      parser,
-      'class A { void m() { stream.map(User::getName); } }',
-      SupportedLanguages.Java,
-    );
-    const match = captures.find((c) => c.callNode.type === 'method_reference');
-    if (match) {
-      const result = extractor.extract(match.callNode, undefined);
-      expect(result).not.toBeNull();
-      expect(result!.calledName).toBe('getName');
-      expect(result!.callForm).toBe('member');
-      expect(result!.receiverName).toBe('User');
-      expect(result!.typeAsReceiverHeuristic).toBe(true);
-    }
-  });
-
-  it('extracts this::method as member call', () => {
-    const captures = extractCallCaptures(
-      parser,
-      'class A { void m() { stream.map(this::process); } }',
-      SupportedLanguages.Java,
-    );
-    const match = captures.find((c) => c.callNode.type === 'method_reference');
-    if (match) {
-      const result = extractor.extract(match.callNode, undefined);
-      expect(result).not.toBeNull();
-      expect(result!.calledName).toBe('process');
-      expect(result!.callForm).toBe('member');
-      expect(result!.receiverName).toBe('this');
-    }
-  });
-
-  it('extractLanguageCallSite returns null for non-method_reference nodes', () => {
-    const captures = extractCallCaptures(
-      parser,
-      'class A { void m() { doStuff(); } }',
-      SupportedLanguages.Java,
-    );
-    const match = captures.find((c) => c.calledName === 'doStuff');
-    expect(match).toBeDefined();
-    // Language seed should be null for regular calls
-    const langSeed = extractor.extract(match!.callNode, undefined);
-    expect(langSeed).toBeNull();
-    // But full extraction with callNameNode should work
-    const full = extractor.extract(match!.callNode, match!.nameNode!);
-    expect(full).not.toBeNull();
-    expect(full!.calledName).toBe('doStuff');
   });
 });
 

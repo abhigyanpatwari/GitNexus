@@ -44,7 +44,7 @@ test('detects compiler-fixture projects through a directory, URL, or imported fi
     assert.ok(javaFixtureUses(source).length, source);
 });
 
-test('accepts unit fixtures used solely in memory, mock paths, and file-backed projects in other languages', () => {
+test('allows graph metadata, mocked paths, and file-backed projects in other languages', () => {
   const source = `
     import fs from 'node:fs';
     import { useFixture } from '../helpers.js';

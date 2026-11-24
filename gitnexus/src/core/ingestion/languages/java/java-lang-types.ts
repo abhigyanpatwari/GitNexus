@@ -1,0 +1,24 @@
+// Public top-level types implicitly imported from java.lang by Java SE 21 (JLS 7.3).
+// Keep this inventory separate from the type conversions modeled by overload resolution.
+export const JAVA_LANG_TYPE_NAMES: ReadonlySet<string> = new Set(
+  `AbstractMethodError Appendable ArithmeticException ArrayIndexOutOfBoundsException
+ArrayStoreException AssertionError AutoCloseable Boolean BootstrapMethodError Byte CharSequence
+Character Class ClassCastException ClassCircularityError ClassFormatError ClassLoader
+ClassNotFoundException ClassValue CloneNotSupportedException Cloneable Comparable Deprecated
+Double Enum EnumConstantNotPresentException Error Exception ExceptionInInitializerError Float
+FunctionalInterface IllegalAccessError IllegalAccessException IllegalArgumentException
+IllegalCallerException IllegalMonitorStateException IllegalStateException
+IllegalThreadStateException IncompatibleClassChangeError IndexOutOfBoundsException
+InheritableThreadLocal InstantiationError InstantiationException Integer InternalError
+InterruptedException Iterable LayerInstantiationException LinkageError Long MatchException Math
+Module ModuleLayer NegativeArraySizeException NoClassDefFoundError NoSuchFieldError
+NoSuchFieldException NoSuchMethodError NoSuchMethodException NullPointerException Number
+NumberFormatException Object OutOfMemoryError Override Package Process ProcessBuilder
+ProcessHandle Readable Record ReflectiveOperationException Runnable Runtime RuntimeException
+RuntimePermission SafeVarargs ScopedValue SecurityException SecurityManager Short
+StackOverflowError StackTraceElement StackWalker StrictMath String StringBuffer StringBuilder
+StringIndexOutOfBoundsException StringTemplate SuppressWarnings System Thread ThreadDeath
+ThreadGroup ThreadLocal Throwable TypeNotPresentException UnknownError UnsatisfiedLinkError
+UnsupportedClassVersionError UnsupportedOperationException VerifyError VirtualMachineError Void
+WrongThreadException`.split(/\s+/),
+);

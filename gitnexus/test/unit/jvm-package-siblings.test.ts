@@ -2,13 +2,6 @@ import type { ScopeResolutionIndexes } from '../../src/core/ingestion/model/scop
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { describe, expect, it } from 'vitest';
 import { createJvmPackageSiblingVisibility } from '../../src/core/ingestion/languages/jvm/package-siblings.js';
-import { collectJavaCaptureSideChannel } from '../../src/core/ingestion/languages/java/capture-side-channel.js';
-import { emitJavaScopeCaptures } from '../../src/core/ingestion/languages/java/captures.js';
-import {
-  isJavaPackageSiblingVisibilityIncomplete,
-  populateJavaPackageSiblings,
-} from '../../src/core/ingestion/languages/java/package-siblings.js';
-import { setJavaPackageFact } from '../../src/core/ingestion/languages/java/package-facts.js';
 import { collectKotlinCaptureSideChannel } from '../../src/core/ingestion/languages/kotlin/capture-side-channel.js';
 import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/captures.js';
 import {
@@ -37,19 +30,6 @@ interface LanguagePackageHarness {
 }
 
 const harnesses: readonly LanguagePackageHarness[] = [
-  {
-    label: 'Java',
-    extension: '.java',
-    namedSource: 'package com.example;\nclass Named {}',
-    defaultSource: 'class Default {}',
-    malformedSource: 'package ;\nclass Malformed {}',
-    brokenBodySource: 'package com.valid;\nclass Broken { void f( }',
-    emit: emitJavaScopeCaptures,
-    collect: collectJavaCaptureSideChannel,
-    setFact: setJavaPackageFact,
-    populate: populateJavaPackageSiblings,
-    isIncomplete: isJavaPackageSiblingVisibilityIncomplete,
-  },
   {
     label: 'Kotlin',
     extension: '.kt',

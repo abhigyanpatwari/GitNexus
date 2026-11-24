@@ -1,3 +1,5 @@
+import { SupportedLanguages } from 'gitnexus-shared';
+import { SCOPE_RESOLVERS } from '../../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -63,3 +65,17 @@ for (const entry of cases) {
     }
   });
 }
+
+test('refuses rename when the Java grammar cannot inventory Unicode escapes', async () => {
+  const resolver = SCOPE_RESOLVERS.get(SupportedLanguages.Java)!;
+  await assert.rejects(
+    async () =>
+      resolver.languageProvider.rename!.parseSource({
+        filePath: 'model.java',
+        content: 'class Model { void t\\u0061rget() {} }',
+        languageProvider: resolver.languageProvider,
+        scopeResolver: resolver,
+      }),
+    { code: 'parse_error' },
+  );
+});

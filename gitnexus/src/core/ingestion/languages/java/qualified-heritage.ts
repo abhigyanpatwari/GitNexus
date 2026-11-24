@@ -1,12 +1,12 @@
 import type { ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
 import { isJvmSourceVisible } from '../jvm/source-visibility.js';
+import { JAVA_LANG_TYPE_NAMES } from './java-lang-types.js';
 import type { JavaWorkspaceTypeInventory, TypeEntry } from './lombok-workspace-proof.js';
 import {
   getJavaOverloadFacts,
   javaOverloadRangeKey,
   javaRangeContains,
 } from './overload-argument-facts.js';
-import { KNOWN_JAVA_PLATFORM_TYPES } from './overload-types.js';
 import { eraseJavaTypeArguments, JAVA_QUALIFIED_NAME, stripGaps } from './type-spelling.js';
 
 const qualifiedName = new RegExp('^' + JAVA_QUALIFIED_NAME + '$', 'u');
@@ -45,6 +45,37 @@ function headerCanNamePackage(
     if (type.parent === undefined) return type.declaringScope === module;
   }
   return false;
+}
+
+type RootOrigin = 'package' | 'shadowed' | { type: string };
+
+function fileRootOrigin(
+  owner: TypeEntry,
+  root: string,
+  inventory: JavaWorkspaceTypeInventory,
+): RootOrigin {
+  if (inventory.staticImportsType(owner, root) !== false) return 'shadowed';
+  const imports = owner.facts.imports
+    .filter((item) => !item.static && !item.wildcard)
+    .map((item) => stripGaps(item.name))
+    .filter((name) => name.split('.').at(-1) === root);
+  const single = new Set(imports);
+  if (single.size === 1) return { type: imports[0]! };
+  if (single.size > 1) return 'shadowed';
+  if (inventory.packageTypes.get(owner.packageName)?.has(root))
+    return { type: owner.packageName ? owner.packageName + '.' + root : root };
+  if (JAVA_LANG_TYPE_NAMES.has(root)) return { type: 'java.lang.' + root };
+  for (const item of owner.facts.imports) {
+    if (!item.wildcard) continue;
+    const name = stripGaps(item.name);
+    if (
+      item.static
+        ? inventory.staticMemberType(owner, name, root) !== false
+        : (inventory.packageTypes.get(name)?.has(root) ?? true)
+    )
+      return 'shadowed';
+  }
+  return 'package';
 }
 
 function sharesTopLevelDeclaration(member: TypeEntry, owner: TypeEntry): boolean {
@@ -107,8 +138,8 @@ export function bindJavaQualifiedHeritage(
       if (list === undefined) sites.set(site.inScope, [site]);
       else list.push(site);
     }
-    const replacements = new Map<ReferenceSite, ScopeId>();
-    const fileRoots = new Map<string, boolean>();
+    const replacements = new Map<ReferenceSite, ReferenceSite>();
+    const fileRoots = new Map<string, RootOrigin>();
     for (const scope of file.scopes) {
       const references = sites.get(scope.id);
       const owner =
@@ -129,27 +160,34 @@ export function bindJavaQualifiedHeritage(
         const written = eraseJavaTypeArguments(stripGaps(owner.fact.bases[i]!));
         const dot = written.indexOf('.');
         if (dot < 0 || !written.endsWith('.' + site.name) || !qualifiedName.test(written)) continue;
-        let candidates = typesByName.get(written);
-        if (candidates === undefined) {
-          candidates = namedTypes(written, inventory);
-          typesByName.set(written, candidates);
-        }
-        if (candidates.length === 0) continue;
         const root = written.slice(0, dot);
-        let available = fileRoots.get(root);
-        if (available === undefined) {
-          available =
-            !inventory.packageTypes.get(owner.packageName)?.has(root) &&
-            !KNOWN_JAVA_PLATFORM_TYPES.has('java.lang.' + root) &&
-            !owner.facts.imports.some((item) => {
-              const name = stripGaps(item.name);
-              if (!item.wildcard) return name.split('.').at(-1) === root;
-              if (item.static) return inventory.staticMemberType(owner, name, root) !== false;
-              return inventory.packageTypes.get(name)?.has(root) ?? true;
-            });
-          fileRoots.set(root, available);
+        let origin = fileRoots.get(root);
+        if (origin === undefined) {
+          origin = fileRootOrigin(owner, root, inventory);
+          fileRoots.set(root, origin);
         }
-        if (!available || !headerCanNamePackage(owner, root, file.moduleScope, inventory)) continue;
+        if (
+          origin === 'shadowed' ||
+          !headerCanNamePackage(owner, root, file.moduleScope, inventory)
+        )
+          continue;
+        // An implicitly imported type shadows the workspace package even when
+        // no source declaration models the platform type's members (JLS 6.5.2).
+        const qualified = origin === 'package' ? written : origin.type + written.slice(dot);
+        let candidates = typesByName.get(qualified);
+        if (candidates === undefined) {
+          candidates = namedTypes(qualified, inventory);
+          typesByName.set(qualified, candidates);
+        }
+        if (candidates.length === 0) {
+          if (
+            origin !== 'package' &&
+            origin.type.includes('.') &&
+            namedTypes(origin.type, inventory).length === 0
+          )
+            replacements.set(site, { ...site, unresolvedInheritanceBase: true });
+          continue;
+        }
         const visible = candidates.filter((candidate) => accessible(candidate, owner, inventory));
         if (visible.length !== 1) continue;
         const target = visible[0]!;
@@ -168,16 +206,14 @@ export function bindJavaQualifiedHeritage(
           }
           if (duplicates.has(site.name)) continue;
         }
-        if (target.declaringScope != null) replacements.set(site, target.declaringScope);
+        if (target.declaringScope != null)
+          replacements.set(site, { ...site, lookupScope: target.declaringScope });
       }
     }
     if (replacements.size > 0) {
       files[index] = {
         ...file,
-        referenceSites: file.referenceSites.map((site) => {
-          const lookupScope = replacements.get(site);
-          return lookupScope === undefined ? site : { ...site, lookupScope };
-        }),
+        referenceSites: file.referenceSites.map((site) => replacements.get(site) ?? site),
       };
     }
   }

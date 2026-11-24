@@ -1,16 +1,15 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { globSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { compareCodeUnits } from '../compare.mjs';
 
 const packageRoot = fileURLToPath(new URL('../../../', import.meta.url));
-const productDirectory = fileURLToPath(new URL('./product/', import.meta.url));
-const products = readdirSync(productDirectory)
-  .filter((name) => name.endsWith('.ts'))
+const javaDirectory = fileURLToPath(new URL('.', import.meta.url));
+const products = globSync(['product/*.ts', 'test/provider/*.ts'], { cwd: javaDirectory })
   .sort(compareCodeUnits)
-  .map((name) => path.join(productDirectory, name));
+  .map((name) => path.join(javaDirectory, name));
 assert.ok(products.length, 'No Java product conformance checks found');
 const spring = fileURLToPath(new URL('./spring-check.mjs', import.meta.url));
 const correctnessEnv = { ...process.env };
@@ -21,7 +20,14 @@ for (const args of [
   [fileURLToPath(new URL('./check-compiler.mjs', import.meta.url)), ...process.argv.slice(2)],
   [fileURLToPath(new URL('./check-resolution.mjs', import.meta.url))],
   [spring],
-  ['--import', 'tsx', '--test', '--test-concurrency=1', ...products],
+  [
+    '--experimental-test-module-mocks',
+    '--import',
+    'tsx',
+    '--test',
+    '--test-concurrency=1',
+    ...products,
+  ],
 ]) {
   execFileSync(process.execPath, args, { cwd: packageRoot, stdio: 'inherit', env: correctnessEnv });
 }

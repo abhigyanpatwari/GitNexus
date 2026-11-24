@@ -216,5 +216,14 @@
     "kind": "Method",
     "newName": "renamed",
     "after": "class Model { void renamed() {} void renamed(int value) {} void use() { renamed(); renamed(1); } }\n"
+  },
+  {
+    "name": "renames a class with a name-coupled Java constructor",
+    "file": "model.java",
+    "source": "class Writer {\n Writer() {}\n static void use() { new Writer(); }\n}\n",
+    "target": "Writer",
+    "kind": "Class",
+    "newName": "Renamed",
+    "after": "class Renamed {\n Renamed() {}\n static void use() { new Renamed(); }\n}\n"
   }
 ]

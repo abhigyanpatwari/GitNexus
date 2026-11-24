@@ -169,7 +169,7 @@ function writesFiles(binding, outer, mocked, seen = new Set()) {
   return walk(node.body, outer);
 }
 
-/** Flag fixture I/O in ordinary Vitest suites. Graph IDs and in-memory parser inputs are data. */
+/** Detect Java fixture I/O statically. Vitest setup also detects in-memory inputs to the Java parser. */
 export function javaFixtureUses(source, filename = 'suite.test.ts') {
   if (!/java|FIXTURES/i.test(source)) return [];
   const tree = parse(source, {

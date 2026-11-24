@@ -348,18 +348,6 @@ describe('managed provider rename through the production parsing pipeline', () =
     );
   }, 60000);
 
-  it('fails closed when the Java grammar cannot inventory Unicode escape syntax', async () => {
-    const resolver = SCOPE_RESOLVERS.get(SupportedLanguages.Java)!;
-    await expect(
-      resolver.languageProvider.rename!.parseSource({
-        filePath: 'model.java',
-        content: 'class Model { void t\\u0061rget() {} }',
-        languageProvider: resolver.languageProvider,
-        scopeResolver: resolver,
-      }),
-    ).rejects.toMatchObject({ code: 'parse_error' });
-  });
-
   it.each([
     [
       'model.kt',

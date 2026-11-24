@@ -6,12 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
-import {
-  FIXTURES,
-  getRelationships,
-  getResolutionOutcomes,
-  writeFixtureRepo,
-} from './graph-observations.mjs';
+import { FIXTURES, getRelationships, getResolutionOutcomes } from './graph-observations.mjs';
 function targets(result, caller, method) {
   return getRelationships(result, 'CALLS')
     .filter((edge) => edge.source === caller && edge.target === method)

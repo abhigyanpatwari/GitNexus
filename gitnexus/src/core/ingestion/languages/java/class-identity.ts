@@ -10,10 +10,10 @@ import {
 const declaredTypes = createClassExtractor(javaClassConfig);
 const collisionsByTree = new WeakMap<SyntaxNode['tree'], ReadonlySet<string>>();
 const anonymousClassHosts = new Set(['object_creation_expression', 'enum_constant']);
-const collisionCandidateNodes = [
-  ...javaClassConfig.typeDeclarationNodes.filter((kind) => !anonymousClassHosts.has(kind)),
-  'class_body',
-];
+const namedTypeNodes = javaClassConfig.typeDeclarationNodes.filter(
+  (kind) => !anonymousClassHosts.has(kind),
+);
+const collisionCandidateNodes = [...namedTypeNodes, 'class_body'];
 
 /** A legal source name can equal another type's synthesized binary name.
  * Check the declarations in this tree before qualifying any existing graph ID. */
@@ -25,6 +25,21 @@ function javaClassNameCollisions(node: SyntaxNode): ReadonlySet<string> | undefi
 
   const names = new Set<string>();
   const collisions = new Set<string>();
+  // Synthesized local and anonymous names contain '$'. Distinct ordinary
+  // source names without that character cannot collide with one another or
+  // with a synthesized name. Avoid walking anonymous bodies in that case.
+  const possibleCollision = tree.rootNode.descendantsOfType(namedTypeNodes).some((type) => {
+    const name = type.childForFieldName('name')?.text;
+    if (!name) return false;
+    if (name.includes('$') || names.has(name)) return true;
+    names.add(name);
+    return false;
+  });
+  if (!possibleCollision) {
+    collisionsByTree.set(tree, collisions);
+    return collisions;
+  }
+  names.clear();
   for (const candidate of tree.rootNode.descendantsOfType(collisionCandidateNodes)) {
     // Start at anonymous bodies so deeply nested plain constructor calls
     // never incur an enclosing-type walk. Enum constant bodies share this shape.

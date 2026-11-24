@@ -90,6 +90,9 @@ export interface ReferenceSite {
    * otherwise, in which case resolution is unchanged.
    */
   readonly rawQualifiedName?: string;
+  /** The provider established that this inheritance base has no source target.
+   * Keep its range and mark the hierarchy incomplete without guessing by name. */
+  readonly unresolvedInheritanceBase?: true;
   /**
    * Top-level generic/template arguments the source wrote ON this reference —
    * `class UserValidator : IValidator<string>` yields `['string']` on the
