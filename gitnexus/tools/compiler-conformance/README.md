@@ -78,6 +78,8 @@ For a project with unresolved dependencies, the manifest can specify the exact j
 
 The Java compiler comparison is strict by default. A difference in a source range, target, rejection, or published edge fails the job and prints the fixture and the two observations.
 
+Each javac task uses the fixture sources, the JDK 21 platform, and an empty application classpath. GitNexus resolves wildcard imports against indexed source packages and known platform types. Adding a dependency JAR to javac's classpath can introduce another type of the same name and change its answer.
+
 The comparison also covers calls in the selected method families that resolve to library code. For example, javac and GitNexus report `java.lang.Iterable#forEach(java.util.function.Consumer)` at the call site when a JDK list supplies the receiver. Source implementations of `forEach` contribute their declaration and a call graph edge.
 
 Windows and macOS run `node tools/compiler-conformance/java/check-products.mjs --platform` from the GitNexus package. This checks rename, worker-cache persistence, the parser ABI, and projects with non-ASCII paths on each platform. The native runner fails if a selected file has no passing tests or contains a skipped case, a todo, or an empty suite.

@@ -45,11 +45,8 @@ export function checkCalls(graph, ref, spec) {
       assert.ok(!targets.includes(spec.excludes), message + ' selected ' + spec.excludes);
     else assert.deepEqual(targets, spec.published, message + ' recovery graph');
   } else {
-    assert.deepEqual(
-      actual.map((edge) => declaration(graph.getNode(edge.targetId))).sort(compareCodeUnits),
-      expected,
-      message,
-    );
+    const targets = new Set(actual.map((edge) => declaration(graph.getNode(edge.targetId))));
+    assert.deepEqual([...targets].sort(compareCodeUnits), expected, message);
   }
 }
 

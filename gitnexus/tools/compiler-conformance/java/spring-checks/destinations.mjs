@@ -413,7 +413,7 @@ export async function verifyDestinations() {
   // `spring-destinations-phase.test.ts`, which can see it — `PipelineResult`
   // does not carry phase outputs). What is observable HERE is that a refusal
   // adds nothing: no node, no edge, no partial address.
-  const addresses = destinations.map((node) => node.properties.address).filter(Boolean);
+  const addresses = destinations.map((node) => node.properties.address);
   assert.ok(!addresses.includes(''));
   assert.equal(
     addresses.some((address) => String(address).includes('${')),
