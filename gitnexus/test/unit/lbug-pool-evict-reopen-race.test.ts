@@ -46,6 +46,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   readBufferPoolExhaustionRemedy: () => undefined,
   withReadBufferPoolRemedy: (err: unknown) => err,
+  keepPoolErrorAsIs: (err: unknown) => err,
   createLbugDatabase: vi.fn(() => ({
     init: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),

@@ -861,6 +861,8 @@ export const withLbugDb = async <T>(
       // the outcome (both layers consult the same isDbBusyError matcher).
       if (!isDbBusyError(err) || isOpenRetryExhausted(err) || attempt === DB_LOCK_RETRY_ATTEMPTS) {
         // Read-only opens here are hintless, so a full pool is the reader pool.
+        // Errors from a pool with its own reservation (vector search run by the
+        // operation) come back marked and pass through unchanged.
         throw readOnly ? withReadBufferPoolRemedy(err) : err;
       }
       // Close stale connection inside the session lock to prevent race conditions

@@ -23,13 +23,14 @@ import { _captureLogger } from '../../src/core/logger.js';
 const DEFAULT_THRESHOLD = 64 * 1024 * 1024;
 
 // The default pool is sized from effective memory and, for read-only opens,
-// the query memory budget. Pin "no container limit" and the default budget so
-// the pool expectations below depend only on the stubbed os.totalmem, also on
-// a CI runner inside a memory-limited cgroup.
+// the query memory budget. Pin "no container limit", the default budget and no
+// pool override so the pool expectations below depend only on the stubbed
+// os.totalmem, also on a CI runner inside a memory-limited cgroup.
 const pinUnconstrainedHost = (): (() => void) => {
   const desc = Object.getOwnPropertyDescriptor(process, 'constrainedMemory');
   Object.defineProperty(process, 'constrainedMemory', { configurable: true, value: () => 0 });
   vi.stubEnv(QUERY_MAX_RSS_ENV, undefined);
+  vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', undefined);
   return () => {
     if (desc) Object.defineProperty(process, 'constrainedMemory', desc);
     else delete (process as { constrainedMemory?: unknown }).constrainedMemory;

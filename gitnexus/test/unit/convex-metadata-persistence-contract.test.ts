@@ -20,6 +20,9 @@ function makeConfigMock() {
   return {
     queries,
     mock: {
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: async () => {
         await conn.close();

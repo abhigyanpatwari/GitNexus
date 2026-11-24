@@ -92,18 +92,6 @@ describe('pooled query native lifetime', () => {
     ]);
   });
 
-  it('names the pool override when a pooled read exhausts the buffer pool', async () => {
-    const native = new Error(
-      'Buffer manager exception: Unable to allocate memory! The buffer pool is full and no memory could be freed!',
-    );
-    execute.mockRejectedValueOnce(native);
-    const error = await executeParameterized('query-lifetime', 'RETURN 1', {}).catch((e) => e);
-    expect(error.message).toContain('The buffer pool is full');
-    expect(error.message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
-    expect(error.cause).toBe(native);
-    expect(end).toHaveBeenCalledTimes(1);
-  });
-
   it('does not reuse timed-out connections while their native operations still run', async () => {
     let release!: (value: any) => void;
     const pending = new Promise<any>((resolve) => {

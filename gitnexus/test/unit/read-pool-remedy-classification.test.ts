@@ -3,8 +3,9 @@
  * Several callers classify errors by message text, so the remedy must not
  * change the class of the error it wraps: a pool-exhausted read is not a
  * forbidden write, a busy lock, a missing table, a WAL or version problem.
- * Runs the real pool adapter, LocalBackend and classifiers; only the native
- * Database constructor and connections are faked.
+ * Runs the real pool adapter, direct adapter (withLbugDb), LocalBackend and
+ * classifiers; only the native Database constructor, connections and the
+ * direct adapter's open helper are faked.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
@@ -35,6 +36,17 @@ vi.mock('@ladybugdb/core', () => ({
 vi.mock('../../src/core/lbug/lbug-config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/core/lbug/lbug-config.js')>()),
   createLbugDatabase: createDb,
+  // The direct adapter (withLbugDb) opens through this helper.
+  openLbugConnection: async () => ({
+    db: { init: async () => undefined, close: async () => undefined },
+    conn: {
+      init: async () => undefined,
+      query: async () => ({ getAll: async () => [], close: () => undefined }),
+      prepare,
+      execute,
+      close: async () => undefined,
+    },
+  }),
 }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => ({
@@ -66,9 +78,17 @@ import {
   isWalCorruptionError,
   maxDbSizeReachedRemedy,
   pastEofReadRemedy,
+  keepPoolErrorAsIs,
+  readBufferPoolExhaustionRemedy,
   withReadBufferPoolRemedy,
 } from '../../src/core/lbug/lbug-config.js';
-import { isBenignDropFtsIndexError, isReadOnlyDbError } from '../../src/core/lbug/lbug-adapter.js';
+import {
+  closeLbug as closeDirectLbug,
+  isBenignDropFtsIndexError,
+  isReadOnlyDbError,
+  withLbugDb,
+} from '../../src/core/lbug/lbug-adapter.js';
+import { _captureLogger } from '../../src/core/logger.js';
 import {
   isMissingShadowSidecarError,
   isReadOnlyCheckpointInProgressError,
@@ -138,6 +158,8 @@ describe('reader buffer-pool remedy keeps the error class', () => {
 
   afterEach(async () => {
     await closeLbug().catch(() => {});
+    await closeDirectLbug().catch(() => {});
+    vi.unstubAllEnvs();
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -180,39 +202,35 @@ describe('reader buffer-pool remedy keeps the error class', () => {
     expect(bufferPoolExhaustionRemedy(remedyOnly.message)).toBeUndefined();
   });
 
-  it('MCP cypher reports a pool-exhausted read with the remedy, not as a forbidden write', async () => {
-    const backend = new LocalBackend();
-    await backend.init();
-    prepare.mockRejectedValueOnce(new Error(ENGINE_TEXT));
+  it.each([
+    ['query', () => prepare.mockRejectedValueOnce(new Error(ENGINE_TEXT))],
+    [
+      'open',
+      () =>
+        createDb.mockImplementation(() => {
+          throw new Error(ENGINE_TEXT);
+        }),
+    ],
+  ])(
+    'MCP cypher reports a full pool at %s with the remedy, not as a forbidden write',
+    async (_label, fail) => {
+      const backend = new LocalBackend();
+      await backend.init();
+      fail();
 
-    const result = await backend.callTool('cypher', {
-      repo: 'pool-repo',
-      query: 'MATCH (n) RETURN n LIMIT 1',
-    });
+      const outcome = await backend
+        .callTool('cypher', { repo: 'pool-repo', query: 'MATCH (n) RETURN n LIMIT 1' })
+        .then(
+          (result: { error?: string }) => result.error ?? JSON.stringify(result),
+          (err: Error) => err.message,
+        );
 
-    expect(result.error).toContain(ENGINE_TEXT);
-    expect(result.error).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
-    expect(result.error).not.toContain('Write operations');
-  });
-
-  it('MCP cypher surfaces a pool too small to open with the remedy, not as a forbidden write', async () => {
-    const backend = new LocalBackend();
-    await backend.init();
-    createDb.mockImplementation(() => {
-      throw new Error(ENGINE_TEXT);
-    });
-
-    const outcome = await backend
-      .callTool('cypher', { repo: 'pool-repo', query: 'MATCH (n) RETURN n LIMIT 1' })
-      .then(
-        (result: { error?: string }) => result.error ?? JSON.stringify(result),
-        (err: Error) => err.message,
-      );
-
-    expect(outcome).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
-    expect(outcome).not.toContain('Write operations');
-    expect(outcome).not.toContain('Retry later');
-  });
+      expect(outcome).toContain(ENGINE_TEXT);
+      expect(outcome).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+      expect(outcome).not.toContain('Write operations');
+      expect(outcome).not.toContain('Retry later');
+    },
+  );
 
   it('passes a non-exhaustion query error through as the same object', async () => {
     await initLbug('pass-through', dbPath);
@@ -230,5 +248,63 @@ describe('reader buffer-pool remedy keeps the error class', () => {
     const native = new Error(ENGINE_TEXT);
     execute.mockRejectedValueOnce(native);
     await expect(executeParameterized('vector-lane', 'RETURN 1', {})).rejects.toBe(native);
+  });
+  describe('withLbugDb (serve REST reads)', () => {
+    const fail = (err: unknown) => async () => {
+      throw err;
+    };
+
+    it('adds the remedy and keeps the cause for a read-only failure', async () => {
+      const native = new Error(ENGINE_TEXT);
+      const err = await withLbugDb(dbPath, fail(native), { readOnly: true }).catch((e) => e);
+      expect(err.message).toContain(ENGINE_TEXT);
+      expect(err.message).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
+      expect(err.cause).toBe(native);
+    });
+
+    it('leaves a writable failure as the same object', async () => {
+      const native = new Error(ENGINE_TEXT);
+      await expect(withLbugDb(dbPath, fail(native))).rejects.toBe(native);
+    });
+
+    it('leaves a reserved-lane failure from inside a read-only operation as the same object', async () => {
+      await initLbug('vector-in-rest', dbPath, {
+        kind: 'vector',
+        bufferPoolBytes: 64 * 1024 * 1024,
+        threads: 1,
+      });
+      const native = new Error(ENGINE_TEXT);
+      execute.mockRejectedValueOnce(native);
+      await expect(
+        withLbugDb(dbPath, () => executeParameterized('vector-in-rest', 'RETURN 1', {}), {
+          readOnly: true,
+        }),
+      ).rejects.toBe(native);
+    });
+  });
+
+  it('wraps once: a wrapped or marked error comes back unchanged', () => {
+    const wrapped = withReadBufferPoolRemedy(new Error(ENGINE_TEXT));
+    expect(withReadBufferPoolRemedy(wrapped)).toBe(wrapped);
+    const marked = keepPoolErrorAsIs(new Error(ENGINE_TEXT));
+    expect(withReadBufferPoolRemedy(marked)).toBe(marked);
+  });
+
+  it('does not repeat the invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE warning for each wrapped error', () => {
+    vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', 'abc');
+    const cap = _captureLogger();
+    try {
+      expect(readBufferPoolExhaustionRemedy(ENGINE_TEXT)).toBeDefined();
+      const warnings = cap
+        .records()
+        .filter(
+          (r) =>
+            typeof r.msg === 'string' &&
+            r.msg.includes('Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
+        );
+      expect(warnings).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
   });
 });

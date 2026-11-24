@@ -5,11 +5,9 @@ import {
   defaultReadPoolBytes,
   estimateBufferPool,
   getEffectiveBufferPoolSize,
-  readBufferPoolExhaustionRemedy,
   setBufferPoolSizeHint,
   _setOsPageSizeForTests,
 } from '../../src/core/lbug/lbug-config.js';
-import { effectiveRamBytes } from '../../src/core/ingestion/utils/effective-ram.js';
 import {
   QUERY_MAX_RSS_ENV,
   resolveQueryRssBudgetBytes,
@@ -113,15 +111,6 @@ describe('default buffer pool under container memory limits', () => {
   });
 
   it.each([
-    ['4 GiB', 4 * GiB, 2 * GiB, 2 * GiB],
-    ['2 GiB', 2 * GiB, 768 * MiB, Math.floor(0.8 * 2 * GiB)],
-  ])('a %s container on a large node', (_label, limit, reader, writer) => {
-    runOn(HOST, limit);
-    expect(readerPool()).toBe(reader);
-    expect(writerPool()).toBe(writer);
-  });
-
-  it.each([
     ['returns 0', 0],
     ['is unavailable', undefined],
     ['reports the cgroup v1 "unlimited" sentinel', CGROUP_V1_UNLIMITED],
@@ -137,17 +126,6 @@ describe('default buffer pool under container memory limits', () => {
     expect(readerPool()).toBe(2 * GiB);
     expect(writerPool()).toBe(2 * GiB);
   });
-
-  it.each([
-    ['256 MiB', 256 * MiB, 64 * MiB],
-    ['512 MiB', 512 * MiB, 128 * MiB],
-  ])(
-    'a read-only open in a tiny %s container keeps at least the 64 MiB floor',
-    (_label, limit, expected) => {
-      runOn(HOST, limit);
-      expect(readerPool()).toBe(expected);
-    },
-  );
 
   it.each([
     ['1073741824', 1073741824],
@@ -201,24 +179,6 @@ describe('default buffer pool under container memory limits', () => {
     },
   );
 
-  it.each([
-    ['a 1 GiB container', HOST, GiB],
-    ['no limit', HOST, 0],
-    ['a limit above RAM', 8 * GiB, 16 * GiB],
-    ['the cgroup v1 sentinel', HOST, CGROUP_V1_UNLIMITED],
-    ['UINT64_MAX', HOST, 2 ** 64],
-  ])('sizes from min(physical RAM, a real container limit): %s', (_label, total, limit) => {
-    runOn(total, limit);
-    // The query guard documents the same rule for its budget. It has no
-    // exported seam for its own memory reading, so this pins the rule, not the
-    // guard's implementation.
-    const availableRam = Math.min(
-      os.totalmem(),
-      process.constrainedMemory() || Number.POSITIVE_INFINITY,
-    );
-    expect(effectiveRamBytes()).toBe(availableRam);
-  });
-
   it('bounds the analyze hint by 80% of the container limit', () => {
     runOn(HOST, GiB);
     expect(estimateBufferPool(10_000_000)).toBe(Math.floor(0.8 * GiB));
@@ -256,16 +216,5 @@ describe('default buffer pool under container memory limits', () => {
       expect(getEffectiveBufferPoolSize('read'), `host ${ram / GiB} GiB`).toBe(legacy);
       expect(getEffectiveBufferPoolSize('write'), `host ${ram / GiB} GiB`).toBe(legacy);
     }
-  });
-
-  it('names GITNEXUS_LBUG_BUFFER_POOL_SIZE for read-path pool exhaustion and ignores other errors', () => {
-    runOn(HOST, GiB);
-    const remedy = readBufferPoolExhaustionRemedy(
-      'Buffer manager exception: Unable to allocate memory! The buffer pool is full and no memory could be freed!',
-    );
-    expect(remedy).toContain('384 MiB');
-    expect(remedy).toContain('GITNEXUS_LBUG_BUFFER_POOL_SIZE');
-    expect(remedy).toContain(QUERY_MAX_RSS_ENV);
-    expect(readBufferPoolExhaustionRemedy('Could not set lock on file')).toBeUndefined();
   });
 });

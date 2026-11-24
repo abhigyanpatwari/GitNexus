@@ -41,6 +41,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({
   readBufferPoolExhaustionRemedy: () => undefined,
   withReadBufferPoolRemedy: (err: unknown) => err,
+  keepPoolErrorAsIs: (err: unknown) => err,
   createLbugDatabase: vi.fn(),
   toNativeSafePath: vi.fn((p: string) => p),
   LBUG_MAX_DB_SIZE: 1024,

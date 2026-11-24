@@ -190,6 +190,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -248,6 +251,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -309,6 +315,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => fsMock);
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof firstConn; db: typeof firstDb }) => {
         await handle.conn.close();
@@ -367,6 +376,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -441,6 +453,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: {
         conn: typeof readOnlyConn1;
@@ -528,6 +543,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => fsMock);
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof readOnlyConn; db: typeof readOnlyDb }) => {
         await handle.conn.close();
@@ -585,6 +603,9 @@ describe('doInitLbug WAL corruption guard — behavioural', () => {
     vi.doMock('fs/promises', () => makeFsMock(dbPath));
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: vi.fn(async () => ({ db, conn })),
       closeLbugConnection: vi.fn(async () => {}),
       isDbBusyError: vi.fn(() => false),
@@ -713,6 +734,9 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
     vi.doMock('fs/promises', () => fsMock);
     vi.doMock('../../src/core/lbug/schema.js', schemaMockFactory);
     vi.doMock('../../src/core/lbug/lbug-config.js', () => ({
+      readBufferPoolExhaustionRemedy: () => undefined,
+      withReadBufferPoolRemedy: (err: unknown) => err,
+      keepPoolErrorAsIs: (err: unknown) => err,
       openLbugConnection: openLbugConnectionMock,
       closeLbugConnection: async (handle: { conn: typeof firstConn; db: typeof firstDb }) => {
         await handle.conn.close();

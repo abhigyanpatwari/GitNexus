@@ -358,9 +358,9 @@ const BUFFER_POOL_FLOOR = 64 * 1024 * 1024;
 // ("buffer pool is full and no memory could be freed") on any non-trivial repo,
 // and even the ~1800-file GitNexus checkout needs ≥256 MiB. So the adaptive
 // size never drops a repo below this — a distinct, higher floor than
-// BUFFER_POOL_FLOOR, which only guards the RAM-derived bounds on tiny-RAM
-// machines. It is still clamped to scaledAnalyzePoolCap, so a machine whose
-// cap is below this floor keeps its cap rather than over-committing.
+// BUFFER_POOL_FLOOR, which only guards defaultBufferPoolSize on tiny-RAM
+// machines. It is still clamped up to defaultBufferPoolSize, so a machine whose
+// default is below this floor keeps its default rather than over-committing.
 const ADAPTIVE_POOL_FLOOR = 256 * 1024 * 1024;
 
 const parseBufferPoolSize = (raw: string | undefined): number | undefined => {
@@ -485,9 +485,6 @@ const defaultBufferPoolSize = (access: BufferPoolAccess): number => {
  * and not defaultBufferPoolSize — is what lets the #2631 fix take effect
  * during the bulk COPY without touching hintless opens: with an unscaled cap
  * the min() below would clamp the scaled COPY floor straight back to 2 GiB.
- * On non-4K hosts in small containers this cap can sit below the scaled COPY
- * floor (1 GiB container, 64 KiB pages: 819 MiB against 4 GiB), so the COPY
- * floor is not honoured there.
  */
 const scaledAnalyzePoolCap = (pageSize: number | undefined): number =>
   Math.min(
@@ -502,10 +499,11 @@ const scaledAnalyzePoolCap = (pageSize: number | undefined): number =>
  * hosts, see granuleRatio); the upper bound means the hint can never exceed
  * the page-size-scaled #2557 cap or 80% of effective RAM — and on a machine
  * whose cap is below the COPY floor (small containers, especially on non-4K
- * hosts), the cap wins: the pool is never over-committed, and the COPY floor
- * is not honoured. On 4 KiB hosts (ratio 1) the upper bound equals the
- * hintless writable default; the hintless read-only default can sit below it
- * because it also leaves room under the read query memory budget.
+ * hosts: 1 GiB with 64 KiB pages gives 819 MiB against 4 GiB), the cap wins:
+ * the pool is never over-committed, and the COPY floor is not honoured. On
+ * 4 KiB hosts (ratio 1) the upper bound equals the hintless writable default;
+ * the hintless read-only default can sit below it because it also leaves room
+ * under the read query memory budget.
  */
 const clampBufferPool = (bytes: number, pageSize: number | undefined = getOsPageSize()): number =>
   Math.min(
@@ -684,9 +682,10 @@ export const bufferPoolExhaustionRemedy = (
  * Remedy for buffer-pool exhaustion on a hintless read-only open or query, or
  * undefined when `message` is not that class. The pool also bounds the memory
  * one open or query can use, and the read-only default is kept under the read
- * query memory budget, so a large query can fill it; retrying does not help.
- * Callers with an explicit pool reservation must not use it: the env knob it
- * names does not resize those pools.
+ * query memory budget, so a large query can fill it. Concurrent reads share
+ * the pool, so a retry can succeed once they finish. Callers with an explicit
+ * pool reservation must not use it: the env knob it names does not resize
+ * those pools.
  *
  * Several error classifiers key on message text (the read-only write
  * rejection, busy/lock, missing-table, WAL, storage-version, timeout). The
@@ -698,20 +697,36 @@ export const readBufferPoolExhaustionRemedy = (message: string): string | undefi
   const pool = resolveBufferManagerSize('read', false);
   const poolLabel = pool === 0 ? "LadybugDB's native 80%-of-RAM default" : formatMiB(pool);
   return (
-    `The reader buffer pool (${poolLabel}) filled up; retrying does not help. ` +
-    `Raise it with GITNEXUS_LBUG_BUFFER_POOL_SIZE=<bytes>, and keep it and ` +
-    `${QUERY_MAX_RSS_ENV} below the container memory limit.`
+    `The reader buffer pool (${poolLabel}) filled up. If other reads were running, retry ` +
+    `after they finish; otherwise raise it with GITNEXUS_LBUG_BUFFER_POOL_SIZE=<bytes>, and ` +
+    `keep it and ${QUERY_MAX_RSS_ENV} below the container memory limit.`
   );
+};
+
+// Errors withReadBufferPoolRemedy must return unchanged: ones it already
+// wrapped, and ones from a pool with an explicit reservation.
+const settledPoolErrors = new WeakSet<object>();
+
+/**
+ * Mark `err` so withReadBufferPoolRemedy leaves it as it is. Used for pools
+ * with an explicit reservation, whose size the env knob in the remedy does not
+ * change, so an outer read-only wrapper does not add the remedy either.
+ */
+export const keepPoolErrorAsIs = <T>(err: T): T => {
+  if (typeof err === 'object' && err !== null) settledPoolErrors.add(err);
+  return err;
 };
 
 /**
  * `err` with the reader-pool remedy appended (engine text first, `err` kept as
- * `cause`), or `err` itself when it is not buffer-pool exhaustion.
+ * `cause`), or `err` itself when it is not buffer-pool exhaustion, was already
+ * wrapped, or was marked with keepPoolErrorAsIs.
  */
 export const withReadBufferPoolRemedy = (err: unknown): unknown => {
+  if (typeof err === 'object' && err !== null && settledPoolErrors.has(err)) return err;
   const message = err instanceof Error ? err.message : String(err);
   const remedy = readBufferPoolExhaustionRemedy(message);
-  return remedy ? new Error(`${message} ${remedy}`, { cause: err }) : err;
+  return remedy ? keepPoolErrorAsIs(new Error(`${message} ${remedy}`, { cause: err })) : err;
 };
 
 /**

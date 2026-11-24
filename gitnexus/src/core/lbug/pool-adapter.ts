@@ -24,6 +24,7 @@ import { queryMemoryGuard } from './query-memory-guard.js';
 import {
   createLbugDatabase,
   isWalCorruptionError,
+  keepPoolErrorAsIs,
   readBufferPoolExhaustionRemedy,
   withReadBufferPoolRemedy,
   sleep,
@@ -778,10 +779,10 @@ function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
 
 type InitLbugAttempt = { status: 'done'; reopened: boolean } | { status: 'retry'; error: Error };
 
-function ladybugUnavailableError(repoId: string, err: Error | undefined, reserved: boolean): Error {
-  // A pool too small to open this index is not a rebuild in progress. An
-  // explicit reservation is not resized by the env knob the remedy names.
-  const remedy = err && !reserved ? readBufferPoolExhaustionRemedy(err.message) : undefined;
+function ladybugUnavailableError(repoId: string, err: Error | undefined): Error {
+  // A pool too small to open this index is not a rebuild in progress.
+  // (Opens with an explicit reservation rethrow raw before reaching here.)
+  const remedy = err ? readBufferPoolExhaustionRemedy(err.message) : undefined;
   if (remedy) {
     return new Error(`LadybugDB could not open ${repoId}: ${err?.message} ${remedy}`, {
       cause: err,
@@ -833,7 +834,7 @@ export const initLbug = async (
     if (attempt === LOCK_RETRY_ATTEMPTS) break;
     await sleep(LOCK_RETRY_DELAY_MS * attempt);
   }
-  throw ladybugUnavailableError(repoId, lastError, reservation !== undefined);
+  throw ladybugUnavailableError(repoId, lastError);
 };
 
 const initLbugInner = async (
@@ -1055,7 +1056,7 @@ async function doInitLbug(
         ) {
           return { status: 'retry', error: lastError };
         }
-        throw ladybugUnavailableError(repoId, lastError, artifactOptions !== undefined);
+        throw ladybugUnavailableError(repoId, lastError);
       }
     }
   }
@@ -1493,8 +1494,9 @@ export const executeParameterized = async (
         });
       }
       // An explicit reservation (the vector lane) is not resized by the env
-      // knob the remedy names, so its errors pass through unchanged.
-      throw entry.artifactOptions ? err : withReadBufferPoolRemedy(err);
+      // knob the remedy names, so its errors pass through unchanged, also
+      // through an outer read-only withLbugDb.
+      throw entry.artifactOptions ? keepPoolErrorAsIs(err) : withReadBufferPoolRemedy(err);
     } finally {
       // Close the native QueryResult cursor(s) before returning the connection —
       // getAll() drains rows but does not release the native cursor, so without
