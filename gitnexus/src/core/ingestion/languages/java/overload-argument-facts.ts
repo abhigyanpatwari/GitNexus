@@ -1,4 +1,5 @@
 import { parameterTypes } from './method-signatures.js';
+import { javaTypeTextWithoutTrivia } from './type-spelling.js';
 import type { CaptureMatch, Range } from 'gitnexus-shared';
 import { synthesizeJavaTypeIdentity, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
@@ -304,16 +305,17 @@ export function captureJavaOverloadFacts(
           : rangeOf(visibilityScope);
         const bases: string[] = [];
         for (const child of node.namedChildren) {
-          if (child.type === 'superclass')
-            bases.push(...child.namedChildren.map((part) => part.text));
+          let clause = child;
           if (child.type === 'super_interfaces' || child.type === 'extends_interfaces') {
-            const list = child.namedChildren.find((part) => part.type === 'type_list');
-            bases.push(...(list?.namedChildren ?? child.namedChildren).map((part) => part.text));
+            clause = child.namedChildren.find((part) => part.type === 'type_list') ?? child;
+          } else if (child.type !== 'superclass') continue;
+          for (const base of clause.namedChildren) {
+            if (!base.isExtra) bases.push(javaTypeTextWithoutTrivia(base));
           }
         }
         if (node.type === 'object_creation_expression') {
           const base = node.childForFieldName('type');
-          if (base !== null) bases.push(base.text);
+          if (base !== null) bases.push(javaTypeTextWithoutTrivia(base));
         } else if (node.type === 'enum_constant') {
           const host = enclosing(node, (parent) => parent.type === 'enum_declaration');
           const base = host?.childForFieldName('name');

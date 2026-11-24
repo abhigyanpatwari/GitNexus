@@ -1394,12 +1394,10 @@ async function verifyJavaEnumConstantBodies2555() {
 }
 
 async function verifyJavaReceiverUnresolvedDropsNameTheProgramBoundary() {
-  let repoDir;
-  let result;
-  repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-java-receiver-origin-'));
-  copyResolutionProject(repoDir, 'receiver-program-boundary');
-  result = await runPipelineFromRepo(repoDir, () => {}, {});
+  const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-java-receiver-origin-'));
   try {
+    copyResolutionProject(repoDir, 'receiver-program-boundary');
+    const result = await runPipelineFromRepo(repoDir, () => {}, {});
     // marks a System.out.println(...) drop external
     {
       const drops = getResolutionOutcomes(result).filter(
@@ -1432,11 +1430,7 @@ async function verifyJavaReceiverUnresolvedDropsNameTheProgramBoundary() {
       );
     }
   } finally {
-    if (repoDir !== void 0)
-      fs.rmSync(repoDir, {
-        recursive: true,
-        force: true,
-      });
+    fs.rmSync(repoDir, { recursive: true, force: true });
   }
 }
 export async function checkGraphContracts() {

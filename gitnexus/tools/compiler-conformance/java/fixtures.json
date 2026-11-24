@@ -1,5 +1,6 @@
 {
   "compiler-conformance/java-annotated-lambda-array": 1,
+  "compiler-conformance/java-annotated-qualified-bases": 2,
   "compiler-conformance/java-anonymous-implicit-array": 4,
   "compiler-conformance/java-array-method-return-identity": {
     "sites": 10,
@@ -90,6 +91,7 @@
   "compiler-conformance/java-worker-qualified-names": {
     "sites": 0
   },
+  "compiler-conformance/java-workspace-static-imports": 1,
   "java/java-consumer-before-provider": 2,
   "java/java-cross-file": 3,
   "lang-resolution/java-ambiguous": 0,

@@ -28,23 +28,27 @@ export const stripGaps = (text: string) =>
  * arguments, whitespace or comments. It checks characters, not segments. */
 export const JAVA_DOTTED_SPELLING = new RegExp(`^[${JAVA_IDENTIFIER_PART_CHARS}.]+$`, 'u');
 
-/** Remove type-use annotations and comments structurally, including
- * annotation argument values and `//` comments that run to the line end. */
-export function javaTypeText(node: Parser.SyntaxNode): string {
+/** Preserve tokens such as wildcard bounds while removing whole annotations and comments. */
+export function javaTypeTextWithoutTrivia(node: Parser.SyntaxNode): string {
+  const written = node.text;
+  if (!written.includes('@') && !written.includes('/')) return written;
   const omitted = node
     .descendantsOfType(['annotation', 'marker_annotation', 'block_comment', 'line_comment'])
     .sort((a, b) => a.startIndex - b.startIndex || b.endIndex - a.endIndex);
-  const written = node.text;
   let cursor = 0;
   let text = '';
   for (const part of omitted) {
     const start = part.startIndex - node.startIndex;
     if (start < cursor) continue; // An outer annotation already consumed it.
-    text += written.slice(cursor, start);
+    text += written.slice(cursor, start) + ' ';
     cursor = part.endIndex - node.startIndex;
   }
-  text += written.slice(cursor);
-  return text.replace(/\s+/g, '');
+  return text + written.slice(cursor);
+}
+
+/** Compact spelling for capture fields that encode types without whitespace. */
+export function javaTypeText(node: Parser.SyntaxNode): string {
+  return javaTypeTextWithoutTrivia(node).replace(/\s+/g, '');
 }
 
 /** Declarator dimensions belong only to that declarator (JLS 10.2). */

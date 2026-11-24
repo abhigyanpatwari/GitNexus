@@ -617,29 +617,23 @@ dependencies {
     ]);
   });
 
-  it('handles static imports', async () => {
-    await writeFile('lib/pom.xml', pomTemplate('com.acme', 'lib'));
-    await writeFile(
-      'lib/src/main/java/com/acme/lib/Constants.java',
-      'package com.acme.lib;\npublic class Constants {}\n',
+  it('links named and wildcard static imports to the declaring type', async () => {
+    const root = path.resolve(
+      import.meta.dirname,
+      '../../../../test/fixtures/compiler-conformance/java-workspace-static-imports',
     );
-
-    await writeFile('app/pom.xml', pomTemplate('com.acme', 'app', ['com.acme:lib']));
-    await writeFile(
-      'app/src/main/java/com/acme/app/Main.java',
-      'package com.acme.app;\nimport static com.acme.lib.Constants;\npublic class Main {}\n',
+    const repos = { lib: 'lib', named: 'named', wildcard: 'wildcard' };
+    const paths = new Map(Object.keys(repos).map((name) => [name, path.join(root, name)]));
+    const result = await extractJavaWorkspaceLinks(repos, paths);
+    assert.deepEqual(
+      result.links
+        .map((link) => [link.from, link.to, link.contract])
+        .sort((a, b) => compareCodeUnits(a[1], b[1])),
+      [
+        ['lib', 'named', 'lib::Constants'],
+        ['lib', 'wildcard', 'lib::Constants'],
+      ],
     );
-
-    const repos = { lib: 'lib', app: 'app' };
-    const repoPaths = new Map([
-      ['lib', path.join(tmpDir, 'lib')],
-      ['app', path.join(tmpDir, 'app')],
-    ]);
-
-    const result = await extractJavaWorkspaceLinks(repos, repoPaths);
-
-    assert.equal(result.links.length, 1);
-    assert.equal(result.links[0].contract, 'lib::Constants');
   });
 
   it('deduplicates identical imports from multiple files', async () => {

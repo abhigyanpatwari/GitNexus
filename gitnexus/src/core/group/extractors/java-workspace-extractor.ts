@@ -370,21 +370,18 @@ async function scanJavaImports(
       continue;
     }
 
-    const importRegex = /^import\s+(?:static\s+)?([a-zA-Z][\w.]*\.[A-Z]\w*)/gm;
+    const importRegex = /^[\t ]*import\s+(static\s+)?([a-zA-Z]\w*(?:\.(?:\w+|\*))+)/gm;
     let match;
     while ((match = importRegex.exec(content)) !== null) {
-      const fullImport = match[1];
+      const importedName = match[2];
+      // A static import names a member of the type that supplies the workspace link.
+      const owner = match[1] ? importedName.slice(0, importedName.lastIndexOf('.')) : importedName;
+      const typeMatch = /^[a-zA-Z][\w.]*\.([A-Z]\w*)/.exec(owner);
+      if (!typeMatch || !isPascalCase(typeMatch[1])) continue;
+      const [fullImport, className] = typeMatch;
       for (const [basePkg, artifactKey] of knownPackages) {
         if (fullImport.startsWith(basePkg + '.') || fullImport === basePkg) {
-          const parts = fullImport.split('.');
-          const className = parts[parts.length - 1];
-          if (isPascalCase(className)) {
-            results.push({
-              artifactKey,
-              symbolName: className,
-              filePath: relFile,
-            });
-          }
+          results.push({ artifactKey, symbolName: className, filePath: relFile });
           break;
         }
       }
