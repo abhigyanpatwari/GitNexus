@@ -1138,7 +1138,11 @@ describe.each(['js', 'ts'])('private class members in a .%s file (#1646)', (ext)
     expect(edgesFrom('CALLS', 'press').map((e) => e.targetLabel)).toEqual(['Method']);
   });
 
-  it.runIf(ext === 'ts')('links an awaited call with type arguments, await this.#m<T>()', () => {
-    expect(edgesFrom('CALLS', 'reload').map((e) => e.target)).toEqual(['#load']);
-  });
+  // Type arguments are TypeScript only. A skipped .js copy of this test would
+  // never pass anywhere, which fails `every test executed`.
+  if (ext === 'ts') {
+    it('links an awaited call with type arguments, await this.#m<T>()', () => {
+      expect(edgesFrom('CALLS', 'reload').map((e) => e.target)).toEqual(['#load']);
+    });
+  }
 });
