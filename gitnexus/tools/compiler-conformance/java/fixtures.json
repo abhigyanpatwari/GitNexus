@@ -175,10 +175,7 @@
   "lang-resolution/java-record-methods": 1,
   "lang-resolution/java-return-type-inference": 2,
   "lang-resolution/java-same-arity-cross-file": 6,
-  "lang-resolution/java-same-package-extends-collision": {
-    "sites": 2,
-    "differences": "./known-differences/qualified-base.txt"
-  },
+  "lang-resolution/java-same-package-extends-collision": 2,
   "lang-resolution/java-self-this-resolution": 1,
   "lang-resolution/java-super-resolution": 1,
   "lang-resolution/java-switch-pattern": 3,
@@ -192,9 +189,6 @@
     "vitestOnly": "Calls a subtype-only method through a supertype variable."
   },
   "lang-resolution/java-wildcard-import": 1,
-  "lang-resolution/java-wildcard-on-demand": {
-    "sites": 1,
-    "differences": "./known-differences/static-wildcard.txt"
-  },
+  "lang-resolution/java-wildcard-on-demand": 1,
   "lang-resolution/java-write-access": 0
 }

@@ -65,8 +65,6 @@ interface FileFactIndex {
   /** Single-type and single-static imports, by the simple name they import. */
   readonly singleImports: Map<string, JavaImportFact[]>;
   readonly onDemandImports: JavaImportFact[];
-  /** Some on-demand import is static. */
-  readonly staticOnDemand: boolean;
 }
 interface State {
   readonly model: SemanticModel;
@@ -271,7 +269,6 @@ function fileFactIndex(facts: JavaOverloadFileFacts, state: State): FileFactInde
     typeParameters: new Map(),
     singleImports: new Map(),
     onDemandImports: [],
-    staticOnDemand: facts.imports.some((item) => item.wildcard && item.static),
   };
   for (const item of facts.imports) {
     if (item.wildcard) {
@@ -832,7 +829,7 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   // Static imports can name types, values or methods. Require a source type
   // identity before resolving one; an unproven import must not become a JDK type.
   const single = index.singleImports.get(name) ?? [];
-  if (index.staticOnDemand || single.some((item) => item.static)) {
+  if (single.some((item) => item.static)) {
     const explicit = single.filter((item) => item.static);
     if (explicit.length === 1) {
       const imported = qualifiedReference(explicit[0]!.name, state);
@@ -858,7 +855,11 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     : [];
   let unknownWildcard = false;
   for (const item of index.onDemandImports) {
-    if (item.static) continue;
+    if (item.static) {
+      if (!javaStaticOnDemandImportBringsNoType(item.name, name, state.scopes))
+        return UNKNOWN_JAVA_TYPE;
+      continue;
+    }
     const qualified = `${item.name}.${name}`;
     const candidates = sourceDefinitionsQualified(name, qualified, state);
     if (candidates.length > 0) imported.push(...candidates.map(sourceReference));

@@ -1,6 +1,6 @@
 /** Workspace-only annotation identity correction; never serialized into parse caches. */
 import type Parser from 'tree-sitter';
-import type { ParsedFile, Range, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, Range, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -16,6 +16,7 @@ import {
   collectJavaCaptureSideChannel,
 } from './capture-side-channel.js';
 import { getJavaPackageFact } from './package-facts.js';
+import { bindJavaQualifiedHeritage } from './qualified-heritage.js';
 import {
   getJavaOverloadFacts,
   type JavaOverloadFileFacts,
@@ -25,6 +26,7 @@ import {
   eraseJavaTypeArguments,
   JAVA_DOTTED_SPELLING,
   JAVA_IDENTIFIER_PART_CHARS,
+  stripGaps,
 } from './type-spelling.js';
 import {
   LOMBOK_ANNOTATION_NAMES,
@@ -49,11 +51,6 @@ const ANNOTATION_NAME = new RegExp(
   String.raw`@${GAP}(${NAME_PART}(?:${GAP}\.${GAP}${NAME_PART})*)`,
   'gu',
 );
-const stripGaps = (text: string) =>
-  text
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/\s+/g, '');
 const rangeKey = (range: Range) =>
   `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
 const nodeRange = (node: Parser.SyntaxNode): Range => ({
@@ -77,8 +74,9 @@ function hasAnnotationInLines(lines: readonly number[] | undefined, range: Range
   return low < lines.length && lines[low]! <= range.endLine;
 }
 
-interface TypeEntry {
+export interface TypeEntry {
   readonly filePath: string;
+  readonly declaringScope: ScopeId | null;
   readonly packageName: string;
   readonly fact: JavaOverloadTypeFact;
   readonly facts: JavaOverloadFileFacts;
@@ -133,7 +131,7 @@ interface Correction {
   readonly proof: JavaLombokWorkspaceProof;
   readonly removed: readonly SymbolDefinition[];
 }
-const corrections = new WeakMap<ParsedFile, Correction>();
+const corrections = new WeakMap<ParsedFile['scopes'], Correction>();
 
 function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   const byFile = new Map<string, Map<string, TypeEntry>>();
@@ -169,6 +167,7 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       }
       const entry: TypeEntry = {
         filePath: parsed.filePath,
+        declaringScope: scope.parent,
         packageName: pkg.packageName,
         fact,
         facts,
@@ -412,18 +411,31 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   return { byFile, packageTypes, namesOf, staticImportsType };
 }
 
+export type JavaWorkspaceTypeInventory = ReturnType<typeof workspaceInventory>;
+
+interface WorkspaceContext {
+  readonly fileContents: ReadonlyMap<string, string>;
+  readonly treeCache?: { get(filePath: string): unknown };
+}
+
+export function reconcileJavaWorkspaceReferences(
+  parsedFiles: ParsedFile[],
+  ctx: WorkspaceContext,
+): void {
+  const inventory = workspaceInventory(parsedFiles);
+  reconcileJavaLombokWorkspaceProof(parsedFiles, ctx, inventory);
+  bindJavaQualifiedHeritage(parsedFiles, inventory);
+}
+
 /** Reconcile only files whose file-local annotation proof can be shadowed by siblings. */
 export function reconcileJavaLombokWorkspaceProof(
   parsedFiles: ParsedFile[],
-  ctx: {
-    readonly fileContents: ReadonlyMap<string, string>;
-    readonly treeCache?: { get(filePath: string): unknown };
-  },
+  ctx: WorkspaceContext,
+  inventory = workspaceInventory(parsedFiles),
 ): void {
-  const inventory = workspaceInventory(parsedFiles);
   for (let i = 0; i < parsedFiles.length; i++) {
     const original = parsedFiles[i]!;
-    corrections.delete(original);
+    corrections.delete(original.scopes);
     const pkg = getJavaPackageFact(original.filePath);
     const facts = getJavaOverloadFacts(original.filePath);
     const entries = inventory.byFile.get(original.filePath);
@@ -591,7 +603,7 @@ export function reconcileJavaLombokWorkspaceProof(
       ]),
     });
     parsedFiles[i] = next;
-    corrections.set(next, { tree, proof, removed });
+    corrections.set(next.scopes, { tree, proof, removed });
   }
 }
 
@@ -602,7 +614,7 @@ export function emitJavaLombokWorkspaceCorrections(
   nodeLookup: GraphNodeLookup,
 ): void {
   for (const parsed of parsedFiles) {
-    const correction = corrections.get(parsed);
+    const correction = corrections.get(parsed.scopes);
     if (correction === undefined) continue;
     const owners = new Map<number, string>();
     const defs = new Map(
@@ -633,6 +645,6 @@ export function emitJavaLombokWorkspaceCorrections(
     );
     for (const node of result.nodes) if (graph.getNode(node.id) === undefined) graph.addNode(node);
     for (const edge of result.relationships) graph.addRelationship(edge);
-    corrections.delete(parsed);
+    corrections.delete(parsed.scopes);
   }
 }

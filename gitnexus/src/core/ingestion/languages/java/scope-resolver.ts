@@ -46,7 +46,7 @@ import {
   validateJavaQualifiedContextualBindings,
 } from './qualified-contextual-bindings.js';
 import {
-  reconcileJavaLombokWorkspaceProof,
+  reconcileJavaWorkspaceReferences,
   emitJavaLombokWorkspaceCorrections,
 } from './lombok-workspace-proof.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
@@ -116,7 +116,7 @@ const javaScopeResolver: ScopeResolver = {
   buildMro: buildJavaMro,
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
-  populateWorkspaceReferences: reconcileJavaLombokWorkspaceProof,
+  populateWorkspaceReferences: reconcileJavaWorkspaceReferences,
   emitHeritageEdges: emitJavaLombokWorkspaceCorrections,
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
   // A call whose every argument is an implicitly typed lambda is decided by

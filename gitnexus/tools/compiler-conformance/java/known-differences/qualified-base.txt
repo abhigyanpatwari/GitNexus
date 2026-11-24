@@ -1,2 +1,0 @@
-# The graph omits the package-qualified superclass when both packages declare B.
-Missing from GitNexus: EXTENDS src/main/java/com/acme/core/Qualified.java#com.acme.core.Qualified -> src/main/java/com/acme/legacy/B.java#com.acme.legacy.B
