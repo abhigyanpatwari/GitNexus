@@ -296,7 +296,6 @@ it('quarantines a file that drives a worker past its enforced heap cap and keeps
     expect(result.quarantined).toEqual(['big.ts']);
     expect(result.statsQuarantined).toBe(1);
     expect(result.slotGenerations[0]).toBeGreaterThanOrEqual(1);
-    // The files around the oversized one still reach the graph.
     expect(result.parsed).toEqual(['other.ts', 'small.ts']);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });

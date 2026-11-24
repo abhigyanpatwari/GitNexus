@@ -152,7 +152,7 @@ describe('--memory-budget real-child smoke (256MB)', () => {
       inheritedSource: 'budget',
     });
 
-    // Node applies the command line last: the child runs at V8's default, not the budget.
+    // The command line resets old space. NODE_OPTIONS still sets the budget's semi-space.
     expect(child.limit / (1024 * 1024)).toBeGreaterThan(256);
     expect(decision.respawn).toBe(true);
   });
