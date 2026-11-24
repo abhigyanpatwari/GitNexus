@@ -595,7 +595,7 @@ describe('PHP replacement identifier validation', () => {
     ['a no-break space', 'a\u00A0b'],
     ['a line separator', 'a\u2028b'],
     ['a paragraph separator', 'a\u2029b'],
-    ['a lone surrogate', 'a\uD800'],
+    ['a lone surrogate', `a${String.fromCharCode(0xd800)}`],
     ['a private-use code point', 'a\uE000b'],
     ['a noncharacter', 'a\uFFFEb'],
   ])('rejects %s in a replacement name', (_label, name) => {

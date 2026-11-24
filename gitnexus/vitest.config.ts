@@ -67,6 +67,7 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.ts'],
       exclude: [
+        '**/*.d.ts',
         'src/cli/index.ts', // CLI entry point (commander wiring)
         'src/core/wiki/**', // Wiki generation (requires LLM)
       ],

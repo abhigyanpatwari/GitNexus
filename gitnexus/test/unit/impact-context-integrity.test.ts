@@ -585,8 +585,8 @@ describe('impact detail row integrity', () => {
 describe('healthy and ordinary-failure compatibility', () => {
   it('preserves Unicode, opaque IDs, optional NULL metadata and source NUL', async () => {
     const content = 'const value = "actual\0source";';
-    rows.target = [{ ...TARGET, name: 'café�', filePath: '源/café�.ts', content }];
-    rows.incoming = [{ ...REF, name: '呼び出し�', filePath: null, kind: '' }];
+    rows.target = [{ ...TARGET, name: 'café\uFFFD', filePath: '源/café\uFFFD.ts', content }];
+    rows.incoming = [{ ...REF, name: '呼び出し\uFFFD', filePath: null, kind: '' }];
     rows.contextProcess = [
       { pid: 'legacy:proc ', label: '', step: 0, stepCount: 0, entryPointId: null },
     ];
@@ -595,12 +595,12 @@ describe('healthy and ordinary-failure compatibility', () => {
     expect(result.error).toBeUndefined();
     expect(result.symbol).toMatchObject({
       uid: TARGET.id,
-      name: 'café�',
-      filePath: '源/café�.ts',
+      name: 'café\uFFFD',
+      filePath: '源/café\uFFFD.ts',
       content,
     });
     expect(result.symbol.methodMetadata).toEqual({ annotations: ['@Text("source\0value")'] });
-    expect(result.incoming.calls[0]).toMatchObject({ uid: REF.uid, name: '呼び出し�' });
+    expect(result.incoming.calls[0]).toMatchObject({ uid: REF.uid, name: '呼び出し\uFFFD' });
     expect(result.processes).toEqual([
       { id: 'legacy:proc ', name: undefined, step_index: 0, step_count: 0 },
     ]);
@@ -729,7 +729,7 @@ describe('raw PDG identities before coercion, caps, and projection', () => {
   });
   it('preserves Unicode owner tuples and source NUL', async () => {
     preparePdg();
-    rows.pdgOwner = [[REF.uid, '呼び出し�', 'Function', 0]];
+    rows.pdgOwner = [[REF.uid, '呼び出し\uFFFD', 'Function', 0]];
     expect((await impact({ mode: 'pdg' })).error).toBeUndefined();
     rows.pdgStatement = [{ id: reached, line: 1, endLine: 1, text: 'value = "source\0text";' }];
     const result = await impact({ mode: 'pdg', line: 2 });
@@ -811,14 +811,20 @@ describe('real AOP helper identities before deduplication', () => {
   it('preserves Unicode and optional NULL metadata', async () => {
     await useRealAop();
     rows.aopRows = [
-      { ...advice, sourceName: '源�', sourceFilePath: null, targetName: '', targetFilePath: null },
+      {
+        ...advice,
+        sourceName: '源\uFFFD',
+        sourceFilePath: null,
+        targetName: '',
+        targetFilePath: null,
+      },
     ];
     const result = await context();
     expect(result.error).toBeUndefined();
     expect(result.symbol.aop.advices[0]).toMatchObject({
       adviceId: advice.targetId,
       advisedId: advice.sourceId,
-      advisedName: '源�',
+      advisedName: '源\uFFFD',
     });
   });
   it('keeps ordinary AOP query failures fail-soft', async () => {

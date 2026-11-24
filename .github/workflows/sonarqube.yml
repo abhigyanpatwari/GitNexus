@@ -7,13 +7,13 @@ jobs:
   build:
     name: Analyze with coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       actions: read
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -48,7 +48,7 @@ jobs:
           done > coverage/lcov.info
 
       - name: Cache SonarQube packages
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/.sonar/cache
           key: ${{ runner.os }}-sonar
@@ -58,8 +58,25 @@ jobs:
         uses: SonarSource/sonarqube-auth-action@b372e2c2930aadfcc4f4399446da1e12772709ad # v1.2
         id: auth
 
-      - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@59202af334b4ba7b5db01b701b8e79f8b3bef0f4 # v8.5.0
+      # The action verifies the CLI signature and adds sonar-scanner to PATH.
+      - name: Install SonarScanner
+        uses: SonarSource/sonarqube-scan-action@70bad232163b09d998ea0707ee80c0ec80798c16 # v8.5.1
         with:
-          # workflow_run's GITHUB_SHA is the receiving workflow's default branch tip.
-          args: ${{ github.event_name == 'workflow_run' && format('-Dsonar.branch.name=main -Dsonar.scm.revision={0}', github.event.workflow_run.head_sha) || '' }}
+          args: --version
+
+      - name: SonarQube Scan
+        shell: bash
+        env:
+          MAIN_REVISION: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          args=(-Dsonar.qualitygate.wait=true)
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
+            args+=(-Dsonar.branch.name=main "-Dsonar.scm.revision=${MAIN_REVISION:?missing Publish revision}")
+          fi
+          # An analyzer can log ERROR and still upload a successful report.
+          # bash pipefail also propagates scanner and quality gate failures.
+          sonar-scanner "${args[@]}" 2>&1 | awk '
+            { print; fflush() }
+            /^[0-9:.]+[[:space:]]+ERROR([[:space:]]|$)/ { errors++ }
+            END { if (errors) { print "::error::SonarScanner logged " errors " error(s)"; exit 1 } }
+          '
