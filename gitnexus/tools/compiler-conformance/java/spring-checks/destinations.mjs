@@ -759,7 +759,7 @@ public class ShipmentPublisher {
     let tmpHome;
     let tmpRepo;
     let repo;
-    let savedHome;
+    const savedHome = process.env.GITNEXUS_HOME;
     const srcDir = () => path.join(repo, 'src', 'main', 'java', 'com', 'example', 'messaging');
 
     // Two argv-form calls rather than one shell string joined by `&&`: the commit
@@ -822,7 +822,6 @@ public class ShipmentPublisher {
     };
     try {
       tmpHome = await createTempDir('gn-dest-incr-home-');
-      savedHome = process.env.GITNEXUS_HOME;
       process.env.GITNEXUS_HOME = tmpHome.dbPath;
       tmpRepo = await createTempDir('gn-dest-incr-repo-');
       repo = tmpRepo.dbPath;

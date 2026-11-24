@@ -113,8 +113,7 @@ ${consumers}
       factCount: facts.length,
     };
   }
-  function writeSpringDiRepo(consumerCount) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-di-bench-${consumerCount}-`));
+  function writeSpringDiRepo(dir, consumerCount) {
     fs.writeFileSync(
       path.join(dir, 'Gateway.java'),
       `package com.example;
@@ -141,7 +140,6 @@ public class Consumer${index} {
 `,
       );
     }
-    return dir;
   }
   // Spring DI capture O(n²) regression tripwire (#2414)
 
@@ -252,8 +250,9 @@ public class Consumer${index} {
     const scales = [25, 50, 100];
     const results = [];
     for (const consumers of scales) {
-      const dir = writeSpringDiRepo(consumers);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-di-bench-${consumers}-`));
       try {
+        writeSpringDiRepo(dir, consumers);
         const start = performance.now();
         const result = await runPipelineFromRepo(dir, () => {}, {});
         const elapsedMs = performance.now() - start;
@@ -549,8 +548,7 @@ ${consumers}
       assert.ok(last.elapsedMs < 10_000);
     }
   }
-  function writeJavaLookupRepo(consumerCount) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-dynamic-java-${consumerCount}-`));
+  function writeJavaLookupRepo(dir, consumerCount) {
     fs.writeFileSync(
       path.join(dir, 'Parent.java'),
       `package a;
@@ -574,10 +572,8 @@ class Consumer${index} {
 `,
       );
     }
-    return dir;
   }
-  function writeKotlinLookupRepo(consumerCount) {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-dynamic-kotlin-${consumerCount}-`));
+  function writeKotlinLookupRepo(dir, consumerCount) {
     fs.writeFileSync(path.join(dir, 'Parent.kt'), 'package a\ninterface Parent\n');
     fs.writeFileSync(path.join(dir, 'Impl.kt'), 'package a\nclass Impl : Parent\n');
     for (let index = 0; index < consumerCount; index++) {
@@ -591,14 +587,14 @@ class Consumer${index} {
 `,
       );
     }
-    return dir;
   }
   async function runPipelineBenchmark(label, writeRepo) {
     const scales = [25, 50, 100];
     const results = [];
     for (const consumers of scales) {
-      const dir = writeRepo(consumers);
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-dynamic-${label}-${consumers}-`));
       try {
+        writeRepo(dir, consumers);
         const start = performance.now();
         const result = await runPipelineFromRepo(dir, () => {}, {});
         const elapsedMs = performance.now() - start;

@@ -21,6 +21,7 @@ export async function verifyActuatorRuntime() {
   }
   function runtimeFixture() {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-actuator-'));
+    tempRepos.push(repo);
     fs.cpSync(springProject('actuator'), repo, {
       recursive: true,
     });
@@ -220,7 +221,6 @@ export async function verifyActuatorRuntime() {
   }
   try {
     const { repo } = runtimeFixture();
-    tempRepos.push(repo);
     const result = await runPipelineFromRepo(repo, () => {}, {
       skipGraphPhases: true,
     });
@@ -245,7 +245,6 @@ export async function verifyActuatorRuntime() {
 
   try {
     const { repo, actuatorDir } = runtimeFixture();
-    tempRepos.push(repo);
     const result = await runPipelineFromRepo(repo, () => {}, {
       skipGraphPhases: true,
       springActuatorPath: actuatorDir,
@@ -358,7 +357,6 @@ export async function verifyActuatorRuntime() {
 
   try {
     const { repo, actuatorDir } = runtimeFixture();
-    tempRepos.push(repo);
     writeJson(repo, 'runtime-actuator/beans.json', {
       contexts: {
         application: {
@@ -547,7 +545,6 @@ export async function verifyActuatorRuntime() {
   } // links an Actuator-only route with a resolved source handler to its execution flow
   try {
     const { repo, actuatorDir } = runtimeFixture();
-    tempRepos.push(repo);
     const result = await runPipelineFromRepo(repo, () => {}, {
       springActuatorPath: actuatorDir,
     });
@@ -653,7 +650,6 @@ export async function verifyActuatorRuntime() {
 
   try {
     const { repo } = runtimeFixture();
-    tempRepos.push(repo);
     writeFixture(
       repo,
       'src/main/java/com/example/OtherController.java',
@@ -723,7 +719,6 @@ export async function verifyActuatorRuntime() {
 
   try {
     const { repo } = runtimeFixture();
-    tempRepos.push(repo);
     const mapping = (className) => ({
       predicate: '{GET [/context-conflict]}',
       details: {
@@ -782,7 +777,6 @@ export async function verifyActuatorRuntime() {
 
   try {
     const { repo } = runtimeFixture();
-    tempRepos.push(repo);
     writeJson(repo, 'runtime-actuator/conditions.json', {
       contexts: {
         application: {

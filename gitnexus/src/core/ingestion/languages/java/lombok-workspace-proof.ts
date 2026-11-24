@@ -136,6 +136,7 @@ const corrections = new WeakMap<ParsedFile['scopes'], Correction>();
 function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   const byFile = new Map<string, Map<string, TypeEntry>>();
   const byFqn = new Map<string, TypeEntry[]>();
+  const declaredNames: [string, TypeEntry][] = [];
   /** Top-level types by package, then simple name: one index per reconcile. */
   const packageTypes = new Map<string, Map<string, TypeEntry[]>>();
   const simpleNames = new Set<string>();
@@ -178,11 +179,11 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       byScope.set(scope.id, entry);
       if (!named) continue;
       simpleNames.add(fact.simpleName);
-      const fqn = pkg.packageName === '' ? fact.name : `${pkg.packageName}.${fact.name}`;
-      const candidates = byFqn.get(fqn) ?? [];
-      candidates.push(entry);
-      byFqn.set(fqn, candidates);
       if (scope.parent === parsed.moduleScope) {
+        declaredNames.push([
+          pkg.packageName ? `${pkg.packageName}.${fact.simpleName}` : fact.simpleName,
+          entry,
+        ]);
         const top = packageTypes.get(pkg.packageName) ?? new Map<string, TypeEntry[]>();
         const named = top.get(fact.simpleName) ?? [];
         named.push(entry);
@@ -202,12 +203,18 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     }
     byFile.set(parsed.filePath, entries);
   }
+  // Java source imports use canonical member names, regardless of the graph's binary spelling.
+  for (const [name, entry] of declaredNames) {
+    const candidates = byFqn.get(name) ?? [];
+    candidates.push(entry);
+    byFqn.set(name, candidates);
+    for (const member of entry.members)
+      declaredNames.push([`${name}.${member.fact.simpleName}`, member]);
+  }
 
   const visible = (from: Pick<TypeEntry, 'filePath' | 'packageName'>, target: TypeEntry) =>
     isJvmSourceVisible(from.filePath, target.filePath) &&
     (from.packageName === target.packageName || target.fact.modifiers?.includes('public') === true);
-  const fqnOf = (target: TypeEntry) =>
-    `${target.packageName === '' ? '' : target.packageName + '.'}${target.fact.name}`;
   /**
    * The member types a single-static-import of `head` brings into `entry`'s
    * file (JLS 7.5.3): declared or inherited by a workspace owner. `external`
@@ -245,30 +252,34 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     }
     return { types: [...types], external };
   };
-  const enclosingTypeNamed = (
-    owner: TypeEntry,
-    head: string,
-  ): TypeEntry | 'unknown' | undefined => {
-    if (owner.fact.typeParameters.includes(head)) return 'unknown';
+  const memberTypeNamed = (owner: TypeEntry, head: string): TypeEntry | 'unknown' | undefined => {
     const declared = owner.memberNames.has(head);
     const inherited = declared ? undefined : namesOf(owner);
     if (inherited?.unknown) return 'unknown';
-    if (!declared && !inherited?.names.has(head))
-      return owner.fact.simpleName === head ? owner : undefined;
+    if (!declared && !inherited?.names.has(head)) return undefined;
     const members = (inherited?.members ?? owner.members).filter(
       (member) => member.fact.simpleName === head,
     );
     return members.length === 1 ? members[0] : 'unknown';
   };
+  const nestedBase = (entry: TypeEntry, root: TypeEntry, names: string[]): ResolvedBase => {
+    let target = root;
+    for (const name of names) {
+      const member = memberTypeNamed(target, name);
+      if (!member || member === 'unknown' || !visible(entry, member)) return 'unknown';
+      target = member;
+    }
+    return target;
+  };
   const lexicalBase = (entry: TypeEntry, raw: string, head: string): ResolvedBase | undefined => {
     for (let owner = entry.parent; owner !== undefined; owner = owner.parent) {
-      const root = enclosingTypeNamed(owner, head);
+      if (owner.fact.typeParameters.includes(head)) return 'unknown';
+      const root =
+        memberTypeNamed(owner, head) ?? (owner.fact.simpleName === head ? owner : undefined);
       if (root === undefined) continue;
-      if (root === 'unknown' || raw === head) return root;
-      const nested = (byFqn.get(fqnOf(root) + raw.slice(head.length)) ?? []).filter((target) =>
-        visible(entry, target),
-      );
-      return nested.length === 1 ? nested[0] : 'unknown';
+      return root === 'unknown' || raw === head
+        ? root
+        : nestedBase(entry, root, raw.split('.').slice(1));
     }
     return undefined;
   };
@@ -287,15 +298,8 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     if (statics.types.length > 0) {
       // Two single imports of one simple name must agree; do not pick one.
       if (explicit.length > 0) return 'unknown';
-      const candidates = [
-        ...new Set(
-          statics.types
-            .flatMap((type) => byFqn.get(fqnOf(type) + raw.slice(head.length)) ?? [])
-            .filter((target) => visible(entry, target)),
-        ),
-      ];
-      // A nested path through an imported member type may be inherited there.
-      return candidates.length === 1 ? candidates[0]! : 'unknown';
+      if (statics.types.length !== 1) return 'unknown';
+      return nestedBase(entry, statics.types[0]!, raw.split('.').slice(1));
     }
     const resolved = resolveUnimported(entry, raw, head, explicit);
     // An owner outside the workspace may import a type of this name, which

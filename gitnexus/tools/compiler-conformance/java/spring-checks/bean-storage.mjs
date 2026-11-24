@@ -253,7 +253,10 @@ export async function verifyConstructorBeanRoundtrip() {
       },
     ]);
   } finally {
-    await adapter.closeLbug();
-    await temp.cleanup();
+    try {
+      await adapter.closeLbug();
+    } finally {
+      await temp.cleanup();
+    }
   }
 }
