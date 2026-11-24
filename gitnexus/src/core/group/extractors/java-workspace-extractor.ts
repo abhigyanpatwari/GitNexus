@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { XMLParser } from 'fast-xml-parser';
+import type { SyntaxNode } from 'tree-sitter';
+import { ParseTimeoutError, parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import type { CypherExecutor } from '../contract-extractor.js';
 import type { GroupManifestLink, ContractRole } from '../types.js';
 import { shouldIgnorePath, loadIgnoreRules } from '../../../config/ignore-service.js';
@@ -354,9 +356,72 @@ function deriveBasePackage(groupId: string, artifactId: string): string {
   return `${groupId}.${sanitized}`;
 }
 
+/** Java imports can name a field and a member type with the same capitalization.
+ * Parse only provider files whose top-level name occurs in the import. */
+function workspaceMemberTypeLookup() {
+  const sources = new Map<string, Map<string, string[]>>();
+  const typesByFile = new Map<string, Set<string>>();
+  return async (repoPath: string, imported: string): Promise<boolean> => {
+    let files = sources.get(repoPath);
+    if (!files) {
+      files = new Map();
+      for (const file of await findJavaFiles(repoPath)) {
+        const type = path.parse(file).name;
+        const paths = files.get(type) ?? [];
+        paths.push(path.join(repoPath, file));
+        files.set(type, paths);
+      }
+      sources.set(repoPath, files);
+    }
+    for (const owner of imported.split('.').slice(0, -1)) {
+      for (const file of files.get(owner) ?? []) {
+        let types = typesByFile.get(file);
+        if (!types) {
+          types = await readJavaMemberTypes(file);
+          typesByFile.set(file, types);
+        }
+        if (types.has(imported)) return true;
+      }
+    }
+    return false;
+  };
+}
+
+async function readJavaMemberTypes(file: string): Promise<Set<string>> {
+  const names = new Set<string>();
+  const content = await fs.readFile(file, 'utf8').catch(() => undefined);
+  if (content === undefined) return names;
+  const { getProviderForFile } = await import('../../ingestion/languages/index.js');
+  const provider = getProviderForFile(file);
+  const extractor = provider?.classExtractor;
+  if (!provider || !extractor) return names;
+  const { createParserForLanguage, isLanguageAvailable } =
+    await import('../../tree-sitter/parser-loader.js');
+  if (!isLanguageAvailable(provider.id, file)) return names;
+  const parser = await createParserForLanguage(provider.id, file);
+  let root: SyntaxNode;
+  try {
+    root = parseSourceSafe(parser, content, undefined, undefined, file).rootNode;
+  } catch (error) {
+    if (error instanceof ParseTimeoutError) return names;
+    throw error;
+  }
+  const pending = [root];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (extractor.isTypeDeclaration(node) && node.childForFieldName('name')) {
+      const type = extractor.extract(node);
+      if (type) names.add(type.qualifiedName);
+    }
+    for (const child of node.namedChildren) pending.push(child);
+  }
+  return names;
+}
+
 async function scanJavaImports(
   repoPath: string,
-  knownPackages: Map<string, string>,
+  knownPackages: Map<string, JavaProjectMeta>,
+  isMemberType: ReturnType<typeof workspaceMemberTypeLookup>,
 ): Promise<ImportedSymbol[]> {
   const results: ImportedSymbol[] = [];
   const sourceFiles = await findJavaFiles(repoPath);
@@ -374,16 +439,23 @@ async function scanJavaImports(
     let match;
     while ((match = importRegex.exec(content)) !== null) {
       const importedName = match[2];
-      // A static import names a member of the type that supplies the workspace link.
-      const owner = match[1] ? importedName.slice(0, importedName.lastIndexOf('.')) : importedName;
-      const typeMatch = /^[a-zA-Z][\w.]*\.([A-Z]\w*)/.exec(owner);
-      if (!typeMatch || !isPascalCase(typeMatch[1])) continue;
-      const [fullImport, className] = typeMatch;
-      for (const [basePkg, artifactKey] of knownPackages) {
-        if (fullImport.startsWith(basePkg + '.') || fullImport === basePkg) {
-          results.push({ artifactKey, symbolName: className, filePath: relFile });
-          break;
+      for (const [basePkg, provider] of knownPackages) {
+        if (!importedName.startsWith(basePkg + '.')) continue;
+        const dot = importedName.lastIndexOf('.');
+        const member = importedName.slice(dot + 1);
+        const staticType =
+          match[1] && member !== '*' && (await isMemberType(provider.repoPath, importedName));
+        const owner = match[1] && !staticType ? importedName.slice(0, dot) : importedName;
+        const typeMatch = /^[a-zA-Z][\w.]*\.([A-Z]\w*)/.exec(owner);
+        const symbolName = staticType ? member : typeMatch?.[1];
+        if (symbolName && (staticType || isPascalCase(symbolName))) {
+          results.push({
+            artifactKey: provider.groupId + ':' + provider.artifactId,
+            symbolName,
+            filePath: relFile,
+          });
         }
+        break;
       }
     }
   }
@@ -464,6 +536,7 @@ export async function extractJavaWorkspaceLinks(
     projectsByGroupPath.set(groupPath, meta);
   }
 
+  const isMemberType = workspaceMemberTypeLookup();
   const links: GroupManifestLink[] = [];
   const seen = new Set<string>();
 
@@ -471,13 +544,13 @@ export async function extractJavaWorkspaceLinks(
     const groupDeps = proj.deps.filter((d) => projectsByKey.has(d));
     if (groupDeps.length === 0) continue;
 
-    const knownPackages = new Map<string, string>();
+    const knownPackages = new Map<string, JavaProjectMeta>();
     for (const dep of groupDeps) {
       const depMeta = projectsByKey.get(dep);
-      if (depMeta) knownPackages.set(depMeta.basePackage, dep);
+      if (depMeta) knownPackages.set(depMeta.basePackage, depMeta);
     }
 
-    const imports = await scanJavaImports(proj.repoPath, knownPackages);
+    const imports = await scanJavaImports(proj.repoPath, knownPackages, isMemberType);
 
     for (const imp of imports) {
       const providerProj = projectsByKey.get(imp.artifactKey);

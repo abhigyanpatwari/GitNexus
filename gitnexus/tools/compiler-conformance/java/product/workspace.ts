@@ -617,7 +617,7 @@ dependencies {
     ]);
   });
 
-  it('links named and wildcard static imports to the declaring type', async () => {
+  it('links static member types and the owners of static fields and wildcard imports', async () => {
     const root = path.resolve(
       import.meta.dirname,
       '../../../../test/fixtures/compiler-conformance/java-workspace-static-imports',
@@ -628,9 +628,10 @@ dependencies {
     assert.deepEqual(
       result.links
         .map((link) => [link.from, link.to, link.contract])
-        .sort((a, b) => compareCodeUnits(a[1], b[1])),
+        .sort((a, b) => compareCodeUnits(a[1], b[1]) || compareCodeUnits(a[2], b[2])),
       [
         ['lib', 'named', 'lib::Constants'],
+        ['lib', 'named', 'lib::Token'],
         ['lib', 'wildcard', 'lib::Constants'],
       ],
     );

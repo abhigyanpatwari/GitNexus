@@ -96,7 +96,7 @@ async function verifyJavaCompileTimeOverloadFamilies() {
   try {
     copyResolutionProject(root, 'compile-time-overloads');
     const result = await runPipelineFromRepo(root, () => {});
-    // %s preserves a terminal %s outcome
+    // Each rejected call records its specific suppression reason.
     for (const [caller, method, status] of [
       ['nullAmbiguous', 'nullable', 'ambiguous'],
       ['crossedAmbiguous', 'crossed', 'ambiguous'],
@@ -120,13 +120,13 @@ async function verifyJavaCompileTimeOverloadFamilies() {
           ))(getResolutionOutcomes(result)),
       );
     }
-    // uses the inherited field before the enclosing field for %s
+    // The inherited field takes precedence over the enclosing field.
     for (const caller of ['inheritedByThis', 'inheritedImplicit']) {
       const calls = targets(result, caller, 'shadowPick');
       assert.equal(calls.length, 1);
       assert.deepEqual(result.graph.getNode(calls[0])?.properties.parameterTypes, ['String']);
     }
-    // records uncertainty for %s without a guessed overload edge
+    // Unknown argument types leave the overload unresolved.
     for (const [caller, method] of [
       ['fakeFactory', 'select'],
       ['fieldFactory', 'select'],

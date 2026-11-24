@@ -66,6 +66,7 @@ ${methods}
         (_, m) => `  public Object op${m}() { return null; }`,
       ).join('\n');
       const controller = `package com.example.web;
+import com.example.api.Api${i};
 import org.springframework.web.bind.annotation.*;
 @RestController
 @RequestMapping("/v1")

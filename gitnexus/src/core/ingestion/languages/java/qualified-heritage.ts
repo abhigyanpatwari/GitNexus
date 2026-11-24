@@ -192,8 +192,8 @@ export function bindJavaQualifiedHeritage(
         if (visible.length !== 1) continue;
         const target = visible[0]!;
         if (target.parent === undefined && target.facts.types.length > 1) {
-          // Member types can also have a module binding. A module scope alone
-          // cannot identify the intended top-level declaration in that case.
+          // A nested declaration can share this module binding. The class extractor
+          // gives colliding declarations distinct qualified names.
           let duplicates = duplicateNamesByFile.get(target.filePath);
           if (duplicates === undefined) {
             const seen = new Set<string>();
@@ -204,7 +204,14 @@ export function bindJavaQualifiedHeritage(
             }
             duplicateNamesByFile.set(target.filePath, duplicates);
           }
-          if (duplicates.has(site.name)) continue;
+          if (duplicates.has(site.name) && target.declaringScope != null) {
+            replacements.set(site, {
+              ...site,
+              lookupScope: target.declaringScope,
+              rawQualifiedName: qualified,
+            });
+            continue;
+          }
         }
         if (target.declaringScope != null)
           replacements.set(site, { ...site, lookupScope: target.declaringScope });
