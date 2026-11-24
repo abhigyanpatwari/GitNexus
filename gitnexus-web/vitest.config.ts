@@ -35,7 +35,7 @@ export default defineConfig({
         'src/core/tree-sitter/**', // WASM (requires tree-sitter binaries)
         'src/core/embeddings/**', // WASM (requires ML model)
         'src/main.tsx', // Entry point
-        'src/vite-env.d.ts', // Type declarations
+        '**/*.d.ts', // Type declarations
       ],
       // Thresholds set to the post-vitest-4 baseline (AST-aware remapping
       // measures coverage more accurately than the old istanbul-style mapping,
