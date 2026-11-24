@@ -12,6 +12,7 @@ import path from 'path';
 import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
+import { readNodeSizeFlag } from '../lib/node-size-flag.js';
 import cliProgress from 'cli-progress';
 import { formatAnalyzeFtsSkipSummary } from '../core/search/fts-policy.js';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
@@ -616,8 +617,9 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
     (process.env.GITNEXUS_ANALYSIS_MANUAL_HEAP === '1' ||
       (process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
         (memoryAutopilotDisabled() ||
-          parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
-          (parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') ?? 0) >= RESPAWN_HEAP_MB)))
+          parseMaxOldSpaceMb(process.execArgv) !== null ||
+          (ambientMaxOldSpaceMb(process.execArgv, process.env.NODE_OPTIONS ?? '') ?? 0) >=
+            RESPAWN_HEAP_MB)))
   );
 }
 
@@ -630,8 +632,9 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
 export function manualHeapAdmission(): { mainHeapMb?: number; mainHeapLimitMb?: number } {
   const limitMb = Math.ceil(v8.getHeapStatistics().heap_size_limit / 1024 ** 2);
   const pinned =
-    parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null ||
-    parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') !== null;
+    (readNodeSizeFlag(process.execArgv, 'max-old-space-size') ??
+      readNodeSizeFlag(process.env.NODE_OPTIONS ?? '', 'max-old-space-size') ??
+      0) > 0;
   return pinned ? { mainHeapMb: limitMb } : { mainHeapLimitMb: limitMb };
 }
 
@@ -640,22 +643,19 @@ export function manualHeapAdmission(): { mainHeapMb?: number; mainHeapLimitMb?: 
  * when absent/unparseable. Last occurrence wins, matching V8's own
  * later-flag-wins semantics when NODE_OPTIONS repeats a flag.
  */
-export function parseMaxOldSpaceMb(nodeOptions: string): number | null {
-  return parseV8SizeFlagMb(nodeOptions, 'max-old-space-size');
+export function parseMaxOldSpaceMb(nodeOptions: string | readonly string[]): number | null {
+  return readNodeSizeFlag(nodeOptions, 'max-old-space-size') || null;
 }
 
 /**
- * Last value (MB) of a V8 `--<name>` size flag in a flag string. V8 accepts
- * `-` and `_` interchangeably in flag names, and Node accepts a
- * space-separated value — honor every spelling instead of silently
- * overriding it (#2649 review).
+ * The NODE_OPTIONS `--max-old-space-size` pin this process runs under: null
+ * when absent or zero, or when the command line sets the flag too (even to 0),
+ * since Node applies the command-line value last.
  */
-function parseV8SizeFlagMb(flags: string, name: string): number | null {
-  const stem = name.split('-').join('[-_]');
-  const matches = [...flags.matchAll(new RegExp(`--${stem}(?:=|\\s+)(\\d+)`, 'g'))];
-  if (matches.length === 0) return null;
-  const mb = Number(matches[matches.length - 1][1]);
-  return Number.isFinite(mb) && mb > 0 ? mb : null;
+function ambientMaxOldSpaceMb(execArgv: readonly string[], nodeOptions: string): number | null {
+  return readNodeSizeFlag(execArgv, 'max-old-space-size') === undefined
+    ? parseMaxOldSpaceMb(nodeOptions)
+    : null;
 }
 
 export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
@@ -706,20 +706,22 @@ export interface BudgetHeapDecision {
 /**
  * The `--memory-budget` heap decision (#3137), kept pure so every branch is
  * testable without a process. The effective requested old space is the last
- * `--max-old-space-size` in execArgv, else in NODE_OPTIONS (every spelling
- * `parseMaxOldSpaceMb` accepts). Only the budget-respawned child keeps
- * running; anything else respawns once at the budget. The budget's own flags
- * follow the user's in the child, so the child always resolves to "at the
- * budget".
+ * `--max-old-space-size` in execArgv (an explicit 0 there hides NODE_OPTIONS),
+ * else in NODE_OPTIONS (every spelling `parseMaxOldSpaceMb` accepts). Only the
+ * budget-respawned child keeps running; anything else respawns once at the
+ * budget. The budget's own flags follow the user's in the child, so the child
+ * always resolves to "at the budget".
  */
 export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
   const { budgetMb, autoCapMb } = input;
   const sizing = budgetHeapSizing(budgetMb);
-  const execFlags = input.execArgv.join(' ');
-  const pinnedMb = parseMaxOldSpaceMb(execFlags) ?? parseMaxOldSpaceMb(input.nodeOptions);
+  const pinnedMb =
+    (readNodeSizeFlag(input.execArgv, 'max-old-space-size') ??
+      readNodeSizeFlag(input.nodeOptions, 'max-old-space-size')) ||
+    null;
   const semiSpaceMb =
-    parseV8SizeFlagMb(execFlags, 'max-semi-space-size') ??
-    parseV8SizeFlagMb(input.nodeOptions, 'max-semi-space-size');
+    readNodeSizeFlag(input.execArgv, 'max-semi-space-size') ??
+    readNodeSizeFlag(input.nodeOptions, 'max-semi-space-size');
   // Only a budget-respawned child carries both the budget's old space and its
   // semi-space, so only it is exactly at the budget. A pin that merely equals
   // the budget leaves V8's young generation on top (a 2000MB pin is a 2048MB
@@ -794,7 +796,7 @@ export async function ensureHeap(
       inheritedSource: 'budget',
     });
     if (!decision.respawn) return false;
-    const ambient = parseMaxOldSpaceMb(nodeOpts);
+    const ambient = ambientMaxOldSpaceMb(process.execArgv, nodeOpts);
     if (ambient !== null && process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1') {
       cliWarn(
         `  NODE_OPTIONS pins the heap to ${ambient}MB. Re-running analyze with the admitted ${options.admittedHeapMb}MB main heap.\n`,
@@ -857,9 +859,9 @@ export async function ensureHeap(
   // (test harnesses, scripts, supervisors that track a single PID) rely on
   // a quiet, single-process run.
   if (memoryAutopilotDisabled()) return false;
-  if (parseMaxOldSpaceMb(process.execArgv.join(' ')) !== null) return false;
+  if (parseMaxOldSpaceMb(process.execArgv) !== null) return false;
 
-  const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
+  const ambientHeapMb = ambientMaxOldSpaceMb(process.execArgv, nodeOpts);
   if (ambientHeapMb !== null) {
     if (ambientHeapMb >= RESPAWN_HEAP_MB) return false;
     cliWarn(
@@ -921,8 +923,10 @@ async function respawnWithHeap(
     GITNEXUS_ANALYSIS_SUPERVISOR_BYTES:
       process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES ?? String(analysisSupervisorReservation()),
   };
-  // glibc reads its arena limit at startup. Apply the default to the graph
-  // writer. The publication/embedding child inherits the caller's policy.
+  // glibc reads its arena limit at startup. Apply the default to the first
+  // analyze child, which runs the parser pool and the graph writer, unless the
+  // operator set an arena policy. The publication/embedding child inherits the
+  // caller's policy.
   const limitWriterArenas =
     options.limitMallocArenas &&
     process.platform === 'linux' &&
@@ -1472,6 +1476,9 @@ const analyzeCommandImpl = async (
     // a nested heap respawn with a slightly different allocation.
     process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB = String(resources.mainHeapMb);
     process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES = String(supervisorBytes);
+    // This child runs the parser pool, then the graph writer. Two glibc arenas
+    // keep its peak RSS under the guard, also when admission fits several
+    // parser workers (see isConstrainedPdgBuild).
     limitMallocArenas = isConstrainedPdgBuild(options.pdg, resources);
     if (
       !manualHeap &&

@@ -21,6 +21,7 @@ import { Worker } from 'node:worker_threads';
 import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 import { isHeuristicEdgeReason } from '../graph/edge-reasons.js';
+import { spawnWithInheritedHeap } from './workers/worker-heap-limit.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -518,17 +519,23 @@ export const runGraphologyLeiden = async (
 ): Promise<CommunityEngineResult> => {
   try {
     const details = await new Promise<LeidenDetailedResult>((resolve, reject) => {
-      const worker = new Worker(GRAPHOLOGY_WORKER_SOURCE, {
-        eval: true,
-        workerData: {
-          graphologyPath: _require.resolve('graphology'),
-          leidenPath,
-          graph: graph.export(),
-          seed: LEIDEN_SEED,
-          resolution: isLarge ? 2.0 : 1.0,
-          maxIterations: isLarge ? 3 : 0,
-        },
-      });
+      // Keeps the heap the inherited flags give it, and shares the parser
+      // workers' heap lease when one has run (see spawnWithInheritedHeap).
+      const worker = spawnWithInheritedHeap(
+        (resourceLimits) =>
+          new Worker(GRAPHOLOGY_WORKER_SOURCE, {
+            eval: true,
+            resourceLimits,
+            workerData: {
+              graphologyPath: _require.resolve('graphology'),
+              leidenPath,
+              graph: graph.export(),
+              seed: LEIDEN_SEED,
+              resolution: isLarge ? 2.0 : 1.0,
+              maxIterations: isLarge ? 3 : 0,
+            },
+          }),
+      );
       let settled = false;
       const timeout = setTimeout(() => {
         settled = true;
@@ -628,19 +635,25 @@ const runIcebugWorker = (
     throw new Error('optional icebug engine currently requires randomize=false');
   }
 
-  const worker = new Worker(ICEBUG_WORKER_SOURCE, {
-    eval: true,
-    workerData: {
-      nodeCount,
-      indices: csr.indices,
-      indptr: csr.indptr,
-      threads,
-      seed: options.icebug?.seed ?? LEIDEN_SEED,
-      iterations: options.icebug?.iterations ?? 4,
-      gamma: options.icebug?.gamma ?? 1.0,
-      randomize: options.icebug?.randomize ?? false,
-    },
-  });
+  // Keeps the heap the inherited flags give it, and shares the parser workers'
+  // heap lease when one has run (see spawnWithInheritedHeap).
+  const worker = spawnWithInheritedHeap(
+    (resourceLimits) =>
+      new Worker(ICEBUG_WORKER_SOURCE, {
+        eval: true,
+        resourceLimits,
+        workerData: {
+          nodeCount,
+          indices: csr.indices,
+          indptr: csr.indptr,
+          threads,
+          seed: options.icebug?.seed ?? LEIDEN_SEED,
+          iterations: options.icebug?.iterations ?? 4,
+          gamma: options.icebug?.gamma ?? 1.0,
+          randomize: options.icebug?.randomize ?? false,
+        },
+      }),
+  );
 
   return new Promise((resolve, reject) => {
     let settled = false;

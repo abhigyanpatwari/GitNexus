@@ -17,6 +17,11 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   }),
 }));
 vi.mock('../../src/storage/branch-index.js', () => ({ resolveBranchPlacement: mocks.placement }));
+// Whether this process's V8 flags let the lease enforce a worker cap.
+const capEnforceable = vi.hoisted(() => ({ value: true }));
+vi.mock('../../src/core/ingestion/workers/worker-heap-limit.js', () => ({
+  workerHeapCapEnforceable: () => capEnforceable.value,
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -31,6 +36,7 @@ beforeEach(() => {
     vi.stubEnv(key, undefined);
   mocks.loadMeta.mockResolvedValue(null);
   mocks.placement.mockResolvedValue({ branch: 'release' });
+  capEnforceable.value = true;
 });
 afterEach(() => vi.unstubAllEnvs());
 
@@ -42,6 +48,20 @@ it('reserves local model capacity only for invocations that may embed', () => {
   vi.stubEnv('GITNEXUS_EMBEDDING_URL', 'http://localhost:1234/v1');
   vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', 'remote');
   expect(resolveHostAnalysisResources({ includeEmbeddings: true }).embedding.modelBytes).toBe(0);
+});
+
+it("charges each worker the main heap when this process's flags leave its cap unenforced", () => {
+  const request = { includeEmbeddings: false, mainHeapMb: 4096 };
+  const capped = resolveHostAnalysisResources(request);
+  expect(capped.parse.workerHeapMb).toBeLessThan(capped.mainHeapMb);
+
+  capEnforceable.value = false;
+  const inherited = resolveHostAnalysisResources(request);
+  expect(inherited.parse.workerHeapMb).toBeGreaterThanOrEqual(inherited.mainHeapMb);
+  // A caller that states the answer overrides this process's flags.
+  expect(
+    resolveHostAnalysisResources({ ...request, workerHeapCapEnforced: true }).parse.workerHeapMb,
+  ).toBe(capped.parse.workerHeapMb);
 });
 
 it('divides the host allowance across concurrent analyses', () => {
@@ -62,8 +82,7 @@ it('honors bounded worker, pool, and embedding-thread overrides', () => {
   vi.stubEnv('GITNEXUS_EMBEDDING_THREADS', '8');
   const budget = resolveHostAnalysisResources({ includeEmbeddings: true });
   expect(budget.parse.workers).toBe(8);
-  expect(budget.parse.workerHeapMb).toBeGreaterThanOrEqual(512);
-  expect(budget.parse.workerHeapMb).toBe(budget.mainHeapMb);
+  expect(budget.parse.workerHeapMb).toBe(512);
   expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
   expect(budget.parse.graphPoolBytes).toBe(256 * 1024 ** 2);
   expect(budget.embedding.nativeThreads).toBe(8);
