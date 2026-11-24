@@ -820,3 +820,40 @@ export async function run(token: string) {
     });
   });
 });
+
+describe('emitTsScopeCaptures — member reads under `await obj.m<T>()`', () => {
+  // `await svc.verify<string>(t)` parses as
+  // `call_expression(function: await_expression(member_expression))`, so the
+  // member's parent is the await, not the call. The read-member catch-all used
+  // to keep it, and the call left a read ACCESSES edge to the method as well.
+  const reads = (src: string) =>
+    emitTsScopeCaptures(src, 'test.ts')
+      .filter((m) => m['@reference.read.member'] !== undefined)
+      .map((m) => m['@reference.name']?.text);
+
+  it('an awaited generic member call is a call, not a read', () => {
+    const src = `
+const svc = { verify<T>(t: string): Promise<T> { return Promise.resolve({} as T); } };
+export async function run(t: string) {
+  return await svc.verify<string>(t);
+}
+`;
+    expect(reads(src)).toEqual([]);
+    expect(
+      emitTsScopeCaptures(src, 'test.ts')
+        .filter((m) => m['@reference.call.member'] !== undefined)
+        .map((m) => m['@reference.name']?.text),
+    ).toContain('verify');
+  });
+
+  it('an awaited member that is not called stays a read', () => {
+    expect(
+      reads(`
+const svc = { pending: Promise.resolve(1) };
+export async function run() {
+  return await svc.pending;
+}
+`),
+    ).toEqual(['pending']);
+  });
+});

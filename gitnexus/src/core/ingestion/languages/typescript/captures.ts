@@ -177,8 +177,11 @@ function pickFirstNode(
  *   3. The member_expression is the `left:` of an `assignment_expression` /
  *      `augmented_assignment_expression` (it's a write, already captured
  *      as `@reference.write.member`).
- *   4. The member_expression is the `function:` of an `await_expression`
- *      being called (handled by the member-call capture).
+ *   4. The member_expression is the awaited callee of `await obj.m<T>()`,
+ *      which tree-sitter parses as
+ *      `call_expression(function: await_expression(member_expression))`
+ *      (already captured as `@reference.call.member`). An awaited member
+ *      that is not called, `await obj.pending`, stays a read.
  *   5. The member_expression is the `name:` of a `jsx_self_closing_element`
  *      or `jsx_opening_element` (it's a JSX component invocation, already
  *      captured as `@reference.call.member` by the TSX-only query suffix).
@@ -199,6 +202,12 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
     case 'assignment_expression':
     case 'augmented_assignment_expression':
       return parent.childForFieldName('left')?.id !== memberNode.id;
+    case 'await_expression': {
+      const call = parent.parent;
+      return !(
+        call?.type === 'call_expression' && call.childForFieldName('function')?.id === parent.id
+      );
+    }
     case 'jsx_self_closing_element':
     case 'jsx_opening_element':
       return parent.childForFieldName('name')?.id !== memberNode.id;
