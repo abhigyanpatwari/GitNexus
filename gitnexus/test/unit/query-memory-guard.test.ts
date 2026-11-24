@@ -504,6 +504,11 @@ describe('formatBreachMessage', () => {
     expect(msg).toContain('RSS was already 8.2 GB or more');
   });
 
+  it('prints a single minus sign when the reported RSS is below the starting value', () => {
+    const msg = rssBreach(17 * GIB, [17.5 * GIB]);
+    expect(msg).toContain('RSS at start 17.5 GB, -0.5 GB since start');
+  });
+
   it('uses the lowest start memory, not the oldest query', () => {
     // The oldest query started at a peak that was later released; the newer
     // one started low and grew 13.5 GB.

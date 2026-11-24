@@ -107,6 +107,7 @@ export interface QueryMemoryGuard {
 
 export function formatBreachMessage(breach: QueryMemoryBreach): string {
   const gb = (n: number) => (n / (1024 * MIB)).toFixed(1);
+  const signedGb = (n: number) => (n >= 0 ? '+' : '') + gb(n);
   // Rounded down, so "X GB or more" stays true.
   const gbAtLeast = (n: number) => (Math.floor((n / (1024 * MIB)) * 10) / 10).toFixed(1);
   // `startBytes` is RSS. Growth and the pre-existing share are only computed
@@ -117,7 +118,7 @@ export function formatBreachMessage(breach: QueryMemoryBreach): string {
     .map(
       (q) =>
         `  - ${q.label} (RSS at start ${gb(q.startBytes)} GB, ` +
-        (sameUnit ? `+${gb(breach.memoryBytes - q.startBytes)} GB since start, ` : '') +
+        (sameUnit ? `${signedGb(breach.memoryBytes - q.startBytes)} GB since start, ` : '') +
         `running ${(q.runningMs / 1000).toFixed(1)} s)`,
     )
     .join('\n');
