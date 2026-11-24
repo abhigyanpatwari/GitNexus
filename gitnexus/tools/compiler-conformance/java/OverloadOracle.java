@@ -8,6 +8,7 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Name;
 import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.util.ElementFilter;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.*;
@@ -21,7 +22,8 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     private final Elements elements;
     private final Types types;
     private final Set<String> constructorLines = new HashSet<>();
-    private final List<ExecutableElement> classMethods = new ArrayList<>();
+    private final List<TypeElement> implementationOwners = new ArrayList<>();
+    private final Map<ExecutableElement, String> classMethods = new HashMap<>();
     private final Map<Name, List<ExecutableElement>> interfaceMethods = new HashMap<>();
     private final List<Diagnostic<? extends JavaFileObject>> errors;
 
@@ -111,17 +113,25 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         if (method.getEnclosingElement().getKind().isInterface()) {
             interfaceMethods.computeIfAbsent(method.getSimpleName(), name -> new ArrayList<>()).add(method);
         } else {
-            classMethods.add(method);
+            classMethods.put(method, declaration(method));
         }
     }
 
     private void emitImplementations() {
-        for (var method : classMethods) {
-            var owner = (TypeElement) method.getEnclosingElement();
-            for (var contract : interfaceMethods.getOrDefault(method.getSimpleName(), List.of())) {
-                if (elements.overrides(method, contract, owner)) {
-                    emit("implementation", declaration(method), declaration(contract));
-                }
+        var reported = new HashSet<List<ExecutableElement>>();
+        for (var owner : implementationOwners) {
+            for (var method : ElementFilter.methodsIn(elements.getAllMembers(owner))) {
+                var from = classMethods.get(method);
+                if (from != null) emitImplementedContracts(owner, method, from, reported);
+            }
+        }
+    }
+
+    private void emitImplementedContracts(TypeElement owner, ExecutableElement method, String from,
+                                          Set<List<ExecutableElement>> reported) {
+        for (var contract : interfaceMethods.getOrDefault(method.getSimpleName(), List.of())) {
+            if (elements.overrides(method, contract, owner) && reported.add(List.of(method, contract))) {
+                emit("implementation", from, declaration(contract));
             }
         }
     }
@@ -154,6 +164,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
 
     @Override public Void visitClass(ClassTree type, MethodTree enclosing) {
         var element = (TypeElement) trees.getElement(getCurrentPath());
+        if (families.contains("<implements>") && element.getKind().isClass()) implementationOwners.add(element);
         var unit = getCurrentPath().getCompilationUnit();
         var binary = elements.getBinaryName(element).toString();
         var kind = switch (type.getKind()) {

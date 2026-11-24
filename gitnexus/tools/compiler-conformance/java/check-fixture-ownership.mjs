@@ -130,11 +130,11 @@ function localBindings(node, outer) {
       for (const spec of statement.specifiers)
         bindings.set(spec.local.name, { module: statement.source.value, imported: spec.imported });
     } else if (statement.type === 'FunctionDeclaration' && statement.id) {
-      bindings.set(statement.id.name, { node: statement });
+      bindings.set(statement.id.name, { node: statement, scope: bindings });
     } else if (statement.type === 'VariableDeclaration') {
       for (const declaration of statement.declarations) {
         if (declaration.id.type === 'Identifier') {
-          bindings.set(declaration.id.name, { node: declaration.init });
+          bindings.set(declaration.id.name, { node: declaration.init, scope: bindings });
         } else {
           for (const name of Object.keys(getBindingIdentifiers(declaration.id)))
             bindings.set(name, {});
@@ -155,7 +155,7 @@ function localBindings(node, outer) {
 }
 
 // Follow local fixture writers only when their implementation reaches real I/O.
-function writesFiles(binding, outer, mocked, seen = new Set()) {
+function writesFiles(binding, mocked, seen = new Set()) {
   if (binding?.writesFixture) return true;
   const node = binding?.node;
   if (
@@ -181,13 +181,13 @@ function writesFiles(binding, outer, mocked, seen = new Set()) {
         return true;
       if (
         (projectReaders.has(method) && (!resolved || resolved.module)) ||
-        (callee.type === 'Identifier' && writesFiles(resolved, bindings, mocked, seen))
+        (callee.type === 'Identifier' && writesFiles(resolved, mocked, seen))
       )
         return true;
     }
     return children(part).some((child) => walk(child, bindings));
   }
-  return walk(node.body, localBindings(node, outer));
+  return walk(node.body, localBindings(node, binding.scope));
 }
 
 function virtualJavaSource(node, bindings) {
@@ -304,7 +304,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
           const candidate = javaSourceMap(arg, bindings) || literal(arg, bindings);
           if (
             (candidate.endsWith('.java') || fixturePath.test(candidate)) &&
-            writesFiles(binding, bindings, mocked)
+            writesFiles(binding, mocked)
           ) {
             match = candidate;
             break;

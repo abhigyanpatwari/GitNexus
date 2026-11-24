@@ -75,6 +75,24 @@ test('respects loop bindings and restores the filesystem import after each loop'
   );
 });
 
+test('resolves a fixture writer in the scope where it was defined', () => {
+  const uses = javaFixtureUses(`
+    import fs from 'node:fs';
+    function write(name) { fs.writeFileSync(name, ''); }
+    const save = (name) => write(name);
+    for (const fs of clients) save('Loop.java');
+    function run(fs) {
+      write('Parameter.java');
+      const fake = (name) => fs.writeFileSync(name, '');
+      fake('Mock.java');
+    }
+  `);
+  assert.deepEqual(
+    uses.map(({ path }) => path),
+    ['Loop.java', 'Parameter.java'],
+  );
+});
+
 test('recognizes explicit filesystem stubs and keeps calls through a partial mock', () => {
   const read = "import { readFileSync } from 'node:fs'; readFileSync('File.java');";
   assert.deepEqual(

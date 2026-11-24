@@ -62,6 +62,7 @@
       "ambiguous": 1
     }
   },
+  "compiler-conformance/java-inherited-interface-methods": { "sites": 0, "implementations": 2 },
   "compiler-conformance/java-overload-lexical": 4,
   "compiler-conformance/java-overload-phases": 9,
   "compiler-conformance/java-private-nested-base": 1,
