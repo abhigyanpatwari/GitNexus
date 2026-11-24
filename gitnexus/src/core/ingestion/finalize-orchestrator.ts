@@ -166,6 +166,9 @@ export function finalizeScopeModel(
         ? createEagerImportVisibility(finalizeOut.imports)
         : createGroupedImportVisibility(finalizeOut.importEntries, finalizeOut.imports),
     bindings: finalizeOut.bindings,
+    ...(finalizeOut.moduleExports === undefined
+      ? {}
+      : { moduleExports: finalizeOut.moduleExports }),
     // Empty post-finalize augmentation channel. Populated (if at all)
     // by language hooks like `populateCsharpNamespaceSiblings` running
     // AFTER `finalizeScopeModel` returns, before `resolveReferenceSites`

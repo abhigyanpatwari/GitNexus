@@ -849,6 +849,8 @@ export function emitFreeCallFallback(
           );
         if (
           importsPrivateDeclaration ||
+          // Re-exports publish names without binding them in the barrel.
+          scopes.moduleExports?.isReexported(parsed.filePath, site.name) ||
           options.isGlobalNameFallbackPlausible?.({
             callerParsed: parsed,
             candidate: vetoCandidate,

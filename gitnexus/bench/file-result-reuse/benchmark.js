@@ -27,13 +27,14 @@
  * they are evidence, not portable wall-clock budgets. CI never rewrites them.
  */
 import assert from 'node:assert/strict';
-import { execFileSync, spawn } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { parseArgs } from 'node:util';
+import { isDeepStrictEqual, parseArgs } from 'node:util';
+import { runBenchmarkTool } from '../lib/benchmark-tools.mjs';
 
 const script = fileURLToPath(import.meta.url);
 const baselinePath = new URL('./baseline.json', import.meta.url);
@@ -116,7 +117,7 @@ const canonical = (value) =>
         )
       : value;
 
-/** Keep full-graph reuse checks, but compare parser output across runtime versions. */
+/** Keep full-graph reuse checks and fingerprint resolved ingestion separately from derived phases. */
 export function graphDigests(graph) {
   const nodes = [...graph.nodes];
   const derivedIds = new Set(
@@ -261,6 +262,71 @@ const digest = /^[a-f0-9]{64}$/;
 const positive = (n) => Number.isFinite(n) && n > 0;
 const integer = (n) => Number.isSafeInteger(n) && n >= 0;
 
+function validateTrial(trial, files) {
+  assert.equal(trial.provenance.phaseIsolation, 'process', 'Phases must use fresh processes');
+  assert.deepEqual(
+    trial.provenance.execArgv,
+    ['--expose-gc', '--predictable-gc-schedule', '--max-old-space-size=' + heapMiB],
+    'Unexpected measurement profile',
+  );
+  assert(
+    ['sourceDigest', 'buildDigest', 'driverDigest'].every((key) =>
+      digest.test(trial.provenance[key]),
+    ),
+    'Invalid digest',
+  );
+  assert(/^[a-f0-9]{40}$/.test(trial.provenance.runtimeHead), 'Missing runtime revision');
+  assert.deepEqual(
+    trial.measurements.map((row) => row.kind),
+    phases,
+    'Missing/duplicate phase',
+  );
+  const format = trial.measurements[0].cacheFormat;
+  assert(['chunk', 'per-file'].includes(format), 'Unknown cache format');
+  for (const row of trial.measurements) {
+    for (const key of [
+      'pipelineMs',
+      'withSaveMs',
+      'peakRssKb',
+      'cacheBytes',
+      'cacheFiles',
+      'nodes',
+      'edges',
+      'parsedNodes',
+      'parsedEdges',
+    ]) {
+      assert(positive(row[key]), `Invalid ${key}`);
+    }
+    assert(row.withSaveMs >= row.pipelineMs, 'Invalid publication timing');
+    assert.equal(row.cacheFormat, format, 'Cache format changed within trial');
+    assert(
+      integer(row.reparsed) && integer(row.hits) && row.reparsed + row.hits === files,
+      'Incomplete parsing',
+    );
+    assert.equal(row.workersStarted, row.reparsed > 0, 'Worker dispatch disagrees with reuse');
+    assert(digest.test(row.digest), 'Missing graph digest');
+    assert(digest.test(row.parsedDigest), 'Missing parsed graph digest');
+  }
+  assert.equal(trial.measurements[0].reparsed, files, 'Cold run must parse every file');
+  assert.equal(trial.measurements[1].reparsed, 0, 'Warm run must reuse every file');
+  assert.equal(trial.measurements[0].digest, trial.measurements[1].digest, 'Warm graph changed');
+  assert.equal(
+    trial.measurements[3].digest,
+    trial.measurements[4].digest,
+    'Repacking changed graph',
+  );
+  assert.notEqual(
+    trial.measurements[1].parsedDigest,
+    trial.measurements[2].parsedDigest,
+    'Edit was not observed',
+  );
+  assert.notEqual(
+    trial.measurements[2].parsedDigest,
+    trial.measurements[3].parsedDigest,
+    'Second edit was not observed',
+  );
+}
+
 export function validatePair(pair) {
   const { baseline, candidate } = pair;
   assert(baseline?.provenance && candidate?.provenance, 'Missing provenance');
@@ -282,70 +348,8 @@ export function validatePair(pair) {
     integer(baseline.provenance.workers) && baseline.provenance.workers > 0,
     'Invalid workers',
   );
-  for (const trial of [baseline, candidate]) {
-    assert.equal(trial.provenance.phaseIsolation, 'process', 'Phases must use fresh processes');
-    assert.deepEqual(
-      trial.provenance.execArgv,
-      ['--expose-gc', '--predictable-gc-schedule', '--max-old-space-size=' + heapMiB],
-      'Unexpected measurement profile',
-    );
-    assert(
-      ['sourceDigest', 'buildDigest', 'driverDigest'].every((key) =>
-        digest.test(trial.provenance[key]),
-      ),
-      'Invalid digest',
-    );
-    assert(/^[a-f0-9]{40}$/.test(trial.provenance.runtimeHead), 'Missing runtime revision');
-    assert.deepEqual(
-      trial.measurements.map((row) => row.kind),
-      phases,
-      'Missing/duplicate phase',
-    );
-    const format = trial.measurements[0].cacheFormat;
-    assert(['chunk', 'per-file'].includes(format), 'Unknown cache format');
-    for (const row of trial.measurements) {
-      for (const key of [
-        'pipelineMs',
-        'withSaveMs',
-        'peakRssKb',
-        'cacheBytes',
-        'cacheFiles',
-        'nodes',
-        'edges',
-        'parsedNodes',
-        'parsedEdges',
-      ]) {
-        assert(positive(row[key]), `Invalid ${key}`);
-      }
-      assert(row.withSaveMs >= row.pipelineMs, 'Invalid publication timing');
-      assert.equal(row.cacheFormat, format, 'Cache format changed within trial');
-      assert(
-        integer(row.reparsed) && integer(row.hits) && row.reparsed + row.hits === files,
-        'Incomplete parsing',
-      );
-      assert.equal(row.workersStarted, row.reparsed > 0, 'Worker dispatch disagrees with reuse');
-      assert(digest.test(row.digest), 'Missing graph digest');
-      assert(digest.test(row.parsedDigest), 'Missing parsed graph digest');
-    }
-    assert.equal(trial.measurements[0].reparsed, files, 'Cold run must parse every file');
-    assert.equal(trial.measurements[1].reparsed, 0, 'Warm run must reuse every file');
-    assert.equal(trial.measurements[0].digest, trial.measurements[1].digest, 'Warm graph changed');
-    assert.equal(
-      trial.measurements[3].digest,
-      trial.measurements[4].digest,
-      'Repacking changed graph',
-    );
-    assert.notEqual(
-      trial.measurements[1].parsedDigest,
-      trial.measurements[2].parsedDigest,
-      'Edit was not observed',
-    );
-    assert.notEqual(
-      trial.measurements[2].parsedDigest,
-      trial.measurements[3].parsedDigest,
-      'Second edit was not observed',
-    );
-  }
+  validateTrial(baseline, files);
+  validateTrial(candidate, files);
   assert.equal(
     candidate.measurements[0].cacheFormat,
     'per-file',
@@ -356,12 +360,42 @@ export function validatePair(pair) {
     [files, 0, 1, 2, 0],
     'Per-file reuse regressed',
   );
+  // An ingestion fix can deliberately change resolved edges. The frozen
+  // real corpus then needs exact expected graphs for both versions. Other
+  // inputs continue to require equality across versions.
+  const expected =
+    candidate.provenance.runtimeHead !== baseline.provenance.runtimeHead
+      ? benchmarkBaseline.graphExpectations?.find(
+          (entry) =>
+            Array.isArray(entry.baselineSourceTrees) &&
+            isDeepStrictEqual(entry.baselineSourceTrees, baseline.provenance.runtimeSourceTrees) &&
+            Array.isArray(entry.candidateSourceTrees) &&
+            isDeepStrictEqual(
+              entry.candidateSourceTrees,
+              candidate.provenance.runtimeSourceTrees,
+            ) &&
+            entry.sourceDigest === baseline.provenance.sourceDigest &&
+            entry.sourceFiles === files,
+        )
+      : undefined;
   for (let i = 0; i < phases.length; i++) {
+    const phase = phases[i];
+    if (expected) {
+      for (const variant of ['baseline', 'candidate']) {
+        const { parsedDigest, parsedNodes, parsedEdges } = pair[variant].measurements[i];
+        assert.deepEqual(
+          [parsedDigest, parsedNodes, parsedEdges],
+          expected[variant][phase],
+          `Unexpected ${variant} graph for ${phase} on the pinned corpus`,
+        );
+      }
+      continue;
+    }
     for (const key of ['parsedDigest', 'parsedNodes', 'parsedEdges']) {
       assert.equal(
         candidate.measurements[i][key],
         baseline.measurements[i][key],
-        `Graph ${key} differs for ${phases[i]}`,
+        `Graph ${key} differs for ${phase}`,
       );
     }
   }
@@ -601,7 +635,7 @@ export async function compareRuntimes(options) {
     if (!phase) {
       assert.equal(
         rows[0].runtimeHead,
-        execFileSync('git', ['-C', path.dirname(runtimes[variant]), 'rev-parse', 'HEAD'], {
+        runBenchmarkTool('git', ['-C', path.dirname(runtimes[variant]), 'rev-parse', 'HEAD'], {
           encoding: 'utf8',
         }).trim(),
         'Measured wrong runtime revision',
@@ -671,7 +705,7 @@ export async function compareRuntimes(options) {
             `| ${m.name} | ${m.unit} | ${m.baselineMedianMs.toFixed(1)} | ${m.candidateMedianMs.toFixed(1)} | ${m.pairedInterval.map((r) => r.toFixed(3)).join(' – ')} | ${m.limit} | ${m.passed} |`,
         )
         .join('\n') +
-      `\n\nRepeated analyses sum warm, one edit, two edits, and repacking (including cache save). RSS is the maximum phase-process high-water mark, including parser worker threads; cache bytes are reported separately. Inconclusive evidence adds ${report.design.stagePairs} pairs per look up to ${report.design.maxPairs}; looks share the 5% error equally, and intervals still crossing a budget at the last look fail. Graph equality and exact per-file reuse are required.\n${report.error ? '\nError: ' + report.error + '\n' : ''}`;
+      `\n\nRepeated analyses sum warm, one edit, two edits, and repacking (including cache save). RSS is the maximum phase-process high-water mark, including parser worker threads; cache bytes are reported separately. Inconclusive evidence adds ${report.design.stagePairs} pairs per look up to ${report.design.maxPairs}; looks share the 5% error equally, and intervals still crossing a budget at the last look fail. Exact graph fingerprints and per-file reuse are required.\n${report.error ? '\nError: ' + report.error + '\n' : ''}`;
     await fs.writeFile(output.replace(/\.json$/, '') + '.md', summary);
     console.log(summary);
   }
@@ -709,12 +743,38 @@ async function measure(values) {
     }
     return hash.digest('hex');
   }
+  const runtimeSourceRoots = ['gitnexus/src', 'gitnexus-shared/src'];
+  const runtimeGit = (...args) =>
+    runBenchmarkTool('git', ['-C', path.dirname(dist), ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
   const runtimeHead = (() => {
     try {
-      return execFileSync('git', ['-C', path.dirname(dist), 'rev-parse', 'HEAD'], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim();
+      return runtimeGit('rev-parse', 'HEAD');
+    } catch {
+      return null;
+    }
+  })();
+  // An exact source identity survives benchmark-only commits and merge commits.
+  // A dirty runtime checkout must use the ordinary graph equality rule.
+  const runtimeSourceTrees = (() => {
+    if (!runtimeHead) return null;
+    try {
+      if (
+        runtimeGit(
+          'status',
+          '--porcelain',
+          '--',
+          ...runtimeSourceRoots.map((root) => `:(top)${root}`),
+        )
+      ) {
+        return null;
+      }
+      return runtimeGit(
+        'rev-parse',
+        ...runtimeSourceRoots.map((root) => `${runtimeHead}:${root}`),
+      ).split('\n');
     } catch {
       return null;
     }
@@ -762,10 +822,12 @@ async function measure(values) {
         buildDigest: await treeDigest(dist),
         driverDigest: createHash('sha256')
           .update(await fs.readFile(new URL(import.meta.url)))
+          .update(await fs.readFile(new URL('../lib/benchmark-tools.mjs', import.meta.url)))
           .update(baselineBytes)
           .digest('hex'),
-        checkoutHead: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+        checkoutHead: runBenchmarkTool('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
         runtimeHead,
+        runtimeSourceTrees,
         platform: process.platform,
         arch: process.arch,
       }),

@@ -34,11 +34,20 @@
  * would mark every declaration in such a file exported.
  */
 
-import type { SyntaxNode } from './utils/ast-helpers.js';
+import type { Capture } from 'gitnexus-shared';
+import { canonicalModuleExportName, decodeIdentifierEscapes } from './utils/ecmascript-literals.js';
+import { syntheticCapture, type SyntaxNode } from './utils/ast-helpers.js';
+
+interface LocalExportSpecifier {
+  readonly publicName: SyntaxNode;
+  readonly typeOnly: boolean;
+}
 
 export interface EsmExportEvidence {
   /** Local names published by `export { … }`, `export default <id>`, `export = <id>`. */
   readonly namedLocals: ReadonlySet<string>;
+  /** Source-less export specifiers, keyed by the canonical local binding. */
+  readonly localSpecifiers?: ReadonlyMap<string, readonly LocalExportSpecifier[]>;
   /** The file exports through a CommonJS assignment: a plain "not under
    *  `export`" is no verdict there. */
   readonly commonJs: boolean;
@@ -259,6 +268,7 @@ export function collectEsmExportEvidence(
 ): EsmExportEvidence | undefined {
   if (filePath.endsWith('.d.ts')) return undefined;
   const namedLocals = new Set<string>();
+  let localSpecifiers: Map<string, LocalExportSpecifier[]> | undefined;
   // Every local named as the default; two different ones (invalid input) name none.
   const defaultLocals = new Set<string>();
   // Any CommonJS export surface anywhere in the file — a direct `module.exports
@@ -273,20 +283,31 @@ export function collectEsmExportEvidence(
       if (stmt.childForFieldName('source') !== null) continue;
       for (const child of stmt.namedChildren) {
         if (child.type === 'export_clause') {
+          const typeOnly = stmt.children.some((token) => token.type === 'type');
           for (const spec of child.namedChildren) {
             if (spec.type !== 'export_specifier') continue;
-            const name = spec.childForFieldName('name')?.text;
-            if (name === undefined || name === '') continue;
+            const nameNode = spec.childForFieldName('name');
+            if (!nameNode?.text) continue;
+            const name = decodeIdentifierEscapes(nameNode.text);
             namedLocals.add(name);
-            // `export { f as default }`: TS parses the alias as an identifier,
-            // JS as an anonymous `default` token, so compare text, not type.
-            if (spec.childForFieldName('alias')?.text === 'default') defaultLocals.add(name);
+            const publicName = spec.childForFieldName('alias') ?? nameNode;
+            const erased = typeOnly || spec.children.some((token) => token.type === 'type');
+            localSpecifiers ??= new Map();
+            let entries = localSpecifiers.get(name);
+            if (!entries) {
+              entries = [];
+              localSpecifiers.set(name, entries);
+            }
+            entries.push({ publicName, typeOnly: erased });
+            if (!erased && canonicalModuleExportName(publicName.text) === 'default')
+              defaultLocals.add(name);
           }
         } else if (child.type === 'identifier') {
           // `export default f;` and TS `export = f;`. Only the former names a
           // default: `export =` binds `import X from` only under esModuleInterop.
-          namedLocals.add(child.text);
-          if (isDefaultExportStatement(stmt)) defaultLocals.add(child.text);
+          namedLocals.add(decodeIdentifierEscapes(child.text));
+          if (isDefaultExportStatement(stmt))
+            defaultLocals.add(decodeIdentifierEscapes(child.text));
         }
       }
     } else if (hasTopLevelThisExportAssignment(stmt)) {
@@ -294,7 +315,7 @@ export function collectEsmExportEvidence(
     }
   }
   const [defaultLocal] = defaultLocals.size === 1 ? defaultLocals : [];
-  return { namedLocals, commonJs, defaultLocal };
+  return { namedLocals, localSpecifiers, commonJs, defaultLocal };
 }
 
 function isDefaultExportStatement(stmt: SyntaxNode): boolean {
@@ -309,7 +330,11 @@ function isDefaultExportStatement(stmt: SyntaxNode): boolean {
  * nested functions of the same name out.
  */
 export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvidence): boolean {
-  if (evidence.defaultLocal === nameNode.text) return true;
+  if (
+    evidence.defaultLocal !== undefined &&
+    evidence.defaultLocal === decodeIdentifierEscapes(nameNode.text)
+  )
+    return true;
   const declaration = nameNode.parent;
   const statement = declaration?.parent;
   return (
@@ -317,6 +342,54 @@ export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvid
     statement.childForFieldName('declaration')?.id === declaration?.id &&
     isDefaultExportStatement(statement)
   );
+}
+
+function hasNamedExportDeclaration(nameNode: SyntaxNode): boolean {
+  for (let declaration = nameNode.parent; declaration !== null; declaration = declaration.parent) {
+    const statement = declaration.parent;
+    if (
+      statement?.type === 'export_statement' &&
+      statement.childForFieldName('declaration')?.id === declaration.id
+    ) {
+      return !isDefaultExportStatement(statement);
+    }
+  }
+  return false;
+}
+
+function removeValueExports(erased: Set<string>, names: ReadonlySet<string>): void {
+  if (erased.size === 0) return;
+  for (const spelling of names) {
+    const canonical = canonicalModuleExportName(spelling);
+    if (canonical !== null) erased.delete(canonical);
+  }
+}
+
+/** Explicit public spellings for an aliased or default binding. */
+export function namedEsmPublications(
+  nameNode: SyntaxNode,
+  evidence: EsmExportEvidence,
+  isDefault: boolean,
+): { namedExports: string[]; typeOnlyExports?: string[] } | undefined {
+  const specifiers = evidence.localSpecifiers?.get(decodeIdentifierEscapes(nameNode.text));
+  if (!isDefault && !specifiers) return undefined;
+  const names = new Set<string>();
+  const erased = new Set<string>();
+  for (const { publicName, typeOnly } of specifiers ?? []) {
+    const canonical = canonicalModuleExportName(publicName.text);
+    if (canonical === null) continue;
+    if (typeOnly) erased.add(canonical);
+    else if (canonical !== 'default') names.add(publicName.text);
+  }
+  if (hasNamedExportDeclaration(nameNode)) names.add(nameNode.text);
+  if (isDefault) erased.delete('default');
+  removeValueExports(erased, names);
+  if (!isDefault && erased.size === 0 && names.size === 1 && names.has(nameNode.text))
+    return undefined;
+  return {
+    namedExports: [...names],
+    ...(erased.size ? { typeOnlyExports: [...erased] } : {}),
+  };
 }
 
 /** Is `object` the value of a top-level `module.exports = { … }` assignment? */
@@ -377,5 +450,45 @@ export function esmExportVerdict(
   }
   if (underExport) return true;
   if (evidence.commonJs) return undefined;
-  return evidence.namedLocals.has(nameNode.text);
+  return (
+    evidence.namedLocals.size > 0 &&
+    evidence.namedLocals.has(decodeIdentifierEscapes(nameNode.text))
+  );
+}
+
+/** Attach the same module export evidence to both grammar providers' declarations. */
+export function addEsmExportMarkerCaptures(
+  grouped: Record<string, Capture>,
+  nameNode: SyntaxNode | undefined,
+  evidence: EsmExportEvidence | undefined,
+): void {
+  if (!evidence || !nameNode) return;
+  const verdict = esmExportVerdict(nameNode, evidence);
+  if (verdict === undefined) return;
+  grouped['@declaration.is-exported'] = syntheticCapture(
+    '@declaration.is-exported',
+    nameNode,
+    String(verdict),
+  );
+  if (!verdict) return;
+  const isDefault = isEsmDefaultExport(nameNode, evidence);
+  if (isDefault)
+    grouped['@declaration.is-default-export'] = syntheticCapture(
+      '@declaration.is-default-export',
+      nameNode,
+      'true',
+    );
+  const names = namedEsmPublications(nameNode, evidence, isDefault);
+  if (names === undefined) return;
+  grouped['@declaration.named-exports'] = syntheticCapture(
+    '@declaration.named-exports',
+    nameNode,
+    JSON.stringify(names.namedExports),
+  );
+  if (names.typeOnlyExports)
+    grouped['@declaration.type-only-exports'] = syntheticCapture(
+      '@declaration.type-only-exports',
+      nameNode,
+      JSON.stringify(names.typeOnlyExports),
+    );
 }

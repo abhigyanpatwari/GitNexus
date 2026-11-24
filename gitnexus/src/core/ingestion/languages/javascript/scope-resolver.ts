@@ -38,8 +38,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
-import { canonicalizeWorkspaceBindings } from '../../scope-resolution/scope/canonicalize-bindings.js';
-import { canonicalTypeScriptName } from '../typescript/identifiers.js';
+import { canonicalizeEcmaWorkspaceBindings } from '../typescript/canonicalize-bindings.js';
 import { javascriptProvider } from '../typescript.js';
 import { jsMergeBindings } from './merge-bindings.js';
 import { jsArityCompatibility } from './arity.js';
@@ -62,8 +61,7 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 
 const javascriptScopeResolver: ScopeResolver = {
   postExtractSourceTextPolicy: 'uncached-files',
-  populateWorkspaceReferences: (parsedFiles) =>
-    canonicalizeWorkspaceBindings(parsedFiles, canonicalTypeScriptName),
+  populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,

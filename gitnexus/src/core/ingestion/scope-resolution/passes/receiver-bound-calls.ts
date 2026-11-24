@@ -913,8 +913,13 @@ function emitReceiverBoundCallsInPass(
   // its module scope binds under the segment — a republished module,
   // `pub const sub = @import("sub.zig");` (→ files); a hop from a class is a
   // nested class-like. Anything ambiguous resolves nothing.
-  const walkChains = provider.resolveNamespaceChains === true;
+  const walkChains = provider.resolveNamespaceChains === true || scopes.moduleExports !== undefined;
   const namespaceImportTargetsOf = (file: string, name: string): readonly string[] => {
+    if (scopes.moduleExports !== undefined) {
+      const exported = scopes.moduleExports.get(file, name);
+      const namespaceTarget = exported?.typeOnly ? undefined : exported?.namespaceTargetFile;
+      return namespaceTarget === undefined ? [] : [namespaceTarget];
+    }
     const moduleScope = index.moduleScopeByFile.get(file);
     if (moduleScope === undefined) return [];
     const out: string[] = [];
@@ -967,6 +972,7 @@ function emitReceiverBoundCallsInPass(
       break;
     }
     if (cursor === undefined) {
+      if (provider.resolveNamespaceChains !== true) return undefined;
       const head = findClassBindingInScope(inScope, segments[0]!, scopes, undefined, {
         onNameFallback,
       });
