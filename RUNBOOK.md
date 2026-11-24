@@ -270,12 +270,13 @@ release memory. Every request in that process is interrupted; restart the
 CLI/server or reconnect the MCP client. A read-only query does not require a
 reindex after this exit.
 
-The message lists each running query with its RSS at start and its running time.
-If it says the memory "is not attributable to those queries", more than half of
-the RSS was already in use when every listed query started. Look at what the
-process did before those queries, such as source parsing or earlier work, before
-you blame a query. After a physical-footprint breach, the start RSS cannot show
-how much of the footprint was already in use.
+The message lists each running query's starting RSS and elapsed time. On an RSS
+breach, it also reports the net change in process RSS since each query started.
+If every query started above half the final RSS, the headline gives the lowest
+starting value, rounded down. Check earlier work such as source parsing as well
+as the running queries. Memory can be freed and allocated again between samples.
+On macOS, a physical-footprint breach reports starting RSS and elapsed time only,
+because RSS and footprint measure different things.
 
 To diagnose a repeat, set `GITNEXUS_QUERY_TRACE=1` in the query/server environment
 and retain stderr. It includes query text but not bound parameters. Review the

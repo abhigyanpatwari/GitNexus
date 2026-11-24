@@ -32,11 +32,7 @@ const SAMPLE_INTERVAL_MS = 200;
 export const FOOTPRINT_INTERVAL_MS = 1000;
 const FOOTPRINT_TIMEOUT_MS = 2000;
 const LABEL_MAX_CHARS = 200;
-/**
- * When every running query started with more than this share of the breaching
- * RSS already in use, the breach message says so instead of blaming the
- * queries: that memory is not attributable to them.
- */
+/** Highlight the start RSS when it exceeded this share of the breach RSS for every query. */
 const PREEXISTING_MEMORY_SHARE = 0.5;
 
 /** Memory budget in bytes, or `null` when disabled. Invalid values use the default. */
@@ -129,8 +125,7 @@ export function formatBreachMessage(breach: QueryMemoryBreach): string {
     `GitNexus stopped: ` +
     (sameUnit ? 'process memory (RSS)' : 'physical footprint') +
     ` reached ${gb(breach.memoryBytes)} GB, over the ${gb(breach.budgetBytes)} GB limit`;
-  // The lowest start RSS is a floor for what was in use before every listed
-  // query began; an empty list leaves nothing to compare.
+  // RSS can fall and rise between samples. The floor describes only the query starts.
   const floorBytes = breach.activeQueries.length
     ? Math.min(...breach.activeQueries.map((q) => q.startBytes))
     : 0;
@@ -143,8 +138,7 @@ export function formatBreachMessage(breach: QueryMemoryBreach): string {
   } else if (floorBytes > breach.memoryBytes * PREEXISTING_MEMORY_SHARE) {
     headline =
       `${reached}. RSS was already ${gbAtLeast(floorBytes)} GB or more when each query ` +
-      `listed below started. That memory is not attributable to those queries (for ` +
-      `example source parsing or earlier work in the same process).`;
+      `listed below started. Check earlier work such as source parsing as well as the running queries.`;
   } else {
     headline = `${reached}, while running a graph query.`;
   }

@@ -162,11 +162,13 @@ describe('createQueryMemoryGuard', () => {
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
   });
 
-  it('reports the memory each running query started at and how long it has run', () => {
+  it('reports the starting RSS even when memory is freed and allocated again during the query', () => {
     const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
     // Memory allocated outside any query: the guard does not sample then.
     h.setRss(900);
     h.guard.begin('MATCH (n) RETURN n');
+    h.setRss(100);
+    h.tick();
     h.advance(2_500);
     h.setRss(1100);
     h.tick();
@@ -178,6 +180,10 @@ describe('createQueryMemoryGuard', () => {
       budgetBytes: 1000 * MIB,
       activeQueries: [{ label: 'MATCH (n) RETURN n', startBytes: 900 * MIB, runningMs: 2_500 }],
     });
+    const message = formatBreachMessage(vi.mocked(h.deps.onBreach).mock.calls[0][0]);
+    expect(message).toContain('RSS was already 0.8 GB or more');
+    expect(message).toContain('+0.2 GB since start');
+    expect(message).not.toContain('not attributable');
     expect(QUERY_MEMORY_LIMIT_EXIT_CODE).toBe(70);
   });
 
@@ -473,14 +479,8 @@ describe('formatBreachMessage', () => {
 
   it('says when every query started with more than half of the memory in use', () => {
     const msg = rssBreach(17 * GIB, [15 * GIB, 16 * GIB]);
-    expect(msg).toContain(
-      'RSS was already 15.0 GB or more when each query listed below started. That memory',
-    );
-    expect(msg).toContain(
-      'not attributable to those queries (for example source parsing or earlier work in the same process)',
-    );
+    expect(msg).toContain('RSS was already 15.0 GB or more when each query listed below started.');
     expect(msg).not.toContain('while running a graph query');
-    expect(msg).not.toContain('source scanning');
     expect(msg).toContain('  - Q0 (RSS at start 15.0 GB, +2.0 GB since start, running 1.0 s)');
     expect(msg).toContain('  - Q1 (RSS at start 16.0 GB, +1.0 GB since start, running 1.0 s)');
     expect(msg).toContain('cannot cancel a running query');
@@ -488,7 +488,7 @@ describe('formatBreachMessage', () => {
     expect(msg).toContain('#3696');
   });
 
-  it('blames the queries at exactly half and clears them just above it', () => {
+  it('reports the starting RSS in the headline only above half', () => {
     expect(rssBreach(16 * GIB, [8 * GIB])).toContain('while running a graph query');
     const above = rssBreach(16 * GIB, [8 * GIB + MIB]);
     expect(above).not.toContain('while running a graph query');
@@ -509,11 +509,11 @@ describe('formatBreachMessage', () => {
     // one started low and grew 13.5 GB.
     const msg = rssBreach(16.5 * GIB, [12 * GIB, 3 * GIB]);
     expect(msg).toContain('while running a graph query');
-    expect(msg).not.toContain('not attributable');
+    expect(msg).not.toContain('RSS was already');
     expect(msg).toContain('process memory (RSS) reached 16.5 GB');
   });
 
-  it('blames the queries when none are listed', () => {
+  it('omits the starting RSS when no queries are listed', () => {
     const msg = rssBreach(17 * GIB, []);
     expect(msg).not.toMatch(/NaN|Infinity/);
     expect(msg).toContain('process memory (RSS) reached 17.0 GB, over the 16.0 GB limit, while');
@@ -531,7 +531,7 @@ describe('formatBreachMessage', () => {
       expect(msg).toContain('excludes compressed and swapped pages');
       expect(msg).toContain(`  - Q (RSS at start ${startBytes / GIB}.0 GB, running 1.0 s)`);
       expect(msg).not.toContain('since start');
-      expect(msg).not.toContain('not attributable');
+      expect(msg).not.toContain('RSS was already');
       expect(msg).not.toContain('process memory');
     }
   });
