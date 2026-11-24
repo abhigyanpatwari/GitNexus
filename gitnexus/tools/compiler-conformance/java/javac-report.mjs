@@ -13,12 +13,16 @@ export function javacReports(fixtures) {
     dir,
     [...(families ?? ['*']), ...(constructors ? ['<init>'] : [])].join(','),
   ]);
-  const output = execFileSync(java, [oracle, ...args], {
+  const options = fixtures.some((fixture) => fixture.diagnostics)
+    ? ['-Dgitnexus.conformance.reportDiagnostics=true']
+    : [];
+  const output = execFileSync(java, [...options, oracle, ...args], {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
   });
   const reports = fixtures.map(() => ({
     producer: 'javac',
+    diagnostics: {},
     sites: [],
     edges: [],
     memberReferences: [],
@@ -41,7 +45,10 @@ export function javacReports(fixtures) {
     const [fixture, kind] = read(2);
     const report = reports[fixture];
     assert.ok(report, 'Unknown javac fixture ' + fixture);
-    if (kind === 'reference') {
+    if (kind === 'diagnostic') {
+      const [code] = read(1);
+      report.diagnostics[code] = (report.diagnostics[code] ?? 0) + 1;
+    } else if (kind === 'reference') {
       const [targetKind, file, start, end, from, to] = read(6);
       assert.ok(
         targetKind === 'Method' || targetKind === 'Constructor',
@@ -82,6 +89,13 @@ export function javacReports(fixtures) {
         report.sites.push(site);
       }
     }
+  }
+  for (const [i, report] of reports.entries()) {
+    assert.deepEqual(
+      report.diagnostics,
+      fixtures[i].diagnostics ?? {},
+      'javac diagnostics for ' + fixtures[i].dir,
+    );
   }
   return reports;
 }

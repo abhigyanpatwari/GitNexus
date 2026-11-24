@@ -47,15 +47,19 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                 var units = task.parse();
                 task.analyze();
                 var errors = new ArrayList<Diagnostic<? extends JavaFileObject>>();
+                var oracle = new OverloadOracle(i / 2, root, Set.of(args[i + 1].split(",")),
+                        Trees.instance(task), task.getElements(), task.getTypes(), errors);
                 for (var error : diagnostics.getDiagnostics()) {
                     if (error.getKind() != Diagnostic.Kind.ERROR) continue;
                     if (rejection(error) == null) {
-                        throw new IllegalStateException(error.toString());
+                        if (!Boolean.getBoolean("gitnexus.conformance.reportDiagnostics")) {
+                            throw new IllegalStateException(error.toString());
+                        }
+                        oracle.emit("diagnostic", error.getCode());
+                    } else {
+                        errors.add(error);
                     }
-                    errors.add(error);
                 }
-                var oracle = new OverloadOracle(i / 2, root, Set.of(args[i + 1].split(",")),
-                        Trees.instance(task), task.getElements(), task.getTypes(), errors);
                 for (var unit : units) oracle.scan(unit, null);
                 if (!errors.isEmpty()) throw new IllegalStateException("Unmatched " + errors);
             }

@@ -48,28 +48,6 @@ async function verifyJavaHeritageResolution() {
     }
   }
 }
-async function verifyJavaQualifiedBaseHeritageResolution1956U2() {
-  let result;
-  result = await runPipelineFromRepo(path.join(FIXTURES, 'java-qualified-base'), () => {});
-  // emits exactly one EXTENDS per class, tail-resolved (no spurious prefix edge)
-  {
-    const extends_ = getRelationships(result, 'EXTENDS');
-    assert.deepEqual(edgeSet(extends_), [
-      'Plain \u2192 Base',
-      'Service \u2192 Box',
-      'Two \u2192 Box',
-    ]);
-  }
-  // emits exactly one IMPLEMENTS per class, tail-resolved (no spurious prefix edge)
-  {
-    const implements_ = getRelationships(result, 'IMPLEMENTS');
-    assert.deepEqual(edgeSet(implements_), [
-      'Plain \u2192 IBar',
-      'Service \u2192 IFoo',
-      'Two \u2192 IFoo',
-    ]);
-  }
-}
 async function verifyJavaAmbiguousSymbolResolution() {
   let result;
   result = await runPipelineFromRepo(path.join(FIXTURES, 'java-ambiguous'), () => {});
@@ -1434,7 +1412,6 @@ async function verifyJavaReceiverUnresolvedDropsNameTheProgramBoundary() {
 }
 export async function checkGraphContracts() {
   await verifyJavaHeritageResolution();
-  await verifyJavaQualifiedBaseHeritageResolution1956U2();
   await verifyJavaAmbiguousSymbolResolution();
   await verifyJavaCallResolutionWithArityFiltering();
   await verifyJavaSameModulePriorityForDuplicateFQNs();

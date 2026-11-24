@@ -211,7 +211,8 @@
   "lang-resolution/java-parent-resolution": 0,
   "lang-resolution/java-protected-overloads": 14,
   "lang-resolution/java-qualified-base": {
-    "compilerExclusion": "Refers to an absent base package."
+    "sites": 0,
+    "diagnostics": { "compiler.err.doesnt.exist": 4 }
   },
   "lang-resolution/java-qualified-constructor": {
     "sites": 0,
