@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { compareCodeUnits } from '../compare.mjs';
 
 const typeLabels = new Set(['Class', 'Enum', 'Interface', 'Record', 'Annotation']);
 
@@ -38,7 +39,9 @@ export function compareJavaStructure(reference, result, typeIdentity, methods) {
       actual.push(`Method ${node.properties.filePath}#${node.properties.name}`);
   }
   assert.ok(expected.length, 'javac produced no source declarations');
-  assert.deepEqual(actual.sort(), expected.sort(), 'Java source declarations');
+  actual.sort(compareCodeUnits);
+  expected.sort(compareCodeUnits);
+  assert.deepEqual(actual, expected, 'Java source declarations');
   const heritage = [];
   for (const relation of ['EXTENDS', 'IMPLEMENTS']) {
     for (const edge of result.graph.iterRelationshipsByType(relation)) {

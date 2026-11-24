@@ -6,6 +6,12 @@ function text(value) {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+// Use UTF-16 code-unit order so diagnostics and fixture identities are stable across locales.
+export function compareCodeUnits(left, right) {
+  if (left === right) return 0;
+  return left < right ? -1 : 1;
+}
+
 function position(value) {
   assert.ok(
     typeof value === 'string' && /^[1-9]\d*:(?:0|[1-9]\d*)$/.test(value),
@@ -62,7 +68,10 @@ export function compareReports(expected, actual) {
     if (!reference.has(key))
       differences.push(`Unexpected in ${actual.producer ?? 'actual'}: ${display}`);
   }
-  if (differences.length) throw new Error(differences.sort().join('\n'));
+  if (differences.length) {
+    differences.sort(compareCodeUnits);
+    throw new Error(differences.join('\n'));
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

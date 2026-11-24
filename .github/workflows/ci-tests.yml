@@ -37,7 +37,7 @@ jobs:
         run: npm run test:conformance:java
       - name: Ensure FTS + VECTOR extensions installed
         working-directory: gitnexus
-        run: npx tsx scripts/ensure-fts.ts
+        run: node --import tsx scripts/ensure-fts.ts
       - name: Download frozen timing snapshot
         uses: ./.github/actions/download-test-artifact
         with:
@@ -49,7 +49,7 @@ jobs:
           SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
           BLOB: .vitest/blob/java-${{ matrix.shard }}.json
         run: >-
-          npx vitest run test/java/
+          npm test -- test/java/
           --shard="$SHARD" --reporter=default --reporter=blob --outputFile.blob="$BLOB"
           --coverage --coverage.thresholds.lines=0 --coverage.thresholds.functions=0
           --coverage.thresholds.branches=0 --coverage.thresholds.statements=0
@@ -70,7 +70,7 @@ jobs:
         if: ${{ always() && matrix.shard == 1 }}
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: execution-java-benchmarks
+          name: execution-java-benchmarks-${{ matrix.shard }}
           path: gitnexus/java-benchmarks.json
 
   file-result-reuse-benchmark:
@@ -487,7 +487,7 @@ jobs:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
           GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: >-
-          npx vitest run test/unit/ test/integration/
+          npm test -- test/unit/ test/integration/
           --shard="$SHARD"
           --reporter=default
           --reporter=blob

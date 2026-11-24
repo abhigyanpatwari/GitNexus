@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
-import { compareReports } from '../compare.mjs';
+import { compareCodeUnits, compareReports } from '../compare.mjs';
 import { gitNexusCallReport } from '../gitnexus-report.mjs';
 import { writeConversionMatrix } from './conversion-matrix.mjs';
 import { javacReports } from './javac-report.mjs';
@@ -17,7 +17,7 @@ const projects = globSync(
   { cwd: root },
 ).map((file) => file.replaceAll('\\', '/').split('/').slice(0, 2).join('/'));
 const fixtures = [];
-for (const name of [...new Set([...Object.keys(corpus), ...projects])].sort()) {
+for (const name of [...new Set([...Object.keys(corpus), ...projects])].sort(compareCodeUnits)) {
   const config = corpus[name];
   if (config?.vitestOnly) continue;
   fixtures.push({
@@ -39,9 +39,10 @@ function checkDifferences(fixture, differences) {
   const expected = readFileSync(file, 'utf8')
     .split(/\r?\n/)
     .filter((line) => line && !line.startsWith('#'))
-    .sort();
+    .sort(compareCodeUnits);
   assert.ok(expected.length, 'Empty known-differences file');
-  assert.deepEqual(differences.sort(), expected, 'Recorded compiler differences changed');
+  differences.sort(compareCodeUnits);
+  assert.deepEqual(differences, expected, 'Recorded compiler differences changed');
   console.log(fixture.name + ' known differences:\n  ' + differences.join('\n  '));
 }
 

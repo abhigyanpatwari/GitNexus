@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,15 +25,22 @@ export function runSkillsCli(cwd: string, timeoutMs = 45000) {
  * Returns the tmp directory path.
  */
 export function createFixtureRepo(prefix: string, files: Record<string, string>): string {
+  // Use an absolute executable so the fixture directory cannot shadow Git.
+  const git =
+    process.env.GIT_EXECUTABLE ??
+    (process.platform === 'win32'
+      ? path.join(process.env.ProgramFiles ?? 'C:/Program Files', 'Git', 'cmd', 'git.exe')
+      : '/usr/bin/git');
+  if (!path.isAbsolute(git)) throw new Error('GIT_EXECUTABLE must be an absolute path');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skills-e2e-${prefix}-`));
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = path.join(tmpDir, relPath);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
     fs.writeFileSync(fullPath, content, 'utf-8');
   }
-  spawnSync('git', ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['add', '-A'], { cwd: tmpDir, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'initial commit'], {
+  execFileSync(git, ['init'], { cwd: tmpDir, stdio: 'pipe' });
+  execFileSync(git, ['add', '-A'], { cwd: tmpDir, stdio: 'pipe' });
+  execFileSync(git, ['commit', '-m', 'initial commit'], {
     cwd: tmpDir,
     stdio: 'pipe',
     env: {

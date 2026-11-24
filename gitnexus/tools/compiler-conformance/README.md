@@ -60,7 +60,7 @@ The GitNexus adapter uses recorded resolution outcomes and call edges with exact
 
 To add a call-resolution case, put a self-contained Java project under `gitnexus/test/fixtures/compiler-conformance/java-<case>/`. Write the Java source exactly as it should be analyzed. The runner discovers the directory and sends the same source to JDK 21 and the production GitNexus ingestion pipeline. Each project gets an isolated javac task in one JVM. A single project can exercise several distinct calls on the same line.
 
-Run the command from a built `gitnexus/` checkout.
+Set `JAVA_HOME` to the absolute path of your JDK 21 installation and run the command from a built `gitnexus/` checkout.
 
 ```sh
 npm run test:conformance:java

@@ -1,15 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Return one reference report per fixture, in input order, using one JVM. */
 export function javacReports(fixtures) {
+  const javaHome = process.env.JAVA_HOME;
+  assert.ok(javaHome && path.isAbsolute(javaHome), 'Set JAVA_HOME to an absolute JDK 21 path');
+  const java = path.join(javaHome, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
   const oracle = fileURLToPath(new URL('./OverloadOracle.java', import.meta.url));
   const args = fixtures.flatMap(({ dir, families, constructors }) => [
     dir,
     [...(families ?? ['*']), ...(constructors ? ['<init>'] : [])].join(','),
   ]);
-  const output = execFileSync('java', [oracle, ...args], {
+  const output = execFileSync(java, [oracle, ...args], {
     encoding: 'utf8',
     maxBuffer: 32 * 1024 * 1024,
   });
