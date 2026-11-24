@@ -1,4 +1,27 @@
 {
+  "../compiler-conformance/java-colliding-type-bindings": [
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": "handle",
+      "fromFile": "p/Impl.java",
+      "projection": "id",
+      "exact": ["Method:p/Handler.java:p.Handler.handle#0"]
+    },
+    {
+      "type": "METHOD_IMPLEMENTS",
+      "from": "handle",
+      "fromFile": "q/Imported.java",
+      "projection": "id",
+      "exact": ["Method:p/Handler.java:p.Handler.handle#0"]
+    },
+    {
+      "type": "CALLS",
+      "from": "run",
+      "reason": "interface-dispatch",
+      "projection": "id",
+      "exact": ["Method:p/Impl.java:Impl.handle#0", "Method:q/Imported.java:Imported.handle#0"]
+    }
+  ],
   "../compiler-conformance/java-field-dispatch-counts": [
     {
       "type": "CALLS",

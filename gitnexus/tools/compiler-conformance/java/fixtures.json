@@ -10,6 +10,10 @@
     }
   },
   "compiler-conformance/java-callback-qualified-lookalike": 14,
+  "compiler-conformance/java-colliding-type-bindings": {
+    "sites": 1,
+    "constructors": true
+  },
   "compiler-conformance/java-contextual-declaration-identity": 3,
   "compiler-conformance/java-contextual-local-element-identity": 2,
   "compiler-conformance/java-copied-method-reference": {
@@ -87,6 +91,11 @@
   },
   "compiler-conformance/java-sam-split-package": 8,
   "compiler-conformance/java-static-wildcard-inner-type": 2,
+  "compiler-conformance/java-varargs-constructor-targets": {
+    "sites": 0,
+    "rejectedConstructors": ["ambiguous", "inapplicable"],
+    "constructors": true
+  },
   "compiler-conformance/java-varargs-overload-identity": 7,
   "compiler-conformance/java-worker-qualified-names": {
     "sites": 0

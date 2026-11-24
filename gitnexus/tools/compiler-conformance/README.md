@@ -76,6 +76,8 @@ All Java source fixtures run through this command, including inline snippets and
 
 Fixtures with existing disagreements record them in `known-differences.txt` alongside the source. Two shared projects point to difference files from the manifest to preserve their benchmark input trees. CI prints the exact differences and fails if one appears, changes, or disappears unexpectedly. To fail on every disagreement, including the recorded ones, run `npm run test:conformance:java -- --strict`.
 
+Windows and macOS run `node tools/compiler-conformance/java/check-products.mjs --platform` from the GitNexus package. This checks rename, worker-cache persistence, the parser ABI, and projects with non-ASCII paths on each platform. The native runner fails if a selected file has no passing tests or contains a skipped case, a todo, or an empty suite.
+
 To compare another analyzer against javac, run the following from this directory. Omit the method names to report all source methods. Pass `'*' '<init>'` to include constructors in the Java report.
 
 ```sh

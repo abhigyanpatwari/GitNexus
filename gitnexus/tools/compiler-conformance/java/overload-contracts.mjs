@@ -1,7 +1,6 @@
 import { compareCodeUnits } from '../compare.mjs';
 import { copyResolutionProject } from './graph-observations.mjs';
 import assert from 'node:assert/strict';
-import { isDeepStrictEqual } from 'node:util';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -107,17 +106,16 @@ async function verifyJavaCompileTimeOverloadFamilies() {
       ['staticQualified', 'staticChoice', 'inapplicable'],
     ]) {
       assert.deepEqual(targets(result, caller, method), []);
+      const reason = status === 'ambiguous' ? 'member-lookup-ambiguous' : `overload-${status}`;
       assert.ok(
-        ((items) =>
-          items.some(
-            (item) =>
-              item?.kind === 'suppressed' &&
-              item?.name === method &&
-              isDeepStrictEqual(
-                item?.reason,
-                status === 'ambiguous' ? 'member-lookup-ambiguous' : `overload-${status}`,
-              ),
-          ))(getResolutionOutcomes(result)),
+        getResolutionOutcomes(result).some(
+          (outcome) =>
+            outcome.kind === 'suppressed' &&
+            outcome.name === method &&
+            outcome.reason === reason &&
+            outcome.callerId?.includes(`.${caller}#`),
+        ),
+        `${caller} must record ${reason} for ${method}`,
       );
     }
     // The inherited field takes precedence over the enclosing field.

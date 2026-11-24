@@ -1657,6 +1657,7 @@ export function runScopeResolution(
           resolveQualifiedFreeCall: provider.resolveQualifiedFreeCall,
           qualifiedFreeCallOutranksNameClaim: provider.qualifiedFreeCallOutranksNameClaim,
           resolveUnqualifiedCall: provider.resolveUnqualifiedCall,
+          resolveConstructorCall: provider.resolveConstructorCall,
           selectedCalls,
           onSelectedCall,
           conversionRankFn: provider.conversionRankFn,

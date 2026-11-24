@@ -1823,6 +1823,16 @@ export interface ScopeResolver {
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
 
+  /** Select among explicit constructors once the written type has been resolved.
+   * A rejection is authoritative. Undefined keeps the shared arity-based lookup. */
+  readonly resolveConstructorCall?: (
+    owner: SymbolDefinition,
+    constructors: readonly SymbolDefinition[],
+    site: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+  ) => ReceiverMemberResolution | undefined;
+
   /** Find an implementation of an already selected compile-time signature.
    * This is override matching, not overload applicability at a runtime subtype.
    * Undefined means no matching implementation; unknown retains a boundary. */

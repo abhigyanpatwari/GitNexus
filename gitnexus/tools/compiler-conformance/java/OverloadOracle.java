@@ -147,7 +147,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
             if (target == null) continue; // Platform and dependency declarations have no fixture source.
             var from = file(unit) + "#" + binary;
             var to = file(target.getCompilationUnit()) + "#" + elements.getBinaryName(parent);
-            var relation = parent.getKind().isInterface() ? "IMPLEMENTS" : "EXTENDS";
+            var relation = element.getKind().isInterface() || !parent.getKind().isInterface() ? "EXTENDS" : "IMPLEMENTS";
             emit("heritage", relation, from, to);
         }
         return super.visitClass(type, null);
@@ -173,6 +173,17 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         var call = getCurrentPath();
         var unit = call.getCompilationUnit();
         if (!families.contains("<init>") || trees.getSourcePositions().getEndPosition(unit, call.getLeaf()) < 0) return;
+        var tree = call.getLeaf();
+        var select = tree instanceof MethodInvocationTree invocation ? invocation.getMethodSelect() : tree;
+        var diagnostic = invocationError(unit, tree, select);
+        if (diagnostic.isPresent()) {
+            var error = diagnostic.get();
+            errors.remove(error);
+            emit("rejected-constructor", file(unit),
+                    position(unit, trees.getSourcePositions().getStartPosition(unit, tree)),
+                    rejection(error));
+            return;
+        }
         var constructor = trees.getElement(call);
         var target = constructor == null ? null : trees.getPath(constructor);
         if (target == null) return;
@@ -214,8 +225,11 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     }
 
     private Optional<Diagnostic<? extends JavaFileObject>> callError(CompilationUnitTree unit, MethodInvocationTree call) {
+        return invocationError(unit, call, call.getMethodSelect());
+    }
+
+    private Optional<Diagnostic<? extends JavaFileObject>> invocationError(CompilationUnitTree unit, Tree call, Tree select) {
         var positions = trees.getSourcePositions();
-        var select = call.getMethodSelect();
         return errors.stream().filter(d -> d.getSource().equals(unit.getSourceFile())
                 && d.getStartPosition() == positions.getStartPosition(unit, select)
                 && (d.getEndPosition() == positions.getEndPosition(unit, select)

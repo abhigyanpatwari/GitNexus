@@ -25,6 +25,7 @@ export function javacReports(fixtures) {
     declarations: [],
     heritage: [],
     constructors: [],
+    rejectedConstructors: [],
   }));
   // Paths and signatures can contain tabs and newlines.
   const fields = output.split('\0');
@@ -50,6 +51,9 @@ export function javacReports(fixtures) {
       // GitNexus publishes member references as aggregate CALLS edges.
       const edges = targetKind === 'Constructor' ? report.constructors : report.edges;
       edges.push({ from, to });
+    } else if (kind === 'rejected-constructor') {
+      const [file, start, status] = read(3);
+      report.rejectedConstructors.push({ file, start, status });
     } else if (kind === 'constructor') {
       const [from, to] = read(2);
       report.constructors.push({ from, to });

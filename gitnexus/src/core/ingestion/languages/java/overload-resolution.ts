@@ -1329,6 +1329,44 @@ function receiverInventory(
   };
 }
 
+export function resolveJavaConstructorCall(
+  owner: SymbolDefinition,
+  constructors: readonly SymbolDefinition[],
+  site: ReferenceSite,
+  scopes: ScopeResolutionIndexes,
+  model: SemanticModel,
+): ReceiverMemberResolution | undefined {
+  if (constructors.length < 2) return undefined;
+  const candidates = new Map(constructors.map((def) => [def.nodeId, def]));
+  if (candidates.size < 2) return undefined;
+  const filePath = scopes.scopeTree.getScope(site.inScope)?.filePath;
+  const call =
+    filePath === undefined ? undefined : getJavaOverloadCall(filePath, site.atRange, '<init>');
+  const candidateIds = [...candidates.keys()];
+  if (filePath === undefined || !call?.constructorForm)
+    return { kind: 'unknown', candidateIds, candidateSetComplete: false };
+  const state = stateFor(scopes, model);
+  const visible: JavaOverloadCandidate<SymbolDefinition>[] = [];
+  for (const constructor of candidates.values()) {
+    // Outside the declaring package a protected constructor can be invoked
+    // by a super invocation or anonymous class creation (JLS 6.6.2.2).
+    const protectedAccess =
+      methodFact(constructor, state)?.modifiers.includes('protected') &&
+      packageName(constructor.filePath) !== packageName(filePath);
+    const access = protectedAccess
+      ? call.constructorForm === 'super' || call.constructorForm === 'anonymous'
+        ? 'yes'
+        : 'no'
+      : eligible(constructor, owner, site, call, state);
+    if (access === 'unknown') return { kind: 'unknown', candidateIds, candidateSetComplete: false };
+    if (access === 'yes') visible.push(normalizedCandidate(constructor, state));
+  }
+  const decision = selectCallOverload(visible, call, filePath, site, state);
+  return decision.kind === 'resolved'
+    ? { kind: 'resolved', definition: decision.definition }
+    : { kind: decision.kind, candidateIds, candidateSetComplete: true };
+}
+
 function selectCallOverload(
   candidates: readonly JavaOverloadCandidate<SymbolDefinition>[],
   call: JavaOverloadCallFact,

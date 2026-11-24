@@ -68,7 +68,7 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
       });
     }
   }
-  // resolves all getter and setter calls to their owner in a %s fixture
+  // Getters and setters resolve to their owner in both same-file and cross-file layouts.
   for (const layout of ['same-file', 'cross-file']) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-pair-'));
     try {

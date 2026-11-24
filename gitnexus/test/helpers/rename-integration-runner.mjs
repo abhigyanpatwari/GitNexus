@@ -170,6 +170,17 @@ try {
   const request = { repo, symbol_uid: target.id, new_name: specification.newName };
   const preview = await backend.callTool('rename', { ...request, dry_run: true });
   assert.equal(preview.status, specification.expect.status, JSON.stringify(preview));
+  for (const alternate of specification.alternateTargets ?? []) {
+    const symbol = select(graph.nodes, alternate);
+    assert.notEqual(symbol.id, target.id);
+    const other = await backend.callTool('rename', {
+      ...request,
+      symbol_uid: symbol.id,
+      dry_run: true,
+    });
+    assert.equal(other.status, preview.status, JSON.stringify(other));
+    assert.deepEqual(other.changes, preview.changes);
+  }
   await assertSources(before);
   const applied =
     specification.expect.status === 'success'

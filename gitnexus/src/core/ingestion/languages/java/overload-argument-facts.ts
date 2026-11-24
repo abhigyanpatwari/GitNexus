@@ -43,6 +43,7 @@ export interface JavaOverloadMethodFact {
 
 export interface JavaOverloadCallFact {
   readonly name: string;
+  readonly constructorForm?: 'new' | 'anonymous' | 'super' | 'this';
   readonly range: Range;
   readonly arguments: readonly JavaArgumentFact[];
   readonly receiver?: JavaArgumentFact;
@@ -372,7 +373,12 @@ export function captureJavaOverloadFacts(
         });
       }
     }
-    if (node.type === 'method_invocation') callNodes.push(node);
+    if (
+      node.type === 'method_invocation' ||
+      node.type === 'object_creation_expression' ||
+      node.type === 'explicit_constructor_invocation'
+    )
+      callNodes.push(node);
     if (
       node.type === 'formal_parameter' ||
       node.type === 'spread_parameter' ||
@@ -686,6 +692,26 @@ export function captureJavaOverloadFacts(
     }
   };
   const calls = callNodes.map((node): JavaOverloadCallFact => {
+    const args = (node.childForFieldName('arguments')?.namedChildren ?? [])
+      .filter((arg) => arg.type !== 'line_comment' && arg.type !== 'block_comment')
+      .map((arg) => expression(arg));
+    if (node.type !== 'method_invocation') {
+      let constructorForm: JavaOverloadCallFact['constructorForm'];
+      if (node.type === 'explicit_constructor_invocation') {
+        const keyword = node.childForFieldName('constructor')?.type;
+        if (keyword === 'super' || keyword === 'this') constructorForm = keyword;
+      } else {
+        constructorForm = node.lastNamedChild?.type === 'class_body' ? 'anonymous' : 'new';
+      }
+      return {
+        name: '<init>',
+        constructorForm,
+        range: rangeOf(node),
+        arguments: args,
+        receiverIsValue: false,
+        staticContext: false,
+      };
+    }
     const receiver = node.childForFieldName('object');
     let directReceiver = receiver;
     while (
@@ -707,9 +733,7 @@ export function captureJavaOverloadFacts(
     return {
       name: node.childForFieldName('name')?.text ?? '',
       range: rangeOf(node),
-      arguments: (node.childForFieldName('arguments')?.namedChildren ?? [])
-        .filter((arg) => arg.type !== 'line_comment' && arg.type !== 'block_comment')
-        .map((arg) => expression(arg)),
+      arguments: args,
       ...(receiver === null
         ? {}
         : { receiver: expression(receiver), receiverSpelling: receiver.text }),
@@ -795,6 +819,8 @@ export function isJavaOverloadFileFacts(value: unknown): value is JavaOverloadFi
         call !== null &&
         typeof call === 'object' &&
         typeof call.name === 'string' &&
+        (call.constructorForm === undefined ||
+          ['new', 'anonymous', 'super', 'this'].includes(call.constructorForm)) &&
         range(call.range) &&
         typeof call.receiverIsValue === 'boolean' &&
         typeof call.staticContext === 'boolean' &&

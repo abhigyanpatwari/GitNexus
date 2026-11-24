@@ -19,6 +19,7 @@ import {
   namesAtScope,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
+import { getJavaPackageFact } from './package-facts.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { createChainFollower } from '../../scope-resolution/passes/imported-return-types.js';
@@ -69,6 +70,7 @@ import {
 } from './capture-side-channel.js';
 import { clearJavaPackageFacts } from './package-facts.js';
 import {
+  resolveJavaConstructorCall,
   resolveJavaReceiverMember,
   resolveJavaSelectedMethodImplementation,
   resolveJavaUnqualifiedCall,
@@ -115,7 +117,23 @@ const javaScopeResolver: ScopeResolver = {
 
   buildMro: buildJavaMro,
 
-  populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateOwners: (parsed: ParsedFile) => {
+    const pkg = getJavaPackageFact(parsed.filePath);
+    if (pkg?.status === 'known' && pkg.packageName) {
+      const prefix = pkg.packageName + '.';
+      for (const def of parsed.localDefs) {
+        if (def.namespacePrefix || !isClassLike(def.type) || !def.qualifiedName?.startsWith(prefix))
+          continue;
+        // Java source lookup uses the lexical owner chain. Only the graph ID
+        // for a colliding declaration includes its package.
+        Object.assign(def, {
+          qualifiedName: def.qualifiedName.slice(prefix.length),
+          namespacePrefix: pkg.packageName,
+        });
+      }
+    }
+    populateClassOwnedMembers(parsed);
+  },
   populateWorkspaceReferences: reconcileJavaWorkspaceReferences,
   emitHeritageEdges: emitJavaLombokWorkspaceCorrections,
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
@@ -129,6 +147,7 @@ const javaScopeResolver: ScopeResolver = {
     ),
   resolveUnqualifiedCall: (site, scopes, model) =>
     selectJavaLambdaOverload(resolveJavaUnqualifiedCall(site, scopes, model), site, scopes),
+  resolveConstructorCall: resolveJavaConstructorCall,
   resolveSelectedMethodImplementation: resolveJavaSelectedMethodImplementation,
   receiverMemberLookupCoversAllCalls: true,
   // A producer indexed by trailing subscripts (`make()[0].save()`) is typed

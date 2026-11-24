@@ -1,7 +1,7 @@
 import { compareCodeUnits } from '../../compare.mjs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { runPipelineFromRepo } from '../../../../dist/core/ingestion/pipeline.js';
 import { SPRING_CONFIG_DESCRIPTION } from '../../../../dist/core/ingestion/frameworks/spring/config-bindings.js';
 import { createTempDir } from '../../../../test/helpers/test-db.ts';
@@ -199,6 +199,20 @@ export async function verifyConfig() {
     await repo.cleanup();
   }
 }
+async function analyzeConditionFixture() {
+  const temp = await createTempDir();
+  try {
+    await cp(springProject('conditions'), temp.dbPath, { recursive: true });
+    const file = path.join(temp.dbPath, 'src/main/java/com/example/SpringConditions.java');
+    const template = await readFile(file, 'utf8');
+    const source = template.replace('{RLO}', '\u202e').replace('{ZWSP}', '\u200b');
+    assert.ok(source.includes('prod\u202e') && source.includes('staging\u200b'));
+    await writeFile(file, source);
+    return await runPipelineFromRepo(temp.dbPath, () => {}, { skipGraphPhases: true });
+  } finally {
+    await temp.cleanup();
+  }
+}
 export async function verifyConditionals() {
   // Spring profiles, conditionals, and auto-configuration pipeline (#2415)
 
@@ -215,10 +229,7 @@ export async function verifyConditionals() {
         reason: edge.reason,
       }));
   };
-  const dir = springProject('conditions');
-  const result = await runPipelineFromRepo(dir, () => {}, {
-    skipGraphPhases: true,
-  });
+  const result = await analyzeConditionFixture();
   const nodes = [...result.graph.iterNodes()];
   const conditions = [...result.graph.iterRelationshipsByType('CONDITIONAL_ON')];
   const declarations = [...result.graph.iterRelationshipsByType('DECLARES')]; // captures Java and Kotlin profile gates as explicit unknown-activation evidence

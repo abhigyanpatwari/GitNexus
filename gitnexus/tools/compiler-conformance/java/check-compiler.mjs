@@ -57,6 +57,13 @@ try {
   for (const [i, fixture] of fixtures.entries()) {
     try {
       const ref = qualifiedJavacReport(references[i]);
+      if (fixture.rejectedConstructors) {
+        assert.deepEqual(
+          ref.rejectedConstructors.map((site) => site.status).sort(compareCodeUnits),
+          [...fixture.rejectedConstructors].sort(compareCodeUnits),
+          'javac constructor rejections',
+        );
+      }
       if (fixture.sites !== undefined)
         assert.equal(ref.sites.length, fixture.sites, 'javac call-site count');
       if (fixture.memberReferences !== undefined)
@@ -86,7 +93,7 @@ try {
         javaTypeIdentity,
         fixture.methods !== false,
       );
-      if (fixture.constructors) compareConstructors(ref, pipeline.graph, javaTypeIdentity);
+      if (fixture.constructors) compareConstructors(ref, pipeline, javaTypeIdentity);
       const actual = gitNexusCallReport(pipeline, {
         names:
           fixture.families ??

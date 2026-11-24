@@ -40,8 +40,20 @@ export function compareJavaStructure(reference, result, typeIdentity, methods) {
       heritage.push(`${relation} ${from} -> ${to}`);
     }
   }
+  const interfaces = new Set(
+    reference.declarations
+      .filter((declaration) => declaration.kind === 'Interface')
+      .map(({ file, qualifiedName }) => file + '#' + qualifiedName),
+  );
   const expectedEdges = new Set(
-    reference.heritage.map(({ relation, from, to }) => `${relation} ${from} -> ${to}`),
+    reference.heritage.map(({ relation, from, to }) => {
+      if (interfaces.has(from)) {
+        assert.equal(relation, 'EXTENDS', 'Java interfaces extend their parent interfaces');
+        // The graph labels a relationship to an interface by the target kind.
+        return `IMPLEMENTS ${from} -> ${to}`;
+      }
+      return `${relation} ${from} -> ${to}`;
+    }),
   );
   const actualEdges = new Set(heritage);
   assert.equal(actualEdges.size, heritage.length, 'Duplicate source heritage edge');
@@ -55,7 +67,22 @@ export function compareJavaStructure(reference, result, typeIdentity, methods) {
   ];
 }
 
-export function compareConstructors(reference, graph, typeIdentity) {
+export function compareConstructors(reference, { graph, resolutionOutcomes }, typeIdentity) {
+  for (const { file, start, status } of reference.rejectedConstructors) {
+    const matches = resolutionOutcomes.filter(
+      (site) =>
+        site.filePath === file &&
+        (!site.siteKind || site.siteKind === 'call') &&
+        site.range &&
+        start === site.range.startLine + ':' + site.range.startCol,
+    );
+    const reason = status === 'ambiguous' ? 'member-lookup-ambiguous' : 'overload-inapplicable';
+    assert.deepEqual(
+      matches.map((site) => [site.kind, site.reason]),
+      [['suppressed', reason]],
+      'Rejected constructor at ' + file + '#' + start,
+    );
+  }
   const constructors = new Map();
   for (const node of graph.nodes) {
     if (node.label !== 'Constructor') continue;

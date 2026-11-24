@@ -1,6 +1,6 @@
 import type { ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
 import { isJvmSourceVisible } from '../jvm/source-visibility.js';
-import { JAVA_LANG_TYPE_NAMES } from './java-lang-types.js';
+import { platformPackageHasType } from './platform-packages.js';
 import type { JavaWorkspaceTypeInventory, TypeEntry } from './lombok-workspace-proof.js';
 import {
   getJavaOverloadFacts,
@@ -11,6 +11,24 @@ import { eraseJavaTypeArguments, JAVA_QUALIFIED_NAME, stripGaps } from './type-s
 
 const qualifiedName = new RegExp('^' + JAVA_QUALIFIED_NAME + '$', 'u');
 
+const namesByMembers = new WeakMap<readonly TypeEntry[], ReadonlyMap<string, TypeEntry[]>>();
+
+function membersNamed(members: readonly TypeEntry[], name: string): TypeEntry[] {
+  let index = namesByMembers.get(members);
+  if (!index) {
+    const byName = new Map<string, TypeEntry[]>();
+    for (const entry of members) {
+      const key = entry.fact.simpleName;
+      const entries = byName.get(key);
+      if (entries) entries.push(entry);
+      else byName.set(key, [entry]);
+    }
+    namesByMembers.set(members, byName);
+    index = byName;
+  }
+  return index.get(name) ?? [];
+}
+
 /** A package contains top-level declarations. Subsequent segments must be
  * actual members of the type that precedes them. */
 function namedTypes(written: string, inventory: JavaWorkspaceTypeInventory): TypeEntry[] {
@@ -20,9 +38,12 @@ function namedTypes(written: string, inventory: JavaWorkspaceTypeInventory): Typ
     let types = inventory.packageTypes.get(parts.slice(0, i).join('.'))?.get(parts[i]!);
     if (types === undefined) continue;
     for (const member of parts.slice(i + 1))
-      types = types.flatMap((type) =>
-        type.members.filter((child) => child.fact.simpleName === member),
-      );
+      types = types.flatMap((type) => {
+        const declared = membersNamed(type.members, member);
+        if (declared.length) return declared;
+        const inherited = inventory.namesOf(type);
+        return inherited.unknown ? [] : membersNamed(inherited.members, member);
+      });
     result.push(...types);
   }
   return result;
@@ -47,7 +68,7 @@ function headerCanNamePackage(
   return false;
 }
 
-type RootOrigin = 'package' | 'shadowed' | { type: string };
+type RootOrigin = 'package' | 'shadowed' | 'uncertain' | { type: string };
 
 function fileRootOrigin(
   owner: TypeEntry,
@@ -64,18 +85,25 @@ function fileRootOrigin(
   if (single.size > 1) return 'shadowed';
   if (inventory.packageTypes.get(owner.packageName)?.has(root))
     return { type: owner.packageName ? owner.packageName + '.' + root : root };
-  if (JAVA_LANG_TYPE_NAMES.has(root)) return { type: 'java.lang.' + root };
+  let importedType = platformPackageHasType('java.lang', root) ? 'java.lang.' + root : undefined;
   for (const item of owner.facts.imports) {
     if (!item.wildcard) continue;
     const name = stripGaps(item.name);
-    if (
-      item.static
-        ? inventory.staticMemberType(owner, name, root) !== false
-        : (inventory.packageTypes.get(name)?.has(root) ?? true)
-    )
-      return 'shadowed';
+    if (item.static) {
+      const member = inventory.staticMemberType(owner, name, root);
+      if (member === true) return 'shadowed';
+      if (member === 'uncertain') return 'uncertain';
+      continue;
+    }
+    const source = inventory.packageTypes.get(name);
+    const platform = platformPackageHasType(name, root);
+    if (!source && platform === undefined) return 'uncertain';
+    if (!source?.has(root) && !platform) continue;
+    const candidate = name + '.' + root;
+    if (importedType && candidate !== importedType) return 'uncertain';
+    importedType = candidate;
   }
-  return 'package';
+  return importedType ? { type: importedType } : 'package';
 }
 
 function sharesTopLevelDeclaration(member: TypeEntry, owner: TypeEntry): boolean {
@@ -161,16 +189,17 @@ export function bindJavaQualifiedHeritage(
         const dot = written.indexOf('.');
         if (dot < 0 || !written.endsWith('.' + site.name) || !qualifiedName.test(written)) continue;
         const root = written.slice(0, dot);
+        if (!headerCanNamePackage(owner, root, file.moduleScope, inventory)) continue;
         let origin = fileRoots.get(root);
         if (origin === undefined) {
           origin = fileRootOrigin(owner, root, inventory);
           fileRoots.set(root, origin);
         }
-        if (
-          origin === 'shadowed' ||
-          !headerCanNamePackage(owner, root, file.moduleScope, inventory)
-        )
+        if (origin === 'uncertain') {
+          replacements.set(site, { ...site, unresolvedInheritanceBase: true });
           continue;
+        }
+        if (origin === 'shadowed') continue;
         // An implicitly imported type shadows the workspace package even when
         // no source declaration models the platform type's members (JLS 6.5.2).
         const qualified = origin === 'package' ? written : origin.type + written.slice(dot);
@@ -181,9 +210,8 @@ export function bindJavaQualifiedHeritage(
         }
         if (candidates.length === 0) {
           if (
-            origin !== 'package' &&
-            origin.type.includes('.') &&
-            namedTypes(origin.type, inventory).length === 0
+            origin === 'package' ||
+            (origin.type.includes('.') && namedTypes(origin.type, inventory).length === 0)
           )
             replacements.set(site, { ...site, unresolvedInheritanceBase: true });
           continue;
