@@ -28,10 +28,13 @@
  * lowest RSS seen since the last nudge, and at least every
  * `MAX_YIELDS_PER_NUDGE` yields. Measuring from the RSS at the last nudge
  * instead let the bar ratchet up with every nudge (one 6,300-file scan reached
- * 2.3 GB). The cap bounds the dead trees between nudges to 128 parses where
- * RSS cannot show them, for example after glibc has reused freed memory. On the
- * same scan this peaks at 0.47 GB; four times the files ran about 400 major
- * GCs without a measurable change in wall time.
+ * 2.3 GB). The cap bounds the dead trees between nudges to 128 parses of one
+ * scan where RSS cannot show them, for example after glibc has reused freed
+ * memory. The count is per releaser, so it holds per scan, not across scans: a
+ * scan of fewer than 128 files never reaches it. On the same scan this peaks at
+ * 0.47 GB. Four times the files ran about 400 major GCs; that left wall time
+ * unchanged on a many-core host, but cost about 8 % on a single CPU, where the
+ * GC work competes with parsing.
  *
  * Await the releaser once per parse, at a point where the loop holds no tree.
  */
@@ -49,19 +52,22 @@ const NUDGE_BYTES = 64 * 1024 * 1024;
 /**
  * Under `--zero-fill-buffers`, `Buffer.allocUnsafeSlow` zero-fills too, and a
  * failed allocation aborts the process instead of throwing. `new ArrayBuffer`
- * throws a `RangeError` in both modes, so it is used in that mode.
+ * throws a `RangeError` in both modes, so it is used in that mode. Node accepts
+ * the flag with dashes or underscores, in its arguments and in NODE_OPTIONS.
  */
 const ZERO_FILL_BUFFERS = [
   ...process.execArgv,
   ...(process.env.NODE_OPTIONS ?? '').split(/\s+/),
-].includes('--zero-fill-buffers');
+].some((arg) => arg.replace(/_/g, '-') === '--zero-fill-buffers');
 
 // One per process: every releaser replaces the same held buffer.
 const nudgeState: { held: ArrayBuffer | Buffer | null } = { held: null };
 
 /** Replace the held buffer, so that V8 runs a major GC. May throw if the allocation fails. */
 export function nudgeV8(): void {
-  // Drop the old buffer first, so a replacement never holds two at once.
+  // Drop the old buffer before allocating the new one. Its memory is freed only
+  // by the GC this allocation starts, so both are allocated until then: 128 MB
+  // of address space, none of it touched.
   nudgeState.held = null;
   nudgeState.held = ZERO_FILL_BUFFERS
     ? new ArrayBuffer(NUDGE_BYTES)

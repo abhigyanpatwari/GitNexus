@@ -13,6 +13,30 @@ const RELEASER_SOURCE = fileURLToPath(
   new URL('../../../src/core/tree-sitter/native-tree-release.ts', import.meta.url),
 );
 
+/**
+ * Run an ES module script in a child Node process and return the JSON object it
+ * prints last. The releaser has no imports, so the child loads its source
+ * directly; the script finds the module's file URL in `RELEASER_URL`.
+ */
+function runReleaserChild(
+  script: string,
+  options: { nodeArgs?: string[]; nodeOptions?: string } = {},
+): Record<string, unknown> {
+  const out = execFileSync(
+    process.execPath,
+    [
+      ...(options.nodeArgs ?? []),
+      '--experimental-strip-types',
+      '--no-warnings',
+      '--input-type=module',
+      '-e',
+      `const RELEASER_URL = ${JSON.stringify(pathToFileURL(RELEASER_SOURCE).href)};\n${script}`,
+    ],
+    { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: options.nodeOptions ?? '' } },
+  );
+  return JSON.parse(out.trim().split('\n').at(-1) ?? '{}');
+}
+
 /** Queue a macrotask now and report whether it has run when asked. */
 function macrotaskProbe(): () => boolean {
   let ran = false;
@@ -86,6 +110,17 @@ describe('createTreeReleaser', () => {
     expect(state.nudges).toBe(2);
   });
 
+  it('re-bases the RSS floor after a nudge, so flat RSS does not nudge again at once', async () => {
+    const { state, release } = scriptedReleaser();
+    state.rss += NUDGE_RSS_GROWTH_BYTES + MB;
+    await release();
+    expect(state.nudges).toBe(1);
+    // RSS stays at the new level: measured from the old floor it would still
+    // be over the threshold and nudge on every yield.
+    for (let i = 1; i < MAX_YIELDS_PER_NUDGE; i++) await release();
+    expect(state.nudges).toBe(1);
+  });
+
   it('nudges every MAX_YIELDS_PER_NUDGE yields when RSS does not show the growth', async () => {
     // glibc reuses freed memory without RSS falling, so RSS can stay flat.
     const { state, release } = scriptedReleaser();
@@ -111,9 +146,9 @@ describe('createTreeReleaser', () => {
   it('nudgeV8 makes V8 run a major GC', () => {
     // A child process, so that no other work in the test worker runs major GCs
     // of its own. The module has no imports, so Node loads the source directly.
-    const script = `
+    const { withoutNudge, withNudge } = runReleaserChild(`
       import { PerformanceObserver, constants } from 'node:perf_hooks';
-      const { nudgeV8 } = await import(${JSON.stringify(pathToFileURL(RELEASER_SOURCE).href)});
+      const { nudgeV8 } = await import(RELEASER_URL);
       let majors = 0;
       new PerformanceObserver((list) => {
         for (const e of list.getEntries()) if (e.detail?.kind === constants.NODE_PERFORMANCE_GC_MAJOR) majors += 1;
@@ -135,14 +170,35 @@ describe('createTreeReleaser', () => {
       const withoutNudge = await phase(false);
       const withNudge = await phase(true);
       console.log(JSON.stringify({ withoutNudge, withNudge }));
-    `;
-    const out = execFileSync(
-      process.execPath,
-      ['--experimental-strip-types', '--no-warnings', '--input-type=module', '-e', script],
-      { encoding: 'utf8' },
-    );
-    const { withoutNudge, withNudge } = JSON.parse(out.trim().split('\n').at(-1) ?? '{}');
+    `);
     expect(withoutNudge).toBe(0);
     expect(withNudge).toBeGreaterThan(0);
+  });
+
+  // Under --zero-fill-buffers a failed Buffer.allocUnsafeSlow aborts the process,
+  // so nudgeV8 must use a plain ArrayBuffer there. Node accepts both spellings.
+  it.each([
+    ['no flag', {}, 1],
+    ['--zero-fill-buffers', { nodeArgs: ['--zero-fill-buffers'] }, 0],
+    ['--zero_fill_buffers', { nodeArgs: ['--zero_fill_buffers'] }, 0],
+    ['NODE_OPTIONS=--zero-fill-buffers', { nodeOptions: '--zero-fill-buffers' }, 0],
+    ['NODE_OPTIONS=--zero_fill_buffers', { nodeOptions: '--zero_fill_buffers' }, 0],
+  ])('nudgeV8 picks its allocation for %s', (_label, options, expectedUnsafeAllocations) => {
+    const { unsafeAllocations } = runReleaserChild(
+      `
+      let unsafeAllocations = 0;
+      const allocUnsafeSlow = Buffer.allocUnsafeSlow;
+      // Only the nudge's 64 MB allocation; Node itself makes small ones.
+      Buffer.allocUnsafeSlow = (size) => {
+        if (size === 64 * 1024 * 1024) unsafeAllocations += 1;
+        return allocUnsafeSlow(size);
+      };
+      const { nudgeV8 } = await import(RELEASER_URL);
+      nudgeV8();
+      console.log(JSON.stringify({ unsafeAllocations }));
+    `,
+      options,
+    );
+    expect(unsafeAllocations).toBe(expectedUnsafeAllocations);
   });
 });
