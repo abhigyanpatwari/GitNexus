@@ -60,6 +60,39 @@ test('detects compiler-fixture projects through a directory, URL, or imported fi
     assert.ok(javaFixtureUses(source).length, source);
 });
 
+test('respects loop bindings and restores the filesystem import after each loop', () => {
+  const uses = javaFixtureUses(`
+    import fs from 'node:fs';
+    for (const fs of clients) fs.readFileSync('Element.java');
+    for (let { fs } = client; fs; ) fs.readFileSync('Binding.java');
+    for (const fs in clients) fs.readFileSync('Key.java');
+    for (const client of clients) fs.readFileSync('LoopDisk.java');
+    fs.readFileSync('Disk.java');
+  `);
+  assert.deepEqual(
+    uses.map(({ path }) => path),
+    ['LoopDisk.java', 'Disk.java'],
+  );
+});
+
+test('recognizes explicit filesystem stubs and keeps calls through a partial mock', () => {
+  const read = "import { readFileSync } from 'node:fs'; readFileSync('File.java');";
+  assert.deepEqual(
+    javaFixtureUses(read + "vi.mock('node:fs', () => ({ readFileSync: vi.fn() }));"),
+    [],
+  );
+  assert.deepEqual(
+    javaFixtureUses(read + "vi.mock('node:fs', () => { return { readFileSync: vi.fn() }; });"),
+    [],
+  );
+  const partial =
+    "vi.mock('node:fs', async (original) => ({ ...await original(), writeFileSync: vi.fn() }));";
+  assert.deepEqual(
+    javaFixtureUses(read + partial).map(({ path }) => path),
+    ['File.java'],
+  );
+});
+
 test('allows graph metadata, mocked paths, and file-backed projects in other languages', () => {
   const source = `
     import fs from 'node:fs';

@@ -204,7 +204,7 @@
   "lang-resolution/java-new-expr-chain-call": 1,
   "lang-resolution/java-nullable-receiver": 4,
   "lang-resolution/java-optional-receiver": 4,
-  "lang-resolution/java-overload-dispatch": 3,
+  "lang-resolution/java-overload-dispatch": { "sites": 3, "implementations": 3 },
   "lang-resolution/java-overload-param-types": 2,
   "lang-resolution/java-overload-typed-args": 4,
   "lang-resolution/java-overload-types": 9,

@@ -3,7 +3,7 @@ import { globSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
-import { getBindingIdentifiers, isFunction } from '@babel/types';
+import { getBindingIdentifiers, isFor, isFunction } from '@babel/types';
 
 const fsCalls = new Set([
   'readFile',
@@ -116,9 +116,16 @@ function localBindings(node, outer) {
     }
     return bindings;
   }
-  if (node.type !== 'Program' && node.type !== 'BlockStatement') return outer;
+  let statements;
+  if (node.type === 'Program' || node.type === 'BlockStatement') {
+    statements = node.body;
+  } else if (isFor(node)) {
+    const declaration = node.init ?? node.left;
+    if (declaration?.type !== 'VariableDeclaration' || declaration.kind === 'var') return outer;
+    statements = [declaration];
+  } else return outer;
   const bindings = new Map(outer);
-  for (const statement of node.body) {
+  for (const statement of statements) {
     if (statement.type === 'ImportDeclaration') {
       for (const spec of statement.specifiers)
         bindings.set(spec.local.name, { module: statement.source.value, imported: spec.imported });
@@ -126,8 +133,12 @@ function localBindings(node, outer) {
       bindings.set(statement.id.name, { node: statement });
     } else if (statement.type === 'VariableDeclaration') {
       for (const declaration of statement.declarations) {
-        if (declaration.id.type === 'Identifier')
+        if (declaration.id.type === 'Identifier') {
           bindings.set(declaration.id.name, { node: declaration.init });
+        } else {
+          for (const name of Object.keys(getBindingIdentifiers(declaration.id)))
+            bindings.set(name, {});
+        }
         if (
           declaration.id.type === 'ObjectPattern' &&
           nameOf(declaration.init?.callee) === 'createRenameFixtureHelpers'
@@ -196,6 +207,33 @@ function virtualJavaSource(node, bindings) {
     : undefined;
 }
 
+function stubExports(node) {
+  if (node?.type === 'CallExpression')
+    return (
+      nameOf(node.callee.object) === 'vi' &&
+      nameOf(node.callee.property) === 'fn' &&
+      node.arguments.length === 0
+    );
+  return (
+    node?.type === 'ObjectExpression' &&
+    node.properties.every(
+      (property) => property.type === 'ObjectProperty' && stubExports(property.value),
+    )
+  );
+}
+
+function completeFsMock(factory) {
+  if (!factory) return true;
+  if (!isFunction(factory)) return false;
+  const body = factory.body;
+  if (body.type !== 'BlockStatement') return stubExports(body);
+  return (
+    body.body.length === 1 &&
+    body.body[0].type === 'ReturnStatement' &&
+    stubExports(body.body[0].argument)
+  );
+}
+
 /** Detect Java file fixtures and virtual source maps. Vitest setup also observes the parser. */
 export function javaFixtureUses(source, filename = 'suite.test.ts') {
   if (!/java|FIXTURES/i.test(source)) return [];
@@ -213,7 +251,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
       nameOf(node.callee.property) === 'mock'
     ) {
       const spec = node.arguments[0]?.value;
-      if (typeof spec === 'string' && fsModule.test(spec) && !node.arguments[1])
+      if (typeof spec === 'string' && fsModule.test(spec) && completeFsMock(node.arguments[1]))
         mocked.add(spec.replace(/^node:/, ''));
     }
     for (const child of children(node)) findMocks(child);

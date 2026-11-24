@@ -4,6 +4,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import javax.lang.model.element.Element;
+import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Name;
 import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.util.Elements;
@@ -19,6 +21,8 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     private final Elements elements;
     private final Types types;
     private final Set<String> constructorLines = new HashSet<>();
+    private final List<ExecutableElement> classMethods = new ArrayList<>();
+    private final Map<Name, List<ExecutableElement>> interfaceMethods = new HashMap<>();
     private final List<Diagnostic<? extends JavaFileObject>> errors;
 
     private OverloadOracle(int fixtureIndex, Path root, Set<String> families, Trees trees, Elements elements, Types types,
@@ -61,6 +65,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                     }
                 }
                 for (var unit : units) oracle.scan(unit, null);
+                oracle.emitImplementations();
                 if (!errors.isEmpty()) throw new IllegalStateException("Unmatched " + errors);
             }
         }
@@ -95,6 +100,30 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     private String declaration(CompilationUnitTree unit, Tree method) {
         var start = trees.getSourcePositions().getStartPosition(unit, method);
         return file(unit) + "#" + position(unit, start);
+    }
+
+    private String declaration(ExecutableElement method) {
+        var path = trees.getPath(method);
+        return declaration(path.getCompilationUnit(), path.getLeaf());
+    }
+
+    private void recordMethod(ExecutableElement method) {
+        if (method.getEnclosingElement().getKind().isInterface()) {
+            interfaceMethods.computeIfAbsent(method.getSimpleName(), name -> new ArrayList<>()).add(method);
+        } else {
+            classMethods.add(method);
+        }
+    }
+
+    private void emitImplementations() {
+        for (var method : classMethods) {
+            var owner = (TypeElement) method.getEnclosingElement();
+            for (var contract : interfaceMethods.getOrDefault(method.getSimpleName(), List.of())) {
+                if (elements.overrides(method, contract, owner)) {
+                    emit("implementation", declaration(method), declaration(contract));
+                }
+            }
+        }
     }
 
     private String callerDeclaration(CompilationUnitTree unit, MethodTree caller) {
@@ -167,6 +196,9 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         if (method.getReturnType() != null
                 && getCurrentPath().getParentPath().getLeaf().getKind() != Tree.Kind.ANNOTATION_TYPE) {
             emit("declaration", file(unit), "Method", method.getName().toString(), "", "");
+            if (families.contains("<implements>") && trees.getElement(getCurrentPath()) instanceof ExecutableElement member) {
+                recordMethod(member);
+            }
         }
         return super.visitMethod(method, method);
     }

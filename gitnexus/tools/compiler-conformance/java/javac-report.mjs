@@ -9,9 +9,13 @@ export function javacReports(fixtures) {
   assert.ok(javaHome && path.isAbsolute(javaHome), 'Set JAVA_HOME to an absolute JDK 21 path');
   const java = path.join(javaHome, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
   const oracle = fileURLToPath(new URL('./OverloadOracle.java', import.meta.url));
-  const args = fixtures.flatMap(({ dir, families, constructors }) => [
+  const args = fixtures.flatMap(({ dir, families, constructors, implementations }) => [
     dir,
-    [...(families ?? ['*']), ...(constructors ? ['<init>'] : [])].join(','),
+    [
+      ...(families ?? ['*']),
+      ...(constructors ? ['<init>'] : []),
+      ...(implementations !== undefined ? ['<implements>'] : []),
+    ].join(','),
   ]);
   const options = fixtures.some((fixture) => fixture.diagnostics)
     ? ['-Dgitnexus.conformance.reportDiagnostics=true']
@@ -28,6 +32,7 @@ export function javacReports(fixtures) {
     memberReferences: [],
     declarations: [],
     heritage: [],
+    implementations: [],
     constructors: [],
     rejectedConstructors: [],
   }));
@@ -61,6 +66,9 @@ export function javacReports(fixtures) {
     } else if (kind === 'rejected-constructor') {
       const [file, start, status] = read(3);
       report.rejectedConstructors.push({ file, start, status });
+    } else if (kind === 'implementation') {
+      const [from, to] = read(2);
+      report.implementations.push({ from, to });
     } else if (kind === 'constructor') {
       const [from, to] = read(2);
       report.constructors.push({ from, to });

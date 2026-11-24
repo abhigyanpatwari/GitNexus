@@ -66,7 +66,7 @@ Set `JAVA_HOME` to the absolute path of your JDK 21 installation and run the com
 npm run test:conformance:java
 ```
 
-For example, a fixture can declare `pick(Object)` and `pick(String)` and call `pick("x")`. Javac supplies the selected declaration and source range. CI detects a missing call, an extra call, a different target, or a disagreement about ambiguity or applicability. It compares direct call edges as well. GitNexus runtime interface implementations have their own graph assertions.
+For example, a fixture can declare `pick(Object)` and `pick(String)` and call `pick("x")`. Javac supplies the selected declaration and source range. CI detects a missing call, an extra call, a different target, or a disagreement about ambiguity or applicability. It compares direct call edges as well. Set `implementations` to the expected number of class-to-interface method pairs to compare every published `METHOD_IMPLEMENTS` edge with javac's `Elements.overrides` result.
 
 The runner also compares source type identities, ordinary method names and counts per file, and direct inheritance between source types. For method references such as `User::getName`, javac records the source range and selected declaration. GitNexus publishes the caller and target as an aggregate edge, so CI compares those declarations. Projects with `constructors: true` also check constructor edges, including `Type::new`, `super(...)` and `this(...)`. Put explicit constructor overloads on different declaration lines in those projects so each edge has an unambiguous target.
 

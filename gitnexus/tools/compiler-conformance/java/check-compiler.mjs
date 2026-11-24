@@ -8,7 +8,12 @@ import { compareCodeUnits, compareReports } from '../compare.mjs';
 import { gitNexusCallReport } from '../gitnexus-report.mjs';
 import { writeConversionMatrix } from './conversion-matrix.mjs';
 import { javacReports, qualifiedJavacReport } from './javac-report.mjs';
-import { compareConstructors, compareJavaStructure, javaTypeIdentity } from './structure.mjs';
+import {
+  compareConstructors,
+  compareImplementations,
+  compareJavaStructure,
+  javaTypeIdentity,
+} from './structure.mjs';
 
 const root = fileURLToPath(new URL('../../../test/fixtures/', import.meta.url));
 const corpus = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url), 'utf8'));
@@ -94,6 +99,8 @@ try {
         fixture.methods !== false,
       );
       if (fixture.constructors) compareConstructors(ref, pipeline, javaTypeIdentity);
+      if (fixture.implementations !== undefined)
+        compareImplementations(ref.implementations, pipeline.graph, fixture.implementations);
       const actual = gitNexusCallReport(pipeline, {
         names:
           fixture.families ??

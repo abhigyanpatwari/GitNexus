@@ -19,7 +19,7 @@ export function getNodesByLabelFull({ graph }, label) {
   return [...graph.iterNodes()]
     .filter((n) => n.label === label)
     .map(({ properties }) => ({ name: properties.name, properties }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => compareCodeUnits(a.name, b.name));
 }
 
 export function getNodesByLabel(result, label) {

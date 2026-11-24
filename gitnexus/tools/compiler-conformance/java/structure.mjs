@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { compareCodeUnits } from '../compare.mjs';
+import { graphDeclaration } from '../gitnexus-report.mjs';
 
 const typeLabels = new Set(['Class', 'Enum', 'Interface', 'Record', 'Annotation']);
 
@@ -65,6 +66,20 @@ export function compareJavaStructure(reference, result, typeIdentity, methods) {
       .filter((e) => !expectedEdges.has(e))
       .map((e) => 'Unexpected in GitNexus: ' + e),
   ];
+}
+
+export function compareImplementations(expected, graph, count) {
+  assert.equal(expected.length, count, 'javac implementation count');
+  const actual = [...graph.iterRelationshipsByType('METHOD_IMPLEMENTS')].map((edge) => ({
+    from: graphDeclaration(graph.getNode(edge.sourceId)),
+    to: graphDeclaration(graph.getNode(edge.targetId)),
+  }));
+  const byEndpoints = (a, b) => compareCodeUnits(a.from, b.from) || compareCodeUnits(a.to, b.to);
+  assert.deepEqual(
+    actual.toSorted(byEndpoints),
+    expected.toSorted(byEndpoints),
+    'Interface method implementations',
+  );
 }
 
 export function compareConstructors(reference, { graph, resolutionOutcomes }, typeIdentity) {

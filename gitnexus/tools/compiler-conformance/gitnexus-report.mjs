@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 
 // Scope resolution uses definition IDs. CALLS uses graph node IDs. Join both
 // to source locations so the compiler needs no knowledge of either ID format.
-function graphDeclaration(node) {
+export function graphDeclaration(node) {
   const { filePath, startLine, startColumn } = node.properties;
   if (node.label === 'File' && filePath) return filePath;
   assert.ok(
