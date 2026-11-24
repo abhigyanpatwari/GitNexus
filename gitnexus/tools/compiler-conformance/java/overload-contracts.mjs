@@ -124,7 +124,8 @@ async function verifyJavaCompileTimeOverloadFamilies() {
       assert.equal(calls.length, 1);
       assert.deepEqual(result.graph.getNode(calls[0])?.properties.parameterTypes, ['String']);
     }
-    // Unknown argument types leave the overload unresolved.
+    // These calls have no published target. equivalentPreferred has a known String
+    // argument, but its two inherited interfaces declare the same signature.
     for (const [caller, method] of [
       ['fakeFactory', 'select'],
       ['fieldFactory', 'select'],

@@ -19,6 +19,7 @@ test('native conformance fails on skipped cases, todos, and empty suites or file
       "it.skip('skipped case', () => {});",
       "it.todo('pending case');",
       "describe('empty suite', () => {});",
+      "describe('populated suite', () => { it('child', () => {}); });",
     ].join('\n'),
   );
   const env = { ...process.env, GITNEXUS_CONFORMANCE_TEST_FILES: JSON.stringify([cases, empty]) };
@@ -35,6 +36,7 @@ test('native conformance fails on skipped cases, todos, and empty suites or file
   );
   assert.ifError(result.error);
   assert.equal(result.status, 1);
+  assert.doesNotMatch(result.stderr, /Empty suite: populated suite/);
   for (const failure of [
     'Skipped or todo: skipped case',
     'Skipped or todo: pending case',
