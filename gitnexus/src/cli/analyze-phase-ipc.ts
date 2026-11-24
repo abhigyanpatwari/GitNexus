@@ -20,9 +20,13 @@ export interface CliSelfCommitSafety {
 const MAX_INSTRUCTION_FILE_LENGTH = 4096;
 
 /** Accept only a normalized repo-relative custom target; never trust the IPC shape. */
-function assertCustomInstructionFile(repoPath: string, file: unknown): asserts file is string {
+function assertCustomInstructionFile(repoPath: unknown, file: unknown): asserts file is string {
   let normalized: string | undefined;
-  if (typeof file === 'string' && file.length <= MAX_INSTRUCTION_FILE_LENGTH) {
+  if (
+    typeof repoPath === 'string' &&
+    typeof file === 'string' &&
+    file.length <= MAX_INSTRUCTION_FILE_LENGTH
+  ) {
     try {
       normalized = resolveInstructionFileTarget(repoPath, file).relative;
     } catch {
@@ -66,8 +70,13 @@ export function parseCliPreparedAnalysis(value: unknown): CliPreparedAnalysisMes
   if (safety && (typeof safety.agentsMd !== 'boolean' || typeof safety.claudeMd !== 'boolean'))
     throw new Error('Invalid CLI self-commit snapshot');
   const custom = safety?.custom;
-  if (custom !== undefined && (custom === null || typeof custom.safe !== 'boolean'))
-    throw new Error('Invalid CLI self-commit snapshot');
+  if (custom !== undefined) {
+    if (custom === null || typeof custom !== 'object' || typeof custom.safe !== 'boolean')
+      throw new Error('Invalid CLI self-commit snapshot');
+    // Validate here, not only downstream: a missing `file` would otherwise be
+    // dropped silently and lose the selected target's snapshot.
+    assertCustomInstructionFile(input.handoff?.repoPath, custom.file);
+  }
   return projectCliPreparedAnalysis(
     { ...input.result, preparedGraph: input.handoff, rebuildReasons: [] },
     input.handoff.repoPath,

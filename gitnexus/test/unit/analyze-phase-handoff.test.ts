@@ -300,6 +300,8 @@ describe('CLI graph phase handoff', () => {
     ['a default file name', { file: 'AGENTS.md', safe: true }],
     ['a non-boolean flag', { file: '.claude/CLAUDE.md', safe: 'yes' }],
     ['a non-string path', { file: 7, safe: true }],
+    ['a missing path', { safe: true }],
+    ['a non-object snapshot', 'yes'],
   ])('rejects a custom self-commit snapshot with %s', async (_name, custom) => {
     const { parseCliPreparedAnalysis, projectCliPreparedAnalysis } =
       await import('../../src/cli/analyze-phase-ipc.js');

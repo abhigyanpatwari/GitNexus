@@ -918,8 +918,9 @@ export async function generateAIContextFiles(
 }
 
 /**
- * Refresh the regression-review target inside the GitNexus block of an
- * already-generated AGENTS.md / CLAUDE.md, in place (#1996 P2, #3509).
+ * Refresh the regression-review target inside the GitNexus block of each
+ * already-generated selected instruction file (root AGENTS.md / CLAUDE.md, or
+ * a custom `instructionFile` target), in place (#1996 P2, #3509).
  *
  * The `alreadyUpToDate` analyze fast path returns before the normal
  * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
@@ -999,7 +1000,8 @@ export async function refreshBaseRefLine(
 }
 
 /**
- * Refresh the volatile counts inside an already-generated block, in place
+ * Refresh the volatile counts inside the already-generated block of each
+ * selected instruction file (root defaults or a custom target), in place
  * (#3618).
  *
  * The `alreadyUpToDate` analyze fast path returns before
