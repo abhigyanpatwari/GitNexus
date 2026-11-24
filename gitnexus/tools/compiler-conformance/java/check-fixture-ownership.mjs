@@ -3,6 +3,7 @@ import { globSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
+import { getBindingIdentifiers, isFunction } from '@babel/types';
 
 const fsCalls = new Set([
   'readFile',
@@ -107,6 +108,15 @@ function javaSourceMap(node, bindings, seen = new Set()) {
 }
 
 function localBindings(node, outer) {
+  if (isFunction(node) || node.type === 'CatchClause') {
+    const parameters = node.params ?? [node.param].filter(Boolean);
+    const bindings = new Map(outer);
+    for (const parameter of parameters) {
+      for (const name of Object.keys(getBindingIdentifiers(parameter))) bindings.set(name, {});
+    }
+    return bindings;
+  }
+  if (node.type !== 'Program' && node.type !== 'BlockStatement') return outer;
   const bindings = new Map(outer);
   for (const statement of node.body) {
     if (statement.type === 'ImportDeclaration') {
@@ -145,7 +155,7 @@ function writesFiles(binding, outer, mocked, seen = new Set()) {
     return false;
   seen.add(node);
   function walk(part, inherited) {
-    const bindings = part.type === 'BlockStatement' ? localBindings(part, inherited) : inherited;
+    const bindings = localBindings(part, inherited);
     if (part.type === 'CallExpression') {
       const callee = part.callee;
       const owner =
@@ -159,14 +169,14 @@ function writesFiles(binding, outer, mocked, seen = new Set()) {
       )
         return true;
       if (
-        projectReaders.has(method) ||
+        (projectReaders.has(method) && (!resolved || resolved.module)) ||
         (callee.type === 'Identifier' && writesFiles(resolved, bindings, mocked, seen))
       )
         return true;
     }
     return children(part).some((child) => walk(child, bindings));
   }
-  return walk(node.body, outer);
+  return walk(node.body, localBindings(node, outer));
 }
 
 /** Detect Java fixture I/O statically. Vitest setup also detects in-memory inputs to the Java parser. */
@@ -192,9 +202,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
   }
   findMocks(tree.program);
   function visit(node, outer) {
-    const bindings = ['Program', 'BlockStatement'].includes(node.type)
-      ? localBindings(node, outer)
-      : outer;
+    const bindings = localBindings(node, outer);
     if (node.type === 'CallExpression' || node.type === 'NewExpression') {
       const callee = node.callee;
       const identifier = callee.type === 'Identifier';
@@ -206,7 +214,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
         : nameOf(callee.property);
       const actualFs =
         fsModule.test(binding?.module ?? '') && !mocked.has(binding.module.replace(/^node:/, ''));
-      const isProject = projectReaders.has(method) && identifier;
+      const isProject = projectReaders.has(method) && identifier && (!binding || binding.module);
       const explicitProjectPath =
         (node.type === 'NewExpression' && method === 'URL') ||
         (pathModule.test(binding?.module ?? '') && ['join', 'resolve'].includes(method));

@@ -141,21 +141,26 @@ describe('Multi-verb Route node identity (#2289)', () => {
   });
 
   it('connects a verb-less fetch() consumer to every Route node at the URL', () => {
-    const consumerFileId = generateId('File', 'web/itemsClient.ts');
-    // Collect FETCHES targets without a test-level conditional: pass the
-    // shape filter as a Set membership check on the relationship type +
-    // sourceId, then materialize unique targetIds.
-    const fetchTargets = new Set(
-      result.graph.relationships
-        .filter((r) => r.type === 'FETCHES' && r.sourceId === consumerFileId)
-        .map((r) => r.targetId),
+    const file = 'web/itemsClient.ts';
+    const consumerFileId = generateId('File', file);
+    const edges = result.graph.relationships.filter(
+      (edge) => edge.type === 'FETCHES' && edge.sourceId === consumerFileId,
     );
-
-    // /api/items: the verb-less consumer reaches BOTH the GET and POST nodes.
-    assert.equal(fetchTargets.has(routeId('GET', '/api/items')), true);
-    assert.equal(fetchTargets.has(routeId('POST', '/api/items')), true);
-    // /api/widgets: reaches both the filesystem node and the decorator node.
-    assert.equal(fetchTargets.has(generateId('Route', '/api/widgets')), true);
-    assert.equal(fetchTargets.has(routeId('GET', '/api/widgets')), true);
+    // File-level edges retain the enclosing functions that contributed each fetch.
+    // The explicit POST in addItem cannot supply evidence for loadItems.
+    function targetsFrom(name: string) {
+      const via = 'via:' + generateId('Function', file + ':' + name);
+      return new Set(
+        edges.filter((edge) => edge.reason?.split('|').includes(via)).map((edge) => edge.targetId),
+      );
+    }
+    assert.deepEqual(
+      targetsFrom('loadItems'),
+      new Set([routeId('GET', '/api/items'), routeId('POST', '/api/items')]),
+    );
+    assert.deepEqual(
+      targetsFrom('loadWidgets'),
+      new Set([generateId('Route', '/api/widgets'), routeId('GET', '/api/widgets')]),
+    );
   });
 });

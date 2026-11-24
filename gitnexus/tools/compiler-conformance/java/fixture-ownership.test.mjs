@@ -35,6 +35,22 @@ test('detects a Java source map passed to the fixture helper, including spreads 
   );
 });
 
+test('recognizes a filesystem import only outside the scope of a parameter shadowing it', () => {
+  const uses = javaFixtureUses(`
+    import fs from 'node:fs';
+    import { readFileSync as read } from 'node:fs';
+    function inspect(fs) { fs.readFileSync('fixtures/java/Virtual.java'); }
+    const inspectRead = ({ read }) => read('Virtual.java');
+    function localWriter(fs, path) { fs.writeFileSync(path, ''); }
+    localWriter(inMemory, 'Virtual.java');
+    read('OnDisk.java');
+  `);
+  assert.deepEqual(
+    uses.map(({ path }) => path),
+    ['OnDisk.java'],
+  );
+});
+
 test('detects compiler-fixture projects through a directory, URL, or imported fixture root', () => {
   for (const source of [
     "import path from 'node:path'; const p = path.join(root, 'compiler-conformance', 'java-arrays');",

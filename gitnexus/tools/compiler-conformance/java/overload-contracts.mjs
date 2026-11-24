@@ -42,10 +42,9 @@ async function verifyRecordsUnresolvedReceiversOnceAcrossReplayWithoutMerging() 
 }
 async function verifyJavaImportedOverloadsAndDeclaredDispatchBounds() {
   const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-imported-overloads-'));
-  let result;
-  copyResolutionProject(root, 'imported-overload-dispatch');
-  result = await runPipelineFromRepo(root, () => {});
   try {
+    copyResolutionProject(root, 'imported-overload-dispatch');
+    const result = await runPipelineFromRepo(root, () => {});
     // retains the original child-interface bound during runtime dispatch
     {
       const ids = targets(result, 'childDispatch', 'task');
@@ -94,10 +93,9 @@ async function verifyJavaJLSOverloadResolutionIssue3789() {
 }
 async function verifyJavaCompileTimeOverloadFamilies() {
   const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-overload-jls-'));
-  let result;
-  copyResolutionProject(root, 'compile-time-overloads');
-  result = await runPipelineFromRepo(root, () => {});
   try {
+    copyResolutionProject(root, 'compile-time-overloads');
+    const result = await runPipelineFromRepo(root, () => {});
     // %s preserves a terminal %s outcome
     for (const [caller, method, status] of [
       ['nullAmbiguous', 'nullable', 'ambiguous'],
