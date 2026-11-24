@@ -3777,7 +3777,8 @@ export const createFTSIndex = async (
   properties: string[],
   stemmer: string = DEFAULT_FTS_STEMMER,
 ): Promise<void> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
@@ -3795,7 +3796,24 @@ export const createFTSIndex = async (
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;
 
   try {
-    await queryAndDrain(conn, query);
+    await withConnLock(async () => {
+      // LadybugDB 0.22 can deadlock two bulk-insert workers on each other's
+      // hash partitions when building the non-ASCII term dictionary (#4060,
+      // LadybugDB/ladybug#1669). Scope the thread limit to this statement.
+      const [setting] = await readQueryRows(
+        await c.query("CALL CURRENT_SETTING('threads') RETURN *"),
+      );
+      const previousThreads = Number(setting?.threads);
+      if (!Number.isSafeInteger(previousThreads) || previousThreads < 1) {
+        throw new Error('Cannot read the LadybugDB thread count before creating a search index.');
+      }
+      c.setMaxNumThreadForExec(1);
+      try {
+        await drainQueryResult(await c.query(query));
+      } finally {
+        c.setMaxNumThreadForExec(previousThreads);
+      }
+    });
     ensuredFTSIndexes.add(key);
   } catch (e: any) {
     if (e.message?.includes('already exists')) {
