@@ -306,17 +306,28 @@ embedding model, bounded input queue, and headroom. For example:
 npx gitnexus analyze --embeddings --resource-budget 8192 --memory-budget 1024 --workers 2
 ```
 
-Node propagates the main V8 heap flag to parser workers, so each worker reserves
-at least the `--memory-budget` allocation. Explicit settings that do not fit
+Each parser worker reserves its old-space cap plus 128 MiB for the young
+generation and native allocations. Raising `--memory-budget`
+leaves less room for worker heaps or additional workers. Explicit settings that do not fit
 the family budget fail before work starts. Without a family override,
 GitNexus fixes the family ceiling at 75% of effective process/container RAM,
 divided among concurrent auto-sync analyses. Automatic heap, worker and native
 pool allocations must fit that ceiling; it never grows to accommodate them.
 Explicit heap, worker or pool requests that cannot fit are rejected before work.
 Small hosts may need an HTTP embedding provider or more RAM for the local model.
-The budget controls
-admission and queue sizes; it is not an operating-system RSS limit. Watch mode
-accepts the same family budget and drains active work before shutdown.
+Community-detection workers and user preload isolates sit outside these reservations.
+An admission error reports the minimum for the allocations at the rejected budget.
+A larger total can also increase headroom and pool sizes, so it may take more
+than that minimum. Watch mode accepts the same family budget and drains active
+work before shutdown.
+
+When setting the heap manually with `GITNEXUS_MEMORY=off`, parser workers keep
+their caps under `--max-old-space-size`, `--max-semi-space-size`,
+`--max-heap-size` and `--max-old-space-size-percentage`, in every spelling Node
+and V8 accept, and other workers keep the main heap those flags give. If V8's
+flags are frozen (`--freeze-flags-after-init`) or the flags analyze reads do not
+match the heap V8 reports, parser workers keep the main heap and admission
+charges each one for it.
 
 `Unable to allocate memory` / `The buffer pool is full` during graph writes
 refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,

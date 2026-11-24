@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { effectiveRamBytes } from './ingestion/utils/effective-ram.js';
 import { granuleRatio } from './lbug/lbug-config.js';
+import { workerHeapCapEnforceable } from './ingestion/workers/worker-heap-limit.js';
 import {
   resolveAnalysisResourceBudget,
   UNBOUNDED_GRAPH_POOL_MESSAGE,
@@ -34,6 +35,9 @@ export interface HostAnalysisResourceOptions {
   supervisorBytes?: number;
   /** Share one host envelope among concurrent auto-sync analyses. */
   concurrency?: number;
+  /** Whether parser workers get their own heap cap; defaults to what this
+   * process's V8 flags allow (`workerHeapCapEnforceable`). */
+  workerHeapCapEnforced?: boolean;
 }
 
 export function resolveHostAnalysisResources(
@@ -57,6 +61,7 @@ export function resolveHostAnalysisResources(
       : undefined,
     preferredWorkers: 16,
     includeParsing: options.includeParsing,
+    workerHeapCapEnforced: options.workerHeapCapEnforced ?? workerHeapCapEnforceable(),
     graphPoolBytes: positiveEnvironment('GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
     graphPoolGranuleRatio: granuleRatio(),
     modelMemoryMb: options.includeEmbeddings && !http ? 2048 : 0,

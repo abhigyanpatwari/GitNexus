@@ -2091,7 +2091,8 @@ async function runFullAnalysisInner(
       const sizedPool = getEffectiveBufferPoolSize();
       const ceiling = budget.parse.graphPoolBytes;
       // COPY and FTS allocate per-thread workspaces while the PDG is still
-      // resident. Serialize writes in the measured single-worker, 6 GiB case.
+      // resident. Serialize writes in the measured 6 GiB case (one requested
+      // parser worker; see isConstrainedPdgBuild).
       const serialPdgWrite = !readOnly && isConstrainedPdgBuild(options.pdg, budget);
       return initLbug(dbPath, {
         skipFts: readOnly || !!ftsDisabledReason,
