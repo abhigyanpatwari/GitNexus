@@ -91,6 +91,23 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         return file(unit) + "#" + position(unit, start);
     }
 
+    private String callerDeclaration(CompilationUnitTree unit, MethodTree caller) {
+        if (caller != null) return declaration(unit, caller);
+        var parent = getCurrentPath();
+        while (parent != null && !(parent.getLeaf() instanceof ClassTree)) parent = parent.getParentPath();
+        if (parent == null) throw new IllegalStateException("No source owner for " + getCurrentPath().getLeaf());
+        return file(unit) + "#" + elements.getBinaryName((TypeElement) trees.getElement(parent));
+    }
+
+    private void emitReference(String kind, String from, String to) {
+        var path = getCurrentPath();
+        var unit = path.getCompilationUnit();
+        var positions = trees.getSourcePositions();
+        emit("reference", kind, file(unit),
+                position(unit, positions.getStartPosition(unit, path.getLeaf())),
+                position(unit, positions.getEndPosition(unit, path.getLeaf())), from, to);
+    }
+
     @Override public Void visitClass(ClassTree type, MethodTree enclosing) {
         var element = (TypeElement) trees.getElement(getCurrentPath());
         var unit = getCurrentPath().getCompilationUnit();
@@ -144,7 +161,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     private void constructorEdge(MethodTree caller) {
         var call = getCurrentPath();
         var unit = call.getCompilationUnit();
-        if (!families.contains("<init>") || caller == null
+        if (!families.contains("<init>") || (caller == null && !(call.getLeaf() instanceof MemberReferenceTree))
                 || trees.getSourcePositions().getEndPosition(unit, call.getLeaf()) < 0) return;
         var constructor = trees.getElement(call);
         var target = constructor == null ? null : trees.getPath(constructor);
@@ -155,8 +172,10 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         var destination = positions.getEndPosition(source, target.getLeaf()) < 0
                 ? file(source) + "#" + elements.getBinaryName(owner)
                 : constructorLine(source, target.getLeaf());
-        var from = caller.getReturnType() == null ? constructorLine(unit, caller) : declaration(unit, caller);
-        emit("constructor", from, destination);
+        var from = caller != null && caller.getReturnType() == null
+                ? constructorLine(unit, caller) : callerDeclaration(unit, caller);
+        if (call.getLeaf() instanceof MemberReferenceTree) emitReference("Constructor", from, destination);
+        else emit("constructor", from, destination);
     }
 
     private String constructorLine(CompilationUnitTree unit, Tree tree) {
@@ -167,6 +186,21 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
     @Override public Void visitNewClass(NewClassTree call, MethodTree caller) {
         constructorEdge(caller);
         return super.visitNewClass(call, caller);
+    }
+
+    @Override public Void visitMemberReference(MemberReferenceTree reference, MethodTree caller) {
+        if (reference.getMode() == MemberReferenceTree.ReferenceMode.NEW) {
+            constructorEdge(caller);
+        } else if (families.contains("*") || families.contains(reference.getName().toString())) {
+            var path = getCurrentPath();
+            var element = trees.getElement(path);
+            var target = element == null ? null : trees.getPath(element);
+            if (target != null && target.getLeaf() instanceof MethodTree method) {
+                emitReference("Method", callerDeclaration(path.getCompilationUnit(), caller),
+                        declaration(target.getCompilationUnit(), method));
+            }
+        }
+        return super.visitMemberReference(reference, caller);
     }
 
     private Optional<Diagnostic<? extends JavaFileObject>> callError(CompilationUnitTree unit, MethodInvocationTree call) {
@@ -226,16 +260,8 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                 target = declaration(path.getCompilationUnit(), method);
                 signature = element.getEnclosingElement() + "." + element;
             }
-            String owner;
-            if (caller == null) {
-                var parent = getCurrentPath();
-                while (parent != null && !(parent.getLeaf() instanceof ClassTree)) parent = parent.getParentPath();
-                if (parent == null) throw new IllegalStateException("No source owner for " + call);
-                owner = file(unit) + "#" + elements.getBinaryName((TypeElement) trees.getElement(parent));
-            } else {
-                owner = declaration(unit, caller);
-            }
-            emit(status, file(unit), position(unit, start), position(unit, end), owner, target, signature);
+            emit(status, file(unit), position(unit, start), position(unit, end),
+                    callerDeclaration(unit, caller), target, signature);
         }
         return super.visitMethodInvocation(call, caller);
     }

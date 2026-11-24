@@ -113,6 +113,11 @@ it('distinguishes a missing site, an extra site, and an ambiguity with a fabrica
 
 it('rejects empty references, malformed ranges, and resolved calls missing a declaration', () => {
   expect(() => compareReports({ sites: [] }, { sites: [] })).toThrow(/no call sites/);
+  const empty = { sites: [], edges: [] };
+  const edgeOnly = { sites: [], edges: [{ from: 'caller', to: 'selected' }] };
+  expect(() => compareReports(empty, empty)).toThrow(/no call sites or edges/);
+  compareReports(edgeOnly, edgeOnly);
+  expect(() => compareReports(edgeOnly, empty)).toThrow(/Missing.*caller -> selected/);
   expect(() => compareReports({ sites: [{ ...first, end: first.start }] }, { sites: [] })).toThrow(
     /Invalid range/,
   );

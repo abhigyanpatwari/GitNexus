@@ -53,7 +53,7 @@ function facts(report) {
 export function compareReports(expected, actual) {
   const reference = facts(expected);
   const observed = facts(actual);
-  assert.ok(expected.sites.length > 0, 'The reference report contains no call sites');
+  assert.ok(reference.size > 0, 'The reference report contains no call sites or edges');
   assert.equal(
     expected.edges !== undefined,
     actual.edges !== undefined,

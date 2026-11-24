@@ -21,6 +21,7 @@ export function javacReports(fixtures) {
     producer: 'javac',
     sites: [],
     edges: [],
+    memberReferences: [],
     declarations: [],
     heritage: [],
     constructors: [],
@@ -39,7 +40,17 @@ export function javacReports(fixtures) {
     const [fixture, kind] = read(2);
     const report = reports[fixture];
     assert.ok(report, 'Unknown javac fixture ' + fixture);
-    if (kind === 'constructor') {
+    if (kind === 'reference') {
+      const [targetKind, file, start, end, from, to] = read(6);
+      assert.ok(
+        targetKind === 'Method' || targetKind === 'Constructor',
+        'Unknown reference target',
+      );
+      report.memberReferences.push({ file, start, end, from, to, targetKind });
+      // GitNexus publishes member references as aggregate CALLS edges.
+      const edges = targetKind === 'Constructor' ? report.constructors : report.edges;
+      edges.push({ from, to });
+    } else if (kind === 'constructor') {
       const [from, to] = read(2);
       report.constructors.push({ from, to });
     } else if (kind === 'heritage') {

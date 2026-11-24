@@ -52,12 +52,19 @@ try {
   fixtures.push({ name: 'overload-conversion-matrix', dir: generated, sites: 100 });
   const references = javacReports(fixtures);
   let totalSites = 0;
+  let totalMemberReferences = 0;
   const failures = [];
   for (const [i, fixture] of fixtures.entries()) {
     try {
       const ref = references[i];
       if (fixture.sites !== undefined)
         assert.equal(ref.sites.length, fixture.sites, 'javac call-site count');
+      if (fixture.memberReferences !== undefined)
+        assert.equal(
+          ref.memberReferences.length,
+          fixture.memberReferences,
+          'javac member-reference count',
+        );
       for (const [status, count] of Object.entries(fixture.rejections ?? {})) {
         assert.equal(
           ref.sites.filter((s) => s.status === status).length,
@@ -92,7 +99,7 @@ try {
       for (const site of actual.sites) {
         if (site.status === 'overload-inapplicable') site.status = 'inapplicable';
       }
-      if (ref.sites.length) {
+      if (ref.sites.length || ref.edges.length) {
         try {
           compareReports(ref, actual);
         } catch (error) {
@@ -105,8 +112,9 @@ try {
       }
       checkDifferences(fixture, differences);
       totalSites += ref.sites.length;
+      totalMemberReferences += ref.memberReferences.length;
       console.log(
-        `${fixture.name}: ${ref.sites.length} call sites, ${ref.heritage.length} source heritage edges`,
+        `${fixture.name}: ${ref.sites.length} call sites, ${ref.memberReferences.length} member references, ${ref.heritage.length} source heritage edges`,
       );
     } catch (error) {
       failures.push(new Error(fixture.name, { cause: error }));
@@ -114,7 +122,9 @@ try {
   }
   if (failures.length)
     throw new AggregateError(failures, `${failures.length} Java conformance fixtures failed`);
-  console.log(`${fixtures.length} Java fixtures, ${totalSites} compiler call sites`);
+  console.log(
+    `${fixtures.length} Java fixtures, ${totalSites} compiler call sites, ${totalMemberReferences} member references`,
+  );
 } finally {
   rmSync(generated, { recursive: true, force: true });
 }

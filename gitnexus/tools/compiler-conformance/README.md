@@ -46,7 +46,7 @@ An execution trace of `Greeter().entry()` can record the following call to `gree
 - **Declaration identity.** Both producers must use the same string for a declaration. The Java adapter uses the fixture-relative declaration file and start position. A fully qualified symbol and signature also work. Optional `description` text gives a human-readable target in diagnostics.
 - **Graph edges.** Include `edges` in both reports to compare the published caller-to-callee pairs. Use `[]` for an observed empty graph. Omit the field from both reports to compare sites alone.
 
-Site records and edges are sets. Order and repeated identical observations have no effect. The reference needs at least one site. Each producer should enumerate its own results over the same fixture and selection rule so missing and unexpected calls remain visible.
+Site records and edges are sets. Order and repeated identical observations have no effect. The reference needs at least one site or edge. Each producer should enumerate its own results over the same fixture and selection rule so missing and unexpected calls remain visible.
 
 The GitNexus adapter uses recorded resolution outcomes and call edges with exact source spans. A caller-to-callee pair without a span contributes to the edge comparison. The comparator reports a missing site if the reference supplies a range that the analyzer cannot establish.
 
@@ -68,13 +68,13 @@ npm run test:conformance:java
 
 For example, a fixture can declare `pick(Object)` and `pick(String)` and call `pick("x")`. Javac supplies the selected declaration and source range. CI detects a missing call, an extra call, a different target, or a disagreement about ambiguity or applicability. It compares direct call edges as well. GitNexus runtime interface implementations have their own graph assertions.
 
-The runner also compares source type identities, ordinary method names and counts per file, and direct inheritance between source types. Selected projects check constructor edges, including `super(...)` and `this(...)`. The graph reports these edges in aggregate. Put explicit constructor overloads on different declaration lines in those projects so each edge has an unambiguous target.
+The runner also compares source type identities, ordinary method names and counts per file, and direct inheritance between source types. For method references such as `User::getName`, javac records the source range and selected declaration. GitNexus publishes the caller and target as an aggregate edge, so CI compares those declarations. Projects with `constructors: true` also check constructor edges, including `Type::new`, `super(...)` and `this(...)`. Put explicit constructor overloads on different declaration lines in those projects so each edge has an unambiguous target.
 
 [The fixture manifest](java/fixtures.json) reuses projects outside the discovery directory and pins the number of compiler sites for migrated tests. A fixture can select method families or compare only type declarations when collapsed overloads give GitNexus a different method inventory. The manifest records why eleven shared projects run in Vitest. They exercise incomplete Java, invalid source layouts, or duplicate types across module boundaries. The runner automatically includes new `lang-resolution/java-*` source projects. The [generated matrix](java/conversion-matrix.mjs) independently pins all 100 argument ranges across 20 overload pairs.
 
 Fixtures with existing disagreements record them in `known-differences.txt` alongside the source. Two shared projects point to difference files from the manifest to preserve their benchmark input trees. CI prints the exact differences and fails if one appears, changes, or disappears unexpectedly. To fail on every disagreement, including the recorded ones, run `npm run test:conformance:java -- --strict`.
 
-To compare another analyzer against javac, run the following from this directory. Omit the method names to report all invocations with source declarations.
+To compare another analyzer against javac, run the following from this directory. Omit the method names to report all source methods. Pass `'*' '<init>'` to include constructors in the Java report.
 
 ```sh
 node java/javac-report.mjs /path/to/fixture find resolve count > compiler.json

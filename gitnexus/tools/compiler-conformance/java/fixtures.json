@@ -135,7 +135,8 @@
   "lang-resolution/java-method-enrichment": 2,
   "lang-resolution/java-method-reference": {
     "sites": 1,
-    "families": ["save"]
+    "memberReferences": 6,
+    "constructors": true
   },
   "lang-resolution/java-mixed-chain": 4,
   "lang-resolution/java-named-imports": {
