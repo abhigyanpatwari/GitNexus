@@ -871,7 +871,8 @@ To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
 the auto-sizer and any `--max-old-space-size` pin. Parser workers keep their
 own heap caps: the pool clears the process-wide `--max-old-space-size` and
-`--max-semi-space-size` flags while it starts each one.
+`--max-semi-space-size` flags while it starts each one. Community-detection
+workers start the same way and keep the heap those flags give them.
 
 Use `--resource-budget <MiB>` to admit the complete analyzer process family,
 including the frontend, main heap, workers, native pools, embedding model, input

@@ -344,6 +344,89 @@ describe('community-processor', () => {
       }
     });
 
+    it('starts both community workers through the heap lease with their inherited heap', async () => {
+      const execArgv = process.execArgv;
+      const nodeOptions = process.env.NODE_OPTIONS;
+      process.execArgv = ['--max-old-space-size=3000'];
+      process.env.NODE_OPTIONS = '--max-semi-space-size=64';
+      const limits: Record<string, unknown> = {};
+      // V8 flags are process-wide: record the lease's writes instead of applying them.
+      const flagWrites: string[] = [];
+      const writesAtSpawn: Record<string, string[]> = {};
+      vi.resetModules();
+      vi.doMock('node:v8', async () => {
+        const actual = await vi.importActual<typeof import('node:v8')>('node:v8');
+        const mocked = {
+          ...actual,
+          setFlagsFromString: (flags: string) => void flagWrites.push(flags),
+        };
+        return { ...mocked, default: mocked };
+      });
+      vi.doMock('node:worker_threads', () => {
+        class MockWorker extends EventEmitter {
+          constructor(
+            _source?: string,
+            options?: { workerData?: { graphologyPath?: string }; resourceLimits?: unknown },
+          ) {
+            super();
+            const graphology = Boolean(options?.workerData?.graphologyPath);
+            limits[graphology ? 'graphology' : 'icebug'] = options?.resourceLimits;
+            writesAtSpawn[graphology ? 'graphology' : 'icebug'] = [...flagWrites];
+            queueMicrotask(() => {
+              if (graphology) {
+                this.emit('message', {
+                  ok: true,
+                  communities: { 'fn:a': 0, 'fn:b': 0 },
+                  count: 1,
+                  modularity: 0,
+                });
+                return;
+              }
+              this.emit('message', { ok: true, partition: [0, 0], modularity: Number.NaN });
+            });
+          }
+
+          terminate(): Promise<number> {
+            return Promise.resolve(0);
+          }
+
+          unref(): void {}
+        }
+
+        return { Worker: MockWorker };
+      });
+
+      try {
+        const { processCommunities: processCommunitiesWithMockWorker } =
+          await import('../../src/core/ingestion/community-processor.js');
+        const graph = createKnowledgeGraph();
+        graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
+        graph.addNode(makeNode('fn:b', 'b', 'Function', '/src/group/b.ts'));
+        graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+
+        await processCommunitiesWithMockWorker(graph, undefined, { engine: 'icebug' });
+
+        // Old space and three semi-spaces keep these workers' heaps where the
+        // flags put them, although each starts with the flags cleared.
+        const inherited = { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 192 };
+        expect(limits).toEqual({ icebug: inherited, graphology: inherited });
+        const cleared = ['--max-old-space-size=0', '--max-semi-space-size=0'];
+        const restored = ['--max-old-space-size=3000', '--max-semi-space-size=64'];
+        expect(writesAtSpawn).toEqual({
+          icebug: cleared,
+          graphology: [...cleared, ...restored, ...cleared],
+        });
+        expect(flagWrites).toEqual([...cleared, ...restored, ...cleared, ...restored]);
+      } finally {
+        process.execArgv = execArgv;
+        if (nodeOptions === undefined) delete process.env.NODE_OPTIONS;
+        else process.env.NODE_OPTIONS = nodeOptions;
+        vi.doUnmock('node:worker_threads');
+        vi.doUnmock('node:v8');
+        vi.resetModules();
+      }
+    });
+
     it.each(['icebug', 'auto'] as const)(
       'preserves both fallback reasons when %s fails and Graphology times out',
       async (engine) => {

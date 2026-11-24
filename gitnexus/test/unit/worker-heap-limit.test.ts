@@ -14,6 +14,7 @@ vi.mock('node:v8', async () => {
 import {
   inheritedOldSpaceMb,
   inheritedSemiSpaceMb,
+  inheritedWorkerResourceLimits,
   spawnWithOwnHeapLimit,
 } from '../../src/core/ingestion/workers/worker-heap-limit.js';
 
@@ -67,6 +68,22 @@ describe('inheritedSemiSpaceMb', () => {
     ['an unrelated old-space flag', ['--max-old-space-size=3000'], '', 0],
   ])('reads %s', (_label, execArgv, nodeOptions, expected) => {
     expect(inheritedSemiSpaceMb(execArgv, nodeOptions)).toBe(expected);
+  });
+});
+
+describe('inheritedWorkerResourceLimits', () => {
+  it.each([
+    [
+      'both flags',
+      ['--max-old-space-size=3000', '--max-semi-space-size=128'],
+      '',
+      { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 384 },
+    ],
+    ['old space only', [], '--max-old-space-size=2000', { maxOldGenerationSizeMb: 2000 }],
+    ['semi-space only', ['--max-semi-space-size=64'], '', { maxYoungGenerationSizeMb: 192 }],
+    ['no flag', [], '', undefined],
+  ])('reproduces the heap a worker inherits from %s', (_label, execArgv, nodeOptions, expected) => {
+    expect(inheritedWorkerResourceLimits(execArgv, nodeOptions)).toEqual(expected);
   });
 });
 
