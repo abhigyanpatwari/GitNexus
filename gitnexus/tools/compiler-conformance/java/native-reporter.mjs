@@ -17,7 +17,7 @@ export default async function* report(events) {
         if (data.details?.type === 'suite' && !plans.delete(location))
           failures.push('Empty suite: ' + data.name);
       }
-      if (type === 'test:summary' && data.file && data.counts.passed > 0)
+      if (type === 'test:summary' && data.file && data.counts.passed + data.counts.failed > 0)
         missing.delete(path.resolve(data.file));
       yield event;
     }

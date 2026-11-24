@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Parser from 'tree-sitter';
+import { getProvider } from '../../../../../src/core/ingestion/languages/index.js';
 import {
   listGrammarSources,
   getLanguageGrammar,
+  loadLanguage,
+  loadParser,
 } from '../../../../../src/core/tree-sitter/parser-loader.js';
 import { SupportedLanguages } from '../../../../../src/config/supported-languages.js';
 import { isOptionalGrammarRequired } from '../../../../../test/helpers/optional-grammar.js';
@@ -43,6 +46,15 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     rootType: 'program',
   },
 };
+
+it('compiles query for java', async () => {
+  const parser = await loadParser();
+  await loadLanguage(SupportedLanguages.Java, 'Test.java');
+  const source = getProvider(SupportedLanguages.Java).treeSitterQueries;
+  assert.ok(source);
+  const query = new Parser.Query(parser.getLanguage(), source);
+  assert.ok(Array.isArray(query.matches(parser.parse('').rootNode)));
+});
 
 describe('parser-loader ABI load-smoke (#1922)', () => {
   const sources = listGrammarSources().filter(({ key }) => key === SupportedLanguages.Java);
