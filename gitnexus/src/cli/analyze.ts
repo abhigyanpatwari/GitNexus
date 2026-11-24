@@ -911,8 +911,10 @@ async function respawnWithHeap(
     GITNEXUS_ANALYSIS_SUPERVISOR_BYTES:
       process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES ?? String(analysisSupervisorReservation()),
   };
-  // glibc reads its arena limit at startup. Apply the default to the graph
-  // writer. The publication/embedding child inherits the caller's policy.
+  // glibc reads its arena limit at startup. Apply the default to the first
+  // analyze child, which runs the parser pool and the graph writer, unless the
+  // operator set an arena policy. The publication/embedding child inherits the
+  // caller's policy.
   const limitWriterArenas =
     options.limitMallocArenas &&
     process.platform === 'linux' &&
@@ -1462,9 +1464,10 @@ const analyzeCommandImpl = async (
     // a nested heap respawn with a slightly different allocation.
     process.env.GITNEXUS_ANALYSIS_MAIN_HEAP_MB = String(resources.mainHeapMb);
     process.env.GITNEXUS_ANALYSIS_SUPERVISOR_BYTES = String(supervisorBytes);
-    // This child parses before writing the graph. Two glibc arenas were measured with one worker.
-    limitMallocArenas =
-      resources.parse.workers === 1 && isConstrainedPdgBuild(options.pdg, resources);
+    // This child runs the parser pool, then the graph writer. Two glibc arenas
+    // keep its peak RSS under the guard, also when admission fits several
+    // parser workers (see isConstrainedPdgBuild).
+    limitMallocArenas = isConstrainedPdgBuild(options.pdg, resources);
     if (
       !manualHeap &&
       (await ensureHeap({

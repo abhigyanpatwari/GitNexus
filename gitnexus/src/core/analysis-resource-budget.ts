@@ -67,10 +67,14 @@ export interface AnalysisResourceBudget {
 }
 
 /**
- * The release corpus was measured with one parser worker and a 6 GiB ceiling.
- * The guard protects the graph write, which runs after parser workers exit, so
- * it follows the worker count the operator requested rather than the count
- * admission fits beside the main heap.
+ * The 6 GiB PDG guard, measured on the release corpus with one requested
+ * parser worker. It has two effects: one native database thread for COPY and
+ * full-text indexing (`run-analyze.ts`), and on Linux with glibc two allocator
+ * arenas for the first analyze child (`cli/analyze.ts`), which also runs the
+ * parser pool. It follows the worker count the operator requested, so when
+ * admission fits several automatic workers beside a small explicit main heap,
+ * they parse under two arenas too: slower than allocator defaults, at a lower
+ * peak RSS (docs/optimize/pdg-spill-time-memory-report.md).
  */
 export function isConstrainedPdgBuild(
   pdg: boolean | undefined,

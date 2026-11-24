@@ -152,22 +152,39 @@ describe('analyzeCommand heap respawn', () => {
   });
 
   it.each([
-    [undefined, undefined],
-    ['1', '2'],
+    // Admission fits several parser workers here; they parse under the guard too.
+    [undefined, undefined, '2'],
+    ['1', undefined, '2'],
+    // An operator's arena policy always wins.
+    [undefined, '8', '8'],
   ] as const)(
-    'selects allocator arenas for the admitted parser count with --workers %s',
-    async (workers, expected) => {
+    'keeps two allocator arenas for the constrained PDG build with --workers %s and MALLOC_ARENA_MAX %s',
+    async (workers, operatorArenas, expected) => {
       const os = (await import('node:os')).default;
       const cpus = vi.spyOn(os, 'availableParallelism').mockReturnValue(4);
       const native = await import('../../src/core/lbug/native-check.js');
       const libc = vi.spyOn(native, 'hostGlibcVersion').mockReturnValue('2.41');
-      vi.stubEnv('MALLOC_ARENA_MAX', undefined);
+      const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+      vi.stubEnv('MALLOC_ARENA_MAX', operatorArenas);
       vi.stubEnv('GLIBC_TUNABLES', undefined);
       vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', undefined);
       vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', undefined);
       try {
+        if (workers === undefined) {
+          const { resolveHostAnalysisResources } =
+            await import('../../src/core/analysis-host-resources.js');
+          const admitted = resolveHostAnalysisResources({
+            totalMb: 6144,
+            mainHeapMb: 1600,
+            includeEmbeddings: false,
+            supervisorBytes: 192 * 1024 ** 2,
+          });
+          expect(admitted.parse.workers).toBeGreaterThan(1);
+        }
         mockSpawnExit();
         const { analyzeCommand } = await import('../../src/cli/analyze.js');
+        // glibc arenas exist only on Linux; take that branch on every host.
+        Object.defineProperty(process, 'platform', { value: 'linux' });
         await analyzeCommand(undefined, {
           pdg: true,
           resourceBudget: '6144',
@@ -176,8 +193,9 @@ describe('analyzeCommand heap respawn', () => {
         });
         expect(spawnMock).toHaveBeenCalledOnce();
         const child = spawnMock.mock.calls[0][2].env;
-        expect(child.MALLOC_ARENA_MAX).toBe(process.platform === 'linux' ? expected : undefined);
+        expect(child.MALLOC_ARENA_MAX).toBe(expected);
       } finally {
+        Object.defineProperty(process, 'platform', platform);
         cpus.mockRestore();
         libc.mockRestore();
         vi.unstubAllEnvs();
