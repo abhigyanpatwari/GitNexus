@@ -876,7 +876,10 @@ Community-detection workers get the main heap those flags give (under
 `--max-heap-size` alone, slightly more). When the flags must not be cleared,
 because `--freeze-flags-after-init` froze them or the flags analyze reads from
 the command line and `NODE_OPTIONS` do not match the main heap V8 reports,
-parser workers keep the main heap and admission charges each one for it.
+parser workers keep the main heap and admission charges each one for it. A
+preload that changes heap flags after startup (`v8.setFlagsFromString`, or
+removing them from `NODE_OPTIONS`) goes unseen, and the module-hooks thread a
+preload's `module.register()` starts in a parser worker gets V8's default heap.
 
 Use `--resource-budget <MiB>` to set the reservation for parsing and embeddings,
 including the frontend, main heap, workers, native pools, embedding model, input

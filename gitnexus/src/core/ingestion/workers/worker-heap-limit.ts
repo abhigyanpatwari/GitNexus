@@ -34,6 +34,12 @@
  * (`inheritedHeap`). Workers then run with the inherited heap, and admission
  * charges each one the main heap (`workerHeapCapEnforceable`).
  *
+ * Known limits: a preload that changes the heap flags after startup without
+ * leaving a contradiction behind (`v8.setFlagsFromString`, or deleting
+ * NODE_OPTIONS) goes unseen, and the module-hooks thread a preload's
+ * `module.register()` starts in a leased worker gets V8's default heap, since
+ * Node takes no `resourceLimits` for it.
+ *
  * The flags are read argument by argument from `process.execArgv` and
  * NODE_OPTIONS (`lib/node-size-flag.ts`), never from a joined command line, so
  * an `--eval` source or a `--title` value cannot pass for a heap flag.
