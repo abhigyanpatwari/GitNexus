@@ -80,7 +80,7 @@ try {
         assert.equal(ref.sites.filter((s) => s.status === 'ambiguous').length, 2);
       }
       const pipeline = await runPipelineFromRepo(fixture.dir, () => {});
-      const typeIdentity = javaTypeIdentity(ref);
+      const typeIdentity = javaTypeIdentity(fixture.dir);
       const differences = compareJavaStructure(
         ref,
         pipeline,

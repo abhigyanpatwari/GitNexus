@@ -1,25 +1,54 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { javaClassConfig } from '../../../dist/core/ingestion/class-extractors/configs/jvm.js';
+import { createClassExtractor } from '../../../dist/core/ingestion/class-extractors/generic.js';
+import { getTreeSitterBufferSize } from '../../../dist/core/ingestion/constants.js';
+import { getJavaParser } from '../../../dist/core/ingestion/languages/java/query.js';
+import { parseSourceSafe } from '../../../dist/core/tree-sitter/safe-parse.js';
 import { compareCodeUnits } from '../compare.mjs';
 
 const typeLabels = new Set(['Class', 'Enum', 'Interface', 'Record', 'Annotation']);
+const extractor = createClassExtractor(javaClassConfig);
+
+function sourceTypes(dir, file) {
+  const source = readFileSync(path.join(dir, file), 'utf8');
+  const { rootNode: root } = parseSourceSafe(
+    getJavaParser(),
+    source,
+    undefined,
+    { bufferSize: getTreeSitterBufferSize(source) },
+    file,
+  );
+  const pkg = extractor.qualifyScopeName(root, '');
+  const declarations = new Map();
+  for (const type of root.descendantsOfType(javaClassConfig.typeDeclarationNodes)) {
+    if (javaClassConfig.shouldSkipClassCapture({ definitionNode: type })) continue;
+    const { name, qualifiedName } = extractor.extract(type);
+    const key = JSON.stringify([type.startPosition.row, name, qualifiedName]);
+    declarations.set(key, javaClassConfig.extractName(type) !== undefined);
+  }
+  return { prefix: pkg ? pkg + '.' : '', declarations };
+}
 
 // Java source uses dots for member types. Class files use '$', including javac's
 // per-host numbering for anonymous and local declarations.
-export function javaTypeIdentity(reference) {
-  const packages = new Map();
-  for (const { file, binaryName } of reference.declarations) {
-    if (binaryName) packages.set(file, binaryName.slice(0, binaryName.lastIndexOf('.') + 1));
-  }
+export function javaTypeIdentity(dir) {
+  const files = new Map();
   return (node) => {
     if (!typeLabels.has(node.label)) return undefined;
-    const { filePath, name, qualifiedName } = node.properties;
+    const { filePath, startLine, name, qualifiedName } = node.properties;
     // Annotation graph nodes expose their source name without a qualifiedName.
     if (node.label === 'Annotation') return filePath + '#@' + name;
-    const prefix = packages.get(filePath) ?? '';
-    assert.ok(qualifiedName?.startsWith(prefix), `Missing qualified Java name for ${node.id}`);
-    const binary = /\$\d/.test(name)
-      ? name
-      : qualifiedName.slice(prefix.length).replaceAll('.', '$');
+    if (!files.has(filePath)) files.set(filePath, sourceTypes(dir, filePath));
+    const { prefix, declarations } = files.get(filePath);
+    const synthesized = declarations.get(JSON.stringify([startLine, name, qualifiedName]));
+    assert.notEqual(
+      synthesized,
+      undefined,
+      `No source declaration for ${node.id} (${qualifiedName})`,
+    );
+    const binary = synthesized ? name : qualifiedName.slice(prefix.length).replaceAll('.', '$');
     return `${filePath}#${prefix}${binary}`;
   };
 }
