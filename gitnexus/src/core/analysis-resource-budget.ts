@@ -23,6 +23,11 @@ export interface AnalysisResourceRequest {
   preferredWorkers?: number;
   /** Resume/sync can admit embeddings without reserving parser workers. */
   includeParsing?: boolean;
+  /** False when the parser pool cannot enforce a worker's own heap cap (V8's
+   * flags are frozen, or the heap flags read do not explain the main heap);
+   * every worker then inherits the main heap and is charged for it. Defaults
+   * to true. */
+  workerHeapCapEnforced?: boolean;
   graphPoolBytes?: number;
   /** LadybugDB COPY accounting uses OS-page-sized granules. */
   graphPoolGranuleRatio?: number;
@@ -161,20 +166,33 @@ export function resolveAnalysisResourceBudget(
     request.workerHeapMb === undefined
       ? undefined
       : integer(request.workerHeapMb, 'worker heap reservation');
+  // The worker count the operator asked for (1 when automatic): every admission
+  // must fit these, and the budget reports them as parse.requestedWorkers.
   const requiredWorkers = includeParsing ? (request.workers ?? 1) : 0;
   // The parser pool enforces this cap on every worker it spawns, so a worker is
   // charged its own heap and native allowance, never the main heap.
   const workerReserveMb = (explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB;
+  // When it cannot, every worker inherits the main heap. Charge each one that
+  // heap and leave room for it, as before workers had enforced caps.
+  const inheritsMainHeap = request.workerHeapCapEnforced === false;
   const parseBaseMb = headroomMb + supervisorMb + graphPoolMb;
   const parseFixedMb = parseBaseMb + requiredWorkers * workerReserveMb;
   // The main heap holds the analysis peak, so it is sized first: it takes what
   // the pools, headroom and required workers leave. Workers only add speed.
-  const maximumMainMb = totalMb - Math.max(embeddingFixedMb, parseFixedMb);
+  const maximumMainMb = inheritsMainHeap
+    ? Math.min(
+        totalMb - Math.max(embeddingFixedMb, parseFixedMb),
+        Math.floor(
+          (totalMb - parseBaseMb - requiredWorkers * WORKER_NATIVE_MB) / (requiredWorkers + 1),
+        ),
+      )
+    : totalMb - Math.max(embeddingFixedMb, parseFixedMb);
   const mainHeapMb =
     request.mainHeapMb === undefined
       ? Math.min(
           16_384,
           maximumMainMb,
+          inheritsMainHeap ? Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)) : Infinity,
           request.mainHeapLimitMb === undefined
             ? Infinity
             : Math.max(MIN_MAIN_HEAP_MB, integer(request.mainHeapLimitMb, 'main heap limit')),
@@ -185,8 +203,12 @@ export function resolveAnalysisResourceBudget(
   // choice; the larger floor is only the automatic sizing policy.
   const minimumMainMb = request.mainHeapMb === undefined ? MIN_MAIN_HEAP_MB : 200;
   if (mainHeapMb < minimumMainMb || mainHeapMb > maximumMainMb) {
+    const requiredMainMb = Math.max(minimumMainMb, request.mainHeapMb ?? 0);
+    const requiredWorkerMb = inheritsMainHeap
+      ? Math.max(requiredMainMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB
+      : workerReserveMb;
     const minimum =
-      Math.max(minimumMainMb, request.mainHeapMb ?? 0) + Math.max(embeddingFixedMb, parseFixedMb);
+      requiredMainMb + Math.max(embeddingFixedMb, parseBaseMb + requiredWorkers * requiredWorkerMb);
     throw new Error(
       `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations. ` +
         'Reduce explicit reservations or concurrent analyses, or increase available RAM. ' +
@@ -206,15 +228,22 @@ export function resolveAnalysisResourceBudget(
   ) {
     throw new Error(`Worker heap reservation must be at least ${MIN_WORKER_HEAP_MB} MiB`);
   }
+  const chargedWorkerMb = inheritsMainHeap
+    ? Math.max(mainHeapMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB
+    : workerReserveMb;
   const workers = !includeParsing
     ? 0
     : request.workers === undefined
-      ? Math.min(desiredWorkers, Math.floor(workerBudgetMb / workerReserveMb))
+      ? Math.min(desiredWorkers, Math.floor(workerBudgetMb / chargedWorkerMb))
       : desiredWorkers;
+  const ownWorkerHeapMb =
+    explicitWorkerHeapMb ??
+    Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB);
   const workerHeapMb = !includeParsing
     ? 0
-    : (explicitWorkerHeapMb ??
-      Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB));
+    : inheritsMainHeap
+      ? Math.max(mainHeapMb, ownWorkerHeapMb)
+      : ownWorkerHeapMb;
   const parseReservedMb =
     headroomMb +
     supervisorMb +

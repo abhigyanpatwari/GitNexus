@@ -321,11 +321,13 @@ A larger total can also increase headroom and pool sizes, so it may take more
 than that minimum. Watch mode accepts the same family budget and drains active
 work before shutdown.
 
-When setting the heap manually with `GITNEXUS_MEMORY=off`, use a positive
-`--max-old-space-size=<MiB>`. A combined `--max-heap-size` can override the
-worker cap. An explicit zero on the command line can restore a superseded
-`NODE_OPTIONS` value. A percentage pin can enlarge the heap of later workers.
-The worker startup path requires mutable V8 flags.
+When setting the heap manually with `GITNEXUS_MEMORY=off`, parser workers keep
+their caps under `--max-old-space-size`, `--max-semi-space-size`,
+`--max-heap-size` and `--max-old-space-size-percentage`, in every spelling Node
+and V8 accept, and other workers keep the main heap those flags give. If V8's
+flags are frozen (`--freeze-flags-after-init`) or the flags analyze reads do not
+match the heap V8 reports, parser workers keep the main heap and admission
+charges each one for it.
 
 `Unable to allocate memory` / `The buffer pool is full` during graph writes
 refers to LadybugDB's native buffer pool. Increasing `NODE_OPTIONS`,

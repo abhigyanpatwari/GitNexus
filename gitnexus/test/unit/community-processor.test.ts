@@ -362,6 +362,11 @@ describe('community-processor', () => {
         const mocked = {
           ...actual,
           setFlagsFromString: (flags: string) => void flagWrites.push(flags),
+          // The main heap those flags give: old space plus three 64 MiB semi-spaces.
+          getHeapStatistics: () => ({
+            ...actual.getHeapStatistics(),
+            heap_size_limit: (3000 + 3 * 64) * 1024 * 1024,
+          }),
         };
         return { ...mocked, default: mocked };
       });

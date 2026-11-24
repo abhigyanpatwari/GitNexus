@@ -169,6 +169,8 @@ describe('analyzeCommand heap respawn', () => {
       vi.stubEnv('GLIBC_TUNABLES', undefined);
       vi.stubEnv('GITNEXUS_WORKER_POOL_SIZE', undefined);
       vi.stubEnv('GITNEXUS_ANALYSIS_SUPERVISOR_BYTES', undefined);
+      // No heap flag is set here, so V8's default limit is the live one.
+      getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4144 * 1024 ** 2 });
       try {
         if (workers === undefined) {
           const { resolveHostAnalysisResources } =
@@ -279,7 +281,8 @@ describe('analyzeCommand heap respawn', () => {
 
   it('re-execs with the auto cap when ambient NODE_OPTIONS pins a smaller heap (#2649)', async () => {
     process.env.NODE_OPTIONS = '--max-old-space-size=4096';
-    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 4096 * 1024 * 1024 });
+    // What V8 gives that pin: its old space plus a 48 MiB young generation.
+    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: (4096 + 48) * 1024 * 1024 });
     mockSpawnExit();
 
     const { _captureLogger } = await import('../../src/core/logger.js');

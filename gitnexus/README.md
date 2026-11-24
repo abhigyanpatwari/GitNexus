@@ -870,9 +870,13 @@ If analyze says the repository doesn't fit, do what the message says:
 To set the main-thread heap yourself on a memory-constrained host, pass
 `--memory-budget <mb>`: analyze re-runs with exactly that V8 heap, overriding
 the auto-sizer and any `--max-old-space-size` pin. During parser startup,
-the pool temporarily clears `--max-old-space-size` and `--max-semi-space-size`
-so V8 can apply the worker's own limits. Community-detection workers request
-the inherited heap settings.
+the pool temporarily clears `--max-old-space-size`, `--max-semi-space-size`
+and `--max-heap-size` so V8 can apply the worker's own limits.
+Community-detection workers get the main heap those flags give (under
+`--max-heap-size` alone, slightly more). When the flags must not be cleared,
+because `--freeze-flags-after-init` froze them or the flags analyze reads from
+the command line and `NODE_OPTIONS` do not match the main heap V8 reports,
+parser workers keep the main heap and admission charges each one for it.
 
 Use `--resource-budget <MiB>` to set the reservation for parsing and embeddings,
 including the frontend, main heap, workers, native pools, embedding model, input

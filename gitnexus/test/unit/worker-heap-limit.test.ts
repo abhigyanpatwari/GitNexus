@@ -4,86 +4,189 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // V8 flags are process-wide: record the lease's flag writes instead of
 // applying them to the test process.
+// The main isolate's live heap limit is stubbed too, so each case can state
+// the limit its flags give.
 const setFlags = vi.hoisted(() => vi.fn<(flags: string) => void>());
+const mainHeap = vi.hoisted(() => ({ limitMb: 3048 }));
 vi.mock('node:v8', async () => {
   const actual = await vi.importActual<typeof import('node:v8')>('node:v8');
-  const mocked = { ...actual, setFlagsFromString: setFlags };
+  const mocked = {
+    ...actual,
+    setFlagsFromString: setFlags,
+    getHeapStatistics: () => ({
+      ...actual.getHeapStatistics(),
+      heap_size_limit: mainHeap.limitMb * 1024 * 1024,
+    }),
+  };
   return { ...mocked, default: mocked };
 });
 
 import {
-  inheritedOldSpaceMb,
-  inheritedSemiSpaceMb,
-  inheritedWorkerResourceLimits,
+  inheritedHeap,
+  percentageOldSpaceMb,
   spawnWithOwnHeapLimit,
+  workerHeapCapEnforceable,
 } from '../../src/core/ingestion/workers/worker-heap-limit.js';
 
 const MIB = 1024 * 1024;
 const fakeWorker = (): Worker => new EventEmitter() as unknown as Worker;
 
-describe('inheritedOldSpaceMb', () => {
+describe('inheritedHeap', () => {
+  const heap = (execArgv: string[], nodeOptions: string, limitMb: number) =>
+    inheritedHeap(execArgv, nodeOptions, limitMb * MIB, 49_152 * MIB, 0);
+
   it.each([
-    ['an execArgv value', ['--max-old-space-size=3000'], '', 3000],
-    ['a NODE_OPTIONS value', [], '--max-old-space-size=2000', 2000],
+    [
+      'an execArgv size',
+      ['--max-old-space-size=3000'],
+      '',
+      3048,
+      ['--max-old-space-size=3000'],
+      { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 48 },
+    ],
     [
       'execArgv over NODE_OPTIONS',
       ['--max-old-space-size=3000'],
       '--max-old-space-size=2000',
-      3000,
+      3096,
+      ['--max-old-space-size=3000'],
+      { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 96 },
     ],
     [
-      'the last repeated value',
-      ['--max-old-space-size=1000', '--max-old-space-size=3000'],
-      '',
-      3000,
-    ],
-    ['the underscore spelling', ['--max_old_space_size=2500'], '', 2500],
-    ['a space-separated value', [], '--max-old-space-size 1800', 1800],
-    ['no flag', [], '', 0],
-    ['an unrelated semi-space flag', ['--max-semi-space-size=64'], '', 0],
-  ])('reads %s', (_label, execArgv, nodeOptions, expected) => {
-    expect(inheritedOldSpaceMb(execArgv, nodeOptions, 9999 * MIB)).toBe(expected);
-  });
-
-  it('uses the measured main limit under a percentage flag, which beats an explicit size', () => {
-    expect(
-      inheritedOldSpaceMb(
-        ['--max-old-space-size=3000'],
-        '--max-old-space-size-percentage=25',
-        12336 * MIB,
-      ),
-    ).toBe(12336);
-    expect(inheritedOldSpaceMb(['--max-old-space-size-percentage=25'], '', 12336.7 * MIB)).toBe(
-      12336,
-    );
-  });
-});
-
-describe('inheritedSemiSpaceMb', () => {
-  it.each([
-    ['an execArgv value', ['--max-semi-space-size=128'], '', 128],
-    ['a NODE_OPTIONS value', [], '--max-semi-space-size=64', 64],
-    ['execArgv over NODE_OPTIONS', ['--max-semi-space-size=128'], '--max-semi-space-size=64', 128],
-    ['the underscore spelling', ['--max_semi_space_size=32'], '', 32],
-    ['an unrelated old-space flag', ['--max-old-space-size=3000'], '', 0],
-  ])('reads %s', (_label, execArgv, nodeOptions, expected) => {
-    expect(inheritedSemiSpaceMb(execArgv, nodeOptions)).toBe(expected);
-  });
-});
-
-describe('inheritedWorkerResourceLimits', () => {
-  it.each([
-    [
-      'both flags',
+      'old and semi-space flags',
       ['--max-old-space-size=3000', '--max-semi-space-size=128'],
       '',
+      3384,
+      ['--max-old-space-size=3000', '--max-semi-space-size=128'],
       { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 384 },
     ],
-    ['old space only', [], '--max-old-space-size=2000', { maxOldGenerationSizeMb: 2000 }],
-    ['semi-space only', ['--max-semi-space-size=64'], '', { maxYoungGenerationSizeMb: 192 }],
-    ['no flag', [], '', undefined],
-  ])('reproduces the heap a worker inherits from %s', (_label, execArgv, nodeOptions, expected) => {
-    expect(inheritedWorkerResourceLimits(execArgv, nodeOptions)).toEqual(expected);
+    [
+      'a semi-space flag V8 rounds up to a power of two',
+      [],
+      '--max-old-space-size=3000 --max-semi-space-size=10',
+      3048,
+      ['--max-old-space-size=3000', '--max-semi-space-size=10'],
+      { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 48 },
+    ],
+    [
+      'a semi-space flag alone, over the default old space',
+      ['--max-semi-space-size=64'],
+      '',
+      4288,
+      ['--max-semi-space-size=64'],
+      { maxOldGenerationSizeMb: 4096, maxYoungGenerationSizeMb: 192 },
+    ],
+    [
+      '--max-heap-size with a smaller old space, whose young generation fills the rest',
+      ['--max-heap-size=3000', '--max-old-space-size=1000'],
+      '',
+      4072,
+      ['--max-old-space-size=1000', '--max-heap-size=3000'],
+      { maxOldGenerationSizeMb: 1000, maxYoungGenerationSizeMb: 3072 },
+    ],
+    [
+      '--max-heap-size with a larger old space',
+      ['--max-heap-size=3000', '--max-old-space-size=5000'],
+      '',
+      5001.5,
+      ['--max-old-space-size=5000', '--max-heap-size=3000'],
+      { maxOldGenerationSizeMb: 5000, maxYoungGenerationSizeMb: 1.5 },
+    ],
+    [
+      '--max-heap-size and a semi-space flag',
+      ['--max-heap-size=3000', '--max-semi-space-size=64'],
+      '',
+      3000,
+      ['--max-semi-space-size=64', '--max-heap-size=3000'],
+      { maxOldGenerationSizeMb: 2808, maxYoungGenerationSizeMb: 192 },
+    ],
+    [
+      '--max-heap-size alone, as the whole limit in old space',
+      ['--max-heap-size=3072'],
+      '',
+      3072,
+      ['--max-heap-size=3072'],
+      { maxOldGenerationSizeMb: 3072 },
+    ],
+    ['no flag', [], '', 4144, [], undefined],
+    // V8 ignores a value out of its bounds, so it is no flag at all.
+    [
+      'an out-of-bounds size V8 ignored',
+      ['--max-old-space-size=100000000000000000000'],
+      '',
+      4144,
+      [],
+      undefined,
+    ],
+    [
+      'an out-of-bounds --max-heap-size beside a size the limit confirms',
+      ['--max-old-space-size=3000', '--max-heap-size=100000000000000000000'],
+      '',
+      3048,
+      ['--max-old-space-size=3000'],
+      { maxOldGenerationSizeMb: 3000, maxYoungGenerationSizeMb: 48 },
+    ],
+    [
+      'an explicit zero over NODE_OPTIONS',
+      ['--max-old-space-size=0'],
+      '--max-old-space-size=800',
+      4144,
+      [],
+      undefined,
+    ],
+  ])('reads %s', (_label, execArgv, nodeOptions, limitMb, flags, limits) => {
+    expect(heap(execArgv, nodeOptions, limitMb)).toEqual({ flags, limits, consistent: true });
+  });
+
+  it.each([
+    [
+      'a size V8 accepts but JavaScript cannot hold exactly',
+      ['--max-old-space-size=9007199254740993'],
+      '',
+      4144,
+    ],
+    ['a size that leaves no young generation', ['--max-old-space-size=4144'], '', 4144],
+    ['a size the live limit contradicts', [], '--max-old-space-size=2000', 3048],
+    [
+      'a semi-space flag the live limit contradicts',
+      ['--max-old-space-size=3000', '--max-semi-space-size=64'],
+      '',
+      3048,
+    ],
+    ['a --max-heap-size the live limit contradicts', ['--max-heap-size=3072'], '', 4144],
+    [
+      'an inexact --max-heap-size beside a size the limit confirms',
+      ['--max-old-space-size=3000', '--max-heap-size=9007199254740993'],
+      '',
+      3048,
+    ],
+  ])('is not consistent with %s', (_label, execArgv, nodeOptions, limitMb) => {
+    expect(heap(execArgv, nodeOptions, limitMb)).toEqual({
+      flags: [],
+      limits: undefined,
+      consistent: false,
+    });
+  });
+
+  it("restores the old space Node's percentage formula gives, checked against the live limit", () => {
+    // 25% of the cgroup limit whenever Node reports one, even above physical RAM.
+    const percentage = (limitMb: number, totalMb: number, constrainedMb: number) =>
+      inheritedHeap(
+        ['--max-old-space-size=3000'],
+        '--max-old-space-size-percentage=25',
+        limitMb * MIB,
+        totalMb * MIB,
+        constrainedMb * MIB,
+      );
+    expect(percentage(12_336, 49_152, 0).flags).toEqual(['--max-old-space-size=12288']);
+    expect(percentage(2096, 49_152, 8192).flags).toEqual(['--max-old-space-size=2048']);
+    expect(percentage(15_408, 34_304, 61_440)).toEqual({
+      flags: ['--max-old-space-size=15360'],
+      limits: { maxOldGenerationSizeMb: 15_360, maxYoungGenerationSizeMb: 48 },
+      consistent: true,
+    });
+    // A limit the formula does not explain leaves the flags unread.
+    expect(percentage(12_400, 49_152, 0).consistent).toBe(false);
   });
 });
 
@@ -97,6 +200,7 @@ describe('spawnWithOwnHeapLimit', () => {
     nodeOptions = process.env.NODE_OPTIONS;
     process.execArgv = ['--max-old-space-size=3000'];
     delete process.env.NODE_OPTIONS;
+    mainHeap.limitMb = 3048;
   });
 
   afterEach(() => {
@@ -177,6 +281,7 @@ describe('spawnWithOwnHeapLimit', () => {
   it('clears and restores the semi-space flag with the old-space flag', () => {
     process.execArgv = ['--max-old-space-size=3000'];
     process.env.NODE_OPTIONS = '--max-semi-space-size=128';
+    mainHeap.limitMb = 3000 + 3 * 128;
     const worker = spawnWithOwnHeapLimit(fakeWorker);
     expect(setFlags.mock.calls).toEqual([['--max-old-space-size=0'], ['--max-semi-space-size=0']]);
     worker.emit('online');
@@ -202,6 +307,121 @@ describe('spawnWithOwnHeapLimit', () => {
     expect(setFlags).not.toHaveBeenCalled();
     expect(worker.listenerCount('online')).toBe(0);
   });
+
+  it.each([
+    [
+      'a quoted NODE_OPTIONS value',
+      [],
+      '--max-old-space-size="3000"',
+      3048,
+      ['--max-old-space-size=0'],
+      ['--max-old-space-size=3000'],
+    ],
+    [
+      '--max-heap-size',
+      ['--max-heap-size=3072'],
+      '',
+      3072,
+      ['--max-heap-size=0'],
+      ['--max-heap-size=3072'],
+    ],
+    [
+      '--max-heap-size with a smaller old space',
+      ['--max-heap-size=3000', '--max-old-space-size=1000'],
+      '',
+      4072,
+      ['--max-old-space-size=0', '--max-heap-size=0'],
+      ['--max-old-space-size=1000', '--max-heap-size=3000'],
+    ],
+  ])('clears and restores %s', (_label, argv, options, limitMb, cleared, restored) => {
+    process.execArgv = argv;
+    process.env.NODE_OPTIONS = options;
+    mainHeap.limitMb = limitMb;
+    const worker = spawnWithOwnHeapLimit(fakeWorker);
+    expect(setFlags.mock.calls.map(([flags]) => flags)).toEqual(cleared);
+    worker.emit('online');
+    expect(setFlags.mock.calls.map(([flags]) => flags)).toEqual([...cleared, ...restored]);
+  });
+
+  it('does not restore a NODE_OPTIONS heap that an explicit command-line zero overrides', () => {
+    process.execArgv = ['--max-old-space-size=0'];
+    process.env.NODE_OPTIONS = '--max-old-space-size=800';
+    spawnWithOwnHeapLimit(fakeWorker).emit('online');
+    expect(setFlags).not.toHaveBeenCalled();
+  });
+
+  it('releases each worker once, whichever of online, message and exit comes first', () => {
+    const [first, second] = [fakeWorker(), fakeWorker()];
+    spawnWithOwnHeapLimit(() => first);
+    spawnWithOwnHeapLimit(() => second);
+    // All three settle events from one worker count once: the other worker is
+    // still starting, so the flags stay cleared.
+    first.emit('online');
+    first.emit('message', { type: 'ready' });
+    first.emit('exit', 0);
+    expect(setFlags.mock.calls).toEqual([['--max-old-space-size=0']]);
+    second.emit('online');
+    expect(setFlags.mock.calls).toEqual([
+      ['--max-old-space-size=0'],
+      ['--max-old-space-size=3000'],
+    ]);
+  });
+
+  it('skips the lease when V8 flags are frozen, since any flag write would abort', () => {
+    process.execArgv = ['--freeze-flags-after-init', '--max-old-space-size=3000'];
+    const worker = spawnWithOwnHeapLimit(fakeWorker);
+    worker.emit('online');
+    expect(setFlags).not.toHaveBeenCalled();
+    expect(worker.listenerCount('online')).toBe(0);
+  });
+
+  it('skips the lease when the flags it reads do not explain the main heap', () => {
+    // NODE_OPTIONS says 2000, but the main isolate runs with 3000 + 48.
+    process.execArgv = [];
+    process.env.NODE_OPTIONS = '--max-old-space-size=2000';
+    const worker = spawnWithOwnHeapLimit(fakeWorker);
+    worker.emit('online');
+    expect(setFlags).not.toHaveBeenCalled();
+    expect(worker.listenerCount('online')).toBe(0);
+  });
+});
+
+describe('workerHeapCapEnforceable', () => {
+  it.each([
+    ['no flags', [], '', 4144, true],
+    [
+      'frozen flags with no heap flag, which leave nothing to clear',
+      ['--freeze-flags-after-init'],
+      '',
+      4144,
+      true,
+    ],
+    [
+      'frozen flags with a heap flag',
+      ['--freeze-flags-after-init', '--max-old-space-size=3000'],
+      '',
+      3048,
+      false,
+    ],
+    [
+      'frozen flags with a NODE_OPTIONS heap flag',
+      ['--freeze-flags-after-init'],
+      '--max-old-space-size=3000',
+      3048,
+      false,
+    ],
+    [
+      'frozen, then unfrozen',
+      ['--freeze-flags-after-init', '--no-freeze-flags-after-init', '--max-old-space-size=3000'],
+      '',
+      3048,
+      true,
+    ],
+    ['a heap flag the live limit confirms', ['--max-old-space-size=3000'], '', 3048, true],
+    ['a heap flag the live limit contradicts', ['--max-old-space-size=3000'], '', 4144, false],
+  ])('is %s -> %s', (_label, argv, nodeOptions, limitMb, expected) => {
+    expect(workerHeapCapEnforceable(argv, nodeOptions, limitMb * MIB)).toBe(expected);
+  });
 });
 
 describe('spawnWithInheritedHeap', () => {
@@ -221,6 +441,7 @@ describe('spawnWithInheritedHeap', () => {
     nodeOptions = process.env.NODE_OPTIONS;
     process.execArgv = ['--max-old-space-size=3000', '--max-semi-space-size=64'];
     delete process.env.NODE_OPTIONS;
+    mainHeap.limitMb = 3000 + 3 * 64;
   });
 
   afterEach(() => {
@@ -276,5 +497,30 @@ describe('spawnWithInheritedHeap', () => {
     }).emit('online');
     expect(limits).toEqual([undefined]);
     expect(setFlags).not.toHaveBeenCalled();
+  });
+});
+
+describe('percentageOldSpaceMb', () => {
+  it('applies the percentage to physical RAM, or to the cgroup limit', () => {
+    const total = 32_768 * MIB;
+    expect(percentageOldSpaceMb(['--max-old-space-size-percentage=25'], '', total, 0)).toBe(8192);
+    expect(percentageOldSpaceMb([], '--max-old-space-size-percentage=12.5', total, 0)).toBe(4096);
+    expect(
+      percentageOldSpaceMb(['--max-old-space-size-percentage=50'], '', total, 8192 * MIB),
+    ).toBe(4096);
+    expect(percentageOldSpaceMb(['--max-old-space-size=3000'], '', total, 0)).toBeUndefined();
+    // Node takes a cgroup limit even above physical RAM, but not UINT64_MAX.
+    expect(
+      percentageOldSpaceMb(['--max-old-space-size-percentage=25'], '', total, 61_440 * MIB),
+    ).toBe(15_360);
+    expect(percentageOldSpaceMb(['--max-old-space-size-percentage=25'], '', total, 2 ** 64)).toBe(
+      8192,
+    );
+    // Whole MB first, as Node does: 60% of 1.9 MiB is 60% of 1 MB, so 0.
+    expect(percentageOldSpaceMb(['--max-old-space-size-percentage=60'], '', 1.9 * MIB, 0)).toBe(0);
+    // Read by argument: the name inside an --eval source is not the flag.
+    expect(
+      percentageOldSpaceMb(['--eval', 'f("--max-old-space-size-percentage=50")'], '', total, 0),
+    ).toBeUndefined();
   });
 });

@@ -375,6 +375,25 @@ describe('analysis resource admission', () => {
     expect(isConstrainedPdgBuild(false, budget)).toBe(false);
   });
 
+  it.each([
+    [10, 2639, 2639],
+    [16, 4300, 4300],
+  ])(
+    'charges every worker the main heap when the cap cannot be enforced (%i GiB)',
+    (gib, mainHeapMb, workerHeapMb) => {
+      // Frozen V8 flags: workers inherit the main heap, so admission sizes them
+      // as before workers had their own caps.
+      const budget = resolveAnalysisResourceBudget({
+        ...container(gib),
+        workerHeapCapEnforced: false,
+      });
+      expect(budget.mainHeapMb).toBe(mainHeapMb);
+      expect(budget.parse.workers).toBe(1);
+      expect(budget.parse.workerHeapMb).toBe(workerHeapMb);
+      expect(budget.parse.reservedBytes).toBeLessThanOrEqual(budget.totalBytes);
+    },
+  );
+
   it('keys the PDG write guard on the requested worker count, not the admitted one', () => {
     // --pdg --resource-budget 6144 --memory-budget 2048 on 4 CPUs, no --workers:
     // admission now fits more than one worker, but the graph write that the
