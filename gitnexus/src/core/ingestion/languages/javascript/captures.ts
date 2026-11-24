@@ -22,9 +22,8 @@
  *      story one level down — it is the only way JavaScript can declare a
  *      field's type at all — and emits `@type-binding.class-field` (#2833).
  *
- *   4. **Shared synthesis passes** — destructuring, for-of map-tuple, and
- *      instanceof narrowing passes are duplicated from `typescript/captures.ts`
- *      (they are pure AST operations with no grammar-specific logic).
+ *   4. **Shared synthesis passes** — Map tuple slots and instanceof guards use
+ *      the same capture rules as TypeScript.
  *
  * Derives captures from its inputs and records CommonJS classification for
  * immediate side-channel collection. Performs no I/O.
@@ -39,18 +38,17 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
-import {
-  collectEsmExportEvidence,
-  esmExportVerdict,
-  isEsmDefaultExport,
-} from '../../ts-js-export-marker.js';
+import { collectEsmExportEvidence, addEsmExportMarkerCaptures } from '../../ts-js-export-marker.js';
 import { splitImportStatement } from '../typescript/import-decomposer.js';
 import { getJsParser, getJsScopeQuery, jsCachedTreeMatchesGrammar } from './query.js';
 import { computeTsArityMetadata } from '../typescript/arity-metadata.js';
 import { synthesizeTsReceiverBinding } from '../typescript/receiver-binding.js';
 import { unboundCallableName } from '../typescript/unbound-callables.js';
 import { isArrayMethodCallbackArrow } from '../typescript/array-callback.js';
-import { isStaticClassFieldBinding } from '../typescript/captures.js';
+import {
+  isStaticClassFieldBinding,
+  synthesizeForOfMapTupleBindings,
+} from '../typescript/captures.js';
 import { reducesToContainedType } from '../typescript/interpret.js';
 
 /** JavaScript's spelling of a class-field declaration — the TypeScript grammar
@@ -618,78 +616,6 @@ function synthesizeDestructuringBindings(root: SyntaxNode, out: CaptureMatch[]):
   }
 }
 
-function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
-    if (node.type !== 'for_in_statement') continue;
-    const left = node.childForFieldName('left');
-    const right = node.childForFieldName('right');
-    if (left === null || right === null) continue;
-    if (left.type !== 'array_pattern' || right.type !== 'identifier') continue;
-    const rhs = right.text;
-    let slot = 0;
-    for (const child of left.namedChildren) {
-      if (child === null || child.type !== 'identifier') continue;
-      const localName = child.text;
-      out.push({
-        '@type-binding.name': syntheticCapture('@type-binding.name', child, localName),
-        '@type-binding.type': syntheticCapture(
-          '@type-binding.type',
-          child,
-          `__MAP_TUPLE_${slot}__:${rhs}`,
-        ),
-        '@type-binding.map-tuple-entry': syntheticCapture(
-          '@type-binding.map-tuple-entry',
-          child,
-          String(slot),
-        ),
-      });
-      slot++;
-    }
-  }
-}
-
-function synthesizeInstanceofNarrowings(root: SyntaxNode, out: CaptureMatch[]): void {
-  const stack: SyntaxNode[] = [root];
-  for (;;) {
-    const node = stack.pop();
-    if (node === undefined) break;
-    for (const child of node.namedChildren) {
-      if (child !== null) stack.push(child);
-    }
-    if (node.type !== 'if_statement') continue;
-    const cond = node.childForFieldName('condition');
-    if (cond === null) continue;
-    const inner = cond.type === 'parenthesized_expression' ? cond.namedChildren[0] : cond;
-    if (inner === null || inner.type !== 'binary_expression') continue;
-    const op = inner.childForFieldName('operator');
-    const left = inner.childForFieldName('left');
-    const right = inner.childForFieldName('right');
-    if (op === null || left === null || right === null) continue;
-    if (op.type !== 'instanceof') continue;
-    if (left.type !== 'identifier') continue;
-    if (right.type !== 'identifier') continue;
-    const varName = left.text;
-    const typeName = right.text;
-    const cons = node.childForFieldName('consequence');
-    if (cons === null) continue;
-    out.push({
-      '@type-binding.name': syntheticCapture('@type-binding.name', cons, varName),
-      '@type-binding.type': syntheticCapture('@type-binding.type', right, typeName),
-      '@type-binding.instanceof-narrow': syntheticCapture(
-        '@type-binding.instanceof-narrow',
-        cons,
-        '1',
-      ),
-    });
-  }
-}
-
 // ─── Constructor field type bindings ─────────────────────────────────────
 
 /**
@@ -932,7 +858,7 @@ export function emitJsScopeCaptures(
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'import_statement') ??
         findNodeAtRange(tree.rootNode, stmtCapture.range, 'export_statement');
       if (stmtNode !== null) {
-        const decomposed = splitImportStatement(stmtNode);
+        const decomposed = splitImportStatement(stmtNode, exportEvidence);
         for (const d of decomposed) out.push(d);
       }
       continue;
@@ -1066,8 +992,8 @@ export function emitJsScopeCaptures(
           fnNode,
           deriveDefaultExportHocName(filePath),
         );
-        // This declaration's name is synthetic, so the later query-name
-        // marker cannot see it. The HOC predicate already proves the export.
+        // The graph gives the exported wrapper a synthetic name. A named
+        // callback's binding is scoped to that function expression.
         grouped['@declaration.is-exported'] = syntheticCapture(
           '@declaration.is-exported',
           fnNode,
@@ -1077,6 +1003,11 @@ export function emitJsScopeCaptures(
           '@declaration.is-default-export',
           fnNode,
           'true',
+        );
+        grouped['@declaration.named-exports'] = syntheticCapture(
+          '@declaration.named-exports',
+          fnNode,
+          '[]',
         );
       }
     }
@@ -1164,24 +1095,7 @@ export function emitJsScopeCaptures(
     // `@declaration.is-exported`: a verdict for every declaration the file's
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
-    const declNameNode = groupedNodes['@declaration.name'];
-    if (exportEvidence !== undefined && declNameNode !== undefined) {
-      const verdict = esmExportVerdict(declNameNode, exportEvidence);
-      if (verdict !== undefined) {
-        grouped['@declaration.is-exported'] = syntheticCapture(
-          '@declaration.is-exported',
-          declNameNode,
-          verdict ? 'true' : 'false',
-        );
-      }
-      if (verdict === true && isEsmDefaultExport(declNameNode, exportEvidence)) {
-        grouped['@declaration.is-default-export'] = syntheticCapture(
-          '@declaration.is-default-export',
-          declNameNode,
-          'true',
-        );
-      }
-    }
+    addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
     out.push(grouped);
 
     // Synthesize `this` receiver type-bindings on class member functions.
@@ -1206,7 +1120,6 @@ export function emitJsScopeCaptures(
   synthesizeConstructorFieldBindings(tree.rootNode, out);
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
-  synthesizeInstanceofNarrowings(tree.rootNode, out);
   synthesizeJsInheritanceReferences(tree.rootNode, out);
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, JS_CALLABLE_CAPTURE_OPTIONS));
 
