@@ -157,7 +157,11 @@ describe('resolveWorkerHeapCapMb (#2649 per-worker heap cap)', () => {
       }
       expect(workerCtorOptions.length).toBeGreaterThan(0);
       expect(workerCtorOptions[0]).toMatchObject({
-        resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: resolveWorkerHeapCapMb(2) },
+        resourceLimits: {
+          stackSizeMb: 16,
+          maxYoungGenerationSizeMb: 96,
+          maxOldGenerationSizeMb: resolveWorkerHeapCapMb(2),
+        },
       });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
@@ -177,10 +181,18 @@ describe('resolveWorkerHeapCapMb (#2649 per-worker heap cap)', () => {
       await legacy.terminate();
       expect(workerCtorOptions).toEqual([
         expect.objectContaining({
-          resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: 768 },
+          resourceLimits: {
+            stackSizeMb: 16,
+            maxYoungGenerationSizeMb: 96,
+            maxOldGenerationSizeMb: 768,
+          },
         }),
         expect.objectContaining({
-          resourceLimits: { stackSizeMb: 16, maxOldGenerationSizeMb: 256 },
+          resourceLimits: {
+            stackSizeMb: 16,
+            maxYoungGenerationSizeMb: 96,
+            maxOldGenerationSizeMb: 256,
+          },
         }),
       ]);
       expect(process.env.GITNEXUS_WORKER_HEAP_MB).toBe('256');

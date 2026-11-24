@@ -23,6 +23,11 @@ export interface AnalysisResourceRequest {
   preferredWorkers?: number;
   /** Resume/sync can admit embeddings without reserving parser workers. */
   includeParsing?: boolean;
+  /** False when the parser pool cannot enforce a worker's own heap cap (V8's
+   * flags are frozen, or the heap flags read do not explain the main heap);
+   * every worker then inherits the main heap and is charged for it. Defaults
+   * to true. */
+  workerHeapCapEnforced?: boolean;
   graphPoolBytes?: number;
   /** LadybugDB COPY accounting uses OS-page-sized granules. */
   graphPoolGranuleRatio?: number;
@@ -40,6 +45,9 @@ export interface AnalysisResourceBudget {
   readonly mainHeapMb: number;
   readonly parse: {
     readonly workers: number;
+    /** Parser workers the operator asked for: the explicit count, or 1 when
+     * automatic sizing chooses it; 0 without parsing. */
+    readonly requestedWorkers: number;
     readonly workerHeapMb: number;
     readonly workerNativeBytes: number;
     readonly graphPoolBytes: number;
@@ -63,7 +71,16 @@ export interface AnalysisResourceBudget {
   };
 }
 
-/** The release corpus was measured with one parser worker and a 6 GiB ceiling. */
+/**
+ * The 6 GiB PDG guard, measured on the release corpus with one requested
+ * parser worker. It has two effects: one native database thread for COPY and
+ * full-text indexing (`run-analyze.ts`), and on Linux with glibc two allocator
+ * arenas for the first analyze child (`cli/analyze.ts`), which also runs the
+ * parser pool. It follows the worker count the operator requested, so when
+ * admission fits several automatic workers beside a small explicit main heap,
+ * they parse under two arenas too: slower than allocator defaults, at a lower
+ * peak RSS (docs/optimize/pdg-spill-time-memory-report.md).
+ */
 export function isConstrainedPdgBuild(
   pdg: boolean | undefined,
   budget: AnalysisResourceBudget,
@@ -72,7 +89,7 @@ export function isConstrainedPdgBuild(
     pdg === true &&
     !budget.automatic &&
     budget.totalBytes <= 6144 * MIB &&
-    budget.parse.workers === 1
+    budget.parse.requestedWorkers === 1
   );
 }
 
@@ -149,25 +166,33 @@ export function resolveAnalysisResourceBudget(
     request.workerHeapMb === undefined
       ? undefined
       : integer(request.workerHeapMb, 'worker heap reservation');
+  // The worker count the operator asked for (1 when automatic): every admission
+  // must fit these, and the budget reports them as parse.requestedWorkers.
   const requiredWorkers = includeParsing ? (request.workers ?? 1) : 0;
+  // The parser pool enforces this cap on every worker it spawns, so a worker is
+  // charged its own heap and native allowance, never the main heap.
+  const workerReserveMb = (explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB;
+  // When it cannot, every worker inherits the main heap. Charge each one that
+  // heap and leave room for it, as before workers had enforced caps.
+  const inheritsMainHeap = request.workerHeapCapEnforced === false;
   const parseBaseMb = headroomMb + supervisorMb + graphPoolMb;
-  const parseFixedMb =
-    parseBaseMb +
-    requiredWorkers * ((explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB);
-  // Node's main-process heap flag overrides Worker resourceLimits. Leave room
-  // for that inherited heap in every required worker, even with a smaller cap.
-  const maximumMainMb = Math.min(
-    totalMb - Math.max(embeddingFixedMb, parseFixedMb),
-    Math.floor(
-      (totalMb - parseBaseMb - requiredWorkers * WORKER_NATIVE_MB) / (requiredWorkers + 1),
-    ),
-  );
+  const parseFixedMb = parseBaseMb + requiredWorkers * workerReserveMb;
+  // The main heap holds the analysis peak, so it is sized first: it takes what
+  // the pools, headroom and required workers leave. Workers only add speed.
+  const maximumMainMb = inheritsMainHeap
+    ? Math.min(
+        totalMb - Math.max(embeddingFixedMb, parseFixedMb),
+        Math.floor(
+          (totalMb - parseBaseMb - requiredWorkers * WORKER_NATIVE_MB) / (requiredWorkers + 1),
+        ),
+      )
+    : totalMb - Math.max(embeddingFixedMb, parseFixedMb);
   const mainHeapMb =
     request.mainHeapMb === undefined
       ? Math.min(
           16_384,
           maximumMainMb,
-          Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)),
+          inheritsMainHeap ? Math.max(MIN_MAIN_HEAP_MB, Math.floor(totalMb * 0.35)) : Infinity,
           request.mainHeapLimitMb === undefined
             ? Infinity
             : Math.max(MIN_MAIN_HEAP_MB, integer(request.mainHeapLimitMb, 'main heap limit')),
@@ -179,15 +204,11 @@ export function resolveAnalysisResourceBudget(
   const minimumMainMb = request.mainHeapMb === undefined ? MIN_MAIN_HEAP_MB : 200;
   if (mainHeapMb < minimumMainMb || mainHeapMb > maximumMainMb) {
     const requiredMainMb = Math.max(minimumMainMb, request.mainHeapMb ?? 0);
+    const requiredWorkerMb = inheritsMainHeap
+      ? Math.max(requiredMainMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB
+      : workerReserveMb;
     const minimum =
-      requiredMainMb +
-      Math.max(
-        embeddingFixedMb,
-        parseBaseMb +
-          requiredWorkers *
-            (Math.max(requiredMainMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) +
-              WORKER_NATIVE_MB),
-      );
+      requiredMainMb + Math.max(embeddingFixedMb, parseBaseMb + requiredWorkers * requiredWorkerMb);
     throw new Error(
       `Resource budget ${totalMb} MiB cannot admit parser/model work; requires at least ${minimum} MiB for these allocations. ` +
         'Reduce explicit reservations or concurrent analyses, or increase available RAM. ' +
@@ -197,8 +218,9 @@ export function resolveAnalysisResourceBudget(
 
   // Explicit worker counts intentionally permit CPU oversubscription, as the
   // parser's existing override does. Reserve every worker's heap/native memory
-  // below; automatic concurrency remains bounded by the usable CPU count.
-  const workerBudgetMb = totalMb - headroomMb - supervisorMb - graphPoolMb - mainHeapMb;
+  // below; automatic concurrency fills what the main heap leaves, bounded by
+  // the usable CPU count.
+  const workerBudgetMb = totalMb - parseBaseMb - mainHeapMb;
   if (
     includeParsing &&
     explicitWorkerHeapMb !== undefined &&
@@ -206,24 +228,22 @@ export function resolveAnalysisResourceBudget(
   ) {
     throw new Error(`Worker heap reservation must be at least ${MIN_WORKER_HEAP_MB} MiB`);
   }
+  const chargedWorkerMb = inheritsMainHeap
+    ? Math.max(mainHeapMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB
+    : workerReserveMb;
   const workers = !includeParsing
     ? 0
     : request.workers === undefined
-      ? Math.min(
-          desiredWorkers,
-          Math.floor(
-            workerBudgetMb /
-              (Math.max(mainHeapMb, explicitWorkerHeapMb ?? MIN_WORKER_HEAP_MB) + WORKER_NATIVE_MB),
-          ),
-        )
+      ? Math.min(desiredWorkers, Math.floor(workerBudgetMb / chargedWorkerMb))
       : desiredWorkers;
+  const ownWorkerHeapMb =
+    explicitWorkerHeapMb ??
+    Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB);
   const workerHeapMb = !includeParsing
     ? 0
-    : Math.max(
-        mainHeapMb,
-        explicitWorkerHeapMb ??
-          Math.min(4096, Math.floor(workerBudgetMb / Math.max(1, workers)) - WORKER_NATIVE_MB),
-      );
+    : inheritsMainHeap
+      ? Math.max(mainHeapMb, ownWorkerHeapMb)
+      : ownWorkerHeapMb;
   const parseReservedMb =
     headroomMb +
     supervisorMb +
@@ -247,6 +267,7 @@ export function resolveAnalysisResourceBudget(
     mainHeapMb,
     parse: Object.freeze({
       workers,
+      requestedWorkers: requiredWorkers,
       workerHeapMb,
       workerNativeBytes: bytes(WORKER_NATIVE_MB, 'worker native reservation'),
       graphPoolBytes,
