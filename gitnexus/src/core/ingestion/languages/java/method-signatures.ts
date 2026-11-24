@@ -1,6 +1,6 @@
 import type { MethodInfo } from '../../method-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
-import { javaTypeText } from './type-spelling.js';
+import { javaTypeText, javaTypeTextWithoutTrivia, stripGaps } from './type-spelling.js';
 
 export function parameterTypes(
   node: SyntaxNode,
@@ -64,7 +64,11 @@ function buildJavaVariadicGraphIds(body: SyntaxNode): Map<number, string> {
     if (group.length < 2) continue;
     for (const { id, signatureSource } of group) {
       const signature = parameterTypes(signatureSource, javaTypeText).slice(0, -1); // drop the varargs marker
-      suffixes.set(id, `#${signature.length}~${signature.join(',')}...`);
+      // Type variables with the same written name can have different erasures.
+      // Preserve their declared bounds in the identity of a generic overload.
+      const variables = signatureSource.childForFieldName('type_parameters');
+      const bounds = variables ? stripGaps(javaTypeTextWithoutTrivia(variables)) : '';
+      suffixes.set(id, `#${signature.length}~${signature.join(',')}...${bounds}`);
     }
   }
   return suffixes;

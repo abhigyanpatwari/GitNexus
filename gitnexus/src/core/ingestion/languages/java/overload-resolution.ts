@@ -810,8 +810,22 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
     if (inherited !== undefined) return inherited;
   }
   if (nearest !== undefined) {
-    if (name.includes('.')) return UNKNOWN_JAVA_TYPE; // qualified nested lookup needs a proven identity
-    const unique = definitionsOfType(nearest, context.filePath, state);
+    let unique = definitionsOfType(nearest, context.filePath, state);
+    if (name.includes('.')) {
+      // A member of a lexically visible local type is in the same Java nest.
+      // Follow the structural owner id, including for legal '$' identifiers.
+      if (nearest.name === nearest.simpleName) return UNKNOWN_JAVA_TYPE;
+      const types = fileTypeIndex(facts, state).bySimpleName;
+      for (const member of name.slice(first.length + 1).split('.')) {
+        const [owner] = unique;
+        if (!owner || unique.length !== 1) return UNKNOWN_JAVA_TYPE;
+        unique = (types.get(member) ?? []).flatMap((type) =>
+          definitionsOfType(type, context.filePath, state).filter(
+            (def) => def.ownerId === owner.nodeId,
+          ),
+        );
+      }
+    }
     return unique.length === 1 ? sourceReference(unique[0]!) : UNKNOWN_JAVA_TYPE;
   }
   if (name.includes('.')) {

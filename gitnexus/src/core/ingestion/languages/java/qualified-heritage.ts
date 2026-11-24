@@ -1,4 +1,4 @@
-import type { ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
+import type { ParsedFile, Range, ReferenceSite, ScopeId, TypeParameter } from 'gitnexus-shared';
 import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 import { platformPackageHasType } from './platform-packages.js';
 import type { JavaWorkspaceTypeInventory, TypeEntry } from './lombok-workspace-proof.js';
@@ -73,33 +73,78 @@ function namedTypes(written: string, inventory: JavaWorkspaceTypeInventory): Qua
   return result;
 }
 
-function headerCanNamePackage(
+type RootOrigin = 'package' | 'shadowed' | 'uncertain' | { type: string; local?: TypeEntry };
+type HeaderParameterLookup = (range: Range, name: string) => RootOrigin;
+
+function classHeaderRoot(
   owner: TypeEntry,
   root: string,
   module: ScopeId,
   inventory: JavaWorkspaceTypeInventory,
-): boolean {
+  parameter: HeaderParameterLookup,
+): RootOrigin | undefined {
   for (let type: TypeEntry | undefined = owner; type !== undefined; type = type.parent) {
-    if (type.fact.simpleName === root || type.fact.typeParameters.includes(root)) return false;
+    if (type.fact.simpleName === root) return 'shadowed';
+    if (type.fact.typeParameters.includes(root)) return parameter(type.fact.range, root);
     if (type !== owner) {
-      if (type.memberNames.has(root)) return false;
+      if (type.memberNames.has(root)) return 'shadowed';
       const inherited = inventory.namesOf(type);
-      if (inherited.unknown || inherited.names.has(root)) return false;
+      if (inherited.unknown || inherited.names.has(root)) return 'shadowed';
     }
-    // A local or anonymous class can see names from an enclosing executable.
-    if (type.parent === undefined) return type.declaringScope === module;
+    if (type.parent === undefined) {
+      return type.declaringScope === module
+        ? undefined
+        : executableHeaderRoot(owner, root, module, inventory, parameter);
+    }
   }
-  return false;
+  return undefined;
 }
 
-type RootOrigin = 'package' | 'shadowed' | 'uncertain' | { type: string };
+/** A local or anonymous declaration can use a package-qualified base. A type
+ * declared in an enclosing block is visible only after its declaration. */
+function executableHeaderRoot(
+  owner: TypeEntry,
+  root: string,
+  module: ScopeId,
+  inventory: JavaWorkspaceTypeInventory,
+  parameter: HeaderParameterLookup,
+): RootOrigin | undefined {
+  const at = owner.fact.range;
+  let nearest: { range: Range; origin: RootOrigin } | undefined;
+  function consider(range: Range, origin: RootOrigin) {
+    if (javaRangeContains(range, at) && (!nearest || javaRangeContains(nearest.range, range))) {
+      nearest = { range, origin };
+    }
+  }
+  for (const method of owner.facts.methods)
+    if (method.typeParameters.includes(root) && javaRangeContains(method.range, at))
+      consider(method.range, parameter(method.range, root));
+  for (const entry of inventory.byFile.get(owner.filePath)?.values() ?? []) {
+    if (entry.declaringScope !== module && entry.fact.simpleName === root)
+      consider(entry.fact.visible, { type: entry.fact.name, local: entry });
+    if (!javaRangeContains(entry.fact.range, at)) continue;
+    if (entry.fact.typeParameters.includes(root))
+      consider(entry.fact.range, parameter(entry.fact.range, root));
+    if (entry === owner || entry.memberNames.has(root)) continue;
+    const inherited = inventory.namesOf(entry);
+    const candidates = membersNamed(inherited.members, root);
+    if (inherited.unknown || candidates.length > 1) consider(entry.fact.range, 'uncertain');
+    else if (candidates[0]) {
+      const member = candidates[0];
+      consider(entry.fact.range, { type: member.fact.name, local: member });
+    }
+  }
+  return nearest?.origin;
+}
 
 function fileRootOrigin(
   owner: TypeEntry,
   root: string,
   inventory: JavaWorkspaceTypeInventory,
 ): RootOrigin {
-  if (inventory.staticImportsType(owner, root) !== false) return 'shadowed';
+  const staticImport = inventory.staticImportsType(owner, root);
+  if (staticImport === 'uncertain') return 'uncertain';
+  if (staticImport === true) return 'shadowed';
   const imports = owner.facts.imports
     .filter((item) => !item.static && !item.wildcard)
     .map((item) => stripGaps(item.name))
@@ -128,6 +173,74 @@ function fileRootOrigin(
     importedType = candidate;
   }
   return importedType ? { type: importedType } : 'package';
+}
+
+function boundRootOrigin(
+  parameter: TypeParameter | undefined,
+  declaration: Range,
+  owner: TypeEntry,
+  inventory: JavaWorkspaceTypeInventory,
+): RootOrigin {
+  if (!parameter) return 'shadowed';
+  if (!parameter.bound) return 'uncertain'; // Object declares no member types.
+  const bound = eraseJavaTypeArguments(stripGaps(parameter.bound));
+  if (!qualifiedName.test(bound)) return 'shadowed';
+  const [first, ...tail] = bound.split('.') as [string, ...string[]];
+  // The bound is read at the parameter declaration, outside the derived class.
+  let nearest: TypeEntry | undefined;
+  for (const type of inventory.byFile.get(owner.filePath)?.values() ?? []) {
+    if (
+      type.fact.simpleName === first &&
+      javaRangeContains(type.fact.visible, declaration) &&
+      (!nearest || javaRangeContains(nearest.fact.visible, type.fact.visible))
+    )
+      nearest = type;
+  }
+  if (nearest) {
+    const accessibleBounds = nestedTypes([{ type: nearest }], tail, inventory).filter((type) =>
+      accessible(type, owner, inventory),
+    );
+    const target = accessibleBounds[0]?.type;
+    if (!target || accessibleBounds.length !== 1) return 'uncertain';
+    return { type: target.fact.name, local: target };
+  }
+  const declared = fileRootOrigin(owner, first, inventory);
+  if (declared === 'package') return bound.includes('.') ? { type: bound } : 'shadowed';
+  return typeof declared === 'string'
+    ? declared
+    : { type: declared.type + bound.slice(first.length) };
+}
+
+function qualifiedCandidates(
+  origin: 'package' | { type: string; local?: TypeEntry },
+  written: string,
+  tail: string,
+  inventory: JavaWorkspaceTypeInventory,
+  cache: Map<string, QualifiedType[]>,
+): QualifiedType[] {
+  // A type root shadows a package. Local roots in different blocks can have
+  // the same source spelling, so use their declaration identity in the cache.
+  let key = written;
+  if (origin !== 'package') {
+    const root = origin.local;
+    key =
+      (root ? root.filePath + '#' + javaOverloadRangeKey(root.fact.range) : origin.type) +
+      '/' +
+      tail;
+  }
+  let candidates = cache.get(key);
+  if (!candidates) {
+    candidates =
+      origin === 'package'
+        ? namedTypes(written, inventory)
+        : nestedTypes(
+            origin.local ? [{ type: origin.local }] : namedTypes(origin.type, inventory),
+            tail.split('.'),
+            inventory,
+          );
+    cache.set(key, candidates);
+  }
+  return candidates;
 }
 
 function sharesTopLevelDeclaration(member: TypeEntry, owner: TypeEntry): boolean {
@@ -195,6 +308,11 @@ export function bindJavaQualifiedHeritage(
     }
     const replacements = new Map<ReferenceSite, ReferenceSite>();
     const fileRoots = new Map<string, RootOrigin>();
+    const parametersAt = new Map<string, readonly TypeParameter[]>();
+    for (const scope of file.scopes) {
+      const parameters = scope.ownedDefs.find((def) => def.typeParameters?.length)?.typeParameters;
+      if (parameters) parametersAt.set(javaOverloadRangeKey(scope.range), parameters);
+    }
     for (const scope of file.scopes) {
       const references = sites.get(scope.id);
       const owner =
@@ -216,8 +334,15 @@ export function bindJavaQualifiedHeritage(
         const dot = written.indexOf('.');
         if (dot < 0 || !written.endsWith('.' + site.name) || !qualifiedName.test(written)) continue;
         const root = written.slice(0, dot);
-        if (!headerCanNamePackage(owner, root, file.moduleScope, inventory)) continue;
-        let origin = fileRoots.get(root);
+        const lexical = classHeaderRoot(owner, root, file.moduleScope, inventory, (range, name) =>
+          boundRootOrigin(
+            parametersAt.get(javaOverloadRangeKey(range))?.find((p) => p.name === name),
+            range,
+            owner,
+            inventory,
+          ),
+        );
+        let origin = lexical ?? fileRoots.get(root);
         if (origin === undefined) {
           origin = fileRootOrigin(owner, root, inventory);
           fileRoots.set(root, origin);
@@ -228,21 +353,13 @@ export function bindJavaQualifiedHeritage(
         }
         if (origin === 'shadowed') continue;
         const qualified = origin === 'package' ? written : origin.type + written.slice(dot);
-        // A type root shadows a package. Follow members from that type only.
-        const cacheKey =
-          origin === 'package' ? written : origin.type + '/' + written.slice(dot + 1);
-        let candidates = typesByName.get(cacheKey);
-        if (candidates === undefined) {
-          candidates =
-            origin === 'package'
-              ? namedTypes(written, inventory)
-              : nestedTypes(
-                  namedTypes(origin.type, inventory),
-                  written.slice(dot + 1).split('.'),
-                  inventory,
-                );
-          typesByName.set(cacheKey, candidates);
-        }
+        const candidates = qualifiedCandidates(
+          origin,
+          written,
+          written.slice(dot + 1),
+          inventory,
+          typesByName,
+        );
         const visible = candidates.filter((candidate) => accessible(candidate, owner, inventory));
         if (visible.length !== 1) {
           replacements.set(site, { ...site, unresolvedInheritanceBase: true });

@@ -9,6 +9,7 @@
       "receiver-unresolved": 1
     }
   },
+  "compiler-conformance/java-bounded-varargs-identities": 2,
   "compiler-conformance/java-callback-qualified-lookalike": 14,
   "compiler-conformance/java-colliding-type-bindings": {
     "sites": 1,
@@ -63,6 +64,7 @@
     }
   },
   "compiler-conformance/java-inherited-interface-methods": { "sites": 0, "implementations": 2 },
+  "compiler-conformance/java-local-qualified-heritage": 3,
   "compiler-conformance/java-overload-lexical": 4,
   "compiler-conformance/java-overload-phases": 9,
   "compiler-conformance/java-private-nested-base": 1,
@@ -70,9 +72,11 @@
   "compiler-conformance/java-qualified-heritage-recovery": {
     "sites": 0,
     "diagnostics": {
-      "compiler.err.cant.resolve.location": 1,
+      "compiler.err.cant.resolve.location": 2,
+      "compiler.err.doesnt.exist": 2,
       "compiler.err.ref.ambiguous": 1,
-      "compiler.err.report.access": 1
+      "compiler.err.report.access": 1,
+      "compiler.err.static.imp.only.classes.and.interfaces": 1
     }
   },
   "compiler-conformance/java-qualified-type-root-shadow": 1,
