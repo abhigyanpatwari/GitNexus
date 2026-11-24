@@ -291,12 +291,12 @@ pool). The pool is per database, and each open database also holds fixed native
 memory outside the pool, so a small container should serve one repository per
 process. For MCP, including `gitnexus serve`'s `/api/mcp`, set
 [`GITNEXUS_MCP_ALLOWED_REPOS`](docs/mcp-reference.md) to one repository; this
-also disables the group tools. The REST routes of `gitnexus serve` have no such
-limit, and their reads (`/api/query`, `/api/graph`, `/api/search`) use the same
-default pool but are not watched by this guard.
+also disables the group tools. `gitnexus serve`'s REST reads have no such limit;
+they use the same default pool but are not watched by this guard.
 
-The pool also bounds the memory one read can use. A read that fails with
-"buffer pool is full" names the remedy: raise `GITNEXUS_LBUG_BUFFER_POOL_SIZE`,
+The pool also bounds the memory one read can use. A read through MCP, the CLI or
+serve's REST routes that fails with "buffer pool is full" names the remedy:
+retry after concurrent reads finish, or raise `GITNEXUS_LBUG_BUFFER_POOL_SIZE`
 and keep it and `GITNEXUS_QUERY_MAX_RSS_MB` below the container memory limit.
 Vector search uses a fixed pool reservation that this setting does not change.
 
