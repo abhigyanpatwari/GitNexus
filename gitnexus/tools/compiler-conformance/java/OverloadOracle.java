@@ -79,7 +79,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         var record = new StringJoiner("\0", "", "\0");
         record.add(Integer.toString(fixtureIndex)).add(kind);
         for (var field : fields) record.add(field);
-        System.out.print(record);
+        System.out.writeBytes(record.toString().getBytes(StandardCharsets.UTF_8));
     }
 
     private String file(CompilationUnitTree unit) {

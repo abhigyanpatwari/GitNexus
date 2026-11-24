@@ -76,6 +76,6 @@ class RecoveryOracle {
         }
     }
     private static void emit(String... fields) {
-        System.out.print(String.join("\0", fields) + "\0");
+        System.out.writeBytes((String.join("\0", fields) + "\0").getBytes(StandardCharsets.UTF_8));
     }
 }
