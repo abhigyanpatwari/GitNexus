@@ -56,6 +56,7 @@ describe.skipIf(process.platform === 'win32')('SonarQube gate', () => {
         ...process.env,
         GITHUB_EVENT_NAME: event,
         MAIN_REVISION: 'abc123',
+        RUNNER_TEMP: '/runner temp',
         LOG: log,
         SCAN_EXIT: String(exit),
       },
@@ -64,6 +65,9 @@ describe.skipIf(process.platform === 'win32')('SonarQube gate', () => {
     expect(result.status, result.stderr).toBe(expected);
     expect(result.stdout).toContain(log);
     expect(result.stdout).toContain('-Dsonar.qualitygate.wait=true');
+    expect(result.stdout.split('\n')).toContain(
+      '-Dsonar.java.binaries=/runner temp/sonar-java-classes',
+    );
     if (event === 'workflow_run') {
       expect(result.stdout).toContain('-Dsonar.branch.name=main');
       expect(result.stdout).toContain('-Dsonar.scm.revision=abc123');

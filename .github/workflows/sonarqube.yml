@@ -47,6 +47,22 @@ jobs:
             sed "s|^SF:|SF:$package/|" "$report"
           done > coverage/lcov.info
 
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Compile Java conformance tools for analysis
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/sonar-java-classes"
+          shopt -s nullglob
+          sources=(gitnexus/tools/compiler-conformance/java/*.java)
+          if (( ${#sources[@]} )); then
+            "$JAVA_HOME/bin/javac" --release 21 -proc:none -encoding UTF-8 \
+              -d "$RUNNER_TEMP/sonar-java-classes" "${sources[@]}"
+          fi
+
       - name: Cache SonarQube packages
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
@@ -69,7 +85,9 @@ jobs:
         env:
           MAIN_REVISION: ${{ github.event.workflow_run.head_sha }}
         run: |
-          args=(-Dsonar.qualitygate.wait=true)
+          args=(-Dsonar.qualitygate.wait=true -Dsonar.java.source=21
+                "-Dsonar.java.binaries=$RUNNER_TEMP/sonar-java-classes"
+                "-Dsonar.java.jdkHome=$JAVA_HOME")
           if [[ "$GITHUB_EVENT_NAME" == workflow_run ]]; then
             args+=(-Dsonar.branch.name=main "-Dsonar.scm.revision=${MAIN_REVISION:?missing Publish revision}")
           fi
