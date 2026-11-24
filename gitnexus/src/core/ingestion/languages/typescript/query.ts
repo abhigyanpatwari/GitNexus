@@ -361,15 +361,7 @@ ${unboundCallableQuery('declaration.function')}
   value: (call_expression
     function: (identifier) @hoc
     arguments: (arguments
-      (arrow_function) @declaration.function)))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      (function_expression) @declaration.function)))
+      [(arrow_function) (function_expression)] @declaration.function)))
   ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ; Member-expression variants exclude callback-taking array methods —
@@ -381,16 +373,7 @@ ${unboundCallableQuery('declaration.function')}
     function: (member_expression
       property: (property_identifier) @callee)
     arguments: (arguments
-      (arrow_function) @declaration.function)))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      (function_expression) @declaration.function)))
+      [(arrow_function) (function_expression)] @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
@@ -405,15 +388,7 @@ ${unboundCallableQuery('declaration.function')}
   value: (call_expression
     function: (identifier) @hoc
     arguments: (arguments
-      (arrow_function) @declaration.function)))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      (function_expression) @declaration.function)))
+      [(arrow_function) (function_expression)] @declaration.function)))
   ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ((pair
@@ -422,16 +397,7 @@ ${unboundCallableQuery('declaration.function')}
     function: (member_expression
       property: (property_identifier) @callee)
     arguments: (arguments
-      (arrow_function) @declaration.function)))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      (function_expression) @declaration.function)))
+      [(arrow_function) (function_expression)] @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Curried pair HOC: create: publicProcedure.mutation(withAuth(async () => {})).
@@ -459,18 +425,7 @@ ${unboundCallableQuery('declaration.function')}
       (call_expression
         function: (identifier)
         arguments: (arguments
-          (arrow_function) @declaration.function)))))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          (function_expression) @declaration.function)))))
+          [(arrow_function) (function_expression)] @declaration.function)))))
   ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ((pair
@@ -482,19 +437,7 @@ ${unboundCallableQuery('declaration.function')}
       (call_expression
         function: (identifier)
         arguments: (arguments
-          (arrow_function) @declaration.function)))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          (function_expression) @declaration.function)))))
+          [(arrow_function) (function_expression)] @declaration.function)))))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ((pair
@@ -505,18 +448,7 @@ ${unboundCallableQuery('declaration.function')}
       (call_expression
         function: (identifier)
         arguments: (arguments
-          (arrow_function) @declaration.function)))))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          (function_expression) @declaration.function)))))
+          [(arrow_function) (function_expression)] @declaration.function)))))
   ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ((pair
@@ -528,19 +460,7 @@ ${unboundCallableQuery('declaration.function')}
       (call_expression
         function: (identifier)
         arguments: (arguments
-          (arrow_function) @declaration.function)))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          (function_expression) @declaration.function)))))
+          [(arrow_function) (function_expression)] @declaration.function)))))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
@@ -617,15 +537,7 @@ ${unboundCallableQuery('declaration.function')}
     value: (call_expression
       function: (identifier)
       arguments: (arguments
-        (arrow_function) @declaration.function))))
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @declaration.name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (function_expression) @declaration.function))))
+        [(arrow_function) (function_expression)] @declaration.function))))
 
 (lexical_declaration
   (variable_declarator
@@ -634,17 +546,7 @@ ${unboundCallableQuery('declaration.function')}
       function: (member_expression
         property: (property_identifier) @callee)
       arguments: (arguments
-        (arrow_function) @declaration.function)))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-(lexical_declaration
-  (variable_declarator
-    name: (identifier) @declaration.name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (function_expression) @declaration.function)))
+        [(arrow_function) (function_expression)] @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 (variable_declaration
@@ -653,15 +555,7 @@ ${unboundCallableQuery('declaration.function')}
     value: (call_expression
       function: (identifier)
       arguments: (arguments
-        (arrow_function) @declaration.function))))
-
-(variable_declaration
-  (variable_declarator
-    name: (identifier) @declaration.name
-    value: (call_expression
-      function: (identifier)
-      arguments: (arguments
-        (function_expression) @declaration.function))))
+        [(arrow_function) (function_expression)] @declaration.function))))
 
 (variable_declaration
   (variable_declarator
@@ -670,17 +564,7 @@ ${unboundCallableQuery('declaration.function')}
       function: (member_expression
         property: (property_identifier) @callee)
       arguments: (arguments
-        (arrow_function) @declaration.function)))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-(variable_declaration
-  (variable_declarator
-    name: (identifier) @declaration.name
-    value: (call_expression
-      function: (member_expression
-        property: (property_identifier) @callee)
-      arguments: (arguments
-        (function_expression) @declaration.function)))
+        [(arrow_function) (function_expression)] @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
@@ -691,14 +575,7 @@ ${unboundCallableQuery('declaration.function')}
   value: (call_expression
     function: (identifier) @hoc
     arguments: (arguments
-      (arrow_function) @declaration.function)))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((export_statement
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      (function_expression) @declaration.function)))
+      [(arrow_function) (function_expression)] @declaration.function)))
   ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ((export_statement
@@ -706,15 +583,7 @@ ${unboundCallableQuery('declaration.function')}
     function: (member_expression
       property: (property_identifier) @callee)
     arguments: (arguments
-      (arrow_function) @declaration.function)))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-((export_statement
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      (function_expression) @declaration.function)))
+      [(arrow_function) (function_expression)] @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Method definitions — regular + private (#field) methods.
