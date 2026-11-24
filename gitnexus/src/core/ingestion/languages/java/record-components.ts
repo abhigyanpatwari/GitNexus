@@ -11,6 +11,7 @@ import type {
 } from '../../method-types.js';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { javaTypeText } from './type-spelling.js';
+import { addJavaVariadicGraphIds } from './method-signatures.js';
 
 const javaExplicitMethodExtractor = createMethodExtractor(javaMethodConfig);
 
@@ -155,6 +156,7 @@ export const javaRecordMethodExtractor: MethodExtractor = {
   language: SupportedLanguages.Java,
   extract(node: SyntaxNode, context: MethodExtractorContext): ExtractedMethods | null {
     const extracted = javaExplicitMethodExtractor.extract(node, context);
+    for (const method of extracted?.methods ?? []) addJavaVariadicGraphIds(node, method);
     if (extracted === null || node.type !== 'record_declaration') return extracted;
 
     const explicitAccessors = explicitZeroArgAccessorNames(node);
@@ -167,6 +169,11 @@ export const javaRecordMethodExtractor: MethodExtractor = {
       .filter((method): method is MethodInfo => method !== null);
 
     return { ...extracted, methods: [...extracted.methods, ...implicitAccessors] };
+  },
+  extractFromNode(node, context) {
+    const method = javaExplicitMethodExtractor.extractFromNode?.(node, context) ?? null;
+    if (method) addJavaVariadicGraphIds(node, method);
+    return method;
   },
 };
 

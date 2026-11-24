@@ -1,3 +1,4 @@
+import { parameterTypes } from './method-signatures.js';
 import type { CaptureMatch, Range } from 'gitnexus-shared';
 import { synthesizeJavaTypeIdentity, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
@@ -172,35 +173,6 @@ function isType(node: SyntaxNode): boolean {
 
 function typeIdentity(node: SyntaxNode): string | undefined {
   return synthesizeJavaTypeIdentity(node)?.name ?? node.childForFieldName('name')?.text;
-}
-
-function parameterTypes(node: SyntaxNode): string[] {
-  const parameters = node.childForFieldName('parameters')?.namedChildren ?? [];
-  const result: string[] = [];
-  let variadic = false;
-  for (const parameter of parameters) {
-    if (!['formal_parameter', 'spread_parameter'].includes(parameter.type)) continue;
-    const declarator = parameter.namedChildren.find(
-      (child) => child.type === 'variable_declarator',
-    );
-    const name = parameter.childForFieldName('name') ?? declarator?.childForFieldName('name');
-    const type =
-      parameter.childForFieldName('type') ??
-      parameter.namedChildren.find(
-        (child) =>
-          child.type !== 'modifiers' &&
-          child.type !== 'variable_declarator' &&
-          child.id !== name?.id,
-      );
-    const dimensions =
-      parameter.childForFieldName('dimensions')?.text ??
-      declarator?.childForFieldName('dimensions')?.text ??
-      '';
-    result.push(type === undefined || type === null ? '?' : type.text + dimensions);
-    variadic ||= parameter.type === 'spread_parameter';
-  }
-  if (variadic) result.push('varargs');
-  return result;
 }
 
 function typeParameters(node: SyntaxNode): string[] {

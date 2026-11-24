@@ -31,10 +31,7 @@
     }
   },
   "compiler-conformance/java-overload-lexical": 4,
-  "compiler-conformance/java-overload-phases": {
-    "sites": 9,
-    "methods": false
-  },
+  "compiler-conformance/java-overload-phases": 9,
   "compiler-conformance/java-private-nested-base": 1,
   "compiler-conformance/java-qualified-type-root-shadow": 1,
   "compiler-conformance/java-r3-inherited-member-root": 3,
@@ -57,6 +54,7 @@
     }
   },
   "compiler-conformance/java-sam-split-package": 8,
+  "compiler-conformance/java-varargs-overload-identity": 7,
   "java/java-consumer-before-provider": 2,
   "java/java-cross-file": 3,
   "lang-resolution/java-ambiguous": 0,

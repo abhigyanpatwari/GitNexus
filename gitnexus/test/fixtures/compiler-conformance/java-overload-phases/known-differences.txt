@@ -1,7 +1,4 @@
 # The boxed argument is a method call. Its type is unknown to GitNexus.
-# The zero-argument varargs selection agrees, but both overloads share a published graph node.
 Missing from GitNexus: Oracle.java:25:8..25:33 resolved Oracle.java#10:4 (Oracle.boxed(java.lang.Number))
 Missing from GitNexus: edge Oracle.java#22:4 -> Oracle.java#10:4
-Missing from GitNexus: edge Oracle.java#22:4 -> Oracle.java#14:4
 Unexpected in GitNexus: Oracle.java:25:8..25:33 overload-unknown
-Unexpected in GitNexus: edge Oracle.java#22:4 -> Oracle.java#13:4
