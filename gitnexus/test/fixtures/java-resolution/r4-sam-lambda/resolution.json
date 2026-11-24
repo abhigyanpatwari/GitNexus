@@ -25,7 +25,7 @@
     {"caller": "Method:app/Main.java:Refused.objectTarget#0", "member": "audit", "source": ["app/Main.java#47:2"], "targets": 0},
     {"caller": "Method:app/Main.java:Refused.arityMismatch#0", "member": "audit", "published": [], "compilerTargets": ["cb/model/Item.java#2:42"], "source": ["app/Main.java#48:2"]},
     {"caller": "Method:app/Main.java:Refused.rawTarget#0", "member": "audit", "source": ["app/Main.java#49:2"], "targets": 0},
-    {"caller": "Method:app/Main.java:Refused.wildcardTarget#0", "member": "audit", "published": [], "compilerTargets": ["app/Item.java#2:42"], "source": ["app/Main.java#50:2"]},
+    {"caller": "Method:app/Main.java:Refused.wildcardTarget#0", "member": "audit", "source": ["app/Main.java#50:2"]},
     {"caller": "Method:app/Main.java:Ambiguous.call#0", "member": "audit", "published": [], "compilerTargets": ["cb/model/Item.java#2:42"], "source": ["app/Main.java#70:2"]},
     {"caller": "Method:app/Main.java:Ambiguous.grouped#0", "member": "audit", "published": [], "compilerTargets": ["cb/model/Item.java#2:42"], "source": ["app/Main.java#71:2"]},
     {"caller": "Method:app/Main.java:StaticContext.call#0", "member": "audit", "published": [], "compilerTargets": ["cb/model/Item.java#2:42"], "source": ["app/Main.java#77:2"]},

@@ -99,7 +99,7 @@ async function verifyJavaCompileTimeOverloadFamilies() {
     for (const [caller, method, status] of [
       ['nullAmbiguous', 'nullable', 'ambiguous'],
       ['crossedAmbiguous', 'crossed', 'ambiguous'],
-      ['unknownArgument', 'opaque', 'unknown'],
+      ['unknownArgument', 'opaque', 'inapplicable'],
       ['knownInapplicable', 'forbidden', 'inapplicable'],
       ['polyTie', 'polyAmbiguous', 'ambiguous'],
       ['staticUnqualified', 'staticChoice', 'inapplicable'],
@@ -146,21 +146,6 @@ async function verifyJavaCompileTimeOverloadFamilies() {
             outcome.callerId?.includes(`.${caller}#`),
         ),
         true,
-      );
-    }
-    // reports unmodeled method-call arguments even when javac can select an overload
-    {
-      assert.deepEqual(targets(result, 'inaccessibleAlternate', 'accessFiltered'), []);
-      assert.ok(
-        ((items) =>
-          items.some(
-            (item) =>
-              item?.kind === 'suppressed' &&
-              item?.name === 'accessFiltered' &&
-              item?.reason === 'overload-unknown' &&
-              item?.callerId?.includes('.inaccessibleAlternate#') &&
-              item?.detail === 'Unsupported Java argument, generic constraint, or subtype evidence',
-          ))(getResolutionOutcomes(result)),
       );
     }
     // uses the selected interface declaration return despite a covariant implementation return

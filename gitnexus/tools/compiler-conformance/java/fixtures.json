@@ -97,8 +97,9 @@
   "compiler-conformance/java-review-followups-per-reference": 2,
   "compiler-conformance/java-review-followups-r5-anonymous-this": 4,
   "compiler-conformance/java-sam-object-identity": {
-    "sites": 5,
+    "sites": 6,
     "rejections": {
+      "receiver-unresolved": 1,
       "inapplicable": 1
     }
   },

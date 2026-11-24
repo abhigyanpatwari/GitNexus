@@ -28,6 +28,7 @@ export function javacReports(fixtures) {
     producer: 'javac',
     diagnostics: {},
     sites: [],
+    binarySites: [],
     edges: [],
     memberReferences: [],
     declarations: [],
@@ -53,6 +54,9 @@ export function javacReports(fixtures) {
     if (kind === 'diagnostic') {
       const [code] = read(1);
       report.diagnostics[code] = (report.diagnostics[code] ?? 0) + 1;
+    } else if (kind === 'binary') {
+      const [file, start, end, name, target] = read(5);
+      report.binarySites.push({ file, start, end, name, target, status: 'external' });
     } else if (kind === 'reference') {
       const [targetKind, file, start, end, from, to] = read(6);
       assert.ok(
@@ -108,6 +112,15 @@ export function javacReports(fixtures) {
   return reports;
 }
 
+/** Include binary targets in the same method families as the source comparison. */
+export function selectedJavacCalls(report, families) {
+  const names = new Set(
+    families ?? report.declarations.filter((d) => d.kind === 'Method').map((d) => d.name),
+  );
+  const binarySites = report.binarySites.filter((site) => names.has(site.name));
+  return { names, binarySites, sites: [...report.sites, ...binarySites] };
+}
+
 // The standalone javac report uses binary names. Compare its type endpoints
 // in the same spelling Java publishes for source types with a canonical name.
 export function qualifiedJavacReport(report) {
@@ -139,7 +152,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error('Usage: node javac-report.mjs <fixture-directory> [method-name ...]');
     process.exitCode = 1;
   } else {
-    const [report] = javacReports([{ dir, families: families.length ? families : undefined }]);
-    console.log(JSON.stringify(report, null, 2));
+    const selected = families.length ? families : undefined;
+    const [report] = javacReports([{ dir, families: selected }]);
+    const { sites, binarySites } = selectedJavacCalls(report, selected);
+    console.log(JSON.stringify({ ...report, sites, binarySites }, null, 2));
   }
 }

@@ -53,6 +53,11 @@ export function gitNexusCallReport(
       end: `${endLine}:${endCol}`,
     };
     if (outcome.kind === 'suppressed') {
+      if (outcome.reason === 'external-call-target') {
+        assert.ok(outcome.externalTarget, 'An external call needs its binary declaration');
+        sites.push({ ...site, status: 'external', target: outcome.externalTarget });
+        continue;
+      }
       const status = ambiguousReasons.includes(outcome.reason) ? 'ambiguous' : outcome.reason;
       sites.push({ ...site, status });
     } else {

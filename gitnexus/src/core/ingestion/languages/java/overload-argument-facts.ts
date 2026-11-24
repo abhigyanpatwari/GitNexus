@@ -3,12 +3,20 @@ import { javaTypeTextWithoutTrivia } from './type-spelling.js';
 import type { CaptureMatch, Range } from 'gitnexus-shared';
 import { synthesizeJavaTypeIdentity, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
+import { implicitParameterNames } from './sam-lambda-captures.js';
 
 /** Written types retain their declaration context; a caller's imports cannot
  * reinterpret a parameter declared in another file. These are capture facts,
  * not the receiver-oriented (container-unwrapped) TypeRef hints. */
 export type JavaArgumentFact =
   | { readonly kind: 'typed'; readonly spelling: string; readonly at: Range }
+  | { readonly kind: 'implicit-void-lambda'; readonly arity: number }
+  | {
+      readonly kind: 'invocation';
+      readonly name: string;
+      readonly at: Range;
+      readonly qualifierShadowed: boolean;
+    }
   | { readonly kind: 'null' }
   | {
       readonly kind: 'factory';
@@ -64,11 +72,22 @@ export interface JavaOverloadFileFacts {
   readonly types: readonly JavaOverloadTypeFact[];
   readonly methods: readonly JavaOverloadMethodFact[];
   readonly calls: readonly JavaOverloadCallFact[];
+  readonly enhancedFor?: readonly {
+    readonly name: string;
+    readonly body: Range;
+    readonly value: JavaArgumentFact;
+  }[];
 }
 
 const files = new Map<string, JavaOverloadFileFacts>();
 const callIndexes = new Map<string, ReadonlyMap<string, JavaOverloadCallFact>>();
 const UNKNOWN: JavaArgumentFact = { kind: 'unknown' };
+const statementExpressions = new Set([
+  'assignment_expression',
+  'update_expression',
+  'method_invocation',
+  'object_creation_expression',
+]);
 const typeNodes = new Set([
   'class_declaration',
   'interface_declaration',
@@ -93,6 +112,34 @@ const lexicalScopes = new Set([
 
 export const javaOverloadRangeKey = (range: Range): string =>
   `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
+
+/** JLS 15.27.2: a void-compatible block has no value-returning statement
+ * belonging to this lambda. Nested class and lambda returns have their own target. */
+function implicitVoidLambda(lambda: SyntaxNode): JavaArgumentFact {
+  const parameters = implicitParameterNames(lambda);
+  const body = lambda.childForFieldName('body');
+  if (!parameters || !body || body.hasError) return UNKNOWN;
+  if (body.type === 'block') {
+    const pending = [...body.namedChildren];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (
+        node.type === 'return_statement' &&
+        node.namedChildren.some(
+          (child) => child.type !== 'line_comment' && child.type !== 'block_comment',
+        )
+      )
+        return UNKNOWN;
+      if (
+        node.type !== 'lambda_expression' &&
+        node.type !== 'class_body' &&
+        !typeNodes.has(node.type)
+      )
+        pending.push(...node.namedChildren);
+    }
+  } else if (!statementExpressions.has(body.type)) return UNKNOWN;
+  return { kind: 'implicit-void-lambda', arity: parameters.length };
+}
 
 export function setJavaOverloadFacts(
   filePath: string,
@@ -230,6 +277,7 @@ export function captureJavaOverloadFacts(
     }),
   );
   const callNodes: SyntaxNode[] = [];
+  const enhancedForNodes: { name: string; body: Range; value: SyntaxNode }[] = [];
   const bindings = new Map<string, Binding[]>();
   const localBindings = new Map<number, Map<string, Binding[]>>();
   const imports: { name: string; wildcard: boolean; static: boolean }[] = [];
@@ -461,6 +509,10 @@ export function captureJavaOverloadFacts(
     } else if (node.type === 'enhanced_for_statement') {
       const type = node.childForFieldName('type')?.text;
       const body = node.childForFieldName('body');
+      const value = node.childForFieldName('value');
+      const name = node.childForFieldName('name')?.text;
+      if (type === 'var' && body && value && name)
+        enhancedForNodes.push({ name, body: rangeOf(body), value });
       if (body !== null)
         addBinding(
           node.childForFieldName('name')?.text,
@@ -596,6 +648,8 @@ export function captureJavaOverloadFacts(
       at,
     });
     switch (node.type) {
+      case 'lambda_expression':
+        return implicitVoidLambda(node);
       case 'decimal_integer_literal':
       case 'hex_integer_literal':
       case 'octal_integer_literal':
@@ -668,7 +722,15 @@ export function captureJavaOverloadFacts(
       case 'method_invocation': {
         const name = node.childForFieldName('name')?.text;
         const owner = node.childForFieldName('object');
-        if ((name !== 'asList' && name !== 'singletonList') || owner === null) return UNKNOWN;
+        if (name === undefined) return UNKNOWN;
+        if ((name !== 'asList' && name !== 'singletonList') || owner === null)
+          return {
+            kind: 'invocation',
+            name,
+            at: rangeOf(node),
+            qualifierShadowed:
+              owner !== null && bindingAt(owner.text.split('.')[0]!, owner) !== undefined,
+          };
         const args =
           node
             .childForFieldName('arguments')
@@ -746,7 +808,21 @@ export function captureJavaOverloadFacts(
       staticContext: callable !== undefined && modifiers(callable).includes('static'),
     };
   });
-  return { version: 1, packageName, imports, types, methods, calls };
+  return {
+    version: 1,
+    packageName,
+    imports,
+    types,
+    methods,
+    calls,
+    ...(enhancedForNodes.length && {
+      enhancedFor: enhancedForNodes.map(({ name, body, value }) => ({
+        name,
+        body,
+        value: expression(value),
+      })),
+    }),
+  };
 }
 
 /** Side-channel revival is fail-closed: malformed data never revives stale
@@ -763,7 +839,13 @@ export function isJavaOverloadFileFacts(value: unknown): value is JavaOverloadFi
   const argument = (arg: JavaArgumentFact, depth = 0): boolean => {
     if (depth > 12 || arg === null || typeof arg !== 'object') return false;
     if (arg.kind === 'null' || arg.kind === 'unknown') return true;
+    if (arg.kind === 'implicit-void-lambda')
+      return Number.isSafeInteger(arg.arity) && arg.arity > 0;
     if (arg.kind === 'typed') return typeof arg.spelling === 'string' && range(arg.at);
+    if (arg.kind === 'invocation')
+      return (
+        typeof arg.name === 'string' && typeof arg.qualifierShadowed === 'boolean' && range(arg.at)
+      );
     return (
       arg.kind === 'factory' &&
       typeof arg.owner === 'string' &&
@@ -777,6 +859,12 @@ export function isJavaOverloadFileFacts(value: unknown): value is JavaOverloadFi
   };
   return (
     facts.version === 1 &&
+    (facts.enhancedFor === undefined ||
+      (Array.isArray(facts.enhancedFor) &&
+        facts.enhancedFor.every(
+          (loop) =>
+            loop && typeof loop.name === 'string' && range(loop.body) && argument(loop.value),
+        ))) &&
     typeof facts.packageName === 'string' &&
     Array.isArray(facts.imports) &&
     facts.imports.every(

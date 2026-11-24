@@ -1,7 +1,0 @@
-# GitNexus suppresses some element calls when a local or package type shadows the JDK container.
-Missing from GitNexus: app/LocalClassList.java:9:24..9:32 resolved models/Other.java#1:37 (models.Other.save())
-Missing from GitNexus: edge app/LocalClassList.java#6:2 -> models/Other.java#1:37
-Missing from GitNexus: edge sib/SiblingList.java#4:20 -> models/Other.java#1:37
-Missing from GitNexus: sib/SiblingList.java:4:82..4:90 resolved models/Other.java#1:37 (models.Other.save())
-Unexpected in GitNexus: app/LocalClassList.java:9:24..9:32 receiver-type-unresolved
-Unexpected in GitNexus: sib/SiblingList.java:4:82..4:90 receiver-type-unresolved

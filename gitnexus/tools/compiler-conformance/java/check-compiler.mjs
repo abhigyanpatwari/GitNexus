@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,7 +7,7 @@ import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
 import { compareCodeUnits, compareReports } from '../compare.mjs';
 import { gitNexusCallReport } from '../gitnexus-report.mjs';
 import { writeConversionMatrix } from './conversion-matrix.mjs';
-import { javacReports, qualifiedJavacReport } from './javac-report.mjs';
+import { javacReports, qualifiedJavacReport, selectedJavacCalls } from './javac-report.mjs';
 import {
   compareConstructors,
   compareImplementations,
@@ -32,31 +32,13 @@ for (const name of [...new Set([...Object.keys(corpus), ...projects])].sort(comp
   });
 }
 
-// Compare exact differences so a new regression and an unexpectedly fixed gap both fail CI.
-function checkDifferences(fixture, differences) {
-  const file = fixture.differences
-    ? new URL(fixture.differences, import.meta.url)
-    : path.join(fixture.dir, 'known-differences.txt');
-  if ((!fixture.differences && !existsSync(file)) || process.argv.includes('--strict')) {
-    if (differences.length) throw new Error(differences.join('\n'));
-    return;
-  }
-  const expected = readFileSync(file, 'utf8')
-    .split(/\r?\n/)
-    .filter((line) => line && !line.startsWith('#'))
-    .sort(compareCodeUnits);
-  assert.ok(expected.length, 'Empty known-differences file');
-  differences.sort(compareCodeUnits);
-  assert.deepEqual(differences, expected, 'Recorded compiler differences changed');
-  console.log(fixture.name + ' known differences:\n  ' + differences.join('\n  '));
-}
-
 const generated = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-conversion-'));
 try {
   const expectedSites = writeConversionMatrix(generated);
   fixtures.push({ name: 'overload-conversion-matrix', dir: generated, sites: 100 });
   const references = javacReports(fixtures);
   let totalSites = 0;
+  let totalBinarySites = 0;
   let totalMemberReferences = 0;
   const failures = [];
   for (const [i, fixture] of fixtures.entries()) {
@@ -101,10 +83,9 @@ try {
       if (fixture.constructors) compareConstructors(ref, pipeline, javaTypeIdentity);
       if (fixture.implementations !== undefined)
         compareImplementations(ref.implementations, pipeline.graph, fixture.implementations);
+      const { names, sites, binarySites } = selectedJavacCalls(ref, fixture.families);
       const actual = gitNexusCallReport(pipeline, {
-        names:
-          fixture.families ??
-          ref.declarations.filter((d) => d.kind === 'Method').map((d) => d.name),
+        names,
         ambiguousReasons: ['member-lookup-ambiguous', 'overload-ambiguous'],
         excludeEdgeReasons: ['interface-dispatch'],
         typeCaller: javaTypeIdentity,
@@ -112,9 +93,9 @@ try {
       for (const site of actual.sites) {
         if (site.status === 'overload-inapplicable') site.status = 'inapplicable';
       }
-      if (ref.sites.length || ref.edges.length) {
+      if (sites.length || ref.edges.length) {
         try {
-          compareReports(ref, actual);
+          compareReports({ ...ref, sites }, actual);
         } catch (error) {
           if (error.constructor !== Error) throw error;
           differences.push(...error.message.split('\n'));
@@ -123,8 +104,9 @@ try {
         assert.deepEqual(actual.sites, [], 'Unexpected call-site outcomes');
         assert.deepEqual(actual.edges, [], 'Unexpected call edges');
       }
-      checkDifferences(fixture, differences);
+      if (differences.length) throw new Error(differences.join('\n'));
       totalSites += ref.sites.length;
+      totalBinarySites += binarySites.length;
       totalMemberReferences += ref.memberReferences.length;
       console.log(
         `${fixture.name}: ${ref.sites.length} call sites, ${ref.memberReferences.length} member references, ${ref.heritage.length} source heritage edges`,
@@ -136,7 +118,7 @@ try {
   if (failures.length)
     throw new AggregateError(failures, `${failures.length} Java conformance fixtures failed`);
   console.log(
-    `${fixtures.length} Java fixtures, ${totalSites} compiler call sites, ${totalMemberReferences} member references`,
+    `${fixtures.length} Java fixtures, ${totalSites} source call sites, ${totalBinarySites} binary call sites, ${totalMemberReferences} member references`,
   );
 } finally {
   rmSync(generated, { recursive: true, force: true });

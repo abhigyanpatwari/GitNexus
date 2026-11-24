@@ -44,7 +44,7 @@
     {"caller": "missingStaticType", "member": "select", "published": [], "compilerTargets": ["client/MissingStaticType.java#2:26"], "source": ["client/MissingStaticType.java#2:82"]},
     {"caller": "conflictingStaticTypes", "member": "select", "published": [], "compilerTargets": ["client/ConflictingStaticType.java#2:30"], "source": ["client/ConflictingStaticType.java#2:86"]},
     {"caller": "equivalentPreferred", "member": "preferred", "published": [], "compilerTargets": ["Cases.java#40:18"], "source": ["Cases.java#93:2"]},
-    {"caller": "inaccessibleAlternate", "member": "accessFiltered", "published": [], "compilerTargets": ["Cases.java#20:47"], "source": ["Cases.java#95:2"]},
+    {"caller": "inaccessibleAlternate", "member": "accessFiltered", "source": ["Cases.java#95:2"]},
     {"caller": "chain", "member": "make", "source": ["Cases.java#86:2"]},
     {"caller": "chain", "member": "run", "source": ["Cases.java#86:2"]},
     {"caller": "assignedChain", "member": "make", "source": ["Cases.java#87:2"]},

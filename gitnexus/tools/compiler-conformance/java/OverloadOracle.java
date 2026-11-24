@@ -8,6 +8,7 @@ import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.element.Name;
 import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.type.TypeKind;
 import javax.lang.model.util.ElementFilter;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
@@ -303,6 +304,24 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         }
     }
 
+    private String binaryTarget(Element element) {
+        if (!(element instanceof ExecutableElement method)
+                || !(method.getEnclosingElement() instanceof TypeElement owner)
+                || trees.getPath(owner) != null) return null;
+        var parameters = new StringJoiner(",", "(", ")");
+        for (var parameter : method.getParameters()) {
+            parameters.add(types.erasure(parameter.asType()).toString());
+        }
+        return elements.getBinaryName(owner) + "#" + method.getSimpleName() + parameters;
+    }
+
+    private boolean erroneousReceiver(ExpressionTree select) {
+        if (!(select instanceof MemberSelectTree member)) return false;
+        var selectPath = new TreePath(getCurrentPath(), select);
+        var receiver = trees.getTypeMirror(new TreePath(selectPath, member.getExpression()));
+        return receiver != null && receiver.getKind() == TypeKind.ERROR;
+    }
+
     @Override public Void visitMethodInvocation(MethodInvocationTree call, MethodTree caller) {
         var select = call.getMethodSelect();
         var name = select instanceof MemberSelectTree member
@@ -330,8 +349,16 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                 var element = trees.getElement(getCurrentPath());
                 var path = element == null ? null : trees.getPath(element);
                 if (path == null || !(path.getLeaf() instanceof MethodTree method)) {
-                    if (allSource) return super.visitMethodInvocation(call, caller);
-                    throw new IllegalStateException("Expected source declaration for " + call);
+                    var binary = binaryTarget(element);
+                    if (binary != null) {
+                        emit("binary", file(unit), position(unit, start), position(unit, end), name, binary);
+                    } else if (!(element instanceof ExecutableElement) && erroneousReceiver(select)) {
+                        emit("receiver-unresolved", file(unit), position(unit, start), position(unit, end),
+                                callerDeclaration(unit, caller), "", "");
+                    } else if (!allSource) {
+                        throw new IllegalStateException("Expected source declaration for " + call);
+                    }
+                    return super.visitMethodInvocation(call, caller);
                 }
                 target = declaration(path.getCompilationUnit(), method);
                 signature = element.getEnclosingElement() + "." + element;

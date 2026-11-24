@@ -14,7 +14,7 @@
     {"caller": "Method:single/Use.java:Use.go#0", "member": "audit", "source": ["single/Use.java#2:12"], "targets": 0},
     {"caller": "Method:chosen/Use.java:Use.go#0", "member": "audit", "source": ["chosen/Use.java#2:12"], "targets": 0},
     {"caller": "Method:external/Use.java:Use.go#0", "member": "audit", "published": [], "compilerTargets": ["model/Other.java#1:36"], "source": ["external/Use.java#1:30"]},
-    {"caller": "Method:wildcard/Use.java:Use.go#0", "member": "save", "published": [], "compilerTargets": ["model/User.java#2:20"], "source": ["wildcard/Use.java#1:30"]},
+    {"caller": "Method:wildcard/Use.java:Use.go#0", "member": "save", "source": ["wildcard/Use.java#1:30"]},
     {"caller": "Method:raw/Use.java:Use.go#0", "member": "save", "source": ["raw/Use.java#1:25"], "targets": 0}
   ]
 }

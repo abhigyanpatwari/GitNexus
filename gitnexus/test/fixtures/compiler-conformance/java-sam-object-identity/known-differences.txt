@@ -1,6 +1,0 @@
-# The tools differ on a rejected functional interface and on source spans for callback registrations.
-Missing from GitNexus: p/Main.java:6:20..6:40 inapplicable
-Missing from GitNexus: p/Main.java:7:20..7:44 resolved p/Main.java#5:26 (p.Main.canonical(p.Canonical))
-Missing from GitNexus: p/Main.java:8:30..8:53 resolved p/Main.java#5:58 (p.Main.imported(p.Imported))
-Unexpected in GitNexus: edge p/Main.java#6:2 -> p/Main.java#5:2
-Unexpected in GitNexus: p/Main.java:6:31..6:39 receiver-unresolved

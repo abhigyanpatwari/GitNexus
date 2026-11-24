@@ -71,6 +71,8 @@ import {
 import { clearJavaPackageFacts } from './package-facts.js';
 import {
   resolveJavaConstructorCall,
+  populateJavaIterableBindings,
+  javaExternalCallTarget,
   resolveJavaReceiverMember,
   resolveJavaSelectedMethodImplementation,
   resolveJavaUnqualifiedCall,
@@ -139,12 +141,8 @@ const javaScopeResolver: ScopeResolver = {
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
   // A call whose every argument is an implicitly typed lambda is decided by
   // potential applicability where the general selector has no evidence.
-  resolveReceiverMember: (owner, member, site, scopes, model) =>
-    selectJavaLambdaOverload(
-      resolveJavaReceiverMember(owner, member, site, scopes, model),
-      site,
-      scopes,
-    ),
+  resolveReceiverMember: resolveJavaReceiverMember,
+  externalCallTarget: javaExternalCallTarget,
   resolveUnqualifiedCall: (site, scopes, model) =>
     selectJavaLambdaOverload(resolveJavaUnqualifiedCall(site, scopes, model), site, scopes),
   resolveConstructorCall: resolveJavaConstructorCall,
@@ -197,7 +195,10 @@ const javaScopeResolver: ScopeResolver = {
     indexJavaEnclosingLocalAliases(parsedFiles, indexes);
   },
   resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
-  populateRangeBindings: populateJavaCrossFileReturnTypes,
+  populateRangeBindings: (files, indexes, context) => {
+    populateJavaCrossFileReturnTypes(files, indexes);
+    if (context.model) populateJavaIterableBindings(files, indexes, context.model);
+  },
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes, ctx) => {
     attachSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);

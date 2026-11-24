@@ -12,6 +12,7 @@ export type JavaPrimitive =
   | 'double';
 export type JavaType =
   | { readonly kind: 'primitive'; readonly name: JavaPrimitive }
+  | { readonly kind: 'variable'; readonly declaration: string }
   | {
       readonly kind: 'reference';
       readonly name: string;
@@ -136,6 +137,8 @@ export function sameJavaType(left: JavaType, right: JavaType, depth = 0): JavaVe
   if (left.kind === 'unknown' || right.kind === 'unknown') return 'unknown';
   if (left.kind !== right.kind) return 'no';
   if (left.kind === 'null') return 'yes';
+  if (left.kind === 'variable' && right.kind === 'variable')
+    return left.declaration === right.declaration ? 'yes' : 'no';
   if (left.kind === 'primitive' && right.kind === 'primitive')
     return left.name === right.name ? 'yes' : 'no';
   if (left.kind === 'array' && right.kind === 'array')
@@ -159,6 +162,14 @@ export function javaSubtype(
   if (depth >= MAX_JAVA_TYPE_DEPTH) return 'unknown';
   if (from.kind === 'unknown' || to.kind === 'unknown') return 'unknown';
   if (sameJavaType(from, to, depth) === 'yes') return 'yes';
+  if (from.kind === 'variable' || to.kind === 'variable') {
+    if (
+      from.kind === 'null' ||
+      (to.kind === 'reference' && to.name === 'java.lang.Object' && to.sourceId === undefined)
+    )
+      return 'yes';
+    return 'unknown';
+  }
   if (from.kind === 'null') return to.kind === 'reference' || to.kind === 'array' ? 'yes' : 'no';
   if (from.kind === 'primitive' || to.kind === 'primitive') {
     return from.kind === 'primitive' &&

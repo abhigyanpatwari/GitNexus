@@ -1334,6 +1334,7 @@ export function runScopeResolution(
   const tRangeBindStart = PROF ? process.hrtime.bigint() : 0n;
   if (provider.populateRangeBindings !== undefined) {
     provider.populateRangeBindings(parsedFiles, indexes, {
+      model: input.model,
       fileContents: getFileContents(),
       treeCache,
     });
@@ -2396,7 +2397,32 @@ export function runScopeResolution(
 
   logHeapProbe('sr-end', `lang=${provider.language} parsedFiles=${emitParsedFiles.length}`);
 
-  for (const outcome of resolutionOutcomes) input.recordResolutionOutcome?.(outcome);
+  for (const [i, outcome] of resolutionOutcomes.entries()) {
+    if (
+      provider.externalCallTarget &&
+      outcome.kind === 'suppressed' &&
+      outcome.siteKind === 'call' &&
+      outcome.range &&
+      outcome.candidateIds.length === 0 &&
+      (outcome.reason === 'receiver-unresolved' || outcome.reason === 'receiver-type-unresolved')
+    ) {
+      const target = provider.externalCallTarget(
+        outcome.filePath,
+        outcome.name,
+        outcome.range,
+        indexes,
+        input.model,
+      );
+      if (target !== undefined) {
+        resolutionOutcomes[i] = {
+          ...outcome,
+          reason: 'external-call-target',
+          externalTarget: target,
+        };
+      }
+    }
+    input.recordResolutionOutcome?.(resolutionOutcomes[i]!);
+  }
   input.onResolved?.({
     parsedFiles: emitParsedFiles,
     indexes,

@@ -1,4 +1,0 @@
-# Several callback registrations have a published edge without a matching call-site range.
-Missing from GitNexus: src/h/Caller.java:12:30..12:56 resolved src/h/Harness.java#7:2 (h.Harness.qualified(cb.QualifiedCb))
-Missing from GitNexus: src/h/Caller.java:5:4..5:26 resolved src/h/Harness.java#6:2 (h.Harness.take0(cb.Cb0))
-Missing from GitNexus: src/h/Caller.java:9:25..9:47 resolved src/h/Harness.java#6:2 (h.Harness.take0(cb.Cb0))

@@ -76,7 +76,9 @@ All Java source fixtures run through this command, including inline snippets and
 
 For a project with unresolved dependencies, the manifest can specify the exact javac diagnostic codes and counts in `diagnostics`. The comparison still checks every source declaration and source inheritance edge that javac can attribute. An added or missing diagnostic fails the run.
 
-Fixtures with existing disagreements record them in `known-differences.txt` alongside the source. Two shared projects point to difference files from the manifest to preserve their benchmark input trees. CI prints the exact differences and fails if one appears, changes, or disappears unexpectedly. To fail on every disagreement, including the recorded ones, run `npm run test:conformance:java -- --strict`.
+The Java compiler comparison is strict by default. A difference in a source range, target, rejection, or published edge fails the job and prints the fixture and the two observations.
+
+The comparison also covers calls in the selected method families that resolve to library code. For example, javac and GitNexus report `java.lang.Iterable#forEach(java.util.function.Consumer)` at the call site when a JDK list supplies the receiver. Source implementations of `forEach` contribute their declaration and a call graph edge.
 
 Windows and macOS run `node tools/compiler-conformance/java/check-products.mjs --platform` from the GitNexus package. This checks rename, worker-cache persistence, the parser ABI, and projects with non-ASCII paths on each platform. The native runner fails if a selected file has no passing tests or contains a skipped case, a todo, or an empty suite.
 

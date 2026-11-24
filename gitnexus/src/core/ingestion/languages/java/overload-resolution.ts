@@ -1,4 +1,5 @@
-import type { Range, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, Range, ReferenceSite, SymbolDefinition, TypeRef } from 'gitnexus-shared';
+import { makeScopeId } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { ReceiverMemberResolution } from '../../scope-resolution/contract/scope-resolver.js';
@@ -45,6 +46,7 @@ import {
   type JavaVerdict,
 } from './overload-types.js';
 import { JAVA_IDENTIFIER_PART_CHARS, JAVA_QUALIFIED_NAME } from './type-spelling.js';
+import { selectJavaLambdaOverload } from './sam-lambda-types.js';
 
 /** A written type-use annotation, `@Name` or `@a.Name(...)`, with its trailing space. */
 const TYPE_ANNOTATION = new RegExp(
@@ -61,12 +63,13 @@ type JavaImportFact = JavaOverloadFileFacts['imports'][number];
 interface FileFactIndex {
   readonly methods: Map<string, JavaOverloadMethodFact[]>;
   readonly ownedMethods: Map<string, Map<string, JavaOverloadMethodFact[]>>;
-  readonly typeParameters: Map<string, { starts: Range[]; widest: Range[] }>;
+  readonly typeParameters: Map<string, { starts: Range[]; parents: number[] }>;
   /** Single-type and single-static imports, by the simple name they import. */
   readonly singleImports: Map<string, JavaImportFact[]>;
   readonly onDemandImports: JavaImportFact[];
 }
 interface State {
+  readonly argumentCalls: Set<JavaOverloadCallFact>;
   readonly model: SemanticModel;
   readonly scopes: ScopeResolutionIndexes;
   readonly types: Map<string, JavaType>;
@@ -96,6 +99,7 @@ function stateFor(scopes: ScopeResolutionIndexes, model: SemanticModel): State {
   const activeSubtype = new Set<string>();
   const subtypeVerdicts = new Map<string, JavaVerdict>();
   const state: State = {
+    argumentCalls: new Set(),
     scopes,
     model,
     types: new Map(),
@@ -293,21 +297,19 @@ function fileFactIndex(facts: JavaOverloadFileFacts, state: State): FileFactInde
   }
   for (const declaration of [...facts.methods, ...facts.types]) {
     for (const name of declaration.typeParameters) {
-      const ranges = index.typeParameters.get(name) ?? { starts: [], widest: [] };
+      const ranges = index.typeParameters.get(name) ?? { starts: [], parents: [] };
       ranges.starts.push(declaration.range);
       index.typeParameters.set(name, ranges);
     }
   }
   for (const ranges of index.typeParameters.values()) {
     ranges.starts.sort((a, b) => a.startLine - b.startLine || a.startCol - b.startCol);
-    let widest = ranges.starts[0]!;
-    for (const range of ranges.starts) {
-      if (
-        range.endLine > widest.endLine ||
-        (range.endLine === widest.endLine && range.endCol > widest.endCol)
-      )
-        widest = range;
-      ranges.widest.push(widest);
+    const parents: number[] = [];
+    for (const [i, range] of ranges.starts.entries()) {
+      while (parents.length && !javaRangeContains(ranges.starts[parents.at(-1)!]!, range))
+        parents.pop();
+      ranges.parents.push(parents.at(-1) ?? -1);
+      parents.push(i);
     }
   }
   state.files.set(facts, index);
@@ -315,10 +317,18 @@ function fileFactIndex(facts: JavaOverloadFileFacts, state: State): FileFactInde
 }
 
 function hasTypeParameter(index: FileFactIndex, name: string, at: Range): boolean {
+  return typeParameterDeclaration(index, name, at) !== undefined;
+}
+
+function typeParameterDeclaration(
+  index: FileFactIndex,
+  name: string,
+  at: Range,
+): Range | undefined {
   const ranges = index.typeParameters.get(name);
-  if (ranges === undefined) return false;
-  // Find declarations starting before this context. The greatest end in that
-  // prefix answers containment, including nested and same-named parameters.
+  if (ranges === undefined) return undefined;
+  // Find the last declaration starting before this use, then walk only its
+  // enclosing declarations. Sibling methods may each declare their own T.
   let low = 0,
     high = ranges.starts.length;
   while (low < high) {
@@ -326,7 +336,11 @@ function hasTypeParameter(index: FileFactIndex, name: string, at: Range): boolea
     if (startsAtOrBefore(ranges.starts[mid]!, at)) low = mid + 1;
     else high = mid;
   }
-  return low > 0 && javaRangeContains(ranges.widest[low - 1]!, at);
+  for (let i = low - 1; i >= 0; i = ranges.parents[i]!) {
+    const declaration = ranges.starts[i]!;
+    if (javaRangeContains(declaration, at)) return declaration;
+  }
+  return undefined;
 }
 
 function methodFact(
@@ -802,7 +816,12 @@ function resolveTypeName(name: string, context: TypeContext, state: State): Java
   if (facts === undefined)
     return name.includes('.') ? qualifiedReference(name, state) : UNKNOWN_JAVA_TYPE;
   const index = fileFactIndex(facts, state);
-  if (hasTypeParameter(index, name, context.at)) return UNKNOWN_JAVA_TYPE;
+  const parameter = typeParameterDeclaration(index, name, context.at);
+  if (parameter)
+    return {
+      kind: 'variable',
+      declaration: `${context.filePath}:${parameter.startLine}:${parameter.startCol}:${name}`,
+    };
   const first = name.split('.')[0]!;
   const nearest = nearestVisibleType(first, context.at, facts, state);
   if (!name.includes('.')) {
@@ -1004,12 +1023,122 @@ function normalizedCandidate(
   };
 }
 
-function argumentType(fact: JavaArgumentFact, filePath: string, state: State): JavaType {
-  return fact.kind === 'typed'
-    ? parseType(fact.spelling, { filePath, at: fact.at }, state)
-    : fact.kind === 'null'
-      ? { kind: 'null' }
-      : UNKNOWN_JAVA_TYPE;
+function argumentType(
+  fact: JavaArgumentFact,
+  filePath: string,
+  state: State,
+  enclosingSite?: ReferenceSite,
+): JavaType {
+  if (fact.kind === 'typed') return parseType(fact.spelling, { filePath, at: fact.at }, state);
+  if (fact.kind === 'null') return { kind: 'null' };
+  if (fact.kind !== 'invocation' || !enclosingSite) return UNKNOWN_JAVA_TYPE;
+  const call = getJavaOverloadCall(filePath, fact.at, fact.name);
+  if (!call || state.argumentCalls.has(call) || state.argumentCalls.size >= 12)
+    return UNKNOWN_JAVA_TYPE;
+  state.argumentCalls.add(call);
+  try {
+    return invocationReturnType(call, fact.qualifierShadowed, filePath, enclosingSite, state);
+  } finally {
+    state.argumentCalls.delete(call);
+  }
+}
+
+function invocationReturnType(
+  call: JavaOverloadCallFact,
+  qualifierShadowed: boolean,
+  filePath: string,
+  enclosingSite: ReferenceSite,
+  state: State,
+): JavaType {
+  const site: ReferenceSite = {
+    ...enclosingSite,
+    name: call.name,
+    atRange: call.range,
+    arity: call.arguments.length,
+    explicitReceiver:
+      call.receiverSpelling === undefined ? undefined : { name: call.receiverSpelling },
+    callForm: call.receiverSpelling === undefined ? 'free' : 'member',
+    receiverChain: undefined,
+  };
+  let selected: ReceiverMemberResolution | undefined;
+  if (call.receiverSpelling === undefined) {
+    selected = resolveJavaUnqualifiedCall(site, state.scopes, state.model);
+  } else {
+    const owner =
+      call.receiver?.kind === 'typed'
+        ? argumentType(call.receiver, filePath, state)
+        : qualifierShadowed
+          ? UNKNOWN_JAVA_TYPE
+          : parseType(call.receiverSpelling, { filePath, at: call.range }, state);
+    if (owner.kind !== 'reference') return UNKNOWN_JAVA_TYPE;
+    if (!owner.sourceId) {
+      if (call.name !== 'valueOf' || qualifierShadowed || call.arguments.length !== 1)
+        return UNKNOWN_JAVA_TYPE;
+      return wrapperValueOfType(
+        owner,
+        argumentType(call.arguments[0]!, filePath, state, site),
+        state,
+      );
+    }
+    const definition = state.scopes.defs.get(owner.sourceId);
+    if (definition)
+      selected = resolveJavaReceiverMember(definition, call.name, site, state.scopes, state.model);
+  }
+  if (selected?.kind !== 'resolved') return UNKNOWN_JAVA_TYPE;
+  const { returnType, filePath: declarationFile, declarationRange } = selected.definition;
+  return returnType && declarationRange
+    ? parseType(returnType, { filePath: declarationFile, at: declarationRange }, state)
+    : UNKNOWN_JAVA_TYPE;
+}
+
+function wrapperValueOfType(owner: JavaReferenceType, argument: JavaType, state: State): JavaType {
+  for (const name of JAVA_PRIMITIVES) {
+    const primitive = { kind: 'primitive', name } as const;
+    if (sameJavaType(owner, boxedJavaType(primitive)) !== 'yes') continue;
+    const acceptsString =
+      name !== 'char' &&
+      argument.kind === 'reference' &&
+      !argument.sourceId &&
+      argument.name === 'java.lang.String';
+    if (
+      acceptsString ||
+      javaInvocationConversion(argument, primitive, 'loose', state.relations) === 'yes'
+    )
+      return owner;
+  }
+  return UNKNOWN_JAVA_TYPE;
+}
+
+// These interfaces inherit Iterable.forEach. Implementations such as ArrayList
+// can override it, so a known subtype alone cannot identify its declaration.
+const inheritsIterableForEach = new Set([
+  'java.lang.Iterable',
+  'java.util.Collection',
+  'java.util.List',
+  'java.util.Set',
+]);
+
+export function javaExternalCallTarget(
+  filePath: string,
+  name: string,
+  range: Range,
+  scopes: ScopeResolutionIndexes,
+  model: SemanticModel,
+): string | undefined {
+  if (name !== 'forEach') return undefined;
+  const call = getJavaOverloadCall(filePath, range, name);
+  if (!call?.receiverIsValue || call.receiver?.kind !== 'typed' || call.arguments.length !== 1)
+    return undefined;
+  const [argument] = call.arguments;
+  if (argument?.kind !== 'implicit-void-lambda' || argument.arity !== 1) return undefined;
+  const receiver = argumentType(call.receiver, filePath, stateFor(scopes, model));
+  if (
+    receiver.kind === 'reference' &&
+    !receiver.sourceId &&
+    inheritsIterableForEach.has(receiver.name)
+  )
+    return 'java.lang.Iterable#forEach(java.util.function.Consumer)';
+  return undefined;
 }
 
 function factoryConversion(
@@ -1041,7 +1170,7 @@ function factoryConversion(
   const expectedOwner = fact.name === 'asList' ? 'java.util.Arrays' : 'java.util.Collections';
   if (owner.kind !== 'reference' || owner.sourceId !== undefined || owner.name !== expectedOwner)
     return 'unknown';
-  let elements = fact.arguments.map((argument) => argumentType(argument, filePath, state));
+  let elements = fact.arguments.map((argument) => argumentType(argument, filePath, state, site));
   if (elements.some((element) => element.kind === 'unknown' || element.kind === 'null'))
     return 'unknown';
   const explicit =
@@ -1274,6 +1403,38 @@ function hierarchyComplete(
     if (base.sourceId === undefined) {
       if (base.name === 'java.lang.Object' && (!objectMethods.has(memberName) || objectCovered))
         continue;
+      if (base.name === 'java.lang.Iterable' && !objectMethods.has(memberName)) {
+        // Iterable<T> contributes exactly these three methods. A source
+        // override of forEach(Consumer<? super T>) accounts for that default.
+        if (!['iterator', 'spliterator', 'forEach'].includes(memberName)) continue;
+        if (
+          memberName === 'forEach' &&
+          base.arguments.length === 1 &&
+          state.model.methods.lookupAllByOwner(owner.nodeId, memberName).some((method) => {
+            const declaration = methodFact(method, state);
+            if (
+              !declaration ||
+              declaration.parameterTypes.length !== 1 ||
+              !declaration.modifiers.includes('public') ||
+              declaration.modifiers.includes('static')
+            )
+              return false;
+            const formal = /^([^<]+)<\s*\?\s+super\s+(.+)>$/.exec(
+              declaration.parameterTypes[0]!.trim(),
+            );
+            if (!formal) return false;
+            const context = { filePath: method.filePath, at: declaration.range };
+            const consumer = parseType(formal[1]!, context, state);
+            return (
+              consumer.kind === 'reference' &&
+              consumer.sourceId === undefined &&
+              consumer.name === 'java.util.function.Consumer' &&
+              sameJavaType(parseType(formal[2]!, context, state), base.arguments[0]!) === 'yes'
+            );
+          })
+        )
+          continue;
+      }
       // Runnable declares only run(). An indexed zero-argument override
       // represents that signature; its other member names come from Object.
       if (base.name === 'java.lang.Runnable' && !objectMethods.has(memberName)) {
@@ -1388,19 +1549,17 @@ function selectCallOverload(
   site: ReferenceSite,
   state: State,
 ) {
+  const types: (JavaType | undefined)[] = [];
   return selectJavaOverload(
     candidates,
     call.arguments.length,
     (index, target, phase) => {
       const argument = call.arguments[index]!;
-      return argument.kind === 'factory'
-        ? factoryConversion(argument, target, filePath, site, state)
-        : javaInvocationConversion(
-            argumentType(argument, filePath, state),
-            target,
-            phase,
-            state.relations,
-          );
+      if (argument.kind === 'factory')
+        return factoryConversion(argument, target, filePath, site, state);
+      const type = types[index] ?? argumentType(argument, filePath, state, site);
+      types[index] = type;
+      return javaInvocationConversion(type, target, phase, state.relations);
     },
     state.relations,
   );
@@ -1623,17 +1782,41 @@ export function resolveJavaReceiverMember(
           detail: 'Java argument capture facts are unavailable',
         };
   }
-  const decision = selectCallOverload(
+  let candidates = inventory.normalized;
+  if (call.receiver?.kind === 'typed') {
+    const receiverType = argumentType(call.receiver, filePath, state);
+    const ownerFact = typeFact(owner, state);
+    if (
+      receiverType.kind === 'reference' &&
+      receiverType.sourceId === owner.nodeId &&
+      ownerFact &&
+      ownerFact.typeParameters.length > 0 &&
+      ownerFact.typeParameters.length === receiverType.arguments.length
+    ) {
+      const substitute = receiverSubstitution(owner.filePath, ownerFact, receiverType);
+      candidates = candidates.map((candidate) => ({
+        ...candidate,
+        parameters: candidate.parameters.map(substitute),
+      }));
+    }
+  }
+  const applicability = selectCallOverload(
     runnableReceiver
-      ? inventory.normalized.filter(
-          (candidate) => candidate.parameters.length === 0 && !candidate.variadic,
-        )
-      : inventory.normalized,
+      ? candidates.filter((candidate) => candidate.parameters.length === 0 && !candidate.variadic)
+      : candidates,
     call,
     filePath,
     site,
     state,
   );
+  const decision =
+    applicability.kind === 'unknown'
+      ? (selectJavaLambdaOverload(
+          { kind: 'unknown', candidateIds, candidateSetComplete: true },
+          site,
+          scopes,
+        ) ?? applicability)
+      : applicability;
   if (decision.kind === 'resolved') {
     const selected = methodFact(decision.definition, state);
     // JLS 15.12.3 checks invocation form AFTER choosing the most-specific
@@ -1663,6 +1846,107 @@ export function resolveJavaReceiverMember(
       ? { detail: 'Unsupported Java argument, generic constraint, or subtype evidence' }
       : {}),
   };
+}
+
+function receiverSubstitution(
+  filePath: string,
+  fact: JavaOverloadTypeFact,
+  receiver: JavaReferenceType,
+) {
+  const substitutions = new Map(
+    fact.typeParameters.map((name, i) => [
+      `${filePath}:${fact.range.startLine}:${fact.range.startCol}:${name}`,
+      receiver.arguments[i],
+    ]),
+  );
+  const substitute = (type: JavaType): JavaType => {
+    if (type.kind === 'variable') return substitutions.get(type.declaration) ?? type;
+    if (type.kind === 'array') return { ...type, component: substitute(type.component) };
+    if (type.kind === 'reference' && type.arguments.length)
+      return { ...type, arguments: type.arguments.map(substitute) };
+    return type;
+  };
+  return substitute;
+}
+
+/** JLS 14.14.2 takes the element from the Iterable supertype, which may
+ * differ from the first type argument of the expression's own class. */
+function iterableElements(type: JavaType, state: State, seen: Set<string>): JavaType[] {
+  if (type.kind === 'array') return [type.component];
+  if (type.kind !== 'reference') return [];
+  if (!type.sourceId) {
+    const element = type.arguments[0];
+    return element &&
+      type.arguments.length === 1 &&
+      javaSubtype(
+        type,
+        { kind: 'reference', name: 'java.lang.Iterable', arguments: [element] },
+        state.relations,
+      ) === 'yes'
+      ? [element]
+      : [];
+  }
+  if (seen.has(type.sourceId) || seen.size >= MAX_JAVA_TYPE_DEPTH) return [];
+  const owner = state.scopes.defs.get(type.sourceId);
+  const fact = owner && typeFact(owner, state);
+  if (!owner || !fact) return [];
+  const substitute = receiverSubstitution(owner.filePath, fact, type);
+  const path = new Set(seen).add(type.sourceId);
+  return fact.bases.flatMap((base) =>
+    iterableElements(
+      substitute(parseType(base, { filePath: owner.filePath, at: fact.range }, state)),
+      state,
+      path,
+    ),
+  );
+}
+
+export function populateJavaIterableBindings(
+  files: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+  model: SemanticModel,
+): void {
+  for (const parsed of files) {
+    const loops = getJavaOverloadFacts(parsed.filePath)?.enhancedFor;
+    if (!loops?.length) continue;
+    const state = stateFor(indexes, model);
+    for (const loop of loops) {
+      const scope = indexes.scopeTree.getScope(
+        makeScopeId({ filePath: parsed.filePath, range: loop.body, kind: 'Block' }),
+      );
+      if (!scope) continue;
+      const site: ReferenceSite = {
+        kind: 'call',
+        name: loop.name,
+        inScope: scope.id,
+        atRange: loop.body,
+      };
+      const type = argumentType(loop.value, parsed.filePath, state, site);
+      const elements = iterableElements(type, state, new Set());
+      const element = elements[0];
+      if (
+        element?.kind !== 'reference' ||
+        !element.sourceId ||
+        !elements.every((other) => sameJavaType(element, other) === 'yes')
+      )
+        continue;
+      const declaration = indexes.defs.get(element.sourceId);
+      if (!declaration) continue;
+      const fact = typeFact(declaration, state);
+      if (!fact) continue;
+      const anchor = makeScopeId({
+        filePath: declaration.filePath,
+        range: fact.range,
+        kind: 'Class',
+      });
+      if (indexes.scopeTree.has(anchor))
+        (scope.typeBindings as Map<string, TypeRef>).set(loop.name, {
+          rawName: fact.simpleName,
+          declaredAtScope: anchor,
+          source: 'assignment-inferred',
+        });
+    }
+  }
 }
 
 function staticImportOwnerAccess(

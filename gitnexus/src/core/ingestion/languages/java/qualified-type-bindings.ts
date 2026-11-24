@@ -78,8 +78,8 @@ const hierarchiesByIndexes = new WeakMap<
   ReadonlyMap<string, ClassHierarchy>
 >();
 
-/** Top-level and member types of one file, keyed by scope. Local, anonymous
- * and enum-constant classes have no FQN, so they are left out. */
+/** Index named types by scope. A local type uses its declaration identity as
+ * a private lookup key so two blocks can each declare the same member path. */
 function collectNamedTypes(
   parsed: ParsedFile,
   packageName: string,
@@ -111,7 +111,8 @@ function collectNamedTypes(
     const parent = byId.get(scope.parent);
     const owner =
       scope.parent === module.id ? undefined : parent === undefined ? undefined : resolve(parent);
-    if (scope.parent !== module.id && owner === undefined) return undefined;
+    const local = scope.parent !== module.id && owner === undefined;
+    if (local && (!parent || parent.kind === 'Class')) return undefined;
     const modifiers = fact.modifiers ?? [];
     const prefix = owner?.fqn ?? packageName;
     const ownerKind = owner === undefined ? undefined : kinds.get(scope.parent);
@@ -122,7 +123,11 @@ function collectNamedTypes(
     kinds.set(scope.id, fact.kind);
     const named: NamedType & { readonly def: SymbolDefinition } = {
       def,
-      fqn: prefix === '' ? fact.simpleName : `${prefix}.${fact.simpleName}`,
+      fqn: local
+        ? `\0${def.nodeId}`
+        : prefix === ''
+          ? fact.simpleName
+          : `${prefix}.${fact.simpleName}`,
       packageName,
       bases,
       enclosingScope: scope.parent,

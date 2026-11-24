@@ -1,7 +1,0 @@
-# The graph lacks source spans for several callback registrations. Compare the nested callback targets as well.
-Missing from GitNexus: anon/Use.java:4:29..4:66 resolved anon/Box.java#2:22 (anon.Box.forEach(anon.Callback<anon.Other>))
-Missing from GitNexus: ondemand/Use.java:4:32..4:69 resolved ondemand/List.java#2:23 (ondemand.List.forEach(ondemand.Callback<ondemand.Other>))
-Missing from GitNexus: shadow/ShadowProbe.java:4:48..4:85 resolved shadow/java.java#5:6 (shadow.java.util.List.forEach(java.util.function.Consumer<shadow.ShadowOther>))
-Missing from GitNexus: shadow/ShadowProbe.java:5:52..5:89 resolved shadow/java.java#8:6 (shadow.java.util.Set.forEach(shadow.ShadowCallback<shadow.ShadowOther>))
-Unexpected in GitNexus: jdk/Use.java:4:37..4:74 receiver-unresolved
-Unexpected in GitNexus: jdk/Use.java:5:42..5:79 receiver-unresolved
