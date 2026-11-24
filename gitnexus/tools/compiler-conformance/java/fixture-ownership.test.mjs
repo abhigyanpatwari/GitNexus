@@ -93,6 +93,27 @@ test('resolves a fixture writer in the scope where it was defined', () => {
   );
 });
 
+test('hoists var to its function without shadowing filesystem imports in other functions', () => {
+  const uses = javaFixtureUses(`
+    import fs from 'node:fs';
+    function inspect() {
+      function save(file) { fs.writeFileSync(file, ''); }
+      save('Before.java');
+      if (ready) { var { fs } = client; }
+      fs.readFileSync('After.java');
+    }
+    function real() {
+      const inner = () => { for (var fs of clients) fs.readFileSync('Loop.java'); };
+      class Store { static { var fs = client; fs.readFileSync('Static.java'); } }
+      fs.readFileSync('Disk.java');
+    }
+  `);
+  assert.deepEqual(
+    uses.map(({ path }) => path),
+    ['Disk.java'],
+  );
+});
+
 test('recognizes explicit filesystem stubs and keeps calls through a partial mock', () => {
   const read = "import { readFileSync } from 'node:fs'; readFileSync('File.java');";
   assert.deepEqual(

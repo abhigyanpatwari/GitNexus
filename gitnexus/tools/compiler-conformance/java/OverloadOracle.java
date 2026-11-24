@@ -58,19 +58,24 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                 for (var error : diagnostics.getDiagnostics()) {
                     if (error.getKind() != Diagnostic.Kind.ERROR) continue;
                     if (rejection(error) == null) {
-                        if (!Boolean.getBoolean("gitnexus.conformance.reportDiagnostics")) {
-                            throw new IllegalStateException(error.toString());
-                        }
-                        oracle.emit("diagnostic", error.getCode());
+                        oracle.reportDiagnostic(error);
                     } else {
                         errors.add(error);
                     }
                 }
                 for (var unit : units) oracle.scan(unit, null);
                 oracle.emitImplementations();
-                if (!errors.isEmpty()) throw new IllegalStateException("Unmatched " + errors);
+                // javac also uses ref.ambiguous for type names outside invocation sites.
+                for (var error : errors) oracle.reportDiagnostic(error);
             }
         }
+    }
+
+    private void reportDiagnostic(Diagnostic<?> error) {
+        if (!Boolean.getBoolean("gitnexus.conformance.reportDiagnostics")) {
+            throw new IllegalStateException(error.toString());
+        }
+        emit("diagnostic", error.getCode());
     }
 
     private static String rejection(Diagnostic<?> error) {

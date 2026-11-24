@@ -3,7 +3,8 @@ import { globSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
-import { getBindingIdentifiers, isFor, isFunction } from '@babel/types';
+import traverse from '@babel/traverse';
+import { isFunction } from '@babel/types';
 
 const fsCalls = new Set([
   'readFile',
@@ -57,8 +58,9 @@ function literal(node, bindings, seen = new Set()) {
         .join('');
     case 'Identifier': {
       if (seen.has(node.name)) return '*';
-      const binding = bindings.get(node.name);
-      if (binding?.node) return literal(binding.node, bindings, new Set([...seen, node.name]));
+      const binding = bindingFor(bindings, node.name);
+      if (binding?.path)
+        return literal(binding.path.node, binding.path.scope, new Set([...seen, node.name]));
       return nameOf(binding?.imported) === 'FIXTURES' || node.name === 'FIXTURES'
         ? 'fixtures'
         : '*';
@@ -75,7 +77,7 @@ function literal(node, bindings, seen = new Set()) {
       return nameOf(node.callee) === 'URL' ? literal(node.arguments[0], bindings, seen) : '';
     case 'CallExpression': {
       const method =
-        nameOf(node.callee.property) ?? nameOf(bindings.get(node.callee.name)?.imported);
+        nameOf(node.callee.property) ?? nameOf(bindingFor(bindings, node.callee.name)?.imported);
       if (['join', 'resolve'].includes(method))
         return node.arguments.map((n) => literal(n, bindings, seen)).join('/');
       if (method === 'fileURLToPath' || node.callee.name === 'fileURLToPath')
@@ -90,7 +92,8 @@ function literal(node, bindings, seen = new Set()) {
 function javaSourceMap(node, bindings, seen = new Set()) {
   if (!node) return '';
   if (node.type === 'Identifier' && !seen.has(node.name)) {
-    return javaSourceMap(bindings.get(node.name)?.node, bindings, new Set([...seen, node.name]));
+    const init = bindingFor(bindings, node.name)?.path;
+    return init ? javaSourceMap(init.node, init.scope, new Set([...seen, node.name])) : '';
   }
   if (node.type === 'TSAsExpression' || node.type === 'TSSatisfiesExpression')
     return javaSourceMap(node.expression, bindings, seen);
@@ -107,87 +110,53 @@ function javaSourceMap(node, bindings, seen = new Set()) {
   return '';
 }
 
-function localBindings(node, outer) {
-  if (isFunction(node) || node.type === 'CatchClause') {
-    const parameters = node.params ?? [node.param].filter(Boolean);
-    const bindings = new Map(outer);
-    for (const parameter of parameters) {
-      for (const name of Object.keys(getBindingIdentifiers(parameter))) bindings.set(name, {});
-    }
-    return bindings;
-  }
-  let statements;
-  if (node.type === 'Program' || node.type === 'BlockStatement') {
-    statements = node.body;
-  } else if (isFor(node)) {
-    const declaration = node.init ?? node.left;
-    if (declaration?.type !== 'VariableDeclaration' || declaration.kind === 'var') return outer;
-    statements = [declaration];
-  } else return outer;
-  const bindings = new Map(outer);
-  for (const statement of statements) {
-    if (statement.type === 'ImportDeclaration') {
-      for (const spec of statement.specifiers)
-        bindings.set(spec.local.name, { module: statement.source.value, imported: spec.imported });
-    } else if (statement.type === 'FunctionDeclaration' && statement.id) {
-      bindings.set(statement.id.name, { node: statement, scope: bindings });
-    } else if (statement.type === 'VariableDeclaration') {
-      for (const declaration of statement.declarations) {
-        if (declaration.id.type === 'Identifier') {
-          bindings.set(declaration.id.name, { node: declaration.init, scope: bindings });
-        } else {
-          for (const name of Object.keys(getBindingIdentifiers(declaration.id)))
-            bindings.set(name, {});
-        }
-        if (
-          declaration.id.type === 'ObjectPattern' &&
-          nameOf(declaration.init?.callee) === 'createRenameFixtureHelpers'
-        ) {
-          for (const property of declaration.id.properties) {
-            if (['fixture', 'expectRename'].includes(nameOf(property.key)))
-              bindings.set(nameOf(property.value), { writesFixture: true });
-          }
-        }
-      }
+function bindingFor(scope, name) {
+  const declaration = name && scope.getBinding(name)?.path;
+  if (!declaration) return undefined;
+  if (declaration.parentPath.isImportDeclaration())
+    return { module: declaration.parent.source.value, imported: declaration.node.imported };
+  if (declaration.isFunctionDeclaration()) return { path: declaration };
+  if (declaration.isVariableDeclarator()) {
+    const { id, init } = declaration.node;
+    if (id.type === 'Identifier') return init ? { path: declaration.get('init') } : {};
+    if (id.type === 'ObjectPattern' && nameOf(init?.callee) === 'createRenameFixtureHelpers') {
+      return {
+        writesFixture: id.properties.some(
+          (p) => nameOf(p.value) === name && ['fixture', 'expectRename'].includes(nameOf(p.key)),
+        ),
+      };
     }
   }
-  return bindings;
+  return {};
 }
 
 // Follow local fixture writers only when their implementation reaches real I/O.
 function writesFiles(binding, mocked, seen = new Set()) {
   if (binding?.writesFixture) return true;
-  const node = binding?.node;
-  if (
-    !node ||
-    seen.has(node) ||
-    !['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression'].includes(node.type)
-  )
-    return false;
-  seen.add(node);
-  function walk(part, inherited) {
-    const bindings = localBindings(part, inherited);
-    if (part.type === 'CallExpression') {
-      const callee = part.callee;
+  const definition = binding?.path;
+  if (!definition?.isFunction() || seen.has(definition.node)) return false;
+  seen.add(definition.node);
+  let writes = false;
+  definition.traverse({
+    CallExpression(call) {
+      const { callee } = call.node;
       const owner =
         nameOf(callee.object?.property) === 'promises' ? callee.object.object : callee.object;
-      const resolved = bindings.get(callee.name ?? owner?.name);
+      const resolved = bindingFor(call.scope, callee.name ?? owner?.name);
       const method = nameOf(callee.property) ?? nameOf(resolved?.imported) ?? callee.name;
       if (
-        fsCalls.has(method) &&
-        fsModule.test(resolved?.module ?? '') &&
-        !mocked.has(resolved.module.replace(/^node:/, ''))
-      )
-        return true;
-      if (
+        (fsCalls.has(method) &&
+          fsModule.test(resolved?.module ?? '') &&
+          !mocked.has(resolved.module.replace(/^node:/, ''))) ||
         (projectReaders.has(method) && (!resolved || resolved.module)) ||
         (callee.type === 'Identifier' && writesFiles(resolved, mocked, seen))
-      )
-        return true;
-    }
-    return children(part).some((child) => walk(child, bindings));
-  }
-  return walk(node.body, localBindings(node, binding.scope));
+      ) {
+        writes = true;
+        call.stop();
+      }
+    },
+  });
+  return writes;
 }
 
 function virtualJavaSource(node, bindings) {
@@ -257,8 +226,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
     for (const child of children(node)) findMocks(child);
   }
   findMocks(tree.program);
-  function visit(node, outer) {
-    const bindings = localBindings(node, outer);
+  function visit({ node, scope: bindings }) {
     const virtual = virtualJavaSource(node, bindings);
     if (virtual)
       inlineSources.push({
@@ -271,7 +239,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
       const identifier = callee.type === 'Identifier';
       let owner = callee.object;
       if (nameOf(owner?.property) === 'promises') owner = owner.object;
-      const binding = bindings.get(identifier ? callee.name : owner?.name);
+      const binding = bindingFor(bindings, identifier ? callee.name : owner?.name);
       const method = identifier
         ? (nameOf(binding?.imported) ?? callee.name)
         : nameOf(callee.property);
@@ -313,9 +281,8 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
       }
       if (match) findings.push({ line: node.loc.start.line, method, path: match });
     }
-    for (const child of children(node)) visit(child, bindings);
   }
-  visit(tree.program, new Map());
+  traverse(tree, { 'ObjectProperty|CallExpression|NewExpression': visit });
   const reportedPaths = new Set(findings.map((issue) => issue.path));
   return [...findings, ...inlineSources.filter((issue) => !reportedPaths.has(issue.path))];
 }

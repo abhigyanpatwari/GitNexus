@@ -29,22 +29,46 @@ function membersNamed(members: readonly TypeEntry[], name: string): TypeEntry[] 
   return index.get(name) ?? [];
 }
 
+type QualifiedType = { type: TypeEntry; qualifier?: QualifiedType };
+
+function nestedTypes(
+  roots: QualifiedType[],
+  members: string[],
+  inventory: JavaWorkspaceTypeInventory,
+): QualifiedType[] {
+  return members.reduce(
+    (types, name) =>
+      types.flatMap((qualifier) => {
+        const { type } = qualifier;
+        let matches = membersNamed(type.members, name);
+        if (matches.length === 0) {
+          const inherited = inventory.namesOf(type);
+          if (inherited.unknown) return [];
+          matches = membersNamed(inherited.members, name);
+        }
+        return matches.map((entry) => ({ type: entry, qualifier }));
+      }),
+    roots,
+  );
+}
+
 /** A package contains top-level declarations. Subsequent segments must be
  * actual members of the type that precedes them. */
-function namedTypes(written: string, inventory: JavaWorkspaceTypeInventory): TypeEntry[] {
+function namedTypes(written: string, inventory: JavaWorkspaceTypeInventory): QualifiedType[] {
   const parts = written.split('.');
-  const result: TypeEntry[] = [];
-  for (let i = parts.length - 1; i > 0; i--) {
-    let types = inventory.packageTypes.get(parts.slice(0, i).join('.'))?.get(parts[i]!);
-    if (types === undefined) continue;
-    for (const member of parts.slice(i + 1))
-      types = types.flatMap((type) => {
-        const declared = membersNamed(type.members, member);
-        if (declared.length) return declared;
-        const inherited = inventory.namesOf(type);
-        return inherited.unknown ? [] : membersNamed(inherited.members, member);
-      });
-    result.push(...types);
+  const result: QualifiedType[] = [];
+  // A bare root names a top-level declaration in the unnamed package.
+  const first = parts.length === 1 ? 0 : 1;
+  for (let i = parts.length - 1; i >= first; i--) {
+    const roots = inventory.packageTypes.get(parts.slice(0, i).join('.'))?.get(parts[i]!);
+    if (roots)
+      result.push(
+        ...nestedTypes(
+          roots.map((type) => ({ type })),
+          parts.slice(i + 1),
+          inventory,
+        ),
+      );
   }
   return result;
 }
@@ -127,12 +151,15 @@ function enclosingSubclassInheritsMember(
 }
 
 function accessible(
-  target: TypeEntry,
+  target: QualifiedType,
   owner: TypeEntry,
   inventory: JavaWorkspaceTypeInventory,
 ): boolean {
-  if (!isJvmSourceVisible(owner.filePath, target.filePath)) return false;
-  for (let type: TypeEntry | undefined = target; type !== undefined; type = type.parent) {
+  // An inherited public member may be named through a public subclass even
+  // when its declaring superclass is package-private (JLS 6.6.1).
+  for (let path: QualifiedType | undefined = target; path; path = path.qualifier) {
+    const { type } = path;
+    if (!isJvmSourceVisible(owner.filePath, type.filePath)) return false;
     const access = type.fact.modifiers;
     if (access?.includes('private') && !sharesTopLevelDeclaration(type, owner)) return false;
     if (type.packageName === owner.packageName || access?.includes('public')) continue;
@@ -148,7 +175,7 @@ export function bindJavaQualifiedHeritage(
   files: ParsedFile[],
   inventory: JavaWorkspaceTypeInventory,
 ): void {
-  const typesByName = new Map<string, TypeEntry[]>();
+  const typesByName = new Map<string, QualifiedType[]>();
   const duplicateNamesByFile = new Map<string, Set<string>>();
   for (const [index, file] of files.entries()) {
     const entries = inventory.byFile.get(file.filePath);
@@ -200,25 +227,28 @@ export function bindJavaQualifiedHeritage(
           continue;
         }
         if (origin === 'shadowed') continue;
-        // An implicitly imported type shadows the workspace package even when
-        // no source declaration models the platform type's members (JLS 6.5.2).
         const qualified = origin === 'package' ? written : origin.type + written.slice(dot);
-        let candidates = typesByName.get(qualified);
+        // A type root shadows a package. Follow members from that type only.
+        const cacheKey =
+          origin === 'package' ? written : origin.type + '/' + written.slice(dot + 1);
+        let candidates = typesByName.get(cacheKey);
         if (candidates === undefined) {
-          candidates = namedTypes(qualified, inventory);
-          typesByName.set(qualified, candidates);
-        }
-        if (candidates.length === 0) {
-          if (
-            origin === 'package' ||
-            (origin.type.includes('.') && namedTypes(origin.type, inventory).length === 0)
-          )
-            replacements.set(site, { ...site, unresolvedInheritanceBase: true });
-          continue;
+          candidates =
+            origin === 'package'
+              ? namedTypes(written, inventory)
+              : nestedTypes(
+                  namedTypes(origin.type, inventory),
+                  written.slice(dot + 1).split('.'),
+                  inventory,
+                );
+          typesByName.set(cacheKey, candidates);
         }
         const visible = candidates.filter((candidate) => accessible(candidate, owner, inventory));
-        if (visible.length !== 1) continue;
-        const target = visible[0]!;
+        if (visible.length !== 1) {
+          replacements.set(site, { ...site, unresolvedInheritanceBase: true });
+          continue;
+        }
+        const target = visible[0]!.type;
         if (target.parent === undefined && target.facts.types.length > 1) {
           // A nested declaration can share this module binding. The class extractor
           // gives colliding declarations distinct qualified names.
