@@ -374,12 +374,6 @@ type ParsedImportSyntax =
    *   - JS `export * from './foo'`   → `{ kind: 'wildcard', targetRaw: './foo' }`
    *   - Rust `pub use foo::*`         → `{ kind: 'wildcard', targetRaw: 'foo' }`
    *
-   * No `typeOnly` here on purpose. The one syntax that would set it,
-   * TypeScript 5.0's `export type * from './m'`, is not parsed by the
-   * vendored tree-sitter-typescript grammar — it yields an `ERROR` node
-   * holding the bare `type` token, so the fact is not readable at the
-   * statement level (see `typescript/import-decomposer.ts`). Add the field
-   * with the grammar that can express it, not before.
    */
   | {
       readonly kind: 'wildcard';
@@ -387,9 +381,9 @@ type ParsedImportSyntax =
       /** False when this statement imports names without publishing them from
        * its file. Absent preserves the historical re-exporting wildcard. */
       readonly reexportsName?: boolean;
-      /** See the same field on the `named` variant. Present here although
-       *  `typeOnly` is not: erasure is a syntactic fact this spelling cannot
-       *  express, but POSITION is not — Ruby's `def f; require './m'; end` is
+      /** The wildcard publishes types without creating a runtime dependency. */
+      readonly typeOnly?: boolean;
+      /** See the same field on the `named` variant. Ruby's `def f; require './m'; end` is
        *  a wildcard (everything in the required file becomes visible) and IS
        *  deferred. Python cannot reach it: `from x import *` inside a `def` is
        *  a SyntaxError. Rust's fn-local `use foo::*` is legal but not
@@ -547,6 +541,8 @@ export interface ImportEdge {
   readonly explicitAlias?: boolean;
   /** Exporting file; `null` only when `kind === 'dynamic-unresolved'`. */
   readonly targetFile: string | null;
+  /** The module object a forwarded namespace denotes. The dependency still names targetFile. */
+  readonly namespaceTargetFile?: string;
   /** The name under which the target exports this symbol. */
   readonly targetExportedName: string;
   /** Pre-resolved at finalize: the module scope of the exporting file. */

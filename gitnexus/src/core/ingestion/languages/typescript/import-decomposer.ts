@@ -51,12 +51,8 @@
  * so a statement counts as type-only exactly when every specifier it
  * decomposes to is — without this file having to aggregate anything.
  *
- * Known gap: TypeScript 5.0's `export type * from './m'` / `export type *
- * as ns from './m'`. The vendored grammar does not parse them — the bare
- * `type` token lands in an `ERROR` node beside the `*`, not as a statement
- * child — so they emit no marker and are treated as value imports. That is
- * the fail-safe direction (`check --cycles` over-reports rather than
- * hiding a real cycle), and neither form appears in this repository.
+ * Type-only stars retain the erasure fact through the grammar's exact
+ * recovery shape for the keyword.
  *
  * Side-effect imports (`import './polyfill'`) produce a single match
  * with `kind: 'side-effect'`. The shared finalize algorithm resolves
@@ -72,6 +68,12 @@ import {
   syntheticCapture,
   type SyntaxNode,
 } from '../../utils/ast-helpers.js';
+
+import type { EsmExportEvidence } from '../../ts-js-export-marker.js';
+import {
+  canonicalModuleExportName,
+  decodeIdentifierEscapes,
+} from '../../utils/ecmascript-literals.js';
 
 type ImportKind =
   | 'default'
@@ -162,6 +164,23 @@ function hasTypeKeyword(node: SyntaxNode): boolean {
   return false;
 }
 
+/** Recognize only the grammar's isolated error node for a type-only star. */
+function isRecoveredTypeOnlyStar(node: SyntaxNode): boolean {
+  const parts = node.children.filter((child) => child.type !== 'comment');
+  const [keyword, type, star, from, source, terminator] = parts;
+  return (
+    keyword?.type === 'export' &&
+    type?.type === 'ERROR' &&
+    type.text === 'type' &&
+    (star?.type === '*' || star?.type === 'namespace_export') &&
+    !star.hasError &&
+    from?.type === 'from' &&
+    source?.type === 'string' &&
+    !source.hasError &&
+    (parts.length === 5 || (parts.length === 6 && terminator?.type === ';'))
+  );
+}
+
 /**
  * Decompose an import anchor. Handles three node types:
  *
@@ -169,11 +188,50 @@ function hasTypeKeyword(node: SyntaxNode): boolean {
  *   - `export_statement` (w/ source) : re-exports
  *   - `call_expression` (import fn)  : dynamic `import()`
  */
-export function splitImportStatement(stmtNode: SyntaxNode): CaptureMatch[] {
-  if (stmtNode.type === 'import_statement') return splitImport(stmtNode);
+export function splitImportStatement(
+  stmtNode: SyntaxNode,
+  exportEvidence?: EsmExportEvidence,
+): CaptureMatch[] {
+  if (stmtNode.type === 'import_statement') {
+    const matches = splitImport(stmtNode);
+    if (exportEvidence?.localSpecifiers && stmtNode.parent?.type === 'program') {
+      return matches.concat(forwardedImportMatches(matches, exportEvidence.localSpecifiers));
+    }
+    return matches;
+  }
   if (stmtNode.type === 'export_statement') return splitReexport(stmtNode);
   if (stmtNode.type === 'call_expression') return splitDynamicImport(stmtNode);
   return [];
+}
+
+/** A local export of an imported binding forwards the original module entry. */
+function forwardedImportMatches(
+  imports: readonly CaptureMatch[],
+  specifiers: NonNullable<EsmExportEvidence['localSpecifiers']>,
+): CaptureMatch[] {
+  const forwarded: CaptureMatch[] = [];
+  for (const match of imports) {
+    const kind = match['@import.kind'].text;
+    if (kind === 'side-effect') continue;
+    const name = match['@import.name'].text;
+    const local = match['@import.alias']?.text ?? name;
+    const aliases = specifiers.get(decodeIdentifierEscapes(local));
+    for (const { publicName, typeOnly } of aliases ?? []) {
+      const namespace = kind === 'namespace';
+      forwarded.push(
+        buildImportMatch(publicName, {
+          kind: namespace ? 'reexport-namespace' : 'reexport-alias',
+          source: match['@import.source'].text,
+          name,
+          alias: publicName.text,
+          atNode: publicName,
+          typeOnly: typeOnly || match['@import.type-only'] !== undefined,
+        }),
+      );
+      if (namespace) forwarded.push(buildNamespaceDeclarationMatch(publicName, publicName));
+    }
+  }
+  return forwarded;
 }
 
 // ─── static imports ─────────────────────────────────────────────────────
@@ -297,7 +355,7 @@ function decomposeNamedSpecifier(
   mayHaveType: boolean,
 ): CaptureMatch | null {
   // `import_specifier` layout:
-  //   name: identifier
+  //   name: identifier | string     (string requires a local alias)
   //   alias: identifier?            (only when `as` is present)
   //   plus an optional `type` keyword token in front (per-specifier type-only)
   //
@@ -306,7 +364,7 @@ function decomposeNamedSpecifier(
   // binding the alias as the imported name would invert the edge.
   const nameNode = spec.childForFieldName('name');
   const aliasNode = spec.childForFieldName('alias');
-  if (nameNode === null) return null;
+  if (nameNode === null || (nameNode.type === 'string' && aliasNode === null)) return null;
   const name = nameNode.text;
   const typeOnly = statementTypeOnly || (mayHaveType && hasTypeKeyword(spec));
 
@@ -346,61 +404,45 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
   const source = extractSource(stmtNode);
   if (source === null) return [];
 
-  // `export type { X } from './m'`. Its `export type *` sibling is NOT
-  // detectable — see the known gap in the module header.
   const mayHaveType = mayHaveTypeKeyword(stmtNode);
-  const statementTypeOnly = mayHaveType && hasTypeKeyword(stmtNode);
+  const statementTypeOnly =
+    mayHaveType && (hasTypeKeyword(stmtNode) || isRecoveredTypeOnlyStar(stmtNode));
 
   const exportClause = findChild(stmtNode, 'export_clause');
   if (exportClause !== null) {
-    const out: CaptureMatch[] = [];
-    for (let i = 0; i < exportClause.namedChildCount; i++) {
-      const spec = exportClause.namedChild(i);
-      if (spec === null || spec.type !== 'export_specifier') continue;
-      const decomposed = decomposeReexportSpecifier(
-        spec,
-        source,
-        stmtNode,
-        statementTypeOnly,
-        mayHaveType,
-      );
-      if (decomposed !== null) out.push(decomposed);
-    }
-    return out;
+    return splitReexportClause(exportClause, stmtNode, source, statementTypeOnly, mayHaveType);
   }
 
-  // `export * as ns from './m'` — tree-sitter-typescript emits a
-  // `namespace_export` child whose identifier is the local re-export
-  // name. Two facts are emitted:
-  //
-  //   1. An `@import.statement` (kind `reexport-namespace`) so finalize
-  //      knows the barrel imports `./m` as `ns` (binds `ns` locally
-  //      inside the barrel for consumers like `barrel.ts` calling
-  //      `ns.X()`).
-  //   2. A synthetic `@declaration.namespace` so the central
-  //      scope-extractor adds a `Namespace` SymbolDefinition for `ns`
-  //      to the barrel's `localDefs`. Without this, downstream files
-  //      doing `import { ns } from './barrel'` cannot resolve `ns`:
-  //      `findExportByName` and the precomputed re-export closure only
-  //      consult `localDefs` / `reexport` / `wildcard` drafts, never
-  //      `namespace`-kind imports. The synthetic declaration fixes that
-  //      without growing the shared finalizer's surface.
+  // The published namespace names a module object without declaring a local.
   const namespaceExport = findChild(stmtNode, 'namespace_export');
   if (namespaceExport !== null) {
-    const aliasId = findChild(namespaceExport, 'identifier');
-    if (aliasId !== null) {
+    // JavaScript's grammar represents `default` as an anonymous token here.
+    const aliasId =
+      findChild(namespaceExport, 'identifier') ??
+      findChild(namespaceExport, 'string') ??
+      namespaceExport.children.find((child) => child.type === 'default');
+    if (aliasId === undefined || canonicalModuleExportName(aliasId.text) === null) {
       return [
         buildImportMatch(stmtNode, {
-          kind: 'reexport-namespace',
+          kind: 'side-effect',
           source,
-          name: source,
-          alias: aliasId.text,
+          name: '',
           atNode: namespaceExport,
           typeOnly: statementTypeOnly,
         }),
-        buildNamespaceDeclarationMatch(namespaceExport, aliasId),
       ];
     }
+    return [
+      buildImportMatch(stmtNode, {
+        kind: 'reexport-namespace',
+        source,
+        name: source,
+        alias: aliasId.text,
+        atNode: namespaceExport,
+        typeOnly: statementTypeOnly,
+      }),
+      buildNamespaceDeclarationMatch(namespaceExport, aliasId),
+    ];
   }
 
   // `export * from './m'` — no clause, no namespace_export. The bare
@@ -412,12 +454,44 @@ function splitReexport(stmtNode: SyntaxNode): CaptureMatch[] {
       source,
       name: '*',
       atNode: stmtNode,
+      typeOnly: statementTypeOnly,
     }),
   ];
 }
 
 /** Mirror of {@link decomposeNamedSpecifier} for `export { … } from './m'`,
  *  including the per-specifier `export { type X } from './m'` spelling. */
+function splitReexportClause(
+  exportClause: SyntaxNode,
+  stmtNode: SyntaxNode,
+  source: string,
+  statementTypeOnly: boolean,
+  mayHaveType: boolean,
+): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  let emptyClause = !exportClause.hasError;
+  for (let i = 0; i < exportClause.namedChildCount; i++) {
+    const spec = exportClause.namedChild(i);
+    if (spec === null || spec.type === 'comment') continue;
+    emptyClause = false;
+    if (spec.type !== 'export_specifier') continue;
+    const decomposed = decomposeReexportSpecifier(
+      spec,
+      source,
+      stmtNode,
+      statementTypeOnly,
+      mayHaveType,
+    );
+    if (decomposed !== null) out.push(decomposed);
+  }
+  if (emptyClause && !statementTypeOnly) {
+    out.push(
+      buildImportMatch(stmtNode, { kind: 'side-effect', source, name: '', atNode: stmtNode }),
+    );
+  }
+  return out;
+}
+
 function decomposeReexportSpecifier(
   spec: SyntaxNode,
   source: string,
@@ -551,6 +625,9 @@ function buildImportMatch(stmtNode: SyntaxNode, spec: ImportSpec): CaptureMatch 
   if (spec.literalSource === true) {
     m['@import.literal'] = syntheticCapture('@import.literal', spec.atNode, '');
   }
+  if (spec.kind.startsWith('reexport')) {
+    m['@import.exports-only'] = syntheticCapture('@import.exports-only', spec.atNode, '');
+  }
   // Presence-only, like `@import.literal`: absent means "not erased", so the
   // marker is added rather than spelled `'false'`, and every non-TypeScript
   // provider's matches keep the shape they already have.
@@ -571,5 +648,16 @@ function buildNamespaceDeclarationMatch(
   return {
     '@declaration.namespace': nodeToCapture('@declaration.namespace', namespaceExportNode),
     '@declaration.name': nodeToCapture('@declaration.name', aliasId),
+    '@declaration.binding-name': syntheticCapture('@declaration.binding-name', aliasId, ''),
+    ...(aliasId.type === 'string'
+      ? {
+          '@declaration.named-exports': syntheticCapture(
+            '@declaration.named-exports',
+            aliasId,
+            JSON.stringify([aliasId.text]),
+          ),
+        }
+      : {}),
+    '@declaration.is-exported': syntheticCapture('@declaration.is-exported', aliasId, 'true'),
   };
 }

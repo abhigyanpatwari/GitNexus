@@ -3,15 +3,22 @@ import type {
   CallableFlowOperand,
   CallableFlowSite,
   ParsedFile,
+  ParsedImport,
   SymbolDefinition,
 } from 'gitnexus-shared';
 import { indexExportsByName } from 'gitnexus-shared';
 import { decodeReceiverChain, encodeReceiverChain } from '../../utils/receiver-chain-codec.js';
 
-/** Normalize lookup spellings while retaining source identities and coordinates. */
+/** Normalize lexical names while letting providers preserve their import key semantics. */
 export function canonicalizeBindings(
   parsed: ParsedFile,
   canonicalName: (name: string) => string,
+  canonicalImport: (entry: ParsedImport) => ParsedImport = (entry) => ({
+    ...entry,
+    ...('localName' in entry ? { localName: canonicalName(entry.localName) } : {}),
+    ...('importedName' in entry ? { importedName: canonicalName(entry.importedName) } : {}),
+    ...('alias' in entry && entry.alias ? { alias: canonicalName(entry.alias) } : {}),
+  }),
 ): ParsedFile {
   const bindingsOf = (scope: ParsedFile['scopes'][number]) => {
     const bindings = new Map<string, BindingRef[]>();
@@ -101,12 +108,7 @@ export function canonicalizeBindings(
         ]),
       ),
     })),
-    parsedImports: parsed.parsedImports.map((entry) => ({
-      ...entry,
-      ...('localName' in entry ? { localName: canonicalName(entry.localName) } : {}),
-      ...('importedName' in entry ? { importedName: canonicalName(entry.importedName) } : {}),
-      ...('alias' in entry && entry.alias ? { alias: canonicalName(entry.alias) } : {}),
-    })),
+    parsedImports: parsed.parsedImports.map(canonicalImport),
     referenceSites: parsed.referenceSites.map((site) => {
       // Member registries use the written declaration name. Receiver bases
       // and free names instead address the canonical lexical binding maps.

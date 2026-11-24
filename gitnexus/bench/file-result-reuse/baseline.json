@@ -1,5 +1,49 @@
 {
   "schemaVersion": 1,
+  "graphExpectations": [
+    {
+      "baselineSourceTrees": [
+        "ca401b5aadd224d31608942ed660b5ac9b28580f",
+        "83ca9e394db987214069b750a873c8c341c0560b"
+      ],
+      "candidateSourceTrees": [
+        "3c85dc6d822b29d8a6862e4f7cf767b29bb6baa2",
+        "d3481cc0785139faf7f2a7b0345504202181a5d7"
+      ],
+      "sourceDigest": "466afd7d65c2be79b324a74de1d95275d01113dbc4a38855b63753ad9c10db1e",
+      "sourceFiles": 1194,
+      "baseline": {
+        "cold": ["fe6ef3d70a8bd0456e82efe293b7edd0a2ea85ab1567ccfcbf18f60219a2717f", 37663, 106053],
+        "warm": ["fe6ef3d70a8bd0456e82efe293b7edd0a2ea85ab1567ccfcbf18f60219a2717f", 37663, 106053],
+        "edit": ["36bb7f9b5be76e191abb5a5b90918066160d3158a37c3b6c2f153155a1f7713e", 37664, 106054],
+        "two-edits": [
+          "6f8c63e7425f761f52d7179f00f6e37ac2384698d6ceb59f7eef461aee22dc4c",
+          37666,
+          106056
+        ],
+        "repack": [
+          "6f8c63e7425f761f52d7179f00f6e37ac2384698d6ceb59f7eef461aee22dc4c",
+          37666,
+          106056
+        ]
+      },
+      "candidate": {
+        "cold": ["17ad8161d53fa86f7b10154e489551a4130a9c8a409ff4b1bb52603ff6530451", 37663, 106310],
+        "warm": ["17ad8161d53fa86f7b10154e489551a4130a9c8a409ff4b1bb52603ff6530451", 37663, 106310],
+        "edit": ["11bc6b1cd2f68179135fc023938305bf48059e631a2764c519d7004cf4e41393", 37664, 106311],
+        "two-edits": [
+          "07dbb92496840e99501df7783d497c60137dd3797b714d3db0508ed7448f92a0",
+          37666,
+          106313
+        ],
+        "repack": [
+          "07dbb92496840e99501df7783d497c60137dd3797b714d3db0508ed7448f92a0",
+          37666,
+          106313
+        ]
+      }
+    }
+  ],
   "protocol": "fresh-process-per-phase-v1",
   "defaults": {
     "pairs": 7,

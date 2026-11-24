@@ -1,0 +1,65 @@
+{
+  "version": 3,
+  "shapes": {
+    "small": {
+      "workload": {
+        "files": 153,
+        "loops": 96,
+        "guards": 80,
+        "moduleCases": 512,
+        "cases": 688,
+        "sourceBytes": 79219,
+        "expectedEdges": 448,
+        "fingerprint": "40fc86c5c54d92dbe391a5827306df38a8123dfb78c0c3e9cb3e7e6400e43370"
+      },
+      "tupleBindings": 112,
+      "narrowingBindings": 48,
+      "captureFingerprint": "6806c82b9d77c0d10e437b792eda49e77aa7558c480b53c502b4cf120c5e0d5e",
+      "graphFingerprint": "9553fbba2b18205dac89bfff037c6391fdb0adfee343f9f12bac0237cbd82dbe",
+      "targetFingerprint": "f15b9d5e6412ec63ef59c0a3a293719182c740ff2aac9a65358208f2c47f4724",
+      "resolvedEdges": 448
+    },
+    "wide": {
+      "workload": {
+        "files": 609,
+        "loops": 384,
+        "guards": 320,
+        "moduleCases": 2048,
+        "cases": 2752,
+        "sourceBytes": 317837,
+        "expectedEdges": 1792,
+        "fingerprint": "736695350c4a6901c33a203336fafcbdf6b69135fa1a1ce9f380443124ed4b73"
+      },
+      "tupleBindings": 448,
+      "narrowingBindings": 192,
+      "captureFingerprint": "1b8cb56e6df546bd3a0dfb8179294e4dfce1a011c62f1dbfab35fff2f2d3e726",
+      "graphFingerprint": "f109de85479e4164269c32d257475e8eee701e9c9811e24916f2e6646f9d4641",
+      "targetFingerprint": "1ca21b7c0c8c0c3cb0126b951c4b7b287400f4b18774131681605787f647cf72",
+      "resolvedEdges": 1792
+    },
+    "dense": {
+      "workload": {
+        "files": 609,
+        "loops": 1536,
+        "guards": 1280,
+        "moduleCases": 8192,
+        "cases": 11008,
+        "sourceBytes": 1172969,
+        "expectedEdges": 7168,
+        "fingerprint": "b9674596a4617128ace46ed7918e93b5f1ee7fc9a90391246a414ef435c966d1"
+      },
+      "tupleBindings": 1792,
+      "narrowingBindings": 768,
+      "captureFingerprint": "0eaa092f132fecc59cba9412e5e39d159da261cf76152f413a896ddba2b44f9a",
+      "graphFingerprint": "df0cce852df6f8085988627a2f221df7d51fd55ba01469551e59a480b2ddb40f",
+      "targetFingerprint": "ab5c381fb2c7a7d834e200295f94ab31bcb403bb8f8d58c632bf6adf4e3ba2c3",
+      "resolvedEdges": 7168
+    }
+  },
+  "budgets": {
+    "breadthCapturePerCase": 1.5,
+    "breadthColdPipelinePerCase": 1.5,
+    "densityCapturePerCase": 1.5,
+    "densityColdPipelinePerCase": 1.5
+  }
+}

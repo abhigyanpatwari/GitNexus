@@ -181,6 +181,7 @@ describe('lexical benchmark sample collection', () => {
             encoding: 'utf8',
             env: {
               ...process.env,
+              PATH: '',
               GITNEXUS_LEXICAL_BENCH_WORKER: '0',
               GITNEXUS_LEXICAL_BENCH_WORKERS: '2',
               GITNEXUS_LEXICAL_BENCH_HEAP_MIB: '256',
@@ -191,6 +192,7 @@ describe('lexical benchmark sample collection', () => {
         );
         expect(result.status, result.stderr).toBe(0);
         const report = JSON.parse(fs.readFileSync(path.join(output, 'results.json'), 'utf8'));
+        expect(report.corpusTrees).toBeNull();
         expect(report.screen).toBe(screen === '1');
         expect(report.baseFirst).toBe(false);
         expect(report.pairs).toBe(expectedPairs);

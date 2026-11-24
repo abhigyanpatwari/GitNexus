@@ -1260,11 +1260,16 @@ export function runScopeResolution(
   // disk seal can reclaim them. Byte-identical: the view returns the same Scope
   // the resident tree holds (or a value-identical revived one in disk mode).
   const methodDispatch = buildPopulatedMethodDispatch(mroByClassDefId, extendsOnlyMroByClassDefId);
+  const moduleExports = finalized.moduleExports;
+  let namespaceExports = provider.namespaceExportsFromModuleExports
+    ? provider.moduleExports
+    : undefined;
+  if (moduleExports !== undefined) {
+    namespaceExports = (file) => moduleExports.values(file.filePath);
+  }
   const workspaceIndex = buildWorkspaceResolutionIndex(parsedFiles, finalized.scopeTree, {
     stripTypePreservingDecoration: provider.stripTypePreservingDecoration,
-    namespaceExports: provider.namespaceExportsFromModuleExports
-      ? provider.moduleExports
-      : undefined,
+    namespaceExports,
   });
   logHeapProbe('sr-post-workspaceIndex', `lang=${provider.language}`);
 

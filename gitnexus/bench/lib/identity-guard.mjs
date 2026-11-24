@@ -4,11 +4,27 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 
+/** Code-unit order keeps benchmark identities independent of the system locale. */
+export function compareCodeUnits(a, b) {
+  if (a === b) return 0;
+  return a < b ? -1 : 1;
+}
+
 export function fingerprintIds(ids) {
   return crypto
     .createHash('sha256')
     .update([...ids].sort().join('\n'))
     .digest('hex');
+}
+
+/** Yield one measurement at a time, rotating the first fixture each round. */
+export function* rotatingSamples(fixtures, lastRound, measure) {
+  for (let round = 0; round <= lastRound; round++) {
+    for (let offset = 0; offset < fixtures.length; offset++) {
+      const index = (round + offset) % fixtures.length;
+      yield measure(fixtures[index], index, round);
+    }
+  }
 }
 
 export function minSample(run, warmup, reps) {
