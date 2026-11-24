@@ -9,7 +9,7 @@
       "sha256": "22dbc3eb225be58b92864ac090a2c9ba6d697dd75a8fea21b5b6f39f0b4739e2"
     }
   },
-  "68dcf837dc72aae5af815a6ce334f35b03c9f25d:6caa0996142604c30fd7d982ebe5c82f5a5a645c": {
+  "621e0e6459f5338d9d9a27ce93ec5c64d7212f73:6caa0996142604c30fd7d982ebe5c82f5a5a645c": {
     "_note": "#4068: the awaited generic call `await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(…)` (parsing-processor.ts:398:25) loses its wrong read ACCESSES edge from dispatchChunkParseRound to WorkerPool.dispatchGroups; its CALLS edge is unchanged. No relationship is added.",
     "additions": {
       "count": 0,
