@@ -5,7 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 
 const launcher = path.resolve(__dirname, '../../../gitnexus-claude-plugin/hooks/gitnexus-hook.js');
 const source = fs.readFileSync(launcher, 'utf8');
@@ -14,16 +14,49 @@ const fixtures: string[] = [];
 const children: ChildProcess[] = [];
 const version = '1.6.12';
 
-afterEach(() => {
-  for (const child of children.splice(0)) if (child.exitCode === null) child.kill();
-  for (const fixture of fixtures.splice(0)) fs.rmSync(fixture, { recursive: true, force: true });
-});
+async function cleanupFixtures() {
+  await Promise.all(
+    children.splice(0).map(async (child) => {
+      if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return;
+      const closed = once(child, 'close');
+      child.kill();
+      await closed;
+    }),
+  );
+  for (const fixture of fixtures.splice(0)) {
+    // A shell descendant can briefly hold the copied node.exe after the launcher closes.
+    fs.rmSync(fixture, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === 'win32' ? 3 : 0,
+    });
+  }
+}
+
+afterEach(cleanupFixtures);
 
 function fixture() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-launcher-')));
   fixtures.push(root);
   return root;
 }
+
+it('waits for a live fixture process to close before removing its directory', async () => {
+  const root = fixture();
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    cwd: root,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  children.push(child);
+  await once(child, 'spawn');
+  const closed = once(child, 'close');
+  const cleanup = cleanupFixtures();
+  const existedWhileClosing = fs.existsSync(root);
+  await Promise.all([cleanup, closed]);
+  expect(existedWhileClosing).toBe(true);
+  expect(fs.existsSync(root)).toBe(false);
+});
 
 function installedPackage(root: string, metadata: Record<string, unknown> = {}) {
   const cli = path.join(root, 'dist', 'cli', 'index.js');

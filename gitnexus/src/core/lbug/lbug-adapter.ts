@@ -4284,7 +4284,7 @@ export const queryFTS = async (
  * lookup miss), so this returns false for it. Anchored to the START of the
  * message (not a bare substring search): every probed LadybugDB error leads
  * with its exception class, and anchoring means a future message that merely
- * mentions "Binder exception" or "Catalog exception" further in in the body
+ * mentions "Binder exception" or "Catalog exception" further in the body
  * of an otherwise-genuine failure can't be misclassified as benign. Pure
  * string logic so it is unit-testable without a native LadybugDB connection.
  */
