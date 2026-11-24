@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterAll, beforeAll, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 // Every heap-flag form a process can start with, in a real child process (V8
 // rejects a space-separated size value in NODE_OPTIONS at startup, so that is
@@ -128,7 +128,6 @@ it.each([
     undefined,
   ],
   // V8 ignores a value out of its bounds and keeps the earlier one.
-  ['an out-of-bounds size alone', ['--max-old-space-size=100000000000000000000'], undefined],
   [
     'an out-of-bounds --max-heap-size beside a size',
     ['--max-old-space-size=3000', '--max-heap-size=100000000000000000000'],
@@ -181,26 +180,30 @@ it.each([
   60000,
 );
 
-it.each([
-  ['old space', ['--max-old-space-size=0'], '--max-old-space-size=800'],
-  [
-    'old and semi-space',
-    ['--max-old-space-size=0', '--max-semi-space-size=0'],
-    '--max-old-space-size=2000 --max-semi-space-size=64',
-  ],
-])(
-  'does not restore a NODE_OPTIONS %s that command-line zeros override',
-  (_label, execArgv, nodeOptions) => {
-    const measured = measure(execArgv, nodeOptions);
-    // The command line wins: the main heap is V8's default, and the lease must
-    // not bring the overridden values back for later workers.
-    expect(measured.main).toBeGreaterThan(2048 + 3 * 64);
-    expect(measured.before).toBe(measured.main);
-    expect(measured.later).toBe(measured.main);
-    expect(measured.inherited).toBe(measured.main);
-  },
-  60000,
-);
+describe('flags that leave the default heap in effect', () => {
+  let control: Measured;
+  beforeAll(() => {
+    control = measure([]);
+  });
+
+  it.each([
+    ['an out-of-bounds size alone', ['--max-old-space-size=100000000000000000000'], undefined],
+    ['an old-space reset', ['--max-old-space-size=0'], '--max-old-space-size=800'],
+    [
+      'old-space and semi-space resets',
+      ['--max-old-space-size=0', '--max-semi-space-size=0'],
+      '--max-old-space-size=2000 --max-semi-space-size=64',
+    ],
+  ])(
+    'matches a fresh process without flags for %s',
+    (_label, execArgv, nodeOptions) => {
+      const measured = measure(execArgv, nodeOptions);
+      expect(measured).toEqual(control);
+      expect(measured.capped).toBeLessThanOrEqual(CAPPED_MAX_MB);
+    },
+    60000,
+  );
+});
 
 it.each([
   [
@@ -209,6 +212,7 @@ it.each([
     '// --max-old-space-size-percentage=50\n',
   ],
   ['a process title naming a size flag', ['--title', 'worker --max-old-space-size=2000'], ''],
+  ['a process title starting with a dash', ['--title=--max-old-space-size=2000'], ''],
 ])(
   'keeps argument boundaries: %s is not a heap flag',
   (_label, execArgv, evalComment) => {

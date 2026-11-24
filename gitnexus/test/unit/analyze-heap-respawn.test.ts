@@ -55,6 +55,12 @@ vi.mock('../../src/core/analysis-host-resources.js', async (importOriginal) => (
   analysisSupervisorReservation: () => 192 * 1024 ** 2,
 }));
 
+// The admission expectations below describe a host with 4 KiB pages.
+vi.mock('../../src/core/lbug/lbug-config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/lbug/lbug-config.js')>()),
+  granuleRatio: () => 1,
+}));
+
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
   closeLbugBeforeExit: vi.fn(async () => undefined),
