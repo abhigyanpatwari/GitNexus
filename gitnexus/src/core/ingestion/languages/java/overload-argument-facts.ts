@@ -640,6 +640,13 @@ export function captureJavaOverloadFacts(
     }
     return undefined;
   };
+  const valueQualifier = (owner: SyntaxNode): boolean => {
+    // Only a name can denote either a value or a type. Roots such as this,
+    // super and call expressions need no lexical search (JLS 6.5.2).
+    let root: SyntaxNode | null = owner;
+    while (root?.type === 'field_access') root = root.childForFieldName('object');
+    return root?.type !== 'identifier' || bindingAt(root.text, root) !== undefined;
+  };
   const expression = (node: SyntaxNode, depth = 0): JavaArgumentFact => {
     if (depth > 12) return UNKNOWN;
     const typed = (spelling: string, at = rangeOf(node)): JavaArgumentFact => ({
@@ -728,8 +735,7 @@ export function captureJavaOverloadFacts(
             kind: 'invocation',
             name,
             at: rangeOf(node),
-            qualifierShadowed:
-              owner !== null && bindingAt(owner.text.split('.')[0]!, owner) !== undefined,
+            qualifierShadowed: owner !== null && valueQualifier(owner),
           };
         const args =
           node
@@ -737,7 +743,6 @@ export function captureJavaOverloadFacts(
             ?.namedChildren.filter(
               (child) => child.type !== 'line_comment' && child.type !== 'block_comment',
             ) ?? [];
-        const firstName = owner.text.split('.')[0]!;
         return {
           kind: 'factory',
           owner: owner.text,
@@ -746,7 +751,7 @@ export function captureJavaOverloadFacts(
           typeArguments:
             node.childForFieldName('type_arguments')?.namedChildren.map((type) => type.text) ?? [],
           at: rangeOf(node),
-          shadowed: bindingAt(firstName, owner) !== undefined,
+          shadowed: valueQualifier(owner),
         };
       }
       default:

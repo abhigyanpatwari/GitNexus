@@ -817,7 +817,15 @@ export function synthesizeJavaDeclaredTypeCaptures(
   ): readonly InheritedFieldProof[] =>
     route === undefined ? found.shadows : found.shadows.map((shadow) => ({ ...shadow, route }));
 
-  const lambdaOrigins = new Map<number, CaptureMatch>();
+  const lambdaOrigins = new Map<string, Map<number, CaptureMatch>>();
+  const recordLambdaOrigin = (name: SyntaxNode, capture: CaptureMatch) => {
+    let declarations = lambdaOrigins.get(name.text);
+    if (!declarations) {
+      declarations = new Map();
+      lambdaOrigins.set(name.text, declarations);
+    }
+    declarations.set(name.id, capture);
+  };
   const rememberLambda = (lambda: SyntaxNode, fallback = false) => {
     const captures = synthesizeJavaSamLambdaCaptures(lambda, fallback);
     for (const parameter of lambdaParameters(lambda)) {
@@ -825,7 +833,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
         parameter.type === 'identifier' ? parameter : parameter.childForFieldName('name');
       const capture =
         name && captures.find((entry) => entry['@call-result-assignment.lhs']?.text === name.text);
-      if (name && capture) lambdaOrigins.set(name.id, capture);
+      if (name && capture) recordLambdaOrigin(name, capture);
     }
     out.push(...captures);
   };
@@ -842,15 +850,17 @@ export function synthesizeJavaDeclaredTypeCaptures(
         let value = declarator.childForFieldName('value');
         while (value?.type === 'parenthesized_expression') value = value.firstNamedChild;
         if (!name || value?.type !== 'identifier') continue;
+        const declarations = lambdaOrigins.get(value.text);
+        if (!declarations) continue;
         const source = lookup(value);
-        const origin = source.binding && lambdaOrigins.get(source.binding.declarationId);
+        const origin = source.binding && declarations.get(source.binding.declarationId);
         if (!origin || source.shadows.length) continue;
         const capture = {
           ...origin,
           '@call-result-assignment.lhs': nodeToCapture('@call-result-assignment.lhs', name),
           '@call-result-assignment.scope': nodeToCapture('@call-result-assignment.scope', name),
         };
-        lambdaOrigins.set(name.id, capture);
+        recordLambdaOrigin(name, capture);
         out.push(capture);
       }
     } else if (node.type === 'enhanced_for_statement') {
