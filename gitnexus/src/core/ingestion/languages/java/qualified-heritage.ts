@@ -1,7 +1,11 @@
 import type { ParsedFile, ReferenceSite, ScopeId } from 'gitnexus-shared';
 import { isJvmSourceVisible } from '../jvm/source-visibility.js';
 import type { JavaWorkspaceTypeInventory, TypeEntry } from './lombok-workspace-proof.js';
-import { getJavaOverloadFacts, javaOverloadRangeKey } from './overload-argument-facts.js';
+import {
+  getJavaOverloadFacts,
+  javaOverloadRangeKey,
+  javaRangeContains,
+} from './overload-argument-facts.js';
 import { KNOWN_JAVA_PLATFORM_TYPES } from './overload-types.js';
 import { eraseJavaTypeArguments, JAVA_QUALIFIED_NAME, stripGaps } from './type-spelling.js';
 
@@ -43,12 +47,19 @@ function headerCanNamePackage(
   return false;
 }
 
+function sharesTopLevelDeclaration(member: TypeEntry, owner: TypeEntry): boolean {
+  if (member.filePath !== owner.filePath) return false;
+  let top = member;
+  while (top.parent) top = top.parent;
+  return javaRangeContains(top.fact.range, owner.fact.range);
+}
+
 function accessible(target: TypeEntry, owner: TypeEntry): boolean {
   if (!isJvmSourceVisible(owner.filePath, target.filePath)) return false;
   for (let type: TypeEntry | undefined = target; type !== undefined; type = type.parent) {
     const access = type.fact.modifiers;
     if (
-      access?.includes('private') ||
+      (access?.includes('private') && !sharesTopLevelDeclaration(type, owner)) ||
       (type.packageName !== owner.packageName && !access?.includes('public'))
     )
       return false;

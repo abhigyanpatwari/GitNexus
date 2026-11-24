@@ -63,6 +63,52 @@ it('uses exact graph spans, preserves guesses, and leaves aggregated edges witho
   );
 });
 
+it('keeps a source-only overload selection distinct from its published edge', () => {
+  const method = (id: string, name: string, startLine: number) => ({
+    id,
+    label: 'Method',
+    properties: { filePath: 'methods.src', name, startLine, startColumn: 0 },
+  });
+  const caller = method('caller', 'entry', 7);
+  const shared = method('shared', 'pick', 1);
+  const nodes = [caller, shared];
+  const edge = { sourceId: caller.id, targetId: shared.id, id: 'rel:CALLS:caller->shared:9:3:9:9' };
+  const result = {
+    graph: {
+      nodes,
+      getNode: (id: string) => nodes.find((node) => node.id === id),
+      iterRelationshipsByType: () => [edge],
+    },
+    resolutionOutcomes: [
+      {
+        kind: 'resolved',
+        name: 'pick',
+        filePath: 'methods.src',
+        range: { startLine: 9, startCol: 3, endLine: 9, endCol: 9 },
+        targetId: 'def:methods.src#4:0:Method:pick',
+      },
+    ],
+  };
+  const actual = gitNexusCallReport(result, { names: ['pick'] });
+  const site = {
+    file: 'methods.src',
+    start: '9:3',
+    end: '9:9',
+    status: 'resolved',
+    target: 'methods.src#4:0',
+  };
+  expect(actual.sites).toEqual([site]);
+  const expected = { sites: [site], edges: [{ from: 'methods.src#8:0', to: site.target }] };
+  expect(() => compareReports(expected, actual)).toThrow(/Missing.*edge.*methods.src#4:0/);
+
+  // If both overloads have graph nodes, a conflicting complete edge is independent evidence.
+  nodes.push(method('other', 'pick', 3));
+  expect(gitNexusCallReport(result, { names: ['pick'] }).sites).toEqual([
+    site,
+    { ...site, target: 'methods.src#2:0' },
+  ]);
+});
+
 it('accepts independent report order, repeated facts and multiple observed targets at one site', () => {
   const alternative = { ...first, target: 'pkg.alternate' };
   const reference = { sites: [first, second, alternative, ambiguous] };

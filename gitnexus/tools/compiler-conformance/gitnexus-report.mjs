@@ -22,7 +22,7 @@ function edgeSite(edge, file, target) {
   return { file, start: span[1], end: span[2], status: 'resolved', target };
 }
 
-function siteTargetKey({ file, start, end, target }) {
+function siteTargetKey({ file, start, end }, target) {
   return JSON.stringify([file, start, end, target]);
 }
 
@@ -42,6 +42,7 @@ export function gitNexusCallReport(
 
   const sites = [];
   const classifiedTargets = new Set();
+  const unpublishedOverloads = new Set();
   for (const outcome of result.resolutionOutcomes) {
     if (!selected.has(outcome.name) || !outcome.range) continue;
     if (outcome.siteKind && outcome.siteKind !== 'call') continue;
@@ -63,9 +64,15 @@ export function gitNexusCallReport(
         const suffix = ':Method:' + outcome.name;
         const position =
           id.startsWith('def:') && id.endsWith(suffix) ? id.slice(4, -suffix.length) : undefined;
-        record.target =
-          declarations.get(id) ?? (position && /#\d+:\d+$/.test(position) ? position : id);
-        classifiedTargets.add(siteTargetKey(record));
+        const published = declarations.get(id);
+        if (published === undefined && position && /#\d+:\d+$/.test(position)) {
+          record.target = position;
+          const file = position.slice(0, position.lastIndexOf('#'));
+          unpublishedOverloads.add(siteTargetKey(site, [file, outcome.name]));
+        } else {
+          record.target = published ?? id;
+          classifiedTargets.add(siteTargetKey(site, record.target));
+        }
       }
       sites.push(record);
     }
@@ -80,7 +87,12 @@ export function gitNexusCallReport(
     const to = graphDeclaration(target);
     edges.push({ from: typeCaller?.(caller) ?? graphDeclaration(caller), to });
     const site = edgeSite(edge, caller.properties.filePath, to);
-    if (site && !classifiedTargets.has(siteTargetKey(site))) sites.push(site);
+    if (!site || classifiedTargets.has(siteTargetKey(site, to))) continue;
+    // A shared method node can verify publication but cannot locate a second overload.
+    const method = [target.properties.filePath, target.properties.name];
+    if (target.label !== 'Method' || !unpublishedOverloads.has(siteTargetKey(site, method))) {
+      sites.push(site);
+    }
   }
   return { producer: 'GitNexus', sites, edges };
 }

@@ -35,6 +35,7 @@
     "sites": 9,
     "methods": false
   },
+  "compiler-conformance/java-private-nested-base": 1,
   "compiler-conformance/java-qualified-type-root-shadow": 1,
   "compiler-conformance/java-r3-inherited-member-root": 3,
   "compiler-conformance/java-r4-sam-on-demand": 14,
