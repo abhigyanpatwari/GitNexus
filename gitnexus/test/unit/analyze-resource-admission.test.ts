@@ -71,20 +71,22 @@ describe('CLI admission with deterministic host inputs', () => {
 
   // Node's own default heap limit on a 15.7 GiB host, with the autopilot off
   // and nothing pinned: a ceiling for the main heap, not a reservation.
-  it('admits the default heap limit of a host too small to reserve it twice', async () => {
+  it('admits the default heap limit of a 15.7 GiB host beside its workers', async () => {
     Object.assign(analysisHost, { ramBytes: 15_700 * 1024 ** 2, heapLimitBytes: 4144 * 1024 ** 2 });
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand(undefined, {});
     expect(process.exitCode).toBeUndefined();
     const resources = runFullAnalysisMock.mock.calls[0][1].resources as AnalysisResourceBudget;
-    // The automatic 35% share of the 11775 MiB budget, below the 4144 MiB limit.
-    expect(resources.mainHeapMb).toBe(4121);
+    // The 11775 MiB budget leaves more than the limit after pools, headroom
+    // and one worker, so the main heap stops at the 4144 MiB limit.
+    expect(resources.mainHeapMb).toBe(4144);
     expect(resources.parse.reservedBytes).toBeLessThanOrEqual(resources.totalBytes);
   });
 
   it('still rejects a heap the operator pinned beyond what the host admits', async () => {
-    Object.assign(analysisHost, { ramBytes: 15_700 * 1024 ** 2, heapLimitBytes: 4144 * 1024 ** 2 });
-    vi.stubEnv('NODE_OPTIONS', '--max-old-space-size=4096');
+    // Pins above 6566 MiB do not fit beside the pools and one worker.
+    Object.assign(analysisHost, { ramBytes: 15_700 * 1024 ** 2, heapLimitBytes: 7000 * 1024 ** 2 });
+    vi.stubEnv('NODE_OPTIONS', '--max-old-space-size=7000');
     const { _captureLogger } = await import('../../src/core/logger.js');
     const capture = _captureLogger();
     try {
