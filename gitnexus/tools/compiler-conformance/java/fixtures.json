@@ -11,6 +11,11 @@
   "compiler-conformance/java-callback-qualified-lookalike": 14,
   "compiler-conformance/java-contextual-declaration-identity": 3,
   "compiler-conformance/java-contextual-local-element-identity": 2,
+  "compiler-conformance/java-dollar-digit-type-names": {
+    "sites": 2,
+    "constructors": true
+  },
+  "compiler-conformance/java-dollar-member-inheritance": 3,
   "compiler-conformance/java-invalid-overloads": {
     "sites": 6,
     "rejections": {

@@ -3,6 +3,8 @@ import com.sun.source.util.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
+import javax.lang.model.element.Element;
+import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.TypeElement;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
@@ -108,6 +110,15 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
                 position(unit, positions.getEndPosition(unit, path.getLeaf())), from, to);
     }
 
+    // Local and anonymous types, and their members, have no canonical name (JLS 6.7).
+    private String qualifiedTypeName(TypeElement type, String binaryName) {
+        for (Element owner = type; owner instanceof TypeElement enclosing; owner = enclosing.getEnclosingElement()) {
+            var nesting = enclosing.getNestingKind();
+            if (nesting == NestingKind.LOCAL || nesting == NestingKind.ANONYMOUS) return binaryName;
+        }
+        return type.getQualifiedName().toString();
+    }
+
     @Override public Void visitClass(ClassTree type, MethodTree enclosing) {
         var element = (TypeElement) trees.getElement(getCurrentPath());
         var unit = getCurrentPath().getCompilationUnit();
@@ -120,11 +131,11 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
             case INTERFACE -> "Interface";
             default -> throw new IllegalStateException("Unexpected type " + type.getKind());
         };
-        emit("declaration", file(unit), kind, type.getSimpleName().toString(), binary);
+        emit("declaration", file(unit), kind, type.getSimpleName().toString(), binary, qualifiedTypeName(element, binary));
         for (var component : element.getRecordComponents()) {
             var accessor = trees.getPath(component.getAccessor());
             if (accessor == null || trees.getSourcePositions().getEndPosition(unit, accessor.getLeaf()) < 0) {
-                emit("declaration", file(unit), "ImplicitAccessor", component.getSimpleName().toString(), "");
+                emit("declaration", file(unit), "ImplicitAccessor", component.getSimpleName().toString(), "", "");
             }
         }
         var bases = new ArrayList<Tree>(type.getImplementsClause());
@@ -151,7 +162,7 @@ class OverloadOracle extends TreePathScanner<Void, MethodTree> {
         }
         if (method.getReturnType() != null
                 && getCurrentPath().getParentPath().getLeaf().getKind() != Tree.Kind.ANNOTATION_TYPE) {
-            emit("declaration", file(unit), "Method", method.getName().toString(), "");
+            emit("declaration", file(unit), "Method", method.getName().toString(), "", "");
         }
         return super.visitMethod(method, method);
     }

@@ -9,8 +9,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { javaRenameProvider } from './java/rename.js';
-import { createClassExtractor } from '../class-extractors/generic.js';
-import { javaClassConfig } from '../class-extractors/configs/jvm.js';
+import { javaClassExtractor, resolveJavaCollisionOwner } from './java/class-identity.js';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
@@ -222,7 +221,8 @@ export const javaProvider = defineLanguage({
   methodExtractor: javaRecordMethodExtractor,
   shouldSkipDefinitionCapture: shouldSkipJavaRecordComponentDefinition,
   variableExtractor: createVariableExtractor(javaVariableConfig),
-  classExtractor: createClassExtractor(javaClassConfig),
+  classExtractor: javaClassExtractor,
+  resolveContainerTypeOwner: resolveJavaCollisionOwner,
   runtimeSymbolStrategy: javaRuntimeSymbolStrategy,
 
   // ── Javadoc → description (issue #2270) ──

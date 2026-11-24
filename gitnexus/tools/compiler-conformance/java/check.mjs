@@ -7,7 +7,7 @@ import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
 import { compareCodeUnits, compareReports } from '../compare.mjs';
 import { gitNexusCallReport } from '../gitnexus-report.mjs';
 import { writeConversionMatrix } from './conversion-matrix.mjs';
-import { javacReports } from './javac-report.mjs';
+import { javacReports, qualifiedJavacReport } from './javac-report.mjs';
 import { compareConstructors, compareJavaStructure, javaTypeIdentity } from './structure.mjs';
 
 const root = fileURLToPath(new URL('../../../test/fixtures/', import.meta.url));
@@ -56,7 +56,7 @@ try {
   const failures = [];
   for (const [i, fixture] of fixtures.entries()) {
     try {
-      const ref = references[i];
+      const ref = qualifiedJavacReport(references[i]);
       if (fixture.sites !== undefined)
         assert.equal(ref.sites.length, fixture.sites, 'javac call-site count');
       if (fixture.memberReferences !== undefined)
@@ -80,21 +80,20 @@ try {
         assert.equal(ref.sites.filter((s) => s.status === 'ambiguous').length, 2);
       }
       const pipeline = await runPipelineFromRepo(fixture.dir, () => {});
-      const typeIdentity = javaTypeIdentity(fixture.dir);
       const differences = compareJavaStructure(
         ref,
         pipeline,
-        typeIdentity,
+        javaTypeIdentity,
         fixture.methods !== false,
       );
-      if (fixture.constructors) compareConstructors(ref, pipeline.graph, typeIdentity);
+      if (fixture.constructors) compareConstructors(ref, pipeline.graph, javaTypeIdentity);
       const actual = gitNexusCallReport(pipeline, {
         names:
           fixture.families ??
           ref.declarations.filter((d) => d.kind === 'Method').map((d) => d.name),
         ambiguousReasons: ['member-lookup-ambiguous', 'overload-ambiguous'],
         excludeEdgeReasons: ['interface-dispatch'],
-        typeCaller: typeIdentity,
+        typeCaller: javaTypeIdentity,
       });
       for (const site of actual.sites) {
         if (site.status === 'overload-inapplicable') site.status = 'inapplicable';

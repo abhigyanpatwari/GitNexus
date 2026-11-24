@@ -57,8 +57,13 @@ export function javacReports(fixtures) {
       const [relation, from, to] = read(3);
       report.heritage.push({ relation, from, to });
     } else if (kind === 'declaration') {
-      const [file, label, name, binaryName] = read(4);
-      report.declarations.push({ file, kind: label, name, ...(binaryName && { binaryName }) });
+      const [file, label, name, binaryName, qualifiedName] = read(5);
+      report.declarations.push({
+        file,
+        kind: label,
+        name,
+        ...(binaryName && { binaryName, qualifiedName }),
+      });
     } else {
       assert.ok(
         ['resolved', 'ambiguous', 'inapplicable', 'receiver-unresolved'].includes(kind),
@@ -75,6 +80,31 @@ export function javacReports(fixtures) {
     }
   }
   return reports;
+}
+
+// The standalone javac report uses binary names. Compare its type endpoints
+// in the same spelling Java publishes for source types with a canonical name.
+export function qualifiedJavacReport(report) {
+  const names = new Map();
+  for (const { file, kind, name, binaryName, qualifiedName } of report.declarations) {
+    if (binaryName)
+      names.set(
+        file + '#' + binaryName,
+        file + '#' + (kind === 'Annotation' ? '@' + name : qualifiedName),
+      );
+  }
+  const qualify = (edge) => ({
+    ...edge,
+    from: names.get(edge.from) ?? edge.from,
+    to: names.get(edge.to) ?? edge.to,
+  });
+  return {
+    ...report,
+    edges: report.edges.map(qualify),
+    constructors: report.constructors.map(qualify),
+    heritage: report.heritage.map(qualify),
+    memberReferences: report.memberReferences.map(qualify),
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

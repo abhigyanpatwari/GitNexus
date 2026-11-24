@@ -2563,7 +2563,8 @@ const processFileGroupFiles = (
             : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
               // scope id keys the worker-path node, matching the sequential path.
               (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
-                provider.classExtractor?.qualifiedNodeId === true &&
+                (extractedClassSymbol?.qualifiedNodeId ??
+                  provider.classExtractor?.qualifiedNodeId) === true &&
                 qualifiedTypeName !== undefined
               ? qualifiedTypeName
               : nestedCallablePrefix !== undefined && definitionNode

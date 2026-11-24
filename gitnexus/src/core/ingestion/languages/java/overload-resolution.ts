@@ -648,7 +648,12 @@ function definitionsOfType(
       type.name,
     ) ?? [])
       if (!unique.has(definition.nodeId)) unique.set(definition.nodeId, definition);
-  return [...unique.values()];
+  const candidates = [...unique.values()];
+  // A literal member name may equal a local class's binary spelling. The
+  // lexical type fact identifies which source declaration supplied the name.
+  return candidates.length > 1
+    ? candidates.filter((definition) => typeFact(definition, state) === type)
+    : candidates;
 }
 
 /** The classes enclosing `context`, innermost first, with their declarations; the
