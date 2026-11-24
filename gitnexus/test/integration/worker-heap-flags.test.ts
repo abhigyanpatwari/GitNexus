@@ -282,3 +282,15 @@ it('lets a command-line zero hide a NODE_OPTIONS pin from the CLI', () => {
     mainHeapLimitMb: expect.any(Number),
   });
 }, 60000);
+
+it('does not take a NODE_OPTIONS pin that a command-line zero overrides as manual', () => {
+  // Node runs this process at V8's default heap, so analyze must size it itself.
+  const runner = `
+    for (const name of ['GITNEXUS_MEMORY', 'GITNEXUS_ANALYSIS_SUPERVISED', 'GITNEXUS_ANALYSIS_MANUAL_HEAP']) delete process.env[name];
+    const { usesManualAnalysisHeap } = await import(${JSON.stringify(dist('cli/analyze.js'))});
+    console.log(JSON.stringify(usesManualAnalysisHeap()));
+  `;
+  expect(runWithFlags(['--max-old-space-size=0'], '--max-old-space-size=100000', runner)).toBe(
+    false,
+  );
+}, 60000);

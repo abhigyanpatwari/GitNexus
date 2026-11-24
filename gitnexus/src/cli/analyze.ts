@@ -618,7 +618,8 @@ export function usesManualAnalysisHeap(memoryBudget?: string): boolean {
       (process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1' &&
         (memoryAutopilotDisabled() ||
           parseMaxOldSpaceMb(process.execArgv) !== null ||
-          (parseMaxOldSpaceMb(process.env.NODE_OPTIONS ?? '') ?? 0) >= RESPAWN_HEAP_MB)))
+          (ambientMaxOldSpaceMb(process.execArgv, process.env.NODE_OPTIONS ?? '') ?? 0) >=
+            RESPAWN_HEAP_MB)))
   );
 }
 
@@ -644,6 +645,17 @@ export function manualHeapAdmission(): { mainHeapMb?: number; mainHeapLimitMb?: 
  */
 export function parseMaxOldSpaceMb(nodeOptions: string | readonly string[]): number | null {
   return readNodeSizeFlag(nodeOptions, 'max-old-space-size') || null;
+}
+
+/**
+ * The NODE_OPTIONS `--max-old-space-size` pin this process runs under: null
+ * when absent or zero, or when the command line sets the flag too (even to 0),
+ * since Node applies the command-line value last.
+ */
+function ambientMaxOldSpaceMb(execArgv: readonly string[], nodeOptions: string): number | null {
+  return readNodeSizeFlag(execArgv, 'max-old-space-size') === undefined
+    ? parseMaxOldSpaceMb(nodeOptions)
+    : null;
 }
 
 export function forwardedSignalExitCode(signal: NodeJS.Signals, cleanTermination: boolean): number {
@@ -694,11 +706,11 @@ export interface BudgetHeapDecision {
 /**
  * The `--memory-budget` heap decision (#3137), kept pure so every branch is
  * testable without a process. The effective requested old space is the last
- * `--max-old-space-size` in execArgv, else in NODE_OPTIONS (every spelling
- * `parseMaxOldSpaceMb` accepts). Only the budget-respawned child keeps
- * running; anything else respawns once at the budget. The budget's own flags
- * follow the user's in the child, so the child always resolves to "at the
- * budget".
+ * `--max-old-space-size` in execArgv (an explicit 0 there hides NODE_OPTIONS),
+ * else in NODE_OPTIONS (every spelling `parseMaxOldSpaceMb` accepts). Only the
+ * budget-respawned child keeps running; anything else respawns once at the
+ * budget. The budget's own flags follow the user's in the child, so the child
+ * always resolves to "at the budget".
  */
 export function resolveBudgetHeap(input: BudgetHeapInput): BudgetHeapDecision {
   const { budgetMb, autoCapMb } = input;
@@ -784,7 +796,7 @@ export async function ensureHeap(
       inheritedSource: 'budget',
     });
     if (!decision.respawn) return false;
-    const ambient = parseMaxOldSpaceMb(nodeOpts);
+    const ambient = ambientMaxOldSpaceMb(process.execArgv, nodeOpts);
     if (ambient !== null && process.env.GITNEXUS_ANALYSIS_SUPERVISED !== '1') {
       cliWarn(
         `  NODE_OPTIONS pins the heap to ${ambient}MB. Re-running analyze with the admitted ${options.admittedHeapMb}MB main heap.\n`,
@@ -849,7 +861,7 @@ export async function ensureHeap(
   if (memoryAutopilotDisabled()) return false;
   if (parseMaxOldSpaceMb(process.execArgv) !== null) return false;
 
-  const ambientHeapMb = parseMaxOldSpaceMb(nodeOpts);
+  const ambientHeapMb = ambientMaxOldSpaceMb(process.execArgv, nodeOpts);
   if (ambientHeapMb !== null) {
     if (ambientHeapMb >= RESPAWN_HEAP_MB) return false;
     cliWarn(
