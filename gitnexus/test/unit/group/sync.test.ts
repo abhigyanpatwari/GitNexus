@@ -1491,6 +1491,32 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
     }
   });
 
+  it('releases the extraction lease of a repo whose extraction throws before leasing the next', async () => {
+    const { HttpRouteExtractor } =
+      await import('../../../src/core/group/extractors/http-route-extractor.js');
+    const { pinSpy, heldAtPin, releaseSpies, restore } = await setupPoolSpies();
+    const extractSpy = vi
+      .spyOn(HttpRouteExtractor.prototype, 'extract')
+      .mockImplementation(async (_executor, repoPath) => {
+        if (repoPath.endsWith('repo-2')) throw new Error('extract boom');
+        return [];
+      });
+    try {
+      const result = await syncGroup(groupConfig(3, []), {
+        resolveRepoHandle: okHandle,
+        skipWrite: true,
+      });
+      expect(result.failedRepos.map((f) => f.repo)).toEqual(['app/repo-2']);
+      expect(pinSpy.mock.calls.map((c) => c[0])).toEqual(repoIds(3));
+      // The failed repo's lease was released before repo-3 was leased.
+      expect(heldAtPin).toEqual([0, 0, 0]);
+      for (const release of releaseSpies) expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      extractSpy.mockRestore();
+      restore();
+    }
+  });
+
   it('releases every window lease on successful completion', async () => {
     const { releaseSpies, restore } = await setupPoolSpies();
     try {

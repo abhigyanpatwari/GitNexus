@@ -1,6 +1,6 @@
 /**
  * Group sync keeps each repo's LadybugDB pool entry leased while its contracts
- * are extracted.
+ * are extracted, by every extractor of that repo.
  *
  * Extractors now yield to the event loop while they parse source files, so a
  * long, query-free parse phase is no longer one macrotask. Without a lease the
@@ -15,13 +15,34 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { CypherExecutor } from '../../../src/core/group/contract-extractor.js';
 import type { GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
+import {
+  closeLbug as closeCoreLbug,
+  initLbug as initCoreLbug,
+} from '../../../src/core/lbug/lbug-adapter.js';
 import { withTestLbugDB } from '../../helpers/test-indexed-db.js';
 
+type StubKind = 'http' | 'grpc';
+
 const scenario = vi.hoisted(() => ({
-  /** Runs inside the stub HTTP extractor between two graph queries. */
+  /** Which stub extractor runs `quietPhase` between its two graph queries. */
+  quietIn: 'http' as 'http' | 'grpc',
   quietPhase: async (): Promise<void> => {},
-  outcome: '' as string,
+  /** Outcome of each stub's second query: 'ok' or the error message. */
+  outcome: {} as Record<string, string>,
 }));
+
+/** Query, maybe a query-free phase that yields (as the parse loops do), query again. */
+async function stubExtract(kind: StubKind, executor: CypherExecutor) {
+  await executor('RETURN 1 AS x');
+  if (scenario.quietIn === kind) await scenario.quietPhase();
+  try {
+    await executor('RETURN 2 AS y');
+    scenario.outcome[kind] = 'ok';
+  } catch (err) {
+    scenario.outcome[kind] = err instanceof Error ? err.message : String(err);
+  }
+  return [];
+}
 
 vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/storage/repo-manager.js')>();
@@ -32,21 +53,16 @@ vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
-// A stand-in for the HTTP extractor: query, a query-free phase that yields to
-// the event loop (as the source-scan parse loops do), then query again.
 vi.mock('../../../src/core/group/extractors/http-route-extractor.js', () => ({
   HttpRouteExtractor: class {
-    async extract(executor: CypherExecutor) {
-      await executor('RETURN 1 AS x');
-      await scenario.quietPhase();
-      try {
-        await executor('RETURN 2 AS y');
-        scenario.outcome = 'ok';
-      } catch (err) {
-        scenario.outcome = err instanceof Error ? err.message : String(err);
-      }
-      return [];
-    }
+    extract = (executor: CypherExecutor) => stubExtract('http', executor);
+  },
+}));
+
+// gRPC runs after HTTP in a sync: the lease must still be held there.
+vi.mock('../../../src/core/group/extractors/grpc-extractor.js', () => ({
+  GrpcExtractor: class {
+    extract = (executor: CypherExecutor) => stubExtract('grpc', executor);
   },
 }));
 
@@ -59,7 +75,7 @@ const config = (): GroupConfig => ({
   packages: {},
   detect: {
     http: true,
-    grpc: false,
+    grpc: true,
     thrift: false,
     topics: false,
     includes: false,
@@ -83,10 +99,14 @@ withTestLbugDB('group-sync-extraction-lease', (handle) => {
     storagePath: path.dirname(handle.dbPath),
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     groupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-lease-group-'));
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-lease-repo-'));
-    scenario.outcome = '';
+    scenario.quietIn = 'http';
+    scenario.outcome = {};
+    // Release the helper's writable handle first: the pool opens the same file,
+    // and on Windows a writable and a read-only handle cannot share a path.
+    await closeCoreLbug();
   });
 
   afterEach(async () => {
@@ -95,6 +115,8 @@ withTestLbugDB('group-sync-extraction-lease', (handle) => {
     // with a fresh timer.
     const { closeLbug } = await import('../../../src/core/lbug/pool-adapter.js');
     await closeLbug();
+    // Reopen the helper's handle for its own cleanup.
+    await initCoreLbug(handle.dbPath);
     fs.rmSync(groupDir, { recursive: true, force: true });
     fs.rmSync(repoDir, { recursive: true, force: true });
   });
@@ -107,12 +129,18 @@ withTestLbugDB('group-sync-extraction-lease', (handle) => {
     const realNow = Date.now.bind(Date);
     let skewMs = 0;
     vi.spyOn(Date, 'now').mockImplementation(() => realNow() + skewMs);
+    const pool = await import('../../../src/core/lbug/pool-adapter.js');
+    // Control: an unleased entry the same sweep must close. Without it this
+    // case would also pass if the shortened sweep never ran.
+    await pool.initLbug('lease-control', handle.dbPath);
+    let controlSwept = false;
 
     scenario.quietPhase = async () => {
       // The parse phase has now run longer than the pool's 5 min idle timeout.
       skewMs = 6 * 60 * 1000;
       await yieldTurns(20);
       await new Promise<void>((resolve) => setTimeout(resolve, 100));
+      controlSwept = !pool.isLbugReady('lease-control');
     };
 
     const { syncGroup } = await import('../../../src/core/group/sync.js');
@@ -121,28 +149,33 @@ withTestLbugDB('group-sync-extraction-lease', (handle) => {
       resolveRepoHandle: async () => repoHandle('lease-idle'),
     });
 
+    expect(controlSwept).toBe(true);
     expect(result.failedRepos).toEqual([]);
-    expect(scenario.outcome).toBe('ok');
+    expect(scenario.outcome).toEqual({ http: 'ok', grpc: 'ok' });
   });
 
-  it('keeps the repo open when a concurrent caller fills the pool', async () => {
-    const { initLbug } = await import('../../../src/core/lbug/pool-adapter.js');
-    scenario.quietPhase = async () => {
-      // Another caller (an MCP tool call, say) opens more repos than the pool
-      // holds; each open evicts the least recently used unleased entry.
-      for (let i = 0; i < 6; i++) {
-        await initLbug(`lease-other-${i}`, handle.dbPath);
-        await yieldTurns(1);
-      }
-    };
+  it.each(['http', 'grpc'] as const)(
+    'keeps the repo open when a concurrent caller fills the pool during the %s extractor',
+    async (kind) => {
+      const { initLbug } = await import('../../../src/core/lbug/pool-adapter.js');
+      scenario.quietIn = kind;
+      scenario.quietPhase = async () => {
+        // Another caller (an MCP tool call, say) opens more repos than the pool
+        // holds; each open evicts the least recently used unleased entry.
+        for (let i = 0; i < 6; i++) {
+          await initLbug(`lease-other-${i}`, handle.dbPath);
+          await yieldTurns(1);
+        }
+      };
 
-    const { syncGroup } = await import('../../../src/core/group/sync.js');
-    const result = await syncGroup(config(), {
-      groupDir,
-      resolveRepoHandle: async () => repoHandle('lease-lru'),
-    });
+      const { syncGroup } = await import('../../../src/core/group/sync.js');
+      const result = await syncGroup(config(), {
+        groupDir,
+        resolveRepoHandle: async () => repoHandle(`lease-lru-${kind}`),
+      });
 
-    expect(result.failedRepos).toEqual([]);
-    expect(scenario.outcome).toBe('ok');
-  });
+      expect(result.failedRepos).toEqual([]);
+      expect(scenario.outcome).toEqual({ http: 'ok', grpc: 'ok' });
+    },
+  );
 });
