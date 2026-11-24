@@ -1044,6 +1044,281 @@ stub = auth_pb2_grpc.AuthServiceStub(channel)`,
       expect(consumers[0].contractId).toContain('AuthService');
       expect(consumers[0].confidence).toBe(0.55);
     });
+
+    // #1186: test doubles are often named like stubs.
+    it('test_extract_python_test_double_without_grpc_import_is_ignored', async () => {
+      writeFile(
+        'tests/services/test_session_rule_service_purge.py',
+        `from app.services.session_rule_service import SessionRuleService
+
+
+class _CollectionStub:
+    def __init__(self):
+        self.deleted = []
+
+    def delete_many(self, query):
+        self.deleted.append(query)
+
+
+def test_purge_deletes_the_rules_of_a_session():
+    collection = _CollectionStub()
+    SessionRuleService(collection).purge("s1")
+    assert collection.deleted == [{"session_id": "s1"}]`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(contracts.filter((c) => c.role === 'consumer')).toHaveLength(0);
+    });
+
+    it('test_extract_python_imported_test_double_without_grpc_import_is_ignored', async () => {
+      writeFile(
+        'tests/services/test_session_service.py',
+        `from tests.fakes import SessionRepoStub
+from app.services.session_service import SessionService
+
+
+def test_close_marks_the_session_closed():
+    repo = SessionRepoStub()
+    SessionService(repo).close("s1")
+    assert repo.closed == ["s1"]`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(contracts.filter((c) => c.role === 'consumer')).toHaveLength(0);
+    });
+
+    it.each([
+      [
+        'called through self',
+        `import grpc
+
+
+class TestAuthClient:
+    class _RepoStub:
+        pass
+
+    def test_login(self):
+        return self._RepoStub()`,
+      ],
+      [
+        'that extends a generated stub under another name',
+        `from proto import auth_pb2_grpc
+
+
+class FakeAuthStub(auth_pb2_grpc.AuthServiceStub):
+    def Login(self, request, timeout=None):
+        return None
+
+
+def test_login(channel):
+    return FakeAuthStub(channel)`,
+      ],
+      [
+        'that extends a class of the same name outside gRPC',
+        `import grpc
+
+from tests import fakes
+
+
+class AuthServiceStub(fakes.AuthServiceStub):
+    pass
+
+
+def test_login():
+    return AuthServiceStub()`,
+      ],
+      [
+        'that extends a stub-named class that is not generated',
+        `import grpc
+
+from tests.fakes import BaseRepoStub
+
+
+class _AuthServiceStub(BaseRepoStub):
+    pass
+
+
+def test_login():
+    return _AuthServiceStub()`,
+      ],
+    ])(
+      'test_extract_python_test_double_in_a_grpc_file_is_ignored when %s',
+      async (_form, source) => {
+        writeFile('tests/test_client.py', source);
+
+        const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+        expect(contracts.filter((c) => c.role === 'consumer')).toHaveLength(0);
+      },
+    );
+
+    // The trade-off #1186 accepts: a betterproto package has no gRPC part in
+    // its name, so a file that only imports its stub is not detected.
+    it('test_extract_python_stub_without_any_grpc_import_is_not_detected', async () => {
+      writeFile(
+        'app/greeter.py',
+        `from .lib.helloworld import GreeterStub
+
+
+def greeter(channel):
+    return GreeterStub(channel)`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(contracts.filter((c) => c.role === 'consumer')).toHaveLength(0);
+    });
+
+    it('test_extract_python_stub_class_defined_in_a_grpc_file_is_ignored', async () => {
+      writeFile(
+        'tests/clients/test_auth_client.py',
+        `import grpc
+
+from app.clients.auth import AuthClient
+
+
+class _AuthServiceStub:
+    def Login(self, request, timeout=None):
+        raise grpc.RpcError()
+
+
+def test_login_maps_rpc_errors():
+    client = AuthClient(stub=_AuthServiceStub())
+    assert client.login("u", "p") is None`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(contracts.filter((c) => c.role === 'consumer')).toHaveLength(0);
+    });
+
+    it.each([
+      [
+        'a stub imported from its generated module, with the channel passed in',
+        `from proto.orders_pb2_grpc import OrderServiceStub
+
+
+class OrdersClient:
+    def __init__(self, channel):
+        self.stub = OrderServiceStub(channel)`,
+        'grpc::OrderService/*',
+      ],
+      [
+        'an aliased generated module',
+        `import proto.billing_pb2_grpc as rpc
+
+
+def billing_client(channel):
+    return rpc.BillingServiceStub(channel)`,
+        'grpc::BillingService/*',
+      ],
+      [
+        'grpc.aio and a relative import',
+        `from grpc import aio
+
+from . import search_pb2_grpc
+
+
+async def search(query):
+    async with aio.insecure_channel("search:50051") as channel:
+        return await search_pb2_grpc.SearchServiceStub(channel).Search(query)`,
+        'grpc::SearchService/*',
+      ],
+      [
+        'a module generated for grpclib',
+        `from .helloworld_grpc import GreeterStub
+
+
+def greeter(channel):
+    return GreeterStub(channel)`,
+        'grpc::Greeter/*',
+      ],
+      [
+        'betterproto and a grpclib channel',
+        `from grpclib.client import Channel
+
+from .lib.helloworld import GreeterStub
+
+
+async def greet(name):
+    async with Channel("greeter", 50051) as channel:
+        return await GreeterStub(channel).say_hello(name=name)`,
+        'grpc::Greeter/*',
+      ],
+      [
+        'imports inside the function',
+        `def users_client(target):
+    import grpc
+    from proto import users_pb2_grpc
+
+    return users_pb2_grpc.UserServiceStub(grpc.insecure_channel(target))`,
+        'grpc::UserService/*',
+      ],
+      [
+        'a relative generated-module import alone',
+        `from . import search_pb2_grpc
+
+
+def client(channel):
+    return search_pb2_grpc.SearchServiceStub(channel)`,
+        'grpc::SearchService/*',
+      ],
+      [
+        'a call through the generated module next to a class of the same name',
+        `import proto.auth_pb2_grpc as rpc
+
+
+class AuthServiceStub:
+    pass
+
+
+def client(channel):
+    return rpc.AuthServiceStub(channel)`,
+        'grpc::AuthService/*',
+      ],
+      [
+        'a call through a dotted generated module next to a class of the same name',
+        `import proto.auth_pb2_grpc
+
+
+class AuthServiceStub:
+    pass
+
+
+def client(channel):
+    return proto.auth_pb2_grpc.AuthServiceStub(channel)`,
+        'grpc::AuthService/*',
+      ],
+      [
+        'a facade of the same name over the generated stub',
+        `import grpc
+import auth_pb2_grpc
+
+
+class AuthServiceStub:
+    def __init__(self, channel):
+        self._inner = auth_pb2_grpc.AuthServiceStub(channel)`,
+        'grpc::AuthService/*',
+      ],
+      [
+        'a subclass that keeps the generated name',
+        `import grpc
+from proto import users_pb2_grpc
+
+
+class UserServiceStub(users_pb2_grpc.UserServiceStub):
+    pass
+
+
+def connect(target):
+    return UserServiceStub(grpc.insecure_channel(target))`,
+        'grpc::UserService/*',
+      ],
+    ])('test_extract_python_stub_returns_consumer with %s', async (_form, source, contractId) => {
+      writeFile('app/client.py', source);
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers.map((c) => c.contractId)).toEqual([contractId]);
+    });
   });
 
   describe('TypeScript/Node detection', () => {
