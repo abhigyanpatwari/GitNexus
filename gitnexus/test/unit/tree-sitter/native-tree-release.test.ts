@@ -6,6 +6,7 @@ import {
   MAX_YIELDS_PER_NUDGE,
   NUDGE_RSS_GROWTH_BYTES,
   PARSES_PER_RELEASE,
+  zeroFillBuffersRequested,
 } from '../../../src/core/tree-sitter/native-tree-release.js';
 
 const MB = 1024 * 1024;
@@ -176,14 +177,11 @@ describe('createTreeReleaser', () => {
   });
 
   // Under --zero-fill-buffers a failed Buffer.allocUnsafeSlow aborts the process,
-  // so nudgeV8 must use a plain ArrayBuffer there. Node accepts both spellings.
+  // so nudgeV8 must use a plain ArrayBuffer there.
   it.each([
-    ['no flag', {}, 1],
-    ['--zero-fill-buffers', { nodeArgs: ['--zero-fill-buffers'] }, 0],
-    ['--zero_fill_buffers', { nodeArgs: ['--zero_fill_buffers'] }, 0],
-    ['NODE_OPTIONS=--zero-fill-buffers', { nodeOptions: '--zero-fill-buffers' }, 0],
-    ['NODE_OPTIONS=--zero_fill_buffers', { nodeOptions: '--zero_fill_buffers' }, 0],
-  ])('nudgeV8 picks its allocation for %s', (_label, options, expectedUnsafeAllocations) => {
+    ['no flag', '', 1],
+    ['a quoted flag in NODE_OPTIONS', '"--zero_fill_buffers"', 0],
+  ])('nudgeV8 picks its allocation with %s', (_label, nodeOptions, expectedUnsafeAllocations) => {
     const { unsafeAllocations } = runReleaserChild(
       `
       let unsafeAllocations = 0;
@@ -197,8 +195,54 @@ describe('createTreeReleaser', () => {
       nudgeV8();
       console.log(JSON.stringify({ unsafeAllocations }));
     `,
-      options,
+      { nodeOptions },
     );
     expect(unsafeAllocations).toBe(expectedUnsafeAllocations);
+  });
+});
+
+describe('zeroFillBuffersRequested', () => {
+  // [NODE_OPTIONS, command-line options, whether Node turns zero-fill on]
+  const CASES: Array<[string, string[], boolean]> = [
+    ['', [], false],
+    ['--zero-fill-buffers', [], true],
+    ['--zero_fill_buffers', [], true],
+    ['"--zero-fill-buffers"', [], true],
+    ['"--zero_fill_buffers"', [], true],
+    ['"--zero-"fill-buffers', [], true],
+    ['"--zero-fill-\\buffers"', [], true],
+    ['--max-old-space-size=100 "--zero-fill-buffers"', [], true],
+    ['--zero-fill-buffers=false', [], true],
+    ["'--zero-fill-buffers'", [], false],
+    ['--no-zero-fill-buffers', [], false],
+    ['--zero-fill-buffers --no-zero-fill-buffers', [], false],
+    ['', ['--zero-fill-buffers=true'], true],
+    ['', ['--zero_fill_buffers=false'], true],
+    ['--zero-fill-buffers', ['--no-zero-fill-buffers'], false],
+    ['--no-zero-fill-buffers', ['--zero-fill-buffers'], true],
+  ];
+
+  it.each(CASES)('NODE_OPTIONS=%s with %j gives %s', (nodeOptions, execArgv, expected) => {
+    expect(zeroFillBuffersRequested(execArgv, nodeOptions)).toBe(expected);
+  });
+
+  it('agrees with Node itself on every case', () => {
+    for (const [nodeOptions, execArgv, expected] of CASES) {
+      const out = execFileSync(
+        process.execPath,
+        [
+          '--expose-internals',
+          ...execArgv,
+          '-e',
+          "console.log(require('internal/options').getOptionValue('--zero-fill-buffers'))",
+        ],
+        { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: nodeOptions } },
+      );
+      expect({ nodeOptions, execArgv, node: out.trim() }).toEqual({
+        nodeOptions,
+        execArgv,
+        node: String(expected),
+      });
+    }
   });
 });

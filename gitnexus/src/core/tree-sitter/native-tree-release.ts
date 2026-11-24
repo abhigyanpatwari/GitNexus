@@ -50,15 +50,62 @@ export const MAX_YIELDS_PER_NUDGE = 8;
 const NUDGE_BYTES = 64 * 1024 * 1024;
 
 /**
+ * Split `NODE_OPTIONS` into arguments the way Node does: on spaces outside
+ * double quotes. Double quotes are dropped wherever they appear, and inside
+ * them a backslash takes the next character literally. Single quotes have no
+ * meaning.
+ */
+export function splitNodeOptions(value: string): string[] {
+  const args: string[] = [];
+  let current: string | null = null;
+  let quoted = false;
+  for (let i = 0; i < value.length; i++) {
+    let c = value[i];
+    if (c === '\\' && quoted && i + 1 < value.length) {
+      c = value[++i];
+    } else if (c === '"') {
+      quoted = !quoted;
+      current ??= '';
+      continue;
+    } else if (c === ' ' && !quoted) {
+      if (current !== null) args.push(current);
+      current = null;
+      continue;
+    }
+    current = (current ?? '') + c;
+  }
+  if (current !== null) args.push(current);
+  return args;
+}
+
+/**
+ * Whether Node runs with `--zero-fill-buffers`, decided as Node decides it:
+ * `NODE_OPTIONS` first, then the command line; dashes and underscores are the
+ * same in the name; any `=value` still turns it on; and the last of
+ * `--zero-fill-buffers` and `--no-zero-fill-buffers` wins.
+ */
+export function zeroFillBuffersRequested(
+  execArgv: readonly string[],
+  nodeOptions: string | undefined,
+): boolean {
+  let requested = false;
+  for (const arg of [...splitNodeOptions(nodeOptions ?? ''), ...execArgv]) {
+    const name = arg.split('=', 1)[0].replace(/_/g, '-');
+    if (name === '--zero-fill-buffers') requested = true;
+    else if (name === '--no-zero-fill-buffers') requested = false;
+  }
+  return requested;
+}
+
+/**
  * Under `--zero-fill-buffers`, `Buffer.allocUnsafeSlow` zero-fills too, and a
  * failed allocation aborts the process instead of throwing. `new ArrayBuffer`
- * throws a `RangeError` in both modes, so it is used in that mode. Node accepts
- * the flag with dashes or underscores, in its arguments and in NODE_OPTIONS.
+ * throws a `RangeError` in both modes, so it is used in that mode. It is not
+ * used always: on macOS its zero-filled pages become resident when the
+ * allocator reuses a freed buffer (about 130 MB held after repeated nudges),
+ * while `allocUnsafeSlow` stays untouched.
  */
-const ZERO_FILL_BUFFERS = [
-  ...process.execArgv,
-  ...(process.env.NODE_OPTIONS ?? '').split(/\s+/),
-].some((arg) => arg.replace(/_/g, '-') === '--zero-fill-buffers');
+const ZERO_FILL_BUFFERS = zeroFillBuffersRequested(process.execArgv, process.env.NODE_OPTIONS);
 
 // One per process: every releaser replaces the same held buffer.
 const nudgeState: { held: ArrayBuffer | Buffer | null } = { held: null };
