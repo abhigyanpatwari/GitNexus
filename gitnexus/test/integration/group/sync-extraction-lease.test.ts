@@ -21,11 +21,11 @@ import {
 } from '../../../src/core/lbug/lbug-adapter.js';
 import { withTestLbugDB } from '../../helpers/test-indexed-db.js';
 
-type StubKind = 'http' | 'grpc';
+type StubKind = 'http' | 'grpc' | 'thrift' | 'topic' | 'include';
 
 const scenario = vi.hoisted(() => ({
   /** Which stub extractor runs `quietPhase` between its two graph queries. */
-  quietIn: 'http' as 'http' | 'grpc',
+  quietIn: 'http' as 'http' | 'grpc' | 'thrift' | 'topic' | 'include',
   quietPhase: async (): Promise<void> => {},
   /** Outcome of each stub's second query: 'ok' or the error message. */
   outcome: {} as Record<string, string>,
@@ -59,12 +59,30 @@ vi.mock('../../../src/core/group/extractors/http-route-extractor.js', () => ({
   },
 }));
 
-// gRPC runs after HTTP in a sync: the lease must still be held there.
+// The other extractors run after HTTP in a sync, include last: the lease must
+// still be held in each of them.
 vi.mock('../../../src/core/group/extractors/grpc-extractor.js', () => ({
   GrpcExtractor: class {
     extract = (executor: CypherExecutor) => stubExtract('grpc', executor);
   },
 }));
+vi.mock('../../../src/core/group/extractors/thrift-extractor.js', () => ({
+  ThriftExtractor: class {
+    extract = (executor: CypherExecutor) => stubExtract('thrift', executor);
+  },
+}));
+vi.mock('../../../src/core/group/extractors/topic-extractor.js', () => ({
+  TopicExtractor: class {
+    extract = (executor: CypherExecutor) => stubExtract('topic', executor);
+  },
+}));
+vi.mock('../../../src/core/group/extractors/include-extractor.js', () => ({
+  IncludeExtractor: class {
+    extract = (executor: CypherExecutor) => stubExtract('include', executor);
+  },
+}));
+
+const ALL_OK = { http: 'ok', grpc: 'ok', thrift: 'ok', topic: 'ok', include: 'ok' };
 
 const config = (): GroupConfig => ({
   version: 1,
@@ -76,9 +94,9 @@ const config = (): GroupConfig => ({
   detect: {
     http: true,
     grpc: true,
-    thrift: false,
-    topics: false,
-    includes: false,
+    thrift: true,
+    topics: true,
+    includes: true,
     workspace_deps: false,
   },
   matching: {},
@@ -151,10 +169,10 @@ withTestLbugDB('group-sync-extraction-lease', (handle) => {
 
     expect(controlSwept).toBe(true);
     expect(result.failedRepos).toEqual([]);
-    expect(scenario.outcome).toEqual({ http: 'ok', grpc: 'ok' });
+    expect(scenario.outcome).toEqual(ALL_OK);
   });
 
-  it.each(['http', 'grpc'] as const)(
+  it.each(['http', 'grpc', 'thrift', 'topic', 'include'] as const)(
     'keeps the repo open when a concurrent caller fills the pool during the %s extractor',
     async (kind) => {
       const { initLbug } = await import('../../../src/core/lbug/pool-adapter.js');
@@ -175,7 +193,7 @@ withTestLbugDB('group-sync-extraction-lease', (handle) => {
       });
 
       expect(result.failedRepos).toEqual([]);
-      expect(scenario.outcome).toEqual({ http: 'ok', grpc: 'ok' });
+      expect(scenario.outcome).toEqual(ALL_OK);
     },
   );
 });
