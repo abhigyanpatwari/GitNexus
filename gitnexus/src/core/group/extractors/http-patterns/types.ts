@@ -193,6 +193,12 @@ export interface HttpLanguagePlugin {
  * over those facts. Splitting the two lets the orchestrator drop each tree as
  * soon as its file is done instead of holding every tree of the family until
  * the cross-file pass.
+ *
+ * `collect` runs once per file, right after the plugin's `scan` of it. A
+ * throw from `collect` or `resolve`, or facts that cannot be structured-cloned,
+ * fails the extraction and drops the repo's contracts, so neither should
+ * throw. `resolve` is skipped when no file of the family was parsed, and it
+ * gets the `repoContext` of the family's first parsed file.
  */
 export interface HttpProjectScan<TFacts = unknown> {
   /**

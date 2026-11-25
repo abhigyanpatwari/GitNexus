@@ -563,15 +563,23 @@ describe('HTTP source scan tree lifetime', () => {
 
   it('rejects project-scan facts that hold a syntax node', async () => {
     writeMixedFixture(tmpDir);
-    const projectScan = getPluginForFile('x.kt')?.projectScan;
-    if (!projectScan) throw new Error('expected the Kotlin project scan');
+    const plugin = getPluginForFile('x.java');
+    const projectScan = plugin?.projectScan;
+    if (!projectScan) throw new Error('expected the Java project scan');
     vi.spyOn(projectScan, 'collect').mockImplementation(({ tree }) => [
       { node: tree.rootNode } as never,
     ]);
 
-    await expect(
-      new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir)),
-    ).rejects.toMatchObject({ name: 'DataCloneError' });
+    const failure = await new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir)).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    // The error names the plugin and the file, and keeps the clone error.
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toMatch(
+      new RegExp(`^HTTP plugin ${plugin?.name} failed on \\S+\\.java: `),
+    );
+    expect((failure as Error).cause).toMatchObject({ name: 'DataCloneError' });
   });
 
   it('keeps no file source alive through the cached scan detections', async () => {

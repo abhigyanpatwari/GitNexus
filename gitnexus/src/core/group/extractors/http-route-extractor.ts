@@ -544,12 +544,19 @@ export class HttpRouteExtractor implements ContractExtractor {
       } catch {
         return null;
       }
-      ownDetections.set(rel, structuredClone(plugin.scan(tree, repoContext, rel)));
-      return {
-        facts: projectScan
-          ? structuredClone(projectScan.collect({ filePath: rel, tree }, repoContext))
-          : undefined,
-      };
+      // A throw here fails the extraction, as before; it names the plugin and
+      // the file, which a bare DataCloneError does not.
+      try {
+        ownDetections.set(rel, structuredClone(plugin.scan(tree, repoContext, rel)));
+        return {
+          facts: projectScan
+            ? structuredClone(projectScan.collect({ filePath: rel, tree }, repoContext))
+            : undefined,
+        };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        throw new Error(`HTTP plugin ${plugin.name} failed on ${rel}: ${reason}`, { cause: err });
+      }
     };
 
     const analyzeFile = async (
