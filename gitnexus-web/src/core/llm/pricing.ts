@@ -115,8 +115,21 @@ export const estimateCostUsd = (
   const pricing = getModelPricing(provider, model);
   if (!pricing) return null;
 
-  const inputCost = (Math.max(0, usage.inputTokens) / 1_000_000) * pricing.inputPerMillion;
-  const outputCost = (Math.max(0, usage.outputTokens) / 1_000_000) * pricing.outputPerMillion;
+  const inputTokens = Math.max(0, usage.inputTokens);
+  const outputTokens = Math.max(0, usage.outputTokens);
+
+  if (pricing.inputPerMillion === 0 && pricing.outputPerMillion === 0) {
+    return 0;
+  }
+
+  // Paid cloud models with only an aggregate total lack the input/output split
+  // needed for an accurate estimate; return null instead of reporting $0.
+  if (usage.totalTokens > 0 && inputTokens === 0 && outputTokens === 0) {
+    return null;
+  }
+
+  const inputCost = (inputTokens / 1_000_000) * pricing.inputPerMillion;
+  const outputCost = (outputTokens / 1_000_000) * pricing.outputPerMillion;
   return inputCost + outputCost;
 };
 

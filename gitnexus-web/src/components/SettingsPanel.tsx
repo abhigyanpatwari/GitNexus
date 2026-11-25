@@ -266,6 +266,9 @@ export const SettingsPanel = ({
 }: SettingsPanelProps) => {
   const { t } = useTranslation(['common', 'settings']);
   const [settings, setSettings] = useState<LLMSettings>(loadSettings);
+  const [maxIterationsInput, setMaxIterationsInput] = useState<string>(() =>
+    String(normalizeMaxIterations(loadSettings().agent?.maxIterations)),
+  );
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   /** Deploy access token. Stored outside LLM settings, persisted on Save. */
   const [authToken, setAuthTokenState] = useState(getAuthToken);
@@ -290,7 +293,9 @@ export const SettingsPanel = ({
   // Load settings when panel opens
   useEffect(() => {
     if (isOpen) {
-      setSettings(loadSettings());
+      const loaded = loadSettings();
+      setSettings(loaded);
+      setMaxIterationsInput(String(normalizeMaxIterations(loaded.agent?.maxIterations)));
       setAuthTokenState(getAuthToken());
       setSaveStatus('idle');
       setOllamaError(null);
@@ -331,14 +336,20 @@ export const SettingsPanel = ({
 
   const handleSave = () => {
     try {
+      const parsedDraft = Number(maxIterationsInput.trim());
+      const resolvedMaxIterations =
+        maxIterationsInput.trim() === '' || !Number.isFinite(parsedDraft)
+          ? DEFAULT_MAX_ITERATIONS
+          : normalizeMaxIterations(Math.trunc(parsedDraft));
       const normalizedSettings: LLMSettings = {
         ...settings,
         agent: {
-          maxIterations: normalizeMaxIterations(settings.agent?.maxIterations),
+          maxIterations: resolvedMaxIterations,
           tokenBudget: normalizeTokenBudget(settings.agent?.tokenBudget),
         },
       };
       setSettings(normalizedSettings);
+      setMaxIterationsInput(String(resolvedMaxIterations));
       saveSettings(normalizedSettings);
       // The token persists on Save with everything else, not per keystroke: it
       // is the only affordance this panel gives for "committed", and a
@@ -1130,9 +1141,11 @@ export const SettingsPanel = ({
                   type="number"
                   min={MIN_MAX_ITERATIONS}
                   max={MAX_MAX_ITERATIONS}
-                  value={settings.agent?.maxIterations ?? DEFAULT_MAX_ITERATIONS}
+                  value={maxIterationsInput}
                   onChange={(e) => {
-                    const trimmed = e.target.value.trim();
+                    const raw = e.target.value;
+                    setMaxIterationsInput(raw);
+                    const trimmed = raw.trim();
                     if (trimmed === '') return;
                     const parsed = Number(trimmed);
                     if (Number.isFinite(parsed)) {
@@ -1145,15 +1158,22 @@ export const SettingsPanel = ({
                       }));
                     }
                   }}
-                  onBlur={() =>
+                  onBlur={() => {
+                    const trimmed = maxIterationsInput.trim();
+                    const parsed = Number(trimmed);
+                    const normalized =
+                      trimmed === '' || !Number.isFinite(parsed)
+                        ? DEFAULT_MAX_ITERATIONS
+                        : normalizeMaxIterations(Math.trunc(parsed));
+                    setMaxIterationsInput(String(normalized));
                     setSettings((prev) => ({
                       ...prev,
                       agent: {
-                        maxIterations: normalizeMaxIterations(prev.agent?.maxIterations),
+                        maxIterations: normalized,
                         tokenBudget: normalizeTokenBudget(prev.agent?.tokenBudget),
                       },
-                    }))
-                  }
+                    }));
+                  }}
                   className="w-full rounded-xl border border-border-subtle bg-elevated px-3.5 py-2.5 font-mono text-sm text-text-primary transition-all outline-none focus:border-accent focus:ring-2 focus:ring-accent/20"
                 />
                 <p className="text-[11px] leading-relaxed text-text-muted">

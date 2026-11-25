@@ -122,6 +122,12 @@ describe('SettingsPanel agent limits UI', () => {
 
     expect(getAgentConfig(loadSettings()).maxIterations).toBe(MAX_MAX_ITERATIONS);
 
+    // Temporary blank while clearing max iterations is allowed, then restored to default on blur
+    fireEvent.change(maxIterInput, { target: { value: '' } });
+    expect(maxIterInput.value).toBe('');
+    fireEvent.blur(maxIterInput);
+    expect(maxIterInput.value).toBe('8');
+
     // Exponent-form numeric inputs (valid in <input type="number">) are parsed accurately
     fireEvent.change(maxIterInput, { target: { value: '1e1' } });
     fireEvent.change(tokenBudgetInput, { target: { value: '1e3' } });

@@ -58,6 +58,15 @@ describe('pricing utilities', () => {
         totalTokens: 7000,
       }),
     ).toBeNull();
+
+    // Paid cloud model reporting only totalTokens without input/output breakdown cannot be priced as $0
+    expect(
+      estimateCostUsd('openai', 'gpt-4o', {
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 500,
+      }),
+    ).toBeNull();
   });
 
   it('formats token counts and USD costs readably', () => {
