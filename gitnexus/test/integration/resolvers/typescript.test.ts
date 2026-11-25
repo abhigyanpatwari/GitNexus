@@ -245,6 +245,13 @@ describe('TypeScript generic awaited call resolution', () => {
     const incoming = calls.filter((c) => c.target === 'verifyToken');
     expect(incoming.length).toBe(2);
   });
+
+  it('the awaited generic member call is not also a read of verify', () => {
+    const accesses = getRelationships(result, 'ACCESSES').filter(
+      (a) => a.source === 'authenticateGuest',
+    );
+    expect(accesses.map((a) => a.target)).not.toContain('verify');
+  });
 });
 
 // ---------------------------------------------------------------------------
