@@ -179,6 +179,29 @@ describe('createTreeReleaser', () => {
     expect(withNudge).toBeGreaterThan(0);
   });
 
+  it('drops the nudge buffer when the last hold ends', () => {
+    const { held, afterFirstEnd, afterLastEnd } = runReleaserChild(
+      `
+      const { nudgeV8, holdNudgeBuffer } = await import(RELEASER_URL);
+      const arrayBuffers = () => { gc(); gc(); return process.memoryUsage().arrayBuffers; };
+      const endFirst = holdNudgeBuffer();
+      const endLast = holdNudgeBuffer();
+      nudgeV8();
+      const held = arrayBuffers();
+      endFirst();
+      endFirst();
+      const afterFirstEnd = arrayBuffers();
+      endLast();
+      const afterLastEnd = arrayBuffers();
+      console.log(JSON.stringify({ held, afterFirstEnd, afterLastEnd }));
+    `,
+      { nodeArgs: ['--expose-gc'] },
+    );
+    // Ending one hold twice does not end the other.
+    expect(Number(afterFirstEnd)).toBeGreaterThanOrEqual(64 * MB);
+    expect(Number(held) - Number(afterLastEnd)).toBeGreaterThanOrEqual(64 * MB);
+  });
+
   // Under --zero-fill-buffers a failed Buffer.allocUnsafeSlow aborts the process,
   // so nudgeV8 must use a plain ArrayBuffer there.
   it.each([

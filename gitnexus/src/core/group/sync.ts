@@ -59,6 +59,8 @@ import { withGroupSyncLock } from './group-lock.js';
 import type { ContractRegistry } from './types.js';
 
 import { logger } from '../logger.js';
+import { holdNudgeBuffer } from '../tree-sitter/native-tree-release.js';
+
 export interface SyncOptions {
   extractorOverride?:
     | ((repo: RepoHandle) => Promise<StoredContract[]>)
@@ -331,6 +333,9 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
   // (bounding residency); this set is the defensive outer-finally sweep —
   // release disposers are idempotent, so double-release is a safe no-op.
   const activeReleases = new Set<() => void>();
+  // The extractors' tree releasers share one nudge buffer; drop it once no
+  // sync is extracting (see native-tree-release.ts).
+  const endNudgeBufferHold = holdNudgeBuffer();
 
   try {
     const eo = opts?.extractorOverride;
@@ -673,6 +678,7 @@ export async function syncGroup(config: GroupConfig, opts?: SyncOptions): Promis
     // double-release is a no-op. Repos are NOT closed — released repos are
     // evictable and LRU reclaims them (avoids stomping a concurrent reader).
     for (const release of activeReleases) release();
+    endNudgeBufferHold();
   }
 
   const providerIndex = buildProviderIndex(autoContracts, config.matching);

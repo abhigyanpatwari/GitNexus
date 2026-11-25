@@ -92,8 +92,30 @@ export function zeroFillBuffersRequested(
  */
 const ZERO_FILL_BUFFERS = zeroFillBuffersRequested(process.execArgv, process.env.NODE_OPTIONS);
 
-// One per process: every releaser replaces the same held buffer.
-const nudgeState: { held: ArrayBuffer | Buffer | null } = { held: null };
+// One per process: every releaser replaces the same held buffer, which is
+// dropped when the last open hold ends (see `holdNudgeBuffer`).
+const nudgeState: { held: ArrayBuffer | Buffer | null; holds: number } = {
+  held: null,
+  holds: 0,
+};
+
+/**
+ * Open a hold on the nudge buffer for a stretch of work that runs tree
+ * releasers, such as a group sync's contract extraction, and return the
+ * function that ends it. When the last open hold ends the buffer is dropped,
+ * so a long-lived process does not keep it after its last scan. Releasers run
+ * outside any hold keep the buffer until a hold ends.
+ */
+export function holdNudgeBuffer(): () => void {
+  nudgeState.holds += 1;
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    nudgeState.holds -= 1;
+    if (nudgeState.holds === 0) nudgeState.held = null;
+  };
+}
 
 /** Replace the held buffer, so that V8 runs a major GC. May throw if the allocation fails. */
 export function nudgeV8(): void {
