@@ -181,7 +181,7 @@ describe('extractCsharpStructureViaScanner', () => {
 // `global using` feeds the workspace evidence the name-fallback visibility
 // veto reads: a namespace imported globally is visible in every file.
 describe('extractCsharpStructureViaScanner: global using', () => {
-  it('captures `global using` namespaces, including global:: and aliased forms', () => {
+  it('captures `global using` namespaces (incl. global::) but not aliases', () => {
     const src = [
       'global using Vendor.Proto;',
       'global using global::Other.Lib;',
@@ -189,13 +189,17 @@ describe('extractCsharpStructureViaScanner: global using', () => {
       'using Local.Only;',
     ].join('\n');
     const structure = extractCsharpStructureViaScanner(src);
-    expect(structure.globalUsingNamespaces).toEqual(['Vendor.Proto', 'Other.Lib', 'Third.Party']);
+    // `global using Alias = Third.Party;` names only `Alias`, not `Third.Party`.
+    expect(structure.globalUsingNamespaces).toEqual(['Vendor.Proto', 'Other.Lib']);
     expect(structure.incomplete).toBeFalsy();
   });
 
-  it('keeps `global using static` on the using-static channel', () => {
-    const structure = extractCsharpStructureViaScanner('global using static System.Math;');
-    expect(structure.usingStaticPaths).toEqual(['System.Math']);
+  it('records `global using static` as a global static path, not a namespace', () => {
+    const structure = extractCsharpStructureViaScanner(
+      'global using static System.Math;\nusing static Local.Only;',
+    );
+    expect(structure.usingStaticPaths).toEqual(['System.Math', 'Local.Only']);
+    expect(structure.globalUsingStaticPaths).toEqual(['System.Math']);
     expect(structure.globalUsingNamespaces).toBeUndefined();
   });
 

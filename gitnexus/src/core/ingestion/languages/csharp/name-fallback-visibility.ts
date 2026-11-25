@@ -17,12 +17,14 @@
  *  2. the caller's file has `using N;`. A using directive is resolved against
  *     the call site's enclosing namespaces (`namespace A { using B; }` may name
  *     `A.B`), and a namespace import reaches only that namespace — not its
- *     parent. `using static T;` / an alias reach types under `T`'s namespace;
+ *     parent. `using static T;` may expose types nested under `T`, and an
+ *     alias `using X = N.X;` names the type only when it points at it;
  *  3. the caller's compilation imports `N` globally: `global using N;` in a
  *     file of the same project, `<Using Include="N" />` in that project's
- *     `.csproj`, or in a `Directory.Build.props` / `.targets` above it;
- *  4. `N` is under `System` / `Microsoft`, which SDK `ImplicitUsings`
- *     may import without any source evidence.
+ *     `.csproj`, or in a `Directory.Build.props` / `.targets` above it
+ *     (aliased global usings name only the alias and do not count);
+ *  4. `N` is one of the namespaces SDK `ImplicitUsings` imports, which leaves
+ *     no source evidence.
  *
  * Everything this hook cannot decide is allowed: a qualified call (the source
  * spells the namespace), a candidate with no recorded namespace (global
@@ -34,8 +36,32 @@ import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { CSharpNamespaceEvidence } from '../../language-config.js';
 import type { CsharpResolutionConfig } from './resolution-config.js';
 
-/** Namespace roots SDK `ImplicitUsings` can bring in with no source trace. */
-const IMPLICIT_USING_ROOTS: ReadonlySet<string> = new Set(['System', 'Microsoft']);
+/**
+ * Namespaces .NET SDK `ImplicitUsings` adds as global usings, with no source
+ * trace. Union over the SDKs (Microsoft.NET.Sdk, .Web, .Worker,
+ * .WindowsDesktop); whether a project enables it is not modelled, so the
+ * union is allowed everywhere (fail open).
+ */
+const IMPLICIT_USING_NAMESPACES: ReadonlySet<string> = new Set([
+  'System',
+  'System.Collections.Generic',
+  'System.IO',
+  'System.Linq',
+  'System.Net.Http',
+  'System.Net.Http.Json',
+  'System.Threading',
+  'System.Threading.Tasks',
+  'System.Drawing',
+  'System.Windows.Forms',
+  'Microsoft.AspNetCore.Builder',
+  'Microsoft.AspNetCore.Hosting',
+  'Microsoft.AspNetCore.Http',
+  'Microsoft.AspNetCore.Routing',
+  'Microsoft.Extensions.Configuration',
+  'Microsoft.Extensions.DependencyInjection',
+  'Microsoft.Extensions.Hosting',
+  'Microsoft.Extensions.Logging',
+]);
 
 type CsharpScope = ParsedFile['scopes'][number];
 
@@ -44,11 +70,6 @@ function normalizeNamespace(raw: string): string {
     .trim()
     .replace(/^global::/, '')
     .replace(/@/g, '');
-}
-
-function topSegment(ns: string): string {
-  const dot = ns.indexOf('.');
-  return dot === -1 ? ns : ns.slice(0, dot);
 }
 
 /** `A.B.C` → `['A.B.C', 'A.B', 'A']`: the namespaces C# searches, innermost first. */
@@ -144,11 +165,15 @@ function importedGlobally(
 ): boolean {
   const projectDirs = evidence.projectDirs ?? new Set<string>();
   const callerProject = owningProjectDir(callerPath, projectDirs);
-  return (evidence.globalUsings ?? []).some(
-    (g) =>
-      normalizeNamespace(g.namespace) === ns &&
-      (g.reach === 'tree' ? isUnderDir(callerPath, g.scopeDir) : g.scopeDir === callerProject),
-  );
+  return (evidence.globalUsings ?? []).some((g) => {
+    const target = normalizeNamespace(g.namespace);
+    // A static import names a type whose nested types may live under `ns`.
+    const reaches = g.static === true ? target.startsWith(ns + '.') : target === ns;
+    return (
+      reaches &&
+      (g.reach === 'tree' ? isUnderDir(callerPath, g.scopeDir) : g.scopeDir === callerProject)
+    );
+  });
 }
 
 /**
@@ -169,8 +194,11 @@ function importedByUsing(
     const resolutions = [...enclosing.map((outer) => `${outer}.${written}`), written];
     for (const target of resolutions) {
       if (imported.kind === 'alias') {
-        // `using Color = N.Color;` — only an alias spelled like the type names it.
-        if (imported.localName === candidateName && target.startsWith(ns + '.')) return true;
+        // `using Color = N.Color;` names the candidate only when it points at
+        // exactly that type; `using Color = N.Other;` binds `Color` elsewhere.
+        if (imported.localName === candidateName && target === `${ns}.${candidateName}`) {
+          return true;
+        }
         continue;
       }
       if (target === ns) return true;
@@ -202,7 +230,7 @@ export function csharpIsGlobalNameFallbackPlausible(ctx: {
   const evidence = (ctx.resolutionConfig as CsharpResolutionConfig | undefined)?.namespaces;
   if (evidence?.globalUsings === undefined || evidence.truncated === true) return true;
 
-  if (IMPLICIT_USING_ROOTS.has(topSegment(ns))) return true;
+  if (IMPLICIT_USING_NAMESPACES.has(ns)) return true;
   if (importedGlobally(ns, ctx.callerParsed.filePath, evidence)) return true;
 
   const siteNamespace = callSiteNamespace(ctx.callerParsed, ctx.site?.inScope);

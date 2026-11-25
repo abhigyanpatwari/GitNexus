@@ -165,6 +165,9 @@ export interface CSharpGlobalUsing {
   /** Repo-relative, `/`-separated; `''` is the repo root. */
   readonly scopeDir: string;
   readonly reach: 'project' | 'tree';
+  /** `global using static T;` / `<Using Static="true">`: `namespace` is the
+   *  type path `T`, whose nested types become nameable. */
+  readonly static?: boolean;
 }
 
 /** Result of a single BFS over a repo collecting both csproj configs and
@@ -570,11 +573,12 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
     const msbuildResults = await mapConcurrent(
       msbuildNames,
       (name) =>
-        collectMsbuildGlobalUsings(path.join(dir, name), (namespace) =>
+        collectMsbuildGlobalUsings(path.join(dir, name), (namespace, isStatic) =>
           globalUsings.push({
             namespace,
             scopeDir: relDir,
             reach: CSHARP_MSBUILD_IMPORT_FILES.has(name) ? 'tree' : 'project',
+            ...(isStatic ? { static: true } : {}),
           }),
         ),
       { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
@@ -591,7 +595,13 @@ export async function scanCSharpProject(repoRoot: string): Promise<CSharpProject
           path.join(dir, name),
           declaredNamespaces,
           rootNamespaces,
-          (namespace) => globalUsings.push({ namespace, scopeDir: ownerDir, reach: 'project' }),
+          (namespace, isStatic) =>
+            globalUsings.push({
+              namespace,
+              scopeDir: ownerDir,
+              reach: 'project',
+              ...(isStatic ? { static: true } : {}),
+            }),
         ),
       { concurrency: CSHARP_SCAN_READ_CONCURRENCY },
     );
@@ -623,20 +633,25 @@ const CSHARP_MSBUILD_IMPORT_FILES: ReadonlySet<string> = new Set([
   'Directory.Build.props',
   'Directory.Build.targets',
 ]);
-// `<Using Include="X" />` — attribute order varies, so match `Include` anywhere
-// inside the opening tag. `Static`/`Alias` forms are kept: over-collecting only
-// widens visibility (fail open), never narrows it.
-const CSHARP_MSBUILD_USING_RE = /<Using\b[^>]*?\bInclude\s*=\s*["']([^"']+)["']/g;
+// `<Using Include="X" [Static="true"] [Alias="A"] />` — attribute order varies,
+// so the opening tag is captured whole and its attributes read separately.
+const CSHARP_MSBUILD_USING_TAG_RE = /<Using\b([^>]*)>/g;
+const msbuildAttr = (attrs: string, name: string): string | undefined =>
+  new RegExp(String.raw`\b${name}\s*=\s*["']([^"']*)["']`, 'i').exec(attrs)?.[1];
 // MSBuild ignores commented-out markup, so `<Using>` inside one is not an import.
 const XML_COMMENT_RE = /<!--[\s\S]*?-->/g;
 // Project files are small; one beyond this is pathological and is treated as
 // unreadable (the scan fails open) rather than streamed.
 const CSHARP_MSBUILD_MAX_BYTES = 4 * 1024 * 1024;
 
-/** Collect the namespaces an MSBuild project file imports globally. */
+/**
+ * Collect the namespaces an MSBuild project file imports globally. An
+ * `Alias` item names only the alias, so it is skipped; a `Static` item imports
+ * a type's members and is flagged as such.
+ */
 async function collectMsbuildGlobalUsings(
   filePath: string,
-  addGlobalUsing: (namespace: string) => void,
+  addGlobalUsing: (namespace: string, isStatic: boolean) => void,
 ): Promise<'ok' | 'truncated'> {
   let text: string;
   try {
@@ -646,8 +661,12 @@ async function collectMsbuildGlobalUsings(
   } catch {
     return 'truncated';
   }
-  for (const match of text.replace(XML_COMMENT_RE, '').matchAll(CSHARP_MSBUILD_USING_RE)) {
-    addGlobalUsing(match[1]!.trim().replace(/^global::/, ''));
+  for (const match of text.replace(XML_COMMENT_RE, '').matchAll(CSHARP_MSBUILD_USING_TAG_RE)) {
+    const attrs = match[1]!;
+    const include = msbuildAttr(attrs, 'Include');
+    if (include === undefined || msbuildAttr(attrs, 'Alias') !== undefined) continue;
+    const isStatic = msbuildAttr(attrs, 'Static')?.trim().toLowerCase() === 'true';
+    addGlobalUsing(include.trim().replace(/^global::/, ''), isStatic);
   }
   return 'ok';
 }
@@ -741,7 +760,7 @@ async function collectDeclaredNamespaces(
   filePath: string,
   declaredNamespaces: Set<string>,
   rootNamespaces: Set<string>,
-  addGlobalUsing: (namespace: string) => void,
+  addGlobalUsing: (namespace: string, isStatic: boolean) => void,
 ): Promise<'ok' | 'truncated'> {
   const createScanner = await getCsharpStructureScannerFactory();
   const scanner = createScanner();
@@ -765,7 +784,8 @@ async function collectDeclaredNamespaces(
     const dot = ns.indexOf('.');
     rootNamespaces.add(dot === -1 ? ns : ns.slice(0, dot));
   }
-  for (const ns of structure.globalUsingNamespaces ?? []) addGlobalUsing(ns);
+  for (const ns of structure.globalUsingNamespaces ?? []) addGlobalUsing(ns, false);
+  for (const type of structure.globalUsingStaticPaths ?? []) addGlobalUsing(type, true);
   // A declaration the scanner could not fully capture (Codex F3) means the
   // collected namespaces are an incomplete picture of this file — treat it like
   // a truncated read so the #1881 gate fails OPEN rather than over-block an

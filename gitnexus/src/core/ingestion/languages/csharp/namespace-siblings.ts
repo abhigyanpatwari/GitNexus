@@ -65,10 +65,13 @@ export interface CsharpFileStructure {
   /** Dotted paths from `using static X.Y.Z;` (including
    *  `global using static` and aliased `using static A = X.Y.Z;`). */
   readonly usingStaticPaths: readonly string[];
-  /** Namespaces from `global using X;` (and `global using A = X;`), which C#
-   *  makes visible in every file of the compilation. Populated by the line
-   *  scanner only (it feeds the workspace scan); absent from the AST walk. */
+  /** Namespaces from `global using X;`, which C# makes visible in every file
+   *  of the compilation. An aliased `global using A = X;` is excluded: it
+   *  names only `A`. Populated by the line scanner only (it feeds the
+   *  workspace scan); absent from the AST walk. */
   readonly globalUsingNamespaces?: readonly string[];
+  /** Type paths from `global using static T;` — a subset of `usingStaticPaths`. */
+  readonly globalUsingStaticPaths?: readonly string[];
   /** True when the scanner saw a `namespace` / `using static` declaration it
    *  could not fully capture (keyword not at line start, split across lines, or
    *  an unparseable identifier form). Callers feeding the #1881 gate must treat
@@ -98,12 +101,15 @@ const CS_USING_STATIC_RE = new RegExp(
   String.raw`^[ \t]*(?:global[ \t]+)?using[ \t]+static[ \t]+(?:@?[\p{L}_][\p{L}\p{N}_]*[ \t]*=[ \t]*)?(${CS_NS_IDENT})`,
   'u',
 );
-// `global using X.Y;` and the aliased `global using A = X.Y;` (non-static —
-// `global using static` is matched by CS_USING_STATIC_RE first).
+// `global using X.Y;` (group 2) and the aliased `global using A = X.Y;`
+// (group 1 = alias). An alias names only `A`, so it is recognized but not
+// recorded as a namespace import. `global using static` is matched by
+// CS_USING_STATIC_RE first.
 const CS_GLOBAL_USING_RE = new RegExp(
-  String.raw`^[ \t]*global[ \t]+using[ \t]+(?:@?[\p{L}_][\p{L}\p{N}_]*[ \t]*=[ \t]*)?(?:global::)?(${CS_NS_IDENT})`,
+  String.raw`^[ \t]*global[ \t]+using[ \t]+(?:(@?[\p{L}_][\p{L}\p{N}_]*)[ \t]*=[ \t]*)?(?:global::)?(${CS_NS_IDENT})`,
   'u',
 );
+const CS_GLOBAL_PREFIX_RE = /^[ \t]*global[ \t]/;
 
 // Incompleteness detectors — used ONLY when the precise matchers above failed,
 // to flag a declaration the scanner could not capture (so the file fails the
@@ -273,6 +279,7 @@ export function createCsharpStructureScanner(): CsharpStructureLineScanner {
   const namespaces: string[] = [];
   const usingStaticPaths: string[] = [];
   const globalUsingNamespaces: string[] = [];
+  const globalUsingStaticPaths: string[] = [];
   let incomplete = false;
   let state: CsScanState = 'code';
   let rawFence = 0;
@@ -288,9 +295,11 @@ export function createCsharpStructureScanner(): CsharpStructureLineScanner {
           const us = CS_USING_STATIC_RE.exec(line);
           const gu = us === null ? CS_GLOBAL_USING_RE.exec(line) : null;
           if (us !== null) {
-            usingStaticPaths.push(us[1]!.replace(/@/g, ''));
+            const path = us[1]!.replace(/@/g, '');
+            usingStaticPaths.push(path);
+            if (CS_GLOBAL_PREFIX_RE.test(line)) globalUsingStaticPaths.push(path);
           } else if (gu !== null) {
-            globalUsingNamespaces.push(gu[1]!.replace(/@/g, ''));
+            if (gu[1] === undefined) globalUsingNamespaces.push(gu[2]!.replace(/@/g, ''));
           } else if (looksLikeUncapturedDeclaration(line)) {
             // A declaration the precise matchers couldn't capture → mark the
             // file incomplete so the #1881 gate fails OPEN (Codex F3).
@@ -305,6 +314,7 @@ export function createCsharpStructureScanner(): CsharpStructureLineScanner {
         namespaces,
         usingStaticPaths,
         ...(globalUsingNamespaces.length > 0 ? { globalUsingNamespaces } : {}),
+        ...(globalUsingStaticPaths.length > 0 ? { globalUsingStaticPaths } : {}),
         ...(incomplete ? { incomplete } : {}),
       };
     },

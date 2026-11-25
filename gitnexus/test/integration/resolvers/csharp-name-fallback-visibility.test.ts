@@ -173,6 +173,21 @@ namespace MyGame
     expect(callTargetsFrom(result, 'Paint', 'App/Painter.cs')).toEqual([]);
   }, 60_000);
 
+  it('does not treat an aliased MSBuild `<Using Alias>` as a namespace import', async () => {
+    const result = await analyze({
+      'Lib/Color.cs': VENDOR_COLOR,
+      'App/App.csproj': `<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <Using Include="Vendor.Proto" Alias="VP" />
+  </ItemGroup>
+</Project>
+`,
+      'App/GlobalUsings.cs': 'global using Proto = Vendor.Proto;\n',
+      'App/Painter.cs': PAINTER_IN_MYGAME,
+    });
+    expect(callTargetsFrom(result, 'Paint', 'App/Painter.cs')).toEqual([]);
+  }, 60_000);
+
   it('scopes a `global using` to the project that declares it', async () => {
     const result = await analyze({
       'Lib/Color.cs': VENDOR_COLOR,

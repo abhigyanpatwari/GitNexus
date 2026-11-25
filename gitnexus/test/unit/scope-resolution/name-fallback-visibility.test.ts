@@ -1066,7 +1066,12 @@ describe('C#: isGlobalNameFallbackPlausible', () => {
   const config = (
     overrides: {
       declaredNamespaces?: string[];
-      globalUsings?: { namespace: string; scopeDir: string; reach: 'project' | 'tree' }[];
+      globalUsings?: {
+        namespace: string;
+        scopeDir: string;
+        reach: 'project' | 'tree';
+        static?: boolean;
+      }[];
       projectDirs?: string[];
       truncated?: boolean;
     } = {},
@@ -1145,6 +1150,39 @@ describe('C#: isGlobalNameFallbackPlausible', () => {
     expect(plausible(caller, mkType('Lib/G.cs', 'Global'))).toBe(true);
     expect(plausible(caller, color, config({ truncated: true }))).toBe(true);
     expect(plausible(caller, color, { csharpConfigs: [] })).toBe(true);
-    expect(plausible(caller, mkType('Lib/Text.cs', 'Encoder', 'System.Text'))).toBe(true);
+    expect(plausible(caller, mkType('Lib/Linq.cs', 'Helper', 'System.Linq'))).toBe(true);
+  });
+
+  it('allows only the SDK implicit-using namespaces, not every System/Microsoft descendant', () => {
+    const caller = mkCaller('App/Painter.cs');
+    expect(plausible(caller, mkType('Lib/Plugin.cs', 'Plugin', 'System.Fake.Plugin'))).toBe(false);
+    expect(plausible(caller, mkType('Lib/Thing.cs', 'Thing', 'Microsoft.Vendor'))).toBe(false);
+  });
+
+  it('honors an alias only when it points at the candidate type itself', () => {
+    const alias = (localName: string, targetRaw: string): ParsedImport => ({
+      kind: 'alias',
+      localName,
+      importedName: targetRaw.split('.').pop()!,
+      alias: localName,
+      targetRaw,
+    });
+    expect(plausible(mkCaller('App/P.cs', [alias('Color', 'Vendor.Proto.Color')]), color)).toBe(
+      true,
+    );
+    expect(plausible(mkCaller('App/P.cs', [alias('Color', 'Vendor.Proto.Other')]), color)).toBe(
+      false,
+    );
+  });
+
+  it('lets a `global using static T;` reach types nested under T only', () => {
+    const resolutionConfig = config({
+      globalUsings: [
+        { namespace: 'Vendor.Proto.Outer', scopeDir: '', reach: 'project', static: true },
+      ],
+    });
+    expect(plausible(mkCaller('App/P.cs'), color, resolutionConfig)).toBe(true);
+    const unrelated = mkType('Lib/X.cs', 'X', 'Other');
+    expect(plausible(mkCaller('App/P.cs'), unrelated, resolutionConfig)).toBe(false);
   });
 });
