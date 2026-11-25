@@ -22,7 +22,8 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
  *        AF.request("https://api.example.com/v1/items", method: .post)
  *      The path is the first argument; the verb comes from `method:`
  *      (`.post`, `HTTPMethod.post`, `"POST"`). No `method:` argument means
- *      GET (Alamofire's default). A `method:` the scan cannot read
+ *      GET only on `AF` (Alamofire's default); on any other receiver the
+ *      default is the wrapper's own and unknown, so it is `*`. A `method:` the scan cannot read
  *      statically (a variable) yields the wildcard `*`, which the matcher
  *      pairs with a provider of any verb on the same path.
  *
@@ -70,6 +71,9 @@ const VERB_TO_HTTP: Record<string, string> = {
 
 const PATH_LABELS = new Set(['path', 'url']);
 
+/** Receivers known to be Alamofire's global session, whose `request` defaults to GET. */
+const ALAMOFIRE_RECEIVERS = new Set(['AF', 'Alamofire.AF']);
+
 const CALL_PATTERNS = Swift
   ? compilePatterns({
       name: 'swift-http-calls',
@@ -80,6 +84,7 @@ const CALL_PATTERNS = Swift
           query: `
             (call_expression
               (navigation_expression
+                target: (_) @recv
                 suffix: (navigation_suffix suffix: (simple_identifier) @fn))
               (call_suffix (value_arguments) @args)) @call
           `,
@@ -144,7 +149,14 @@ export const SWIFT_HTTP_PLUGIN: HttpLanguagePlugin | null =
             let framework: string;
             if (fn === 'request') {
               const methodArg = args.find((a) => argLabel(a) === 'method');
-              method = methodArg ? readMethodArg(methodArg.childForFieldName('value')) : 'GET';
+              // GET is Alamofire's default only; a custom `request` wrapper's
+              // default verb is unknown, so it stays a wildcard.
+              const isAlamofire = ALAMOFIRE_RECEIVERS.has(match.captures.recv?.text ?? '');
+              method = methodArg
+                ? readMethodArg(methodArg.childForFieldName('value'))
+                : isAlamofire
+                  ? 'GET'
+                  : '*';
               framework = 'swift-request';
             } else if (VERB_TO_HTTP[fn]) {
               method = VERB_TO_HTTP[fn];

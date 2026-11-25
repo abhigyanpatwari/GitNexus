@@ -81,6 +81,20 @@ describeSwift('Swift HTTP consumer plugin (#1677)', () => {
     ]);
   });
 
+  it('defaults request to GET only on Alamofire AF, not on arbitrary wrappers', () => {
+    expect(
+      scan(`
+        Alamofire.AF.request("/v1/items")
+        _ = try await client.request("/v1/items")
+        _ = try await session.request(path: "/v1/items")
+      `),
+    ).toEqual([
+      { method: 'GET', path: '/v1/items', framework: 'swift-request' },
+      { method: '*', path: '/v1/items', framework: 'swift-request' },
+      { method: '*', path: '/v1/items', framework: 'swift-request' },
+    ]);
+  });
+
   it('reads a labeled string method: and path: on a request wrapper', () => {
     expect(
       scan(`
