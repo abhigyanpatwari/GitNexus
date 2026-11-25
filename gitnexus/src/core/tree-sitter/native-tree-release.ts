@@ -55,67 +55,40 @@ export const MAX_YIELDS_PER_NUDGE = 8;
 const NUDGE_BYTES = 64 * 1024 * 1024;
 
 /**
- * Split `NODE_OPTIONS` into arguments the way Node does: on spaces outside
- * double quotes. Double quotes are dropped wherever they appear, and inside
- * them a backslash takes the next character literally. Single quotes have no
- * meaning.
+ * Any mention of `--zero-fill-buffers` (either spelling), or of a Node config
+ * file, which can turn it on too.
  */
-export function splitNodeOptions(value: string): string[] {
-  const args: string[] = [];
-  let current: string | null = null;
-  let quoted = false;
-  for (let i = 0; i < value.length; i++) {
-    let c = value[i];
-    if (c === '\\' && quoted && i + 1 < value.length) {
-      c = value[++i];
-    } else if (c === '"') {
-      quoted = !quoted;
-      current ??= '';
-      continue;
-    } else if (c === ' ' && !quoted) {
-      if (current !== null) args.push(current);
-      current = null;
-      continue;
-    }
-    current = (current ?? '') + c;
-  }
-  if (current !== null) args.push(current);
-  return args;
-}
+const ZERO_FILL_MENTION =
+  /--zero[-_]fill[-_]buffers|--experimental[-_](?:default[-_])?config[-_]file/;
 
 /**
- * Whether Node runs with `--zero-fill-buffers`, decided as Node decides it:
- * `NODE_OPTIONS` first, then the command line; in `NODE_OPTIONS` Node stops at
- * the first argument that is not an option (one that does not start with `-`,
- * or a bare `-`) and ignores the rest; dashes and underscores are the same in
- * the name; any `=value` still turns it on; and the last of
- * `--zero-fill-buffers` and `--no-zero-fill-buffers` wins.
+ * Whether Node may run with `--zero-fill-buffers`. Errs towards yes: a wrong
+ * yes only costs the macOS residency described below, while a wrong no picks
+ * the allocation that aborts the process when it fails. So any mention of the
+ * flag on the command line or in `NODE_OPTIONS` counts, with any value and
+ * wherever it sits, even where Node ignores it or a later
+ * `--no-zero-fill-buffers` turns it off; so does a config file. Node drops
+ * the double quotes in `NODE_OPTIONS`, and the backslashes inside them, when it
+ * splits the value; dropping both everywhere before matching can only add
+ * matches.
  */
 export function zeroFillBuffersRequested(
   execArgv: readonly string[],
   nodeOptions: string | undefined,
 ): boolean {
-  const options: string[] = [];
-  for (const arg of splitNodeOptions(nodeOptions ?? '')) {
-    if (arg !== '' && (!arg.startsWith('-') || arg === '-')) break;
-    options.push(arg);
-  }
-  let requested = false;
-  for (const arg of [...options, ...execArgv]) {
-    const name = arg.split('=', 1)[0].replace(/_/g, '-');
-    if (name === '--zero-fill-buffers') requested = true;
-    else if (name === '--no-zero-fill-buffers') requested = false;
-  }
-  return requested;
+  return [...execArgv, (nodeOptions ?? '').replace(/["\\]/g, '')].some((arg) =>
+    ZERO_FILL_MENTION.test(arg),
+  );
 }
 
 /**
  * Under `--zero-fill-buffers`, `Buffer.allocUnsafeSlow` zero-fills too, and a
  * failed allocation aborts the process instead of throwing. `new ArrayBuffer`
- * throws a `RangeError` in both modes, so it is used in that mode. It is not
- * used always: on macOS its zero-filled pages become resident when the
- * allocator reuses a freed buffer (about 130 MB held after repeated nudges),
- * while `allocUnsafeSlow` stays untouched.
+ * throws a `RangeError` in both modes, so it is used whenever that mode may be
+ * on (see `zeroFillBuffersRequested`). It is not used always: on macOS its
+ * zero-filled pages become resident when the allocator reuses a freed buffer
+ * (about 130 MB held after repeated nudges), while `allocUnsafeSlow` stays
+ * untouched.
  */
 const ZERO_FILL_BUFFERS = zeroFillBuffersRequested(process.execArgv, process.env.NODE_OPTIONS);
 

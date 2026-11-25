@@ -1,5 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   createTreeReleaser,
@@ -182,6 +185,11 @@ describe('createTreeReleaser', () => {
     ['no flag', {}, 1],
     ['a quoted flag in NODE_OPTIONS', { nodeOptions: '"--zero_fill_buffers"' }, 0],
     ['the flag on the command line', { nodeArgs: ['--zero-fill-buffers'] }, 0],
+    [
+      'the flag after an option value in NODE_OPTIONS',
+      { nodeOptions: '--title gitnexus-test --zero-fill-buffers' },
+      0,
+    ],
   ])('nudgeV8 picks its allocation with %s', (_label, options, expectedUnsafeAllocations) => {
     const { unsafeAllocations } = runReleaserChild(
       `
@@ -203,55 +211,102 @@ describe('createTreeReleaser', () => {
 });
 
 describe('zeroFillBuffersRequested', () => {
-  // [NODE_OPTIONS, command-line options, whether Node turns zero-fill on]
+  // `$MODULE` stands for an empty module, for the options that load one, and
+  // `$CONFIG` for a Node config file that turns zero-fill on.
+  let fixtureDir: string;
+  beforeAll(() => {
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-zero-fill-'));
+    fs.writeFileSync(path.join(fixtureDir, 'empty.cjs'), '');
+    fs.writeFileSync(
+      path.join(fixtureDir, 'zero-fill.json'),
+      JSON.stringify({ nodeOptions: { 'zero-fill-buffers': true } }),
+    );
+  });
+  afterAll(() => fs.rmSync(fixtureDir, { recursive: true, force: true }));
+  const fill = (arg: string): string =>
+    arg
+      .replace('$MODULE', path.join(fixtureDir, 'empty.cjs'))
+      .replace('$CONFIG', path.join(fixtureDir, 'zero-fill.json'));
+
+  // [NODE_OPTIONS, command-line options, the answer]. A wrong "on" only costs
+  // memory and a wrong "off" can abort, so every mention counts as on, also
+  // where Node ignores it or turns it off again.
   const CASES: Array<[string, string[], boolean]> = [
     ['', [], false],
+    ['--max-old-space-size=100', ['--max-old-space-size=100'], false],
     ['--zero-fill-buffers', [], true],
     ['--zero_fill_buffers', [], true],
     ['"--zero-fill-buffers"', [], true],
-    ['"--zero_fill_buffers"', [], true],
     ['"--zero-"fill-buffers', [], true],
     ['"--zero-fill-\\buffers"', [], true],
     ['--max-old-space-size=100 "--zero-fill-buffers"', [], true],
     ['--zero-fill-buffers=false', [], true],
-    ["'--zero-fill-buffers'", [], false],
-    ['--no-zero-fill-buffers', [], false],
-    ['--zero-fill-buffers --no-zero-fill-buffers', [], false],
     ['', ['--zero-fill-buffers=true'], true],
     ['', ['--zero_fill_buffers=false'], true],
-    ['--zero-fill-buffers', ['--no-zero-fill-buffers'], false],
-    ['--no-zero-fill-buffers', ['--zero-fill-buffers'], true],
-    // Node stops reading NODE_OPTIONS at the first argument that is not an option.
-    ['--zero-fill-buffers x --no-zero-fill-buffers', [], true],
-    ['--zero-fill-buffers - --no-zero-fill-buffers', [], true],
-    ['x --zero-fill-buffers', [], false],
-    // An empty argument is not such a stop.
-    ['--zero-fill-buffers "" --no-zero-fill-buffers', [], false],
-    // Only spaces separate arguments.
-    ['\t--zero-fill-buffers', [], false],
+    ['--no-zero-fill-buffers', [], false],
+    ['', ['--no-zero-fill-buffers'], false],
+    // Node reads a separately given option value and goes on.
+    ['--require $MODULE --zero-fill-buffers', [], true],
+    ['-r $MODULE --zero-fill-buffers', [], true],
+    ['--import $MODULE --zero-fill-buffers', [], true],
+    ['--title x --zero-fill-buffers', [], true],
+    ['--conditions x --zero-fill-buffers', [], true],
+    ['--disable-warning x --zero-fill-buffers', [], true],
+    // A config file can turn it on.
+    ['', ['--experimental-config-file=$CONFIG'], true],
+    ['', ['--experimental-config-file', '$CONFIG'], true],
+    // Node says off for these; on is the safe side.
+    ['--zero-fill-buffers --no-zero-fill-buffers', [], true],
+    ['--zero-fill-buffers', ['--no-zero-fill-buffers'], true],
+    ['x --zero-fill-buffers', [], true],
+    ["'--zero-fill-buffers'", [], true],
+    ['\t--zero-fill-buffers', [], true],
   ];
 
   it.each(CASES)('NODE_OPTIONS=%s with %j gives %s', (nodeOptions, execArgv, expected) => {
-    expect(zeroFillBuffersRequested(execArgv, nodeOptions)).toBe(expected);
+    expect(zeroFillBuffersRequested(execArgv.map(fill), fill(nodeOptions))).toBe(expected);
   });
 
-  it('agrees with Node itself on every case', () => {
-    for (const [nodeOptions, execArgv, expected] of CASES) {
+  /** What Node itself decides; false when it rejects the options. */
+  function nodeTurnsZeroFillOn(execArgv: string[], nodeOptions: string): boolean {
+    const env: NodeJS.ProcessEnv = { ...process.env, NODE_OPTIONS: nodeOptions };
+    // A set NODE_OPTIONS, even an empty one, makes Node skip a config file's
+    // `nodeOptions`.
+    if (nodeOptions === '') delete env.NODE_OPTIONS;
+    try {
       const out = execFileSync(
         process.execPath,
         [
           '--expose-internals',
+          '--no-warnings',
           ...execArgv,
           '-e',
           "console.log(require('internal/options').getOptionValue('--zero-fill-buffers'))",
         ],
-        { encoding: 'utf8', env: { ...process.env, NODE_OPTIONS: nodeOptions } },
+        { encoding: 'utf8', env, stdio: ['ignore', 'pipe', 'ignore'] },
       );
-      expect({ nodeOptions, execArgv, node: out.trim() }).toEqual({
+      return out.trim() === 'true';
+    } catch {
+      // For example a Node release without config files.
+      return false;
+    }
+  }
+
+  it('says on wherever Node itself turns zero-fill on', () => {
+    let nodeOn = 0;
+    for (const [rawOptions, rawArgv] of CASES) {
+      const nodeOptions = fill(rawOptions);
+      const execArgv = rawArgv.map(fill);
+      if (!nodeTurnsZeroFillOn(execArgv, nodeOptions)) continue;
+      nodeOn += 1;
+      expect({
         nodeOptions,
         execArgv,
-        node: String(expected),
-      });
+        ours: zeroFillBuffersRequested(execArgv, nodeOptions),
+      }).toEqual({ nodeOptions, execArgv, ours: true });
     }
+    // Node says on for every "on" row except the last five and, on a release
+    // without config files, the two config rows; so the loop is not vacuous.
+    expect(nodeOn).toBeGreaterThanOrEqual(CASES.filter(([, , on]) => on).length - 7);
   });
 });
