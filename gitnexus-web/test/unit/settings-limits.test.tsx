@@ -66,18 +66,24 @@ describe('agent limits settings-service helpers', () => {
   });
 
   it('resolves active model name across standard and Azure providers', () => {
-    const settings = loadSettings();
-    settings.activeProvider = 'openai';
-    settings.openai = { apiKey: 'k', model: 'gpt-4o' };
-    expect(getModelNameForSettings(settings)).toBe('gpt-4o');
-
-    settings.activeProvider = 'azure-openai';
-    settings.azureOpenAI = {
-      apiKey: 'k',
-      endpoint: 'https://example.openai.azure.com',
-      deploymentName: 'gpt-4o-mini-deploy',
+    const base = loadSettings();
+    const openAISettings = {
+      ...base,
+      activeProvider: 'openai' as const,
+      openai: { apiKey: 'k', model: 'gpt-4o' },
     };
-    expect(getModelNameForSettings(settings)).toBe('gpt-4o-mini-deploy');
+    expect(getModelNameForSettings(openAISettings)).toBe('gpt-4o');
+
+    const azureSettings = {
+      ...base,
+      activeProvider: 'azure-openai' as const,
+      azureOpenAI: {
+        apiKey: 'k',
+        endpoint: 'https://example.openai.azure.com',
+        deploymentName: 'gpt-4o-mini-deploy',
+      },
+    };
+    expect(getModelNameForSettings(azureSettings)).toBe('gpt-4o-mini-deploy');
   });
 });
 
@@ -115,5 +121,15 @@ describe('SettingsPanel agent limits UI', () => {
     fireEvent.click(screen.getByRole('button', { name: 'settings:saveSettings' }));
 
     expect(getAgentConfig(loadSettings()).maxIterations).toBe(MAX_MAX_ITERATIONS);
+
+    // Exponent-form numeric inputs (valid in <input type="number">) are parsed accurately
+    fireEvent.change(maxIterInput, { target: { value: '1e1' } });
+    fireEvent.change(tokenBudgetInput, { target: { value: '1e3' } });
+    fireEvent.click(screen.getByRole('button', { name: 'settings:saveSettings' }));
+
+    expect(getAgentConfig(loadSettings())).toEqual({
+      maxIterations: 10,
+      tokenBudget: 1000,
+    });
   });
 });

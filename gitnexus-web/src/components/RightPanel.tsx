@@ -57,9 +57,11 @@ export const RightPanel = () => {
       }
       if (typeof msg.estimatedCostUsd === 'number') {
         acc.estimatedCostUsd = (acc.estimatedCostUsd ?? 0) + msg.estimatedCostUsd;
-      }
-      if (msg.estimatedCostUsd === 0) {
-        acc.hasLocalCost = true;
+        if (msg.estimatedCostUsd === 0) {
+          acc.hasLocalCost = true;
+        }
+      } else if (msg.tokenUsage && msg.tokenUsage.totalTokens > 0) {
+        acc.hasUnknownCost = true;
       }
       return acc;
     },
@@ -69,6 +71,7 @@ export const RightPanel = () => {
       totalTokens: 0,
       estimatedCostUsd: null as number | null,
       hasLocalCost: false,
+      hasUnknownCost: false,
     },
   );
 
@@ -312,16 +315,17 @@ export const RightPanel = () => {
                     count: formatTokenCount(conversationUsage.totalTokens),
                   })}
                 </span>
-                {conversationUsage.estimatedCostUsd !== null && (
-                  <>
-                    <span className="text-text-muted">•</span>
-                    <span className="text-accent">
-                      {conversationUsage.estimatedCostUsd === 0 && conversationUsage.hasLocalCost
-                        ? t('chat:usage.localCost')
-                        : formatCostUsd(conversationUsage.estimatedCostUsd)}
-                    </span>
-                  </>
-                )}
+                {conversationUsage.estimatedCostUsd !== null &&
+                  !conversationUsage.hasUnknownCost && (
+                    <>
+                      <span className="text-text-muted">•</span>
+                      <span className="text-accent">
+                        {conversationUsage.estimatedCostUsd === 0 && conversationUsage.hasLocalCost
+                          ? t('chat:usage.localCost')
+                          : formatCostUsd(conversationUsage.estimatedCostUsd)}
+                      </span>
+                    </>
+                  )}
               </span>
             )}
             <div className="ml-auto flex items-center gap-2">

@@ -102,4 +102,31 @@ describe('RightPanel token usage and cost display', () => {
     const messageUsage = screen.getByTestId('message-token-usage');
     expect(messageUsage.textContent).toContain('chat:usage.localCost');
   });
+
+  it('does not label mixed local and unknown-cost turns as Local (free)', () => {
+    mockChatMessages = [
+      {
+        id: 'assistant-local',
+        role: 'assistant',
+        content: 'Local answer',
+        tokenUsage: { inputTokens: 400, outputTokens: 100, totalTokens: 500 },
+        estimatedCostUsd: 0,
+        timestamp: 1002,
+      },
+      {
+        id: 'assistant-unknown-cloud',
+        role: 'assistant',
+        content: 'Unknown cloud model answer',
+        tokenUsage: { inputTokens: 600, outputTokens: 200, totalTokens: 800 },
+        estimatedCostUsd: null,
+        timestamp: 1003,
+      },
+    ];
+
+    render(<RightPanel />);
+
+    const conversationBadge = screen.getByTestId('conversation-token-usage');
+    expect(conversationBadge.textContent).not.toContain('chat:usage.localCost');
+    expect(conversationBadge.textContent).not.toContain('$0.00');
+  });
 });

@@ -1132,14 +1132,14 @@ export const SettingsPanel = ({
                   max={MAX_MAX_ITERATIONS}
                   value={settings.agent?.maxIterations ?? DEFAULT_MAX_ITERATIONS}
                   onChange={(e) => {
-                    const raw = e.target.value;
-                    if (raw === '') return;
-                    const parsed = Number.parseInt(raw, 10);
-                    if (!Number.isNaN(parsed)) {
+                    const trimmed = e.target.value.trim();
+                    if (trimmed === '') return;
+                    const parsed = Number(trimmed);
+                    if (Number.isFinite(parsed)) {
                       setSettings((prev) => ({
                         ...prev,
                         agent: {
-                          maxIterations: parsed,
+                          maxIterations: Math.trunc(parsed),
                           tokenBudget: prev.agent?.tokenBudget ?? DEFAULT_TOKEN_BUDGET,
                         },
                       }));
@@ -1176,14 +1176,14 @@ export const SettingsPanel = ({
                   value={settings.agent?.tokenBudget ?? DEFAULT_TOKEN_BUDGET}
                   placeholder={t('settings:agentLimits.tokenBudgetPlaceholder')}
                   onChange={(e) => {
-                    const raw = e.target.value;
-                    const parsed = raw === '' ? 0 : Number.parseInt(raw, 10);
-                    if (!Number.isNaN(parsed)) {
+                    const trimmed = e.target.value.trim();
+                    const parsed = trimmed === '' ? 0 : Number(trimmed);
+                    if (Number.isFinite(parsed)) {
                       setSettings((prev) => ({
                         ...prev,
                         agent: {
                           maxIterations: prev.agent?.maxIterations ?? DEFAULT_MAX_ITERATIONS,
-                          tokenBudget: Math.max(0, parsed),
+                          tokenBudget: Math.max(0, Math.trunc(parsed)),
                         },
                       }));
                     }

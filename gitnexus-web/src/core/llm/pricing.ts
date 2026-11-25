@@ -64,6 +64,17 @@ const MODEL_PRICING_PREFIXES: ReadonlyArray<readonly [string, ModelPricing]> = [
   ['glm-4.5', { inputPerMillion: 0.2, outputPerMillion: 0.8 }],
 ];
 
+const VERSION_SUFFIX_RE = /^(?:\d+(?:-\d+)*|latest)$/;
+
+const isMatchingModelPrefix = (normalized: string, prefix: string): boolean => {
+  if (normalized === prefix) return true;
+  if (normalized.startsWith(`${prefix}-`) || normalized.startsWith(`${prefix}:`)) {
+    const suffix = normalized.slice(prefix.length + 1);
+    return VERSION_SUFFIX_RE.test(suffix);
+  }
+  return false;
+};
+
 const normalizeModelName = (model: string): string => {
   const trimmed = model.trim().toLowerCase();
   const slashIdx = trimmed.lastIndexOf('/');
@@ -72,7 +83,8 @@ const normalizeModelName = (model: string): string => {
 
 /**
  * Resolve approximate USD pricing for a provider/model pair.
- * Local Ollama runs return zero cost; unknown models return null.
+ * Local Ollama runs return zero cost; unknown models or distinct uncatalogued
+ * variants return null.
  */
 export const getModelPricing = (provider: LLMProvider, model: string): ModelPricing | null => {
   if (provider === 'ollama') {
@@ -83,11 +95,7 @@ export const getModelPricing = (provider: LLMProvider, model: string): ModelPric
   if (!normalized) return null;
 
   for (const [prefix, pricing] of MODEL_PRICING_PREFIXES) {
-    if (
-      normalized === prefix ||
-      normalized.startsWith(`${prefix}-`) ||
-      normalized.startsWith(`${prefix}:`)
-    ) {
+    if (isMatchingModelPrefix(normalized, prefix)) {
       return pricing;
     }
   }

@@ -22,11 +22,16 @@ describe('pricing utilities', () => {
     });
   });
 
-  it('returns zero pricing for Ollama and null for unknown models', () => {
+  it('returns zero pricing for Ollama and null for unknown models or distinct variants', () => {
     expect(getModelPricing('ollama', 'qwen3-coder:30b')).toEqual({
       inputPerMillion: 0,
       outputPerMillion: 0,
     });
+    expect(getModelPricing('gemini', 'gemini-2.0-flash-001')).toEqual({
+      inputPerMillion: 0.1,
+      outputPerMillion: 0.4,
+    });
+    expect(getModelPricing('gemini', 'gemini-2.0-flash-lite')).toBeNull();
     expect(getModelPricing('openai', 'my-custom-finetune')).toBeNull();
   });
 
