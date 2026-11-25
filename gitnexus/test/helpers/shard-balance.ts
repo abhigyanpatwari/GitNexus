@@ -10,7 +10,6 @@ const PACKAGE_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // for 98 seconds, while a 17KB database suite finishes in one second. Refresh
 // from CI measurements when suites grow; these are not timing assertions.
 const SEQUENTIAL_COVERAGE_SECONDS: Readonly<Record<string, number>> = {
-  'test/integration/fts-extension-e2e.test.ts': 62,
   'test/integration/mcp-index-generation.test.ts': 46,
   'test/integration/parse-cache-identity-lifecycle.test.ts': 147,
   'test/integration/parse-cache-identity-package.test.ts': 67,

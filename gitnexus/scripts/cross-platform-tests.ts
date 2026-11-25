@@ -192,7 +192,6 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
-  'test/integration/analysis-embedding-flow.test.ts',
   'test/integration/analysis-generation-routing.test.ts',
   'test/integration/analysis-publication-flow.test.ts',
   'test/integration/embedding-job-controller.test.ts',
@@ -311,7 +310,7 @@ const LBUG_NATIVE = [
   // case — and it needs this matrix for two reasons the VECTOR sibling above
   // does not cover. The reported failure environment is a machine where the
   // extension stopped LOADING, which is the #2374 class and Windows-reported
-  // (the same reason fts-extension-e2e.test.ts is registered below), so the
+  // (also covered by TypeScript platform conformance), so the
   // FTS-unavailable branch has to run on a real Windows/macOS runner rather
   // than only on Ubuntu where FTS always loads. And its both-blocked case is
   // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml requires in both
@@ -330,14 +329,9 @@ const SPAWN_CLI = [
   // Spawns Node on the tree releaser's source (type stripping, file URLs) to
   // check its real V8 nudge and the zero-fill flag spellings.
   'test/unit/tree-sitter/native-tree-release.test.ts',
-  'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
-  // Spawns the real CLI across hermetic HOME/USERPROFILE homes to exercise the
-  // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
-  // run on the Windows/macOS matrix, not just the Ubuntu full suite.
-  'test/integration/fts-extension-e2e.test.ts',
   'test/integration/fts-vendored-root-seam.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',

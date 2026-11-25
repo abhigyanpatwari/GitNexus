@@ -5,7 +5,8 @@
  *    and test trees are never roots
  *  - the package map is memoised per repo root and can be invalidated
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
+import { expect } from 'expect';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -13,8 +14,8 @@ import {
   loadNodeWorkspacePackages,
   invalidateNodeWorkspacePackages,
   resolveNodeWorkspaceImport,
-} from '../../src/core/ingestion/languages/typescript/workspace-packages.js';
-import { _captureLogger } from '../../src/core/logger.js';
+} from '../../../../src/core/ingestion/languages/typescript/workspace-packages.js';
+import { _captureLogger } from '../../../../src/core/logger.js';
 
 function mkRepo(prefix: string) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));

@@ -8,8 +8,11 @@ const directory = fileURLToPath(new URL('.', import.meta.url));
 const platform = process.argv.includes('--platform');
 const selected = platform
   ? [
+      'product/analysis-embedding-flow.ts',
+      'product/cli-e2e.ts',
       'product/dangling-owner-edges.ts',
       'product/fetch-wrapper-persistence.ts',
+      'product/fts-extension-e2e.ts',
       'product/ignore-and-skip-e2e.ts',
       'product/pipeline-graph-golden.ts',
       'product/rename.ts',
@@ -31,7 +34,11 @@ execFileSync(
   ],
   {
     stdio: 'inherit',
-    env: { ...process.env, GITNEXUS_CONFORMANCE_TEST_FILES: JSON.stringify(files) },
+    env: {
+      ...process.env,
+      GITNEXUS_E2E_CLI: process.env.GITNEXUS_E2E_CLI ?? 'dist',
+      GITNEXUS_CONFORMANCE_TEST_FILES: JSON.stringify(files),
+    },
   },
 );
 if (platform) {

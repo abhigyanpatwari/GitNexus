@@ -15,12 +15,13 @@
  */
 process.env.GITNEXUS_FTS_CJK_SEGMENTATION = 'bigram';
 
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, after as afterAll } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { withTestLbugDB } from '../helpers/test-indexed-db.js';
-import { buildTestGraph } from '../helpers/test-graph.js';
-import { searchFTSFromLbug } from '../../src/core/search/bm25-index.js';
+import { withTestLbugDB } from '../support/indexed-db.js';
+import { buildTestGraph } from '../../../../test/helpers/test-graph.js';
+import { searchFTSFromLbug } from '../../../../src/core/search/bm25-index.js';
 
 afterAll(() => {
   delete process.env.GITNEXUS_FTS_CJK_SEGMENTATION;
@@ -65,7 +66,7 @@ withTestLbugDB(
       const graph = buildTestGraph([
         { id: 'file:cjk.ts', label: 'File', name: 'cjk.ts', filePath: 'cjk.ts' },
       ]);
-      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const adapter = await import('../../../../src/core/lbug/lbug-adapter.js');
       await adapter.loadGraphToLbug(graph, repoDir, storageDir);
     },
   },

@@ -8,15 +8,16 @@
  * monorepo otherwise held every tree of the family pass at once (gigabytes of
  * native memory) between two graph queries.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import v8 from 'node:v8';
 import Parser from 'tree-sitter';
-import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
-import { getPluginForFile } from '../../../src/core/group/extractors/http-patterns/index.js';
-import type { RepoHandle } from '../../../src/core/group/types.js';
+import { HttpRouteExtractor } from '../../../../src/core/group/extractors/http-route-extractor.js';
+import { getPluginForFile } from '../../../../src/core/group/extractors/http-patterns/index.js';
+import type { RepoHandle } from '../../../../src/core/group/types.js';
 
 const TreeClass = (Parser as unknown as { Tree: abstract new (...args: never[]) => unknown }).Tree;
 /** Reachable Tree wrappers; `queryObjects` runs a full GC first. */
