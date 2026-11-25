@@ -262,6 +262,12 @@ function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFa
       for (const clause of node.heritageClauses ?? []) {
         const extendsBase = clause.token === SyntaxKind.ExtendsKeyword;
         for (const base of clause.types) {
+          if (
+            extendsBase &&
+            node.kind === SyntaxKind.ClassDeclaration &&
+            isErasedValueUse(base.expression)
+          )
+            continue;
           const type = checker.getTypeAtLocation(base);
           if (!type) continue;
           edge(
@@ -300,19 +306,20 @@ function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFa
       }
     }
 
+    function isErasedValueUse(expression) {
+      return erasedValueUses.get(expression.getSourceFile().fileName)?.has(expression.getStart());
+    }
+
     function rejectedConstruction(expression) {
       return (
-        expression?.kind === SyntaxKind.NewExpression &&
-        erasedValueUses
-          .get(expression.getSourceFile().fileName)
-          ?.has(expression.expression.getStart())
+        expression?.kind === SyntaxKind.NewExpression && isErasedValueUse(expression.expression)
       );
     }
 
     // The checker continues type-checking after an illegal value use and can
     // return recovery signatures for a receiver initialized by that expression.
     function rejectedCall(node) {
-      if (rejectedConstruction(node)) return true;
+      if (isErasedValueUse(node.expression)) return true;
       if (node.expression.kind !== SyntaxKind.PropertyAccessExpression) return false;
       const receiver = node.expression.expression;
       if (receiver.kind !== SyntaxKind.Identifier) return false;

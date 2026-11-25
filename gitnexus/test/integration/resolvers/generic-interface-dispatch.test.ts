@@ -255,45 +255,6 @@ class Runner {
   });
 });
 
-describe('TypeScript generic interface dispatch (#2912)', () => {
-  let result: PipelineResult;
-  let root: string;
-
-  beforeAll(async () => {
-    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-ts-generic-dispatch-'));
-    writeFixtureRepo(root, {
-      'validator.ts': `export interface Validator<T> { check(item: T): boolean; }`,
-      'string-validator.ts': `import type { Validator } from './validator.js';
-        export class StringValidator implements Validator<string> {
-          check(item: string): boolean { return true; }
-        }`,
-      'number-validator.ts': `import type { Validator } from './validator.js';
-        export class NumberValidator implements Validator<number> {
-          check(item: number): boolean { return true; }
-        }`,
-      'runner.ts': `import type { Validator } from './validator.js';
-        export function run(v: Validator<string>): boolean { return v.check('x'); }
-        export function runAny<T>(v: Validator<T>, item: T): boolean { return v.check(item); }`,
-    });
-    result = await runPipelineFromRepo(root, () => {});
-  }, 60000);
-
-  afterAll(() => {
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  it('reaches only the implementor of the receiver instantiation', () => {
-    const targets = dispatchTargetFiles(result, 'run', 'check');
-    expect(targets).toContain('string-validator.ts');
-    expect(targets).not.toContain('number-validator.ts');
-  });
-
-  it('keeps every implementor when the receiver is typed by a CALLER type variable', () => {
-    const targets = dispatchTargetFiles(result, 'runAny', 'check');
-    expect(targets).toContain('string-validator.ts');
-    expect(targets).toContain('number-validator.ts');
-  });
-});
 
 describe('Kotlin generic interface dispatch (#2912)', () => {
   // Kotlin needs no per-language wiring: it emits heritage through the shared

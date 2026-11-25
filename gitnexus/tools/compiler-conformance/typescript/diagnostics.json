@@ -1,4 +1,8 @@
 {
+  "compiler-conformance/typescript-type-value-namespaces": [
+    "erased.ts:2:37 TS1361",
+    "erased.ts:3:31 TS1361"
+  ],
   "lang-resolution/ts-deep-field-chain": [
     "models.ts:10:2 TS2564",
     "models.ts:11:2 TS2564",

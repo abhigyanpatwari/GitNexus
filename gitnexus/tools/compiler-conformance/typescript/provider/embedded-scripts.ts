@@ -1,4 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { registerCases } from '../support/cases.mjs';
+import { after as afterAll, before as beforeAll, describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +13,7 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
-} from '../../../integration/resolvers/helpers.js';
+} from '../support/fixture.js';
 
 const sources = Object.fromEntries(
   ['jsx', 'tsx', 'ts'].map((lang) => [
@@ -33,24 +35,29 @@ function normalCaller() { const ns = require('./target'); return ns.run(); }
 describe('Vue embedded script grammar and source positions', () => {
   let repo: string;
   let result: PipelineResult;
-  beforeAll(async () => {
-    repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-vue-embedded-'));
-    writeFixtureRepo(repo, {
-      'target.ts':
-        'export function run() { return 1; }\nexport function Widget(value) { return value; }',
-      ...Object.fromEntries(
-        Object.entries(sources).map(([lang, source]) => [`${lang}.vue`, source]),
-      ),
-    });
-    result = await runPipelineFromRepo(repo, () => {}, {
-      workerPoolSize: 1,
-      skipGraphPhases: true,
-      pdg: true,
-    });
-  }, 120_000);
+  beforeAll(
+    async () => {
+      repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-vue-embedded-'));
+      writeFixtureRepo(repo, {
+        'target.ts':
+          'export function run() { return 1; }\nexport function Widget(value) { return value; }',
+        ...Object.fromEntries(
+          Object.entries(sources).map(([lang, source]) => [`${lang}.vue`, source]),
+        ),
+      });
+      result = await runPipelineFromRepo(repo, () => {}, {
+        workerPoolSize: 1,
+        skipGraphPhases: true,
+        pdg: true,
+      });
+    },
+    { timeout: 120_000 },
+  );
   afterAll(() => fs.rmSync(repo, { recursive: true, force: true }));
 
-  it.each(['jsx', 'tsx', 'ts'])(
+  registerCases(
+    it,
+    ['jsx', 'tsx', 'ts'],
     'maps reordered %s script declarations to original source rows in both paths',
     (lang) => {
       const source = sources[lang];
@@ -104,7 +111,9 @@ describe('Vue embedded script grammar and source positions', () => {
     },
   );
 
-  it.each(['jsx', 'tsx'])(
+  registerCases(
+    it,
+    ['jsx', 'tsx'],
     'retains %s component calls through direct extraction and real workers',
     (lang) => {
       const parsed = extractParsedFile(vueProvider, sources[lang], `${lang}.vue`)!;
