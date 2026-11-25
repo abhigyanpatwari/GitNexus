@@ -170,7 +170,7 @@ impact({target: "UserService", direction: "upstream", minConfidence: 0.8})
 TARGET: Class UserService (src/services/user.ts)
 
 UPSTREAM (what depends on this):
-  Depth 1 (WILL BREAK):
+  Depth 1 (DIRECT — REVIEW FIRST):
     handleLogin [CALLS 90%] -> src/api/auth.ts:45
     handleRegister [CALLS 90%] -> src/api/auth.ts:78
     UserController [CALLS 85%] -> src/controllers/user.ts:12
