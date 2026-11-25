@@ -476,7 +476,9 @@ async function buildNodeRepoContext(args: {
         // fail the same way before falling back to literal-only scanning.
         const tree = args.parseSource(parserFor(language), content);
         if (!tree) continue;
-        byFile.set(normalizeRel(rel), extractJsModuleFacts(tree));
+        // The context outlives this file; the clone copies the strings sliced
+        // from its source, so they do not keep the whole source alive.
+        byFile.set(normalizeRel(rel), structuredClone(extractJsModuleFacts(tree)));
       } catch {
         // One malformed file must never abort the pre-pass — it simply stays
         // unresolved, exactly as it is without this pass at all.

@@ -1187,12 +1187,14 @@ async function buildPythonRepoContext(
     }
   }
 
-  return {
+  // The context outlives every file; the clone copies the prefixes, keys and
+  // constants sliced from their sources, so they do not keep the sources alive.
+  return structuredClone({
     prefixesByFile,
     prefixesByLongKey,
     prefixesByShortKey,
     constantsByFile,
-  };
+  });
 }
 
 function joinPrefix(prefix: string, route: string): string {

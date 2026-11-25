@@ -1366,7 +1366,9 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
           await releaseTrees();
           const tree = args.parseSource(args.parser, src);
           if (!tree) continue;
-          const mc = extractKotlinModuleConstants(tree);
+          // The context outlives this file; the clone copies the strings sliced
+          // from its source, so they do not keep the whole source alive.
+          const mc = structuredClone(extractKotlinModuleConstants(tree));
           if (
             mc.literals.size > 0 ||
             mc.exprs.size > 0 ||

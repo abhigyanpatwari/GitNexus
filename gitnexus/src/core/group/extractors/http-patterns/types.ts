@@ -155,7 +155,10 @@ export interface HttpLanguagePlugin {
    * Implementations must not throw — return undefined on any error so
    * the orchestrator falls back to context-less scanning. A pre-pass that
    * parses many files is async and awaits `releaseTrees` before each parse,
-   * so their native tree memory is freed as it goes.
+   * so their native tree memory is freed as it goes. The context lives for the
+   * whole extraction, so it must hold no tree or syntax node, and strings read
+   * from a tree (slices of the file's source) must be copied, for example with
+   * `structuredClone`, or they keep the whole source alive.
    */
   prepareRepo?(args: {
     repoPath: string;

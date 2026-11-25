@@ -920,7 +920,9 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         await releaseTrees();
         const tree = args.parseSource(args.parser, src);
         if (!tree) continue;
-        const mc = extractJavaModuleConstants(tree);
+        // The context outlives this file; the clone copies the strings sliced
+        // from its source, so they do not keep the whole source alive.
+        const mc = structuredClone(extractJavaModuleConstants(tree));
         if (
           mc.literals.size > 0 ||
           mc.exprs.size > 0 ||

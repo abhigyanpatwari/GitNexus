@@ -665,6 +665,77 @@ describe('HTTP source scan tree lifetime', () => {
     expect((failure as Error).cause).toMatchObject({ name: 'DataCloneError' });
   });
 
+  it.each(
+    // A long literal per file, which V8 slices from the file's source, and
+    // padding around it; files the `prepareRepo` pass parses.
+    (
+      [
+        [
+          'x.java',
+          (i, pad) => [
+            `src/C${i}.java`,
+            `// ${pad}\npublic class C${i} {\n  public static final String P = "/api/customer/preferences/v${i}/items";\n}\n`,
+          ],
+        ],
+        [
+          'x.kt',
+          (i, pad) => [
+            `src/C${i}.kt`,
+            `// ${pad}\nobject C${i} {\n    const val P = "/api/customer/preferences/v${i}/items"\n}\n`,
+          ],
+        ],
+        [
+          'x.py',
+          (i, pad) => [
+            `app/main${i}.py`,
+            `# ${pad}\nfrom fastapi import FastAPI\nfrom app.customer_preferences${i} import router as preferences_router${i}\napp = FastAPI()\napp.include_router(preferences_router${i}, prefix="/api/customer/preferences/v${i}/items")\n`,
+          ],
+        ],
+        [
+          'x.ts',
+          (i, pad) => [
+            `web/c${i}.ts`,
+            `// ${pad}\nimport axios from 'axios';\nexport const customerPreferencesBase${i} = '/api/customer/preferences/v${i}/items';\nexport const customerPreferencesClient${i} = axios.create({ baseURL: customerPreferencesBase${i} });\n`,
+          ],
+        ],
+      ] as Array<[string, (i: number, pad: string) => [string, string]]>
+    ).filter(([sample]) => sample !== 'x.kt' || KOTLIN),
+  )('keeps no file source alive through the %s prepareRepo context', async (sample, makeFile) => {
+    const FILES = 32;
+    // Below the JS/TS pass's 512 KB file cap.
+    const LARGE_PAD = 448 * 1024;
+    const plugin = getPluginForFile(sample);
+    if (!plugin?.prepareRepo) throw new Error(`expected a prepareRepo pass for ${sample}`);
+    const heapWithContext = async (padChars: number): Promise<number> => {
+      const root = fs.mkdtempSync(path.join(tmpDir, 'pad-'));
+      for (let i = 0; i < FILES; i++) write(root, ...makeFile(i, 'x'.repeat(padChars)));
+      // Read once the pass has returned, while the orchestrator holds its
+      // context; `liveTrees` runs a full GC.
+      let withContext = 0;
+      const prepareRepo = plugin.prepareRepo;
+      plugin.prepareRepo = async (...args) => {
+        const context = await prepareRepo?.apply(plugin, args);
+        liveTrees();
+        withContext = process.memoryUsage().heapUsed;
+        return context;
+      };
+      try {
+        liveTrees();
+        const before = process.memoryUsage().heapUsed;
+        await new HttpRouteExtractor().extract(null, root, makeRepo(root));
+        expect(withContext).toBeGreaterThan(0);
+        return withContext - before;
+      } finally {
+        plugin.prepareRepo = prepareRepo;
+      }
+    };
+
+    const small = await heapWithContext(1024);
+    const large = await heapWithContext(LARGE_PAD);
+    // The large run reads 14 MB more source; the context must keep none of it.
+    expect(large - small).toBeLessThan((FILES * LARGE_PAD) / 4);
+  });
+
   it('keeps no file source alive through the cached scan detections', async () => {
     // One detection per file, whose path V8 slices from the file's source, and
     // only the padding around it grows between the two runs.
