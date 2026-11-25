@@ -23,5 +23,20 @@
       "count": 0,
       "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
+  },
+  "4db60ff34b782fb7818221a9f8d4e6837e1a504a:9c78863c80c71f87db2d303f7342fca24e50db0e": {
+    "_note": "#4084: TypeScript confirms the target declarations for 3,634 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The replaced rows are the 27 former IMPLEMENTS edges and two type references with revised confidence.",
+    "additions": {
+      "count": 3735,
+      "sha256": "10429d060c4298198a46129980c1d7cfef50499fca84be5994b92d6d8b742b42"
+    },
+    "removals": {
+      "count": 29,
+      "sha256": "fa29c8289cefc8100dc78628175ea93cfaaa7b376fe280cdca3083a89d4ab175"
+    },
+    "typeOnlyImports": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
   }
 }

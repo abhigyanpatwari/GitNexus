@@ -18,16 +18,18 @@
  *
  * Nothing path-dependent, time-dependent, or id-opaque leaks into the snapshot.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
+import { expect } from 'expect';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import crypto from 'crypto';
-import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import type { PipelineResult } from '../../src/types/pipeline.js';
+import { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
+import type { PipelineResult } from '../../../../src/types/pipeline.js';
 
-const FIXTURE_SRC = path.resolve(__dirname, '..', 'fixtures', 'mini-repo');
-const GOLDEN_DIR = path.resolve(__dirname, '..', 'fixtures', 'pipeline-golden', 'mini-repo');
+const fixtures = path.resolve(import.meta.dirname, '../../../../test/fixtures');
+const FIXTURE_SRC = path.join(fixtures, 'mini-repo');
+const GOLDEN_DIR = path.join(fixtures, 'pipeline-golden', 'mini-repo');
 const GOLDEN_FILE = path.join(GOLDEN_DIR, 'expected-graph.json');
 
 const UPDATE = process.env.UPDATE_GOLDEN === '1';
@@ -131,19 +133,22 @@ describe('pipeline graph golden', () => {
   let snapshot: GraphSnapshot;
   let tmpDir: string;
 
-  beforeAll(async () => {
-    // Copy the fixture to a temp directory as defense-in-depth against
-    // parallel tests writing into the shared fixture source. cli-e2e
-    // was the historical offender — it now copies to its own tmpdir
-    // (see test/integration/cli-e2e.test.ts `beforeAll`) — but this
-    // cpSync stays as a belt-and-suspenders guarantee that any future
-    // test adding files to the source won't pollute the golden snapshot.
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-golden-'));
-    fs.cpSync(FIXTURE_SRC, tmpDir, { recursive: true });
+  beforeAll(
+    async () => {
+      // Copy the fixture to a temp directory as defense-in-depth against
+      // parallel tests writing into the shared fixture source. cli-e2e
+      // was the historical offender — it now copies to its own tmpdir
+      // (see test/integration/cli-e2e.test.ts `beforeAll`) — but this
+      // cpSync stays as a belt-and-suspenders guarantee that any future
+      // test adding files to the source won't pollute the golden snapshot.
+      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-golden-'));
+      fs.cpSync(FIXTURE_SRC, tmpDir, { recursive: true });
 
-    result = await runPipelineFromRepo(tmpDir, () => {});
-    snapshot = buildSnapshot(result);
-  }, 60000);
+      result = await runPipelineFromRepo(tmpDir, () => {});
+      snapshot = buildSnapshot(result);
+    },
+    { timeout: 60000 },
+  );
 
   afterAll(() => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -198,7 +203,7 @@ describe('pipeline graph golden', () => {
         ...diffs,
         '',
         'If this drift is intentional, regenerate the golden file with:',
-        '  UPDATE_GOLDEN=1 npm --prefix gitnexus test -- pipeline-graph-golden',
+        '  UPDATE_GOLDEN=1 node --import tsx --test tools/compiler-conformance/typescript/product/pipeline-graph-golden.ts',
       ].join('\n');
       throw new Error(msg);
     }

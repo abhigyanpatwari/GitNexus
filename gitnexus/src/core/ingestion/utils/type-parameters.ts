@@ -148,7 +148,8 @@ function parseEntry(entry: string): TypeParameter | undefined {
   // declares no type at all.
   if (namePart[matched.index - 1] === "'") return undefined;
 
-  return bound === undefined || bound.length === 0 ? { name } : { name, bound };
+  const defaultType = head.length < entry.length ? entry.slice(head.length + 1).trim() : undefined;
+  return { name, ...(bound && { bound }), ...(defaultType && { defaultType }) };
 }
 
 /** `entry` up to a top-level `=`, which introduces a DEFAULT rather than a

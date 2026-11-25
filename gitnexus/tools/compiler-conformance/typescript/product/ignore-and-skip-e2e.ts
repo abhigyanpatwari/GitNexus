@@ -1,14 +1,15 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
+import { expect } from 'expect';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import {
   walkRepositoryPaths,
   readFileContents,
-} from '../../src/core/ingestion/filesystem-walker.js';
-import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
-import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
-import { SupportedLanguages } from '../../src/config/supported-languages.js';
+} from '../../../../src/core/ingestion/filesystem-walker.js';
+import { parseFilesWithWorkers } from '../../../../test/helpers/worker-parse.js';
+import { isLanguageAvailable } from '../../../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../../../src/config/supported-languages.js';
 
 // ============================================================================
 // E2E: .gitignore + .gitnexusignore + unsupported language skip

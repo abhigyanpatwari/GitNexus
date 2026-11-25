@@ -290,7 +290,7 @@ const REBUILD_REASON_COVERAGE = [
   { key: 'shared-store-missing-graph', file: 'test/integration/shared-store-analyze.test.ts' },
   {
     key: 'content-retention',
-    file: 'test/integration/external-storage-content-retention.test.ts',
+    file: 'tools/compiler-conformance/typescript/product/external-storage-content-retention.ts',
   },
   { key: 'pdg-mode', file: 'test/unit/pdg-mode-flip.test.ts' },
   { key: 'schema-fingerprint', file: 'test/unit/incremental-orchestration.test.ts' },

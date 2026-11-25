@@ -1446,6 +1446,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; Composite annotations retain the dependency of each named constituent.
 ;; The parent context excludes type names being declared.
 [
+  (default_type (type_identifier) @reference.name @reference.type_reference)
   (array_type (type_identifier) @reference.name @reference.type_reference)
   (union_type (type_identifier) @reference.name @reference.type_reference)
   (intersection_type (type_identifier) @reference.name @reference.type_reference)

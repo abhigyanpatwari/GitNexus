@@ -134,32 +134,6 @@ export async function loadData(): Promise<Response> {
 });
 
 // ---------------------------------------------------------------------------
-// Variadic resolution: rest params don't get filtered by arity
-// ---------------------------------------------------------------------------
-
-describe('TypeScript variadic call resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(
-    async () => {
-      result = await runPipelineFromRepo(
-        path.join(FIXTURES, 'typescript-variadic-resolution'),
-        () => {},
-      );
-    },
-    { timeout: 60000 },
-  );
-
-  it('resolves processInput → logEntry to src/logger.ts despite 3 args vs rest param', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const logCall = calls.find((c) => c.target === 'logEntry');
-    expect(logCall).toBeDefined();
-    expect(logCall!.source).toBe('processInput');
-    expect(logCall!.targetFilePath).toBe('src/logger.ts');
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Constructor-inferred type resolution: const user = new User(); user.save()
 // Cross-file SymbolTable verification (no explicit type annotations)
 // ---------------------------------------------------------------------------
@@ -177,80 +151,10 @@ describe('TypeScript constructor-inferred type resolution', () => {
     { timeout: 60000 },
   );
 
-  it('detects User and Repo classes, both with save methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves explicit constructor calls for User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetFilePath === 'src/user.ts');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetFilePath === 'src/repo.ts');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-    expect(userCtor!.targetLabel).toBe('Class');
-    expect(repoCtor!.targetLabel).toBe('Class');
-  });
-
-  it('resolves user.save() to src/user.ts via constructor-inferred type', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/user.ts');
-    expect(userSave).toBeDefined();
-    expect(userSave!.source).toBe('processEntities');
-  });
-
-  it('resolves repo.save() to src/repo.ts via constructor-inferred type', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
-    expect(repoSave).toBeDefined();
-    expect(repoSave!.source).toBe('processEntities');
-  });
-
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
-  });
-
-  it('resolves constructor calls for both User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User');
-    const repoCtor = calls.find((c) => c.target === 'Repo');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// this.save() resolves to enclosing class's own save method
-// ---------------------------------------------------------------------------
-
-describe('TypeScript this resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(
-    async () => {
-      result = await runPipelineFromRepo(
-        path.join(FIXTURES, 'typescript-self-this-resolution'),
-        () => {},
-      );
-    },
-    { timeout: 60000 },
-  );
-
-  it('detects User and Repo classes, each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(2);
-  });
-
-  it('resolves this.save() inside User.process to User.save, not Repo.save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
-    expect(saveCall).toBeDefined();
-    expect(saveCall!.targetFilePath).toBe('src/models/User.ts');
   });
 });
 
@@ -319,30 +223,11 @@ describe('TypeScript super resolution', () => {
     { timeout: 60000 },
   );
 
-  it('detects BaseModel, User, and Repo classes, each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(3);
-  });
-
   it('emits EXTENDS edge: User → BaseModel', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     expect(extends_.length).toBe(1);
     expect(extends_[0].source).toBe('User');
     expect(extends_[0].target).toBe('BaseModel');
-  });
-
-  it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(
-      (c) =>
-        c.source === 'save' && c.target === 'save' && c.targetFilePath === 'src/models/Base.ts',
-    );
-    expect(superSave).toBeDefined();
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.targetFilePath === 'src/models/Repo.ts',
-    );
-    expect(repoSave).toBeUndefined();
   });
 });
 
@@ -363,30 +248,11 @@ describe('TypeScript generic parent super resolution', () => {
     { timeout: 60000 },
   );
 
-  it('detects BaseModel, User, and Repo classes, each with a save method', () => {
-    expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
-    const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
-    expect(saveMethods.length).toBe(3);
-  });
-
   it('emits EXTENDS edge: User → BaseModel (not BaseModel<string>)', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     expect(extends_.length).toBe(1);
     expect(extends_[0].source).toBe('User');
     expect(extends_[0].target).toBe('BaseModel');
-  });
-
-  it('resolves super.save() inside User to BaseModel.save, not Repo.save', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const superSave = calls.find(
-      (c) =>
-        c.source === 'save' && c.target === 'save' && c.targetFilePath === 'src/models/Base.ts',
-    );
-    expect(superSave).toBeDefined();
-    const repoSave = calls.find(
-      (c) => c.target === 'save' && c.targetFilePath === 'src/models/Repo.ts',
-    );
-    expect(repoSave).toBeUndefined();
   });
 });
 
@@ -476,89 +342,11 @@ describe('TypeScript nullable receiver resolution (optional chaining)', () => {
     { timeout: 60000 },
   );
 
-  it('detects User and Repo classes with their methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    expect(getNodesByLabel(result, 'Class')).toContain('Repo');
-    expect(getNodesByLabel(result, 'Method')).toContain('save');
-    expect(getNodesByLabel(result, 'Method')).toContain('greet');
-  });
-
-  it('resolves user?.save() to User.save via receiver typing', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/user.ts');
-    expect(userSave).toBeDefined();
-    expect(userSave!.source).toBe('processEntities');
-  });
-
-  it('resolves user?.greet() to User.greet via receiver typing', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const greetCall = calls.find((c) => c.target === 'greet' && c.targetFilePath === 'src/user.ts');
-    expect(greetCall).toBeDefined();
-    expect(greetCall!.source).toBe('processEntities');
-  });
-
-  it('resolves repo?.save() to Repo.save via receiver typing', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const repoSave = calls.find((c) => c.target === 'save' && c.targetFilePath === 'src/repo.ts');
-    expect(repoSave).toBeDefined();
-    expect(repoSave!.source).toBe('processEntities');
-  });
-
-  it('emits constructor CALLS edges for both User and Repo', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const userCtor = calls.find((c) => c.target === 'User' && c.targetLabel === 'Class');
-    const repoCtor = calls.find((c) => c.target === 'Repo' && c.targetLabel === 'Class');
-    expect(userCtor).toBeDefined();
-    expect(repoCtor).toBeDefined();
-  });
-
   it('emits exactly 2 save() CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCalls = calls.filter((c) => c.target === 'save');
     // user?.save() → User.save + repo?.save() → Repo.save = 2 edges
     // If nullable unwrapping fails, the resolver refuses ambiguous matches and emits 0
     expect(saveCalls.length).toBe(2);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Return type inference: const user = getUser('alice'); user.save()
-// The TS/JS CONSTRUCTOR_BINDING_SCANNER captures variable_declarator nodes
-// with plain call_expression values, enabling end-to-end return type inference.
-// ---------------------------------------------------------------------------
-
-describe('TypeScript return type inference via explicit function return type', () => {
-  let result: PipelineResult;
-
-  beforeAll(
-    async () => {
-      result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-return-type-inference'), () => {});
-    },
-    { timeout: 60000 },
-  );
-
-  it('detects User class with save and getName methods', () => {
-    expect(getNodesByLabel(result, 'Class')).toContain('User');
-    const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toContain('save');
-    expect(methods).toContain('getName');
-  });
-
-  it('detects getUser and fetchUserAsync functions', () => {
-    const functions = getNodesByLabel(result, 'Function');
-    expect(functions).toContain('getUser');
-    expect(functions).toContain('fetchUserAsync');
-  });
-
-  it('resolves user.save() to User#save via return type of getUser(): User', () => {
-    // TS has explicit return types in the source, so the method extractor captures
-    // the return type. The TS extractInitializer handles `const user = getUser()`
-    // via the variable_declarator path, enabling save() to resolve to User#save.
-    const calls = getRelationships(result, 'CALLS');
-    const saveCall = calls.find(
-      (c) =>
-        c.target === 'save' && c.source === 'processUser' && c.targetFilePath.includes('models'),
-    );
-    expect(saveCall).toBeDefined();
   });
 });

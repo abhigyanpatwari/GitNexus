@@ -12,12 +12,10 @@ import {
 } from '../support/fixture.js';
 
 // ---------------------------------------------------------------------------
-// Issue #1066 sibling regression for TypeScript: force worker-mode extraction
-// so scope-resolution reparses on cache miss, then assert large ASCII and
-// UTF-8-heavy source files still produce trailing call edges.
+// Issue #1066. The parse worker must capture calls after large ASCII and UTF-8 prefixes.
 // ---------------------------------------------------------------------------
 
-describe('TypeScript large-file cache-miss parser buffer regression', () => {
+describe('TypeScript worker parsing of large files', () => {
   let repoDir: string;
   let result: PipelineResult;
 

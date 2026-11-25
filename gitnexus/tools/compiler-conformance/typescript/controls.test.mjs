@@ -3,11 +3,32 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
+import { runtimeCalls } from './runtime-calls.mjs';
 
 const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('swapping the two unchecked save calls disagrees with ECMAScript dispatch', () => {
+  const fixture = fileURLToPath(
+    new URL(
+      '../../../test/fixtures/lang-resolution/typescript-double-cast-inference/',
+      import.meta.url,
+    ),
+  );
+  const runtime = { unchecked: [], methods: [] };
+  compilerReport(fixture, ['src/app.ts:9:7 TS2339'], false, { runtime });
+  const trace = runtimeCalls(fixture, runtime);
+  assert.equal(trace.sites.length, 2);
+  const [user, repo] = trace.sites;
+  assert.notEqual(user.target, repo.target);
+  const swapped = [
+    { ...user, target: repo.target },
+    { ...repo, target: user.target },
+  ];
+  assert.throws(() => compareReports(trace, { ...trace, sites: swapped }), /Missing from actual/);
+});
 
 test('the checker distinguishes derived, super and unrelated methods with the same spelling', () => {
   assert.equal(facts.CALLS.sites.length, 3);

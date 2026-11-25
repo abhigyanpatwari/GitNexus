@@ -6,6 +6,7 @@ import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
 import { compareReports } from '../compare.mjs';
 import { graphDeclaration } from '../gitnexus-report.mjs';
 import { compilerReport, emptyReport, graphRelations, relations } from './compiler-report.mjs';
+import { runtimeCalls } from './runtime-calls.mjs';
 
 function graphIdentity(node) {
   if (['Class', 'Interface', 'TypeAlias', 'Enum'].includes(node.label)) {
@@ -15,7 +16,7 @@ function graphIdentity(node) {
   return graphDeclaration(node);
 }
 
-function graphReport(graph, boundCalls, inventory) {
+function graphReport(graph, boundCalls, inventory, methodFacts) {
   const owners = new Map();
   for (const edge of graph.iterRelationshipsByType('HAS_METHOD')) {
     const owner = graph.getNode(edge.sourceId);
@@ -28,6 +29,16 @@ function graphReport(graph, boundCalls, inventory) {
       : graphIdentity(node);
   }
   const result = emptyReport();
+  if (methodFacts) {
+    for (const node of graph.nodes) {
+      if (node.label !== 'Method') continue;
+      const { isAbstract, isStatic, parameterTypes } = node.properties;
+      result.METHOD_FACTS.edges.push({
+        from: callableIdentity(node),
+        to: JSON.stringify([isAbstract, isStatic, parameterTypes ?? []]),
+      });
+    }
+  }
   if (inventory) {
     for (const node of graph.nodes) {
       if (!['Class', 'Interface', 'Method', 'Function'].includes(node.label)) continue;
@@ -167,7 +178,13 @@ const manifest = JSON.parse(readFileSync(new URL('./projects.json', import.meta.
 export async function compareProject(root, options = {}, expectedDiagnostics = []) {
   const key = path.relative(fixturesDirectory, root).split(path.sep).join('/');
   const inventory = manifest.declarationInventory.includes(key);
-  const reference = compilerReport(root, expectedDiagnostics, inventory);
+  const takesRuntimeEvidence = manifest.runtimeDispatch.includes(key);
+  const evidence = takesRuntimeEvidence ? { methods: [], unchecked: [] } : undefined;
+  const methodFacts = manifest.methodFacts.includes(key);
+  const reference = compilerReport(root, expectedDiagnostics, inventory, {
+    runtime: evidence,
+    methodFacts,
+  });
   assert.ok(
     relations.some((kind) => reference[kind].edges.length || reference[kind].sites.length),
     root + ': TypeScript reported no project-local declarations at any reference',
@@ -182,11 +199,26 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
       recordBindings(observation, boundCalls, typeParameters, reads, unbound);
     },
   });
-  const observed = graphReport(pipeline.graph, boundCalls, inventory);
+  const observed = graphReport(pipeline.graph, boundCalls, inventory, methodFacts);
   observed.TYPE_PARAMETER_USES.sites = typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.
   // The observer also sees property reads, argument reads and other syntax.
   const location = (site) => JSON.stringify([site.file, site.start, site.end]);
+  let runtimeCount = 0;
+  if (evidence) {
+    const runtime = runtimeCalls(root, evidence);
+    const exercised = new Set(runtime.sites.map(location));
+    compareReports(
+      { producer: 'Node.js', sites: runtime.sites },
+      {
+        producer: 'GitNexus',
+        sites: observed.CALLS.sites.filter((site) => exercised.has(location(site))),
+      },
+    );
+    observed.CALLS.sites = observed.CALLS.sites.filter((site) => !exercised.has(location(site)));
+    reference.CALLS.edges.push(...runtime.edges);
+    runtimeCount = runtime.sites.length;
+  }
   const rejectedLocations = new Set(reference.REJECTED_CALLS.sites.map(location));
   observed.REJECTED_CALLS.sites = unbound.filter((site) => rejectedLocations.has(location(site)));
   const checkedReads = new Set(reference.VARIABLE_READS.sites.map(location));
@@ -211,9 +243,15 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   }
   return {
     pipeline,
-    counts: Object.fromEntries(
-      relations.map((kind) => [kind, reference[kind].sites.length || reference[kind].edges.length]),
-    ),
+    counts: {
+      ...Object.fromEntries(
+        relations.map((kind) => [
+          kind,
+          reference[kind].sites.length || reference[kind].edges.length,
+        ]),
+      ),
+      RUNTIME_CALLS: runtimeCount,
+    },
   };
 }
 

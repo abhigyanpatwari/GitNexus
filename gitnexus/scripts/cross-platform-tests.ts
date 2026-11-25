@@ -418,7 +418,6 @@ const WORKER_THREADS = [
   'test/integration/local-import-worker-parity.test.ts',
   'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
-  'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
@@ -429,7 +428,6 @@ const NATIVE_ADDON_SMOKE = [
   'test/integration/tree-sitter-languages.test.ts',
   'test/integration/parsing.test.ts',
   'test/integration/pipeline.test.ts',
-  'test/integration/pipeline-graph-golden.test.ts',
   'test/unit/parser-loader.test.ts',
   'test/unit/parser-loader-abi.test.ts',
 ];
@@ -458,7 +456,6 @@ const FILESYSTEM = [
   'test/unit/watch-external-config.test.ts',
   'test/integration/server-route-hook-config.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
-  'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is
   // opened. The property it protects is about mtime behavior across OS and
   // filesystem, and the alternative — really opening the bridge — cannot run on

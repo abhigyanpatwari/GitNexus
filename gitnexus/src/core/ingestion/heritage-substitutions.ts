@@ -8,12 +8,22 @@ export class HeritageSubstitutions {
   private readonly edges = new Map<string, Bindings>();
   private readonly methodParameters = new Map<string, ReadonlySet<string>>();
 
-  registerBase(child: string, base: string, def: SymbolDefinition, args: readonly string[]) {
-    if (!def.typeParameters?.length || def.typeParameters.length !== args.length) return;
+  get hasBindings(): boolean {
+    return this.edges.size > 0;
+  }
+
+  registerBase(child: string, base: string, def: SymbolDefinition, args: readonly string[] = []) {
+    const parameters = def.typeParameters;
+    if (!parameters?.length || args.length > parameters.length) return;
     const key = heritageTypeArgumentsKey(child, base);
-    if (!this.edges.has(key)) {
-      this.edges.set(key, new Map(def.typeParameters.map((p, i) => [p.name, args[i]!])));
+    if (this.edges.has(key)) return;
+    const bindings = new Map<string, string>();
+    for (const [index, parameter] of parameters.entries()) {
+      const fallback = parameter.defaultType;
+      const type = args[index] ?? (fallback && (bindings.get(fallback) ?? fallback));
+      if (type) bindings.set(parameter.name, type);
     }
+    if (bindings.size) this.edges.set(key, bindings);
   }
 
   registerMethod(id: string, def: SymbolDefinition) {

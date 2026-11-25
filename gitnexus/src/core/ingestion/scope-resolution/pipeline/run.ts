@@ -535,8 +535,8 @@ function preEmitInheritanceEdges(
     // bases produce an entry; the sink owns the first-writer-wins rule.
     if (site.typeArguments !== undefined) {
       recordTypeArguments(callerGraphId, targetGraphId, site.typeArguments);
-      substitutions?.registerBase(callerGraphId, targetGraphId, targetDef, site.typeArguments);
     }
+    substitutions?.registerBase(callerGraphId, targetGraphId, targetDef, site.typeArguments);
   }
 
   return handledSites;
@@ -1210,7 +1210,7 @@ export function runScopeResolution(
         recordSourceBinding,
         input.heritageSubstitutions,
       );
-  if (heritageTypeArguments.size && input.heritageSubstitutions) {
+  if (input.heritageSubstitutions?.hasBindings) {
     for (const def of finalized.defs.byId.values()) {
       if (def.type !== 'Method' || !def.typeParameters?.length) continue;
       const id = resolveDefGraphId(def.filePath, def, nodeLookup);

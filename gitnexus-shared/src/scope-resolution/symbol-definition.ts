@@ -55,6 +55,8 @@ export interface TypeParameter {
    * `where` clauses) — see `parseTypeParameterList`.
    */
   bound?: string;
+  /** Default type used when the corresponding argument is omitted. */
+  defaultType?: string;
 }
 
 export interface SymbolDefinition {

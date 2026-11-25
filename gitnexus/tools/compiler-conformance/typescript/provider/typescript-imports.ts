@@ -1,9 +1,5 @@
 /**
- * Unit 2 coverage for the TypeScript import interpreter + target resolver.
- *
- * Asserts the ParsedImport shape for every TS import/export flavor and
- * checks the resolver adapter's single-target behavior against a small
- * set of fake file paths (with and without tsconfig path aliases).
+ * Checks the parsed import and export records produced by the TypeScript provider.
  */
 
 import { describe, it } from 'node:test';

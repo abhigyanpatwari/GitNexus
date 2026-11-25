@@ -60,7 +60,7 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
-  /** Observe source bindings before call sites are combined into graph edges. */
+  /** Receive each source site's binding after the scope-resolution phase emits graph edges. */
   onScopeResolved?: Parameters<typeof runScopeResolution>[0]['onResolved'];
   /** Cooperative cancellation checked between parser dispatch and graph phases. */
   signal?: AbortSignal;

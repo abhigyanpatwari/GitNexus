@@ -39,7 +39,7 @@ describe('multi-branch analyze (#2106)', () => {
   beforeEach(async () => {
     // Isolate the global registry so the full analyze runs below don't write
     // to the developer's real ~/.gitnexus/registry.json.
-    tmpHome = await createTempDir('gitnexus-multibranch-home-');
+    tmpHome = await createTempDir('gitnexus-test-multibranch-home-');
     savedGitnexusHome = process.env.GITNEXUS_HOME;
     process.env.GITNEXUS_HOME = tmpHome.dbPath;
   });
@@ -54,7 +54,7 @@ describe('multi-branch analyze (#2106)', () => {
     'a plain analyze follows a branch switch into the flat workspace slot (#2354)',
     { timeout: 180_000 },
     async () => {
-      const tmp = await createTempDir('gitnexus-multibranch-');
+      const tmp = await createTempDir('gitnexus-test-multibranch-');
       const repo = tmp.dbPath;
       try {
         git(['init'], repo);
@@ -111,7 +111,7 @@ describe('multi-branch analyze (#2106)', () => {
     'an explicit --branch run pins a sub-index; a later plain analyze on that branch reclaims it',
     { timeout: 180_000 },
     async () => {
-      const tmp = await createTempDir('gitnexus-multibranch-pin-');
+      const tmp = await createTempDir('gitnexus-test-multibranch-pin-');
       const repo = tmp.dbPath;
       try {
         git(['init'], repo);
@@ -193,7 +193,7 @@ describe('multi-branch analyze (#2106)', () => {
     'a detached-HEAD re-analyze preserves the primary stamp (no later overwrite)',
     { timeout: 180_000 },
     async () => {
-      const tmp = await createTempDir('gitnexus-multibranch-detached-');
+      const tmp = await createTempDir('gitnexus-test-multibranch-detached-');
       const repo = tmp.dbPath;
       try {
         git(['init'], repo);
@@ -236,7 +236,7 @@ describe('multi-branch analyze (#2106)', () => {
     'an auto-detected branch the rules forbid lands on the flat slot (#2106 R1)',
     { timeout: 180_000 },
     async () => {
-      const tmp = await createTempDir('gitnexus-multibranch-r1-');
+      const tmp = await createTempDir('gitnexus-test-multibranch-r1-');
       const repo = tmp.dbPath;
       try {
         git(['init'], repo);

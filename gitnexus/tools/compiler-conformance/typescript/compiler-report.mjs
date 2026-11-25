@@ -24,6 +24,7 @@ export const relations = [
   'VARIABLE_READS',
   'DECLARATIONS',
   'HAS_METHOD',
+  'METHOD_FACTS',
   'REJECTED_CALLS',
 ];
 
@@ -120,13 +121,13 @@ function symbolDeclaration(symbol, project) {
   return (symbol?.valueDeclaration ?? symbol?.declarations[0])?.resolve(project);
 }
 
-export function compilerReport(root, expectedDiagnostics = [], inventory = false) {
+export function compilerReport(root, expectedDiagnostics = [], inventory = false, options = {}) {
   return withWorkspacePackages(root, (projectRoot) =>
-    reportProject(projectRoot, expectedDiagnostics, inventory),
+    reportProject(projectRoot, expectedDiagnostics, inventory, options),
   );
 }
 
-function reportProject(root, expectedDiagnostics, inventory) {
+function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFacts }) {
   const localConfig = path.join(root, 'tsconfig.json');
   const scratch = existsSync(localConfig)
     ? undefined
@@ -140,7 +141,7 @@ function reportProject(root, expectedDiagnostics, inventory) {
         exclude: ['**/node_modules/**'],
       }).map((file) => path.join(root, file));
       writeFileSync(
-        config,
+        path.join(scratch, 'tsconfig.json'),
         JSON.stringify({
           files,
           compilerOptions: {
@@ -153,6 +154,7 @@ function reportProject(root, expectedDiagnostics, inventory) {
             types: [],
           },
         }),
+        { flag: 'wx' },
       );
     }
     const project = api.updateSnapshot({ openProjects: [config] }).getProject(config);
@@ -329,15 +331,44 @@ function reportProject(root, expectedDiagnostics, inventory) {
       [SyntaxKind.FunctionDeclaration, 'Function'],
       [SyntaxKind.MethodDeclaration, 'Method'],
       [SyntaxKind.MethodSignature, 'Method'],
+      [SyntaxKind.Constructor, 'Method'],
     ]);
     function visit(node) {
-      if (inventory && node.name) {
-        const label = declarationLabels.get(node.kind);
-        if (label) {
+      if (methodFacts && node.kind === SyntaxKind.MethodDeclaration) {
+        result.METHOD_FACTS.edges.push({
+          from: graphIdentity(root, node, project),
+          to: JSON.stringify([
+            hasModifier(node, SyntaxKind.AbstractKeyword),
+            hasModifier(node, SyntaxKind.StaticKeyword),
+            Array.from(node.parameters ?? [], (parameter) =>
+              checker.typeToString(checker.getTypeAtLocation(parameter)),
+            ),
+          ]),
+        });
+      }
+      if (runtime && node.kind === SyntaxKind.MethodDeclaration && node.body && node.parent.name) {
+        runtime.methods.push({
+          file: relative(root, node.getSourceFile()),
+          owner: node.parent.name.getText(),
+          name: node.name.getText(),
+          target: identity(root, node),
+          edgeTarget: graphIdentity(root, node, project),
+        });
+      }
+      if (inventory) {
+        const variableFunction =
+          (node.kind === SyntaxKind.ArrowFunction || node.kind === SyntaxKind.FunctionExpression) &&
+          node.parent.kind === SyntaxKind.VariableDeclaration;
+        const label = variableFunction ? 'Function' : declarationLabels.get(node.kind);
+        const name =
+          node.kind === SyntaxKind.Constructor
+            ? 'constructor'
+            : (variableFunction ? node.parent.name : node.name)?.getText();
+        if (label && name) {
           const target = graphIdentity(root, node, project);
           result.DECLARATIONS.edges.push({
             from: relative(root, node.getSourceFile()),
-            to: label + ':' + node.name.getText() + '@' + target,
+            to: label + ':' + name + '@' + target,
           });
           if (label === 'Method')
             result.HAS_METHOD.edges.push({ from: identity(root, node.parent), to: target });
@@ -400,6 +431,17 @@ function reportProject(root, expectedDiagnostics, inventory) {
         }
         const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
         edge('CALLS', enclosingCaller(node), selected, node);
+        if (runtime && !selected && node.expression.kind === SyntaxKind.PropertyAccessExpression) {
+          const source = node.getSourceFile();
+          const start = source.getLineAndCharacterOfPosition(node.getStart());
+          const end = source.getLineAndCharacterOfPosition(node.end);
+          runtime.unchecked.push({
+            file: relative(root, source),
+            start: [start.line, start.character],
+            end: [end.line, end.character],
+            caller: graphIdentity(root, enclosingCaller(node), project),
+          });
+        }
       }
       if (
         node.kind === SyntaxKind.JsxOpeningElement ||
@@ -462,6 +504,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     path.resolve(directory),
     [],
     relation === 'DECLARATIONS' || relation === 'HAS_METHOD',
+    { methodFacts: relation === 'METHOD_FACTS' },
   );
   console.log(JSON.stringify({ producer: 'TypeScript', ...report[relation] }, null, 2));
 }

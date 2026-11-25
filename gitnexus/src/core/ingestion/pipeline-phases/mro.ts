@@ -41,9 +41,13 @@ export const mroPhase: PipelinePhase<MROOutput> = {
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
 
+    const { heritageSubstitutions } = getPhaseOutput<ScopeResolutionOutput>(
+      deps,
+      'scopeResolution',
+    );
     const mroResult = computeMRO(
       ctx.graph,
-      getPhaseOutput<ScopeResolutionOutput>(deps, 'scopeResolution').heritageSubstitutions,
+      heritageSubstitutions?.hasBindings ? heritageSubstitutions : undefined,
     );
 
     if (isDev && mroResult.entries.length > 0) {

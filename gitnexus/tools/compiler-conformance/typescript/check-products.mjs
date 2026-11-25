@@ -7,7 +7,14 @@ import path from 'node:path';
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const platform = process.argv.includes('--platform');
 const selected = platform
-  ? ['product/rename.ts', 'provider/rename-typescript-member-keys.ts']
+  ? [
+      'product/dangling-owner-edges.ts',
+      'product/fetch-wrapper-persistence.ts',
+      'product/ignore-and-skip-e2e.ts',
+      'product/pipeline-graph-golden.ts',
+      'product/rename.ts',
+      'provider/rename-typescript-member-keys.ts',
+    ]
   : globSync(['product/*.ts', 'provider/*.ts'], { cwd: directory });
 const files = selected.sort().map((file) => path.join(directory, file));
 assert.ok(files.length, 'No TypeScript product checks found');

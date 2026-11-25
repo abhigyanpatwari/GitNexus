@@ -1,3 +1,4 @@
+import { registerCases } from '../support/cases.mjs';
 /**
  * Library and runtime receivers name the program boundary (#3498 triage).
  *
@@ -12,7 +13,8 @@
  * provider's data reaching the pass through `runScopeResolution`, for every
  * language that supplies it, in one multi-language repository.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,7 +23,7 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
-} from '../../integration/resolvers/helpers.js';
+} from '../support/fixture.js';
 
 const FILES: Record<string, string> = {
   'web/dom.ts': `export function attach(link: unknown): void {
@@ -105,11 +107,14 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
   let repoDir: string;
   let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-receiver-origin-library-'));
-    writeFixtureRepo(repoDir, FILES);
-    result = await runPipelineFromRepo(repoDir, () => {}, {});
-  }, 120000);
+  beforeAll(
+    async () => {
+      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-receiver-origin-library-'));
+      writeFixtureRepo(repoDir, FILES);
+      result = await runPipelineFromRepo(repoDir, () => {}, {});
+    },
+    { timeout: 120000 },
+  );
 
   afterAll(() => {
     if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
@@ -125,37 +130,49 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
         outcome.name === name,
     );
 
-  it.each([
-    ['a DOM global', 'web/dom.ts', 2, 'appendChild'],
-    ['a browser global', 'web/dom.ts', 6, 'pushState'],
-    ['the Node Buffer global', 'web/dom.ts', 10, 'toString'],
-    ['the Node process global', 'web/env.ts', 2, 'SERVICE_URL'],
-    ['a Python stdlib namespace import', 'py/settings.py', 6, 'setdefault'],
-    ['a Python stdlib named import', 'py/settings.py', 10, 'resolve'],
-    ['the Zig standard library', 'zig/src/sorter.zig', 4, 'pdq'],
-
-    ['the C# System namespace', 'cs/App.cs', 13, 'WriteLine'],
-    ['a C# field declared as a library type', 'cs/App.cs', 18, 'Keys'],
-    ['Kotlin java.lang.System', 'kt/src/Worker.kt', 3, 'println'],
-  ] as const)('records a drop rooted at %s as external', (_label, filePath, line, name) => {
-    const drops = dropsAt(filePath, line, name);
-    expect(drops.length).toBeGreaterThan(0);
-    expect(drops).toEqual(drops.map(() => expect.objectContaining({ receiverOrigin: 'external' })));
-  });
-
-  it.each([
-    ['a TypeScript parameter named document', 'web/dom.ts', 14, 'render'],
-    ['a Python parameter named os', 'py/settings.py', 14, 'update'],
-    ['a same-named program declaration', 'web/env.ts', 1, 'API_BASE'],
+  registerCases(
+    it,
     [
-      'a TypeScript member used through a JavaScript library receiver',
-      'web/interop.js',
-      1,
-      'interopSave',
-    ],
-  ] as const)('keeps a drop on %s hedged', (_label, filePath, line, name) => {
-    const drops = dropsAt(filePath, line, name);
-    expect(drops.length).toBeGreaterThan(0);
-    expect(drops).not.toContainEqual(expect.objectContaining({ receiverOrigin: 'external' }));
-  });
+      ['a DOM global', 'web/dom.ts', 2, 'appendChild'],
+      ['a browser global', 'web/dom.ts', 6, 'pushState'],
+      ['the Node Buffer global', 'web/dom.ts', 10, 'toString'],
+      ['the Node process global', 'web/env.ts', 2, 'SERVICE_URL'],
+      ['a Python stdlib namespace import', 'py/settings.py', 6, 'setdefault'],
+      ['a Python stdlib named import', 'py/settings.py', 10, 'resolve'],
+      ['the Zig standard library', 'zig/src/sorter.zig', 4, 'pdq'],
+
+      ['the C# System namespace', 'cs/App.cs', 13, 'WriteLine'],
+      ['a C# field declared as a library type', 'cs/App.cs', 18, 'Keys'],
+      ['Kotlin java.lang.System', 'kt/src/Worker.kt', 3, 'println'],
+    ] as const,
+    'records a drop rooted at %s as external',
+    (_label, filePath, line, name) => {
+      const drops = dropsAt(filePath, line, name);
+      expect(drops.length).toBeGreaterThan(0);
+      expect(drops).toEqual(
+        drops.map(() => expect.objectContaining({ receiverOrigin: 'external' })),
+      );
+    },
+  );
+
+  registerCases(
+    it,
+    [
+      ['a TypeScript parameter named document', 'web/dom.ts', 14, 'render'],
+      ['a Python parameter named os', 'py/settings.py', 14, 'update'],
+      ['a same-named program declaration', 'web/env.ts', 1, 'API_BASE'],
+      [
+        'a TypeScript member used through a JavaScript library receiver',
+        'web/interop.js',
+        1,
+        'interopSave',
+      ],
+    ] as const,
+    'keeps a drop on %s hedged',
+    (_label, filePath, line, name) => {
+      const drops = dropsAt(filePath, line, name);
+      expect(drops.length).toBeGreaterThan(0);
+      expect(drops).not.toContainEqual(expect.objectContaining({ receiverOrigin: 'external' }));
+    },
+  );
 });
