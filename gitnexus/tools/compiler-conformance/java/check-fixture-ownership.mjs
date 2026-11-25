@@ -50,7 +50,8 @@ function literalIdentifier(node, bindings, seen) {
   const binding = bindingFor(bindings, node.name);
   if (binding?.path)
     return literal(binding.path.node, binding.path.scope, new Set([...seen, node.name]));
-  return nameOf(binding?.imported) === 'FIXTURES' || node.name === 'FIXTURES' ? 'fixtures' : '*';
+  const name = binding ? nameOf(binding.imported) : node.name;
+  return name === 'FIXTURES' ? 'fixtures' : '*';
 }
 
 function literal(node, bindings, seen = new Set()) {

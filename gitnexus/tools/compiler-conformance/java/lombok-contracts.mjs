@@ -144,9 +144,10 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
   }
   // Kotlin caller of Java getName(): synthetic Method exists; CALLS blocked by pre-existing JVM interop
   {
-    const lombokRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kt-lombok-'));
-    const handRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kt-hand-'));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-kt-lombok-'));
     try {
+      const lombokRoot = path.join(scratch, 'lombok');
+      const handRoot = path.join(scratch, 'handwritten');
       copyResolutionProject(lombokRoot, 'kotlin-lombok-accessor');
       copyResolutionProject(handRoot, 'kotlin-handwritten-accessor');
       const lombok = await runPipelineFromRepo(lombokRoot, () => {});
@@ -169,11 +170,7 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
         true,
       );
     } finally {
-      fs.rmSync(lombokRoot, {
-        recursive: true,
-        force: true,
-      });
-      fs.rmSync(handRoot, {
+      fs.rmSync(scratch, {
         recursive: true,
         force: true,
       });
@@ -181,9 +178,11 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
   }
   // cold parse, warm replay (byte-identical Method ids), and incompatible historical cache miss
   {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-lombok-cache-repo-'));
-    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-lombok-cache-store-'));
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-lombok-cache-'));
     try {
+      const root = path.join(scratch, 'repo');
+      const storage = path.join(scratch, 'cache');
+      fs.mkdirSync(storage);
       copyResolutionProject(root, 'lombok-cache');
       const coldCache = {
         identity: parseIdentity,
@@ -249,11 +248,7 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
       assert.equal(recovered.usedWorkerPool, true);
       assert.deepEqual(projectLombokMethods(recovered), coldMethods);
     } finally {
-      fs.rmSync(root, {
-        recursive: true,
-        force: true,
-      });
-      fs.rmSync(storage, {
+      fs.rmSync(scratch, {
         recursive: true,
         force: true,
       });

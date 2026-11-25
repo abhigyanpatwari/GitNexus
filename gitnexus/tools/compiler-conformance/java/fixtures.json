@@ -16,7 +16,10 @@
     "constructors": true
   },
   "compiler-conformance/java-contextual-declaration-identity": 3,
-  "compiler-conformance/java-contextual-local-element-identity": 2,
+  "compiler-conformance/java-contextual-local-element-identity": {
+    "families": ["*"],
+    "sites": 2
+  },
   "compiler-conformance/java-copied-method-reference": {
     "families": ["invoke"],
     "sites": 1

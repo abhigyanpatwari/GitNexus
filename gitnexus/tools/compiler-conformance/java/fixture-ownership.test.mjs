@@ -56,8 +56,17 @@ test('detects compiler-fixture projects through a directory, URL, or imported fi
     "import path from 'node:path'; const p = path.join(root, 'compiler-conformance', 'java-arrays');",
     "const p = new URL('../fixtures/java-resolution/arrays', import.meta.url);",
     "import path from 'node:path'; import { FIXTURES } from '../helpers.js'; path.join(FIXTURES, 'java-calls');",
+    "import path from 'node:path'; import { FIXTURES as root } from '../helpers.js'; path.join(root, 'java-calls');",
   ])
     assert.ok(javaFixtureUses(source).length, source);
+  assert.deepEqual(
+    javaFixtureUses(`
+      import path from 'node:path';
+      import { FIXTURES } from '../helpers.js';
+      function inspect(FIXTURES) { return path.join(FIXTURES, 'java-calls'); }
+    `),
+    [],
+  );
 });
 
 test('respects loop bindings and restores the filesystem import after each loop', () => {

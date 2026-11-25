@@ -138,9 +138,15 @@ export function javacReports(fixtures) {
 
 /** Include binary targets in the same method families as the source comparison. */
 export function selectedJavacCalls(report, families) {
-  const names = new Set(
-    families ?? report.declarations.filter((d) => d.kind === 'Method').map((d) => d.name),
-  );
+  const names = new Set(families);
+  const allFamilies = names.delete('*');
+  if (!families || allFamilies) {
+    for (const declaration of report.declarations)
+      if (declaration.kind === 'Method') names.add(declaration.name);
+  }
+  if (allFamilies) {
+    for (const site of report.binarySites) names.add(site.name);
+  }
   const binarySites = report.binarySites.filter((site) => names.has(site.name));
   return { names, binarySites, sites: [...report.sites, ...binarySites] };
 }

@@ -90,10 +90,8 @@ ${impls}
     return types;
   }
   /**
-   * Write `pairCount` interface+controller pairs to a fresh temp repo and return
-   * its path. Mirrors `buildSpringTypes`' shape but on disk, so the full pipeline
-   * (read → parse → worker extractSpringTypes → cross-file inheritance pass →
-   * graph) is exercised exactly as a real analyze would be.
+   * Write the same interface and controller pairs as `buildSpringTypes` under
+   * `dir` so the benchmark exercises file discovery, parsing and route resolution.
    */
   function writeSpringRepo(dir, pairCount) {
     const apiDir = path.join(dir, 'api');
