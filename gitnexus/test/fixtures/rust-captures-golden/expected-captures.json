@@ -388,12 +388,12 @@
     "digest": "9d462a7fcfe6ddd56e5d82d856adb54a7e16a1e1ddc0e0f25c4a7875f769b91c"
   },
   "rust-for-call-expr/src/repo.rs": {
-    "captureGroups": 14,
-    "digest": "6c6c53ab458997365f7ee4a9675ec64809aaebd2dd101b6418928b0d9313bdec"
+    "captureGroups": 16,
+    "digest": "cedab5f0fb2c56dab480ebdf7d0c1296f8af2eded7ff3a135618fbafec217b48"
   },
   "rust-for-call-expr/src/user.rs": {
-    "captureGroups": 14,
-    "digest": "7331591b986aa2a9b0ee57020c1f0285ad0da10d5044c326b4beaaeb26019aa8"
+    "captureGroups": 16,
+    "digest": "4acca72e486d33a06d7fb0be043c9580c4e2d779758238bd71023e43489e7747"
   },
   "rust-for-loop/src/main.rs": {
     "captureGroups": 28,

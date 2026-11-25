@@ -3266,3 +3266,78 @@ describe('Rust module-qualified factory result types (#3498 follow-up)', () => {
     expect(dropped).toEqual(['44:call:m', '44:read:m', '48:call:m', '48:read:m']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1388: a call written inside a macro's arguments (`println!("{}", f())`) is
+// inside an unparsed token tree, and used to produce no CALLS edge at all.
+// ---------------------------------------------------------------------------
+
+describe('Rust calls inside macro arguments (#1388)', () => {
+  let result: PipelineResult;
+  let root: string;
+
+  beforeAll(async () => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-rust-macro-args-'));
+    writeFixtureRepo(root, {
+      'src/utils.rs': `pub fn gettext_f(s: &str) -> String { s.to_string() }
+pub fn probe() -> bool { true }
+
+pub struct Row;
+impl Row {
+    pub fn render(&self) -> String { String::new() }
+}
+`,
+      'src/main.rs': `mod utils;
+use utils::{gettext_f, probe, Row};
+
+struct Holder { row: Row }
+
+impl Holder {
+    fn via_field(&self) { println!("{}", self.row.render()); }
+}
+
+fn via_param(row: &Row) { println!("{}", row.render()); }
+fn in_println() { println!("{}", gettext_f("a")); }
+fn in_vec() -> Vec<String> { vec![gettext_f("a")] }
+fn in_assert() { assert!(probe()); }
+fn in_matches() -> bool { matches!(probe(), true) }
+fn in_third_party() { g_printerr!("{}\\n", gettext_f("a")); }
+fn in_nested() { eprintln!("{}", format!("{}", gettext_f("a"))); }
+fn in_scoped() { std::println!("{}", utils::gettext_f("a")); }
+
+fn in_stringify() -> &'static str { stringify!(probe()) }
+fn in_braces() { items! { probe() } }
+fn in_closure() { custom!(|probe| probe()); }
+
+fn main() {}
+`,
+    });
+    result = await runPipelineFromRepo(root, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    if (root) fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('emits exactly the calls whose arguments are evaluated expressions', () => {
+    const calls = getRelationships(result, 'CALLS').map(
+      (edge) => `${edge.source} → ${edge.rel.targetId}`,
+    );
+    const gettext = 'Function:src/utils.rs:gettext_f';
+    const probe = 'Function:src/utils.rs:probe';
+    const render = 'Function:src/utils.rs:Row.render#0';
+    expect(calls.sort()).toEqual(
+      [
+        `in_assert → ${probe}`,
+        `in_matches → ${probe}`,
+        `in_nested → ${gettext}`,
+        `in_println → ${gettext}`,
+        `in_scoped → ${gettext}`,
+        `in_third_party → ${gettext}`,
+        `in_vec → ${gettext}`,
+        `via_field → ${render}`,
+        `via_param → ${render}`,
+      ].sort(),
+    );
+  });
+});
