@@ -731,7 +731,7 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
   });
 
   it.each([false, true])(
-    'drains every FTS CREATE result and preserves a deferred failure (failure=%s)',
+    'runs FTS CREATE on one thread and restores the prior setting after draining every result (failure=%s)',
     async (fails) => {
       vi.resetModules();
       const nativeError = new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.');
@@ -747,9 +747,23 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         }),
       }));
       const genericResult = { getAll: vi.fn(async () => []), close: vi.fn() };
-      const conn = makeConn(async (sql: string) =>
-        sql.startsWith('CALL CREATE_FTS_INDEX') ? results : genericResult,
-      );
+      let threads = 8;
+      const conn = {
+        ...makeConn(async (sql: string) => {
+          if (sql.includes("CURRENT_SETTING('threads')")) {
+            return { getAll: async () => [{ threads: String(threads) }], close: vi.fn() };
+          }
+          if (sql.startsWith('CALL CREATE_FTS_INDEX')) {
+            events.push(`create:${threads}`);
+            return results;
+          }
+          return genericResult;
+        }),
+        setMaxNumThreadForExec(value: number) {
+          threads = value;
+          events.push(`threads:${value}`);
+        },
+      };
       const db = { close: vi.fn(async () => {}) };
       const dbPath = '/tmp/gitnexus-lbug-fts-create-drain/lbug';
       mockFsForInit(dbPath);
@@ -778,12 +792,15 @@ describe('lbug adapter CHECKPOINT lifecycle', () => {
         if (fails) await expect(create).rejects.toBe(nativeError);
         else await expect(create).resolves.toBeUndefined();
         expect(events).toEqual([
+          'threads:1',
+          'create:1',
           'first:getAll',
           'first:close',
           'second:getAll',
           'second:close',
           'third:getAll',
           'third:close',
+          'threads:8',
         ]);
         for (const result of results) expect(result.close).toHaveBeenCalledOnce();
       } finally {

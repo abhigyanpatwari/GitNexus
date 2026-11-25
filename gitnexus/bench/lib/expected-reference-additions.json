@@ -8,5 +8,20 @@
       "count": 5,
       "sha256": "22dbc3eb225be58b92864ac090a2c9ba6d697dd75a8fea21b5b6f39f0b4739e2"
     }
+  },
+  "621e0e6459f5338d9d9a27ce93ec5c64d7212f73:6caa0996142604c30fd7d982ebe5c82f5a5a645c": {
+    "_note": "#4068: the awaited generic call `await workerPool.dispatchGroups<ParseWorkerInput, ParseWorkerResult>(…)` (parsing-processor.ts:398:25) loses its wrong read ACCESSES edge from dispatchChunkParseRound to WorkerPool.dispatchGroups; its CALLS edge is unchanged. No relationship is added.",
+    "additions": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "removals": {
+      "count": 1,
+      "sha256": "81f24d6b78be1c471dcd4702cb4b7c83644f74d0d2ed61d0850b2a65c0cac6c6"
+    },
+    "typeOnlyImports": {
+      "count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
   }
 }
