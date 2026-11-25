@@ -79,6 +79,30 @@ function isTsxFile(filePath: string): boolean {
   return filePath.endsWith('.tsx');
 }
 
+// Keep the terminal name for symbol lookup and the full spelling and range for
+// namespace qualification, including when a local type has the same name.
+const namedTypeReference = `[
+  (type_identifier) @reference.name
+  (nested_type_identifier name: (type_identifier) @reference.name) @reference.qualified-name
+] @reference.type_reference`;
+const typeReferencePatterns = [
+  'type_annotation',
+  'type_arguments',
+  'default_type',
+  'array_type',
+  'union_type',
+  'intersection_type',
+  'tuple_type',
+  'parenthesized_type',
+  'satisfies_expression',
+  'as_expression',
+]
+  .map(
+    (context) => `(${context} ${namedTypeReference})
+(${context} (generic_type name: ${namedTypeReference}))`,
+  )
+  .join('\n');
+
 export const TYPESCRIPT_SCOPE_QUERY = `
 ${unboundCallableQuery('declaration.function')}
 ;; Scopes — module / namespace / class-likes / function-likes
@@ -1433,32 +1457,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; and heritage \`implements\` — never a bare \`(type_identifier)\`. A blanket rule
 ;; would also match the identifier in \`type X = …\` and \`interface X\`, making
 ;; every declaration a consumer of itself.
-(type_annotation
-  (type_identifier) @reference.name @reference.type_reference)
-
-(type_annotation
-  (generic_type
-    name: (type_identifier) @reference.name @reference.type_reference))
-
-(type_arguments
-  (type_identifier) @reference.name @reference.type_reference)
-
-;; Composite annotations retain the dependency of each named constituent.
-;; The parent context excludes type names being declared.
-[
-  (default_type (type_identifier) @reference.name @reference.type_reference)
-  (array_type (type_identifier) @reference.name @reference.type_reference)
-  (union_type (type_identifier) @reference.name @reference.type_reference)
-  (intersection_type (type_identifier) @reference.name @reference.type_reference)
-  (tuple_type (type_identifier) @reference.name @reference.type_reference)
-  (parenthesized_type (type_identifier) @reference.name @reference.type_reference)
-  (satisfies_expression (type_identifier) @reference.name @reference.type_reference)
-]
-
-;; \`x as SomeType\` / \`satisfies SomeType\` — an assertion is a claim ABOUT a
-;; declared type, so the code making it depends on that declaration.
-(as_expression
-  (type_identifier) @reference.name @reference.type_reference)
+${typeReferencePatterns}
 `;
 
 /**
