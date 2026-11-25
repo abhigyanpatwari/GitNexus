@@ -107,12 +107,14 @@ import {
   mergeMountPrefixes,
   resolveFastAPIRouterPrefixes,
 } from '../route-extractors/fastapi-router-prefixes.js';
-import type { ExtractedPhpRouteRequireBinding } from '../route-extractors/php-router-require-bindings.js';
-import { applyPhpRouterRequireContexts } from '../route-extractors/php-router-require-context.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
 import { resolveOperands } from '../route-extractors/python-const-resolver.js';
 import type { ModuleConstants } from '../route-extractors/constant-resolver.js';
-import { prepareRouteConstantsByProvider, runPostParseHooks } from '../language-provider.js';
+import {
+  prepareRouteConstantsByProvider,
+  runPostParseHooks,
+  type ExtractedRouteRequireBinding,
+} from '../language-provider.js';
 import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
@@ -799,7 +801,7 @@ export async function runChunkedParseAndResolve(
   // below, after cross-file aggregation, alongside the include_router prefix pass.
   const allModuleConstants: ExtractedModuleConstants[] = [];
   const allSpringTypes: SharedSpringType[] = [];
-  const allPhpRouterRequireBindings: ExtractedPhpRouteRequireBinding[] = [];
+  const allRouteRequireBindings: ExtractedRouteRequireBinding[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   // Aggregated per-file ParsedFile artifacts produced by workers' calls
@@ -1024,9 +1026,9 @@ export async function runChunkedParseAndResolve(
         if (chunkWorkerData.springTypes?.length) {
           for (const item of chunkWorkerData.springTypes) allSpringTypes.push(item);
         }
-        if (chunkWorkerData.phpRouterRequireBindings?.length) {
-          for (const item of chunkWorkerData.phpRouterRequireBindings) {
-            allPhpRouterRequireBindings.push(item);
+        if (chunkWorkerData.routeRequireBindings?.length) {
+          for (const item of chunkWorkerData.routeRequireBindings) {
+            allRouteRequireBindings.push(item);
           }
         }
         if (chunkWorkerData.toolDefs?.length) {
@@ -1428,14 +1430,26 @@ export async function runChunkedParseAndResolve(
         logDeferredProfile(`cross-file routes: +${crossFileRoutes.length}`);
       }
     }
-    if (allPhpRouterRequireBindings.length > 0 && allExtractedRoutes.length > 0) {
-      const expanded = applyPhpRouterRequireContexts(
-        allExtractedRoutes,
-        allPaths,
-        allPhpRouterRequireBindings,
-      );
-      allExtractedRoutes.length = 0;
-      for (const route of expanded) allExtractedRoutes.push(route);
+    if (allRouteRequireBindings.length > 0 && allExtractedRoutes.length > 0) {
+      const byApplier = new Map<
+        NonNullable<LanguageProvider['applyRouteRequireContexts']>,
+        ExtractedRouteRequireBinding[]
+      >();
+      for (const binding of allRouteRequireBindings) {
+        const apply = getProviderForFile(binding.filePath)?.applyRouteRequireContexts;
+        if (!apply) continue;
+        let list = byApplier.get(apply);
+        if (!list) {
+          list = [];
+          byApplier.set(apply, list);
+        }
+        list.push(binding);
+      }
+      for (const [apply, bindings] of byApplier) {
+        const expanded = apply(allExtractedRoutes, allPaths, bindings);
+        allExtractedRoutes.length = 0;
+        for (const route of expanded) allExtractedRoutes.push(route);
+      }
     }
     if (allExtractedRoutes.length > 0) {
       const tRoutes = startTimer(deferredProfile);

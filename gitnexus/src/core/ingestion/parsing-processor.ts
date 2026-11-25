@@ -31,7 +31,7 @@ import type {
   ExtractedRouterModuleAlias,
 } from './route-extractors/fastapi-router-bindings.js';
 import type { SharedSpringType } from './route-extractors/spring-shared.js';
-import type { ExtractedPhpRouteRequireBinding } from './route-extractors/php-router-require-bindings.js';
+import type { ExtractedRouteRequireBinding } from './language-provider.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -53,7 +53,7 @@ export interface WorkerExtractedData {
   ormQueries: ExtractedORMQuery[];
   /** Project-wide Spring class/interface views for the #2288 inheritance pass. */
   springTypes: SharedSpringType[];
-  phpRouterRequireBindings: ExtractedPhpRouteRequireBinding[];
+  routeRequireBindings: ExtractedRouteRequireBinding[];
   fileScopeBindings: FileScopeBindings[];
   /**
    * Per-file `ParsedFile` artifacts from the new scope-based resolution
@@ -207,7 +207,7 @@ export const mergeChunkResults = (
   const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allModuleConstants: ExtractedModuleConstants[] = [];
   const allSpringTypes: SharedSpringType[] = [];
-  const allPhpRouterRequireBindings: ExtractedPhpRouteRequireBinding[] = [];
+  const allRouteRequireBindings: ExtractedRouteRequireBinding[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
@@ -286,8 +286,7 @@ export const mergeChunkResults = (
     for (const item of result.routerModuleAliases ?? []) allRouterModuleAliases.push(item);
     for (const item of result.moduleConstants ?? []) allModuleConstants.push(item);
     for (const item of result.springTypes ?? []) allSpringTypes.push(item);
-    for (const item of result.phpRouterRequireBindings ?? [])
-      allPhpRouterRequireBindings.push(item);
+    for (const item of result.routeRequireBindings ?? []) allRouteRequireBindings.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
     if (result.fileScopeBindings)
@@ -327,7 +326,7 @@ export const mergeChunkResults = (
     toolDefs: byFilePath(allToolDefs),
     ormQueries: byFilePath(allORMQueries),
     springTypes: byFilePath(allSpringTypes),
-    phpRouterRequireBindings: byFilePath(allPhpRouterRequireBindings),
+    routeRequireBindings: byFilePath(allRouteRequireBindings),
     fileScopeBindings: byFilePath(fileScopeBindingsByFile),
     parsedFiles: byFilePath(allParsedFiles),
     scopeExtractionFailures: inPathOrder(scopeExtractionFailures, (filePath) => filePath),

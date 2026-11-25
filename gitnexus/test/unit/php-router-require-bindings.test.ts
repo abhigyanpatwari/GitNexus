@@ -4,11 +4,11 @@ import PHP from 'tree-sitter-php';
 import {
   extractPhpRouterRequireBindings,
   shouldExtractPhpRouterRequireBindings,
-} from '../../src/core/ingestion/route-extractors/php-router-require-bindings.js';
+} from '../../src/core/ingestion/languages/php/router-require-bindings.js';
 import {
   applyPhpRouterRequireContexts,
   resolvePhpRouterRequireBindings,
-} from '../../src/core/ingestion/route-extractors/php-router-require-context.js';
+} from '../../src/core/ingestion/languages/php/router-require-context.js';
 import {
   extractLaravelRoutes,
   type ExtractedRoute,

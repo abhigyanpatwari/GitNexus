@@ -23,6 +23,7 @@ import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 import type { LanguageProvider, RouteHookConfig } from './language-provider.js';
+import { getProviderForFile } from './languages/index.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
 import {
   isTestRouteFile,
@@ -178,7 +179,18 @@ export function buildExportedTypeMapFromGraph(
  */
 const ROUTE_EDGE_CONFIDENCE = 0.5;
 
-/** Unique case-insensitive Method of the controller class (PHP routes only; after exact miss or ambiguity). */
+/** Exact same-file Method definitions owned by `controllerDef` (prevents another class's method from matching or suppressing fallback). */
+function lookupOwnedControllerMethods(
+  symbols: SymbolTableReader,
+  controllerDef: SymbolDefinition,
+  methodName: string,
+): SymbolDefinition[] {
+  return symbols
+    .lookupExactAll(controllerDef.filePath, methodName)
+    .filter((def) => def.type === 'Method' && def.ownerId === controllerDef.nodeId);
+}
+
+/** Unique case-insensitive Method of the controller class (for providers with `caseInsensitiveRouteMethods`, after exact miss or ambiguity). */
 function routeHandlerMethodCaseInsensitiveFallback(
   symbols: SymbolTableReader,
   controllerDef: SymbolDefinition,
@@ -348,10 +360,10 @@ export const processRoutesFromExtracted = async (
     const confidence = ROUTE_EDGE_CONFIDENCE;
 
     // Method must live in the controller's own file (the legacy emitter only
-    // accepted same-file method resolutions).
-    const methodDefs = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName);
+    // accepted same-file method resolutions) and be owned by the controller class.
+    const methodDefs = lookupOwnedControllerMethods(model.symbols, controllerDef, route.methodName);
     let methodId = methodDefs[0]?.nodeId;
-    if (!methodId && route.filePath.endsWith('.php')) {
+    if (!methodId && getProviderForFile(route.filePath)?.caseInsensitiveRouteMethods) {
       methodId = routeHandlerMethodCaseInsensitiveFallback(
         model.symbols,
         controllerDef,
@@ -557,8 +569,13 @@ export function resolveRouteHandlerSymbols(
         if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
       }
       if (controllerDef) {
-        methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
-        if (!methodId && route.filePath.endsWith('.php')) {
+        const exactDefs = lookupOwnedControllerMethods(
+          model.symbols,
+          controllerDef,
+          route.methodName,
+        );
+        methodId = exactDefs.length === 1 ? exactDefs[0]?.nodeId : undefined;
+        if (!methodId && getProviderForFile(route.filePath)?.caseInsensitiveRouteMethods) {
           methodId = routeHandlerMethodCaseInsensitiveFallback(
             model.symbols,
             controllerDef,

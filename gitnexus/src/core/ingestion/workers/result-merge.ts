@@ -62,9 +62,9 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
     target.springTypes ??= [];
     appendAll(target.springTypes, src.springTypes);
   }
-  if (src.phpRouterRequireBindings) {
-    target.phpRouterRequireBindings ??= [];
-    appendAll(target.phpRouterRequireBindings, src.phpRouterRequireBindings);
+  if (src.routeRequireBindings) {
+    target.routeRequireBindings ??= [];
+    appendAll(target.routeRequireBindings, src.routeRequireBindings);
   }
   appendAll(target.toolDefs, src.toolDefs);
   appendAll(target.ormQueries, src.ormQueries);

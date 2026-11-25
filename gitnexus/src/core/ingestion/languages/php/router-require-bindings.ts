@@ -1,12 +1,13 @@
 import type Parser from 'tree-sitter';
 import path from 'node:path';
-import type { SyntaxNode } from '../utils/ast-helpers.js';
-import { isPhpRouteFile } from '../languages/php.js';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import type { ExtractedRouteRequireBinding } from '../../language-provider.js';
 import {
   EMPTY_ROUTE_GROUP_CONTEXT,
   extendRouteGroupContext,
+  isPhpRouteFile,
   type ComposedRouteGroupContext,
-} from './php-route-group.js';
+} from './route-group.js';
 import {
   findRouteGroupClosureBody,
   foldPhpStringLiteral,
@@ -14,28 +15,9 @@ import {
   getRouterCallMethodName,
   isPhpRouterGroupCall,
   parseRouteGroupArrayArgs,
-} from './laravel.js';
+} from '../../route-extractors/laravel.js';
 
-export interface ExtractedPhpRouteRequireBinding {
-  filePath: string;
-  /** Repo-relative path to the required PHP file (normalized slashes). */
-  requiredPath: string;
-  prefix: string | null;
-  namespace: string | null;
-  /** The group namespace started with `\`, so it replaces the host's namespace. */
-  namespaceResets: boolean;
-  middleware: string[];
-  namePrefix: string | null;
-  lineNumber: number;
-  /** Orders requires that share a line. */
-  column: number;
-  /** `require_once` / `include_once`: PHP skips the file if it already ran. */
-  once: boolean;
-  /** True inside a router group; false for a bare require, which loads the file as-is. */
-  appliesContext: boolean;
-  /** True only when the require runs whenever the code before it in the same host ran. */
-  unguarded: boolean;
-}
+export type ExtractedPhpRouteRequireBinding = ExtractedRouteRequireBinding;
 
 export function shouldExtractPhpRouterRequireBindings(content: string): boolean {
   return /\b(require|include)(_once)?\b/i.test(content);
@@ -108,7 +90,6 @@ const DEFERRED_SCOPE_TYPES = new Set([
   'enum_declaration',
 ]);
 
-/** Statements after which later code in the same scope may not run. */
 /** Exits that stop later sequential statements in the same block (`break` / `continue` do not). */
 const EXIT_NODE_TYPES = new Set([
   'return_statement',
@@ -172,8 +153,8 @@ interface WalkFrame {
 export function extractPhpRouterRequireBindings(
   tree: Parser.Tree,
   hostFilePath: string,
-): ExtractedPhpRouteRequireBinding[] {
-  const bindings: ExtractedPhpRouteRequireBinding[] = [];
+): ExtractedRouteRequireBinding[] {
+  const bindings: ExtractedRouteRequireBinding[] = [];
   const relHost = hostFilePath.replace(/\\/g, '/');
   const mayExit = collectMayExit(tree.rootNode);
 

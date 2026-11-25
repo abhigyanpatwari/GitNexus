@@ -229,6 +229,57 @@ describe('processRoutesFromExtracted — Laravel route → controller CALLS edge
     expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
   });
 
+  it('same-name exact method in another class does not suppress controller case-insensitive fallback', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'Helper', 'class:Helper', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'INDEX', 'method:Helper.INDEX', 'Method', {
+      ownerId: 'class:Helper',
+    });
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'INDEX' })], model);
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe('method:OrderController.index');
+  });
+
+  it('same-name method in another class does not resolve when the controller lacks that method', async () => {
+    const graph = createKnowledgeGraph();
+    const model = createSemanticModel();
+    model.symbols.add(CONTROLLER_FILE, 'Helper', 'class:Helper', 'Class');
+    model.symbols.add(CONTROLLER_FILE, 'index', 'method:Helper.index', 'Method', {
+      ownerId: 'class:Helper',
+    });
+    model.symbols.add(CONTROLLER_FILE, 'OrderController', 'class:OrderController', 'Class');
+
+    await processRoutesFromExtracted(graph, [makeRoute({ methodName: 'index' })], model);
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:index`));
+  });
+
+  it('non-PHP route file does not use case-insensitive controller method fallback', async () => {
+    const graph = createKnowledgeGraph();
+    const model = modelWithController(['index']);
+
+    await processRoutesFromExtracted(
+      graph,
+      [makeRoute({ filePath: 'routes/web.py', methodName: 'INDEX' })],
+      model,
+    );
+
+    const edges = routeCallsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0].targetId).toBe(generateId('Method', `${CONTROLLER_FILE}:INDEX`));
+    expect(edges[0].confidence).toBeCloseTo(0.5 * 0.8, 5);
+  });
+
   it('overloaded controller method → edge targets the first-registered definition', async () => {
     // Two same-name method definitions in the controller file (overloads).
     // The emitter takes lookupExactAll(...)[0] — first-registered wins, parity

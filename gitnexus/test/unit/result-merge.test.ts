@@ -170,7 +170,7 @@ describe('mergeResult', () => {
     expect(target.scopeExtractionFailures).toBeUndefined();
   });
 
-  it('unions phpRouterRequireBindings across sub-batches', () => {
+  it('unions routeRequireBindings across sub-batches', () => {
     const target = emptyResult();
     const first = {
       filePath: 'bootstrap/app.php',
@@ -200,10 +200,10 @@ describe('mergeResult', () => {
       appliesContext: true,
       unguarded: true,
     };
-    mergeResult(target, { ...emptyResult(), phpRouterRequireBindings: [first] });
+    mergeResult(target, { ...emptyResult(), routeRequireBindings: [first] });
     mergeResult(target, emptyResult());
-    mergeResult(target, { ...emptyResult(), phpRouterRequireBindings: [second] });
-    expect(target.phpRouterRequireBindings).toEqual([first, second]);
+    mergeResult(target, { ...emptyResult(), routeRequireBindings: [second] });
+    expect(target.routeRequireBindings).toEqual([first, second]);
   });
 
   it('merges failure sets larger than the JavaScript argument limit', () => {

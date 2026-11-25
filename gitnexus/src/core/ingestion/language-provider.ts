@@ -72,6 +72,31 @@ export interface RouteFrameworkAlias {
   readonly framework: string;
 }
 
+/**
+ * Cross-file router group/require binding emitted per file by a provider that
+ * composes route groups across included/required route files.
+ */
+export interface ExtractedRouteRequireBinding {
+  filePath: string;
+  /** Repo-relative path to the required route file (normalized slashes). */
+  requiredPath: string;
+  prefix: string | null;
+  namespace: string | null;
+  /** True when the group namespace resets outer group namespaces. */
+  namespaceResets: boolean;
+  middleware: string[];
+  namePrefix: string | null;
+  lineNumber: number;
+  /** Orders requires that share a line. */
+  column: number;
+  /** True for single-execution includes (`require_once` / `include_once`). */
+  once: boolean;
+  /** True inside a router group; false for a bare require, which loads the file as-is. */
+  appliesContext: boolean;
+  /** True only when the require runs whenever the code before it in the same host ran. */
+  unguarded: boolean;
+}
+
 /** User route configuration handed to provider route hooks on the main thread. */
 export interface RouteHookConfig {
   /** Declared router-framework aliases; empty when none are configured. */
@@ -674,8 +699,7 @@ interface LanguageProviderConfig {
     reader: (relativePath: string) => string | null,
     parser?: Parser | null,
   ) => ExtractedRoute[];
-  /**
-   * Extract routes from file text without an AST.
+  /** Extract routes from file text without an AST.
    *
    * Content-based (regex / line scan), not tree-sitter. tRPC uses this hook:
    * procedure routers are recognized from source text (`publicProcedure.query`)
@@ -685,6 +709,33 @@ interface LanguageProviderConfig {
    * Default: undefined (no text-route extraction).
    */
   readonly extractTextRoutes?: (filePath: string, content: string) => ExtractedRoute[];
+
+  /**
+   * Whether controller route handler method lookup falls back ASCII
+   * case-insensitively on exact miss or ambiguity (for languages with
+   * case-insensitive method dispatch).
+   */
+  readonly caseInsensitiveRouteMethods?: boolean;
+
+  /**
+   * Extract cross-file router group/require bindings from a parsed file
+   * (AST-based, worker-side).
+   */
+  readonly extractRouteRequireBindings?: (
+    tree: Parser.Tree,
+    filePath: string,
+    content: string,
+  ) => ExtractedRouteRequireBinding[];
+
+  /**
+   * Expand extracted routes with cross-file router group/require bindings
+   * collected across all files.
+   */
+  readonly applyRouteRequireContexts?: (
+    routes: readonly ExtractedRoute[],
+    files: Iterable<string>,
+    bindings: readonly ExtractedRouteRequireBinding[],
+  ) => ExtractedRoute[];
 
   /** Extract tool registrations after captures, using only emitted callable identities.
    * The map keys are declaration-name AST node IDs, local to this parsed tree. */

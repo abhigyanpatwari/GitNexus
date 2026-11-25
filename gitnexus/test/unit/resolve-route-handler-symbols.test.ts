@@ -618,6 +618,22 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
     expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
   });
 
+  it('uses case-insensitive fallback when a single unrelated same-name method exists in another class', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'Other', 'class:Other', 'Class');
+    model.symbols.add(CTRL, 'INDEX', 'method:Other.INDEX', 'Method', {
+      ownerId: 'class:Other',
+    });
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'INDEX' })], []);
+
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
+  });
+
   it('a case-insensitive match owned by another class is not stamped', () => {
     const model = createSemanticModel();
     model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
@@ -626,6 +642,34 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
     });
 
     const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'INDEX' })], []);
+
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+
+  it('an exact-case match owned by another class is not stamped', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:Helper.index', 'Method', {
+      ownerId: 'class:Helper',
+    });
+
+    const out = resolveRouteHandlerSymbols(model, [laravelRoute({ methodName: 'index' })], []);
+
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
+  });
+
+  it('non-PHP route file does not use case-insensitive controller method fallback', () => {
+    const model = createSemanticModel();
+    model.symbols.add(CTRL, 'OrderController', 'class:OrderController', 'Class');
+    model.symbols.add(CTRL, 'index', 'method:OrderController.index', 'Method', {
+      ownerId: 'class:OrderController',
+    });
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [laravelRoute({ filePath: 'routes/web.py', methodName: 'INDEX' })],
+      [],
+    );
 
     expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
   });

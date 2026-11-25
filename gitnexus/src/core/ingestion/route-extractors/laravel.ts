@@ -12,9 +12,9 @@ import {
   type ComposedRouteGroupContext,
   type PhpRouteReceiverKind,
   type RouteGroupContext,
-} from './php-route-group.js';
+} from '../languages/php/route-group.js';
 
-export type { RouteGroupContext, PhpRouteReceiverKind } from './php-route-group.js';
+export type { RouteGroupContext, PhpRouteReceiverKind } from '../languages/php/route-group.js';
 
 /** Group stack composed per receiver kind: Laravel and Lumen merge `as`/namespace differently. */
 type ComposedGroups = Readonly<Record<PhpRouteReceiverKind, ComposedRouteGroupContext>>;

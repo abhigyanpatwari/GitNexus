@@ -1,13 +1,13 @@
-import { isPhpRouteFile } from '../languages/php.js';
-import type { ExtractedRoute } from './laravel.js';
+import type { ExtractedRoute } from '../../route-extractors/laravel.js';
+import type { ExtractedRouteRequireBinding } from '../../language-provider.js';
 import {
   extendRouteGroupContext,
+  isPhpRouteFile,
   joinPhpRouteGroupNamespaces,
   mergeLumenRouteName,
   mergeRoutePrefixes,
   qualifyStringActionController,
-} from './php-route-group.js';
-import type { ExtractedPhpRouteRequireBinding } from './php-router-require-bindings.js';
+} from './route-group.js';
 
 export interface PhpRouteRequireContext {
   prefix: string | null;
@@ -35,7 +35,7 @@ const contextKey = (ctx: PhpRouteRequireContext): string =>
 
 function composeContext(
   outer: PhpRouteRequireContext,
-  binding: ExtractedPhpRouteRequireBinding,
+  binding: ExtractedRouteRequireBinding,
 ): PhpRouteRequireContext {
   if (!binding.appliesContext) return outer;
   const composed = extendRouteGroupContext(
@@ -59,8 +59,8 @@ function composeContext(
 }
 
 const compareBindingPosition = (
-  a: ExtractedPhpRouteRequireBinding,
-  b: ExtractedPhpRouteRequireBinding,
+  a: ExtractedRouteRequireBinding,
+  b: ExtractedRouteRequireBinding,
 ): number => a.lineNumber - b.lineNumber || a.column - b.column;
 
 /**
@@ -76,11 +76,11 @@ const compareBindingPosition = (
  */
 export function resolvePhpRouterRequireBindings(
   files: Iterable<string>,
-  bindings: readonly ExtractedPhpRouteRequireBinding[],
+  bindings: readonly ExtractedRouteRequireBinding[],
 ): Map<string, PhpRouteRequireContext[]> {
   const fileSet = new Set([...files].map((f) => f.replace(/\\/g, '/')));
 
-  const byHost = new Map<string, ExtractedPhpRouteRequireBinding[]>();
+  const byHost = new Map<string, ExtractedRouteRequireBinding[]>();
   for (const binding of bindings) {
     const host = binding.filePath.replace(/\\/g, '/');
     const list = byHost.get(host);
@@ -88,7 +88,7 @@ export function resolvePhpRouterRequireBindings(
     else byHost.set(host, [binding]);
   }
 
-  type Edge = { host: string; target: string; binding: ExtractedPhpRouteRequireBinding };
+  type Edge = { host: string; target: string; binding: ExtractedRouteRequireBinding };
   const edges: Edge[] = [];
   const required = new Set<string>();
   for (const host of [...byHost.keys()].sort()) {
@@ -201,7 +201,7 @@ function applyContext(route: ExtractedRoute, ctx: PhpRouteRequireContext): Extra
 export function applyPhpRouterRequireContexts(
   routes: readonly ExtractedRoute[],
   files: Iterable<string>,
-  bindings: readonly ExtractedPhpRouteRequireBinding[],
+  bindings: readonly ExtractedRouteRequireBinding[],
 ): ExtractedRoute[] {
   const contextsByFile = resolvePhpRouterRequireBindings(files, bindings);
   if (contextsByFile.size === 0) return [...routes];

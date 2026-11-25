@@ -105,7 +105,7 @@ import {
   templateArgumentsIdTag,
   templateConstraintsIdTag,
 } from '../utils/template-arguments.js';
-import type { LanguageProvider } from '../language-provider.js';
+import type { ExtractedRouteRequireBinding, LanguageProvider } from '../language-provider.js';
 import {
   mergeCanonicalDefinitionProperties,
   runDefinitionPropertiesExtractor,
@@ -118,11 +118,6 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
-import {
-  extractPhpRouterRequireBindings,
-  shouldExtractPhpRouterRequireBindings,
-  type ExtractedPhpRouteRequireBinding,
-} from '../route-extractors/php-router-require-bindings.js';
 import type { SharedSpringType } from '../route-extractors/spring-shared.js';
 import {
   collectFunctionCfgs,
@@ -505,10 +500,11 @@ export interface ParseWorkerResult {
    */
   routerModuleAliases?: ExtractedRouterModuleAlias[];
   /**
-   * Bootstrap `$app->router->group(..., require ...)` sites for cross-file
-   * Lumen prefix propagation. Optional for parse-cache backward compatibility.
+   * Bootstrap router-group require bindings for cross-file prefix propagation
+   * (e.g. Lumen `$app->router->group(..., require ...)`). Optional for parse-cache
+   * backward compatibility.
    */
-  phpRouterRequireBindings?: ExtractedPhpRouteRequireBinding[];
+  routeRequireBindings?: ExtractedRouteRequireBinding[];
   /**
    * Per-file Python module-level string constants (#2391). parse-impl aggregates
    * these into a repo-wide, file-path-keyed map and resolves each decorator
@@ -3135,12 +3131,11 @@ const processFileGroupFiles = (
       for (const r of extractedRoutes) result.routes.push(r);
     }
 
-    if (
-      language === SupportedLanguages.PHP &&
-      shouldExtractPhpRouterRequireBindings(file.content)
-    ) {
-      for (const binding of extractPhpRouterRequireBindings(tree, file.path)) {
-        (result.phpRouterRequireBindings ??= []).push(binding);
+    if (provider.extractRouteRequireBindings) {
+      const bindings = provider.extractRouteRequireBindings(tree, file.path, file.content);
+      if (bindings.length > 0) {
+        const target = (result.routeRequireBindings ??= []);
+        for (const binding of bindings) target.push(binding);
       }
     }
 

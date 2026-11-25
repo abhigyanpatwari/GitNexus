@@ -46,6 +46,14 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { phpVariableConfig } from '../variable-extractors/configs/php.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { phpCallConfig } from '../call-extractors/configs/php.js';
+import { isPhpRouteFile } from './php/route-group.js';
+import {
+  extractPhpRouterRequireBindings,
+  shouldExtractPhpRouterRequireBindings,
+} from './php/router-require-bindings.js';
+import { applyPhpRouterRequireContexts } from './php/router-require-context.js';
+
+export { isPhpRouteFile };
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -258,13 +266,6 @@ function phpDescriptionExtractor(
   return phpLeadingDocFallback(nodeLabel, nodeName, captureMap);
 }
 
-/** Detect Laravel/Lumen route files by path convention. */
-export function isPhpRouteFile(filePath: string): boolean {
-  return (
-    filePath.endsWith('.php') && (filePath.includes('/routes/') || filePath.startsWith('routes/'))
-  );
-}
-
 export const phpProvider = defineLanguage({
   rename: phpRenameProvider,
   id: SupportedLanguages.PHP,
@@ -314,6 +315,12 @@ export const phpProvider = defineLanguage({
   classExtractor: createClassExtractor(phpClassConfig),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
+  caseInsensitiveRouteMethods: true,
+  extractRouteRequireBindings: (tree, filePath, content) =>
+    shouldExtractPhpRouterRequireBindings(content)
+      ? extractPhpRouterRequireBindings(tree, filePath)
+      : [],
+  applyRouteRequireContexts: applyPhpRouterRequireContexts,
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────────────────
   emitScopeCaptures: emitPhpScopeCaptures,

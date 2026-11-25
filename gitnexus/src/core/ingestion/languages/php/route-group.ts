@@ -1,6 +1,13 @@
-import { normalizeQualifiedName } from '../utils/qualified-name.js';
+import { normalizeQualifiedName } from '../../utils/qualified-name.js';
 
 export type PhpRouteReceiverKind = 'lumen' | 'laravel';
+
+/** Detect Laravel/Lumen route files by path convention. */
+export function isPhpRouteFile(filePath: string): boolean {
+  return (
+    filePath.endsWith('.php') && (filePath.includes('/routes/') || filePath.startsWith('routes/'))
+  );
+}
 
 export interface RouteGroupContext {
   middleware: string[];
