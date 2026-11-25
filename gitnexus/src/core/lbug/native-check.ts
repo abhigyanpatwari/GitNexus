@@ -10,6 +10,17 @@ import { resolveVendoredFtsPath, resolveVendoredVectorPath } from './vendored-ex
 const NATIVE_LOAD_PROBE_TIMEOUT_MS = 15_000;
 
 /**
+ * Cap the throwaway probe database's max size so it does not inherit
+ * LadybugDB's default 8 TiB mmap reservation. Constrained environments
+ * (containers, CI runners, proot/Android) reject that reservation, so the
+ * probe reports FTS/VECTOR as unavailable even when `LOAD EXTENSION` works
+ * and `analyze`/`query` (which pin their own bounded size) are healthy.
+ * Deliberately a local const, not an `lbug-config` import: this module must
+ * stay loadable when the native addon is missing (see the probe note below).
+ */
+const PROBE_MAX_DB_SIZE = 1024 * 1024 * 1024;
+
+/**
  * Why the native check failed. A failed check is NOT necessarily a missing
  * binary — the package may be absent, the binary may be absent, a binary that is
  * right there may fail to load (host glibc too old, truncated download), or the
@@ -553,7 +564,7 @@ async function probeExtensionLoad(
   const probe = (async (): Promise<ExtensionProbeResult> => {
     try {
       const { default: lbug } = await import('@ladybugdb/core');
-      const db = new lbug.Database(':memory:');
+      const db = new lbug.Database(':memory:', 0, false, false, PROBE_MAX_DB_SIZE);
       // Nested finallys so `db` is closed even if the Connection ctor throws.
       try {
         const conn = new lbug.Connection(db);
