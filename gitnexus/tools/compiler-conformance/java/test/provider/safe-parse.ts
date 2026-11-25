@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, after } from 'node:test';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import Python from 'tree-sitter-python';
 
-import { after } from 'node:test';
 import { configureLoggerSink } from '../../../../../src/core/logger.js';
 const records: { level: number; file?: string; nullByteCount?: number; msg: string }[] = [];
 const restoreSink = configureLoggerSink({

@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../test/helpers/run-in-sequence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -23,7 +24,7 @@ export const springFixture = (name) => path.join(fixtures, 'java', name);
 
 export async function runtimeParseIdentity() {
   const artifact = new URL('../../../dist/core/run-analyze.js', import.meta.url);
-  const result = await resolveParseCacheIdentity(artifact.href);
+  const result = resolveParseCacheIdentity(artifact.href);
   assert.ok(result.ok, result.reason);
   return result.identity;
 }
@@ -83,7 +84,9 @@ export async function withIndexedBackend(name, seed, verify) {
         indexedAt: new Date().toISOString(),
         lastCommit: '',
       };
-      for (const statement of seed) await database.executeQuery(statement);
+      await runInSequence(seed, async (statement) => {
+        await database.executeQuery(statement);
+      });
       await database.flushWAL();
       await saveMeta(storage, metadata);
       await registerRepo(repo, metadata, { name, storagePath: storage });

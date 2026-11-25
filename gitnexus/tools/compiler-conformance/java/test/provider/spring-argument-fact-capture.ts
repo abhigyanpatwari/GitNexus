@@ -132,10 +132,9 @@ describe('Java non-HTTP handler annotation arguments', () => {
   });
 
   it('skips comments interleaved with annotation arguments', () => {
-    const commented = annotations
-      .flat()
-      .filter((annotation) => annotation.name === 'Scheduled')
-      .at(-1);
+    const scheduled = annotations.flat().filter((annotation) => annotation.name === 'Scheduled');
+    assert.ok(scheduled.length > 0);
+    const commented = scheduled.at(-1);
     assert.deepEqual(commented?.args, [{ name: 'cron', text: '"0 * * * * *"' }]);
   });
 });

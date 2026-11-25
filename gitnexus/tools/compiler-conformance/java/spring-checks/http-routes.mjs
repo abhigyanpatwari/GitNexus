@@ -53,7 +53,7 @@ async function verifyRoutes(root, expected) {
       handler.properties.name,
     ]);
   }
-  assert.deepEqual(actual.sort(compareRoutes), expected.toSorted(compareRoutes));
+  assert.deepEqual(actual.toSorted(compareRoutes), expected.toSorted(compareRoutes));
   return oracle;
 }
 

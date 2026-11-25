@@ -21,6 +21,27 @@ export function probeOwnership(
     'Template',
     'Namespace',
   ]);
+  function registerLegacyDefinitions(
+    files: Parameters<typeof reconcile>[0],
+    model: Parameters<typeof reconcile>[1],
+    ids: Set<string>,
+  ) {
+    for (const file of files)
+      for (const def of file.localDefs) {
+        if (def.ownerId !== undefined || ids.has(def.nodeId)) continue;
+        const name = simpleQualifiedName(def);
+        if (name === undefined) continue;
+        // Reproduce the pre-fix ownerless buckets, including their runtime
+        // undefined key despite the registry's string-only reader contract.
+        const owner = undefined as unknown as string;
+        if (['Property', 'Variable', 'Const', 'Static'].includes(def.type))
+          model.fields.register(owner, name, def);
+        else if (types.has(def.type)) model.types.registerByOwner(owner, name, def);
+        else continue;
+        ids.add(def.nodeId);
+        probe.registrations++;
+      }
+  }
   return (...args: Parameters<typeof reconcileOwnership>) => {
     const [files, model] = args;
     let ids = seen.get(model);
@@ -38,22 +59,7 @@ export function probeOwnership(
     // The probe is installed first: reconciliation's own duplicate checks
     // are registry readers too, and must be counted.
     const stats = reconcileOwnership(...args);
-    if (probe.legacy)
-      for (const file of files)
-        for (const def of file.localDefs) {
-          if (def.ownerId !== undefined || ids.has(def.nodeId)) continue;
-          const name = simpleQualifiedName(def);
-          if (name === undefined) continue;
-          // Reproduce the pre-fix ownerless buckets, including their runtime
-          // undefined key despite the registry's string-only reader contract.
-          const owner = undefined as unknown as string;
-          if (['Property', 'Variable', 'Const', 'Static'].includes(def.type))
-            model.fields.register(owner, name, def);
-          else if (types.has(def.type)) model.types.registerByOwner(owner, name, def);
-          else continue;
-          ids.add(def.nodeId);
-          probe.registrations++;
-        }
+    if (probe.legacy) registerLegacyDefinitions(files, model, ids);
     return stats;
   };
 }

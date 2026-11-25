@@ -6,8 +6,7 @@
  * call-resolution path.
  */
 
-import type { ParsedFile, TypeRef } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { SupportedLanguages, type ParsedFile, type TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
@@ -19,7 +18,7 @@ import {
   namesAtScope,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
-import { getJavaPackageFact } from './package-facts.js';
+import { clearJavaPackageFacts, getJavaPackageFact } from './package-facts.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { createChainFollower } from '../../scope-resolution/passes/imported-return-types.js';
@@ -68,7 +67,6 @@ import {
   applyJavaCaptureSideChannel,
   clearJavaClassAnnotationFacts,
 } from './capture-side-channel.js';
-import { clearJavaPackageFacts } from './package-facts.js';
 import {
   resolveJavaConstructorCall,
   populateJavaIterableBindings,

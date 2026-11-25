@@ -341,12 +341,14 @@ export async function verifyAop() {
   // matches unqualified wildcard type patterns by owner simple name
 
   const withinAdvice = nodeNamed('simpleNameWithinAdvice');
-  const withinTargets = advisedBy
-    .filter((relationship) => relationship.targetId === withinAdvice?.id)
-    .map((relationship) => result.graph.getNode(relationship.sourceId)?.properties.name);
-  assert.ok(withinTargets.includes('plainOperation'));
-  assert.ok(withinTargets.includes('kotlinCachedOperation'));
-  assert.ok(!withinTargets.includes('kotlinInterfaceInheritedTransaction'));
+  const withinTargets = new Set(
+    advisedBy
+      .filter((relationship) => relationship.targetId === withinAdvice?.id)
+      .map((relationship) => result.graph.getNode(relationship.sourceId)?.properties.name),
+  );
+  assert.ok(withinTargets.has('plainOperation'));
+  assert.ok(withinTargets.has('kotlinCachedOperation'));
+  assert.ok(!withinTargets.has('kotlinInterfaceInheritedTransaction'));
   const executionAdvice = nodeNamed('simpleNameExecutionAdvice');
   const executionTargets = advisedBy
     .filter((relationship) => relationship.targetId === executionAdvice?.id)

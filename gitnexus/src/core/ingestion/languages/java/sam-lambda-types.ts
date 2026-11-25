@@ -963,8 +963,7 @@ export function selectJavaLambdaOverload(
   if (index === undefined || filePath === undefined) return decision;
   const arities = index.lambdaCalls.get(lambdaCallKey(filePath, site.atRange));
   const call = getJavaOverloadCall(filePath, site.atRange, site.name);
-  if (arities === undefined || call === undefined || call.arguments.length !== arities.length)
-    return decision;
+  if (arities === undefined || call?.arguments.length !== arities.length) return decision;
   const lambdas: number[] = [];
   for (const arity of arities) {
     if (arity === undefined) return decision;

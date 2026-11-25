@@ -4,50 +4,63 @@ import assert from 'node:assert/strict';
 import { runPipelineFromRepo } from '../../../../dist/core/ingestion/pipeline.js';
 import { getRelationships, springProject } from '../spring-support.mjs';
 import { isDeepStrictEqual } from 'node:util';
+
+/**
+ * End-to-end pipeline coverage for Spring DI collection injection (#2200).
+ * Real Java sources run through the ACTUAL pipeline (parse worker → field
+ * extraction → heritage → `di` phase): an `@Autowired List<IFoo>` field must
+ * yield a Property node carrying the extraction contract
+ * (`declaredType`/`rawDeclaredType`/`annotations`) and exactly one INJECTS
+ * edge per implementer of `IFoo` — while a non-annotated collection field of
+ * the very same type contributes nothing. Both prior no-op incarnations of
+ * this feature (stripped `declaredType` only; no annotation gate) fail here.
+ */
+
+/** A consumer whose collection fields carry NO injection annotation. */
+
+function findProperty(result, name) {
+  let found;
+  result.graph.forEachNode((n) => {
+    if (n.label === 'Property' && n.properties.name === name) found = n;
+  });
+  if (!found) throw new Error(`Consumer.${name} should be a Property node`);
+  return found;
+}
+
+/** All INJECTS edges as sorted `sourceName->targetName` pairs (set-equality food). */
+function injectsPairs(result) {
+  const nameById = new Map();
+  result.graph.forEachNode((n) => nameById.set(n.id, String(n.properties.name)));
+  return result.graph.relationships
+    .filter((r) => r.type === 'INJECTS')
+    .map((r) => `${nameById.get(r.sourceId)}->${nameById.get(r.targetId)}`)
+    .sort(compareCodeUnits);
+}
+
+function injectsDetails(result) {
+  const nameById = new Map();
+  result.graph.forEachNode((node) => nameById.set(node.id, String(node.properties.name)));
+  return result.graph.relationships
+    .filter((relationship) => relationship.type === 'INJECTS')
+    .map((relationship) => ({
+      pair: `${nameById.get(relationship.sourceId)}->${nameById.get(relationship.targetId)}`,
+      confidence: relationship.confidence,
+      reason: relationship.reason,
+    }))
+    .sort((left, right) => left.pair.localeCompare(right.pair));
+}
+
+function injectionEdges(result) {
+  return getRelationships(result, 'INJECTS').map((edge) => ({
+    source: edge.source,
+    target: edge.target,
+    type: edge.rel.type,
+    confidence: edge.rel.confidence,
+    reason: edge.rel.reason,
+  }));
+}
+
 export async function verifyDi() {
-  /**
-   * End-to-end pipeline coverage for Spring DI collection injection (#2200).
-   * Real Java sources run through the ACTUAL pipeline (parse worker → field
-   * extraction → heritage → `di` phase): an `@Autowired List<IFoo>` field must
-   * yield a Property node carrying the extraction contract
-   * (`declaredType`/`rawDeclaredType`/`annotations`) and exactly one INJECTS
-   * edge per implementer of `IFoo` — while a non-annotated collection field of
-   * the very same type contributes nothing. Both prior no-op incarnations of
-   * this feature (stripped `declaredType` only; no annotation gate) fail here.
-   */
-
-  /** A consumer whose collection fields carry NO injection annotation. */
-
-  function findProperty(result, name) {
-    let found;
-    result.graph.forEachNode((n) => {
-      if (n.label === 'Property' && n.properties.name === name) found = n;
-    });
-    if (!found) throw new Error(`Consumer.${name} should be a Property node`);
-    return found;
-  }
-
-  /** All INJECTS edges as sorted `sourceName->targetName` pairs (set-equality food). */
-  function injectsPairs(result) {
-    const nameById = new Map();
-    result.graph.forEachNode((n) => nameById.set(n.id, String(n.properties.name)));
-    return result.graph.relationships
-      .filter((r) => r.type === 'INJECTS')
-      .map((r) => `${nameById.get(r.sourceId)}->${nameById.get(r.targetId)}`)
-      .sort(compareCodeUnits);
-  }
-  function injectsDetails(result) {
-    const nameById = new Map();
-    result.graph.forEachNode((node) => nameById.set(node.id, String(node.properties.name)));
-    return result.graph.relationships
-      .filter((relationship) => relationship.type === 'INJECTS')
-      .map((relationship) => ({
-        pair: `${nameById.get(relationship.sourceId)}->${nameById.get(relationship.targetId)}`,
-        confidence: relationship.confidence,
-        reason: relationship.reason,
-      }))
-      .sort((left, right) => left.pair.localeCompare(right.pair));
-  }
   // Spring DI collection-injection pipeline (#2200)
   {
     const dir = springProject('collection-injection');
@@ -248,15 +261,6 @@ export async function verifyDi() {
   }
 }
 export async function verifyDynamicLookup() {
-  function injectionEdges(result) {
-    return getRelationships(result, 'INJECTS').map((edge) => ({
-      source: edge.source,
-      target: edge.target,
-      type: edge.rel.type,
-      confidence: edge.rel.confidence,
-      reason: edge.rel.reason,
-    }));
-  }
   // Spring dynamic lookup production integration
 
   // resolves Java imports, assignability, concrete targets, ranges, and nested callables

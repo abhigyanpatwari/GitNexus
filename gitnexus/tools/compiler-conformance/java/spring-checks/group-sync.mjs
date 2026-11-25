@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import { compareCodeUnits } from '../../compare.mjs';
 import assert from 'node:assert/strict';
 import { cp, mkdir } from 'node:fs/promises';
@@ -15,7 +16,7 @@ async function syncProjects(projects, detect, verify) {
   process.env.GITNEXUS_HOME = tmp.dbPath;
   const repos = {};
   try {
-    for (const [group, fixtures] of Object.entries(projects)) {
+    await runInSequence(Object.entries(projects), async ([group, fixtures]) => {
       const name = path.basename(group);
       const repo = path.join(tmp.dbPath, 'repos', name);
       const storage = path.join(repo, '.gitnexus');
@@ -31,7 +32,7 @@ async function syncProjects(projects, detect, verify) {
       await saveMeta(storage, metadata);
       await registerRepo(repo, metadata, { name, storagePath: storage });
       repos[group] = name;
-    }
+    });
     const result = await syncGroup(
       {
         version: 1,
@@ -59,7 +60,9 @@ async function syncProjects(projects, detect, verify) {
     await verify(result);
   } finally {
     try {
-      for (const name of Object.values(repos)) await pool.closeLbug(name);
+      await runInSequence(Object.values(repos), async (name) => {
+        await pool.closeLbug(name);
+      });
     } finally {
       if (previous === undefined) delete process.env.GITNEXUS_HOME;
       else process.env.GITNEXUS_HOME = previous;

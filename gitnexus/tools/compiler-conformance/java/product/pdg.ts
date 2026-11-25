@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import assert from 'node:assert/strict';
 import { copyFile, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -57,10 +58,10 @@ it('default and disabled Java PDG match the recorded graph', { timeout: 90_000 }
     relationships: 46,
     symbols: 27,
   };
-  for (const opts of [workers, { ...workers, pdg: false }]) {
+  await runInSequence([workers, { ...workers, pdg: false }], async (opts) => {
     const run = await runPipelineFromRepo(await fixture(t), () => {}, opts);
     assert.deepEqual(graphDigest(run), expected);
-  }
+  });
 });
 it(
   'preserves every Java PDG row when heap pressure spills the scope index',

@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import assert from 'node:assert/strict';
 import { Session } from 'node:inspector/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -34,34 +35,43 @@ export async function verifyLargeJavaInputsUseSafeParsing() {
     (_, i) =>
       '    public String helper' + i + '() { return "padding-' + i + '-aaaaaaaaaaaaaaaaaaa"; }\n',
   ).join('');
-  for (const [Extractor, name, header, files] of [
-    [HttpRouteExtractor, 'BigController', '@RestController\npublic class BigController {', {}],
+  await runInSequence(
     [
-      ThriftExtractor,
-      'BigClient',
-      'import billing.v1.OrderService;\npublic class BigClient {\n  private OrderService.Iface client;',
       {
-        'idl/order.thrift':
-          'namespace java billing.v1\nservice OrderService {\n  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)\n}',
+        Extractor: HttpRouteExtractor,
+        name: 'BigController',
+        header: '@RestController\npublic class BigController {',
+        files: {},
+      },
+      {
+        Extractor: ThriftExtractor,
+        name: 'BigClient',
+        header:
+          'import billing.v1.OrderService;\npublic class BigClient {\n  private OrderService.Iface client;',
+        files: {
+          'idl/order.thrift':
+            'namespace java billing.v1\nservice OrderService {\n  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)\n}',
+        },
       },
     ],
-  ]) {
-    const root = await mkdtemp(path.join(os.tmpdir(), 'java-large-extractor-'));
-    try {
-      const source = 'package com.example;\n' + header + '\n' + padding + '}\n';
-      assert.ok(source.length > 40_000);
-      writeFixtureRepo(root, { ...files, ['src/' + name + '.java']: source });
-      const calls = await measureSafeParses(() =>
-        new Extractor().extract(null, root, {
-          id: 'large-input',
-          path: name,
-          repoPath: root,
-          storagePath: path.join(root, '.gitnexus'),
-        }),
-      );
-      assert.ok(calls > 0, Extractor.name + ' must call parseSourceSafe for a large source');
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  }
+    async ({ Extractor, name, header, files }) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), 'java-large-extractor-'));
+      try {
+        const source = 'package com.example;\n' + header + '\n' + padding + '}\n';
+        assert.ok(source.length > 40_000);
+        writeFixtureRepo(root, { ...files, ['src/' + name + '.java']: source });
+        const calls = await measureSafeParses(() =>
+          new Extractor().extract(null, root, {
+            id: 'large-input',
+            path: name,
+            repoPath: root,
+            storagePath: path.join(root, '.gitnexus'),
+          }),
+        );
+        assert.ok(calls > 0, Extractor.name + ' must call parseSourceSafe for a large source');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
 }

@@ -285,7 +285,8 @@ describe('Java lossless overload argument facts', () => {
 
   it('keeps same-start chained call sites distinct through a plain-data round trip', () => {
     const facts = capture('class A { void run(Long id) { lookup.find(id).get(id); } }');
-    const restored: unknown = JSON.parse(JSON.stringify(facts));
+    const wire = JSON.stringify(facts);
+    const restored: unknown = JSON.parse(wire);
     assert.equal(isJavaOverloadFileFacts(restored), true);
     setJavaOverloadFacts('A.java', restored as typeof facts);
     for (const call of facts.calls)
@@ -339,7 +340,8 @@ describe('Java lossless overload argument facts', () => {
         { name: 'count', parameterTypes: ['int'], modifiers: [] },
       ],
     );
-    assert.equal(isJavaOverloadFileFacts(JSON.parse(JSON.stringify(facts))), true);
+    const wire = JSON.stringify(facts);
+    assert.equal(isJavaOverloadFileFacts(JSON.parse(wire)), true);
   });
 
   it('does not synthesize accessor facts for malformed record component names', () => {
@@ -383,7 +385,8 @@ describe('Java lossless overload argument facts', () => {
     const facts = capture('public class A {}');
     const { modifiers: _modifiers, ...olderType } = facts.types[0]!;
     assert.equal(isJavaOverloadFileFacts({ ...facts, types: [olderType] }), true);
-    assert.equal(isJavaOverloadFileFacts(JSON.parse(JSON.stringify(facts))), true);
+    const wire = JSON.stringify(facts);
+    assert.equal(isJavaOverloadFileFacts(JSON.parse(wire)), true);
     assert.equal(
       isJavaOverloadFileFacts({ ...facts, types: [{ ...olderType, modifiers: null }] }),
       false,

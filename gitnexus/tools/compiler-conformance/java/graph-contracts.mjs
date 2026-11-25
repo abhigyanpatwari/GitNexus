@@ -1,11 +1,6 @@
 import { compareCodeUnits } from '../compare.mjs';
-import { copyResolutionProject } from './graph-observations.mjs';
-import assert from 'node:assert/strict';
-import path from 'path';
-import fs from 'node:fs';
-import os from 'node:os';
-import { _captureLogger } from '../../../dist/core/logger.js';
 import {
+  copyResolutionProject,
   FIXTURES,
   getRelationships,
   getNodesByLabel,
@@ -15,6 +10,11 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
 } from './graph-observations.mjs';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { _captureLogger } from '../../../dist/core/logger.js';
 function compareParameterTypes(left, right) {
   const sharedLength = Math.min(left.length, right.length);
   for (let i = 0; i < sharedLength; i++) {
@@ -54,9 +54,9 @@ async function verifyJavaAmbiguousSymbolResolution() {
   // import edges point to models/ not other/
   {
     const imports = getRelationships(result, 'IMPORTS');
-    const targets = imports.map((e) => e.target).sort(compareCodeUnits);
-    assert.ok(targets.includes('Handler.java'));
-    assert.ok(targets.includes('Processor.java'));
+    const targets = new Set(imports.map((e) => e.target));
+    assert.ok(targets.has('Handler.java'));
+    assert.ok(targets.has('Processor.java'));
     for (const imp of imports) {
       assert.match(imp.targetFilePath, /^models\//);
     }
@@ -215,25 +215,20 @@ async function verifyJavaOnDemandImportEdges() {
       .map((edge) => edge.targetFilePath.replace('com/example/models/', ''))
       .sort(compareCodeUnits);
   // keeps the files a type-only use names — the edge is their only trace
-  {
-    assert.deepEqual(importsOf('TypeOnly.java'), [
-      'Audited.java',
-      'BizException.java',
-      'User.java',
-    ]);
-  }
+
+  assert.deepEqual(importsOf('TypeOnly.java'), ['Audited.java', 'BizException.java', 'User.java']);
+
   // emits no edge for a wildcard import the file never uses
-  {
-    assert.deepEqual(importsOf('Unused.java'), []);
-  }
+
+  assert.deepEqual(importsOf('Unused.java'), []);
+
   // keeps the type a static wildcard import names
-  {
-    assert.deepEqual(importsOf('StaticUser.java'), ['Utils.java']);
-  }
+
+  assert.deepEqual(importsOf('StaticUser.java'), ['Utils.java']);
+
   // keeps an explicit import whether or not its type is used
-  {
-    assert.deepEqual(importsOf('Explicit.java'), ['Order.java']);
-  }
+
+  assert.deepEqual(importsOf('Explicit.java'), ['Order.java']);
 }
 async function verifyJavaRecordMethodResolution2564() {
   let result;
@@ -724,10 +719,12 @@ async function verifyJavaMethodEnrichment() {
   // emits HAS_METHOD edges for Animal methods
   {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const animalMethods = hasMethod.filter((e) => e.source === 'Animal').map((e) => e.target);
-    assert.ok(animalMethods.includes('speak'));
-    assert.ok(animalMethods.includes('classify'));
-    assert.ok(animalMethods.includes('breathe'));
+    const animalMethods = new Set(
+      hasMethod.filter((e) => e.source === 'Animal').map((e) => e.target),
+    );
+    assert.ok(animalMethods.has('speak'));
+    assert.ok(animalMethods.has('classify'));
+    assert.ok(animalMethods.has('breathe'));
   }
   // emits HAS_METHOD edge for Dog.speak
   {
@@ -906,9 +903,9 @@ async function verifyCrossClassMethodChainResolutionJava575() {
     () => {},
   );
   // detects classes: Address, App, City, User
-  {
-    assert.deepEqual(getNodesByLabel(result, 'Class'), ['Address', 'App', 'City', 'User']);
-  }
+
+  assert.deepEqual(getNodesByLabel(result, 'Class'), ['Address', 'App', 'City', 'User']);
+
   // two-step chain: user.getAddress().save() → Address#save
   {
     const calls = getRelationships(result, 'CALLS');
@@ -953,16 +950,15 @@ async function verifyJavaCastReceiverResolution() {
   let result;
   result = await runPipelineFromRepo(path.join(FIXTURES, 'java-cast-receiver'), () => {});
   // detects the caller plus target and decoy classes
-  {
-    assert.deepEqual(getNodesByLabel(result, 'Class'), [
-      'App',
-      'Box',
-      'Fallback',
-      'Shape',
-      'Target',
-      'Wrapper',
-    ]);
-  }
+
+  assert.deepEqual(getNodesByLabel(result, 'Class'), [
+    'App',
+    'Box',
+    'Fallback',
+    'Shape',
+    'Target',
+    'Wrapper',
+  ]);
 
   // does not emit an open() edge to the decoy Wrapper
   {
@@ -1005,21 +1001,21 @@ async function verifyJavaUnparseableCastReceiverResolution() {
       .filter((c) => c.source === source && c.target === target)
       .map((c) => `${c.source} \u2192 ${c.target} @ ${c.targetFilePath}`);
   // emits no open() edge for a generic cast ((Box<String>) obj) — declared-type decoy Wrapper
-  {
-    assert.deepEqual(callTargets('castGeneric', 'open'), []);
-  }
+
+  assert.deepEqual(callTargets('castGeneric', 'open'), []);
+
   // emits no act2() edge for an array cast ((Box[]) obj) — declared-type decoy Wrapper
-  {
-    assert.deepEqual(callTargets('castArray', 'act2'), []);
-  }
+
+  assert.deepEqual(callTargets('castArray', 'act2'), []);
+
   // emits no act3() edge for a fully-qualified cast ((models.Box) obj) — declared-type decoy Wrapper
-  {
-    assert.deepEqual(callTargets('castQualified', 'act3'), []);
-  }
+
+  assert.deepEqual(callTargets('castQualified', 'act3'), []);
+
   // emits no act4() edge for a generic-FQN cast over this.field — field declared-type decoy Shape
-  {
-    assert.deepEqual(callTargets('castGenericFqnThisField', 'act4'), []);
-  }
+
+  assert.deepEqual(callTargets('castGenericFqnThisField', 'act4'), []);
+
   // leaves a non-cast parenthesized receiver untouched — no crash, no fabricated edge
   {
     const fromNonCast = getRelationships(result, 'CALLS')
@@ -1093,9 +1089,9 @@ async function verifyJavaAnonymousClassInstanceIdentity2550() {
   let result;
   result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anonymous-class-scope'), () => {});
   // emits a Class node Worker$1 for the anonymous Runnable body
-  {
-    assert.ok(getNodesByLabel(result, 'Class').includes('Worker$1'));
-  }
+
+  assert.ok(getNodesByLabel(result, 'Class').includes('Worker$1'));
+
   // re-keys the anonymous run method to Worker$1.run and owns it via HAS_METHOD
   {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
@@ -1107,9 +1103,9 @@ async function verifyJavaAnonymousClassInstanceIdentity2550() {
     assert.notEqual(owned, undefined);
   }
   // still extracts the anonymous Runnable method as a Method
-  {
-    assert.ok(getNodesByLabel(result, 'Method').includes('run'));
-  }
+
+  assert.ok(getNodesByLabel(result, 'Method').includes('run'));
+
   // resolves handler.run() to Worker$1.run via the receiver path, not the free-call leak
   {
     const calls = getRelationships(result, 'CALLS');

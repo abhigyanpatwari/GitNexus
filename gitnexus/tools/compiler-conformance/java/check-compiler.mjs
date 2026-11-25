@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../test/helpers/run-in-sequence.mjs';
 import assert from 'node:assert/strict';
 import { globSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -41,7 +42,7 @@ try {
   let totalBinarySites = 0;
   let totalMemberReferences = 0;
   const failures = [];
-  for (const [i, fixture] of fixtures.entries()) {
+  await runInSequence(fixtures.entries(), async ([i, fixture]) => {
     try {
       const ref = qualifiedJavacReport(references[i]);
       if (fixture.rejectedConstructors) {
@@ -114,7 +115,7 @@ try {
     } catch (error) {
       failures.push(new Error(fixture.name, { cause: error }));
     }
-  }
+  });
   if (failures.length)
     throw new AggregateError(failures, `${failures.length} Java conformance fixtures failed`);
   console.log(

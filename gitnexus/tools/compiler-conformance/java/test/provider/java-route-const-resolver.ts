@@ -261,29 +261,17 @@ describe('resolveJavaConstant end-to-end (real repo shapes)', () => {
 describe('parseJavaConstOperands', () => {
   it('parses a bare identifier ref', () => {
     const tree = parse(`package p; public class C { static final String X = Y; }`);
-    let valueNode: Parser.SyntaxNode | null = null;
-    const walk = (n: Parser.SyntaxNode): void => {
-      if (n.type === 'variable_declarator') {
-        const v = n.childForFieldName('value');
-        if (v) valueNode = v;
-      }
-      for (const c of n.children ?? []) walk(c);
-    };
-    walk(tree.rootNode);
+    const valueNode =
+      tree.rootNode.descendantsOfType('variable_declarator').at(-1)?.childForFieldName('value') ??
+      null;
     assert.deepEqual(parseJavaConstOperands(valueNode), [{ kind: 'ref', name: 'Y' }]);
   });
 
   it('parses left-associative + chains', () => {
     const tree = parse(`package p; public class C { static final String X = A + "/b" + C; }`);
-    let valueNode: Parser.SyntaxNode | null = null;
-    const walk = (n: Parser.SyntaxNode): void => {
-      if (n.type === 'variable_declarator') {
-        const v = n.childForFieldName('value');
-        if (v) valueNode = v;
-      }
-      for (const c of n.children ?? []) walk(c);
-    };
-    walk(tree.rootNode);
+    const valueNode =
+      tree.rootNode.descendantsOfType('variable_declarator').at(-1)?.childForFieldName('value') ??
+      null;
     assert.deepEqual(parseJavaConstOperands(valueNode), [
       { kind: 'ref', name: 'A' },
       { kind: 'literal', value: '/b' },
@@ -295,15 +283,9 @@ describe('parseJavaConstOperands', () => {
     const tree = parse(
       `package p; public class C { static final String X = String.format("%s", a); }`,
     );
-    let valueNode: Parser.SyntaxNode | null = null;
-    const walk = (n: Parser.SyntaxNode): void => {
-      if (n.type === 'variable_declarator') {
-        const v = n.childForFieldName('value');
-        if (v) valueNode = v;
-      }
-      for (const c of n.children ?? []) walk(c);
-    };
-    walk(tree.rootNode);
+    const valueNode =
+      tree.rootNode.descendantsOfType('variable_declarator').at(-1)?.childForFieldName('value') ??
+      null;
     assert.equal(parseJavaConstOperands(valueNode), null);
   });
 });
@@ -534,10 +516,10 @@ describe('escaped characters survive folding (review P1)', () => {
   // `{id:d+}` and a pure-escape literal folded to ''. Worse, the LITERAL path
   // keeps escapes verbatim, so one Java route had two spellings.
   const cases = [
-    ['"/user/{id:\\d+}"', '/user/{id:\\d+}'],
-    ['"/a\\tb"', '/a\\tb'],
-    ['"/a\\u002Fb"', '/a\\u002Fb'],
-    ['"\\t"', '\\t'],
+    [String.raw`"/user/{id:\d+}"`, String.raw`/user/{id:\d+}`],
+    [String.raw`"/a\tb"`, String.raw`/a\tb`],
+    [String.raw`"/a\u002Fb"`, String.raw`/a\u002Fb`],
+    [String.raw`"\t"`, String.raw`\t`],
     ['""', ''],
     ['"/plain"', '/plain'],
   ] as const;
@@ -1012,10 +994,10 @@ public class ApiPaths { public static final String SAVE = "/api/v1/save"; }`,
 
 describe('resolveJavaImport POSIX key compare', () => {
   it('matches a backslash-keyed Windows repo path', () => {
-    const keys = new Set(['src\\main\\java\\com\\x\\ApiPath.java']);
+    const keys = new Set([String.raw`src\main\java\com\x\ApiPath.java`]);
     assert.equal(
-      resolveJavaImport('a\\A.java', 'com.x.ApiPath', keys),
-      'src\\main\\java\\com\\x\\ApiPath.java',
+      resolveJavaImport(String.raw`a\A.java`, 'com.x.ApiPath', keys),
+      String.raw`src\main\java\com\x\ApiPath.java`,
     );
   });
 });

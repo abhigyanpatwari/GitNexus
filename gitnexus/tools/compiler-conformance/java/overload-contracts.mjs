@@ -1,11 +1,15 @@
 import { compareCodeUnits } from '../compare.mjs';
-import { copyResolutionProject } from './graph-observations.mjs';
+import {
+  copyResolutionProject,
+  FIXTURES,
+  getRelationships,
+  getResolutionOutcomes,
+} from './graph-observations.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
-import { FIXTURES, getRelationships, getResolutionOutcomes } from './graph-observations.mjs';
 function targets(result, caller, method) {
   return getRelationships(result, 'CALLS')
     .filter((edge) => edge.source === caller && edge.target === method)
@@ -14,29 +18,28 @@ function targets(result, caller, method) {
 }
 async function verifyRecordsUnresolvedReceiversOnceAcrossReplayWithoutMerging() {
   // records unresolved receivers once across replay without merging distinct sites
-  {
-    const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-receiver-replay-'));
-    try {
-      copyResolutionProject(root, 'replayed-receiver-sites');
-      const result = await runPipelineFromRepo(root, () => {});
-      const drops = getResolutionOutcomes(result)
-        .filter((outcome) => outcome.kind === 'suppressed')
-        .filter((outcome) => outcome.reason === 'receiver-unresolved');
-      assert.equal(drops.filter((outcome) => outcome.name === 'println').length, 2);
-      assert.equal(
-        drops.filter((outcome) => outcome.name === 'value' && outcome.siteKind === 'call').length,
-        2,
-      );
-      const identities = drops.map((outcome) =>
-        JSON.stringify([outcome.filePath, outcome.range, outcome.siteKind, outcome.name]),
-      );
-      assert.equal(new Set(identities).size, drops.length);
-    } finally {
-      rmSync(root, {
-        recursive: true,
-        force: true,
-      });
-    }
+
+  const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-java-receiver-replay-'));
+  try {
+    copyResolutionProject(root, 'replayed-receiver-sites');
+    const result = await runPipelineFromRepo(root, () => {});
+    const drops = getResolutionOutcomes(result)
+      .filter((outcome) => outcome.kind === 'suppressed')
+      .filter((outcome) => outcome.reason === 'receiver-unresolved');
+    assert.equal(drops.filter((outcome) => outcome.name === 'println').length, 2);
+    assert.equal(
+      drops.filter((outcome) => outcome.name === 'value' && outcome.siteKind === 'call').length,
+      2,
+    );
+    const identities = drops.map((outcome) =>
+      JSON.stringify([outcome.filePath, outcome.range, outcome.siteKind, outcome.name]),
+    );
+    assert.equal(new Set(identities).size, drops.length);
+  } finally {
+    rmSync(root, {
+      recursive: true,
+      force: true,
+    });
   }
 }
 async function verifyJavaImportedOverloadsAndDeclaredDispatchBounds() {
@@ -149,10 +152,9 @@ async function verifyJavaCompileTimeOverloadFamilies() {
       );
     }
     // uses the selected interface declaration return despite a covariant implementation return
-    {
-      assert.ok(targets(result, 'interfaceReturn', 'run').includes('Method:Cases.java:A.run#0'));
-      assert.ok(!targets(result, 'interfaceReturn', 'run').includes('Method:Cases.java:B.run#0'));
-    }
+
+    assert.ok(targets(result, 'interfaceReturn', 'run').includes('Method:Cases.java:A.run#0'));
+    assert.ok(!targets(result, 'interfaceReturn', 'run').includes('Method:Cases.java:B.run#0'));
   } finally {
     rmSync(root, {
       recursive: true,

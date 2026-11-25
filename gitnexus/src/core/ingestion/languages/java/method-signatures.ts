@@ -40,6 +40,15 @@ const callableKinds = new Set([
 ]);
 const suffixesByTree = new WeakMap<SyntaxNode['tree'], Map<number, Map<number, string>>>();
 
+function variadicGraphSuffix(signatureSource: SyntaxNode): string {
+  const signature = parameterTypes(signatureSource, javaTypeText).slice(0, -1); // drop the varargs marker
+  // Type variables with the same written name can have different erasures.
+  // Preserve their declared bounds in the identity of a generic overload.
+  const variables = signatureSource.childForFieldName('type_parameters');
+  const bounds = variables ? stripGaps(javaTypeTextWithoutTrivia(variables)) : '';
+  return `#${signature.length}~${signature.join(',')}...${bounds}`;
+}
+
 /** Variadic invocation arity is open, so all variadics with the same name
  * normally share an unsuffixed graph ID. Only split actual collisions. */
 function buildJavaVariadicGraphIds(body: SyntaxNode): Map<number, string> {
@@ -63,12 +72,7 @@ function buildJavaVariadicGraphIds(body: SyntaxNode): Map<number, string> {
   for (const group of groups.values()) {
     if (group.length < 2) continue;
     for (const { id, signatureSource } of group) {
-      const signature = parameterTypes(signatureSource, javaTypeText).slice(0, -1); // drop the varargs marker
-      // Type variables with the same written name can have different erasures.
-      // Preserve their declared bounds in the identity of a generic overload.
-      const variables = signatureSource.childForFieldName('type_parameters');
-      const bounds = variables ? stripGaps(javaTypeTextWithoutTrivia(variables)) : '';
-      suffixes.set(id, `#${signature.length}~${signature.join(',')}...${bounds}`);
+      suffixes.set(id, variadicGraphSuffix(signatureSource));
     }
   }
   return suffixes;

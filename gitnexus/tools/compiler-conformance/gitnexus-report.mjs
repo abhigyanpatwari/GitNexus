@@ -26,11 +26,7 @@ function siteTargetKey({ file, start, end }, target) {
   return JSON.stringify([file, start, end, target]);
 }
 
-export function gitNexusCallReport(
-  result,
-  { names, ambiguousReasons = [], excludeEdgeReasons = [], typeCaller },
-) {
-  const selected = new Set(names);
+function selectedDeclarations(result, selected) {
   const declarations = new Map();
   for (const node of result.graph.nodes) {
     const { name, startLine, startColumn } = node.properties;
@@ -40,49 +36,63 @@ export function gitNexusCallReport(
     declarations.set(`def:${location}:${node.label}:${name}`, location);
   }
 
-  const sites = [];
-  const classifiedTargets = new Set();
-  const unpublishedOverloads = new Set();
-  for (const outcome of result.resolutionOutcomes) {
-    if (!selected.has(outcome.name) || !outcome.range) continue;
-    if (outcome.siteKind && outcome.siteKind !== 'call') continue;
-    const { startLine, startCol, endLine, endCol } = outcome.range;
-    const site = {
-      file: outcome.filePath,
-      start: `${startLine}:${startCol}`,
-      end: `${endLine}:${endCol}`,
-    };
-    if (outcome.kind === 'suppressed') {
-      if (outcome.reason === 'external-call-target') {
-        assert.ok(outcome.externalTarget, 'An external call needs its binary declaration');
-        sites.push({ ...site, status: 'external', target: outcome.externalTarget });
-        continue;
-      }
-      const status = ambiguousReasons.includes(outcome.reason) ? 'ambiguous' : outcome.reason;
-      sites.push({ ...site, status });
+  return declarations;
+}
+
+function recordOutcome(
+  outcome,
+  declarations,
+  ambiguousReasons,
+  sites,
+  classifiedTargets,
+  unpublishedOverloads,
+) {
+  const { startLine, startCol, endLine, endCol } = outcome.range;
+  const site = {
+    file: outcome.filePath,
+    start: `${startLine}:${startCol}`,
+    end: `${endLine}:${endCol}`,
+  };
+  if (outcome.kind === 'suppressed') {
+    if (outcome.reason === 'external-call-target') {
+      assert.ok(outcome.externalTarget, 'An external call needs its binary declaration');
+      sites.push({ ...site, status: 'external', target: outcome.externalTarget });
+      return;
+    }
+    const status = ambiguousReasons.includes(outcome.reason) ? 'ambiguous' : outcome.reason;
+    sites.push({ ...site, status });
+    return;
+  }
+  const record = { ...site, status: outcome.kind };
+  if (outcome.targetId !== undefined) {
+    // Overloads can have distinct definition positions but share one legacy graph node.
+    // Preserve the resolver's actual selection; the edge comparison verifies publication.
+    const id = outcome.targetId;
+    const suffix = ':Method:' + outcome.name;
+    const position =
+      id.startsWith('def:') && id.endsWith(suffix) ? id.slice(4, -suffix.length) : undefined;
+    const published = declarations.get(id);
+    if (published === undefined && position && /#\d+:\d+$/.test(position)) {
+      record.target = position;
+      const file = position.slice(0, position.lastIndexOf('#'));
+      unpublishedOverloads.add(siteTargetKey(site, [file, outcome.name]));
     } else {
-      const record = { ...site, status: outcome.kind };
-      if (outcome.targetId !== undefined) {
-        // Overloads can have distinct definition positions but share one legacy graph node.
-        // Preserve the resolver's actual selection; the edge comparison verifies publication.
-        const id = outcome.targetId;
-        const suffix = ':Method:' + outcome.name;
-        const position =
-          id.startsWith('def:') && id.endsWith(suffix) ? id.slice(4, -suffix.length) : undefined;
-        const published = declarations.get(id);
-        if (published === undefined && position && /#\d+:\d+$/.test(position)) {
-          record.target = position;
-          const file = position.slice(0, position.lastIndexOf('#'));
-          unpublishedOverloads.add(siteTargetKey(site, [file, outcome.name]));
-        } else {
-          record.target = published ?? id;
-          classifiedTargets.add(siteTargetKey(site, record.target));
-        }
-      }
-      sites.push(record);
+      record.target = published ?? id;
+      classifiedTargets.add(siteTargetKey(site, record.target));
     }
   }
+  sites.push(record);
+}
 
+function collectGraphEdges(
+  result,
+  selected,
+  excludeEdgeReasons,
+  typeCaller,
+  sites,
+  classifiedTargets,
+  unpublishedOverloads,
+) {
   const edges = [];
   for (const edge of result.graph.iterRelationshipsByType('CALLS')) {
     if (excludeEdgeReasons.includes(edge.reason)) continue;
@@ -99,5 +109,38 @@ export function gitNexusCallReport(
       sites.push(site);
     }
   }
+  return edges;
+}
+
+export function gitNexusCallReport(
+  result,
+  { names, ambiguousReasons = [], excludeEdgeReasons = [], typeCaller },
+) {
+  const selected = new Set(names);
+  const declarations = selectedDeclarations(result, selected);
+  const sites = [];
+  const classifiedTargets = new Set();
+  const unpublishedOverloads = new Set();
+  for (const outcome of result.resolutionOutcomes) {
+    if (!selected.has(outcome.name) || !outcome.range) continue;
+    if (outcome.siteKind && outcome.siteKind !== 'call') continue;
+    recordOutcome(
+      outcome,
+      declarations,
+      ambiguousReasons,
+      sites,
+      classifiedTargets,
+      unpublishedOverloads,
+    );
+  }
+  const edges = collectGraphEdges(
+    result,
+    selected,
+    excludeEdgeReasons,
+    typeCaller,
+    sites,
+    classifiedTargets,
+    unpublishedOverloads,
+  );
   return { producer: 'GitNexus', sites, edges };
 }

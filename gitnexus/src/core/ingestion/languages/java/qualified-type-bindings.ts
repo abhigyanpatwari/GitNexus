@@ -83,6 +83,11 @@ const hierarchiesByIndexes = new WeakMap<
 
 /** Index named types by scope. A local type uses its declaration identity as
  * a private lookup key so two blocks can each declare the same member path. */
+function namedTypeIdentity(local: boolean, id: string, prefix: string, name: string): string {
+  if (local) return `\0${id}`;
+  return prefix ? `${prefix}.${name}` : name;
+}
+
 function collectNamedTypes(
   parsed: ParsedFile,
   packageName: string,
@@ -112,8 +117,7 @@ function collectNamedTypes(
     hierarchies.set(def.nodeId, { name: fact.simpleName, bases });
     if (def.qualifiedName === undefined || !fact.kind.endsWith('_declaration')) return undefined;
     const parent = byId.get(scope.parent);
-    const owner =
-      scope.parent === module.id ? undefined : parent === undefined ? undefined : resolve(parent);
+    const owner = scope.parent === module.id || parent === undefined ? undefined : resolve(parent);
     const local = scope.parent !== module.id && owner === undefined;
     if (local && (!parent || parent.kind === 'Class')) return undefined;
     const modifiers = fact.modifiers ?? [];
@@ -130,11 +134,7 @@ function collectNamedTypes(
     kinds.set(scope.id, fact.kind);
     const named: NamedType & { readonly def: SymbolDefinition } = {
       def,
-      fqn: local
-        ? `\0${def.nodeId}`
-        : prefix === ''
-          ? fact.simpleName
-          : `${prefix}.${fact.simpleName}`,
+      fqn: namedTypeIdentity(local, def.nodeId, prefix, fact.simpleName),
       ...(localSpelling === undefined ? {} : { localSpelling }),
       packageName,
       bases,

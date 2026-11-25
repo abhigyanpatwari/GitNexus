@@ -1,6 +1,5 @@
-import { mock } from 'node:test';
+import { mock, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import { createMethodExtractor } from '../../../../../src/core/ingestion/method-extractors/generic.js';

@@ -38,7 +38,7 @@ export async function verifyBeanMetadataRoundtrip() {
       );
       assert.ok(classCsv.includes('org.springframework.stereotype.Service'));
       assert.ok(classCsv.includes(FRAMEWORK_MARKER));
-      await adapter.executeQuery(adapter.getCopyQuery('Class', classCsvPath.replace(/\\/g, '/')));
+      await adapter.executeQuery(adapter.getCopyQuery('Class', classCsvPath.replaceAll('\\', '/')));
       assert.deepStrictEqual(
         await adapter.executeQuery(
           `MATCH (c:Class {id: '${CLASS_ID}'}) RETURN c.frameworkAnnotations AS frameworkAnnotations`,

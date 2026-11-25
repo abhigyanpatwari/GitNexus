@@ -83,7 +83,7 @@ export async function assertBatchedFileResults(
       const entry = records.find((r) => r.path === input.path)!;
       assert.equal(entry.key, input.cacheKey);
       assert.equal('encoded' in entry, true);
-      if (!('encoded' in entry)) throw Error('Expected encoded file');
+      if (!('encoded' in entry)) throw new Error('Expected encoded file');
       assert.equal(entry.encoded.cacheable, true);
       const result = decodeFileResultSection(entry.encoded.facts, entry.key, entry.path, 'facts')!
         .value as ParseWorkerResult;
@@ -102,7 +102,7 @@ export async function assertBatchedFileResults(
       expected.fileCount,
     );
     const emptyRecord = records.find((record) => record.path === 'empty.ts')!;
-    if (!('encoded' in emptyRecord)) throw Error('Expected encoded empty file');
+    if (!('encoded' in emptyRecord)) throw new Error('Expected encoded empty file');
     assert.deepEqual(
       decodeFileResultSection(
         emptyRecord.encoded.scopes,

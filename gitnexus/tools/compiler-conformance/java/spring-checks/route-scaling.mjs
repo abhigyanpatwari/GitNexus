@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -7,6 +8,18 @@ import Java from 'tree-sitter-java';
 import { extractSpringTypes } from '../../../../dist/core/ingestion/route-extractors/spring.js';
 import { resolveInheritedSpringRoutes } from '../../../../dist/core/ingestion/route-extractors/spring-shared.js';
 import { runPipelineFromRepo } from '../../../../dist/core/ingestion/pipeline.js';
+
+function parse(src) {
+  const p = new Parser();
+  p.setLanguage(Java);
+  return p.parse(src);
+}
+
+function scalingLabel(ratio) {
+  if (ratio < 1.5) return 'linear';
+  return ratio < 3 ? 'superlinear' : 'WARNING: quadratic';
+}
+
 export async function verifyInheritanceBenchmark() {
   /**
    * Spring interface-inheritance benchmark (#2288 / PR #2290 review).
@@ -31,11 +44,6 @@ export async function verifyInheritanceBenchmark() {
 
   /** Methods declared per interface (each becomes one inherited route). */
   const METHODS_PER_INTERFACE = 4;
-  function parse(src) {
-    const p = new Parser();
-    p.setLanguage(Java);
-    return p.parse(src);
-  }
 
   /**
    * Generate `pairCount` interface+controller pairs and return the project-wide
@@ -74,8 +82,10 @@ public class Controller${i} implements Api${i} {
 ${impls}
 }
 `;
-      types.push(...extractSpringTypes(parse(iface), `Api${i}.java`));
-      types.push(...extractSpringTypes(parse(controller), `Controller${i}.java`));
+      types.push(
+        ...extractSpringTypes(parse(iface), `Api${i}.java`),
+        ...extractSpringTypes(parse(controller), `Controller${i}.java`),
+      );
     }
     return types;
   }
@@ -167,8 +177,8 @@ ${impls}
   // Non-Java / no-interface repos pay ~0 — the Java provider hook is the only
   // populator of springTypes, so the pass receives an empty list elsewhere.
   assert.deepStrictEqual(resolveInheritedSpringRoutes([]), []);
-  if (BENCH_ENABLED) // Spring inheritance scaling benchmark (#2288)
-  {
+  // Spring inheritance scaling benchmark (#2288)
+  function measureInheritanceScaling() {
     // scales linearly with interface×controller pair count
 
     const scales = [250, 500, 1000];
@@ -212,18 +222,18 @@ ${impls}
       const timeRatio = results[i].totalMs / results[i - 1].totalMs;
       const scaling = timeRatio / sizeRatio;
       console.log(
-        `  ${results[i - 1].pairs} → ${results[i].pairs}: ${scaling.toFixed(2)}x (${scaling < 1.5 ? 'linear' : scaling < 3 ? 'superlinear' : 'WARNING: quadratic'})`,
+        `  ${results[i - 1].pairs} → ${results[i].pairs}: ${scaling.toFixed(2)}x (${scalingLabel(scaling)})`,
       );
       assert.ok(scaling < 1.5);
     }
   }
-  if (BENCH_ENABLED) // Spring inheritance pipeline benchmark — end-to-end (#2288)
-  {
+  // Spring inheritance pipeline benchmark — end-to-end (#2288)
+  async function measureInheritancePipeline() {
     // full analyze scales linearly with interface→controller pair count
 
     const scales = [100, 250, 500];
     const results = [];
-    for (const pairs of scales) {
+    await runInSequence(scales, async (pairs) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), `spring-inherit-bench-${pairs}-`));
       try {
         writeSpringRepo(dir, pairs);
@@ -248,7 +258,7 @@ ${impls}
           force: true,
         });
       }
-    }
+    });
     console.log('\nSpring Inheritance — End-to-End Pipeline');
     console.log('┌──────────┬───────────┬────────────┐');
     console.log('│ Pairs    │ Time (ms) │ Route nodes│');
@@ -270,7 +280,7 @@ ${impls}
       const timeRatio = results[i].elapsedMs / results[i - 1].elapsedMs;
       const scaling = timeRatio / sizeRatio;
       console.log(
-        `  ${results[i - 1].pairs} → ${results[i].pairs}: ${scaling.toFixed(2)}x (${scaling < 1.5 ? 'linear' : scaling < 3 ? 'superlinear' : 'WARNING: quadratic'})`,
+        `  ${results[i - 1].pairs} → ${results[i].pairs}: ${scaling.toFixed(2)}x (${scalingLabel(scaling)})`,
       );
       // Full-pipeline wall-clock carries fixed startup/teardown overhead that
       // dominates at small N, so the ratio is biased BELOW 1 at these sizes; a
@@ -278,4 +288,7 @@ ${impls}
       assert.ok(scaling < 1.5);
     }
   }
+  if (!BENCH_ENABLED) return;
+  measureInheritanceScaling();
+  await measureInheritancePipeline();
 }

@@ -9,37 +9,16 @@ function write(root, file, contents) {
   fs.writeFileSync(filename, contents);
 }
 
-export function generateLargePackages(root, corpus) {
-  const dirs = [];
-  function finish(dir, checks, diagnostics) {
-    write(dir, 'resolution.json', JSON.stringify({ diagnostics, largePackage: checks }));
-    dirs.push(dir);
-  }
-  for (const count of [205, 505]) {
-    for (const variant of ['imported', 'list-shadow', 'root-shadow', 'import-shadow']) {
-      const dir = path.join(root, 'large-' + count + '-' + variant);
-      const element = variant === 'root-shadow' ? 'models.User' : 'User';
-      write(dir, 'models/User.java', 'package models; public class User { public void save() {} }');
-      write(
-        dir,
-        'models/Other.java',
-        'package models; public class Other { public void save() {} }',
-      );
-      write(dir, 'app/Base.java', 'package app; public class Base {}');
-      if (variant === 'list-shadow')
-        write(dir, 'app/List.java', 'package app; public class List<T> {}');
-      if (variant.endsWith('root-shadow') || variant === 'import-shadow')
-        write(
-          dir,
-          'app/models.java',
-          'package app; public class models { public static class User { public void save() {} } }',
-        );
-      for (let i = 0; i < count; i++) {
-        const wildcard = i % 2 === 0;
-        write(
-          dir,
-          `app/K${i}.java`,
-          `package app;
+function finish(dir, checks, diagnostics) {
+  write(dir, 'resolution.json', JSON.stringify({ diagnostics, largePackage: checks }));
+}
+
+function writeVariantClass(dir, i, element) {
+  const wildcard = i % 2 === 0;
+  write(
+    dir,
+    `app/K${i}.java`,
+    `package app;
 ${wildcard ? 'import java.util.*;' : ''}
 ${element === 'User' ? 'import models.User;' : ''}
 public class K${i}${i % 4 < 2 ? ' extends Base' : ''} {
@@ -50,50 +29,76 @@ public class K${i}${i % 4 < 2 ? ' extends Base' : ''} {
   void viaField() { one.save(); }
 }
 `,
-        );
-      }
-      const rejected = Math.ceil(count / 2);
-      const diagnostics =
-        variant === 'list-shadow'
-          ? {
-              'compiler.err.cant.resolve.location.args': rejected,
-              'compiler.err.foreach.not.applicable.to.type': rejected,
-            }
-          : {};
-      finish(dir, { count, methods: ['viaLambda', 'viaLoop', 'viaField'] }, diagnostics);
-    }
-  }
-  for (const variant of ['demand', 'raw', 'shadow']) {
-    const count = 205;
-    const dir = path.join(root, 'large-205-qualified-' + variant);
-    write(dir, 'p/Base.java', 'package p; public class Base {}');
-    write(dir, 'p/User.java', 'package p; public class User { public void save() {} }');
-    write(dir, 'p/Other.java', 'package p; public class Other { public void save() {} }');
-    if (variant === 'shadow') write(dir, 'p/List.java', 'package p; public class List<T> {}');
-    for (let i = 0; i < count; i++) {
-      write(
-        dir,
-        `p/K${i}.java`,
-        `package p;
+  );
+}
+
+function generateVariant(root, count, variant) {
+  const dir = path.join(root, 'large-' + count + '-' + variant);
+  const element = variant === 'root-shadow' ? 'models.User' : 'User';
+  write(dir, 'models/User.java', 'package models; public class User { public void save() {} }');
+  write(dir, 'models/Other.java', 'package models; public class Other { public void save() {} }');
+  write(dir, 'app/Base.java', 'package app; public class Base {}');
+  if (variant === 'list-shadow')
+    write(dir, 'app/List.java', 'package app; public class List<T> {}');
+  if (variant.endsWith('root-shadow') || variant === 'import-shadow')
+    write(
+      dir,
+      'app/models.java',
+      'package app; public class models { public static class User { public void save() {} } }',
+    );
+  for (let i = 0; i < count; i++) writeVariantClass(dir, i, element);
+  const rejected = Math.ceil(count / 2);
+  const diagnostics =
+    variant === 'list-shadow'
+      ? {
+          'compiler.err.cant.resolve.location.args': rejected,
+          'compiler.err.foreach.not.applicable.to.type': rejected,
+        }
+      : {};
+  finish(dir, { count, methods: ['viaLambda', 'viaLoop', 'viaField'] }, diagnostics);
+  return dir;
+}
+
+function generateQualified(root, variant) {
+  const count = 205;
+  const dir = path.join(root, 'large-205-qualified-' + variant);
+  write(dir, 'p/Base.java', 'package p; public class Base {}');
+  write(dir, 'p/User.java', 'package p; public class User { public void save() {} }');
+  write(dir, 'p/Other.java', 'package p; public class Other { public void save() {} }');
+  if (variant === 'shadow') write(dir, 'p/List.java', 'package p; public class List<T> {}');
+  for (let i = 0; i < count; i++) {
+    write(
+      dir,
+      `p/K${i}.java`,
+      `package p;
 ${variant === 'raw' ? '' : 'import java.util.*;'}
 class K${i} extends Base {
   ${variant === 'raw' ? 'java.util.List' : 'List'}<User> items;
   void runEach() { items.forEach(u -> u.save()); }
   void runFor() { for (var u : items) u.save(); }
 }`,
-      );
-    }
-    finish(
-      dir,
-      { count, methods: ['runEach', 'runFor'] },
-      variant === 'shadow'
-        ? {
-            'compiler.err.cant.resolve.location.args': count,
-            'compiler.err.foreach.not.applicable.to.type': count,
-          }
-        : {},
     );
   }
+  finish(
+    dir,
+    { count, methods: ['runEach', 'runFor'] },
+    variant === 'shadow'
+      ? {
+          'compiler.err.cant.resolve.location.args': count,
+          'compiler.err.foreach.not.applicable.to.type': count,
+        }
+      : {},
+  );
+  return dir;
+}
+
+export function generateLargePackages(root, corpus) {
+  const dirs = [];
+  for (const count of [205, 505]) {
+    for (const variant of ['imported', 'list-shadow', 'root-shadow', 'import-shadow'])
+      dirs.push(generateVariant(root, count, variant));
+  }
+  for (const variant of ['demand', 'raw', 'shadow']) dirs.push(generateQualified(root, variant));
   const dir = path.join(root, 'large-inherited-field-siblings');
   fs.cpSync(path.join(corpus, 'inherited-field-siblings'), dir, { recursive: true });
   for (let i = 0; i < 501; i++) write(dir, `src/app/F${i}.java`, `package app; class F${i} {}`);

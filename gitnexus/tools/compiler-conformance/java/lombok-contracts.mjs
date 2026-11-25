@@ -1,17 +1,18 @@
+import { runInSequence } from '../../../test/helpers/run-in-sequence.mjs';
 import { compareCodeUnits } from '../compare.mjs';
-import { copyResolutionProject } from './graph-observations.mjs';
-import assert from 'node:assert/strict';
-import { runtimeParseIdentity } from './spring-support.mjs';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import {
+  copyResolutionProject,
   writeFixtureRepo,
   runPipelineFromRepo,
   getRelationships,
   getNodesByLabelFull,
   getResolutionOutcomes,
 } from './graph-observations.mjs';
+import assert from 'node:assert/strict';
+import { runtimeParseIdentity } from './spring-support.mjs';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { loadParseCache, pruneCache, saveParseCache } from '../../../dist/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
@@ -52,12 +53,8 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
             item?.kind === 'suppressed' &&
             item?.reason === 'overload-unknown' &&
             item?.name === 'setValue' &&
-            item?.candidateGraphIds.some(
-              (item) => item === 'Method:Inheritance.java:GeneratedBase.setValue#1',
-            ) &&
-            item?.candidateGraphIds.some(
-              (item) => item === 'Method:Inheritance.java:GeneratedChild.setValue#1',
-            ) &&
+            item?.candidateGraphIds.includes('Method:Inheritance.java:GeneratedBase.setValue#1') &&
+            item?.candidateGraphIds.includes('Method:Inheritance.java:GeneratedChild.setValue#1') &&
             item?.candidateSetComplete === true,
         ),
       );
@@ -69,7 +66,7 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
     }
   }
   // Getters and setters resolve to their owner in both same-file and cross-file layouts.
-  for (const layout of ['same-file', 'cross-file']) {
+  await runInSequence(['same-file', 'cross-file'], async (layout) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-pair-'));
     try {
       const models = `import lombok.Data;
@@ -108,7 +105,7 @@ async function verifyJavaLombokAccessorSynthesisPipeline() {
         force: true,
       });
     }
-  }
+  });
   // resolves Consumer.consume -> User.getName for @Data
   {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-'));

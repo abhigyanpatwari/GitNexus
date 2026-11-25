@@ -130,6 +130,21 @@ function edges(result: Awaited<ReturnType<typeof runPipelineFromRepo>>, type: Re
     .sort(compareCodeUnits);
 }
 
+function cachedAnalysis(root: string, storage: string, base: ParseCache['identity']['base']) {
+  const run = (parseCache: ParseCache) =>
+    runPipelineFromRepo(root, () => {}, {
+      workerPoolSize: 1,
+      skipDerivedGraphPhases: true,
+      parseCache,
+    });
+  const save = async (cache: ParseCache) => {
+    pruneCache(cache, cache.usedKeys);
+    const keys = await saveParseCache(storage, cache);
+    await pruneAndSaveDurableParsedFileStore(getDurableParsedFileDir(storage), base, new Set(keys));
+  };
+  return { run, save };
+}
+
 describe('Lombok Value and generated constructor DI through worker/cache paths', () => {
   it(
     'retains exact accessor and dependency owners on cold worker parse and warm replay',
@@ -361,21 +376,7 @@ it(
         writeStoragePath: storage,
         onDiskKeys: new Set(),
       };
-      const run = (parseCache: ParseCache) =>
-        runPipelineFromRepo(root, () => {}, {
-          workerPoolSize: 1,
-          skipDerivedGraphPhases: true,
-          parseCache,
-        });
-      const save = async (cache: ParseCache) => {
-        pruneCache(cache, cache.usedKeys);
-        const keys = await saveParseCache(storage, cache);
-        await pruneAndSaveDurableParsedFileStore(
-          getDurableParsedFileDir(storage),
-          identity.base,
-          new Set(keys),
-        );
-      };
+      const { run, save } = cachedAnalysis(root, storage, identity.base);
       const hasGetter = (result: Awaited<ReturnType<typeof run>>) =>
         result.graph.getNode('Method:p/Model.java:Model.getRepo#0') !== undefined;
       const expectedInjection = ['Class:p/Model.java:Model->Class:p/Repo.java:Repo'];
@@ -505,21 +506,7 @@ it(
         writeStoragePath: storage,
         onDiskKeys: new Set(),
       };
-      const run = (parseCache: ParseCache) =>
-        runPipelineFromRepo(root, () => {}, {
-          workerPoolSize: 1,
-          skipDerivedGraphPhases: true,
-          parseCache,
-        });
-      const save = async (cache: ParseCache) => {
-        pruneCache(cache, cache.usedKeys);
-        const keys = await saveParseCache(storage, cache);
-        await pruneAndSaveDurableParsedFileStore(
-          getDurableParsedFileDir(storage),
-          identity.base,
-          new Set(keys),
-        );
-      };
+      const { run, save } = cachedAnalysis(root, storage, identity.base);
       const facts = (result: Awaited<ReturnType<typeof run>>) => ({
         getter: result.graph.getNode('Method:app/Model.java:Model.getRepo#0') !== undefined,
         injects: [...result.graph.iterRelationshipsByType('INJECTS')]

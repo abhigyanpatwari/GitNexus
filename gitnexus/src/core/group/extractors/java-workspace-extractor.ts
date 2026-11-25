@@ -536,22 +536,13 @@ export async function extractJavaWorkspaceLinks(
     projectsByGroupPath.set(groupPath, meta);
   }
 
-  const isMemberType = workspaceMemberTypeLookup();
   const links: GroupManifestLink[] = [];
   const seen = new Set<string>();
 
-  for (const [, proj] of projectsByGroupPath) {
-    const groupDeps = proj.deps.filter((d) => projectsByKey.has(d));
-    if (groupDeps.length === 0) continue;
-
-    const knownPackages = new Map<string, JavaProjectMeta>();
-    for (const dep of groupDeps) {
-      const depMeta = projectsByKey.get(dep);
-      if (depMeta) knownPackages.set(depMeta.basePackage, depMeta);
-    }
-
-    const imports = await scanJavaImports(proj.repoPath, knownPackages, isMemberType);
-
+  for await (const { proj, imports } of projectImportScans(
+    projectsByGroupPath.values(),
+    projectsByKey,
+  )) {
     for (const imp of imports) {
       const providerProj = projectsByKey.get(imp.artifactKey);
       if (!providerProj) continue;
@@ -573,4 +564,27 @@ export async function extractJavaWorkspaceLinks(
   }
 
   return { links, discoveredProjects: projectsByGroupPath };
+}
+
+// Start each repository scan on demand to bound filesystem and parser work.
+function* projectImportScans(
+  projects: Iterable<JavaProjectMeta>,
+  projectsByKey: ReadonlyMap<string, JavaProjectMeta>,
+) {
+  const isMemberType = workspaceMemberTypeLookup();
+  for (const proj of projects) {
+    const groupDeps = proj.deps.filter((d) => projectsByKey.has(d));
+    if (groupDeps.length === 0) continue;
+
+    const knownPackages = new Map<string, JavaProjectMeta>();
+    for (const dep of groupDeps) {
+      const depMeta = projectsByKey.get(dep);
+      if (depMeta) knownPackages.set(depMeta.basePackage, depMeta);
+    }
+
+    yield scanJavaImports(proj.repoPath, knownPackages, isMemberType).then((imports) => ({
+      proj,
+      imports,
+    }));
+  }
 }

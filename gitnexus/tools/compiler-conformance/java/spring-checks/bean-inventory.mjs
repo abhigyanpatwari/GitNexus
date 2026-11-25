@@ -2,6 +2,13 @@ import assert from 'node:assert/strict';
 import { runPipelineFromRepo } from '../../../../dist/core/ingestion/pipeline.js';
 import { decodeSpringBeanFactoryReason } from '../../../../dist/core/ingestion/frameworks/spring/bean-factories.js';
 import { springFixture, withIndexedBackend, springProject } from '../spring-support.mjs';
+
+function nodeNames(result) {
+  const names = new Map();
+  result.graph.forEachNode((node) => names.set(node.id, String(node.properties.name)));
+  return names;
+}
+
 export async function verifyBean() {
   const { graph } = await runPipelineFromRepo(springFixture('spring-bean-app'), () => {});
   const symbols = new Map([...graph.iterNodes()].map((node) => [node.properties.name, node]));
@@ -70,11 +77,6 @@ export async function verifyBean() {
   );
 }
 export async function verifyBeanResource() {
-  function nodeNames(result) {
-    const names = new Map();
-    result.graph.forEachNode((node) => names.set(node.id, String(node.properties.name)));
-    return names;
-  }
   function injectionDetails(result) {
     const names = nodeNames(result);
     return result.graph.relationships
@@ -155,10 +157,7 @@ export async function verifyBeanResource() {
         'aggregate->slowGateway',
       ],
     );
-    assert.equal(
-      pairs.some((pair) => pair === 'selfAwareGateway->selfAwareGateway'),
-      false,
-    );
+    assert.equal(pairs.includes('selfAwareGateway->selfAwareGateway'), false);
     assert.equal(
       pairs.some((pair) => pair.startsWith('selfAwareGateway->')),
       true,
@@ -230,10 +229,7 @@ export async function verifyBeanResource() {
       pairs.some((pair) => pair.startsWith('KotlinConflictingResourceConsumer->')),
       false,
     );
-    assert.equal(
-      pairs.some((pair) => pair === 'kotlinSelfAwareGateway->kotlinSelfAwareGateway'),
-      false,
-    );
+    assert.equal(pairs.includes('kotlinSelfAwareGateway->kotlinSelfAwareGateway'), false);
     assert.equal(
       pairs.some((pair) => pair.startsWith('kotlinSelfAwareGateway->')),
       true,

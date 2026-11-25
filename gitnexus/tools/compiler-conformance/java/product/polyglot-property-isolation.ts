@@ -15,7 +15,7 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it, before } from 'node:test';
-import path from 'path';
+import path from 'node:path';
 import { getRelationships } from '../../../../test/helpers/resolution-graph.js';
 import { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../../src/types/pipeline.js';

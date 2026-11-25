@@ -23,6 +23,60 @@ import {
   pruneAndSaveDurableParsedFileStore,
 } from '../../../../dist/storage/parsedfile-store.js';
 import { isDeepStrictEqual } from 'node:util';
+function messagingFileRows(filePath, java) {
+  const rows = [];
+  const file = path.basename(filePath);
+  const producers = java
+    ? getJavaSpringMessageProducerFacts(filePath)
+    : getKotlinSpringMessageProducerFacts(filePath);
+  for (const producer of producers) {
+    rows.push({
+      kind: 'producer',
+      file,
+      detail: `${producer.template} ${producer.receiverName}.${producer.methodName}`,
+      ...(producer.args === undefined
+        ? {}
+        : {
+            args: producer.args,
+          }),
+    });
+  }
+  const handlers = java
+    ? getJavaSpringNonHttpHandlerFacts(filePath)
+    : getKotlinSpringNonHttpHandlerFacts(filePath);
+  for (const handler of handlers) {
+    for (const annotation of handler.annotations) {
+      rows.push({
+        kind: 'annotation',
+        file,
+        detail: annotation.name,
+        ...(annotation.args === undefined
+          ? {}
+          : {
+              args: annotation.args,
+            }),
+      });
+    }
+  }
+  return rows;
+}
+
+function messagingSnapshot(pipeline) {
+  const filePaths = new Set();
+  for (const node of pipeline.graph.iterNodes()) {
+    const filePath = node.properties.filePath;
+    if (typeof filePath === 'string') filePaths.add(filePath);
+  }
+  const rows = [];
+  for (const filePath of [...filePaths].sort(compareCodeUnits)) {
+    const java = filePath.endsWith('.java');
+    const kotlin = filePath.endsWith('.kt');
+    if (!java && !kotlin) continue;
+    rows.push(...messagingFileRows(filePath, java));
+  }
+  return rows;
+}
+
 export async function verifyNonHttpHandlers() {
   const parseIdentity = await runtimeParseIdentity();
   const FIXTURE = springFixture('spring-non-http-handler-app');
@@ -34,53 +88,7 @@ export async function verifyNonHttpHandlers() {
    * list would still match after a change that stopped capturing the handler
    * annotations it sits next to.
    */
-  function messagingSnapshot(pipeline) {
-    const filePaths = new Set();
-    for (const node of pipeline.graph.iterNodes()) {
-      const filePath = node.properties.filePath;
-      if (typeof filePath === 'string') filePaths.add(filePath);
-    }
-    const rows = [];
-    for (const filePath of [...filePaths].sort(compareCodeUnits)) {
-      const java = filePath.endsWith('.java');
-      const kotlin = filePath.endsWith('.kt');
-      if (!java && !kotlin) continue;
-      const file = path.basename(filePath);
-      const producers = java
-        ? getJavaSpringMessageProducerFacts(filePath)
-        : getKotlinSpringMessageProducerFacts(filePath);
-      for (const producer of producers) {
-        rows.push({
-          kind: 'producer',
-          file,
-          detail: `${producer.template} ${producer.receiverName}.${producer.methodName}`,
-          ...(producer.args === undefined
-            ? {}
-            : {
-                args: producer.args,
-              }),
-        });
-      }
-      const handlers = java
-        ? getJavaSpringNonHttpHandlerFacts(filePath)
-        : getKotlinSpringNonHttpHandlerFacts(filePath);
-      for (const handler of handlers) {
-        for (const annotation of handler.annotations) {
-          rows.push({
-            kind: 'annotation',
-            file,
-            detail: annotation.name,
-            ...(annotation.args === undefined
-              ? {}
-              : {
-                  args: annotation.args,
-                }),
-          });
-        }
-      }
-    }
-    return rows;
-  }
+
   // Spring non-HTTP handler entry points (#2417)
 
   let methods;

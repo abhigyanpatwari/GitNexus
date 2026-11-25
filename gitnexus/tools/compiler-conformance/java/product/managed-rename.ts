@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { SCOPE_RESOLVERS } from '../../../../src/core/ingestion/scope-resolution/pipeline/registry.js';
 import assert from 'node:assert/strict';
@@ -49,7 +50,7 @@ for (const entry of cases) {
     }
     assert.ok(entry.error);
     const { root, nodes, symbol } = await fixture(files, entry.target, entry.kind);
-    for (const dry_run of [true, false]) {
+    await runInSequence([true, false], async (dry_run) => {
       const result = await renameSymbol(root, symbol, { new_name: entry.newName, dry_run }, nodes);
       assert.partialDeepStrictEqual(result, { status: 'error', code: entry.error, applied: false });
       if (entry.planning) {
@@ -62,7 +63,7 @@ for (const entry of cases) {
       if (entry.message) assert.ok(result.error?.includes(entry.message), result.error);
       assert.equal(await fs.readFile(path.join(root, entry.file), 'utf8'), entry.source);
       if (entry.absentFile) assert.ok(!(await fs.readdir(root)).includes(entry.absentFile));
-    }
+    });
   });
 }
 
@@ -72,7 +73,7 @@ test('refuses rename when the Java grammar cannot inventory Unicode escapes', as
     async () =>
       resolver.languageProvider.rename!.parseSource({
         filePath: 'model.java',
-        content: 'class Model { void t\\u0061rget() {} }',
+        content: String.raw`class Model { void t\u0061rget() {} }`,
         languageProvider: resolver.languageProvider,
         scopeResolver: resolver,
       }),

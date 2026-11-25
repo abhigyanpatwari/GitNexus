@@ -126,8 +126,8 @@ public class Probe {
   });
 
   it('strips bidi-override and zero-width controls from the description', () => {
-    const rlo = String.fromCharCode(0x202e); // right-to-left override
-    const zwsp = String.fromCharCode(0x200b); // zero-width space
+    const rlo = String.fromCodePoint(0x202e); // right-to-left override
+    const zwsp = String.fromCodePoint(0x200b); // zero-width space
     const cls = firstNode(
       Java,
       `/** Doc ${rlo}with${zwsp} hidden controls, marker BIDIMARK. */\npublic class Foo {}`,

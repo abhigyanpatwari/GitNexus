@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../test/helpers/run-in-sequence.mjs';
 import { compareCodeUnits } from '../compare.mjs';
 import assert from 'node:assert/strict';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
@@ -61,7 +62,7 @@ export async function checkImportStorage(dir, ref, spec) {
   const expected = [...selected, ...spec.extraEdges].sort(compareCodeUnits);
   const prior = process.env.GITNEXUS_DISABLE_IMPORT_GROUPS;
   try {
-    for (const disabled of ['', '1']) {
+    await runInSequence(['', '1'], async (disabled) => {
       process.env.GITNEXUS_DISABLE_IMPORT_GROUPS = disabled;
       const { graph } = await runPipelineFromRepo(dir, () => {});
       assert.deepEqual(
@@ -69,7 +70,7 @@ export async function checkImportStorage(dir, ref, spec) {
         expected,
         disabled ? 'expanded imports' : 'grouped imports',
       );
-    }
+    });
   } finally {
     if (prior === undefined) delete process.env.GITNEXUS_DISABLE_IMPORT_GROUPS;
     else process.env.GITNEXUS_DISABLE_IMPORT_GROUPS = prior;

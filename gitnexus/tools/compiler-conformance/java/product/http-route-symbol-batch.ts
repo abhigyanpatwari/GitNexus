@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 /**
  * `HttpRouteExtractor` loads the symbols of the files it expects to look up
  * with one CONTAINING_FILES_QUERY instead of one CONTAINING_QUERY per file.
@@ -15,9 +16,9 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it, before, after } from 'node:test';
-import fs from 'fs/promises';
-import path from 'path';
-import os from 'os';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 import { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
 import {
   CONTAINING_FILES_QUERY,
@@ -132,10 +133,12 @@ before(
     repoDir = path.join(tmpBase, 'repo');
     storagePath = path.join(tmpBase, '.gitnexus');
     const dbPath = path.join(storagePath, 'lbug');
-    for (const [rel, content] of Object.entries(FILES)) {
-      await fs.mkdir(path.dirname(path.join(repoDir, rel)), { recursive: true });
-      await fs.writeFile(path.join(repoDir, rel), content);
-    }
+    await Promise.all(
+      Object.entries(FILES).map(async ([rel, content]) => {
+        await fs.mkdir(path.dirname(path.join(repoDir, rel)), { recursive: true });
+        await fs.writeFile(path.join(repoDir, rel), content);
+      }),
+    );
     await fs.mkdir(dbPath, { recursive: true });
 
     const result = await runPipelineFromRepo(repoDir, () => {}, {});
@@ -154,14 +157,9 @@ after(async () => {
     /* may not have opened */
   }
   if (tmpBase) {
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await fs.rm(tmpBase, { recursive: true, force: true });
-        return;
-      } catch {
-        if (attempt < 4) await new Promise((r) => setTimeout(r, 200 * (attempt + 1)));
-      }
-    }
+    await fs
+      .rm(tmpBase, { recursive: true, force: true, maxRetries: 4, retryDelay: 200 })
+      .catch(() => {});
   }
 });
 
@@ -170,8 +168,17 @@ const realExecutor = async (): Promise<CypherExecutor> => {
   return (query, params = {}) => adapter.executePrepared(query, params);
 };
 
-const sortedByUid = (rows: Record<string, unknown>[]): Record<string, unknown>[] =>
-  [...rows].sort((a, b) => String(a.uid).localeCompare(String(b.uid)));
+function stringColumn(row: Record<string, unknown>, key: string): string {
+  const value = row[key];
+  assert.equal(typeof value, 'string', 'Expected string column ' + key);
+  return value as string;
+}
+
+function sortedByUid(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const sorted = [...rows];
+  sorted.sort((a, b) => stringColumn(a, 'uid').localeCompare(stringColumn(b, 'uid')));
+  return sorted;
+}
 
 describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
   it('returns each file exactly the rows of its own CONTAINING_QUERY', async () => {
@@ -184,17 +191,17 @@ describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
 
     const batched = new Map<string, Record<string, unknown>[]>();
     for (const row of await db(CONTAINING_FILES_QUERY, { filePaths: files })) {
-      const filePath = String(row.filePath);
+      const filePath = stringColumn(row, 'filePath');
       batched.set(filePath, [...(batched.get(filePath) ?? []), row]);
     }
 
     const labelsPerFile: number[] = [];
-    for (const filePath of files) {
+    await runInSequence(files, async (filePath) => {
       const own = await db(CONTAINING_QUERY, { filePath });
       labelsPerFile.push(new Set(own.map((row) => JSON.stringify(row.labels))).size);
       // Row order is the engine's and differs between calls: compare the sets.
       assert.deepEqual(sortedByUid(batched.get(filePath) ?? []), sortedByUid(own), filePath);
-    }
+    });
     // The comparison is not vacuous: no file is skipped, the source files
     // define symbols, and one of them has rows in two node tables.
     assert.equal(labelsPerFile.length, files.length);
@@ -260,15 +267,18 @@ describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
     // extractor's fixed order puts the Function first.
     const winners = new Set<string>();
     let firstContracts: unknown;
-    for (let run = 0; run < 20; run++) {
-      const contracts = await new HttpRouteExtractor().extract(db, repoDir, repo);
-      if (run === 0) firstContracts = contracts;
-      else assert.deepEqual(contracts, firstContracts);
-      const tie = contracts.find(
-        (c) => c.role === 'consumer' && c.contractId === 'http::GET::/api/min',
-      );
-      winners.add(`${tie?.symbolName} ${tie?.symbolUid}`);
-    }
+    await runInSequence(
+      Array.from({ length: 20 }, (_, index) => index),
+      async (run) => {
+        const contracts = await new HttpRouteExtractor().extract(db, repoDir, repo);
+        if (run === 0) firstContracts = contracts;
+        else assert.deepEqual(contracts, firstContracts);
+        const tie = contracts.find(
+          (c) => c.role === 'consumer' && c.contractId === 'http::GET::/api/min',
+        );
+        winners.add(`${tie?.symbolName} ${tie?.symbolUid}`);
+      },
+    );
     assert.deepEqual([...winners], ['boot Function:web/min.ts:boot']);
   });
 });

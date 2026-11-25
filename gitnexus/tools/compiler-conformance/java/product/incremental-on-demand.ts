@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import { fixtureGitExecutable } from '../../../../test/helpers/git-executable.js';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
@@ -51,14 +52,16 @@ it(
         ],
       ]);
       const write = async (file: string, source: string): Promise<void> => {
-        for (const target of repos) {
-          await fs.mkdir(path.dirname(path.join(target, file)), { recursive: true });
-          await fs.writeFile(path.join(target, file), java(source));
-        }
+        await Promise.all(
+          repos.map(async (target) => {
+            await fs.mkdir(path.dirname(path.join(target, file)), { recursive: true });
+            await fs.writeFile(path.join(target, file), java(source));
+          }),
+        );
       };
       const commit = (message: string): void =>
         repos.forEach((target) => commitAll(target, message));
-      for (const [file, source] of sources) await write(file, source);
+      await Promise.all(Array.from(sources, ([file, source]) => write(file, source)));
       for (const target of repos) {
         initGitRepo(target);
         execFileSync(fixtureGitExecutable(), ['config', 'commit.gpgsign', 'false'], {
@@ -116,17 +119,23 @@ it(
       await analyzeBoth('models/Base.java', 'models/Base.java');
 
       // A type neither importer spells changes its superclass, there and back.
-      for (const [parent, runTarget] of [
-        ['Other', 'models/Deep.java'],
-        ['Base', 'models/Base.java'],
-      ]) {
-        await write('alternate/Mid.java', `package models; public class Mid extends ${parent} {}`);
-        commit(`reparent Mid to ${parent}`);
-        assert.partialDeepStrictEqual(await analyzeBoth(runTarget, runTarget), {
-          changedFiles: 1,
-          writeMode: 'incremental',
-        });
-      }
+      await runInSequence(
+        [
+          ['Other', 'models/Deep.java'],
+          ['Base', 'models/Base.java'],
+        ],
+        async ([parent, runTarget]) => {
+          await write(
+            'alternate/Mid.java',
+            `package models; public class Mid extends ${parent} {}`,
+          );
+          commit(`reparent Mid to ${parent}`);
+          assert.partialDeepStrictEqual(await analyzeBoth(runTarget, runTarget), {
+            changedFiles: 1,
+            writeMode: 'incremental',
+          });
+        },
+      );
 
       // A body edit changes no other file's rows: nothing else is rewritten.
       await write(
@@ -161,7 +170,11 @@ it(
       );
 
       // Deleting it restores both.
-      for (const target of repos) await fs.rm(path.join(target, 'app/Foo.java'));
+      await Promise.all(
+        repos.map(async (target) => {
+          await fs.rm(path.join(target, 'app/Foo.java'));
+        }),
+      );
       commit('delete the same-package Foo');
       assert.partialDeepStrictEqual(await analyzeBoth('models/Base.java', 'models/Base.java'), {
         changedFiles: 1,

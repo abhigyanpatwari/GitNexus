@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import { compareCodeUnits } from '../../compare.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -12,6 +13,110 @@ import {
 import { collectKotlinCaptureSideChannel } from '../../../../dist/core/ingestion/languages/kotlin/capture-side-channel.js';
 import { emitKotlinScopeCaptures } from '../../../../dist/core/ingestion/languages/kotlin/captures.js';
 import { runPipelineFromRepo } from '../../../../dist/core/ingestion/pipeline.js';
+
+function parsePointcut(expression) {
+  const pointcut = parseSpringAopPointcut(expression);
+  if (pointcut === null) throw new Error(`Expected a static pointcut: ${expression}`);
+  return pointcut;
+}
+
+function matchingIds(pointcut, candidates, methodAnnotations) {
+  return candidates
+    .filter((candidate) =>
+      springAopPointcutMatches(
+        pointcut,
+        candidate.owner,
+        candidate.method,
+        methodAnnotations.get(candidate.method.id),
+      ),
+    )
+    .map((candidate) => candidate.method.id)
+    .sort(compareCodeUnits);
+}
+
+function denseKotlinAopSource(classCount) {
+  const classes = Array.from(
+    {
+      length: classCount,
+    },
+    (_, index) => {
+      const transactional =
+        index % 50 === 0
+          ? `
+  @Tx
+  fun transactional${index}() {}`
+          : '';
+      return `
+@Noise
+class Subject${index} {
+  @Noise
+  fun ordinary${index}() {}
+
+  @OtherNoise
+  fun secondary${index}() {}
+${transactional}
+}
+`;
+    },
+  ).join('\n');
+  return `package com.example
+
+import org.aspectj.lang.annotation.Aspect as AopAspect
+import org.aspectj.lang.annotation.Before as AdviceBefore
+import org.springframework.transaction.annotation.Transactional as Tx
+
+@AopAspect
+class DenseAspect {
+  @AdviceBefore("@annotation(org.springframework.transaction.annotation.Transactional)")
+  fun beforeTransaction() {}
+}
+
+${classes}
+`;
+}
+
+function writeFixture(root, relativePath, content) {
+  const target = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(target), {
+    recursive: true,
+  });
+  fs.writeFileSync(target, content);
+}
+
+function javaServices(count) {
+  return Array.from(
+    {
+      length: count,
+    },
+    (_, index) => `
+class JavaService${index} {
+  @Transactional public void transaction${index}() {}
+  public void read${index}() {}
+  public void write${index}() {}
+}
+`,
+  ).join('\n');
+}
+
+function kotlinServices(count) {
+  return Array.from(
+    {
+      length: count,
+    },
+    (_, index) => `
+class KotlinService${index} {
+  @Tx fun transaction${index}() {}
+  fun read${index}() {}
+  fun write${index}() {}
+}
+`,
+  ).join('\n');
+}
+
+function createRepoDir(serviceCount) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), `spring-aop-bench-${serviceCount}-`));
+}
+
 export async function verifyAopBenchmark() {
   /**
    * Spring AOP candidate-selection and Kotlin capture benchmarks (#2416).
@@ -25,6 +130,39 @@ export async function verifyAopBenchmark() {
   const BENCH_ENABLED = process.env.GITNEXUS_BENCH === '1';
   const TRANSACTIONAL = 'org.springframework.transaction.annotation.Transactional';
   const CACHEABLE = 'org.springframework.cache.annotation.Cacheable';
+  function addOwnerMethods(
+    owner,
+    { ownerIndex, methodsPerOwner, qualifiedName, extension, filePath, language },
+    candidates,
+    methodAnnotations,
+  ) {
+    for (let methodIndex = 0; methodIndex < methodsPerOwner; methodIndex += 1) {
+      const name = `${methodIndex % 2 === 0 ? 'read' : 'write'}${methodIndex}`;
+      const method = {
+        id: `Method:${qualifiedName}.${name}:${extension}`,
+        label: 'Method',
+        properties: {
+          name,
+          qualifiedName: `${qualifiedName}.${name}`,
+          filePath,
+          language,
+          startLine: methodIndex + 2,
+          endLine: methodIndex + 2,
+          isExported: true,
+          visibility: methodIndex % 3 === 0 ? 'protected' : 'public',
+          parameterCount: methodIndex % 3,
+        },
+      };
+      candidates.push({
+        method,
+        owner,
+      });
+      const annotations = new Set();
+      if (ownerIndex % 100 === 0 && methodIndex === 0) annotations.add(TRANSACTIONAL);
+      if (ownerIndex % 125 === 1 && methodIndex === 1) annotations.add(CACHEABLE);
+      if (annotations.size > 0) methodAnnotations.set(method.id, annotations);
+    }
+  }
   function candidateFixture(methodCount) {
     const methodsPerOwner = 10;
     if (methodCount % methodsPerOwner !== 0) {
@@ -50,56 +188,19 @@ export async function verifyAopBenchmark() {
           isExported: true,
         },
       };
-      for (let methodIndex = 0; methodIndex < methodsPerOwner; methodIndex += 1) {
-        const name = `${methodIndex % 2 === 0 ? 'read' : 'write'}${methodIndex}`;
-        const method = {
-          id: `Method:${qualifiedName}.${name}:${extension}`,
-          label: 'Method',
-          properties: {
-            name,
-            qualifiedName: `${qualifiedName}.${name}`,
-            filePath,
-            language,
-            startLine: methodIndex + 2,
-            endLine: methodIndex + 2,
-            isExported: true,
-            visibility: methodIndex % 3 === 0 ? 'protected' : 'public',
-            parameterCount: methodIndex % 3,
-          },
-        };
-        candidates.push({
-          method,
-          owner,
-        });
-        const annotations = new Set();
-        if (ownerIndex % 100 === 0 && methodIndex === 0) annotations.add(TRANSACTIONAL);
-        if (ownerIndex % 125 === 1 && methodIndex === 1) annotations.add(CACHEABLE);
-        if (annotations.size > 0) methodAnnotations.set(method.id, annotations);
-      }
+      addOwnerMethods(
+        owner,
+        { ownerIndex, methodsPerOwner, qualifiedName, extension, filePath, language },
+        candidates,
+        methodAnnotations,
+      );
     }
     return {
       candidates,
       methodAnnotations,
     };
   }
-  function parsePointcut(expression) {
-    const pointcut = parseSpringAopPointcut(expression);
-    if (pointcut === null) throw new Error(`Expected a static pointcut: ${expression}`);
-    return pointcut;
-  }
-  function matchingIds(pointcut, candidates, methodAnnotations) {
-    return candidates
-      .filter((candidate) =>
-        springAopPointcutMatches(
-          pointcut,
-          candidate.owner,
-          candidate.method,
-          methodAnnotations.get(candidate.method.id),
-        ),
-      )
-      .map((candidate) => candidate.method.id)
-      .sort(compareCodeUnits);
-  }
+
   function selectivePointcuts() {
     const partitions = [0, 7, 19, 42, 88];
     return [
@@ -116,46 +217,7 @@ export async function verifyAopBenchmark() {
       parsePointcut(`@annotation(${CACHEABLE})`),
     ];
   }
-  function denseKotlinAopSource(classCount) {
-    const classes = Array.from(
-      {
-        length: classCount,
-      },
-      (_, index) => {
-        const transactional =
-          index % 50 === 0
-            ? `
-  @Tx
-  fun transactional${index}() {}`
-            : '';
-        return `
-@Noise
-class Subject${index} {
-  @Noise
-  fun ordinary${index}() {}
 
-  @OtherNoise
-  fun secondary${index}() {}
-${transactional}
-}
-`;
-      },
-    ).join('\n');
-    return `package com.example
-
-import org.aspectj.lang.annotation.Aspect as AopAspect
-import org.aspectj.lang.annotation.Before as AdviceBefore
-import org.springframework.transaction.annotation.Transactional as Tx
-
-@AopAspect
-class DenseAspect {
-  @AdviceBefore("@annotation(org.springframework.transaction.annotation.Transactional)")
-  fun beforeTransaction() {}
-}
-
-${classes}
-`;
-  }
   function runKotlinAopCapture(classCount, run) {
     const filePath = `src/SpringAopBench${classCount}_${run}.kt`;
     const startedAt = performance.now();
@@ -195,44 +257,7 @@ ${classes}
       matches,
     };
   }
-  function writeFixture(root, relativePath, content) {
-    const target = path.join(root, relativePath);
-    fs.mkdirSync(path.dirname(target), {
-      recursive: true,
-    });
-    fs.writeFileSync(target, content);
-  }
-  function javaServices(count) {
-    return Array.from(
-      {
-        length: count,
-      },
-      (_, index) => `
-class JavaService${index} {
-  @Transactional public void transaction${index}() {}
-  public void read${index}() {}
-  public void write${index}() {}
-}
-`,
-    ).join('\n');
-  }
-  function kotlinServices(count) {
-    return Array.from(
-      {
-        length: count,
-      },
-      (_, index) => `
-class KotlinService${index} {
-  @Tx fun transaction${index}() {}
-  fun read${index}() {}
-  fun write${index}() {}
-}
-`,
-    ).join('\n');
-  }
-  function createRepoDir(serviceCount) {
-    return fs.mkdtempSync(path.join(os.tmpdir(), `spring-aop-bench-${serviceCount}-`));
-  }
+
   function writeMixedSpringAopRepo(root, serviceCount) {
     const javaCount = serviceCount / 2;
     const kotlinCount = serviceCount - javaCount;
@@ -447,7 +472,7 @@ public class BenchmarkAspect {
       assert.ok(result.buildMs + result.queryMs < 10_000);
     }
     const first = results[0];
-    const last = results[results.length - 1];
+    const last = results.at(-1);
     const workRatio = last.examined / first.examined;
     const sizeRatio = last.methods / first.methods;
     assert.ok(workRatio > sizeRatio * 0.9);
@@ -459,14 +484,14 @@ public class BenchmarkAspect {
 
     const scales = [20, 40, 80];
     const results = [];
-    for (const services of scales) {
+    await runInSequence(scales, async (services) => {
       const result = await runMixedPipelineBenchmark(services);
       results.push(result);
       console.log(
         `  pipeline services=${services}: ${result.elapsedMs.toFixed(1)}ms ` +
           `(${result.behaviorEdges} behavior, ${result.adviceEdges} advice edges)`,
       );
-    }
+    });
     for (const result of results) {
       const javaServiceCount = result.services / 2;
       const kotlinServiceCount = result.services - javaServiceCount;

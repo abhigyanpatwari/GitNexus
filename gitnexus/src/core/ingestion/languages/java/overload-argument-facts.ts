@@ -191,6 +191,16 @@ export function javaRangeContains(outer: Range, inner: Range): boolean {
   return startsAtOrBefore(outer, inner) && endsAtOrAfter(outer, inner);
 }
 
+function constructorInvocationForm(node: SyntaxNode): JavaOverloadCallFact['constructorForm'] {
+  if (node.type === 'explicit_constructor_invocation') {
+    const keyword = node.childForFieldName('constructor')?.type;
+    if (keyword === 'super' || keyword === 'this') return keyword;
+  } else {
+    return node.lastNamedChild?.type === 'class_body' ? 'anonymous' : 'new';
+  }
+  return undefined;
+}
+
 function rangeOf(node: SyntaxNode): Range {
   return {
     startLine: node.startPosition.row + 1,
@@ -763,16 +773,9 @@ export function captureJavaOverloadFacts(
       .filter((arg) => arg.type !== 'line_comment' && arg.type !== 'block_comment')
       .map((arg) => expression(arg));
     if (node.type !== 'method_invocation') {
-      let constructorForm: JavaOverloadCallFact['constructorForm'];
-      if (node.type === 'explicit_constructor_invocation') {
-        const keyword = node.childForFieldName('constructor')?.type;
-        if (keyword === 'super' || keyword === 'this') constructorForm = keyword;
-      } else {
-        constructorForm = node.lastNamedChild?.type === 'class_body' ? 'anonymous' : 'new';
-      }
       return {
         name: '<init>',
-        constructorForm,
+        constructorForm: constructorInvocationForm(node),
         range: rangeOf(node),
         arguments: args,
         receiverIsValue: false,

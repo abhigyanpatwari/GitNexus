@@ -1,5 +1,11 @@
+package org.gitnexus.conformance;
+
 import com.sun.source.util.JavacTask;
 import java.io.IOException;
+import java.io.FileDescriptor;
+import java.io.FileOutputStream;
+import java.io.PrintWriter;
+import java.nio.charset.StandardCharsets;
 import java.net.URI;
 import java.util.List;
 import java.util.TreeMap;
@@ -47,7 +53,10 @@ class PlatformTypes {
                     }
                 }
             }
-            packages.forEach((name, types) -> System.out.println(name + " " + String.join(" ", types)));
+            try (var out = new PrintWriter(new FileOutputStream(FileDescriptor.out), false, StandardCharsets.UTF_8)) {
+                packages.forEach((name, types) -> out.println(name + " " + String.join(" ", types)));
+                if (out.checkError()) throw new IOException("Cannot write package inventory");
+            }
         }
     }
 }

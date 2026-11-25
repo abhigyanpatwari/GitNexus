@@ -72,8 +72,10 @@ for (const [project, observations] of Object.entries(projects)) {
         );
       if (observation.only)
         assert.ok(values.length && values.every((value) => value === observation.only), message);
-      if (exact)
-        assert.deepEqual(values.sort(compareCodeUnits), [...exact].sort(compareCodeUnits), message);
+      if (exact) {
+        values.sort(compareCodeUnits);
+        assert.deepEqual(values, [...exact].sort(compareCodeUnits), message);
+      }
       for (const value of includes ?? []) assert.ok(values.includes(value), message);
       for (const value of excludes ?? []) assert.ok(!values.includes(value), message);
     }

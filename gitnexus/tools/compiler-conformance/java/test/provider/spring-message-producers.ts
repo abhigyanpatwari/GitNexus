@@ -408,7 +408,8 @@ describe('Spring messaging producer side-channel transport', () => {
       JAVA_FILE,
     );
     const collected = collectJavaCaptureSideChannel(JAVA_FILE);
-    const restored = JSON.parse(JSON.stringify(collected)) as typeof collected;
+    const wire = JSON.stringify(collected);
+    const restored = JSON.parse(wire) as typeof collected;
     assert.deepEqual(restored?.springMessageProducerFacts, collected?.springMessageProducerFacts);
     assert.deepEqual(restored?.springMessageProducerFacts?.[0]?.args, [
       { text: '"orders"' },
@@ -577,11 +578,13 @@ describe('Spring messaging producer destination kinds per template', () => {
     // `notAPublish` is the last method in both fixtures; the signature lists
     // above end at the stream bridge, so `RabbitTemplate.send` and
     // `JmsTemplate.send` produced nothing.
-    const receivers = [...javaProducers(JAVA_SOURCE), ...kotlinProducers(KOTLIN_SOURCE)].map(
-      (fact) => `${fact.receiverName}.${fact.methodName}`,
+    const receivers = new Set(
+      [...javaProducers(JAVA_SOURCE), ...kotlinProducers(KOTLIN_SOURCE)].map(
+        (fact) => `${fact.receiverName}.${fact.methodName}`,
+      ),
     );
-    assert.ok(!receivers.includes('rabbitTemplate.send'));
-    assert.ok(!receivers.includes('jmsTemplate.send'));
+    assert.ok(!receivers.has('rabbitTemplate.send'));
+    assert.ok(!receivers.has('jmsTemplate.send'));
   });
 
   it('resolves no destination while capturing it', () => {

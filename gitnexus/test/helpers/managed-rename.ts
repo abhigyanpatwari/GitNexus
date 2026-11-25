@@ -59,8 +59,11 @@ export function managedRename(roots: string[]) {
       { status: 'success', applied: false },
       JSON.stringify(preview),
     );
-    for (const [file, content] of Object.entries(files))
-      assert.equal(await fs.readFile(path.join(root, file), 'utf8'), content);
+    await Promise.all(
+      Object.entries(files).map(async ([file, content]) => {
+        assert.equal(await fs.readFile(path.join(root, file), 'utf8'), content);
+      }),
+    );
     const applied = await renameSymbol(root, symbol, { new_name: newName, dry_run: false }, nodes);
     assert.partialDeepStrictEqual(
       applied,
@@ -71,8 +74,11 @@ export function managedRename(roots: string[]) {
       },
       JSON.stringify(applied),
     );
-    for (const [file, content] of Object.entries(expected))
-      assert.equal(await fs.readFile(path.join(root, file), 'utf8'), content);
+    await Promise.all(
+      Object.entries(expected).map(async ([file, content]) => {
+        assert.equal(await fs.readFile(path.join(root, file), 'utf8'), content);
+      }),
+    );
   }
   return { fixture, expectRename };
 }

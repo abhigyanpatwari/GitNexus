@@ -512,10 +512,9 @@ dependencies {
 
     const result = await extractNamed(['shared-lib', 'models', 'app', 'named', 'named-first']);
 
-    assert.deepEqual(result.discoveredProjects.get('app')?.deps.sort(compareCodeUnits), [
-      'com.example:models',
-      'com.example:shared-lib',
-    ]);
+    const dependencies = result.discoveredProjects.get('app')?.deps;
+    dependencies?.sort(compareCodeUnits);
+    assert.deepEqual(dependencies, ['com.example:models', 'com.example:shared-lib']);
     for (const link of [
       {
         from: 'shared-lib',

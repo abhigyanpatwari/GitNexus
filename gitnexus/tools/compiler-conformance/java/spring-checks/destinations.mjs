@@ -275,9 +275,9 @@ export async function verifyDestinations() {
     // it either way publishes the other reading's payload as an address.
     assert.deepStrictEqual(withAddress('body'), []);
     assert.deepStrictEqual(withAddress('orders.rk'), []);
-    const names = destinations.map((node) => String(node.properties.name));
-    assert.ok(!names.includes('body'));
-    assert.ok(!names.includes('orders.rk'));
+    const names = new Set(destinations.map((node) => String(node.properties.name)));
+    assert.ok(!names.has('body'));
+    assert.ok(!names.has('orders.rk'));
     const sources = new Set(
       messagingEdges.map((edge) => result.graph.getNode(edge.sourceId)?.properties.name),
     );
@@ -386,9 +386,9 @@ export async function verifyDestinations() {
   }
   // does not treat a topic pattern as an address
 
-  assert.deepStrictEqual(withAddress('orders\\..*'), []);
+  assert.deepStrictEqual(withAddress(String.raw`orders\..*`), []);
   assert.equal(
-    destinations.some((node) => String(node.properties.name).includes('orders\\..*')),
+    destinations.some((node) => String(node.properties.name).includes(String.raw`orders\..*`)),
     false,
   );
   // does not model a WebSocket/STOMP mapping as a broker destination
@@ -588,9 +588,9 @@ export async function verifyDestinationsDatabase() {
       );
       const types = new Set(rows.map((row) => row.type));
       assert.deepStrictEqual(types, new Set(['CONSUMES_FROM', 'PUBLISHES_TO']));
-      const names = rows.map((row) => row.name);
-      assert.ok(names.includes('publishLiteral'));
-      assert.ok(names.includes('consumeLiteral'));
+      const names = new Set(rows.map((row) => row.name));
+      assert.ok(names.has('publishLiteral'));
+      assert.ok(names.has('consumeLiteral'));
     }
     // KEEPS that pair joined when a stranger names the same word on another broker
     {

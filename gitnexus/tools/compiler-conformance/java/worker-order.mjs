@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../test/helpers/run-in-sequence.mjs';
 import { compareCodeUnits } from '../compare.mjs';
 import assert from 'node:assert/strict';
 import { globSync, readFileSync } from 'node:fs';
@@ -26,7 +27,7 @@ export async function checkWorkerOrder(dir, ref, spec) {
     ...new Set(ref.calls.filter((call) => call.from === owners[0][0]).map((call) => call.to)),
   ].sort(compareCodeUnits);
   assert.ok(expected.length, 'Compiler selected no source methods in ' + spec.file);
-  for (const input of [files, [...files].reverse()]) {
+  await runInSequence([files, [...files].reverse()], async (input) => {
     javaScopeResolver.loadResolutionConfig?.('');
     const graph = createKnowledgeGraph();
     const model = createSemanticModel();
@@ -73,5 +74,5 @@ export async function checkWorkerOrder(dir, ref, spec) {
       expected,
       'Worker-parsed CALLS from ' + spec.file + ' with first input ' + input[0].path,
     );
-  }
+  });
 }

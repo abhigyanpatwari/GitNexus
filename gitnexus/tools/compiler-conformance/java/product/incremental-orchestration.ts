@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import { fixtureGitExecutable } from '../../../../test/helpers/git-executable.js';
 import { compareCodeUnits } from '../../compare.mjs';
 import assert from 'node:assert/strict';
@@ -518,9 +519,11 @@ it(
     const repo = await setupMiniRepo();
     try {
       const src = path.join(repo.dbPath, 'src');
-      for (const name of JAVA_DI_FIXTURE) {
-        await copyFile(incrementalSource(name), path.join(src, name));
-      }
+      await Promise.all(
+        JAVA_DI_FIXTURE.map(async (name) => {
+          await copyFile(incrementalSource(name), path.join(src, name));
+        }),
+      );
       gitCommitAll(repo.dbPath, 'add java di fixture');
 
       const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
@@ -584,14 +587,14 @@ it(
       assert.equal(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath), 1);
 
       const target = path.join(repo.dbPath, 'src', 'logger.ts');
-      for (const run of [1, 2]) {
+      await runInSequence([1, 2], async (run) => {
         const before = await readFile(target, 'utf-8');
         await writeFile(target, `${before}\n// auto-register idempotency touch ${run}\n`, 'utf-8');
         gitCommitAll(repo.dbPath, `unrelated auto-register touch ${run}`);
         await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
         assert.equal(await countSpringAutoConfigurationDeclarations(repo.dbPath), 1);
         assert.equal(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath), 1);
-      }
+      });
 
       await copyFile(
         incrementalSource('ExampleAutoConfiguration.java'),

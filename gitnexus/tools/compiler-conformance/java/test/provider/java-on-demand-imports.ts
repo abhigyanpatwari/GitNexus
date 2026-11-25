@@ -324,10 +324,10 @@ describe('Java AST-bound package on-demand dependencies (JLS 6.5, 7.5.2)', () =>
   it('reuses JSON-serialized AST facts with no retained source', () => {
     const source = importing('User value; String unrelated = "Order";');
     const cold = run(source);
-    const cached = structuredClone(cold.parsedFiles).map((parsed) => ({
-      ...parsed,
-      captureSideChannel: JSON.parse(JSON.stringify(parsed.captureSideChannel)),
-    }));
+    const cached = structuredClone(cold.parsedFiles).map((parsed) => {
+      const wire = JSON.stringify(parsed.captureSideChannel);
+      return { ...parsed, captureSideChannel: JSON.parse(wire) };
+    });
     assert.deepEqual(rerun(source, cached).targets, cold.targets);
     assert.deepEqual(cold.targets, ['models/User.java']);
   });

@@ -75,7 +75,8 @@ function ingestionRoutes(files: Record<string, string>): string[] {
         ? foldJavaOperands(rel, route.routePathOperands, repo)
         : route.routePath;
       if (path === null) continue;
-      out.push(`${route.httpMethod} ${`${route.prefix ?? ''}${path}`.replace(/\/{2,}/g, '/')}`);
+      const routePath = `${route.prefix ?? ''}${path}`.replace(/\/{2,}/g, '/');
+      out.push(`${route.httpMethod} ${routePath}`);
     }
   }
   return out.sort(compareCodeUnits);

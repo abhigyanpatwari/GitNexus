@@ -9,7 +9,7 @@ it('includes the source path in embedded-NUL warnings', { timeout: 20_000 }, asy
   const filePath = 'src/NullByteDemo.java';
   const source = 'public interface Demo { /** embedded \0 */ void after(); }';
   // The worker logger writes directly to fd 2, so capture it at a child-process boundary.
-  const runner = `
+  const runner = String.raw`
       const { Worker } = require('node:worker_threads');
       const { pathToFileURL } = require('node:url');
       const worker = new Worker(pathToFileURL(${JSON.stringify(DIST_WORKER)}));
@@ -22,7 +22,7 @@ it('includes the source path in embedded-NUL warnings', { timeout: 20_000 }, asy
             files: [{ path: ${JSON.stringify(filePath)}, content: ${JSON.stringify(source)} }],
           });
         } else if (message && message.type === 'sub-batch-done') {
-          process.stdout.write('SUB_BATCH_DONE\\n');
+          process.stdout.write('SUB_BATCH_DONE\n');
         }
       });
       worker.on('error', (error) => {

@@ -76,6 +76,16 @@ function namedTypes(written: string, inventory: JavaWorkspaceTypeInventory): Qua
 type RootOrigin = 'package' | 'shadowed' | 'uncertain' | { type: string; local?: TypeEntry };
 type HeaderParameterLookup = (range: Range, name: string) => RootOrigin;
 
+function shadowsHeaderRoot(
+  type: TypeEntry,
+  root: string,
+  inventory: JavaWorkspaceTypeInventory,
+): boolean {
+  if (type.memberNames.has(root)) return true;
+  const inherited = inventory.namesOf(type);
+  return inherited.unknown || inherited.names.has(root);
+}
+
 function classHeaderRoot(
   owner: TypeEntry,
   root: string,
@@ -86,11 +96,7 @@ function classHeaderRoot(
   for (let type: TypeEntry | undefined = owner; type !== undefined; type = type.parent) {
     if (type.fact.simpleName === root) return 'shadowed';
     if (type.fact.typeParameters.includes(root)) return parameter(type.fact.range, root);
-    if (type !== owner) {
-      if (type.memberNames.has(root)) return 'shadowed';
-      const inherited = inventory.namesOf(type);
-      if (inherited.unknown || inherited.names.has(root)) return 'shadowed';
-    }
+    if (type !== owner && shadowsHeaderRoot(type, root, inventory)) return 'shadowed';
     if (type.parent === undefined) {
       return type.declaringScope === module
         ? undefined
@@ -116,9 +122,11 @@ function executableHeaderRoot(
       nearest = { range, origin };
     }
   }
-  for (const method of owner.facts.methods)
-    if (method.typeParameters.includes(root) && javaRangeContains(method.range, at))
-      consider(method.range, parameter(method.range, root));
+  for (const method of owner.facts.methods.filter((method) =>
+    method.typeParameters.includes(root),
+  )) {
+    if (javaRangeContains(method.range, at)) consider(method.range, parameter(method.range, root));
+  }
   for (const entry of inventory.byFile.get(owner.filePath)?.values() ?? []) {
     if (entry.declaringScope !== module && entry.fact.simpleName === root)
       consider(entry.fact.visible, { type: entry.fact.name, local: entry });
@@ -126,15 +134,22 @@ function executableHeaderRoot(
     if (entry.fact.typeParameters.includes(root))
       consider(entry.fact.range, parameter(entry.fact.range, root));
     if (entry === owner || entry.memberNames.has(root)) continue;
-    const inherited = inventory.namesOf(entry);
-    const candidates = membersNamed(inherited.members, root);
-    if (inherited.unknown || candidates.length > 1) consider(entry.fact.range, 'uncertain');
-    else if (candidates[0]) {
-      const member = candidates[0];
-      consider(entry.fact.range, { type: member.fact.name, local: member });
-    }
+    const origin = inheritedHeaderOrigin(entry, root, inventory);
+    if (origin !== undefined) consider(entry.fact.range, origin);
   }
   return nearest?.origin;
+}
+
+function inheritedHeaderOrigin(
+  entry: TypeEntry,
+  root: string,
+  inventory: JavaWorkspaceTypeInventory,
+): RootOrigin | undefined {
+  const inherited = inventory.namesOf(entry);
+  const candidates = membersNamed(inherited.members, root);
+  if (inherited.unknown || candidates.length > 1) return 'uncertain';
+  const member = candidates[0];
+  return member && { type: member.fact.name, local: member };
 }
 
 function fileRootOrigin(
@@ -154,25 +169,44 @@ function fileRootOrigin(
   if (single.size > 1) return 'shadowed';
   if (inventory.packageTypes.get(owner.packageName)?.has(root))
     return { type: owner.packageName ? owner.packageName + '.' + root : root };
+  return wildcardRootOrigin(owner, root, inventory);
+}
+
+function wildcardRootOrigin(
+  owner: TypeEntry,
+  root: string,
+  inventory: JavaWorkspaceTypeInventory,
+): RootOrigin {
   let importedType = platformPackageHasType('java.lang', root) ? 'java.lang.' + root : undefined;
   for (const item of owner.facts.imports) {
     if (!item.wildcard) continue;
     const name = stripGaps(item.name);
-    if (item.static) {
-      const member = inventory.staticMemberType(owner, name, root);
-      if (member === true) return 'shadowed';
-      if (member === 'uncertain') return 'uncertain';
-      continue;
-    }
-    const source = inventory.packageTypes.get(name);
-    const platform = platformPackageHasType(name, root);
-    if (!source && platform === undefined) return 'uncertain';
-    if (!source?.has(root) && !platform) continue;
-    const candidate = name + '.' + root;
+    const match = wildcardImportOrigin(owner, root, name, item.static, inventory);
+    if (match === undefined) continue;
+    if (typeof match === 'string') return match;
+    const candidate = match.type;
     if (importedType && candidate !== importedType) return 'uncertain';
     importedType = candidate;
   }
   return importedType ? { type: importedType } : 'package';
+}
+
+function wildcardImportOrigin(
+  owner: TypeEntry,
+  root: string,
+  name: string,
+  isStatic: boolean,
+  inventory: JavaWorkspaceTypeInventory,
+): RootOrigin | undefined {
+  if (isStatic) {
+    const member = inventory.staticMemberType(owner, name, root);
+    if (member === true) return 'shadowed';
+    return member === 'uncertain' ? 'uncertain' : undefined;
+  }
+  const source = inventory.packageTypes.get(name);
+  const platform = platformPackageHasType(name, root);
+  if (!source && platform === undefined) return 'uncertain';
+  return source?.has(root) || platform ? { type: name + '.' + root } : undefined;
 }
 
 function boundRootOrigin(
@@ -230,14 +264,11 @@ function qualifiedCandidates(
   }
   let candidates = cache.get(key);
   if (!candidates) {
-    candidates =
-      origin === 'package'
-        ? namedTypes(written, inventory)
-        : nestedTypes(
-            origin.local ? [{ type: origin.local }] : namedTypes(origin.type, inventory),
-            tail.split('.'),
-            inventory,
-          );
+    if (origin === 'package') candidates = namedTypes(written, inventory);
+    else {
+      const roots = origin.local ? [{ type: origin.local }] : namedTypes(origin.type, inventory);
+      candidates = nestedTypes(roots, tail.split('.'), inventory);
+    }
     cache.set(key, candidates);
   }
   return candidates;
@@ -293,110 +324,149 @@ export function bindJavaQualifiedHeritage(
   for (const [index, file] of files.entries()) {
     const entries = inventory.byFile.get(file.filePath);
     if (
-      entries === undefined ||
+      !entries ||
       !getJavaOverloadFacts(file.filePath)?.types.some((type) =>
         type.bases.some((base) => base.includes('.')),
       )
     )
       continue;
-    const sites = new Map<ScopeId, ReferenceSite[]>();
-    for (const site of file.referenceSites) {
-      if (site.kind !== 'inherits') continue;
-      const list = sites.get(site.inScope);
-      if (list === undefined) sites.set(site.inScope, [site]);
-      else list.push(site);
-    }
-    const replacements = new Map<ReferenceSite, ReferenceSite>();
-    const fileRoots = new Map<string, RootOrigin>();
-    const parametersAt = new Map<string, readonly TypeParameter[]>();
-    for (const scope of file.scopes) {
-      const parameters = scope.ownedDefs.find((def) => def.typeParameters?.length)?.typeParameters;
-      if (parameters) parametersAt.set(javaOverloadRangeKey(scope.range), parameters);
-    }
-    for (const scope of file.scopes) {
-      const references = sites.get(scope.id);
-      const owner =
-        references === undefined ? undefined : entries.get(javaOverloadRangeKey(scope.range));
-      if (
-        owner === undefined ||
-        references === undefined ||
-        references.length !== owner.fact.bases.length
-      )
-        continue;
-      // The parser records extends and implements in source order, including
-      // two interfaces with the same simple name and different packages.
-      references.sort(
-        (a, b) =>
-          a.atRange.startLine - b.atRange.startLine || a.atRange.startCol - b.atRange.startCol,
+    files[index] = bindFileHeritage(file, entries, {
+      inventory,
+      typesByName,
+      duplicateNamesByFile,
+    });
+  }
+}
+
+interface HeritageLookup {
+  inventory: JavaWorkspaceTypeInventory;
+  typesByName: Map<string, QualifiedType[]>;
+  duplicateNamesByFile: Map<string, Set<string>>;
+}
+
+function inheritanceSites(file: ParsedFile): Map<ScopeId, ReferenceSite[]> {
+  const sites = new Map<ScopeId, ReferenceSite[]>();
+  for (const site of file.referenceSites) {
+    if (site.kind !== 'inherits') continue;
+    const list = sites.get(site.inScope);
+    if (list) list.push(site);
+    else sites.set(site.inScope, [site]);
+  }
+  return sites;
+}
+
+function headerParameterLookup(
+  parametersAt: ReadonlyMap<string, readonly TypeParameter[]>,
+  owner: TypeEntry,
+  inventory: JavaWorkspaceTypeInventory,
+): HeaderParameterLookup {
+  return (range, name) =>
+    boundRootOrigin(
+      parametersAt.get(javaOverloadRangeKey(range))?.find((p) => p.name === name),
+      range,
+      owner,
+      inventory,
+    );
+}
+
+function bindFileHeritage(
+  file: ParsedFile,
+  entries: ReadonlyMap<string, TypeEntry>,
+  lookup: HeritageLookup,
+): ParsedFile {
+  const sites = inheritanceSites(file);
+  const parametersAt = new Map<string, readonly TypeParameter[]>();
+  for (const scope of file.scopes) {
+    const parameters = scope.ownedDefs.find((def) => def.typeParameters?.length)?.typeParameters;
+    if (parameters) parametersAt.set(javaOverloadRangeKey(scope.range), parameters);
+  }
+  const fileRoots = new Map<string, RootOrigin>();
+  const replacements = new Map<ReferenceSite, ReferenceSite>();
+  for (const scope of file.scopes) {
+    const references = sites.get(scope.id);
+    if (!references) continue;
+    const owner = entries.get(javaOverloadRangeKey(scope.range));
+    if (!owner || references.length !== owner.fact.bases.length) continue;
+    const parameter = headerParameterLookup(parametersAt, owner, lookup.inventory);
+    // The parser records extends and implements in source order, including same-named interfaces from different packages.
+    references.sort(
+      (a, b) =>
+        a.atRange.startLine - b.atRange.startLine || a.atRange.startCol - b.atRange.startCol,
+    );
+    for (const [i, site] of references.entries()) {
+      const resolved = bindHeritageSite(
+        site,
+        owner.fact.bases[i]!,
+        owner,
+        file.moduleScope,
+        parameter,
+        fileRoots,
+        lookup,
       );
-      for (const [i, site] of references.entries()) {
-        const written = eraseJavaTypeArguments(stripGaps(owner.fact.bases[i]!));
-        const dot = written.indexOf('.');
-        if (dot < 0 || !written.endsWith('.' + site.name) || !qualifiedName.test(written)) continue;
-        const root = written.slice(0, dot);
-        const lexical = classHeaderRoot(owner, root, file.moduleScope, inventory, (range, name) =>
-          boundRootOrigin(
-            parametersAt.get(javaOverloadRangeKey(range))?.find((p) => p.name === name),
-            range,
-            owner,
-            inventory,
-          ),
-        );
-        let origin = lexical ?? fileRoots.get(root);
-        if (origin === undefined) {
-          origin = fileRootOrigin(owner, root, inventory);
-          fileRoots.set(root, origin);
-        }
-        if (origin === 'uncertain') {
-          replacements.set(site, { ...site, unresolvedInheritanceBase: true });
-          continue;
-        }
-        if (origin === 'shadowed') continue;
-        const qualified = origin === 'package' ? written : origin.type + written.slice(dot);
-        const candidates = qualifiedCandidates(
-          origin,
-          written,
-          written.slice(dot + 1),
-          inventory,
-          typesByName,
-        );
-        const visible = candidates.filter((candidate) => accessible(candidate, owner, inventory));
-        if (visible.length !== 1) {
-          replacements.set(site, { ...site, unresolvedInheritanceBase: true });
-          continue;
-        }
-        const target = visible[0]!.type;
-        if (target.parent === undefined && target.facts.types.length > 1) {
-          // A nested declaration can share this module binding. The class extractor
-          // gives colliding declarations distinct qualified names.
-          let duplicates = duplicateNamesByFile.get(target.filePath);
-          if (duplicates === undefined) {
-            const seen = new Set<string>();
-            duplicates = new Set<string>();
-            for (const { simpleName } of target.facts.types) {
-              if (seen.has(simpleName)) duplicates.add(simpleName);
-              seen.add(simpleName);
-            }
-            duplicateNamesByFile.set(target.filePath, duplicates);
-          }
-          if (duplicates.has(site.name) && target.declaringScope != null) {
-            replacements.set(site, {
-              ...site,
-              lookupScope: target.declaringScope,
-              rawQualifiedName: qualified,
-            });
-            continue;
-          }
-        }
-        if (target.declaringScope != null)
-          replacements.set(site, { ...site, lookupScope: target.declaringScope });
-      }
-    }
-    if (replacements.size > 0) {
-      files[index] = {
-        ...file,
-        referenceSites: file.referenceSites.map((site) => replacements.get(site) ?? site),
-      };
+      if (resolved) replacements.set(site, resolved);
     }
   }
+  return replacements.size
+    ? { ...file, referenceSites: file.referenceSites.map((site) => replacements.get(site) ?? site) }
+    : file;
+}
+
+function bindHeritageSite(
+  site: ReferenceSite,
+  base: string,
+  owner: TypeEntry,
+  module: ScopeId,
+  parameter: HeaderParameterLookup,
+  fileRoots: Map<string, RootOrigin>,
+  lookup: HeritageLookup,
+): ReferenceSite | undefined {
+  const written = eraseJavaTypeArguments(stripGaps(base));
+  const dot = written.indexOf('.');
+  if (dot < 0 || !written.endsWith('.' + site.name) || !qualifiedName.test(written))
+    return undefined;
+  const root = written.slice(0, dot);
+  let origin =
+    classHeaderRoot(owner, root, module, lookup.inventory, parameter) ?? fileRoots.get(root);
+  if (origin === undefined) {
+    origin = fileRootOrigin(owner, root, lookup.inventory);
+    fileRoots.set(root, origin);
+  }
+  if (origin === 'shadowed') return undefined;
+  if (origin === 'uncertain') return { ...site, unresolvedInheritanceBase: true };
+  const candidates = qualifiedCandidates(
+    origin,
+    written,
+    written.slice(dot + 1),
+    lookup.inventory,
+    lookup.typesByName,
+  );
+  const visible = candidates.filter((candidate) => accessible(candidate, owner, lookup.inventory));
+  if (visible.length !== 1) return { ...site, unresolvedInheritanceBase: true };
+  const target = visible[0]!.type;
+  if (target.declaringScope == null) return undefined;
+  if (hasDuplicateModuleName(target, site.name, lookup.duplicateNamesByFile)) {
+    const qualified = origin === 'package' ? written : origin.type + written.slice(dot);
+    return { ...site, lookupScope: target.declaringScope, rawQualifiedName: qualified };
+  }
+  return { ...site, lookupScope: target.declaringScope };
+}
+
+// A nested declaration can share a module binding with a top-level class.
+function hasDuplicateModuleName(
+  target: TypeEntry,
+  name: string,
+  byFile: Map<string, Set<string>>,
+): boolean {
+  if (target.parent !== undefined || target.facts.types.length < 2) return false;
+  let duplicates = byFile.get(target.filePath);
+  if (!duplicates) {
+    const seen = new Set<string>();
+    duplicates = new Set<string>();
+    for (const { simpleName } of target.facts.types) {
+      if (seen.has(simpleName)) duplicates.add(simpleName);
+      seen.add(simpleName);
+    }
+    byFile.set(target.filePath, duplicates);
+  }
+  return duplicates.has(name);
 }

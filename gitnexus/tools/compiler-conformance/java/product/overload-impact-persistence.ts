@@ -9,6 +9,20 @@ import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import type { RepoMeta } from '../../../../src/storage/repo-meta.js';
 
+function assertCallers(results: Record<string, ImpactReceipt>): void {
+  for (const [suffix, expected] of Object.entries(callers)) {
+    const result = results[prefix + suffix];
+    assert.ok(!Object.hasOwn(result, 'error'), suffix);
+    assert.notEqual(result.partial, true, suffix);
+    assert.equal(result.summary.direct, expected.length, suffix);
+    assert.deepEqual(
+      (result.byDepth['1'] ?? []).map((caller) => caller.name).sort(compareCodeUnits),
+      [...expected].sort(compareCodeUnits),
+      suffix,
+    );
+  }
+}
+
 const exec = promisify(execFile);
 const helper = fileURLToPath(
   new URL('../../../../test/helpers/java-overload-persistence-child.mjs', import.meta.url),
@@ -76,19 +90,7 @@ it(
       if (!line) throw new Error(`Missing child receipt: ${stdout}`);
       return JSON.parse(line.slice('JAVA_OVERLOAD_RESULT='.length)) as T;
     }
-    function assertCallers(results: Record<string, ImpactReceipt>): void {
-      for (const [suffix, expected] of Object.entries(callers)) {
-        const result = results[prefix + suffix];
-        assert.ok(!Object.hasOwn(result, 'error'), suffix);
-        assert.notEqual(result.partial, true, suffix);
-        assert.equal(result.summary.direct, expected.length, suffix);
-        assert.deepEqual(
-          (result.byDepth['1'] ?? []).map((caller) => caller.name).sort(compareCodeUnits),
-          [...expected].sort(compareCodeUnits),
-          suffix,
-        );
-      }
-    }
+
     try {
       await cp(fixture, repo, { recursive: true });
       await exec('git', ['init', '-q', repo]);

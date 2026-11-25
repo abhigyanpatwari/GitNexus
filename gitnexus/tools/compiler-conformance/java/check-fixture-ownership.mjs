@@ -26,8 +26,12 @@ const projectReaders = new Set([
   'useFixture',
   'writeFixtureRepo',
 ]);
-const fixturePath =
-  /(?:^|\/)(?:compiler-conformance\/java-[^/]+|java-resolution\/[^/]+|fixtures(?:\/[^/]+)*\/(?:java|java-[^/]+))(?:\/|$)/;
+const compilerProjectPath =
+  /(?:^|\/)(?:compiler-conformance\/java-[^/]+|java-resolution\/[^/]+)(?:\/|$)/;
+const javaFixturePath = /(?:^|\/)fixtures(?:\/[^/]+)*\/java(?:-[^/]+)?(?:\/|$)/;
+function isFixturePath(path) {
+  return compilerProjectPath.test(path) || javaFixturePath.test(path);
+}
 const fsModule = /^(?:node:)?fs(?:\/promises)?$/;
 const pathModule = /^(?:node:)?path(?:\/posix|\/win32)?$/;
 
@@ -39,6 +43,14 @@ function children(node) {
 
 function nameOf(node) {
   return node?.name ?? node?.value;
+}
+
+function literalIdentifier(node, bindings, seen) {
+  if (seen.has(node.name)) return '*';
+  const binding = bindingFor(bindings, node.name);
+  if (binding?.path)
+    return literal(binding.path.node, binding.path.scope, new Set([...seen, node.name]));
+  return nameOf(binding?.imported) === 'FIXTURES' || node.name === 'FIXTURES' ? 'fixtures' : '*';
 }
 
 function literal(node, bindings, seen = new Set()) {
@@ -56,15 +68,8 @@ function literal(node, bindings, seen = new Set()) {
               : ''),
         )
         .join('');
-    case 'Identifier': {
-      if (seen.has(node.name)) return '*';
-      const binding = bindingFor(bindings, node.name);
-      if (binding?.path)
-        return literal(binding.path.node, binding.path.scope, new Set([...seen, node.name]));
-      return nameOf(binding?.imported) === 'FIXTURES' || node.name === 'FIXTURES'
-        ? 'fixtures'
-        : '*';
-    }
+    case 'Identifier':
+      return literalIdentifier(node, bindings, seen);
     case 'TSAsExpression':
     case 'TSSatisfiesExpression':
     case 'TSNonNullExpression':
@@ -99,15 +104,16 @@ function javaSourceMap(node, bindings, seen = new Set()) {
     return javaSourceMap(node.expression, bindings, seen);
   if (node.type !== 'ObjectExpression') return '';
   for (const property of node.properties) {
-    if (property.type === 'SpreadElement') {
-      const match = javaSourceMap(property.argument, bindings, seen);
-      if (match) return match;
-    } else {
-      const key = property.computed ? literal(property.key, bindings) : nameOf(property.key);
-      if (typeof key === 'string' && key.endsWith('.java')) return key;
-    }
+    const match = javaSourceProperty(property, bindings, seen);
+    if (match) return match;
   }
   return '';
+}
+
+function javaSourceProperty(property, bindings, seen) {
+  if (property.type === 'SpreadElement') return javaSourceMap(property.argument, bindings, seen);
+  const key = property.computed ? literal(property.key, bindings) : nameOf(property.key);
+  return typeof key === 'string' && key.endsWith('.java') ? key : '';
 }
 
 function bindingFor(scope, name) {
@@ -203,6 +209,46 @@ function completeFsMock(factory) {
   );
 }
 
+function fixtureCall(node, bindings, mocked) {
+  const callee = node.callee;
+  const identifier = callee.type === 'Identifier';
+  let owner = callee.object;
+  if (nameOf(owner?.property) === 'promises') owner = owner.object;
+  const binding = bindingFor(bindings, identifier ? callee.name : owner?.name);
+  const method = identifier ? (nameOf(binding?.imported) ?? callee.name) : nameOf(callee.property);
+  const actualFs =
+    fsModule.test(binding?.module ?? '') && !mocked.has(binding.module.replace(/^node:/, ''));
+  const isProject = projectReaders.has(method) && identifier && (!binding || binding.module);
+  const explicitProjectPath =
+    (node.type === 'NewExpression' && method === 'URL') ||
+    (pathModule.test(binding?.module ?? '') && ['join', 'resolve'].includes(method));
+  return { binding, method, identifier, actualFs, isProject, explicitProjectPath };
+}
+
+function fixtureArgument(node, bindings, { method, actualFs, isProject, explicitProjectPath }) {
+  if ((actualFs && fsCalls.has(method)) || isProject || explicitProjectPath) {
+    const count = ['cp', 'cpSync', 'copyFile', 'copyFileSync'].includes(method) ? 2 : 1;
+    const paths = explicitProjectPath ? [node] : node.arguments.slice(0, count);
+    for (const arg of paths) {
+      const candidate = literal(arg, bindings).replaceAll('\\', '/');
+      if (isFixturePath(candidate) || (actualFs && candidate.endsWith('.java'))) return candidate;
+    }
+  }
+  if (isProject && (method === 'useFixture' || method === 'writeFixtureRepo'))
+    return javaSourceMap(node.arguments[1], bindings);
+  return '';
+}
+
+function writtenFixture(node, bindings, { identifier, binding }, mocked) {
+  if (!identifier || !binding) return '';
+  for (const arg of node.arguments) {
+    const candidate = javaSourceMap(arg, bindings) || literal(arg, bindings);
+    if ((candidate.endsWith('.java') || isFixturePath(candidate)) && writesFiles(binding, mocked))
+      return candidate;
+  }
+  return '';
+}
+
 /** Detect Java file fixtures and virtual source maps. Vitest setup also observes the parser. */
 export function javaFixtureUses(source, filename = 'suite.test.ts') {
   if (!/java|FIXTURES/i.test(source)) return [];
@@ -234,53 +280,11 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
         method: 'inline Java source',
         path: virtual,
       });
-    if (node.type === 'CallExpression' || node.type === 'NewExpression') {
-      const callee = node.callee;
-      const identifier = callee.type === 'Identifier';
-      let owner = callee.object;
-      if (nameOf(owner?.property) === 'promises') owner = owner.object;
-      const binding = bindingFor(bindings, identifier ? callee.name : owner?.name);
-      const method = identifier
-        ? (nameOf(binding?.imported) ?? callee.name)
-        : nameOf(callee.property);
-      const actualFs =
-        fsModule.test(binding?.module ?? '') && !mocked.has(binding.module.replace(/^node:/, ''));
-      const isProject = projectReaders.has(method) && identifier && (!binding || binding.module);
-      const explicitProjectPath =
-        (node.type === 'NewExpression' && method === 'URL') ||
-        (pathModule.test(binding?.module ?? '') && ['join', 'resolve'].includes(method));
-      let match = '';
-      if ((actualFs && fsCalls.has(method)) || isProject || explicitProjectPath) {
-        const args = explicitProjectPath
-          ? [node]
-          : node.arguments.slice(
-              0,
-              ['cp', 'cpSync', 'copyFile', 'copyFileSync'].includes(method) ? 2 : 1,
-            );
-        for (const arg of args) {
-          const candidate = literal(arg, bindings).replaceAll('\\', '/');
-          if (fixturePath.test(candidate) || (actualFs && candidate.endsWith('.java'))) {
-            match = candidate;
-            break;
-          }
-        }
-      }
-      if (!match && (method === 'useFixture' || method === 'writeFixtureRepo') && isProject)
-        match = javaSourceMap(node.arguments[1], bindings);
-      if (!match && identifier && binding) {
-        for (const arg of node.arguments) {
-          const candidate = javaSourceMap(arg, bindings) || literal(arg, bindings);
-          if (
-            (candidate.endsWith('.java') || fixturePath.test(candidate)) &&
-            writesFiles(binding, mocked)
-          ) {
-            match = candidate;
-            break;
-          }
-        }
-      }
-      if (match) findings.push({ line: node.loc.start.line, method, path: match });
-    }
+    if (node.type !== 'CallExpression' && node.type !== 'NewExpression') return;
+    const call = fixtureCall(node, bindings, mocked);
+    const match =
+      fixtureArgument(node, bindings, call) || writtenFixture(node, bindings, call, mocked);
+    if (match) findings.push({ line: node.loc.start.line, method: call.method, path: match });
   }
   traverse(tree, { 'ObjectProperty|CallExpression|NewExpression': visit });
   const reportedPaths = new Set(findings.map((issue) => issue.path));
@@ -297,7 +301,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   if (findings.length) {
     console.error(
       'Run Java source fixtures in compiler conformance:\n' +
-        findings.sort(compareCodeUnits).join('\n'),
+        findings.toSorted(compareCodeUnits).join('\n'),
     );
     process.exitCode = 1;
   } else console.log('Java fixture ownership passed');

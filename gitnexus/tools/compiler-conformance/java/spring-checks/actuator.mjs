@@ -5,17 +5,20 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../../../dist/core/ingestion/pipeline.js';
+
+function writeFixture(root, relativePath, content) {
+  const target = path.join(root, relativePath);
+  fs.mkdirSync(path.dirname(target), {
+    recursive: true,
+  });
+  fs.writeFileSync(target, content);
+}
+
 export async function verifyActuatorRuntime() {
   const SECRET_ENV_VALUE = 'ACTUATOR_ENV_SECRET_2418';
   const SECRET_CONFIG_VALUE = 'ACTUATOR_CONFIG_SECRET_2418';
   const SECRET_CONDITION_MESSAGE = 'runtime condition details must stay private';
-  function writeFixture(root, relativePath, content) {
-    const target = path.join(root, relativePath);
-    fs.mkdirSync(path.dirname(target), {
-      recursive: true,
-    });
-    fs.writeFileSync(target, content);
-  }
+
   function writeJson(root, relativePath, value) {
     writeFixture(root, relativePath, JSON.stringify(value));
   }
@@ -504,7 +507,7 @@ export async function verifyActuatorRuntime() {
     removeTemporaryProjects();
   }
   // excludes an in-repo Actuator dump addressed through a directory symlink
-  if (!(process.platform === 'win32')) {
+  if (process.platform !== 'win32') {
     try {
       const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-actuator-symlink-'));
       tempRepos.push(repo);

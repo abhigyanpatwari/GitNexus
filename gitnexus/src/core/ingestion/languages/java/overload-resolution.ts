@@ -1043,6 +1043,28 @@ function argumentType(
   }
 }
 
+function invocationReceiverType(
+  call: JavaOverloadCallFact,
+  shadowed: boolean,
+  filePath: string,
+  state: State,
+): JavaType {
+  if (call.receiver?.kind === 'typed') return argumentType(call.receiver, filePath, state);
+  if (shadowed || call.receiverSpelling === undefined) return UNKNOWN_JAVA_TYPE;
+  return parseType(call.receiverSpelling, { filePath, at: call.range }, state);
+}
+
+function resolvedReturnType(
+  selected: ReceiverMemberResolution | undefined,
+  state: State,
+): JavaType {
+  if (selected?.kind !== 'resolved') return UNKNOWN_JAVA_TYPE;
+  const { returnType, filePath, declarationRange } = selected.definition;
+  return returnType && declarationRange
+    ? parseType(returnType, { filePath, at: declarationRange }, state)
+    : UNKNOWN_JAVA_TYPE;
+}
+
 function invocationReturnType(
   call: JavaOverloadCallFact,
   qualifierShadowed: boolean,
@@ -1064,12 +1086,7 @@ function invocationReturnType(
   if (call.receiverSpelling === undefined) {
     selected = resolveJavaUnqualifiedCall(site, state.scopes, state.model);
   } else {
-    const owner =
-      call.receiver?.kind === 'typed'
-        ? argumentType(call.receiver, filePath, state)
-        : qualifierShadowed
-          ? UNKNOWN_JAVA_TYPE
-          : parseType(call.receiverSpelling, { filePath, at: call.range }, state);
+    const owner = invocationReceiverType(call, qualifierShadowed, filePath, state);
     if (owner.kind !== 'reference') return UNKNOWN_JAVA_TYPE;
     if (!owner.sourceId) {
       if (call.name !== 'valueOf' || qualifierShadowed || call.arguments.length !== 1)
@@ -1084,11 +1101,7 @@ function invocationReturnType(
     if (definition)
       selected = resolveJavaReceiverMember(definition, call.name, site, state.scopes, state.model);
   }
-  if (selected?.kind !== 'resolved') return UNKNOWN_JAVA_TYPE;
-  const { returnType, filePath: declarationFile, declarationRange } = selected.definition;
-  return returnType && declarationRange
-    ? parseType(returnType, { filePath: declarationFile, at: declarationRange }, state)
-    : UNKNOWN_JAVA_TYPE;
+  return resolvedReturnType(selected, state);
 }
 
 function wrapperValueOfType(owner: JavaReferenceType, argument: JavaType, state: State): JavaType {
@@ -1413,23 +1426,27 @@ function hierarchyComplete(
           state.model.methods.lookupAllByOwner(owner.nodeId, memberName).some((method) => {
             const declaration = methodFact(method, state);
             if (
-              !declaration ||
-              declaration.parameterTypes.length !== 1 ||
+              declaration?.parameterTypes.length !== 1 ||
               !declaration.modifiers.includes('public') ||
               declaration.modifiers.includes('static')
             )
               return false;
-            const formal = /^([^<]+)<\s*\?\s+super\s+(.+)>$/.exec(
-              declaration.parameterTypes[0]!.trim(),
-            );
-            if (!formal) return false;
+            const parameter = declaration.parameterTypes[0]!.trim();
+            const open = parameter.indexOf('<');
+            if (open <= 0 || !parameter.endsWith('>')) return false;
+            const bound = parameter.slice(open + 1, -1).trimStart();
+            const wildcard = /^\?\s+super\s+/u.exec(bound);
+            if (!wildcard || wildcard[0].length === bound.length) return false;
             const context = { filePath: method.filePath, at: declaration.range };
-            const consumer = parseType(formal[1]!, context, state);
+            const consumer = parseType(parameter.slice(0, open), context, state);
             return (
               consumer.kind === 'reference' &&
               consumer.sourceId === undefined &&
               consumer.name === 'java.util.function.Consumer' &&
-              sameJavaType(parseType(formal[2]!, context, state), base.arguments[0]!) === 'yes'
+              sameJavaType(
+                parseType(bound.slice(wildcard[0].length), context, state),
+                base.arguments[0]!,
+              ) === 'yes'
             );
           })
         )
@@ -1523,16 +1540,7 @@ export function resolveJavaConstructorCall(
   const state = stateFor(scopes, model);
   const visible: JavaOverloadCandidate<SymbolDefinition>[] = [];
   for (const constructor of candidates.values()) {
-    // Outside the declaring package a protected constructor can be invoked
-    // by a super invocation or anonymous class creation (JLS 6.6.2.2).
-    const protectedAccess =
-      methodFact(constructor, state)?.modifiers.includes('protected') &&
-      packageName(constructor.filePath) !== packageName(filePath);
-    const access = protectedAccess
-      ? call.constructorForm === 'super' || call.constructorForm === 'anonymous'
-        ? 'yes'
-        : 'no'
-      : eligible(constructor, owner, site, call, state);
+    const access = constructorAccess(constructor, owner, site, call, state, filePath);
     if (access === 'unknown') return { kind: 'unknown', candidateIds, candidateSetComplete: false };
     if (access === 'yes') visible.push(normalizedCandidate(constructor, state));
   }
@@ -1540,6 +1548,23 @@ export function resolveJavaConstructorCall(
   return decision.kind === 'resolved'
     ? { kind: 'resolved', definition: decision.definition }
     : { kind: decision.kind, candidateIds, candidateSetComplete: true };
+}
+
+function constructorAccess(
+  constructor: SymbolDefinition,
+  owner: SymbolDefinition,
+  site: ReferenceSite,
+  call: JavaOverloadCallFact,
+  state: State,
+  filePath: string,
+): JavaVerdict {
+  // JLS 6.6.2.2 permits protected construction outside its package through super or anonymous creation.
+  if (
+    methodFact(constructor, state)?.modifiers.includes('protected') &&
+    packageName(constructor.filePath) !== packageName(filePath)
+  )
+    return call.constructorForm === 'super' || call.constructorForm === 'anonymous' ? 'yes' : 'no';
+  return eligible(constructor, owner, site, call, state);
 }
 
 function selectCallOverload(
@@ -1911,42 +1936,51 @@ export function populateJavaIterableBindings(
     if (!loops?.length) continue;
     const state = stateFor(indexes, model);
     for (const loop of loops) {
-      const scope = indexes.scopeTree.getScope(
-        makeScopeId({ filePath: parsed.filePath, range: loop.body, kind: 'Block' }),
-      );
-      if (!scope) continue;
-      const site: ReferenceSite = {
-        kind: 'call',
-        name: loop.name,
-        inScope: scope.id,
-        atRange: loop.body,
-      };
-      const type = argumentType(loop.value, parsed.filePath, state, site);
-      const elements = iterableElements(type, state, new Set());
-      const element = elements[0];
-      if (
-        element?.kind !== 'reference' ||
-        !element.sourceId ||
-        !elements.every((other) => sameJavaType(element, other) === 'yes')
-      )
-        continue;
-      const declaration = indexes.defs.get(element.sourceId);
-      if (!declaration) continue;
-      const fact = typeFact(declaration, state);
-      if (!fact) continue;
-      const anchor = makeScopeId({
-        filePath: declaration.filePath,
-        range: fact.range,
-        kind: 'Class',
-      });
-      if (indexes.scopeTree.has(anchor))
-        (scope.typeBindings as Map<string, TypeRef>).set(loop.name, {
-          rawName: fact.simpleName,
-          declaredAtScope: anchor,
-          source: 'assignment-inferred',
-        });
+      bindIterableElement(loop, parsed.filePath, indexes, state);
     }
   }
+}
+
+function bindIterableElement(
+  loop: NonNullable<JavaOverloadFileFacts['enhancedFor']>[number],
+  filePath: string,
+  indexes: ScopeResolutionIndexes,
+  state: State,
+): void {
+  const scope = indexes.scopeTree.getScope(
+    makeScopeId({ filePath: filePath, range: loop.body, kind: 'Block' }),
+  );
+  if (!scope) return;
+  const site: ReferenceSite = {
+    kind: 'call',
+    name: loop.name,
+    inScope: scope.id,
+    atRange: loop.body,
+  };
+  const type = argumentType(loop.value, filePath, state, site);
+  const elements = iterableElements(type, state, new Set());
+  const element = elements[0];
+  if (
+    element?.kind !== 'reference' ||
+    !element.sourceId ||
+    !elements.every((other) => sameJavaType(element, other) === 'yes')
+  )
+    return;
+  const declaration = indexes.defs.get(element.sourceId);
+  if (!declaration) return;
+  const fact = typeFact(declaration, state);
+  if (!fact) return;
+  const anchor = makeScopeId({
+    filePath: declaration.filePath,
+    range: fact.range,
+    kind: 'Class',
+  });
+  if (indexes.scopeTree.has(anchor))
+    (scope.typeBindings as Map<string, TypeRef>).set(loop.name, {
+      rawName: fact.simpleName,
+      declaredAtScope: anchor,
+      source: 'assignment-inferred',
+    });
 }
 
 function staticImportOwnerAccess(

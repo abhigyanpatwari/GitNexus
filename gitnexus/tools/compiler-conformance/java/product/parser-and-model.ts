@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -84,7 +85,7 @@ test('embeddings reuse the parsed Java class and preserve fields and line spans'
     endLine: lineAt(content.length),
     ...(await extractStructuralNames(content, file, tree)),
   };
-  for (const strategy of ['ast', 'fixed'] as const) {
+  await runInSequence(['ast', 'fixed'] as const, async (strategy) => {
     const chunks = await chunkNode('Class', content, file, startLine, symbol.endLine, 80, 10, {
       strategy,
       tree,
@@ -103,7 +104,7 @@ test('embeddings reuse the parsed Java class and preserve fields and line spans'
       assert.equal(chunk.startLine, lineAt(chunk.startOffset));
       assert.equal(chunk.endLine, lineAt(Math.max(chunk.startOffset, chunk.endOffset - 1)));
     }
-  }
+  });
 });
 
 test('Java export checks retain sibling and enclosing class visibility across parser trees', async () => {

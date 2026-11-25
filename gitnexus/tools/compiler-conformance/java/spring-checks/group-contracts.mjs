@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../../test/helpers/run-in-sequence.mjs';
 import { compareCodeUnits } from '../../compare.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -119,32 +120,35 @@ async function verifyExtractionFixture(domain, spec) {
       ? detectServiceBoundaries
       : (project) => new Extractor().extract(null, project, repoHandle(project));
   const outputs = [];
-  for (const [index, project] of projects.entries()) {
+  await runInSequence(projects.entries(), async ([index, project]) => {
     const expected = spec.wildcard ? spec.expected[index] : spec.expected;
-    for (let run = 0; run < (spec.repeat ?? 1); run++) {
-      const contracts = await extract(project);
-      assert.deepEqual(ordered(contracts), ordered(expected));
-      outputs.push(contracts);
-    }
-  }
+    await runInSequence(
+      Array.from({ length: spec.repeat ?? 1 }, (_, index) => index),
+      async (run) => {
+        const contracts = await extract(project);
+        assert.deepEqual(ordered(contracts), ordered(expected));
+        outputs.push(contracts);
+      },
+    );
+  });
   if (spec.wildcard) verifyWildcard(outputs, spec.wildcard);
 }
 
 export async function verifyGroupExtraction() {
-  for (const domain of [...Object.keys(domains), 'boundary']) {
-    for (const spec of cases(domain)) {
+  await runInSequence([...Object.keys(domains), 'boundary'], async (domain) => {
+    await runInSequence(cases(domain), async (spec) => {
       try {
         await verifyExtractionFixture(domain, spec);
       } catch (error) {
         throw new Error(domain + ': ' + spec.name, { cause: error });
       }
-    }
-  }
+    });
+  });
 }
 
 export async function verifyJavaKotlinContractParity() {
-  for (const { name, project, expected } of cases('parity')) {
-    for (const language of ['java', 'kotlin']) {
+  await runInSequence(cases('parity'), async ({ name, project, expected }) => {
+    await runInSequence(['java', 'kotlin'], async (language) => {
       const root = path.join(fixture('parity', project), language);
       const result = await new HttpRouteExtractor().extract(null, root, repoHandle(root));
       const projection = result.map(({ role, contractId, meta, confidence }) => ({
@@ -154,6 +158,6 @@ export async function verifyJavaKotlinContractParity() {
         confidence,
       }));
       assert.deepEqual(ordered(projection), ordered(expected), name + ' ' + language);
-    }
-  }
+    });
+  });
 }

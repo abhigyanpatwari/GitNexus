@@ -16,7 +16,7 @@ export const JAVA_IDENTIFIER = `[${JAVA_IDENTIFIER_START_CHARS}][${JAVA_IDENTIFI
 /** A dotted name with no whitespace or comments between its parts. */
 export const JAVA_QUALIFIED_NAME = `${JAVA_IDENTIFIER}(?:\\.${JAVA_IDENTIFIER})*`;
 const nameGaps = new RegExp(
-  `([${JAVA_IDENTIFIER_PART_CHARS}])\\s+(?=[${JAVA_IDENTIFIER_PART_CHARS}])|\\s+`,
+  String.raw`([${JAVA_IDENTIFIER_PART_CHARS}])\s+(?=[${JAVA_IDENTIFIER_PART_CHARS}])|\s+`,
   'gu',
 );
 /** Ignore spacing around punctuation while keeping separate identifier tokens separate. */

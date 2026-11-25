@@ -3,6 +3,77 @@ import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+function appendJavacRecord(report, kind, read) {
+  switch (kind) {
+    case 'diagnostic': {
+      const [code] = read(1);
+      report.diagnostics[code] = (report.diagnostics[code] ?? 0) + 1;
+      return;
+    }
+    case 'binary': {
+      const [file, start, end, name, target] = read(5);
+      report.binarySites.push({ file, start, end, name, target, status: 'external' });
+      return;
+    }
+    case 'reference': {
+      const [targetKind, file, start, end, from, to] = read(6);
+      assert.ok(
+        targetKind === 'Method' || targetKind === 'Constructor',
+        'Unknown reference target',
+      );
+      report.memberReferences.push({ file, start, end, from, to, targetKind });
+      // GitNexus publishes member references as aggregate CALLS edges.
+      const edges = targetKind === 'Constructor' ? report.constructors : report.edges;
+      edges.push({ from, to });
+      return;
+    }
+    case 'rejected-constructor': {
+      const [file, start, status] = read(3);
+      report.rejectedConstructors.push({ file, start, status });
+      return;
+    }
+    case 'implementation': {
+      const [from, to] = read(2);
+      report.implementations.push({ from, to });
+      return;
+    }
+    case 'constructor': {
+      const [from, to] = read(2);
+      report.constructors.push({ from, to });
+      return;
+    }
+    case 'heritage': {
+      const [relation, from, to] = read(3);
+      report.heritage.push({ relation, from, to });
+      return;
+    }
+    case 'declaration': {
+      const [file, label, name, binaryName, qualifiedName] = read(5);
+      report.declarations.push({
+        file,
+        kind: label,
+        name,
+        ...(binaryName && { binaryName, qualifiedName }),
+      });
+      return;
+    }
+    default: {
+      assert.ok(
+        ['resolved', 'ambiguous', 'inapplicable', 'receiver-unresolved'].includes(kind),
+        'Unknown javac record ' + kind,
+      );
+      const [file, start, end, caller, target, description] = read(6);
+      const site = { file, start, end, status: kind };
+      if (kind === 'resolved') {
+        report.sites.push({ ...site, target, description });
+        report.edges.push({ from: caller, to: target });
+      } else {
+        report.sites.push(site);
+      }
+    }
+  }
+}
+
 /** Return one reference report per fixture, in input order, using one JVM. */
 export function javacReports(fixtures) {
   const javaHome = process.env.JAVA_HOME;
@@ -51,56 +122,7 @@ export function javacReports(fixtures) {
     const [fixture, kind] = read(2);
     const report = reports[fixture];
     assert.ok(report, 'Unknown javac fixture ' + fixture);
-    if (kind === 'diagnostic') {
-      const [code] = read(1);
-      report.diagnostics[code] = (report.diagnostics[code] ?? 0) + 1;
-    } else if (kind === 'binary') {
-      const [file, start, end, name, target] = read(5);
-      report.binarySites.push({ file, start, end, name, target, status: 'external' });
-    } else if (kind === 'reference') {
-      const [targetKind, file, start, end, from, to] = read(6);
-      assert.ok(
-        targetKind === 'Method' || targetKind === 'Constructor',
-        'Unknown reference target',
-      );
-      report.memberReferences.push({ file, start, end, from, to, targetKind });
-      // GitNexus publishes member references as aggregate CALLS edges.
-      const edges = targetKind === 'Constructor' ? report.constructors : report.edges;
-      edges.push({ from, to });
-    } else if (kind === 'rejected-constructor') {
-      const [file, start, status] = read(3);
-      report.rejectedConstructors.push({ file, start, status });
-    } else if (kind === 'implementation') {
-      const [from, to] = read(2);
-      report.implementations.push({ from, to });
-    } else if (kind === 'constructor') {
-      const [from, to] = read(2);
-      report.constructors.push({ from, to });
-    } else if (kind === 'heritage') {
-      const [relation, from, to] = read(3);
-      report.heritage.push({ relation, from, to });
-    } else if (kind === 'declaration') {
-      const [file, label, name, binaryName, qualifiedName] = read(5);
-      report.declarations.push({
-        file,
-        kind: label,
-        name,
-        ...(binaryName && { binaryName, qualifiedName }),
-      });
-    } else {
-      assert.ok(
-        ['resolved', 'ambiguous', 'inapplicable', 'receiver-unresolved'].includes(kind),
-        'Unknown javac record ' + kind,
-      );
-      const [file, start, end, caller, target, description] = read(6);
-      const site = { file, start, end, status: kind };
-      if (kind === 'resolved') {
-        report.sites.push({ ...site, target, description });
-        report.edges.push({ from: caller, to: target });
-      } else {
-        report.sites.push(site);
-      }
-    }
+    appendJavacRecord(report, kind, read);
   }
   for (const [i, report] of reports.entries()) {
     assert.deepEqual(

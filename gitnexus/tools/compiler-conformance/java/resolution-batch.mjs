@@ -1,3 +1,4 @@
+import { runInSequence } from '../../../test/helpers/run-in-sequence.mjs';
 import { compareCodeUnits } from '../compare.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -24,7 +25,7 @@ if (batch.contract) {
 }
 let checks = 0;
 const failures = [];
-for (const { dir, ref, spec } of batch.projects ?? []) {
+await runInSequence(batch.projects ?? [], async ({ dir, ref, spec }) => {
   ref.methods = new Map(ref.methods);
   try {
     assert.ok(ref.complete, 'Incomplete javac project');
@@ -32,27 +33,27 @@ for (const { dir, ref, spec } of batch.projects ?? []) {
     if (spec.localClaims) {
       checkLocalClaims(path.join(dir, spec.localClaims));
       checks++;
-      continue;
+      return;
     }
     if (spec.workerOrder) {
       await checkWorkerOrder(dir, ref, spec.workerOrder);
       checks += 2;
-      continue;
+      return;
     }
     if (spec.onDemand) {
       await checkImportStorage(dir, ref, spec.onDemand);
       checks += 2;
-      continue;
+      return;
     }
     const { graph } = await runPipelineFromRepo(dir, () => {});
     if (spec.sourceMethods !== undefined) {
       checkRecoveredCalls(graph, ref, spec);
       checks += spec.sourceMethods + 1;
-      continue;
+      return;
     }
     if (spec.largePackage) {
       checks += checkLargePackage(graph, ref, spec.largePackage);
-      continue;
+      return;
     }
     for (const [file, expected] of Object.entries(spec.synthetic ?? {})) {
       const ids = [...graph.iterNodes()]
@@ -70,6 +71,6 @@ for (const { dir, ref, spec } of batch.projects ?? []) {
   } catch (error) {
     failures.push(new Error(path.basename(dir), { cause: error }));
   }
-}
+});
 if (failures.length) throw new AggregateError(failures, 'Java resolution conformance failed');
 writeFileSync(output, JSON.stringify(checks));

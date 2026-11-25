@@ -1,3 +1,10 @@
+import { compareCodeUnits } from '../../../compare.mjs';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { describe, it } from 'node:test';
+import { isDeepStrictEqual } from 'node:util';
+import { emitJavaScopeCaptures } from '../../../../../src/core/ingestion/languages/java/captures.js';
+
 /**
  * Low-level coverage for the Java scope-captures orchestrator
  * (`emitJavaScopeCaptures`), focused on the #1928 parsing-layer fixes:
@@ -11,12 +18,11 @@
  * drift before the integration parity gate.
  */
 
-import { compareCodeUnits } from '../../../compare.mjs';
-import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { describe, it } from 'node:test';
-import { isDeepStrictEqual } from 'node:util';
-import { emitJavaScopeCaptures } from '../../../../../src/core/ingestion/languages/java/captures.js';
+function invokeFactsFor(src: string): number {
+  return emitJavaScopeCaptures(src, 'C.java').filter(
+    (m) => m['@callable-flow.invoke'] !== undefined,
+  ).length;
+}
 
 describe('Java invocation classification', () => {
   it('does not also emit free references for qualified member calls', () => {
@@ -343,12 +349,6 @@ describe('emitJavaScopeCaptures — explicit constructor invocations (F38 #1928)
 });
 
 describe('emitJavaScopeCaptures — callable-flow protocol methods (#2522 review)', () => {
-  function invokeFactsFor(src: string): number {
-    return emitJavaScopeCaptures(src, 'C.java').filter(
-      (m) => m['@callable-flow.invoke'] !== undefined,
-    ).length;
-  }
-
   it('does not emit invoke facts for ordinary container accessors', () => {
     const src = `
 import java.util.HashMap;
@@ -394,10 +394,10 @@ describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
       'record R(int x) { R { class Local {} new Runnable() {}; } }',
       'R.java',
     );
-    const names = matches.flatMap((m) => m['@declaration.name']?.text ?? []);
+    const names = new Set(matches.flatMap((m) => m['@declaration.name']?.text ?? []));
 
-    assert.ok(names.includes('R$1Local'));
-    assert.ok(names.includes('R$1'));
+    assert.ok(names.has('R$1Local'));
+    assert.ok(names.has('R$1'));
   });
 
   it('uses javac-compatible independent sequences for anonymous and named local types', () => {
@@ -413,11 +413,11 @@ describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
        }`,
       'Outer.java',
     );
-    const names = matches.flatMap((m) => m['@declaration.name']?.text ?? []);
+    const names = new Set(matches.flatMap((m) => m['@declaration.name']?.text ?? []));
 
     assert.ok(
       ['Outer$1', 'Outer$2', 'Outer$1Local', 'Outer$2Local', 'Outer$1Other'].every((expected) =>
-        names.includes(expected),
+        names.has(expected),
       ),
     );
   });
@@ -461,7 +461,7 @@ describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
        }`,
       'Outer.java',
     );
-    const names = matches.flatMap((match) => match['@declaration.name']?.text ?? []);
+    const names = new Set(matches.flatMap((match) => match['@declaration.name']?.text ?? []));
 
     assert.ok(
       [
@@ -469,7 +469,7 @@ describe('emitJavaScopeCaptures — local-type identities (#2562)', () => {
         'Outer$1InstanceLocal',
         'Outer$1LambdaLocal',
         'Outer$1$1AnonymousLocal',
-      ].every((expected) => names.includes(expected)),
+      ].every((expected) => names.has(expected)),
     );
   });
 

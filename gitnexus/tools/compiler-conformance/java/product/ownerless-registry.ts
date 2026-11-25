@@ -21,12 +21,14 @@ it(
     for await (const source of glob('**/*.java', { cwd: fixtures })) {
       projects.add(source.split(path.sep)[0]);
     }
-    for (const name of projects) {
-      await cp(path.join(fixtures, name), path.join(root, name), {
-        recursive: true,
-        filter: (source) => path.basename(source) !== '.gitnexus',
-      });
-    }
+    await Promise.all(
+      Array.from(projects, async (name) => {
+        await cp(path.join(fixtures, name), path.join(root, name), {
+          recursive: true,
+          filter: (source) => path.basename(source) !== '.gitnexus',
+        });
+      }),
+    );
     const original = new URL(
       '../../../../dist/core/ingestion/scope-resolution/pipeline/reconcile-ownership.js',
       import.meta.url,

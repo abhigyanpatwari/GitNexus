@@ -116,16 +116,16 @@ test('Java class impact and context traverse constructors and importers', async 
         assert.ok(result.impactedCount >= 2);
 
         const d1 = result.byDepth[1] || result.byDepth['1'] || [];
-        const names = d1.map((d: any) => d.name);
+        const names = new Set(d1.map((d: any) => d.name));
 
         // Production caller must be present
-        assert.ok(names.includes('registerSessionTracker'));
+        assert.ok(names.has('registerSessionTracker'));
 
         // Test callers must be excluded (paths match /test/ via isTestFilePath)
-        assert.ok(!names.includes('setUp'));
-        assert.ok(!names.includes('constructor_nullGameMode_accepted'));
-        assert.ok(!names.includes('constructor_nullServerId_accepted'));
-        assert.ok(!names.includes('startPlayerSession_passesGameModeAndServerId'));
+        assert.ok(!names.has('setUp'));
+        assert.ok(!names.has('constructor_nullGameMode_accepted'));
+        assert.ok(!names.has('constructor_nullServerId_accepted'));
+        assert.ok(!names.has('startPlayerSession_passesGameModeAndServerId'));
       },
     );
     await t.test('with includeTests finds all 5 callers (1 prod + 4 tests)', async () => {
@@ -139,12 +139,12 @@ test('Java class impact and context traverse constructors and importers', async 
       assert.ok(result.impactedCount >= 5);
 
       const d1 = result.byDepth[1] || result.byDepth['1'] || [];
-      const names = d1.map((d: any) => d.name);
-      assert.ok(names.includes('registerSessionTracker'));
-      assert.ok(names.includes('setUp'));
-      assert.ok(names.includes('constructor_nullGameMode_accepted'));
-      assert.ok(names.includes('constructor_nullServerId_accepted'));
-      assert.ok(names.includes('startPlayerSession_passesGameModeAndServerId'));
+      const names = new Set(d1.map((d: any) => d.name));
+      assert.ok(names.has('registerSessionTracker'));
+      assert.ok(names.has('setUp'));
+      assert.ok(names.has('constructor_nullGameMode_accepted'));
+      assert.ok(names.has('constructor_nullServerId_accepted'));
+      assert.ok(names.has('startPlayerSession_passesGameModeAndServerId'));
 
       // Owning file (SessionTracker.java) must NOT appear — it is the
       // definition container, not an upstream dependent (#480 Copilot review)
@@ -166,15 +166,17 @@ test('Java class impact and context traverse constructors and importers', async 
         // 1 caller (depth 1 via Constructor) + 10 importers (depth 2 via File)
         assert.ok(result.impactedCount >= 11);
 
-        const allNames = Object.values(result.byDepth as Record<string, any[]>)
-          .flat()
-          .map((d: any) => d.name);
-        assert.ok(allNames.includes('initRankHandler'));
-        assert.ok(allNames.includes('RankCommand.java'));
-        assert.ok(allNames.includes('RankManager.java'));
+        const allNames = new Set(
+          Object.values(result.byDepth as Record<string, any[]>)
+            .flat()
+            .map((d: any) => d.name),
+        );
+        assert.ok(allNames.has('initRankHandler'));
+        assert.ok(allNames.has('RankCommand.java'));
+        assert.ok(allNames.has('RankManager.java'));
 
         // Owning file must NOT appear in results
-        assert.ok(!allNames.includes('RankPermissionHandler.java'));
+        assert.ok(!allNames.has('RankPermissionHandler.java'));
       },
     );
     await t.test(
@@ -187,19 +189,21 @@ test('Java class impact and context traverse constructors and importers', async 
 
         assert.ok(!Object.hasOwn(result, 'error'));
 
-        const allNames = Object.values(result.byDepth as Record<string, any[]>)
-          .flat()
-          .map((d: any) => d.name);
+        const allNames = new Set(
+          Object.values(result.byDepth as Record<string, any[]>)
+            .flat()
+            .map((d: any) => d.name),
+        );
 
         // Production importers must be present
-        assert.ok(allNames.includes('RankCommand.java'));
+        assert.ok(allNames.has('RankCommand.java'));
 
         // Test importers (src/test/java/... paths) must be excluded
-        assert.ok(!allNames.includes('RankTest1.java'));
-        assert.ok(!allNames.includes('RankTest2.java'));
-        assert.ok(!allNames.includes('RankTest3.java'));
-        assert.ok(!allNames.includes('RankTest4.java'));
-        assert.ok(!allNames.includes('RankTest5.java'));
+        assert.ok(!allNames.has('RankTest1.java'));
+        assert.ok(!allNames.has('RankTest2.java'));
+        assert.ok(!allNames.has('RankTest3.java'));
+        assert.ok(!allNames.has('RankTest4.java'));
+        assert.ok(!allNames.has('RankTest5.java'));
       },
     );
     await t.test('incoming.calls contains Constructor callers (was empty before fix)', async () => {

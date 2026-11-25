@@ -21,9 +21,8 @@ describe('Java export detection', () => {
   }
 
   it('does not scan sibling methods while checking a declaration', (t) => {
-    const tree = getJavaParser().parse(
-      `class Wide { ${Array.from({ length: 128 }, (_, i) => `void method${i}() {}`).join('\n')} }`,
-    );
+    const methods = Array.from({ length: 128 }, (_, i) => `void method${i}() {}`).join('\n');
+    const tree = getJavaParser().parse(`class Wide { ${methods} }`);
     const body = tree.rootNode.namedChildren[0]!.childForFieldName('body')!;
     const name = body.namedChildren[0]!.childForFieldName('name')!;
     const child = t.mock.method(body, 'child');
