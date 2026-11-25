@@ -13,6 +13,14 @@ entries. The count arm remains 138 call drops and 168 total drops.
 Earlier entries below retain their original measurement contracts and source pins;
 member-name-only RESOLVES claims in those entries are historical.
 
+## C# array-typed parameters (#4098)
+
+C# `indexElement` (`repos[0].Save()` with a `User[] repos` parameter) moves
+VISIBLE-GAP -> RESOLVES with the exact `User.Save` target. The C# query now
+captures `(array_type)` parameter types, so `repos` binds `User[]`, and the
+existing `elementTypeOf` index route peels it to `User`. Every other shape
+state is unchanged, and the count arm is unchanged.
+
 ## Java receiver and generated dependency ownership (#3955)
 
 Java `indexElement` (`repos[0].save()` with a `User[] repos` parameter) moves

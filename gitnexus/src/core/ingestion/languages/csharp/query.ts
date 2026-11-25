@@ -170,6 +170,14 @@ const CSHARP_SCOPE_QUERY = `
   type: (predefined_type) @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.parameter
 
+;; Array parameters — \`void F(User[] repos)\`. The binding keeps the \`[]\`
+;; spelling; the index route of \`elementTypeOf\` peels it to \`User\` so
+;; \`repos[0].Save()\` resolves (#4098). Shapes the peel does not recognize
+;; (\`User[][]\`, \`User[,]\`, \`List<User>[]\`) stay unresolved.
+(parameter
+  type: (array_type) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
 ;; Type bindings — local variable annotations: \`User u = new User();\`
 ;; Typed local with identifier type + \`new X()\` initializer — shape
 ;; matters so \`u\` binds to \`X\` (the constructor call's type), not the
