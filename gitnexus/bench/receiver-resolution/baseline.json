@@ -194,7 +194,7 @@
       "nonNullAssert": "RESOLVES",
       "awaitParen": "RESOLVES",
       "explicitTypeArgs": "RESOLVES",
-      "indexElement": "VISIBLE-GAP",
+      "indexElement": "RESOLVES",
       "fourHopChain": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",

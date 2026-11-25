@@ -10,8 +10,8 @@ all 72 original N/A entries found executable cases hidden among the exclusions.
 
 ## Results
 
-The expanded matrix has **110 executed cases**: 93 reach their exact expected
-declaration, 14 expose gaps, and three intentionally untyped controls remain
+The expanded matrix has **110 executed cases**: 94 reach their exact expected
+declaration, 13 expose gaps, and three intentionally untyped controls remain
 unresolved. The other **58 entries are N/A declarations**, not successful runtime
 tests. No active shape corpus reported GRAMMAR-UNAVAILABLE.
 
@@ -32,7 +32,7 @@ tests. No active shape corpus reported GRAMMAR-UNAVAILABLE.
 | [rust](rust-ingestion-gaps.md)             | 8            | 0           | 0             | 0            | 2   |
 | [swift](swift-ingestion-gaps.md)           | 7            | 1           | 0             | 0            | 2   |
 | [typescript](typescript-ingestion-gaps.md) | 10           | 0           | 0             | 0            | 1   |
-| [vue](vue-ingestion-gaps.md)               | 9            | 1           | 0             | 0            | 1   |
+| [vue](vue-ingestion-gaps.md)               | 10           | 0           | 0             | 0            | 1   |
 
 The visible-gap counts include the three deliberate controls: JavaScript and
 Ruby `untypedChain`, and PHP `arrowCallChain`. They must remain unresolved.

@@ -21,19 +21,19 @@ and no same-named call to a different owner. WRONG-TARGET records incorrect edge
 | `nonNullAssert`         | RESOLVES       | `svc!.getUser().save();`                                                                                    |
 | `awaitParen`            | RESOLVES       | `(await svc.getUserAsync()).save();`                                                                        |
 | `explicitTypeArgs`      | RESOLVES       | `svc.getTyped<User>().save();`                                                                              |
-| `indexElement`          | VISIBLE-GAP    | `repos[0].save();`                                                                                          |
+| `indexElement`          | RESOLVES       | `repos[0].save();`                                                                                          |
 | `fourHopChain`          | RESOLVES       | `root.getSvc().getUser().address.getCity().save();`                                                         |
 | `fieldReceiverCall`     | RESOLVES       | `this.repo.save();`                                                                                         |
 | `decoratedReceiverBase` | N/A            | TypeScript `this` carries no type decoration — there is no pointer/reference spelling on a method receiver. |
 | `decoratedFieldType`    | RESOLVES       | `this.repo!.save();`                                                                                        |
 
-The row now runs a real `<script lang="ts">` SFC against the same typed declarations used by TypeScript. Nine shapes reach their exact expected owners. `repos[0].save()` is VISIBLE-GAP even though the corresponding TypeScript fixture resolves. The former all-N/A row hid both working behavior and this gap. Template expressions and `<script setup>` remain separate coverage surfaces.
+The row now runs a real `<script lang="ts">` SFC against the same typed declarations used by TypeScript. All ten applicable shapes reach their exact expected owners. `repos[0].save()` resolves via `elementTypeOf: indexOnlyElementType` in the Vue scope resolver (VUE-01). Template expressions and `<script setup>` remain separate coverage surfaces.
 
 ## Planning candidates
 
 | ID     | Evidence       | Gap or boundary                                                         | Next planning step and acceptance                                                                                                                           |
 | ------ | -------------- | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| VUE-01 | Measured gap   | Typed SFC `repos[0].save()` remains VISIBLE-GAP.                        | Compare SFC capture/type bindings and element folding with the resolving TypeScript control. Assert User.save and preserve same-name and untyped negatives. |
+| VUE-01 | Fixed          | Typed SFC `repos[0].save()` resolves (`indexElement`).                  | Verified: `repos[0].save()` resolves to `User.save` with exact target assertion, decoy isolation, and untyped negative controls.                            |
 | VUE-02 | Coverage audit | Script, template and cross-file import behavior need distinct evidence. | Inventory existing SFC tests before adding cases; keep same-named component imports and compiler macros separate from real callable declarations.           |
 
 ## Code and regression entry points
