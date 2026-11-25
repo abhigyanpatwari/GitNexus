@@ -10,8 +10,8 @@ all 72 original N/A entries found executable cases hidden among the exclusions.
 
 ## Results
 
-The expanded matrix has **110 executed cases**: 93 reach their exact expected
-declaration, 14 expose gaps, and three intentionally untyped controls remain
+The expanded matrix has **110 executed cases**: 94 reach their exact expected
+declaration, 13 expose gaps, and three intentionally untyped controls remain
 unresolved. The other **58 entries are N/A declarations**, not successful runtime
 tests. No active shape corpus reported GRAMMAR-UNAVAILABLE.
 
@@ -20,7 +20,7 @@ tests. No active shape corpus reported GRAMMAR-UNAVAILABLE.
 | [c](c-ingestion-gaps.md)                   | 0            | 0           | 0             | 0            | 10  |
 | [cobol](cobol-ingestion-gaps.md)           | 0            | 0           | 0             | 0            | 10  |
 | [cpp](cpp-ingestion-gaps.md)               | 7            | 2           | 0             | 0            | 3   |
-| [csharp](csharp-ingestion-gaps.md)         | 8            | 1           | 0             | 0            | 1   |
+| [csharp](csharp-ingestion-gaps.md)         | 9            | 0           | 0             | 0            | 1   |
 | [dart](dart-ingestion-gaps.md)             | 5            | 2           | 1             | 1            | 1   |
 | [go](go-ingestion-gaps.md)                 | 6            | 0           | 0             | 0            | 4   |
 | [java](java-ingestion-gaps.md)             | 4            | 1           | 0             | 0            | 5   |

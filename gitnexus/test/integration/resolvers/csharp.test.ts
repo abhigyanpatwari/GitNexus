@@ -3047,3 +3047,83 @@ describe('C# global-namespace type precedence', () => {
     expect(drops).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// CSHARP-01: Array parameter and local indexElement receiver resolution
+// ---------------------------------------------------------------------------
+
+describe('C# array parameter indexElement resolution (CSHARP-01)', () => {
+  let result: PipelineResult;
+  let fixtureDir: string;
+
+  beforeAll(async () => {
+    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-csharp-array-'));
+    writeFixtureRepo(fixtureDir, {
+      'Models.cs': `public class User {
+    public void Save() {}
+}
+
+public class Address {
+    public void Save() {}
+}
+
+public class Decoys {
+    public static void Save() {}
+}
+`,
+      'Processors.cs': `public class Processor {
+    public void RunArrayParam(User[] repos) {
+        repos[0].Save();
+    }
+
+    public void RunArrayLocal() {
+        User[] users = new User[1];
+        users[0].Save();
+    }
+
+    public void RunUntypedDecoy(object[] objs) {
+        // Untyped array must not bind to User.Save
+        ((dynamic)objs[0]).Save();
+    }
+}
+`,
+    });
+
+    result = await runPipelineFromRepo(fixtureDir, () => {});
+  }, 60000);
+
+  afterAll(() => {
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+  });
+
+  it('resolves RunArrayParam repos[0].Save() to User.Save with no decoy edges', () => {
+    const calls = getRelationships(result, 'CALLS').filter((e) => e.source === 'RunArrayParam');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].target).toBe('Save');
+    expect(calls[0].targetFilePath).toBe('Models.cs');
+    expect(calls[0].rel.targetId).toContain('User.Save');
+  });
+
+  it('resolves RunArrayLocal users[0].Save() to User.Save with no decoy edges', () => {
+    const calls = getRelationships(result, 'CALLS').filter((e) => e.source === 'RunArrayLocal');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].target).toBe('Save');
+    expect(calls[0].targetFilePath).toBe('Models.cs');
+    expect(calls[0].rel.targetId).toContain('User.Save');
+  });
+
+  it('does not emit spurious edges to Address.Save or Decoys.Save from array callers', () => {
+    const calls = getRelationships(result, 'CALLS').filter(
+      (e) => e.source === 'RunArrayParam' || e.source === 'RunArrayLocal',
+    );
+    for (const call of calls) {
+      expect(call.rel.targetId).not.toContain('Address.Save');
+      expect(call.rel.targetId).not.toContain('Decoys.Save');
+    }
+  });
+
+  it('leaves RunUntypedDecoy with no call edge to User.Save', () => {
+    const calls = getRelationships(result, 'CALLS').filter((e) => e.source === 'RunUntypedDecoy');
+    expect(calls).toHaveLength(0);
+  });
+});

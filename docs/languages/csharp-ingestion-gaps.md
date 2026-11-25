@@ -21,18 +21,18 @@ and no same-named call to a different owner. WRONG-TARGET records incorrect edge
 | `nonNullAssert`         | RESOLVES       | `svc!.GetUser().Save();`              |
 | `awaitParen`            | RESOLVES       | `(await svc.GetUserAsync()).Save();`  |
 | `explicitTypeArgs`      | RESOLVES       | `svc.GetTyped<User>().Save();`        |
-| `indexElement`          | VISIBLE-GAP    | `repos[0].Save();`                    |
+| `indexElement`          | RESOLVES       | `repos[0].Save();`                    |
 | `fieldReceiverCall`     | RESOLVES       | `this.repo.Save();`                   |
 | `decoratedReceiverBase` | N/A            | C# `this` carries no type decoration. |
 | `decoratedFieldType`    | RESOLVES       | `this.repo.Save();`                   |
 
-The matrix resolves local nullable fields and the tested chain wrappers. It still loses `repos[0].Save()` with a `User[]` parameter. The resolver already registers an `elementTypeOf` hook, so this gap needs a full capture-to-resolution trace, not an assumption that the hook is absent.
+The matrix resolves local nullable fields, the tested chain wrappers, and array indexed elements `repos[0].Save()` with a `User[]` parameter (CSHARP-01).
 
 ## Planning candidates
 
 | ID        | Evidence            | Gap or boundary                                                                                                 | Next planning step and acceptance                                                                                                                                       |
 | --------- | ------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CSHARP-01 | Measured gap        | `indexElement` remains VISIBLE-GAP for a typed array.                                                           | Locate the lost array/type-owner evidence, then assert the exact User.Save target with a same-name decoy and an untyped/unsupported negative.                           |
+| CSHARP-01 | Fixed               | `indexElement` resolves for typed arrays (`User[] repos`). Captured via `array_type` in `csharp/query.ts`.      | Verified: `repos[0].Save()` resolves to `User.Save` with exact owner assertions, decoy isolation, and untyped negative controls.                                         |
 | CSHARP-02 | Documented boundary | Qualified nullable fields, including `Custom.List<User>?`, are refused until their written owner can be proven. | Establish namespace-aware ownership before adding support. Keep wrapper types distinct from element types and preserve external and workspace-tail collision negatives. |
 
 ## Code and regression entry points
