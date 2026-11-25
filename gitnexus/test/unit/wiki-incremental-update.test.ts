@@ -136,11 +136,27 @@ describe('incremental wiki update of a module with sub-modules', () => {
 
   afterEach(async () => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     await fs.rm(repoPath, { recursive: true, force: true });
+  });
+
+  it('rejects a relative custom Git path', () => {
+    vi.stubEnv('GITNEXUS_WIKI_GIT_PATH', 'git');
+    expect(() => run()).toThrow(/GITNEXUS_WIKI_GIT_PATH must be the absolute path/);
+  });
+
+  it('does not report an up-to-date wiki when neither revision is known', async () => {
+    await fs.rename(path.join(repoPath, '.git'), path.join(repoPath, 'saved-git'));
+    const metaPath = path.join(wikiPath, 'meta.json');
+    const meta = JSON.parse(await fs.readFile(metaPath, 'utf8'));
+    await fs.writeFile(metaPath, JSON.stringify({ ...meta, fromCommit: '' }));
+    expect((await run()).mode).toBe('full');
   });
 
   it('regenerates the sub-module page of a changed file before its parent page', async () => {
     await commitChange('billing.ts');
+    // Git discovery during wiki generation must be independent of the checkout and PATH.
+    vi.stubEnv('PATH', repoPath);
 
     expect(await run()).toEqual({ pagesGenerated: 3, mode: 'incremental', failedModules: [] });
 
