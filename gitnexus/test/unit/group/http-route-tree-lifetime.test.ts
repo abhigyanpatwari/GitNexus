@@ -36,6 +36,9 @@ const TreeClass = (Parser as unknown as { Tree: abstract new (...args: never[]) 
 /** Reachable Tree wrappers; `queryObjects` runs a full GC first. */
 const liveTrees = (): number => v8.queryObjects(TreeClass, { format: 'count' });
 
+/** The Kotlin grammar is optional; the Kotlin cases run only where it is built. */
+const KOTLIN = getPluginForFile('x.kt') !== undefined;
+
 const PLUGIN_SAMPLE_FILES = ['x.java', 'x.kt', 'x.ts', 'x.tsx', 'x.js', 'x.go', 'x.py', 'x.php'];
 
 /** Every distinct registered plugin, so each one's scan can be observed. */
@@ -285,7 +288,19 @@ Route::get('/php/items${i}', function () { return []; });
 
 /** Files per family: enough that one unbroken turn would exceed the bound. */
 const BULK = 3 * PARSES_PER_RELEASE;
-const BULK_KOTLIN_CONTROLLER = 'app/src/main/kotlin/com/example/bulk/Ctl0.kt';
+/** Java, TS and Go, and Kotlin where its grammar is built. */
+const BULK_FAMILIES = KOTLIN ? 4 : 3;
+/** In the platform's spelling, as the file scan lists it. */
+const BULK_JAVA_CONTROLLER = path.join(
+  'legacy',
+  'src',
+  'main',
+  'java',
+  'com',
+  'example',
+  'bulk',
+  'Ctl0.java',
+);
 
 /**
  * Many files per plugin and nothing that triggers a `prepareRepo` parse (no
@@ -404,7 +419,7 @@ const MIXED_CONTRACTS = [
   'provider http::POST::/api/direct4 legacy/src/main/java/com/example/api/Thing4Controller.java post 0.8',
   'provider http::POST::/api/direct5 legacy/src/main/java/com/example/api/Thing5Controller.java post 0.8',
   'provider http::POST::/api/events web/src/server.ts handler 0.8',
-];
+].filter((key) => KOTLIN || !/\.kt /.test(key));
 
 /** With a graph route lacking a handler id, that provider keeps the graph's file-level symbol. */
 const MIXED_CONTRACTS_WITH_GRAPH_ROUTE = MIXED_CONTRACTS.map((key) =>
@@ -422,7 +437,14 @@ const PREPARE_PASS_FILES: Array<[string, (i: number) => [string, string]]> = [
       `public class C${i} {\n  public static final String P = "/java/${i}";\n}\n`,
     ],
   ],
-  ['x.kt', (i) => [`src/C${i}.kt`, `object C${i} {\n    const val P = "/kt/${i}"\n}\n`]],
+  ...(KOTLIN
+    ? [
+        [
+          'x.kt',
+          (i: number) => [`src/C${i}.kt`, `object C${i} {\n    const val P = "/kt/${i}"\n}\n`],
+        ] as [string, (i: number) => [string, string]],
+      ]
+    : []),
   [
     'x.py',
     (i) => [
@@ -521,7 +543,7 @@ describe('HTTP source scan tree lifetime', () => {
     ['without a graph', () => null],
     [
       'with graph routes that need the source scan',
-      () => unresolvedRouteDb(BULK_KOTLIN_CONTROLLER, '/kt/0'),
+      () => unresolvedRouteDb(BULK_JAVA_CONTROLLER, '/java/0'),
     ],
   ])('yields to the event loop between parse batches %s', async (_label, makeDb) => {
     writeBulkFixture(tmpDir);
@@ -532,7 +554,27 @@ describe('HTTP source scan tree lifetime', () => {
 
     expect(contracts.length).toBeGreaterThan(0);
     // Every bulk file is parsed exactly once.
-    expect(turnProbe.parseTurns.length).toBe(4 * BULK);
+    expect(turnProbe.parseTurns.length).toBe(BULK_FAMILIES * BULK);
+    expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
+  });
+
+  it('parses a graph file at most once more when the graph spells its path the other way', async () => {
+    // On Windows a graph path in POSIX spelling misses the scanned file's
+    // cached detections and parses that file once more; it must stay one parse.
+    writeBulkFixture(tmpDir);
+    const other = path.sep === '/' ? '\\' : '/';
+
+    const contracts = await countingTurns(() =>
+      new HttpRouteExtractor().extract(
+        unresolvedRouteDb(BULK_JAVA_CONTROLLER.split(path.sep).join(other), '/java/0'),
+        tmpDir,
+        makeRepo(tmpDir),
+      ),
+    );
+
+    expect(contracts.length).toBeGreaterThan(0);
+    expect(turnProbe.parseTurns.length).toBeGreaterThanOrEqual(BULK_FAMILIES * BULK);
+    expect(turnProbe.parseTurns.length).toBeLessThanOrEqual(BULK_FAMILIES * BULK + 1);
     expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
   });
 
@@ -571,9 +613,9 @@ describe('HTTP source scan tree lifetime', () => {
       return new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir));
     });
 
-    // Java and Kotlin parses fail; the TS and Go files still give contracts.
+    // The Java and Kotlin parses fail; the TS and Go files still give contracts.
     expect(contracts.length).toBeGreaterThan(0);
-    expect(turnProbe.parseTurns.length).toBe(4 * BULK);
+    expect(turnProbe.parseTurns.length).toBe(BULK_FAMILIES * BULK);
     expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
   });
 
@@ -692,13 +734,16 @@ describe('HTTP source scan tree lifetime', () => {
     expect(contractKeys(contracts)).toEqual(MIXED_CONTRACTS);
   });
 
-  it('emits the same contracts when graph routes need the source scan', async () => {
-    writeMixedFixture(tmpDir);
-    const db = unresolvedRouteDb(
-      'app/src/main/kotlin/com/example/pay/AccountController.kt',
-      '/api/accounts/api/reports',
-    );
-    const contracts = await new HttpRouteExtractor().extract(db, tmpDir, makeRepo(tmpDir));
-    expect(contractKeys(contracts)).toEqual(MIXED_CONTRACTS_WITH_GRAPH_ROUTE);
-  });
+  it.skipIf(!KOTLIN)(
+    'emits the same contracts when graph routes need the source scan',
+    async () => {
+      writeMixedFixture(tmpDir);
+      const db = unresolvedRouteDb(
+        'app/src/main/kotlin/com/example/pay/AccountController.kt',
+        '/api/accounts/api/reports',
+      );
+      const contracts = await new HttpRouteExtractor().extract(db, tmpDir, makeRepo(tmpDir));
+      expect(contractKeys(contracts)).toEqual(MIXED_CONTRACTS_WITH_GRAPH_ROUTE);
+    },
+  );
 });
