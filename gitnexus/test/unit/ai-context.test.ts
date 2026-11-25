@@ -351,6 +351,20 @@ describe('generateAIContextFiles', () => {
     expect(content).not.toContain('## Keeping the Index Fresh');
   });
 
+  it('scopes the impact-before-edit MUST rule to code changes (#3976)', async () => {
+    // The block is regenerated on every analyze, so a hand-added scoping note
+    // inside it is lost. Docs-only edits must not be bound by the impact rule;
+    // the commit-time detect_changes rule stays unconditional.
+    const stats = { nodes: 50, edges: 100, processes: 5 };
+    await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
+
+    const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
+
+    expect(content).toContain('**MUST run impact before code edits.**');
+    expect(content).not.toContain('**MUST run impact before editing.**');
+    expect(content).toContain('**MUST analyze changes before commit.**');
+  });
+
   it('keeps the CLAUDE.md GitNexus block under the token-cost budget (#856)', async () => {
     // The pre-trim block was ~5465 chars. After #856 it's ~2580 — about a
     // 52% reduction. The ceiling is a soft cap that still leaves headroom for
