@@ -72,6 +72,9 @@ only for Azure: `--provider azure` or an Azure OpenAI base URL.
 open the file in `$EDITOR` (or `$VISUAL`, else `vi`) and generate pages from the edited tree,
 or `n` to stop. In a non-interactive shell, generation continues without asking.
 
+Wiki generation uses a system Git installation to compare revisions. If Git is installed
+elsewhere, set `GITNEXUS_WIKI_GIT_PATH` to the absolute path of your trusted Git executable.
+
 `--force` groups the files into modules again before regenerating every page, unless
 `module_tree.json` was edited since the last generation; an edit is used for the next
 generation only. A run that finds more than five new source files since the last generation
