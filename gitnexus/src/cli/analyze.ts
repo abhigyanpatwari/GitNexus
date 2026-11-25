@@ -207,6 +207,13 @@ const RESPAWN_PROGRESS_ENV = 'GITNEXUS_RESPAWN_PROGRESS_TTY';
 /** How often analyze prints a progress line when stderr is not a terminal. */
 const PLAIN_PROGRESS_INTERVAL_MS = 10_000;
 
+/**
+ * A progress label is one line of text, yet it can carry a file name, and a
+ * file name can carry escapes or line breaks.
+ */
+const toProgressLabel = (label: string): string =>
+  label.replace(/[\r\n]+/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]/g, '');
+
 interface CliProgressTerminal {
   cursorSave(): void;
   cursorRestore(): void;
@@ -1680,12 +1687,15 @@ const analyzeCommandImpl = async (
     barOptions.terminal = createAnsiPipeTerminal(process.stderr);
   }
   if (!redrawsInPlace) {
-    // Without a terminal (Docker without -t, CI, stderr sent to a file),
-    // cli-progress prints nothing, so a long run looks hung. Print a plain
-    // line on a schedule instead; the phase's elapsed time shows it is alive.
+    // When neither stdout nor stderr is a terminal (Docker without -t, CI, both
+    // streams redirected), cli-progress prints nothing, so a long run looks
+    // hung. Print a plain line on a schedule instead; the phase's elapsed time
+    // shows it is alive. Without a line to clear, clearOnComplete only keeps
+    // stop() from ending the log on a blank line.
     barOptions.format = '  {percentage}% | {phase}';
     barOptions.noTTYOutput = true;
     barOptions.notTTYSchedule = PLAIN_PROGRESS_INTERVAL_MS;
+    barOptions.clearOnComplete = true;
   }
   const bar = new cliProgress.SingleBar(barOptions, cliProgress.Presets.shades_grey);
 
@@ -1726,7 +1736,7 @@ const analyzeCommandImpl = async (
 
   // Route console output through bar.log() to prevent progress bar corruption.
   // This is a deliberate UI pattern (not a logging concern): analyze runs a
-  // long-lived progress bar on stdout; any concurrent console.* write would
+  // long-lived progress bar on stderr; any concurrent console.* write would
   // overwrite the bar mid-render. We capture originals, swap to barLog for
   // the lifetime of the run, and restore on completion/error/SIGINT.
   const origLog = console.log.bind(console);
@@ -1752,7 +1762,8 @@ const analyzeCommandImpl = async (
   let lastPhaseLabel = 'Initializing...';
   let phaseStart = Date.now();
 
-  const updateBar = (value: number, phaseLabel: string) => {
+  const updateBar = (value: number, rawLabel: string) => {
+    const phaseLabel = toProgressLabel(rawLabel);
     barCurrentValue = value;
     if (phaseLabel !== lastPhaseLabel) {
       lastPhaseLabel = phaseLabel;

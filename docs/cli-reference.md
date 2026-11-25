@@ -47,8 +47,6 @@ You can also query the graph directly from the terminal — `gitnexus query`, `c
 
 Impact defaults to 30 symbols per depth when pagination is omitted. Use `--limit` and `--offset` for explicit pages, or `GITNEXUS_IMPACT_DEFAULT_LIMIT=0` for all symbols. `--summary-only`, group queries and PDG mode bypass this default. Symbols list at most three processes, with `processCount` preserving the full count when shortened. `--max-tokens` is explicit on the CLI; `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` applies only to MCP.
 
-Without a terminal (Docker without `-t`, CI, or stderr redirected to a file), `gitnexus analyze` prints a plain progress line such as `32% | Parsing chunks 79-93/128...` every ten seconds instead of the redrawn bar.
-
 `gitnexus analyze --watch` requires a Git repository. It runs one initial
 analysis, then debounces scanner-admitted working-tree changes for 300 ms by
 default and applies serialized incremental refreshes. Events arriving during a
@@ -120,6 +118,8 @@ gitnexus analyze --wal-checkpoint-threshold 67108864  # LadybugDB WAL auto-check
 An operation must name a protocol, either through its own `bindings` or through the `servers[].protocol` of the servers its channel resolves to (a channel that lists no `servers` resolves to all of them); operations that name none are refused, as are operations whose two readings name different brokers, and channels that inherit a multi-protocol server set without choosing. HTTP and WebSocket documents are refused for destination minting: there the host rather than the address names the place, and an HTTP endpoint is already modelled as a `Route`. A parameterized address — a channel declaring `parameters`, or an address containing `{` — is refused rather than keyed: two services publishing `{env}.orders` share a pattern, not a queue. AsyncAPI **2.x is refused** under its own counted reason and never mapped, because its `publish`/`subscribe` are inverted relative to 3.x `send`/`receive` and a naive mapping would reverse the async graph while leaving it connected. Every refusal is counted, and a configured path that yields nothing is reported rather than passed over in silence.
 
 Like Actuator snapshots, documents are external to git freshness — replacing one moves no commit and dirties no file — so an enabled run always rebuilds, and the first later run without the option rebuilds once to remove document-derived evidence. There is no glob-based auto-discovery, and the option is unsupported with `--watch`.
+
+When neither stdout nor stderr is a terminal (Docker without `-t`, CI, or both streams redirected), `analyze` prints a plain progress line such as `32% | Parsing chunks 79-93/128...` every ten seconds instead of the redrawn bar.
 
 If `analyze` reports a worker parse timeout on a large or unusual repository, it keeps running and falls back safely. To give slow worker jobs more time, use `--worker-timeout 60` or set `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=60000`. For very large files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES` controls the worker job byte budget.
 

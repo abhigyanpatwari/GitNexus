@@ -349,6 +349,9 @@ describe('CLI end-to-end', () => {
   // an earlier sibling test's analyze cannot push this one onto the
   // alreadyUpToDate fast path, which would skip the very wiring this
   // test is here to protect.
+  //
+  // The same run guards #1194: with piped stdio (Docker without -t, CI),
+  // analyze used to print no progress at all until it finished.
   it('analyze persists meta.json AND a matching registry entry (#1169)', () => {
     const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-home-'));
     const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-repo-');
@@ -374,6 +377,13 @@ describe('CLI end-to-end', () => {
           `stderr: ${result.stderr}`,
         ].join('\n'),
       ).toBe(0);
+
+      // #1194: no terminal here, so progress arrives as plain lines, with no
+      // bar characters and no cursor controls in what is a log.
+      expect(result.stderr).toMatch(/^\s*0% \| Initializing\.\.\./m);
+      expect(result.stderr).toMatch(/^\s*100% \| Done/m);
+      expect(result.stderr).not.toMatch(/[█░]/);
+      expect(`${result.stdout}${result.stderr}`).not.toContain('\x1b');
 
       // Both metadata filenames must exist after a successful analyze:
       // gitnexus.json is the primary (what assertAnalysisFinalized checks —
@@ -413,46 +423,6 @@ describe('CLI end-to-end', () => {
     } finally {
       cleanupTempDirSync(gnHome);
       cleanupTempDirSync(repoParent);
-    }
-  }, 90_000);
-
-  // Regression guard for #1194: with piped stdio (Docker without -t, CI),
-  // analyze used to print no progress at all until it finished.
-  it('analyze without a terminal prints plain progress lines (#1194)', () => {
-    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1194-home-'));
-    let repoParent: string | undefined;
-
-    try {
-      // Inside the try, so a failed copy still removes the home created above.
-      const repo = makeMiniRepoCopy('mini-repo', 'gn-1194-repo-');
-      repoParent = path.dirname(repo);
-      const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 90_000);
-
-      expect(
-        result.status,
-        [
-          'analyze timed out before its progress output could be checked',
-          `stdout: ${result.stdout}`,
-          `stderr: ${result.stderr}`,
-        ].join('\n'),
-      ).not.toBeNull();
-      expect(
-        result.status,
-        [
-          `analyze exited with code ${result.status}`,
-          `stdout: ${result.stdout}`,
-          `stderr: ${result.stderr}`,
-        ].join('\n'),
-      ).toBe(0);
-
-      expect(result.stderr).toContain('0% | Initializing...');
-      expect(result.stderr).toContain('100% | Done');
-      // No bar characters and no cursor controls in a log.
-      expect(result.stderr).not.toMatch(/[█░]/);
-      expect(`${result.stdout}${result.stderr}`).not.toContain('\x1b');
-    } finally {
-      cleanupTempDirSync(gnHome);
-      if (repoParent) cleanupTempDirSync(repoParent);
     }
   }, 90_000);
 
