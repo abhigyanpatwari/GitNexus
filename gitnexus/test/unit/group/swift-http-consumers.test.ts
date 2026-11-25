@@ -107,6 +107,17 @@ describeSwift('Swift HTTP consumer plugin (#1677)', () => {
     ]);
   });
 
+  it('ignores Object.prototype names as verbs and as method: values', () => {
+    expect(
+      scan(`
+        _ = client.constructor("/api/x")
+        _ = client.toString("/api/x")
+        _ = client.hasOwnProperty(path: "/api/x")
+        AF.request("/api/x", method: "constructor")
+      `),
+    ).toEqual([{ method: '*', path: '/api/x', framework: 'swift-request' }]);
+  });
+
   it('ignores calls whose literal is not a URL path, and non-literal paths', () => {
     expect(
       scan(`

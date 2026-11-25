@@ -61,13 +61,15 @@ try {
   Swift = null;
 }
 
-const VERB_TO_HTTP: Record<string, string> = {
-  get: 'GET',
-  post: 'POST',
-  put: 'PUT',
-  patch: 'PATCH',
-  delete: 'DELETE',
-};
+// A Map, not an object literal: `obj[fn]` would hit inherited names such as
+// `constructor` / `toString` and yield a function instead of a verb.
+const VERB_TO_HTTP = new Map([
+  ['get', 'GET'],
+  ['post', 'POST'],
+  ['put', 'PUT'],
+  ['patch', 'PATCH'],
+  ['delete', 'DELETE'],
+]);
 
 const PATH_LABELS = new Set(['path', 'url']);
 
@@ -130,7 +132,7 @@ function readMethodArg(value: Parser.SyntaxNode | null | undefined): string {
   } else {
     name = swiftStringLiteral(value);
   }
-  return (name && VERB_TO_HTTP[name.toLowerCase()]) ?? '*';
+  return (name ? VERB_TO_HTTP.get(name.toLowerCase()) : undefined) ?? '*';
 }
 
 export const SWIFT_HTTP_PLUGIN: HttpLanguagePlugin | null =
@@ -160,11 +162,11 @@ export const SWIFT_HTTP_PLUGIN: HttpLanguagePlugin | null =
                   ? 'GET'
                   : '*';
               framework = 'swift-request';
-            } else if (VERB_TO_HTTP[fn]) {
-              method = VERB_TO_HTTP[fn];
-              framework = 'swift-wrapper';
             } else {
-              continue;
+              const verb = VERB_TO_HTTP.get(fn);
+              if (!verb) continue;
+              method = verb;
+              framework = 'swift-wrapper';
             }
 
             // First positional argument, else the first `path:` / `url:` one.
