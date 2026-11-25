@@ -105,13 +105,18 @@ withTestLbugDB(
       expect(result.riskNote).toMatch(/file-level imports/);
     });
 
-    it('omits imports_only and riskNote when no IMPORTS-only nodes exist', async () => {
-      // initAuth is a Function — no file seed, so no IMPORTS fan-out
+    it('omits imports_only from summary when no IMPORTS-only nodes exist', async () => {
+      // orphanFn is a Function with zero callers — no file seed, no IMPORTS fan-out.
+      // Risk will be UNKNOWN (zero-caller upstream), which carries its own riskNote,
+      // but the IMPORTS-only exclusion note must not appear.
       const result = await backend.callTool('impact', {
         target: 'orphanFn',
         direction: 'upstream',
       });
       expect(result.summary.imports_only).toBeUndefined();
+      if (result.riskNote) {
+        expect(result.riskNote).not.toMatch(/IMPORTS/);
+      }
     });
 
     it('downstream direction is not broken by the fix', async () => {
