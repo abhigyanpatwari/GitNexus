@@ -1560,3 +1560,15 @@ no in-repository target. The fixture's three existing call edges are preserved.
 This increases the all-language count from 174 to 176 unresolved calls, with
 34 unresolved reads. The dynamic-import fixture still links `feature.activate()`
 to its imported `Feature.activate` method.
+
+### JavaScript indexed element (JAVASCRIPT-01)
+
+The JavaScript provider now answers `elementTypeOf` with the same
+`indexOnlyElementType` hook TypeScript uses, so `indexElement`
+(`@param {User[]} repos`, `repos[0].save()`) moves VISIBLE-GAP -> RESOLVES.
+The new `javascript-typed-array-index` fixture adds two intended
+`receiver-unresolved` call drops, both `chain-unwrap` in `.js`: a partial index
+of `User[][]` and an untyped receiver. With that fixture removed, the count arm
+is identical to the previous baseline, so no existing call changed state. The
+all-language count moves from 176 to 178 unresolved calls (210 -> 212 across
+all kinds).

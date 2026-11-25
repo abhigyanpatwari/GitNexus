@@ -51,6 +51,7 @@ import {
 import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
+import { indexOnlyElementType } from '../../type-extractors/shared.js';
 
 async function loadResolutionConfig(repoPath: string, fresh = false) {
   return {
@@ -62,6 +63,9 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 const javascriptScopeResolver: ScopeResolver = {
   postExtractSourceTextPolicy: 'uncached-files',
   populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
+  // Same subscript rule as TypeScript: a JSDoc `{User[]}` / `{Array<User>}`
+  // element types `repos[0].save()`; the accessor route declines.
+  elementTypeOf: indexOnlyElementType,
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,
