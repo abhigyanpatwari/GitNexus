@@ -420,10 +420,12 @@ describe('CLI end-to-end', () => {
   // analyze used to print no progress at all until it finished.
   it('analyze without a terminal prints plain progress lines (#1194)', () => {
     const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1194-home-'));
-    const repo = makeMiniRepoCopy('mini-repo', 'gn-1194-repo-');
-    const repoParent = path.dirname(repo);
+    let repoParent: string | undefined;
 
     try {
+      // Inside the try, so a failed copy still removes the home created above.
+      const repo = makeMiniRepoCopy('mini-repo', 'gn-1194-repo-');
+      repoParent = path.dirname(repo);
       const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 90_000);
 
       expect(
@@ -450,7 +452,7 @@ describe('CLI end-to-end', () => {
       expect(`${result.stdout}${result.stderr}`).not.toContain('\x1b');
     } finally {
       cleanupTempDirSync(gnHome);
-      cleanupTempDirSync(repoParent);
+      if (repoParent) cleanupTempDirSync(repoParent);
     }
   }, 90_000);
 
