@@ -4,7 +4,7 @@
  * Tests that traceCommand forwards CLI flags to callTool('trace', ...)
  * with correct parameter names. Mocked LocalBackend — no graph/DB.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const { callTool, init } = vi.hoisted(() => ({
   callTool: vi.fn(),
@@ -20,8 +20,13 @@ vi.mock('../../src/mcp/local/local-backend.js', () => ({
 }));
 
 // Report every byte written, as the real call does; output() loops until all land.
+// Also records the text so --stale-policy tests can inspect printed `.staleness`.
+const writeSyncMock = vi.fn();
 vi.mock('node:fs', () => ({
-  writeSync: vi.fn((_fd: number, bytes: Buffer, offset = 0) => bytes.length - offset),
+  writeSync: (fd: number, bytes: Buffer, offset = 0) => {
+    writeSyncMock(fd, bytes.subarray(offset).toString('utf8'));
+    return bytes.length - offset;
+  },
 }));
 
 vi.mock('../../src/core/lbug/native-check.js', () => ({
@@ -34,6 +39,13 @@ describe('CLI trace command', () => {
   beforeEach(() => {
     callTool.mockReset();
     callTool.mockResolvedValue({ status: 'ok', hopCount: 1 });
+    writeSyncMock.mockReset();
+  });
+
+  // These tests exercise the success path through output(), which sets the
+  // real process.exitCode; clear it so one test's failure doesn't leak.
+  afterEach(() => {
+    process.exitCode = undefined;
   });
 
   it('forwards from/to as positional args', async () => {
@@ -186,5 +198,81 @@ describe('CLI trace command', () => {
     } finally {
       process.argv = originalArgv;
     }
+  });
+
+  // --stale-policy (#3127): trace was added to withToolStaleness's dispatch
+  // alongside query/context/impact/cypher/check so the flag has a signal to
+  // act on. Mirrors the matrix in tool-direct-cli.test.ts's --stale-policy
+  // describe block for the other five commands.
+  describe('--stale-policy', () => {
+    it('rejects an invalid value with a clear usage error', async () => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('process.exit');
+      });
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        await expect(traceCommand('A', 'B', { stalePolicy: 'nonsense' })).rejects.toThrow(
+          'process.exit',
+        );
+        expect(stderr).toHaveBeenCalledWith(
+          expect.stringContaining("--stale-policy 'nonsense' is invalid"),
+        );
+        expect(callTool).not.toHaveBeenCalled();
+      } finally {
+        exitSpy.mockRestore();
+        stderr.mockRestore();
+      }
+    });
+
+    it('defaults to warn: leaves staleness and exit code untouched', async () => {
+      callTool.mockResolvedValue({
+        status: 'found',
+        hops: [],
+        staleness: { status: 'behind', commitsBehind: 4 },
+      });
+
+      await traceCommand('A', 'B', {});
+
+      const text: string = writeSyncMock.mock.calls[0][1];
+      expect(JSON.parse(text).staleness).toEqual({ status: 'behind', commitsBehind: 4 });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('ignore strips the staleness field entirely', async () => {
+      callTool.mockResolvedValue({
+        status: 'found',
+        hops: [],
+        staleness: { status: 'diverged', hint: 'Index is not at HEAD.' },
+      });
+
+      await traceCommand('A', 'B', { stalePolicy: 'ignore' });
+
+      const text: string = writeSyncMock.mock.calls[0][1];
+      expect(JSON.parse(text).staleness).toBeUndefined();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it.each(['behind', 'diverged', 'unknown'])(
+      'error fails the exit code on a non-current index (%s)',
+      async (status) => {
+        callTool.mockResolvedValue({ status: 'found', hops: [], staleness: { status } });
+
+        await traceCommand('A', 'B', { stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      },
+    );
+
+    it('error leaves the exit code untouched for a confirmed-current index', async () => {
+      callTool.mockResolvedValue({
+        status: 'found',
+        hops: [],
+        staleness: { status: 'current' },
+      });
+
+      await traceCommand('A', 'B', { stalePolicy: 'error' });
+
+      expect(process.exitCode).toBeUndefined();
+    });
   });
 });

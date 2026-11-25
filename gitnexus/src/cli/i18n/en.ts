@@ -131,6 +131,8 @@ export const en = {
   'tool.usage.trace':
     'Usage: gitnexus trace <from> <to> [-f|--file <path>] [--from-file <path>] [--to-file <path>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
+  'tool.usage.stalePolicy':
+    "--stale-policy '{{value}}' is invalid; expected one of: warn, ignore, error.",
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
@@ -389,6 +391,8 @@ export const en = {
   'help.option.query.goal': 'What you want to find',
   'help.option.query.limit': 'Max processes to return (default: 5)',
   'help.option.content': 'Include full symbol source code',
+  'help.option.stalePolicy':
+    'How to handle a stale index: warn (default, report and continue), ignore (suppress the signal), error (nonzero exit when the index is not confirmed current)',
   'help.option.repo.target': 'Target repository',
   'help.option.branch': 'Scope to a specific branch index (multi-branch repos)',
   'help.option.context.uid': 'Direct symbol UID (zero-ambiguity lookup)',

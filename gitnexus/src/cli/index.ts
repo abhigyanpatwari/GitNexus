@@ -522,6 +522,11 @@ program
     '--content',
     'Include retained symbol source text (reports availability when disabled by retention)',
   )
+  .option(
+    '--stale-policy <policy>',
+    'How to handle a stale index: warn (default, report and continue), ignore (suppress the signal), error (nonzero exit when the index is not confirmed current)',
+    'warn',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'queryCommand'));
 
 program
@@ -535,6 +540,11 @@ program
   .option(
     '--content',
     'Include retained symbol source text (reports availability when disabled by retention)',
+  )
+  .option(
+    '--stale-policy <policy>',
+    'How to handle a stale index: warn (default, report and continue), ignore (suppress the signal), error (nonzero exit when the index is not confirmed current)',
+    'warn',
   )
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
@@ -571,6 +581,11 @@ program
     '--max-tokens <n>',
     'Fit compact JSON into about N tokens; trim deepest callgraph symbols or fail if required content cannot fit. PDG/group results must fit intact',
   )
+  .option(
+    '--stale-policy <policy>',
+    'How to handle a stale index: warn (default, report and continue), ignore (suppress the signal), error (nonzero exit when the index is not confirmed current)',
+    'warn',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
 
 program
@@ -585,6 +600,11 @@ program
   .option('--include-tests', 'Include test files in results')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index')
+  .option(
+    '--stale-policy <policy>',
+    'How to handle a stale index: warn (default, report and continue), ignore (suppress the signal), error (nonzero exit when the index is not confirmed current)',
+    'warn',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'traceCommand'));
 
 program
@@ -593,6 +613,11 @@ program
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-l, --limit <n>', 'Max result rows to return')
+  .option(
+    '--stale-policy <policy>',
+    'How to handle a stale index: warn (default, report and continue), ignore (suppress the signal), error (nonzero exit when the index is not confirmed current)',
+    'warn',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
 program
@@ -613,6 +638,11 @@ program
   .option('--json', 'Emit machine-readable JSON')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .option(
+    '--stale-policy <policy>',
+    'How to handle a stale index: warn (default, report and continue), ignore (suppress the signal), error (nonzero exit when the index is not confirmed current)',
+    'warn',
+  )
   .action(createLbugLazyAction(() => import('./tool.js'), 'checkCommand'));
 
 // ─── Eval Server (persistent daemon for SWE-bench) ─────────────────

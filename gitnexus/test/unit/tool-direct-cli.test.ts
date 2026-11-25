@@ -423,4 +423,241 @@ describe('direct CLI tool commands', () => {
     expect(output).toContain('受影响执行流程：');
     expect(output).toContain('Auth Flow (5 步) — 已变更：foo');
   });
+
+  // --stale-policy (#3127): query/context/impact/cypher attach `.staleness` via
+  // LocalBackend.withToolStaleness. These pin what each policy does with it.
+  describe('--stale-policy', () => {
+    it('rejects an invalid value with a clear usage error', async () => {
+      // Mirrors the usage-error convention: cliErrorKey writes to stderr (not the
+      // fd-1 writeSyncMock output() uses) and process.exit(1) genuinely halts
+      // the process in production. The mock here can't observe that halt — see
+      // the real-command.not-called guarantee enforced for the real invalid-value
+      // checks in cli-index-help.test.ts e2e instead — so this pins the reported
+      // message and exit code.
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const { queryCommand } = await import('../../src/cli/tool.js');
+        await queryCommand('auth flow', { stalePolicy: 'nonsense' });
+        expect(stderr).toHaveBeenCalledWith(
+          expect.stringContaining("--stale-policy 'nonsense' is invalid"),
+        );
+        expect(exit).toHaveBeenCalledWith(1);
+      } finally {
+        exit.mockRestore();
+        stderr.mockRestore();
+      }
+    });
+
+    it('defaults to warn: leaves staleness and exit code untouched', async () => {
+      callToolMock.mockResolvedValue({
+        results: [],
+        staleness: { status: 'behind', commitsBehind: 3, hint: 'Index is 3 commits behind HEAD.' },
+      });
+      const { queryCommand } = await import('../../src/cli/tool.js');
+
+      await queryCommand('auth flow');
+
+      const text: string = writeSyncMock.mock.calls[0][1];
+      expect(JSON.parse(text).staleness).toEqual({
+        status: 'behind',
+        commitsBehind: 3,
+        hint: 'Index is 3 commits behind HEAD.',
+      });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('ignore strips the staleness field entirely', async () => {
+      callToolMock.mockResolvedValue({
+        results: [],
+        staleness: { status: 'diverged', hint: 'Index is not at HEAD.' },
+      });
+      const { queryCommand } = await import('../../src/cli/tool.js');
+
+      await queryCommand('auth flow', { stalePolicy: 'ignore' });
+
+      const text: string = writeSyncMock.mock.calls[0][1];
+      expect(JSON.parse(text).staleness).toBeUndefined();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it.each(['behind', 'diverged'])(
+      'error fails the exit code on a confirmed-stale index (%s)',
+      async (status) => {
+        callToolMock.mockResolvedValue({
+          impactedCount: 1,
+          byDepth: {},
+          staleness: { status },
+        });
+        const { impactCommand } = await import('../../src/cli/tool.js');
+
+        await impactCommand('someSymbol', { stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+        // The result still prints — error fails the exit code, it does not hide why.
+        const text: string = writeSyncMock.mock.calls[0][1];
+        expect(JSON.parse(text).staleness.status).toBe(status);
+      },
+    );
+
+    it('error also fails when the staleness check itself could not run (unknown)', async () => {
+      // A git failure (not on PATH, shallow clone, broken worktree) collapses to
+      // `status: 'unknown'`, not `isStale: true` — the fail-open design the probe
+      // itself relies on. An explicit --stale-policy error exists to catch exactly
+      // this: silently treating "could not verify" as "fine" would pass CI on the
+      // one outcome the flag was added to prevent (issue #3127 discussion).
+      callToolMock.mockResolvedValue({
+        impactedCount: 0,
+        byDepth: {},
+        staleness: { status: 'unknown' },
+      });
+      const { impactCommand } = await import('../../src/cli/tool.js');
+
+      await impactCommand('someSymbol', { stalePolicy: 'error' });
+
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('error leaves the exit code untouched for a confirmed-current index', async () => {
+      callToolMock.mockResolvedValue({
+        impactedCount: 0,
+        byDepth: {},
+        staleness: { status: 'current' },
+      });
+      const { impactCommand } = await import('../../src/cli/tool.js');
+
+      await impactCommand('someSymbol', { stalePolicy: 'error' });
+
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('applies to context results', async () => {
+      callToolMock.mockResolvedValue({
+        incoming: {},
+        outgoing: {},
+        staleness: { status: 'behind', commitsBehind: 1 },
+      });
+      const { contextCommand } = await import('../../src/cli/tool.js');
+
+      await contextCommand('validateUser', { stalePolicy: 'ignore' });
+
+      const text: string = writeSyncMock.mock.calls[0][1];
+      expect(JSON.parse(text).staleness).toBeUndefined();
+    });
+
+    it('applies to cypher results', async () => {
+      callToolMock.mockResolvedValue({
+        markdown: '| count |\n| --- |\n| 1 |',
+        row_count: 1,
+        staleness: { status: 'diverged', hint: 'Index is not at HEAD.' },
+      });
+      const { cypherCommand } = await import('../../src/cli/tool.js');
+
+      await cypherCommand('MATCH (n) RETURN count(n) AS count', { stalePolicy: 'error' });
+
+      expect(process.exitCode).toBe(1);
+    });
+
+    // check and trace were added to withToolStaleness's dispatch alongside
+    // query/context/impact/cypher (local-backend.ts dispatch switch) so
+    // --stale-policy has a signal to act on for them too.
+    it('check: rejects an invalid value with a clear usage error', async () => {
+      const exit = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      try {
+        const { checkCommand } = await import('../../src/cli/tool.js');
+        await checkCommand({ cycles: true, stalePolicy: 'nonsense' });
+        expect(stderr).toHaveBeenCalledWith(
+          expect.stringContaining("--stale-policy 'nonsense' is invalid"),
+        );
+        expect(exit).toHaveBeenCalledWith(1);
+      } finally {
+        exit.mockRestore();
+        stderr.mockRestore();
+      }
+    });
+
+    it('check: defaults to warn, leaving staleness and exit code untouched', async () => {
+      callToolMock.mockResolvedValue({
+        status: 'clean',
+        cycleCount: 0,
+        cycles: [],
+        staleness: { status: 'behind', commitsBehind: 2 },
+      });
+      const { checkCommand } = await import('../../src/cli/tool.js');
+
+      await checkCommand({ cycles: true, json: true });
+
+      const text: string = writeSyncMock.mock.calls[0][1];
+      expect(JSON.parse(text).staleness).toEqual({ status: 'behind', commitsBehind: 2 });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('check: ignore strips the staleness field', async () => {
+      callToolMock.mockResolvedValue({
+        status: 'clean',
+        cycleCount: 0,
+        cycles: [],
+        staleness: { status: 'diverged', hint: 'Index is not at HEAD.' },
+      });
+      const { checkCommand } = await import('../../src/cli/tool.js');
+
+      await checkCommand({ cycles: true, json: true, stalePolicy: 'ignore' });
+
+      const text: string = writeSyncMock.mock.calls[0][1];
+      expect(JSON.parse(text).staleness).toBeUndefined();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it.each(['behind', 'diverged', 'unknown'])(
+      'check: error fails the exit code on a non-current index (%s)',
+      async (status) => {
+        callToolMock.mockResolvedValue({
+          status: 'clean',
+          cycleCount: 0,
+          cycles: [],
+          staleness: { status },
+        });
+        const { checkCommand } = await import('../../src/cli/tool.js');
+
+        await checkCommand({ cycles: true, json: true, stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      },
+    );
+
+    it('check: error leaves the exit code untouched for a confirmed-current index', async () => {
+      callToolMock.mockResolvedValue({
+        status: 'clean',
+        cycleCount: 0,
+        cycles: [],
+        staleness: { status: 'current' },
+      });
+      const { checkCommand } = await import('../../src/cli/tool.js');
+
+      await checkCommand({ cycles: true, json: true, stalePolicy: 'error' });
+
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('check: error still fails the exit code in prose mode (no --json)', async () => {
+      // applyStalePolicy must run before the --json/prose branch, since error's
+      // exit-code side effect is not itself print-format-dependent.
+      callToolMock.mockResolvedValue({
+        status: 'clean',
+        cycleCount: 0,
+        cycles: [],
+        staleness: { status: 'behind', commitsBehind: 1 },
+      });
+      const { checkCommand } = await import('../../src/cli/tool.js');
+
+      await checkCommand({ cycles: true, stalePolicy: 'error' });
+
+      expect(writeSyncMock).toHaveBeenCalledWith(
+        1,
+        expect.stringContaining('No circular imports found.'),
+      );
+      expect(process.exitCode).toBe(1);
+    });
+  });
 });

@@ -150,6 +150,42 @@ function parseOffset(raw: string | undefined): number | undefined {
   return Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
+type StalePolicy = 'warn' | 'ignore' | 'error';
+
+/**
+ * Parse and validate `--stale-policy`. Unlike --limit/--offset, an invalid
+ * value here is a hard usage error rather than a silent fallback: a typoed
+ * `error` policy that quietly behaves like `warn` would defeat the exact CI
+ * gate the flag exists to provide (issue #3127).
+ */
+function resolveStalePolicy(raw: string | undefined): StalePolicy {
+  if (raw === undefined || raw === 'warn') return 'warn';
+  if (raw === 'ignore' || raw === 'error') return raw;
+  cliErrorKey('tool.usage.stalePolicy', { value: raw });
+  process.exit(1);
+}
+
+/**
+ * Apply `--stale-policy` to a tool result already carrying `.staleness`
+ * (attached by `LocalBackend.withToolStaleness`). `ignore` removes the
+ * signal entirely; `error` fails the exit code on anything but a confirmed
+ * `current` index — including `status: 'unknown'`, where the staleness
+ * probe itself could not run (git missing, shallow clone, broken worktree).
+ * Treating `unknown` as "fine" would silently pass on exactly the case an
+ * explicit error policy is meant to catch (see issue #3127 discussion).
+ */
+function applyStalePolicy(result: unknown, policy: StalePolicy): void {
+  if (!result || typeof result !== 'object' || !('staleness' in result)) return;
+  const record = result as { staleness?: { status?: string } };
+  if (policy === 'ignore') {
+    delete record.staleness;
+    return;
+  }
+  if (policy === 'error' && record.staleness?.status !== 'current') {
+    process.exitCode = 1;
+  }
+}
+
 export async function queryCommand(
   queryText: string | undefined,
   options?: {
@@ -160,6 +196,7 @@ export async function queryCommand(
     goal?: string;
     limit?: string;
     content?: boolean;
+    stalePolicy?: string;
   },
 ): Promise<void> {
   const resolvedQuery = queryText?.trim() || options?.query?.trim();
@@ -167,6 +204,7 @@ export async function queryCommand(
     cliErrorKey('tool.usage.query');
     process.exit(1);
   }
+  const stalePolicy = resolveStalePolicy(options?.stalePolicy);
 
   const backend = await getBackend();
   try {
@@ -180,6 +218,7 @@ export async function queryCommand(
       repo: options?.repo,
       branch: options?.branch,
     });
+    applyStalePolicy(result, stalePolicy);
     output(result);
   } finally {
     // A local embedding query may start the sidecar. Direct CLI commands are
@@ -202,6 +241,7 @@ export async function contextCommand(
     uid?: string;
     limit?: string;
     content?: boolean;
+    stalePolicy?: string;
   },
 ): Promise<void> {
   // Reject a `--`-prefixed uid swallowed from a following flag (see impactCommand).
@@ -213,6 +253,7 @@ export async function contextCommand(
     cliErrorKey('tool.usage.context');
     process.exit(1);
   }
+  const stalePolicy = resolveStalePolicy(options?.stalePolicy);
 
   const limit = parseLimit(options?.limit);
   const backend = await getBackend();
@@ -242,6 +283,7 @@ export async function contextCommand(
       result.typed_properties = result.typed_properties.slice(0, limit);
     if (Array.isArray(result.processes)) result.processes = result.processes.slice(0, limit);
   }
+  applyStalePolicy(result, stalePolicy);
   output(result);
 }
 
@@ -262,6 +304,7 @@ export async function impactCommand(
     offset?: string;
     summaryOnly?: boolean;
     maxTokens?: string;
+    stalePolicy?: string;
   },
 ): Promise<void> {
   // A `--`-prefixed uid means Commander swallowed a following flag as the uid
@@ -277,6 +320,7 @@ export async function impactCommand(
     cliErrorKey('tool.usage.impact');
     process.exit(1);
   }
+  const stalePolicy = resolveStalePolicy(options?.stalePolicy);
   // Soft-validate --kind: an unknown kind is a no-op hint (the backend scores
   // it but it matches nothing), so warn and proceed rather than rejecting —
   // parity with the lenient MCP surface and forward-compatible with new labels.
@@ -327,6 +371,7 @@ export async function impactCommand(
         result.affected_routes = result.affected_routes.slice(0, parsedLimit);
     }
     const shaped = shapeImpactForAgent(result, maxTokens);
+    applyStalePolicy(shaped, stalePolicy);
     // The budget is measured on compact JSON, even when stdout is a terminal.
     output(shaped, maxTokens === undefined ? undefined : (data) => JSON.stringify(data));
   } catch (err: unknown) {
@@ -354,12 +399,14 @@ export async function cypherCommand(
     repo?: string;
     branch?: string;
     limit?: string;
+    stalePolicy?: string;
   },
 ): Promise<void> {
   if (!query?.trim()) {
     cliErrorKey('tool.usage.cypher');
     process.exit(1);
   }
+  const stalePolicy = resolveStalePolicy(options?.stalePolicy);
 
   const limit = parseLimit(options?.limit);
   const backend = await getBackend();
@@ -388,6 +435,7 @@ export async function cypherCommand(
       result.row_count = Math.min(result.row_count, limit);
     }
   }
+  applyStalePolicy(result, stalePolicy);
   output(result);
 }
 
@@ -422,12 +470,14 @@ export async function checkCommand(options?: {
   json?: boolean;
   repo?: string;
   branch?: string;
+  stalePolicy?: string;
 }): Promise<void> {
   if (!options?.cycles) {
     process.stderr.write('Usage: gitnexus check --cycles [--json]\n');
     process.exitCode = 1;
     return;
   }
+  const stalePolicy = resolveStalePolicy(options?.stalePolicy);
 
   try {
     const backend = await getBackend();
@@ -436,6 +486,10 @@ export async function checkCommand(options?: {
       repo: options.repo,
       branch: options.branch,
     });
+    // Independent of --json/prose rendering below: --stale-policy error must
+    // fail the exit code either way, and ignore's strip only has a visible
+    // effect in --json mode (prose never prints `.staleness`).
+    applyStalePolicy(result, stalePolicy);
     // A rendering guard, not an exit-code decision — `output()` owns that. An
     // error payload carries no `cycles` array, so the prose branch below would
     // throw on it; print the structured payload and stop.
@@ -493,6 +547,7 @@ export async function traceCommand(
     repo?: string;
     branch?: string;
     includeTests?: boolean;
+    stalePolicy?: string;
   },
 ): Promise<void> {
   if (options?.fromUid?.startsWith('--') || options?.toUid?.startsWith('--')) {
@@ -520,6 +575,7 @@ export async function traceCommand(
       process.exit(1);
     }
   }
+  const stalePolicy = resolveStalePolicy(options?.stalePolicy);
 
   try {
     const backend = await getBackend();
@@ -536,6 +592,7 @@ export async function traceCommand(
       repo: options?.repo,
       branch: options?.branch,
     });
+    applyStalePolicy(result, stalePolicy);
     output(result);
   } catch (err: unknown) {
     output({

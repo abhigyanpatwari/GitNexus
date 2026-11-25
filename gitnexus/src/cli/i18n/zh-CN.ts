@@ -122,6 +122,7 @@ export const zhCN = {
   'tool.usage.trace':
     '用法：gitnexus trace <起点> <终点> [-f|--file <路径>] [--from-file <路径>] [--to-file <路径>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': '用法：gitnexus cypher <Cypher 查询>',
+  'tool.usage.stalePolicy': "--stale-policy '{{value}}' 无效；应为以下之一：warn、ignore、error。",
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
@@ -351,6 +352,8 @@ export const zhCN = {
   'help.option.query.goal': '你想查找的目标',
   'help.option.query.limit': '最多返回的流程数（默认：5）',
   'help.option.content': '包含完整符号源码',
+  'help.option.stalePolicy':
+    '如何处理过期索引：warn（默认，报告后继续执行）、ignore（抑制该信号）、error（索引未确认为最新时以非零状态退出）',
   'help.option.repo.target': '目标仓库',
   'help.option.branch': '将查询限定到指定分支的索引（多分支仓库）',
   'help.option.context.uid': '直接符号 UID（零歧义查找）',

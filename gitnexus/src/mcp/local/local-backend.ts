@@ -3290,7 +3290,7 @@ export class LocalBackend {
       case 'detect_changes':
         return this.detectChanges(repo, p);
       case 'check':
-        return this.check(repo, p);
+        return this.withToolStaleness(repo, await this.check(repo, p));
       case 'rename':
         return this.rename(repo, p as unknown as Parameters<LocalBackend['rename']>[1]);
       // Legacy aliases for backwards compatibility
@@ -3312,7 +3312,7 @@ export class LocalBackend {
       case 'api_impact':
         return this.apiImpact(repo, p);
       case 'trace':
-        return this.trace(repo, p);
+        return this.withToolStaleness(repo, await this.trace(repo, p));
       case 'read_file':
         return this.withToolStaleness(repo, await this.readFile(repo, p));
       case 'grep':

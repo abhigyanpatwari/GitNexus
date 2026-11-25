@@ -751,12 +751,21 @@ describe('LocalBackend.callTool', () => {
 
     const result = await backend.callTool('check', { cycles: true });
 
+    // `check` now routes through withToolStaleness (#3127 --stale-policy needs
+    // a signal to act on), so a success result carries `.staleness` same as
+    // query/context/impact/cypher already did.
     expect(result).toEqual({
       status: 'cycles_found',
       enumeration: 'complete',
       cycleCount: 1,
       componentCount: 1,
       cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
+      staleness: {
+        status: 'current',
+        lastCommit: MOCK_REPO_ENTRY.lastCommit,
+        indexedAt: MOCK_REPO_ENTRY.indexedAt,
+        measuredAgainst: 'HEAD',
+      },
     });
     expect((executeParameterized as any).mock.calls.at(-1)[2]).toMatchObject({ limit: 100_001 });
   });
@@ -770,6 +779,12 @@ describe('LocalBackend.callTool', () => {
       cycleCount: 0,
       componentCount: 0,
       cycles: [],
+      staleness: {
+        status: 'current',
+        lastCommit: MOCK_REPO_ENTRY.lastCommit,
+        indexedAt: MOCK_REPO_ENTRY.indexedAt,
+        measuredAgainst: 'HEAD',
+      },
     });
   });
 
@@ -801,6 +816,12 @@ describe('LocalBackend.callTool', () => {
         { files: ['src/b.ts', 'src/c.ts', 'src/d.ts', 'src/b.ts'] },
         { files: ['src/b.ts', 'src/d.ts', 'src/b.ts'] },
       ],
+      staleness: {
+        status: 'current',
+        lastCommit: MOCK_REPO_ENTRY.lastCommit,
+        indexedAt: MOCK_REPO_ENTRY.indexedAt,
+        measuredAgainst: 'HEAD',
+      },
     });
   });
 
@@ -831,6 +852,12 @@ describe('LocalBackend.callTool', () => {
       cycleCount: null,
       componentCount: 1,
       cycles: [{ files: ['src/0.ts', 'src/1.ts', 'src/0.ts'] }],
+      staleness: {
+        status: 'current',
+        lastCommit: MOCK_REPO_ENTRY.lastCommit,
+        indexedAt: MOCK_REPO_ENTRY.indexedAt,
+        measuredAgainst: 'HEAD',
+      },
     });
   });
 
@@ -859,6 +886,12 @@ describe('LocalBackend.callTool', () => {
         { files: ['src/0.ts', 'src/1.ts', 'src/0.ts'] },
         { files: ['src/y.ts', 'src/z.ts', 'src/y.ts'] },
       ],
+      staleness: {
+        status: 'current',
+        lastCommit: MOCK_REPO_ENTRY.lastCommit,
+        indexedAt: MOCK_REPO_ENTRY.indexedAt,
+        measuredAgainst: 'HEAD',
+      },
     });
   });
 
@@ -6045,10 +6078,12 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     });
   });
 
-  // F3: drift guard — exactly the four read tools route through stalenessForTool;
-  // the adjacent read-ish tools must not, so a future tool added without staleness
-  // (or one dropped) is caught.
-  it('routes only query/cypher/context/impact through the freshness check', async () => {
+  // F3: drift guard — exactly six read tools route through stalenessForTool
+  // (query/cypher/context/impact from #2655, check/trace added for #3127's
+  // --stale-policy so the CLI flag has a signal to act on); the adjacent
+  // read-ish tools must not, so a future tool added without staleness (or one
+  // dropped) is caught.
+  it('routes only query/cypher/context/impact/check/trace through the freshness check', async () => {
     stubResolve();
     await stubStale();
     const spy = vi.spyOn(backend as any, 'stalenessForTool');
@@ -6057,10 +6092,11 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
       'query',
       'context',
       'impact',
+      'check',
+      'trace',
       'explain',
       'pdgQuery',
       'detectChanges',
-      'check',
     ]) {
       vi.spyOn(backend as any, m).mockResolvedValue({ ok: true });
     }
@@ -6072,15 +6108,16 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     await backend.callTool('cypher', { statement: 'RETURN 1', repo: 'r' });
     await backend.callTool('context', { name: 'x', repo: 'r' });
     await backend.callTool('impact', { target: 'x', repo: 'r' });
+    await backend.callTool('check', { cycles: true, repo: 'r' });
+    await backend.callTool('trace', { from: 'x', to: 'y', repo: 'r' });
     const wrappedCalls = spy.mock.calls.length;
 
     await backend.callTool('explain', { target: 'x', repo: 'r' });
     await backend.callTool('pdg_query', { anchor: 'x', repo: 'r' });
     await backend.callTool('detect_changes', { scope: 'unstaged', repo: 'r' });
-    await backend.callTool('check', { cycles: true, repo: 'r' });
 
-    expect(wrappedCalls).toBe(4);
-    expect(spy.mock.calls.length).toBe(4);
+    expect(wrappedCalls).toBe(6);
+    expect(spy.mock.calls.length).toBe(6);
   });
 
   // F4: the per-index freshness result is deduped within TOOL_STALENESS_TTL_MS and

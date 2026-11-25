@@ -327,6 +327,7 @@ gitnexus trace <from> <to>       # Shortest directed path between two symbols
 gitnexus detect-changes          # Map the working-tree diff to affected symbols and execution flows
 gitnexus check                   # Read-only structural checks against the indexed graph
 gitnexus cypher "<query>"        # Run a raw Cypher query against the knowledge graph
+gitnexus query "<concept>" --stale-policy error  # query/context/impact/cypher/check/trace accept --stale-policy warn|ignore|error (default: warn) for a stale index
 
 # Repository groups (multi-repo / monorepo service tracking)
 gitnexus group create <name>                                   # Create a repository group
