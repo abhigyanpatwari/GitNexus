@@ -297,10 +297,9 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
       getInterModuleEdgesForOverview: vi.fn().mockResolvedValue([]),
     }));
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockImplementation(() => {
+      execFileSync: vi.fn().mockImplementation(() => {
         throw new Error('not a git repo');
       }),
-      execFileSync: vi.fn(),
     }));
 
     const llmClient = await import('../../src/core/wiki/llm-client.js');

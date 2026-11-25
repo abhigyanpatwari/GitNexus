@@ -35,8 +35,8 @@ describe('ECMAScript literal decoding', () => {
   it.each([
     [String.raw`"\u{1F600}"`, String.fromCodePoint(0x1f600)],
     [String.raw`'\uD83D\uDE00'`, String.fromCodePoint(0x1f600)],
-    [String.raw`'\uD800'`, null],
-    [String.raw`'\uDC00'`, null],
+    ["'\\uD800'", null],
+    ["'\\uDC00'", null],
     [String.raw`f\u006F\u{6F}`, 'foo'],
   ])('reads module name %j', (source, expected) => {
     expect(canonicalModuleExportName(source)).toBe(expected);
