@@ -125,6 +125,18 @@ describe('createTreeReleaser', () => {
     expect(state.nudges).toBe(1);
   });
 
+  it('lowers the RSS floor when RSS falls between nudges', async () => {
+    // The floor starts at the RSS read when the releaser is made.
+    const { state, release } = scriptedReleaser();
+    state.rss = 300 * MB;
+    await release();
+    expect(state.nudges).toBe(0);
+    // Growth from the new low nudges, although RSS is below the first reading.
+    state.rss += NUDGE_RSS_GROWTH_BYTES + MB;
+    await release();
+    expect(state.nudges).toBe(1);
+  });
+
   it('nudges every MAX_YIELDS_PER_NUDGE yields when RSS does not show the growth', async () => {
     // glibc reuses freed memory without RSS falling, so RSS can stay flat.
     const { state, release } = scriptedReleaser();
@@ -175,8 +187,30 @@ describe('createTreeReleaser', () => {
       const withNudge = await phase(true);
       console.log(JSON.stringify({ withoutNudge, withNudge }));
     `);
-    expect(withoutNudge).toBe(0);
-    expect(withNudge).toBeGreaterThan(0);
+    // Not `withoutNudge === 0`: whether V8 runs a major GC of its own here
+    // depends on its version.
+    expect(Number(withNudge)).toBeGreaterThan(Number(withoutNudge));
+  });
+
+  it('nudgeV8 holds its buffer until the next nudge', () => {
+    // A buffer dropped at once is freed by a minor GC and starts no major one
+    // (see the module comment), so the nudge must keep it.
+    const { afterFirst, afterSecond } = runReleaserChild(
+      `
+      const { nudgeV8 } = await import(RELEASER_URL);
+      const arrayBuffers = () => { gc(); gc(); return process.memoryUsage().arrayBuffers; };
+      nudgeV8();
+      const afterFirst = arrayBuffers();
+      nudgeV8();
+      const afterSecond = arrayBuffers();
+      console.log(JSON.stringify({ afterFirst, afterSecond }));
+    `,
+      { nodeArgs: ['--expose-gc'] },
+    );
+    expect(Number(afterFirst)).toBeGreaterThanOrEqual(64 * MB);
+    // The second nudge replaces the first buffer instead of adding to it.
+    expect(Number(afterSecond)).toBeGreaterThanOrEqual(64 * MB);
+    expect(Number(afterSecond)).toBeLessThan(128 * MB);
   });
 
   it('drops the nudge buffer when the last hold ends', () => {
