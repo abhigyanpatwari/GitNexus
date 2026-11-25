@@ -8053,7 +8053,7 @@ export class LocalBackend {
             'METHOD_IMPLEMENTS',
           ];
     const relationTypes =
-      rawRelTypes.length > 0
+      rawRelTypes.length > 0 || hasExplicitRelationTypes
         ? rawRelTypes
         : [
             'CALLS',
@@ -10125,6 +10125,7 @@ export class LocalBackend {
     const mappedRelTypes = opts.relationTypes?.flatMap((t: string) =>
       t === 'OVERRIDES' ? ['OVERRIDES', 'METHOD_OVERRIDES'] : [t],
     );
+    const hasExplicitRelationTypes = mappedRelTypes !== undefined && mappedRelTypes.length > 0;
     const rawRelTypes =
       mappedRelTypes && mappedRelTypes.length > 0
         ? mappedRelTypes.filter((t: string) => VALID_RELATION_TYPES.has(t))
@@ -10138,7 +10139,7 @@ export class LocalBackend {
             'METHOD_IMPLEMENTS',
           ];
     const relationTypes =
-      rawRelTypes.length > 0
+      rawRelTypes.length > 0 || hasExplicitRelationTypes
         ? rawRelTypes
         : [
             'CALLS',
