@@ -98,14 +98,9 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # A queued PR can get a new test merge after the event recorded its base SHA.
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -164,14 +159,8 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -255,14 +244,8 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -1243,14 +1226,8 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:

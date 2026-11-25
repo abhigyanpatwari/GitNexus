@@ -79,7 +79,9 @@ export function javacReports(fixtures) {
   const javaHome = process.env.JAVA_HOME;
   assert.ok(javaHome && path.isAbsolute(javaHome), 'Set JAVA_HOME to an absolute JDK 21 path');
   const java = path.join(javaHome, 'bin', process.platform === 'win32' ? 'java.exe' : 'java');
-  const oracle = fileURLToPath(new URL('./OverloadOracle.java', import.meta.url));
+  const oracle = fileURLToPath(
+    new URL('./org/gitnexus/conformance/OverloadOracle.java', import.meta.url),
+  );
   const args = fixtures.flatMap(({ dir, families, constructors, implementations }) => [
     dir,
     [

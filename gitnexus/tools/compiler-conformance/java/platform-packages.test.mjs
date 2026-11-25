@@ -15,7 +15,9 @@ test('wildcard import lookup covers the public top-level types exported by JDK 2
     'bin',
     process.platform === 'win32' ? 'java.exe' : 'java',
   );
-  const source = fileURLToPath(new URL('./PlatformTypes.java', import.meta.url));
+  const source = fileURLToPath(
+    new URL('./org/gitnexus/conformance/PlatformTypes.java', import.meta.url),
+  );
   const generated = execFileSync(java, [source], { encoding: 'utf8' });
   assert.deepEqual(javaPlatformTypeInventory.split('\n'), generated.trimEnd().split(/\r?\n/));
 });

@@ -18,6 +18,32 @@ import {
 
 const root = fileURLToPath(new URL('../../../test/fixtures/', import.meta.url));
 const corpus = JSON.parse(readFileSync(new URL('./fixtures.json', import.meta.url), 'utf8'));
+
+function assertJavacCounts(fixture, ref) {
+  if (fixture.rejectedConstructors) {
+    assert.deepEqual(
+      ref.rejectedConstructors.map((site) => site.status).sort(compareCodeUnits),
+      [...fixture.rejectedConstructors].sort(compareCodeUnits),
+      'javac constructor rejections',
+    );
+  }
+  if (fixture.sites !== undefined)
+    assert.equal(ref.sites.length, fixture.sites, 'javac call-site count');
+  if (fixture.memberReferences !== undefined)
+    assert.equal(
+      ref.memberReferences.length,
+      fixture.memberReferences,
+      'javac member-reference count',
+    );
+  for (const [status, count] of Object.entries(fixture.rejections ?? {})) {
+    assert.equal(
+      ref.sites.filter((s) => s.status === status).length,
+      count,
+      'javac ' + status + ' count',
+    );
+  }
+}
+
 const projects = globSync(
   ['compiler-conformance/java-*/**/*.java', 'lang-resolution/java-*/**/*.java'],
   { cwd: root },
@@ -45,28 +71,7 @@ try {
   await runInSequence(fixtures.entries(), async ([i, fixture]) => {
     try {
       const ref = qualifiedJavacReport(references[i]);
-      if (fixture.rejectedConstructors) {
-        assert.deepEqual(
-          ref.rejectedConstructors.map((site) => site.status).sort(compareCodeUnits),
-          [...fixture.rejectedConstructors].sort(compareCodeUnits),
-          'javac constructor rejections',
-        );
-      }
-      if (fixture.sites !== undefined)
-        assert.equal(ref.sites.length, fixture.sites, 'javac call-site count');
-      if (fixture.memberReferences !== undefined)
-        assert.equal(
-          ref.memberReferences.length,
-          fixture.memberReferences,
-          'javac member-reference count',
-        );
-      for (const [status, count] of Object.entries(fixture.rejections ?? {})) {
-        assert.equal(
-          ref.sites.filter((s) => s.status === status).length,
-          count,
-          'javac ' + status + ' count',
-        );
-      }
+      assertJavacCounts(fixture, ref);
       if (fixture.dir === generated) {
         assert.deepEqual(
           new Set(ref.sites.map((s) => `${s.file}:${s.start}..${s.end}`)),

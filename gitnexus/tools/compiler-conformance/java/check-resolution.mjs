@@ -45,7 +45,9 @@ const java = path.join(
   'bin',
   process.platform === 'win32' ? 'java.exe' : 'java',
 );
-const oracle = fileURLToPath(new URL('./RecoveryOracle.java', import.meta.url));
+const oracle = fileURLToPath(
+  new URL('./org/gitnexus/conformance/RecoveryOracle.java', import.meta.url),
+);
 const fields = (
   dirs.length
     ? execFileSync(java, ['-Xmx512m', oracle, ...dirs], {

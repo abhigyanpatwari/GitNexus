@@ -57,7 +57,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/sonar-java-classes"
           shopt -s nullglob
-          sources=(gitnexus/tools/compiler-conformance/java/*.java)
+          sources=(gitnexus/tools/compiler-conformance/java/org/gitnexus/conformance/*.java)
           if (( ${#sources[@]} )); then
             "$JAVA_HOME/bin/javac" --release 21 -proc:none -encoding UTF-8 \
               -d "$RUNNER_TEMP/sonar-java-classes" "${sources[@]}"
