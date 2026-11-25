@@ -172,7 +172,15 @@ function verifyReferenceAdditions(before, after, revision, oldGraph, newGraph) {
     typeOnlyImports.push(row);
     return false;
   });
-  assert.equal(remaining.size, 0, 'An existing relationship changed or was removed');
+  // A fix can also drop a wrong reference. The manifest pins the exact rows,
+  // so any other removed or changed relationship still fails the receipt.
+  const removals = [...remaining];
+  for (const row of removals) {
+    assert(
+      REFERENCE_TYPES.has(JSON.parse(row).type),
+      `Removed a non-reference relationship: ${row}`,
+    );
+  }
   const receipt = {
     version: 1,
     mode: 'added-references',
@@ -180,6 +188,7 @@ function verifyReferenceAdditions(before, after, revision, oldGraph, newGraph) {
     candidate: after.graph,
     comparison: before.graph,
     additions: digest(additions),
+    removals: digest(removals),
     typeOnlyImports: digest(typeOnlyImports),
   };
   assertReferenceAdditionReceipt(

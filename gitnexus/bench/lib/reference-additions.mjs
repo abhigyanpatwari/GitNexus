@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+
+// Entries without `removals` pin an empty set of removed references.
+const NO_ROWS = { count: 0, sha256: createHash('sha256').digest('hex') };
 
 let manifest;
 
@@ -24,5 +28,11 @@ export function assertReferenceAdditionReceipt(revision, receipt, edgeDelta) {
     expected.typeOnlyImports,
     'Unexpected type-only imports',
   );
-  assert.equal(edgeDelta, expected.additions.count, 'Unexpected added reference count');
+  const removals = expected.removals ?? NO_ROWS;
+  assert.deepEqual(receipt.removals ?? NO_ROWS, removals, 'Unexpected removed reference receipt');
+  assert.equal(
+    edgeDelta,
+    expected.additions.count - removals.count,
+    'Unexpected reference count change',
+  );
 }
