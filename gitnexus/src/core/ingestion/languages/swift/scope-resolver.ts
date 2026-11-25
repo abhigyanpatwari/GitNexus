@@ -139,7 +139,19 @@ const swiftScopeResolver: ScopeResolver = {
   // a qualified name (`ExtendedType.member`) but no ownerId. Reconcile those
   // members after all files are available so extensions declared in sibling
   // files work as well as extensions beside the original type.
-  populateWorkspaceOwners: populateSwiftExtensionOwners,
+  populateWorkspaceOwners(parsedFiles, { fileContents, resolutionConfig }) {
+    // A shared file may extend a type compiled only into a later target.
+    // Visit every membership and keep the first matching owner.
+    const filesByTarget = groupSwiftFilesByModule(
+      parsedFiles,
+      (parsed) => parsed.filePath,
+      resolutionConfig,
+      { allMemberships: true },
+    );
+    for (const files of filesByTarget.values()) {
+      stampSwiftExtensionOwnersInTarget(files, fileContents);
+    }
+  },
   resolveUnqualifiedCall: resolveSwiftExtensionCall,
 
   // `super.method()` dispatches through the superclass chain.
@@ -255,23 +267,6 @@ function buildSwiftMro(
   }
 
   return mro;
-}
-
-function populateSwiftExtensionOwners(
-  parsedFiles: readonly ParsedFile[],
-  ctx: { readonly fileContents: ReadonlyMap<string, string>; readonly resolutionConfig?: unknown },
-): void {
-  // Every membership: a shared file may extend a type compiled only into a
-  // later target. Stamping never overwrites an owner, so the first match wins.
-  const filesByTarget = groupSwiftFilesByModule(
-    parsedFiles,
-    (parsed) => parsed.filePath,
-    ctx.resolutionConfig,
-    { allMemberships: true },
-  );
-  for (const files of filesByTarget.values()) {
-    stampSwiftExtensionOwnersInTarget(files, ctx.fileContents);
-  }
 }
 
 function stampSwiftExtensionOwnersInTarget(
