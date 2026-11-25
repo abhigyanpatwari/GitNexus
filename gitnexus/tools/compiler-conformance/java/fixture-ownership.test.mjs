@@ -35,6 +35,20 @@ test('detects a Java source map passed to the fixture helper, including spreads 
   );
 });
 
+test('recognizes both paths in a real filesystem rename', () => {
+  const uses = javaFixtureUses(`
+    import fs from 'node:fs';
+    import { rename as move } from 'node:fs/promises';
+    fs.renameSync('fixtures/java/Source.java', 'archive');
+    move('temporary', 'Moved.java');
+    function example(fs) { fs.renameSync('Virtual.java', 'other'); }
+  `);
+  assert.deepEqual(
+    uses.map(({ path }) => path),
+    ['fixtures/java/Source.java', 'Moved.java'],
+  );
+});
+
 test('recognizes a filesystem import only outside the scope of a parameter shadowing it', () => {
   const uses = javaFixtureUses(`
     import fs from 'node:fs';

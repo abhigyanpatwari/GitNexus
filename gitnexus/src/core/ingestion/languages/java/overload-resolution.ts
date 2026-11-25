@@ -9,6 +9,7 @@ import {
   lookupNameClaim,
 } from '../../scope-resolution/scope/walkers.js';
 import { getJavaPackageFact } from './package-facts.js';
+import { javaBoundBase } from './qualified-heritage.js';
 import {
   javaInheritedMemberType,
   javaStaticOnDemandImportBringsNoType,
@@ -1089,19 +1090,30 @@ function invocationReturnType(
     const owner = invocationReceiverType(call, qualifierShadowed, filePath, state);
     if (owner.kind !== 'reference') return UNKNOWN_JAVA_TYPE;
     if (!owner.sourceId) {
-      if (call.name !== 'valueOf' || qualifierShadowed || call.arguments.length !== 1)
-        return UNKNOWN_JAVA_TYPE;
-      return wrapperValueOfType(
-        owner,
-        argumentType(call.arguments[0]!, filePath, state, site),
-        state,
-      );
+      if (call.name !== 'valueOf' || qualifierShadowed) return UNKNOWN_JAVA_TYPE;
+      const args = call.arguments.map((arg) => argumentType(arg, filePath, state, site));
+      if (owner.name === 'java.lang.String') return stringValueOfType(owner, args, state);
+      return args.length === 1 ? wrapperValueOfType(owner, args[0]!, state) : UNKNOWN_JAVA_TYPE;
     }
     const definition = state.scopes.defs.get(owner.sourceId);
     if (definition)
       selected = resolveJavaReceiverMember(definition, call.name, site, state.scopes, state.model);
   }
   return resolvedReturnType(selected, state);
+}
+
+function stringValueOfType(owner: JavaReferenceType, args: JavaType[], state: State): JavaType {
+  // Object and primitive overloads cover every known standalone value at arity one.
+  if (args.length === 1 && args[0]!.kind !== 'unknown') return owner;
+  if (args.length !== 3) return UNKNOWN_JAVA_TYPE;
+  const integer = { kind: 'primitive', name: 'int' } as const;
+  const chars = { kind: 'array', component: { kind: 'primitive', name: 'char' } } as const;
+  return [chars, integer, integer].every(
+    (parameter, i) =>
+      javaInvocationConversion(args[i]!, parameter, 'loose', state.relations) === 'yes',
+  )
+    ? owner
+    : UNKNOWN_JAVA_TYPE;
 }
 
 function wrapperValueOfType(owner: JavaReferenceType, argument: JavaType, state: State): JavaType {
@@ -1392,6 +1404,22 @@ function coversObjectSignature(owner: SymbolDefinition, name: string, state: Sta
   );
 }
 
+function hierarchyBaseType(
+  owner: SymbolDefinition,
+  fact: JavaOverloadTypeFact,
+  raw: string,
+  state: State,
+): JavaType {
+  const bound = javaBoundBase(state.scopes.referenceSites, fact, raw);
+  if (!bound) return parseType(raw, { filePath: owner.filePath, at: fact.range }, state);
+  for (const id of state.scopes.methodDispatch.mroFor(owner.nodeId)) {
+    const ancestor = state.scopes.defs.get(id);
+    if (ancestor?.filePath === bound.filePath && typeFact(ancestor, state) === bound.target)
+      return sourceReference(ancestor);
+  }
+  return UNKNOWN_JAVA_TYPE;
+}
+
 function hierarchyComplete(
   owner: SymbolDefinition,
   memberName: string,
@@ -1411,7 +1439,7 @@ function hierarchyComplete(
   if (fact === undefined) return false;
   if (objectMethods.has(memberName) && !objectCovered) return false;
   for (const raw of fact.bases) {
-    const base = parseType(raw, { filePath: owner.filePath, at: fact.range }, state);
+    const base = hierarchyBaseType(owner, fact, raw, state);
     if (base.kind !== 'reference') return false;
     if (base.sourceId === undefined) {
       if (base.name === 'java.lang.Object' && (!objectMethods.has(memberName) || objectCovered))

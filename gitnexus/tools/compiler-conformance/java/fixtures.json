@@ -45,6 +45,7 @@
     "sites": 0,
     "constructors": true
   },
+  "compiler-conformance/java-imported-and-bounded-heritage": 3,
   "compiler-conformance/java-invalid-overloads": {
     "sites": 6,
     "rejections": {
@@ -53,6 +54,7 @@
     }
   },
   "compiler-conformance/java-local-binary-name-collision": 3,
+  "compiler-conformance/java-string-factory-overloads": 3,
   "compiler-conformance/java-method-ownership": {
     "sites": 0
   },

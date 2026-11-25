@@ -6,6 +6,14 @@ import { parse } from '@babel/parser';
 import traverse from '@babel/traverse';
 import { isFunction } from '@babel/types';
 
+const twoPathFsCalls = new Set([
+  'copyFile',
+  'copyFileSync',
+  'cp',
+  'cpSync',
+  'rename',
+  'renameSync',
+]);
 const fsCalls = new Set([
   'readFile',
   'readFileSync',
@@ -13,10 +21,7 @@ const fsCalls = new Set([
   'writeFileSync',
   'appendFile',
   'appendFileSync',
-  'copyFile',
-  'copyFileSync',
-  'cp',
-  'cpSync',
+  ...twoPathFsCalls,
   'createReadStream',
   'createWriteStream',
 ]);
@@ -228,7 +233,7 @@ function fixtureCall(node, bindings, mocked) {
 
 function fixtureArgument(node, bindings, { method, actualFs, isProject, explicitProjectPath }) {
   if ((actualFs && fsCalls.has(method)) || isProject || explicitProjectPath) {
-    const count = ['cp', 'cpSync', 'copyFile', 'copyFileSync'].includes(method) ? 2 : 1;
+    const count = twoPathFsCalls.has(method) ? 2 : 1;
     const paths = explicitProjectPath ? [node] : node.arguments.slice(0, count);
     for (const arg of paths) {
       const candidate = literal(arg, bindings).replaceAll('\\', '/');

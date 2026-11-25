@@ -71,7 +71,11 @@ import { synthesizeJavaRecordComponentAccessorCaptures } from './record-componen
 import { collectLombokImports, synthesizeLombokAccessorCaptures } from './lombok-synthesizer.js';
 import { captureJavaOverloadFacts, setJavaOverloadFacts } from './overload-argument-facts.js';
 import { captureJavaImportUses } from './import-use-facts.js';
-import { javaTypeText, javaTrailingDimensions } from './type-spelling.js';
+import {
+  javaTypeText,
+  javaTypeTextWithoutTrivia,
+  javaTrailingDimensions,
+} from './type-spelling.js';
 import { synthesizeJavaLexicalCaptures } from './lexical-captures.js';
 import { synthesizeJavaFactoryAliasCaptures } from './factory-alias-captures.js';
 import { synthesizeJavaDeclaredTypeCaptures } from './declared-type-captures.js';
@@ -199,7 +203,10 @@ export function emitJavaScopeCaptures(
     const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
-      grouped[tag] = nodeToCapture(tag, c.node);
+      grouped[tag] =
+        tag === '@declaration.type-parameters'
+          ? syntheticCapture(tag, c.node, javaTypeTextWithoutTrivia(c.node))
+          : nodeToCapture(tag, c.node);
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;

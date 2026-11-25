@@ -6,10 +6,47 @@ import {
   getJavaOverloadFacts,
   javaOverloadRangeKey,
   javaRangeContains,
+  type JavaOverloadTypeFact,
 } from './overload-argument-facts.js';
 import { eraseJavaTypeArguments, JAVA_QUALIFIED_NAME, stripGaps } from './type-spelling.js';
 
 const qualifiedName = new RegExp('^' + JAVA_QUALIFIED_NAME + '$', 'u');
+
+interface BoundBase {
+  owner: JavaOverloadTypeFact;
+  spelling: string;
+  filePath: string;
+  target: JavaOverloadTypeFact;
+}
+const boundBaseBySite = new WeakMap<ReferenceSite, BoundBase>();
+const boundBasesByWorkspace = new WeakMap<
+  readonly ReferenceSite[],
+  Map<JavaOverloadTypeFact, Map<string, BoundBase>>
+>();
+
+/** Dispatch uses the same qualified base as the heritage edge, including a
+ * member selected through a type parameter's bound or a static import. */
+export function javaBoundBase(
+  sites: readonly ReferenceSite[],
+  owner: JavaOverloadTypeFact,
+  spelling: string,
+): BoundBase | undefined {
+  if (!spelling.includes('.')) return undefined;
+  let byOwner = boundBasesByWorkspace.get(sites);
+  if (!byOwner) {
+    byOwner = new Map();
+    for (const site of sites) {
+      if (!site.lookupScope || site.kind !== 'inherits') continue;
+      const bound = boundBaseBySite.get(site);
+      if (!bound) continue;
+      const bases = byOwner.get(bound.owner) ?? new Map<string, BoundBase>();
+      bases.set(bound.spelling, bound);
+      byOwner.set(bound.owner, bases);
+    }
+    boundBasesByWorkspace.set(sites, byOwner);
+  }
+  return byOwner.get(owner)?.get(spelling);
+}
 
 const namesByMembers = new WeakMap<readonly TypeEntry[], ReadonlyMap<string, TypeEntry[]>>();
 
@@ -151,16 +188,20 @@ function fileRootOrigin(
   root: string,
   inventory: JavaWorkspaceTypeInventory,
 ): RootOrigin {
-  const staticImport = inventory.staticImportsType(owner, root);
-  if (staticImport === 'uncertain') return 'uncertain';
-  if (staticImport === true) return 'shadowed';
-  const imports = owner.facts.imports
-    .filter((item) => !item.static && !item.wildcard)
-    .map((item) => stripGaps(item.name))
-    .filter((name) => name.split('.').at(-1) === root);
-  const single = new Set(imports);
-  if (single.size === 1) return { type: imports[0]! };
-  if (single.size > 1) return 'shadowed';
+  const single = new Set<string>();
+  for (const item of owner.facts.imports) {
+    if (item.wildcard) continue;
+    const name = stripGaps(item.name);
+    const dot = name.lastIndexOf('.');
+    if (name.slice(dot + 1) !== root) continue;
+    const origin = item.static
+      ? staticImportOrigin(owner, name.slice(0, dot), root, inventory)
+      : { type: name };
+    if (origin === 'uncertain') return origin;
+    if (origin) single.add(origin.type);
+  }
+  if (single.size === 1) return { type: [...single][0]! };
+  if (single.size > 1) return 'uncertain';
   if (inventory.packageTypes.get(owner.packageName)?.has(root))
     return { type: owner.packageName ? owner.packageName + '.' + root : root };
   return wildcardRootOrigin(owner, root, inventory);
@@ -192,15 +233,33 @@ function wildcardImportOrigin(
   isStatic: boolean,
   inventory: JavaWorkspaceTypeInventory,
 ): RootOrigin | undefined {
-  if (isStatic) {
-    const member = inventory.staticMemberType(owner, name, root);
-    if (member === true) return 'shadowed';
-    return member === 'uncertain' ? 'uncertain' : undefined;
-  }
+  if (isStatic) return staticImportOrigin(owner, name, root, inventory);
   const source = inventory.packageTypes.get(name);
   const platform = platformPackageHasType(name, root);
   if (!source && platform === undefined) return 'uncertain';
   return source?.has(root) || platform ? { type: name + '.' + root } : undefined;
+}
+
+function staticImportOrigin(
+  owner: TypeEntry,
+  name: string,
+  root: string,
+  inventory: JavaWorkspaceTypeInventory,
+): { type: string } | 'uncertain' | undefined {
+  const member = inventory.staticMemberType(owner, name, root);
+  if (member !== true) return member === 'uncertain' ? member : undefined;
+  const candidates = namedTypes(name + '.' + root, inventory).filter((candidate) =>
+    accessible(candidate, owner, inventory),
+  );
+  if (candidates.length !== 1) return 'uncertain';
+  // The declaring class and a subclass can both import the same inherited type.
+  const target = candidates[0]!.type;
+  const segments = [];
+  for (let entry: TypeEntry | undefined = target; entry; entry = entry.parent)
+    segments.push(entry.fact.simpleName);
+  if (target.packageName) segments.push(target.packageName);
+  segments.reverse();
+  return { type: segments.join('.') };
 }
 
 function boundRootOrigin(
@@ -438,11 +497,16 @@ function bindHeritageSite(
   if (visible.length !== 1) return { ...site, unresolvedInheritanceBase: true };
   const target = visible[0]!.type;
   if (target.declaringScope == null) return undefined;
-  if (hasDuplicateModuleName(target, site.name, lookup.duplicateNamesByFile)) {
-    const qualified = origin === 'package' ? written : origin.type + written.slice(dot);
-    return { ...site, lookupScope: target.declaringScope, rawQualifiedName: qualified };
-  }
-  return { ...site, lookupScope: target.declaringScope };
+  const boundSite = { ...site, lookupScope: target.declaringScope };
+  if (hasDuplicateModuleName(target, site.name, lookup.duplicateNamesByFile))
+    boundSite.rawQualifiedName = origin === 'package' ? written : origin.type + written.slice(dot);
+  boundBaseBySite.set(boundSite, {
+    owner: owner.fact,
+    spelling: base,
+    filePath: target.filePath,
+    target: target.fact,
+  });
+  return boundSite;
 }
 
 // A nested declaration can share a module binding with a top-level class.
