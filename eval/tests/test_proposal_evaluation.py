@@ -234,6 +234,10 @@ def test_native_paired_proposal_cost_and_grading(tmp_path):
             Path(os.environ["CLAUDE_CANARY_BIN"]), model, "high", "offline-fixture", provider.base_url, timeout=150
         )
         report = evaluator.evaluate([task], meta, runtime_root=runtime, client=client, out=out, oracle_root=oracles)
+        assert report["complete"], (
+            report["problems"],
+            [(row["arm"], row["run"], row["error_kind"]) for row in report["per_run"] if not row["ok"]],
+        )
         assert len(provider.requests) == 12
     assert observed == {False: 3, True: 3}
     assert len(tool_results) == 6
@@ -246,7 +250,7 @@ def test_native_paired_proposal_cost_and_grading(tmp_path):
         assert "Patch submitted" in str(results["toolu_mock_1"]["content"])
         if augmented:
             assert "benchmark-target" in str(results["toolu_mock_2"]["content"])
-    assert report["complete"] and report["schema"] == release_report.PROPOSAL_SCHEMA
+    assert report["schema"] == release_report.PROPOSAL_SCHEMA
     assert report["arms"]["baseline_nomcp"]["solved"] == 3 and report["arms"]["baseline"]["solved"] == 2
     for row in report["per_run"]:
         assert row["input_tokens"] == 22 and row["output_tokens"] == 14 and row["cost_usd"] == pytest.approx(0.000276)
