@@ -362,10 +362,9 @@ describe('buildModuleTree batched grouping', () => {
     }));
 
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockImplementation(() => {
+      execFileSync: vi.fn().mockImplementation(() => {
         throw new Error('not a git repo');
       }),
-      execFileSync: vi.fn(),
     }));
 
     const llmClient = await import('../../src/core/wiki/llm-client.js');
@@ -438,10 +437,9 @@ describe('buildModuleTree batched grouping', () => {
     }));
 
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockImplementation(() => {
+      execFileSync: vi.fn().mockImplementation(() => {
         throw new Error('not a git repo');
       }),
-      execFileSync: vi.fn(),
     }));
 
     const llmClient = await import('../../src/core/wiki/llm-client.js');
@@ -526,10 +524,9 @@ describe('buildModuleTree batched grouping', () => {
     }));
 
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockImplementation(() => {
+      execFileSync: vi.fn().mockImplementation(() => {
         throw new Error('not a git repo');
       }),
-      execFileSync: vi.fn(),
     }));
 
     const llmClient = await import('../../src/core/wiki/llm-client.js');
