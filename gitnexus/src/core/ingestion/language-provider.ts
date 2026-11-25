@@ -466,6 +466,12 @@ interface LanguageProviderConfig {
    *  Default: undefined (no preprocessing). */
   readonly importPathPreprocessor?: (cleaned: string, importNode: SyntaxNode) => string;
 
+  /** Source imports used to link projects in a workspace manifest. */
+  readonly readWorkspaceImports?: (
+    source: string,
+    filePath: string,
+  ) => readonly { readonly name: string; readonly isStatic: boolean }[];
+
   // ── Enclosing owner resolution ─────────────────────────────────
   /** Resolve a container node during enclosing-owner tree walks.
    *  Called when a CLASS_CONTAINER_TYPES node is found while walking up.

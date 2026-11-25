@@ -16,7 +16,7 @@ import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 // strings — so any post-dominator / Ferrante behavior change shows as a
 // reviewable snapshot diff, never silent drift.
 
-const FIXTURES = path.join(__dirname, 'fixtures');
+const FIXTURES = path.join(__dirname, '../../fixtures/cfg');
 
 function cfgsOfFile(file: string): readonly FunctionCfg[] {
   const visitor = getProvider(SupportedLanguages.TypeScript).cfgVisitor;

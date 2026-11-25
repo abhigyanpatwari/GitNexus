@@ -1,0 +1,11 @@
+{
+  "diagnostics": {},
+  "calls": [
+    {"caller": "Method:app/NestRec.java:NestRec.nrFor#0", "member": "save", "source": ["app/NestRec.java#8:2"]},
+    {"caller": "Method:app/NestRec.java:NestRec.nrLambda#0", "member": "save", "source": ["app/NestRec.java#9:2"]},
+    {"caller": "Method:app/NestRec.java:NestRec.localRecord#0", "member": "save", "source": ["app/NestRec.java#10:2"]},
+    {"caller": "Method:app/NestRec.java:Page.inside#0", "member": "save", "source": ["app/NestRec.java#6:4"]},
+    {"caller": "Method:app/Sw.java:Sw.inside#1", "member": "save", "source": ["app/Sw.java#5:2"]},
+    {"caller": "Method:app/Sw.java:Sw.after#1", "member": "save", "source": ["app/Sw.java#8:2"]}
+  ]
+}

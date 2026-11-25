@@ -1,0 +1,1 @@
+package probe; public class Use { public Point make() { return new Point(1); } }

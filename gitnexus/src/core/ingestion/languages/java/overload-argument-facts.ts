@@ -1,12 +1,22 @@
+import { parameterTypes } from './method-signatures.js';
+import { javaTypeTextWithoutTrivia } from './type-spelling.js';
 import type { CaptureMatch, Range } from 'gitnexus-shared';
 import { synthesizeJavaTypeIdentity, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { synthesizeJavaRecordComponentAccessorCaptures } from './record-components.js';
+import { implicitParameterNames } from './sam-lambda-captures.js';
 
 /** Written types retain their declaration context; a caller's imports cannot
  * reinterpret a parameter declared in another file. These are capture facts,
  * not the receiver-oriented (container-unwrapped) TypeRef hints. */
 export type JavaArgumentFact =
   | { readonly kind: 'typed'; readonly spelling: string; readonly at: Range }
+  | { readonly kind: 'implicit-void-lambda'; readonly arity: number }
+  | {
+      readonly kind: 'invocation';
+      readonly name: string;
+      readonly at: Range;
+      readonly qualifierShadowed: boolean;
+    }
   | { readonly kind: 'null' }
   | {
       readonly kind: 'factory';
@@ -41,6 +51,7 @@ export interface JavaOverloadMethodFact {
 
 export interface JavaOverloadCallFact {
   readonly name: string;
+  readonly constructorForm?: 'new' | 'anonymous' | 'super' | 'this';
   readonly range: Range;
   readonly arguments: readonly JavaArgumentFact[];
   readonly receiver?: JavaArgumentFact;
@@ -61,11 +72,22 @@ export interface JavaOverloadFileFacts {
   readonly types: readonly JavaOverloadTypeFact[];
   readonly methods: readonly JavaOverloadMethodFact[];
   readonly calls: readonly JavaOverloadCallFact[];
+  readonly enhancedFor?: readonly {
+    readonly name: string;
+    readonly body: Range;
+    readonly value: JavaArgumentFact;
+  }[];
 }
 
 const files = new Map<string, JavaOverloadFileFacts>();
 const callIndexes = new Map<string, ReadonlyMap<string, JavaOverloadCallFact>>();
 const UNKNOWN: JavaArgumentFact = { kind: 'unknown' };
+const statementExpressions = new Set([
+  'assignment_expression',
+  'update_expression',
+  'method_invocation',
+  'object_creation_expression',
+]);
 const typeNodes = new Set([
   'class_declaration',
   'interface_declaration',
@@ -90,6 +112,34 @@ const lexicalScopes = new Set([
 
 export const javaOverloadRangeKey = (range: Range): string =>
   `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
+
+/** JLS 15.27.2: a void-compatible block has no value-returning statement
+ * belonging to this lambda. Nested class and lambda returns have their own target. */
+function implicitVoidLambda(lambda: SyntaxNode): JavaArgumentFact {
+  const parameters = implicitParameterNames(lambda);
+  const body = lambda.childForFieldName('body');
+  if (!parameters || !body || body.hasError) return UNKNOWN;
+  if (body.type === 'block') {
+    const pending = [...body.namedChildren];
+    while (pending.length) {
+      const node = pending.pop()!;
+      if (
+        node.type === 'return_statement' &&
+        node.namedChildren.some(
+          (child) => child.type !== 'line_comment' && child.type !== 'block_comment',
+        )
+      )
+        return UNKNOWN;
+      if (
+        node.type !== 'lambda_expression' &&
+        node.type !== 'class_body' &&
+        !typeNodes.has(node.type)
+      )
+        pending.push(...node.namedChildren);
+    }
+  } else if (!statementExpressions.has(body.type)) return UNKNOWN;
+  return { kind: 'implicit-void-lambda', arity: parameters.length };
+}
 
 export function setJavaOverloadFacts(
   filePath: string,
@@ -141,6 +191,16 @@ export function javaRangeContains(outer: Range, inner: Range): boolean {
   return startsAtOrBefore(outer, inner) && endsAtOrAfter(outer, inner);
 }
 
+function constructorInvocationForm(node: SyntaxNode): JavaOverloadCallFact['constructorForm'] {
+  if (node.type === 'explicit_constructor_invocation') {
+    const keyword = node.childForFieldName('constructor')?.type;
+    if (keyword === 'super' || keyword === 'this') return keyword;
+  } else {
+    return node.lastNamedChild?.type === 'class_body' ? 'anonymous' : 'new';
+  }
+  return undefined;
+}
+
 function rangeOf(node: SyntaxNode): Range {
   return {
     startLine: node.startPosition.row + 1,
@@ -172,35 +232,6 @@ function isType(node: SyntaxNode): boolean {
 
 function typeIdentity(node: SyntaxNode): string | undefined {
   return synthesizeJavaTypeIdentity(node)?.name ?? node.childForFieldName('name')?.text;
-}
-
-function parameterTypes(node: SyntaxNode): string[] {
-  const parameters = node.childForFieldName('parameters')?.namedChildren ?? [];
-  const result: string[] = [];
-  let variadic = false;
-  for (const parameter of parameters) {
-    if (!['formal_parameter', 'spread_parameter'].includes(parameter.type)) continue;
-    const declarator = parameter.namedChildren.find(
-      (child) => child.type === 'variable_declarator',
-    );
-    const name = parameter.childForFieldName('name') ?? declarator?.childForFieldName('name');
-    const type =
-      parameter.childForFieldName('type') ??
-      parameter.namedChildren.find(
-        (child) =>
-          child.type !== 'modifiers' &&
-          child.type !== 'variable_declarator' &&
-          child.id !== name?.id,
-      );
-    const dimensions =
-      parameter.childForFieldName('dimensions')?.text ??
-      declarator?.childForFieldName('dimensions')?.text ??
-      '';
-    result.push(type === undefined || type === null ? '?' : type.text + dimensions);
-    variadic ||= parameter.type === 'spread_parameter';
-  }
-  if (variadic) result.push('varargs');
-  return result;
 }
 
 function typeParameters(node: SyntaxNode): string[] {
@@ -256,6 +287,7 @@ export function captureJavaOverloadFacts(
     }),
   );
   const callNodes: SyntaxNode[] = [];
+  const enhancedForNodes: { name: string; body: Range; value: SyntaxNode }[] = [];
   const bindings = new Map<string, Binding[]>();
   const localBindings = new Map<number, Map<string, Binding[]>>();
   const imports: { name: string; wildcard: boolean; static: boolean }[] = [];
@@ -332,16 +364,17 @@ export function captureJavaOverloadFacts(
           : rangeOf(visibilityScope);
         const bases: string[] = [];
         for (const child of node.namedChildren) {
-          if (child.type === 'superclass')
-            bases.push(...child.namedChildren.map((part) => part.text));
+          let clause = child;
           if (child.type === 'super_interfaces' || child.type === 'extends_interfaces') {
-            const list = child.namedChildren.find((part) => part.type === 'type_list');
-            bases.push(...(list?.namedChildren ?? child.namedChildren).map((part) => part.text));
+            clause = child.namedChildren.find((part) => part.type === 'type_list') ?? child;
+          } else if (child.type !== 'superclass') continue;
+          for (const base of clause.namedChildren) {
+            if (!base.isExtra) bases.push(javaTypeTextWithoutTrivia(base));
           }
         }
         if (node.type === 'object_creation_expression') {
           const base = node.childForFieldName('type');
-          if (base !== null) bases.push(base.text);
+          if (base !== null) bases.push(javaTypeTextWithoutTrivia(base));
         } else if (node.type === 'enum_constant') {
           const host = enclosing(node, (parent) => parent.type === 'enum_declaration');
           const base = host?.childForFieldName('name');
@@ -398,7 +431,12 @@ export function captureJavaOverloadFacts(
         });
       }
     }
-    if (node.type === 'method_invocation') callNodes.push(node);
+    if (
+      node.type === 'method_invocation' ||
+      node.type === 'object_creation_expression' ||
+      node.type === 'explicit_constructor_invocation'
+    )
+      callNodes.push(node);
     if (
       node.type === 'formal_parameter' ||
       node.type === 'spread_parameter' ||
@@ -481,6 +519,10 @@ export function captureJavaOverloadFacts(
     } else if (node.type === 'enhanced_for_statement') {
       const type = node.childForFieldName('type')?.text;
       const body = node.childForFieldName('body');
+      const value = node.childForFieldName('value');
+      const name = node.childForFieldName('name')?.text;
+      if (type === 'var' && body && value && name)
+        enhancedForNodes.push({ name, body: rangeOf(body), value });
       if (body !== null)
         addBinding(
           node.childForFieldName('name')?.text,
@@ -608,6 +650,13 @@ export function captureJavaOverloadFacts(
     }
     return undefined;
   };
+  const valueQualifier = (owner: SyntaxNode): boolean => {
+    // Only a name can denote either a value or a type. Roots such as this,
+    // super and call expressions need no lexical search (JLS 6.5.2).
+    let root: SyntaxNode | null = owner;
+    while (root?.type === 'field_access') root = root.childForFieldName('object');
+    return root?.type !== 'identifier' || bindingAt(root.text, root) !== undefined;
+  };
   const expression = (node: SyntaxNode, depth = 0): JavaArgumentFact => {
     if (depth > 12) return UNKNOWN;
     const typed = (spelling: string, at = rangeOf(node)): JavaArgumentFact => ({
@@ -616,6 +665,8 @@ export function captureJavaOverloadFacts(
       at,
     });
     switch (node.type) {
+      case 'lambda_expression':
+        return implicitVoidLambda(node);
       case 'decimal_integer_literal':
       case 'hex_integer_literal':
       case 'octal_integer_literal':
@@ -688,14 +739,20 @@ export function captureJavaOverloadFacts(
       case 'method_invocation': {
         const name = node.childForFieldName('name')?.text;
         const owner = node.childForFieldName('object');
-        if ((name !== 'asList' && name !== 'singletonList') || owner === null) return UNKNOWN;
+        if (name === undefined) return UNKNOWN;
+        if ((name !== 'asList' && name !== 'singletonList') || owner === null)
+          return {
+            kind: 'invocation',
+            name,
+            at: rangeOf(node),
+            qualifierShadowed: owner !== null && valueQualifier(owner),
+          };
         const args =
           node
             .childForFieldName('arguments')
             ?.namedChildren.filter(
               (child) => child.type !== 'line_comment' && child.type !== 'block_comment',
             ) ?? [];
-        const firstName = owner.text.split('.')[0]!;
         return {
           kind: 'factory',
           owner: owner.text,
@@ -704,7 +761,7 @@ export function captureJavaOverloadFacts(
           typeArguments:
             node.childForFieldName('type_arguments')?.namedChildren.map((type) => type.text) ?? [],
           at: rangeOf(node),
-          shadowed: bindingAt(firstName, owner) !== undefined,
+          shadowed: valueQualifier(owner),
         };
       }
       default:
@@ -712,6 +769,19 @@ export function captureJavaOverloadFacts(
     }
   };
   const calls = callNodes.map((node): JavaOverloadCallFact => {
+    const args = (node.childForFieldName('arguments')?.namedChildren ?? [])
+      .filter((arg) => arg.type !== 'line_comment' && arg.type !== 'block_comment')
+      .map((arg) => expression(arg));
+    if (node.type !== 'method_invocation') {
+      return {
+        name: '<init>',
+        constructorForm: constructorInvocationForm(node),
+        range: rangeOf(node),
+        arguments: args,
+        receiverIsValue: false,
+        staticContext: false,
+      };
+    }
     const receiver = node.childForFieldName('object');
     let directReceiver = receiver;
     while (
@@ -733,9 +803,7 @@ export function captureJavaOverloadFacts(
     return {
       name: node.childForFieldName('name')?.text ?? '',
       range: rangeOf(node),
-      arguments: (node.childForFieldName('arguments')?.namedChildren ?? [])
-        .filter((arg) => arg.type !== 'line_comment' && arg.type !== 'block_comment')
-        .map((arg) => expression(arg)),
+      arguments: args,
       ...(receiver === null
         ? {}
         : { receiver: expression(receiver), receiverSpelling: receiver.text }),
@@ -748,7 +816,21 @@ export function captureJavaOverloadFacts(
       staticContext: callable !== undefined && modifiers(callable).includes('static'),
     };
   });
-  return { version: 1, packageName, imports, types, methods, calls };
+  return {
+    version: 1,
+    packageName,
+    imports,
+    types,
+    methods,
+    calls,
+    ...(enhancedForNodes.length && {
+      enhancedFor: enhancedForNodes.map(({ name, body, value }) => ({
+        name,
+        body,
+        value: expression(value),
+      })),
+    }),
+  };
 }
 
 /** Side-channel revival is fail-closed: malformed data never revives stale
@@ -765,7 +847,13 @@ export function isJavaOverloadFileFacts(value: unknown): value is JavaOverloadFi
   const argument = (arg: JavaArgumentFact, depth = 0): boolean => {
     if (depth > 12 || arg === null || typeof arg !== 'object') return false;
     if (arg.kind === 'null' || arg.kind === 'unknown') return true;
+    if (arg.kind === 'implicit-void-lambda')
+      return Number.isSafeInteger(arg.arity) && arg.arity > 0;
     if (arg.kind === 'typed') return typeof arg.spelling === 'string' && range(arg.at);
+    if (arg.kind === 'invocation')
+      return (
+        typeof arg.name === 'string' && typeof arg.qualifierShadowed === 'boolean' && range(arg.at)
+      );
     return (
       arg.kind === 'factory' &&
       typeof arg.owner === 'string' &&
@@ -779,6 +867,12 @@ export function isJavaOverloadFileFacts(value: unknown): value is JavaOverloadFi
   };
   return (
     facts.version === 1 &&
+    (facts.enhancedFor === undefined ||
+      (Array.isArray(facts.enhancedFor) &&
+        facts.enhancedFor.every(
+          (loop) =>
+            loop && typeof loop.name === 'string' && range(loop.body) && argument(loop.value),
+        ))) &&
     typeof facts.packageName === 'string' &&
     Array.isArray(facts.imports) &&
     facts.imports.every(
@@ -821,6 +915,8 @@ export function isJavaOverloadFileFacts(value: unknown): value is JavaOverloadFi
         call !== null &&
         typeof call === 'object' &&
         typeof call.name === 'string' &&
+        (call.constructorForm === undefined ||
+          ['new', 'anonymous', 'super', 'this'].includes(call.constructorForm)) &&
         range(call.range) &&
         typeof call.receiverIsValue === 'boolean' &&
         typeof call.staticContext === 'boolean' &&

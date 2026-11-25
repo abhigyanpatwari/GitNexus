@@ -1,0 +1,11 @@
+{
+  "diagnostics": {
+    "compiler.err.cant.resolve": 1,
+    "compiler.err.doesnt.exist": 1
+  },
+  "sourceMethods": 2,
+  "reason": "The missing Lombok processor leaves only the handwritten setter visible to javac. GitNexus includes the synthetic setter in its overload family.",
+  "callDifferences": [
+    "- Inheritance.java#4:17 -> Inheritance.java#3:45"
+  ]
+}

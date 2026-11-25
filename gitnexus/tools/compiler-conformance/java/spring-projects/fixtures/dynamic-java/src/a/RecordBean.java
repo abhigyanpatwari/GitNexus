@@ -1,0 +1,1 @@
+package a; public record RecordBean(String value) {}

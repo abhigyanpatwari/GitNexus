@@ -1,0 +1,7 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location.args": 1},
+  "calls": [
+    {"caller": "good", "member": "accept", "source": ["Calls.java#4:4"]},
+    {"caller": "bad", "member": "accept", "source": ["Calls.java#5:4"], "targets": 0}
+  ]
+}

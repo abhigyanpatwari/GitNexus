@@ -1,0 +1,1 @@
+package client; class Client { void acrossPackages(api.Service service) { service.select(1); } }

@@ -340,8 +340,8 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
     moduleNamed(tree, module).children?.map((child) => child.name);
 
   it('leaves IntelliJ and Gradle metadata out and splits the module at its packages', async () => {
-    const pkg = 'src/main/java/com/linkedin/metadata';
-    const api = 'metadata-io-api/src/main/java/com/linkedin/metadata';
+    const pkg = 'src/main/kotlin/com/linkedin/metadata';
+    const api = 'metadata-io-api/src/main/kotlin/com/linkedin/metadata';
     const files: Record<string, number> = {
       'README.md': 400,
       'build.gradle': 400,
@@ -350,18 +350,18 @@ describe('WikiGenerator module tree for a Gradle module (#1060)', () => {
       'oss-datahub.metadata-io.main-1.iml': 4000,
       'metadata-io-api/build.gradle': 400,
       'metadata-io-api/metadata-io-api.iml': 4000,
-      'src/testFixtures/java/com/linkedin/metadata/F0.java': 400,
-      'src/testFixtures/java/com/linkedin/metadata/F1.java': 400,
+      'src/testFixtures/kotlin/com/linkedin/metadata/F0.kt': 400,
+      'src/testFixtures/kotlin/com/linkedin/metadata/F1.kt': 400,
     };
     for (const i of range(4)) {
       // Over budget, all in one directory: pages packed up to the budget.
       files[`docs/guide${i}.md`] = 800;
       for (const dir of ['entity', 'graph', 'search', 'timeline']) {
-        files[`${pkg}/${dir}/C${i}.java`] = 400;
+        files[`${pkg}/${dir}/C${i}.kt`] = 400;
       }
-      files[`${api}/api/A${i}.java`] = 400;
-      files[`${api}/spi/S${i}.java`] = 400;
-      files[`src/test/java/com/linkedin/metadata/T${i}.java`] = 400;
+      files[`${api}/api/A${i}.kt`] = 400;
+      files[`${api}/spi/S${i}.kt`] = 400;
+      files[`src/test/kotlin/com/linkedin/metadata/T${i}.kt`] = 400;
     }
 
     const { gen, tree, prompts } = await buildTree(files, 500);

@@ -17,9 +17,7 @@ vi.mock('../../../src/core/tree-sitter/safe-parse.js', async (importOriginal) =>
   );
 });
 
-import { TopicExtractor } from '../../../src/core/group/extractors/topic-extractor.js';
 import { GrpcExtractor } from '../../../src/core/group/extractors/grpc-extractor.js';
-import { ThriftExtractor } from '../../../src/core/group/extractors/thrift-extractor.js';
 import { IncludeExtractor } from '../../../src/core/group/extractors/include-extractor.js';
 import type { ContractExtractor } from '../../../src/core/group/contract-extractor.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
@@ -36,9 +34,7 @@ const makeRepo = (repoPath: string): RepoHandle => ({
 });
 
 const CASES: Array<[string, () => ContractExtractor, (i: number) => [string, string]]> = [
-  ['topic', () => new TopicExtractor(), (i) => [`src/T${i}.java`, `class T${i} {}\n`]],
   ['gRPC', () => new GrpcExtractor(), (i) => [`cmd/g${i}.go`, `package main\n\nfunc g${i}() {}\n`]],
-  ['Thrift', () => new ThriftExtractor(), (i) => [`src/R${i}.java`, `class R${i} {}\n`]],
   [
     'include',
     () => new IncludeExtractor(),

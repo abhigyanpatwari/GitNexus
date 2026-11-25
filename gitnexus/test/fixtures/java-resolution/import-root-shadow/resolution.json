@@ -1,0 +1,17 @@
+{
+  "diagnostics": {},
+  "calls": [
+    {"caller": "Method:app/OnDemand.java:OnDemand.viaLambda#0", "member": "save", "source": ["app/OnDemand.java#6:2"]},
+    {"caller": "Method:app/OnDemand.java:OnDemand.viaLoop#0", "member": "save", "source": ["app/OnDemand.java#7:2"]},
+    {"caller": "Method:app/Raw.java:Raw.viaLambda#0", "member": "save", "source": ["app/Raw.java#5:2"]},
+    {"caller": "Method:app/Raw.java:Raw.viaLoop#0", "member": "save", "source": ["app/Raw.java#6:2"]},
+    {"caller": "Method:app/Caller.java:Caller.viaReturn#0", "member": "save", "source": ["app/Caller.java#4:2"]},
+    {"caller": "Method:app/Caller.java:Caller.viaValues#0", "member": "save", "source": ["app/Caller.java#5:2"]},
+    {"caller": "Method:app/Written.java:Written.viaLambda#0", "member": "save", "source": ["app/Written.java#5:2"]},
+    {"caller": "Method:app/Written.java:Written.viaLoop#0", "member": "save", "source": ["app/Written.java#6:2"]},
+    {"caller": "Method:app/Caller.java:Caller.bothKeys#0", "member": "save", "published": [], "compilerTargets": ["app/models.java#3:29"], "source": ["app/Caller.java#6:2"]},
+    {"caller": "Method:app/Caller.java:Caller.bothValues#0", "member": "save", "published": [], "compilerTargets": ["models/User.java#2:20"], "source": ["app/Caller.java#7:2"]},
+    {"caller": "Method:inh/Sub.java:Sub.viaLambda#0", "member": "save", "published": [], "compilerTargets": ["inh/Base.java#3:29"], "source": ["inh/Sub.java#6:2"]},
+    {"caller": "Method:inh/Sub.java:Sub.viaLoop#0", "member": "save", "source": ["inh/Sub.java#7:2"]}
+  ]
+}

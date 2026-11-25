@@ -1,0 +1,1 @@
+package app; public class Consts { public static final int LIMIT = 1; }

@@ -1,0 +1,4 @@
+com.example.JavaAutoConfig
+com.vendor.StarterAutoConfiguration
+com.vendor.SharedAutoConfiguration
+com.duplicate.DuplicateAutoConfiguration

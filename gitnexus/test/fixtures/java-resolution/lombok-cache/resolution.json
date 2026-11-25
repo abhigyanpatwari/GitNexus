@@ -1,0 +1,8 @@
+{
+  "diagnostics": {
+    "compiler.err.cant.resolve": 1,
+    "compiler.err.cant.resolve.location.args": 1,
+    "compiler.err.doesnt.exist": 1
+  },
+  "sourceMethods": 1
+}

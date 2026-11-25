@@ -19,7 +19,6 @@ const SEQUENTIAL_COVERAGE_SECONDS: Readonly<Record<string, number>> = {
   'test/integration/rename-provider-csharp.test.ts': 71,
   'test/integration/rename-provider-dart.test.ts': 98,
   'test/integration/rename-provider-go.test.ts': 79,
-  'test/integration/rename-provider-java.test.ts': 36,
   'test/integration/rename-provider-javascript.test.ts': 39,
   'test/integration/rename-provider-kotlin.test.ts': 93,
   'test/integration/rename-provider-objective-c.test.ts': 82,

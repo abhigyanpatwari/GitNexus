@@ -1,0 +1,25 @@
+{
+  "diagnostics": {"compiler.err.array.req.but.found": 1, "compiler.err.cant.resolve.location.args": 3, "compiler.err.override.meth": 1},
+  "calls": [
+    {"caller": "parameter", "member": "save", "source": ["Main.java#14:2"]},
+    {"caller": "trailingParameter", "member": "save", "source": ["Main.java#15:2"]},
+    {"caller": "varargs", "member": "save", "source": ["Main.java#16:2"]},
+    {"caller": "local", "member": "save", "source": ["Main.java#17:2"]},
+    {"caller": "trailingLocal", "member": "save", "source": ["Main.java#18:2"]},
+    {"caller": "mixedScalar", "member": "save", "source": ["Main.java#19:2"]},
+    {"caller": "mixedArray", "member": "save", "source": ["Main.java#20:2"]},
+    {"caller": "mixedDimensions", "member": "save", "source": ["Main.java#21:2"]},
+    {"caller": "fieldElement", "member": "save", "source": ["Main.java#22:2"]},
+    {"caller": "methodElement", "member": "save", "source": ["Main.java#23:2"]},
+    {"caller": "trailingMethodElement", "member": "save", "source": ["Main.java#24:2"]},
+    {"caller": "iterateArray", "member": "save", "source": ["Main.java#32:2"]},
+    {"caller": "iterateList", "member": "save", "source": ["Main.java#33:2"]},
+    {"caller": "unindexed", "member": "save", "source": ["Main.java#25:2"], "targets": 0},
+    {"caller": "partial", "member": "save", "source": ["Main.java#26:2"], "targets": 0},
+    {"caller": "mixedPartial", "member": "save", "source": ["Main.java#27:2"], "targets": 0},
+    {"caller": "listIndex", "member": "save", "source": ["Main.java#28:2"], "targets": 0},
+    {"caller": "cloneArray", "member": "clone", "source": ["Main.java#29:2"], "targets": 0},
+    {"caller": "stringifyArray", "member": "toString", "source": ["Main.java#30:2"], "targets": 0},
+    {"caller": "classArray", "member": "getClass", "source": ["Main.java#31:2"], "targets": 0}
+  ]
+}

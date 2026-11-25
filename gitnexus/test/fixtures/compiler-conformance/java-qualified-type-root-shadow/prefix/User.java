@@ -1,0 +1,1 @@
+package prefix; public class User { public void save() {} }

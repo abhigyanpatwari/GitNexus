@@ -1,0 +1,19 @@
+{
+  "diagnostics": {"compiler.err.ref.ambiguous": 2},
+  "calls": [
+    {"caller": "Method:hd/C.java:C.simple#1", "member": "go", "source": ["hd/C.java#3:2"]},
+    {"caller": "Method:hd/C.java:C.qualified#1", "member": "go", "source": ["hd/C.java#4:2"]},
+    {"caller": "Method:hd/D.java:D.simple#1", "member": "go", "source": ["hd/D.java#3:2"]},
+    {"caller": "Method:hd/D.java:D.qualified#1", "member": "go", "source": ["hd/D.java#4:2"]},
+    {"caller": "Method:hd/E.java:E.simple#1", "member": "go", "source": ["hd/E.java#3:2"]},
+    {"caller": "Method:hd/E.java:E.qualified#1", "member": "go", "source": ["hd/E.java#4:2"]},
+    {"caller": "Method:hd/G.java:G.simple#1", "member": "go", "source": ["hd/G.java#3:2"]},
+    {"caller": "Method:hd/G.java:G.qualified#1", "member": "go", "source": ["hd/G.java#4:2"]},
+    {"caller": "Method:hd/F.java:F.simple#1", "member": "go", "source": ["hd/F.java#3:2"], "targets": 0},
+    {"caller": "Method:hd/F.java:F.qualified#1", "member": "go", "source": ["hd/F.java#4:2"], "targets": 0}
+  ],
+  "nodes": [
+    "Method:hd/F.java:F.qualified#1",
+    "Method:hd/F.java:F.simple#1"
+  ]
+}

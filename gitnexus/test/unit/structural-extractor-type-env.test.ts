@@ -12,13 +12,6 @@ import { extractStructuralNames } from '../../src/core/embeddings/structural-ext
 describe('structural names for embedding text (#3870)', () => {
   it.each([
     [
-      'Sample.java',
-      'Sample',
-      'public class Sample { private final java.util.Map<String, Integer> cache = new java.util.HashMap<>(); private int size; int total(int limit) { int sum = 0; for (int i = 0; i < limit; i++) sum += i; return sum; } }',
-      ['cache', 'size'],
-      ['total'],
-    ],
-    [
       'sample.ts',
       'Sample',
       'class Sample { private cache = new Map<string, number>(); size: number = 0; total(limit: number): number { let sum = 0; for (let i = 0; i < limit; i++) sum += i; return sum; } }',

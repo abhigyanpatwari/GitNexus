@@ -1,0 +1,35 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve": 2, "compiler.err.cant.resolve.location": 2, "compiler.err.cant.resolve.location.args": 4, "compiler.err.doesnt.exist": 2},
+  "calls": [
+    {"caller": "Method:p/Elements.java:Elements.element#1", "member": "save", "source": ["p/Elements.java#4:2"]},
+    {"caller": "Method:p/Elements.java:Elements.lineComment#1", "member": "save", "source": ["p/Elements.java#5:2"]},
+    {"caller": "Method:p/Elements.java:Elements.eachLambda#1", "member": "save", "source": ["p/Elements.java#7:2"]},
+    {"caller": "Method:p/Elements.java:Elements.combining#1", "member": "save", "source": ["p/Elements.java#8:2"]},
+    {"caller": "Method:p/Elements.java:Elements.asciiElement#1", "member": "save", "source": ["p/Elements.java#9:2"]},
+    {"caller": "Method:p/Elements.java:Elements.asciiLineComment#1", "member": "save", "source": ["p/Elements.java#10:2"]},
+    {"caller": "Method:p/Elements.java:Elements.asciiEachLambda#1", "member": "save", "source": ["p/Elements.java#12:2"]},
+    {"caller": "Method:p/Imported.java:Imported.element#1", "member": "save", "source": ["p/Imported.java#4:17"]},
+    {"caller": "Method:p/ImportedAscii.java:ImportedAscii.element#1", "member": "save", "source": ["p/ImportedAscii.java#4:22"]},
+    {"caller": "Method:p/Overloads.java:Picker.local#1", "member": "take", "source": ["p/Overloads.java#14:2"]},
+    {"caller": "Method:p/Overloads.java:Picker.parameter#2", "member": "take", "source": ["p/Overloads.java#15:2"]},
+    {"caller": "Method:p/Overloads.java:Picker.asciiLocal#1", "member": "take", "source": ["p/Overloads.java#16:2"]},
+    {"caller": "Method:p/Overloads.java:Picker.combining#1", "member": "take", "source": ["p/Overloads.java#17:2"]},
+    {"caller": "Method:p/Overloads.java:Picker.besideCombining#1", "member": "take", "source": ["p/Overloads.java#18:2"]},
+    {"caller": "Method:p/Lambdas.java:Lambdas.generic#0", "member": "save", "source": ["p/Lambdas.java#14:2"]},
+    {"caller": "Method:p/Lambdas.java:Lambdas.genericAscii#0", "member": "save", "source": ["p/Lambdas.java#15:2"]},
+    {"caller": "Method:p/Lambdas.java:Lambdas.named#0", "member": "save", "source": ["p/Lambdas.java#16:2"]},
+    {"caller": "Method:p/Lambdas.java:Lambdas.namedAscii#0", "member": "save", "source": ["p/Lambdas.java#17:2"]},
+    {"caller": "Method:p/Lambdas.java:Lambdas.sub#0", "member": "save", "source": ["p/Lambdas.java#18:2"]},
+    {"caller": "Method:p/Lambdas.java:Lambdas.subAscii#0", "member": "save", "source": ["p/Lambdas.java#19:2"]},
+    {"caller": "Method:l/Callers.java:Callers.field#1", "member": "getNämé", "published": ["Method:l/Models.java:Mödel.getNämé#0"], "compilerTargets": [], "source": ["l/Callers.java#3:2"]},
+    {"caller": "Method:l/Callers.java:Callers.asciiField#1", "member": "getName", "published": ["Method:l/Models.java:Model.getName#0"], "compilerTargets": [], "source": ["l/Callers.java#4:2"]},
+    {"caller": "Method:l/Callers.java:Callers.type#1", "member": "getFëld", "published": ["Method:l/Models.java:Klässe.getFëld#0"], "compilerTargets": [], "source": ["l/Callers.java#5:2"]},
+    {"caller": "Method:l/Callers.java:Callers.value#1", "member": "getWërt", "published": ["Method:l/Models.java:Wërt.getWërt#0"], "compilerTargets": [], "source": ["l/Callers.java#6:2"]}
+  ],
+  "relationships": [
+    {"type": "HAS_METHOD", "projection": "#{rel.sourceId}", "where": {"op": "===", "key": "rel.targetId", "value": "Method:l/Models.java:Mödel.getNämé#0"}, "expected": ["Class:l/Models.java:Mödel"]},
+    {"type": "HAS_METHOD", "projection": "#{rel.sourceId}", "where": {"op": "===", "key": "rel.targetId", "value": "Method:l/Models.java:Model.getName#0"}, "expected": ["Class:l/Models.java:Model"]},
+    {"type": "HAS_METHOD", "projection": "#{rel.sourceId}", "where": {"op": "===", "key": "rel.targetId", "value": "Method:l/Models.java:Klässe.getFëld#0"}, "expected": ["Class:l/Models.java:Klässe"]},
+    {"type": "HAS_METHOD", "projection": "#{rel.sourceId}", "where": {"op": "===", "key": "rel.targetId", "value": "Method:l/Models.java:Wërt.getWërt#0"}, "expected": ["Class:l/Models.java:Wërt"]}
+  ]
+}

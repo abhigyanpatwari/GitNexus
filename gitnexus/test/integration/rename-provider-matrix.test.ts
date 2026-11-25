@@ -15,9 +15,9 @@ describe('persisted semantic rename coverage', () => {
     ).toEqual(new Set(Object.values(SupportedLanguages)));
   });
 
-  // Fixtures only run through a per-language file (it also shards CI), so a missing or
+  // Java fixtures run under compiler conformance. For Vitest languages a missing or
   // mis-targeted file would leave its fixtures silently unexecuted.
-  it.each(fixtureLanguages)(
+  it.each(fixtureLanguages.filter((language) => language !== 'java'))(
     'runs the persisted fixtures of %s from its own rename-provider file',
     async (language) => {
       const file = new URL(`./rename-provider-${language}.test.ts`, import.meta.url);

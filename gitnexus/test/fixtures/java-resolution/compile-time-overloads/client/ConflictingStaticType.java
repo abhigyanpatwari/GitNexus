@@ -1,0 +1,2 @@
+package client; import static names.Names.Long; import static names.Other.Long;
+class ConflictingStaticType { void select(Long value) {} void select(Number value) {} void conflictingStaticTypes() { select(1L); } }

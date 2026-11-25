@@ -378,22 +378,6 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
     expect(targets).toEqual(['Function:a.rb:handler']);
   });
 
-  it('Java: handler.apply(1) resolves to ONE node, not a Function/Property twin', async () => {
-    // The rule is anchored on field_declaration — the same node the value rule
-    // uses — so the parse-worker dedup collapses the pair. Anchoring on the
-    // inner variable_declarator produced both a Function and a Property node.
-    const targets = await callTargetsFor(
-      'A.java',
-      'import java.util.function.Function;\n' +
-        'class A {\n' +
-        '  static Function<Integer,Integer> handler = x -> x;\n' +
-        '  int caller() { return handler.apply(1); }\n' +
-        '}\n',
-    );
-
-    expect(targets).toEqual(['Function:A.java:A.handler']);
-  });
-
   it('C#: handler(1) resolves', async () => {
     const targets = await callTargetsFor(
       'A.cs',

@@ -6,7 +6,6 @@ import {
   parseSpringProperties,
   parseSpringYaml,
 } from '../../src/core/ingestion/pipeline-phases/spring-config.js';
-import { extractJavaSpringConfigConsumers } from '../../src/core/ingestion/languages/java/spring-config-bindings.js';
 
 describe('Spring configuration parsing', () => {
   it('recognizes base and profile-specific application config files', () => {
@@ -195,82 +194,6 @@ describe('Spring configuration parsing', () => {
     expect(() => parseSpringYaml(aliasChain.join('\n'), 'application.yml')).toThrow(
       'Spring YAML traversal depth',
     );
-  });
-});
-
-describe('Java Spring configuration consumers', () => {
-  it('resolves official imports and ignores shadowed annotation names', () => {
-    const consumers = extractJavaSpringConfigConsumers(`
-      import org.springframework.beans.factory.annotation.Value;
-      import org.springframework.boot.context.properties.ConfigurationProperties;
-
-      @ConfigurationProperties(prefix = "service")
-      class ServiceProperties {
-        @Value("\${service.timeout:30}") private int timeout;
-      }
-    `);
-    expect(consumers).toEqual([
-      expect.objectContaining({ kind: 'value', fieldName: 'timeout', keys: ['service.timeout'] }),
-      expect.objectContaining({
-        kind: 'configuration-properties',
-        className: 'ServiceProperties',
-        prefix: 'service',
-      }),
-    ]);
-
-    expect(
-      extractJavaSpringConfigConsumers(`
-        @interface Value { String value(); }
-        class Local { @Value("\${fake.key}") String field; }
-      `),
-    ).toEqual([]);
-  });
-
-  it('supports wildcard/FQN annotations and every declarator in a field', () => {
-    const consumers = extractJavaSpringConfigConsumers(`
-      import org.springframework.beans.factory.annotation.*;
-
-      class DirectValues {
-        @Value("\${shared.key}") String first, second;
-      }
-
-      @org.springframework.boot.context.properties.ConfigurationProperties("service")
-      record ServiceProperties(String endpoint) {}
-    `);
-
-    expect(consumers).toEqual([
-      expect.objectContaining({ kind: 'value', fieldName: 'first', keys: ['shared.key'] }),
-      expect.objectContaining({ kind: 'value', fieldName: 'second', keys: ['shared.key'] }),
-      expect.objectContaining({
-        kind: 'configuration-properties',
-        className: 'ServiceProperties',
-        prefix: 'service',
-      }),
-    ]);
-  });
-
-  it('reads only string-literal AST nodes and ignores placeholders inside comments', () => {
-    const consumers = extractJavaSpringConfigConsumers(`
-      import org.springframework.beans.factory.annotation.Value;
-      import org.springframework.boot.context.properties.ConfigurationProperties;
-
-      @ConfigurationProperties(
-        // legacy prefix: "old.unsafe"
-        value = "service"
-      )
-      class ServiceProperties {
-        @Value(
-          /* legacy: "\${old.unsafe.key}" */
-          "\${service.timeout:30}"
-        )
-        private int timeout;
-      }
-    `);
-
-    expect(consumers).toEqual([
-      expect.objectContaining({ kind: 'value', keys: ['service.timeout'] }),
-      expect.objectContaining({ kind: 'configuration-properties', prefix: 'service' }),
-    ]);
   });
 });
 

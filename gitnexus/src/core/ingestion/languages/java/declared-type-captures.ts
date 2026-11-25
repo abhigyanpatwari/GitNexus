@@ -24,6 +24,7 @@ import {
 
 type SyntaxNode = Parser.SyntaxNode;
 interface DeclaredBinding {
+  readonly declarationId: number;
   readonly name: string;
   readonly start: number;
   readonly end: number;
@@ -413,6 +414,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
     const names = bindings.get(owner.id) ?? new Map<string, DeclaredBinding[]>();
     const values = names.get(name.text) ?? [];
     values.push({
+      declarationId: name.id,
       name: name.text,
       start,
       end,
@@ -815,10 +817,53 @@ export function synthesizeJavaDeclaredTypeCaptures(
   ): readonly InheritedFieldProof[] =>
     route === undefined ? found.shadows : found.shadows.map((shadow) => ({ ...shadow, route }));
 
+  const lambdaOrigins = new Map<string, Map<number, CaptureMatch>>();
+  const recordLambdaOrigin = (name: SyntaxNode, capture: CaptureMatch) => {
+    let declarations = lambdaOrigins.get(name.text);
+    if (!declarations) {
+      declarations = new Map();
+      lambdaOrigins.set(name.text, declarations);
+    }
+    declarations.set(name.id, capture);
+  };
+  const rememberLambda = (lambda: SyntaxNode, fallback = false) => {
+    const captures = synthesizeJavaSamLambdaCaptures(lambda, fallback);
+    for (const parameter of lambdaParameters(lambda)) {
+      const name =
+        parameter.type === 'identifier' ? parameter : parameter.childForFieldName('name');
+      const capture =
+        name && captures.find((entry) => entry['@call-result-assignment.lhs']?.text === name.text);
+      if (name && capture) recordLambdaOrigin(name, capture);
+    }
+    out.push(...captures);
+  };
   // Native descendants are in source order: outer operations publish their
   // element declaration before a nested operation asks for that declaration.
   for (const node of nodes) {
-    if (node.type === 'enhanced_for_statement') {
+    if (
+      node.type === 'local_variable_declaration' &&
+      node.childForFieldName('type')?.text === 'var'
+    ) {
+      for (const declarator of node.namedChildren) {
+        if (declarator.type !== 'variable_declarator') continue;
+        const name = declarator.childForFieldName('name');
+        let value = declarator.childForFieldName('value');
+        while (value?.type === 'parenthesized_expression') value = value.firstNamedChild;
+        if (!name || value?.type !== 'identifier') continue;
+        const declarations = lambdaOrigins.get(value.text);
+        if (!declarations) continue;
+        const source = lookup(value);
+        const origin = source.binding && declarations.get(source.binding.declarationId);
+        if (!origin || source.shadows.length) continue;
+        const capture = {
+          ...origin,
+          '@call-result-assignment.lhs': nodeToCapture('@call-result-assignment.lhs', name),
+          '@call-result-assignment.scope': nodeToCapture('@call-result-assignment.scope', name),
+        };
+        recordLambdaOrigin(name, capture);
+        out.push(capture);
+      }
+    } else if (node.type === 'enhanced_for_statement') {
       const name = node.childForFieldName('name');
       const body = node.childForFieldName('body');
       const type = node.childForFieldName('type');
@@ -913,7 +958,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
           (child) => child.type !== 'line_comment' && child.type !== 'block_comment',
         ).length !== 1
       ) {
-        out.push(...synthesizeJavaSamLambdaCaptures(node));
+        rememberLambda(node);
         continue;
       }
       const found = lookup(receiver);
@@ -942,7 +987,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
               ? ['forEachKey', 'forEachValue']
               : undefined;
       if (candidates === undefined && (routes === undefined || found.shadows.length === 0)) {
-        out.push(...synthesizeJavaSamLambdaCaptures(node));
+        rememberLambda(node);
         continue;
       }
       for (let i = 0; i < parameters.length; i++) {
@@ -973,7 +1018,7 @@ export function synthesizeJavaDeclaredTypeCaptures(
       // workspace type named like the JDK container, or a supertype field. A
       // refuted parameter then takes the selected method's functional
       // interface parameter type instead, as any other lambda argument does.
-      out.push(...synthesizeJavaSamLambdaCaptures(node, true));
+      rememberLambda(node, true);
     } else if (node.type === 'method_declaration') {
       const type = node.childForFieldName('type');
       // Only a generic return type can name a JDK container's element.

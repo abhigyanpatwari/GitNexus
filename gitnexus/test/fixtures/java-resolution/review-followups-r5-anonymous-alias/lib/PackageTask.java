@@ -1,0 +1,1 @@
+package lib; public abstract class PackageTask { Object value; }

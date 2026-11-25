@@ -1,0 +1,1 @@
+package a; public class Element { public void save() {} }

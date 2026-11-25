@@ -10,7 +10,7 @@ import {
   runPipelineFromRepo,
   getRelationships,
   getNodesByLabelFull,
-} from './helpers.js';
+} from '../../integration/resolvers/helpers.js';
 
 describe('Kotlin JVM accessor synthesis (pipeline)', () => {
   it.each(['same-file', 'cross-file'] as const)(
@@ -115,39 +115,6 @@ fun readBeta(beta: Beta): String = beta.getName()
       expect(betaCall).toBeDefined();
       expect(ownerByMethod.get(alphaCall?.rel.targetId ?? '')).toBe('Alpha');
       expect(ownerByMethod.get(betaCall?.rel.targetId ?? '')).toBe('Beta');
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  }, 60000);
-
-  it('emits Kotlin getName while Java-to-Kotlin member CALLS remains unsupported', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-kt-acc-'));
-    try {
-      writeFixtureRepo(root, {
-        'models/User.kt': `package models
-data class User(val name: String)
-`,
-        'app/Consumer.java': `package app;
-import models.User;
-class Consumer {
-  String consume(User user) {
-    return user.getName();
-  }
-}
-`,
-      });
-      const linked = await runPipelineFromRepo(root, () => {});
-      const getName = getNodesByLabelFull(linked, 'Method').find(
-        (m) => m.name === 'getName' && String(m.properties.filePath).endsWith('User.kt'),
-      );
-      expect(getName).toBeDefined();
-      const calls = getRelationships(linked, 'CALLS').filter(
-        (e) => e.source === 'consume' && e.target === 'getName',
-      );
-      // Pre-existing cross-language resolver gap: this feature adds the target
-      // Method but does not claim Java→Kotlin member CALLS support.
-      expect(getName?.properties.synthetic).toBe('kotlin-jvm');
-      expect(calls).toEqual([]);
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

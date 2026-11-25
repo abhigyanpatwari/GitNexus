@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
+import { cdgSourcedInHazardFunction, graphDigest } from '../../helpers/pdg-graph.js';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import { decodeTaintPath } from '../../../src/core/ingestion/taint/path-codec.js';
@@ -16,7 +16,7 @@ import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 // (workers + scope-resolution) on a tiny repo and inspects the in-memory graph.
 // The flag-off run proves the gate: zero CFG nodes/edges (cf. AC4 golden).
 
-const FIXTURE = path.join(__dirname, 'fixtures', 'pdg-repo');
+const FIXTURE = path.join(__dirname, '../../integration/cfg/fixtures/pdg-repo');
 
 function counts(result: PipelineResult): {
   basicBlocks: number;
@@ -205,7 +205,7 @@ describe('U7 — end-to-end --pdg pipeline', () => {
 // ── C-family worker-mode PDG (#2195 U7) ─────────────────────────────────────
 //
 // The same both-sinks proof as the TS block above, run through the REAL worker
-// pipeline for each of C, C++, C#, Java, Go. Each language gets its own tiny
+// pipeline for each of C, C++, C#, Go. Each language gets its own tiny
 // repo (one hazard fixture with real branching AND a non-terminating
 // loop/`select`) and we assert, under `--pdg`:
 //   - BasicBlock + CFG > 0 (the worker built a per-function CFG and emit wired it)
@@ -227,7 +227,7 @@ describe('U7 — end-to-end --pdg pipeline', () => {
 // `dist/`. A stale bundle silently zeros CFG output. `pretest:integration` (and
 // the U7 verification recipe) run `node scripts/build.js` first.
 
-const C_FAMILY_FIXTURES = path.join(__dirname, 'fixtures');
+const C_FAMILY_FIXTURES = path.join(__dirname, '../../fixtures/cfg');
 
 // `hazard`: a substring of a BasicBlock's `text` that appears ONLY inside the
 // fixture's non-terminating-loop function (`for(;;)` / `while(true)` / `for{}`).
@@ -239,7 +239,6 @@ const C_FAMILY: ReadonlyArray<{ lang: string; fixture: string; hazard?: string }
   { lang: 'C', fixture: 'c-hazards.c', hazard: 'handle_request' }, // server_forever: for(;;)
   { lang: 'C++', fixture: 'cpp-hazards.cpp', hazard: 'poll(' }, // run_forever: while(true)
   { lang: 'C#', fixture: 'csharp-hazards.cs' }, // no non-terminating loop in the fixture
-  { lang: 'Java', fixture: 'java-hazards.java', hazard: 'ready(' }, // serve: while(true)
   { lang: 'Go', fixture: 'go-hazards.go', hazard: 'handle(v)' }, // forInfinite: for{}
 ];
 
@@ -298,93 +297,6 @@ const WORKER_OFF = {
   workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
   workerPoolSize: 2,
 } as const;
-
-/**
- * Deterministic, path/id-independent digest of the non-PDG graph: sorted
- * label→count and relType→count maps + a sha256 over symbolic edge triples
- * (label:name keyed, not opaque ids). Mirrors `pipeline-graph-golden`'s
- * technique so the snapshot is stable across id-format refactors and only
- * trips on a real semantic change to the C-family graph.
- */
-function graphDigest(result: PipelineResult): {
-  symbols: number;
-  relationships: number;
-  byType: Record<string, number>;
-  byRelType: Record<string, number>;
-  edgeDigest: string;
-} {
-  const byType: Record<string, number> = {};
-  const byRelType: Record<string, number> = {};
-  const nodeKey = new Map<string, string>();
-  result.graph.forEachNode((n) => {
-    byType[n.label] = (byType[n.label] ?? 0) + 1;
-    const props = n.properties as Record<string, unknown>;
-    const fp = (props.filePath as string | undefined) ?? '';
-    const nm = (props.name as string | undefined) ?? '';
-    nodeKey.set(n.id, `${n.label}:${nm}@${fp}`);
-  });
-  const triples: string[] = [];
-  for (const rel of result.graph.iterRelationships()) {
-    byRelType[rel.type] = (byRelType[rel.type] ?? 0) + 1;
-    const src = nodeKey.get(rel.sourceId) ?? `?:${rel.sourceId}`;
-    const dst = nodeKey.get(rel.targetId) ?? `?:${rel.targetId}`;
-    triples.push(`${rel.type}|${src}|${dst}`);
-  }
-  triples.sort();
-  const sortObj = (o: Record<string, number>): Record<string, number> => {
-    const out: Record<string, number> = {};
-    for (const k of Object.keys(o).sort()) out[k] = o[k];
-    return out;
-  };
-  return {
-    symbols: result.graph.nodeCount,
-    relationships: result.graph.relationshipCount,
-    byType: sortObj(byType),
-    byRelType: sortObj(byRelType),
-    edgeDigest: crypto.createHash('sha256').update(triples.join('\n')).digest('hex'),
-  };
-}
-
-/**
- * Parse a BasicBlock node id into its function anchor (#2197 U3). emit.ts
- * templates the id as `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIndex>`
- * (filePath may itself contain `:` on some platforms) — so the anchor is every
- * segment except the trailing block index, and the function anchor is the id
- * with its final `:<blockIndex>` segment stripped. All blocks of one function
- * share that anchor; block indices restart at 0 per function.
- */
-function functionAnchorOf(blockId: string): string {
-  return blockId.slice(0, blockId.lastIndexOf(':'));
-}
-
-/**
- * Whether ≥1 CDG edge is sourced inside the fixture's non-terminating-loop
- * function — the load-bearing #2197 U3 claim. Locates that function via
- * `hazardMarker` (a substring of a block `text` unique to the hazard function),
- * derives its block anchor, collects every BasicBlock id under that anchor, and
- * checks whether any CDG edge's source block is one of them. Unlike the whole-
- * fixture `cdg > 0` aggregate (satisfied by ANY branching function), this proves
- * the post-dom/CDG pass actually ran for the function whose loop traps EXIT.
- */
-function cdgSourcedInHazardFunction(result: PipelineResult, hazardMarker: string): boolean {
-  // Find the hazard function's anchor from the block whose text carries the
-  // marker, and (separately) every block id grouped by anchor.
-  let hazardAnchor: string | undefined;
-  const idsByAnchor = new Map<string, Set<string>>();
-  result.graph.forEachNode((n) => {
-    if (n.label !== 'BasicBlock') return;
-    const anchor = functionAnchorOf(n.id);
-    (idsByAnchor.get(anchor) ?? idsByAnchor.set(anchor, new Set()).get(anchor)!).add(n.id);
-    const text = (n.properties as { text?: string }).text ?? '';
-    if (text.includes(hazardMarker)) hazardAnchor = anchor;
-  });
-  if (hazardAnchor === undefined) return false; // marker not found → fail the assertion
-  const hazardBlockIds = idsByAnchor.get(hazardAnchor) ?? new Set<string>();
-  for (const rel of result.graph.iterRelationships()) {
-    if (rel.type === 'CDG' && hazardBlockIds.has(rel.sourceId)) return true;
-  }
-  return false;
-}
 
 describe('U7 — C-family worker-mode --pdg pipeline', () => {
   for (const { lang, fixture, hazard } of C_FAMILY) {

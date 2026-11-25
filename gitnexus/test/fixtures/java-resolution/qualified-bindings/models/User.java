@@ -1,0 +1,1 @@
+package models; public class User<T> { public void save() {} }

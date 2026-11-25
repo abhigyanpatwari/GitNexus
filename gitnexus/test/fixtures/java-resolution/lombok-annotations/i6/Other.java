@@ -1,0 +1,1 @@
+package i6; public class Other { public String getX() { return ""; } }
