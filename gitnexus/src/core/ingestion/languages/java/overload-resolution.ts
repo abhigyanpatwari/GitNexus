@@ -1165,9 +1165,9 @@ function wrapperValueOfType(owner: JavaReferenceType, argument: JavaType, state:
     if (sameJavaType(owner, boxedJavaType(primitive)) !== 'yes') continue;
     const acceptsString =
       name !== 'char' &&
-      argument.kind === 'reference' &&
-      !argument.sourceId &&
-      argument.name === 'java.lang.String';
+      (argument.kind === 'null' ||
+        sameJavaType(argument, { kind: 'reference', name: 'java.lang.String', arguments: [] }) ===
+          'yes');
     if (
       acceptsString ||
       javaInvocationConversion(argument, primitive, 'loose', state.relations) === 'yes'

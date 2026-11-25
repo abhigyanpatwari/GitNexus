@@ -77,6 +77,8 @@ export const javaClassExtractor: ClassExtractor = {
   ...declaredTypes,
   extract: extractJavaClassSymbol,
   extractQualifiedName(node, simpleName) {
+    if (node.type === 'annotation_type_declaration')
+      return declaredTypes.qualifyScopeName?.(node, simpleName) ?? null;
     return extractJavaClassSymbol(node, { name: simpleName })?.qualifiedName ?? null;
   },
 };

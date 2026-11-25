@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 import javax.lang.model.element.*;
+import javax.lang.model.type.TypeKind;
 import javax.tools.*;
 
 /** Report the source declarations selected in programs that may have unrelated compile errors. */
@@ -104,13 +105,50 @@ final class RecoveryScanner extends TreePathScanner<Void, String> {
         var unit = getCurrentPath().getCompilationUnit();
         var start = trees.getSourcePositions().getStartPosition(unit, select);
         var end = trees.getSourcePositions().getEndPosition(unit, select);
-        if (caller != null && end >= 0 && errors.stream().noneMatch(d ->
-                unit.getSourceFile().equals(d.getSource()) && start <= d.getPosition() && d.getPosition() < end)) {
+        if (caller != null && end >= 0 && !reportedError(unit, start, end) && !hasErroneousArgument(unit, call)) {
             var element = trees.getElement(getCurrentPath());
             var target = element == null ? null : trees.getPath(element);
             if (target != null && target.getLeaf() instanceof MethodTree method && method.getReturnType() != null)
                 RecoveryOracle.emit(out, rootString, "call", caller, method.getName().toString(), declaration(target));
         }
         return super.visitMethodInvocation(call, caller);
+    }
+
+    private boolean reportedError(CompilationUnitTree unit, long start, long end) {
+        return errors.stream().anyMatch(d -> unit.getSourceFile().equals(d.getSource())
+                && start <= d.getPosition() && d.getPosition() < end);
+    }
+
+    private boolean hasErroneousArgument(CompilationUnitTree unit, MethodInvocationTree call) {
+        if (errors.isEmpty()) return false;
+        var positions = trees.getSourcePositions();
+        for (var argument : call.getArguments()) {
+            if (reportedError(unit, positions.getStartPosition(unit, argument), positions.getEndPosition(unit, argument))
+                    && new ArgumentErrors(trees).scan(argument, getCurrentPath())) return true;
+        }
+        return false;
+    }
+}
+
+/** A recovery type on an evaluated argument cannot establish an overload target.
+ * Errors in a callback or an anonymous class body can coexist with a valid outer selection. */
+final class ArgumentErrors extends TreeScanner<Boolean, TreePath> {
+    private final Trees trees;
+
+    ArgumentErrors(Trees trees) { this.trees = trees; }
+
+    @Override public Boolean scan(Tree tree, TreePath parent) {
+        if (tree == null) return false;
+        var path = new TreePath(parent, tree);
+        if (tree instanceof ExpressionTree) {
+            var type = trees.getTypeMirror(path);
+            if (type != null && type.getKind() == TypeKind.ERROR) return true;
+        }
+        if (tree instanceof LambdaExpressionTree || tree instanceof ClassTree) return false;
+        return Boolean.TRUE.equals(tree.accept(this, path));
+    }
+
+    @Override public Boolean reduce(Boolean left, Boolean right) {
+        return Boolean.TRUE.equals(left) || Boolean.TRUE.equals(right);
     }
 }

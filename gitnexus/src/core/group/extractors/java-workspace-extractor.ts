@@ -409,9 +409,10 @@ async function readJavaMemberTypes(file: string): Promise<Set<string>> {
   const pending = [root];
   while (pending.length) {
     const node = pending.pop()!;
-    if (extractor.isTypeDeclaration(node) && node.childForFieldName('name')) {
-      const type = extractor.extract(node);
-      if (type) names.add(type.qualifiedName);
+    const name = node.childForFieldName('name');
+    if (name) {
+      const qualifiedName = extractor.extractQualifiedName(node, name.text);
+      if (qualifiedName) names.add(qualifiedName);
     }
     for (const child of node.namedChildren) pending.push(child);
   }

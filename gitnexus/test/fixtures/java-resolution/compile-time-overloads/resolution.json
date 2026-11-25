@@ -37,7 +37,7 @@
     {"caller": "castBase", "member": "access", "source": ["first/Child.java#3:1"]},
     {"caller": "superProtected", "member": "protectedChoice", "source": ["second/ProtectedChild.java#1:71"]},
     {"caller": "fakeFactory", "member": "select", "source": ["shadow/Shadow.java#6:2"], "targets": 0},
-    {"caller": "fieldFactory", "member": "select", "published": [], "compilerTargets": ["shadow/Shadow.java#14:2"], "source": ["shadow/Shadow.java#15:2"]},
+    {"caller": "fieldFactory", "member": "select", "source": ["shadow/Shadow.java#15:2"], "targets": 0},
     {"caller": "typeParameter", "member": "generic", "published": [], "compilerTargets": ["shadow/Shadow.java#9:40"], "source": ["shadow/Shadow.java#10:2"]},
     {"caller": "inheritedUnknown", "member": "select", "published": [], "compilerTargets": ["shadow/Shadow.java#18:2"], "source": ["shadow/Shadow.java#19:2"]},
     {"caller": "implicitObject", "member": "wait", "source": ["shadow/Shadow.java#23:2"], "targets": 0},

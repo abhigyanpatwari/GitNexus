@@ -788,7 +788,7 @@ const javaIdentityCandidatesBelow = (root: SyntaxNode): SyntaxNode[] => {
 };
 
 /** Group ordinary declarations by lexical type, including members of a
- * generated owner. Only literal dollar-digit names can occupy an ordinal. */
+ * generated owner. A literal dollar can overlap a binary-name separator. */
 const javaDeclaredBinaryNameMembers = (root: SyntaxNode, generated: readonly SyntaxNode[]) => {
   const members = new Map<string, SyntaxNode[]>();
   const named =
@@ -796,8 +796,7 @@ const javaDeclaredBinaryNameMembers = (root: SyntaxNode, generated: readonly Syn
       ...JAVA_NAMED_TYPE_NODE_LABELS.keys(),
       'annotation_type_declaration',
     ]) ?? [];
-  if (!named.some((type) => /\$\d/.test(type.childForFieldName?.('name')?.text ?? '')))
-    return members;
+  if (!named.some((type) => type.childForFieldName?.('name')?.text.includes('$'))) return members;
   if (JAVA_ANON_HOST_TYPES.has(root.type)) named.unshift(root);
   const types = new Set([...named, ...generated].map(javaHostKey));
   for (const type of named) {

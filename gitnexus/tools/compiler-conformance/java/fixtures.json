@@ -55,14 +55,14 @@
     }
   },
   "compiler-conformance/java-lambda-wildcard-bounds": 8,
-  "compiler-conformance/java-local-binary-name-collision": 3,
+  "compiler-conformance/java-local-binary-name-collision": 4,
   "compiler-conformance/java-same-file-nested-overloads": 4,
   "compiler-conformance/java-selected-call-diagnostics": {
     "families": ["keep"],
     "sites": 2,
     "rejections": { "inapplicable": 1 }
   },
-  "compiler-conformance/java-string-factory-overloads": 3,
+  "compiler-conformance/java-string-factory-overloads": 4,
   "compiler-conformance/java-method-ownership": {
     "sites": 0
   },

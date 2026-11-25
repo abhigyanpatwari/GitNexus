@@ -630,6 +630,7 @@ dependencies {
         .sort((a, b) => compareCodeUnits(a[1], b[1]) || compareCodeUnits(a[2], b[2])),
       [
         ['lib', 'named', 'lib::Constants'],
+        ['lib', 'named', 'lib::Marker'],
         ['lib', 'named', 'lib::Token'],
         ['lib', 'wildcard', 'lib::Constants'],
       ],
