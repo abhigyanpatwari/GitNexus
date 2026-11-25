@@ -9,7 +9,7 @@ import {
 } from '../../../../test/helpers/skills-e2e.js';
 
 describe('Java', () => {
-  let tmpDir: string;
+  let tmpDir: string | undefined;
   let result: ReturnType<typeof runSkillsCli>;
 
   before(
@@ -122,7 +122,7 @@ public class User {
   );
 
   after(() => {
-    cleanupTempDirSync(tmpDir);
+    if (tmpDir) cleanupTempDirSync(tmpDir);
   });
 
   /**

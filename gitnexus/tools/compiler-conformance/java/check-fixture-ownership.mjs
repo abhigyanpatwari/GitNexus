@@ -122,6 +122,26 @@ function javaSourceProperty(property, bindings, seen) {
   return typeof key === 'string' && key.endsWith('.java') ? key : '';
 }
 
+function requiredModule(node, scope) {
+  if (
+    node?.type === 'CallExpression' &&
+    node.callee.type === 'Identifier' &&
+    node.callee.name === 'require' &&
+    !scope.getBinding('require') &&
+    node.arguments.length === 1 &&
+    node.arguments[0].type === 'StringLiteral'
+  )
+    return { module: node.arguments[0].value };
+  if (node?.type !== 'MemberExpression') return undefined;
+  const owner = requiredModule(node.object, scope);
+  if (!owner || owner.imported) return undefined;
+  const imported = node.property;
+  if (node.computed && imported.type !== 'StringLiteral') return undefined;
+  return nameOf(imported) === 'promises' && /^(?:node:)?fs$/.test(owner.module)
+    ? { module: owner.module + '/promises' }
+    : { module: owner.module, imported };
+}
+
 function bindingFor(scope, name) {
   const declaration = name && scope.getBinding(name)?.path;
   if (!declaration) return undefined;
@@ -130,6 +150,14 @@ function bindingFor(scope, name) {
   if (declaration.isFunctionDeclaration()) return { path: declaration };
   if (declaration.isVariableDeclarator()) {
     const { id, init } = declaration.node;
+    const required = requiredModule(init, declaration.scope);
+    if (required) {
+      if (id.type === 'Identifier') return required;
+      if (id.type === 'ObjectPattern' && !required.imported) {
+        const imported = id.properties.find((p) => nameOf(p.value) === name)?.key;
+        if (imported) return { module: required.module, imported };
+      }
+    }
     if (id.type === 'Identifier') return init ? { path: declaration.get('init') } : {};
     if (id.type === 'ObjectPattern' && nameOf(init?.callee) === 'createRenameFixtureHelpers') {
       return {
@@ -151,17 +179,16 @@ function writesFiles(binding, mocked, seen = new Set()) {
   let writes = false;
   definition.traverse({
     CallExpression(call) {
-      const { callee } = call.node;
-      const owner =
-        nameOf(callee.object?.property) === 'promises' ? callee.object.object : callee.object;
-      const resolved = bindingFor(call.scope, callee.name ?? owner?.name);
-      const method = nameOf(callee.property) ?? nameOf(resolved?.imported) ?? callee.name;
+      const {
+        binding: resolved,
+        method,
+        actualFs,
+        identifier,
+      } = fixtureCall(call.node, call.scope, mocked);
       if (
-        (fsCalls.has(method) &&
-          fsModule.test(resolved?.module ?? '') &&
-          !mocked.has(resolved.module.replace(/^node:/, ''))) ||
+        (actualFs && fsCalls.has(method)) ||
         (projectReaders.has(method) && (!resolved || resolved.module)) ||
-        (callee.type === 'Identifier' && writesFiles(resolved, mocked, seen))
+        (identifier && writesFiles(resolved, mocked, seen))
       ) {
         writes = true;
         call.stop();
@@ -220,7 +247,8 @@ function fixtureCall(node, bindings, mocked) {
   const identifier = callee.type === 'Identifier';
   let owner = callee.object;
   if (nameOf(owner?.property) === 'promises') owner = owner.object;
-  const binding = bindingFor(bindings, identifier ? callee.name : owner?.name);
+  const binding =
+    bindingFor(bindings, identifier ? callee.name : owner?.name) ?? requiredModule(owner, bindings);
   const method = identifier ? (nameOf(binding?.imported) ?? callee.name) : nameOf(callee.property);
   const actualFs =
     fsModule.test(binding?.module ?? '') && !mocked.has(binding.module.replace(/^node:/, ''));
@@ -300,7 +328,7 @@ export function javaFixtureUses(source, filename = 'suite.test.ts') {
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
   const root = fileURLToPath(new URL('../../../test/', import.meta.url));
   const findings = [];
-  for (const file of globSync('**/*.{test,spec}.{ts,tsx,js,jsx,mts,mjs}', { cwd: root })) {
+  for (const file of globSync('**/*.{test,spec}.{ts,tsx,js,jsx,mts,mjs,cts,cjs}', { cwd: root })) {
     for (const issue of javaFixtureUses(readFileSync(path.join(root, file), 'utf8'), file))
       findings.push(file + ':' + issue.line + ' ' + issue.method + ' ' + issue.path);
   }

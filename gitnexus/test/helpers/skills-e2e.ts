@@ -1,3 +1,4 @@
+import { cleanupTempDirSync } from './test-db.js';
 import { fixtureGitExecutable } from './git-executable.js';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -28,25 +29,38 @@ export function runSkillsCli(cwd: string, timeoutMs = 45000) {
 export function createFixtureRepo(prefix: string, files: Record<string, string>): string {
   const git = fixtureGitExecutable();
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skills-e2e-${prefix}-`));
-  for (const [relPath, content] of Object.entries(files)) {
-    const fullPath = path.join(tmpDir, relPath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf-8');
+  try {
+    for (const [relPath, content] of Object.entries(files)) {
+      const fullPath = path.join(tmpDir, relPath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, content, 'utf-8');
+    }
+    execFileSync(git, ['init'], { cwd: tmpDir, stdio: 'pipe' });
+    execFileSync(git, ['add', '-A'], { cwd: tmpDir, stdio: 'pipe' });
+    execFileSync(git, ['commit', '-m', 'initial commit'], {
+      cwd: tmpDir,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'test',
+        GIT_AUTHOR_EMAIL: 'test@test',
+        GIT_COMMITTER_NAME: 'test',
+        GIT_COMMITTER_EMAIL: 'test@test',
+      },
+    });
+    return tmpDir;
+  } catch (error) {
+    try {
+      cleanupTempDirSync(tmpDir);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Failed to create and clean up skills fixture',
+        { cause: error },
+      );
+    }
+    throw error;
   }
-  execFileSync(git, ['init'], { cwd: tmpDir, stdio: 'pipe' });
-  execFileSync(git, ['add', '-A'], { cwd: tmpDir, stdio: 'pipe' });
-  execFileSync(git, ['commit', '-m', 'initial commit'], {
-    cwd: tmpDir,
-    stdio: 'pipe',
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'test',
-      GIT_AUTHOR_EMAIL: 'test@test',
-      GIT_COMMITTER_NAME: 'test',
-      GIT_COMMITTER_EMAIL: 'test@test',
-    },
-  });
-  return tmpDir;
 }
 
 export function assertSkillsCliSucceeded(result: ReturnType<typeof runSkillsCli>) {

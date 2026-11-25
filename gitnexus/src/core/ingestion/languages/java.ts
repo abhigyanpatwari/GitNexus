@@ -22,7 +22,7 @@ import {
   isJavaConstantFile,
   prepareJavaRouteConstants,
 } from '../route-extractors/java-const-resolver.js';
-import { javaExportChecker } from '../export-detection.js';
+import { javaExportChecker } from './java/export-visibility.js';
 import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { javaCallConfig } from '../call-extractors/configs/jvm.js';

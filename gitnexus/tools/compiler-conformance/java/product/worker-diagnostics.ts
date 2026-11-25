@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 const DIST_WORKER = fileURLToPath(
   new URL('../../../../dist/core/ingestion/workers/parse-worker.js', import.meta.url),
@@ -35,6 +36,8 @@ it('includes the source path in embedded-NUL warnings', { timeout: 20_000 }, asy
   });
   let stdout = '';
   let stderr = '';
+  let warningLine: string | undefined;
+  const diagnostics = createInterface({ input: child.stderr });
 
   try {
     await new Promise<void>((resolve, reject) => {
@@ -43,11 +46,7 @@ it('includes the source path in embedded-NUL warnings', { timeout: 20_000 }, asy
       }, 15_000);
       let complete = false;
       const finishIfComplete = (): void => {
-        if (
-          !complete &&
-          stdout.includes('SUB_BATCH_DONE') &&
-          stderr.includes('replaced embedded NUL bytes before tree-sitter parsing')
-        ) {
+        if (!complete && stdout.includes('SUB_BATCH_DONE') && warningLine !== undefined) {
           complete = true;
           clearTimeout(timeout);
           resolve();
@@ -57,8 +56,10 @@ it('includes the source path in embedded-NUL warnings', { timeout: 20_000 }, asy
         stdout += String(chunk);
         finishIfComplete();
       });
-      child.stderr.on('data', (chunk) => {
-        stderr += String(chunk);
+      diagnostics.on('line', (line) => {
+        stderr += line + '\n';
+        if (line.includes('replaced embedded NUL bytes before tree-sitter parsing'))
+          warningLine = line;
         finishIfComplete();
       });
       child.once('error', (error) => {
@@ -72,9 +73,6 @@ it('includes the source path in embedded-NUL warnings', { timeout: 20_000 }, asy
         }
       });
     });
-    const warningLine = stderr
-      .split('\n')
-      .find((line) => line.includes('replaced embedded NUL bytes before tree-sitter parsing'));
     if (!warningLine) throw new Error(`missing embedded-NUL warning in stderr: ${stderr}`);
     assert.partialDeepStrictEqual(JSON.parse(warningLine), {
       level: 40,
@@ -83,6 +81,7 @@ it('includes the source path in embedded-NUL warnings', { timeout: 20_000 }, asy
       msg: 'replaced embedded NUL bytes before tree-sitter parsing',
     });
   } finally {
+    diagnostics.close();
     child.kill();
   }
 });

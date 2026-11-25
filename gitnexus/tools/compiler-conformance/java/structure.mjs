@@ -18,6 +18,7 @@ export function javaTypeIdentity(node) {
 export function compareJavaStructure(reference, result, typeIdentity, methods) {
   const expected = [];
   const actual = [];
+  const methodAccess = new Map();
   for (const { file, kind, name, qualifiedName } of reference.declarations) {
     if (kind === 'Annotation') expected.push(`Annotation ${file}#@${name}`);
     else if (qualifiedName) expected.push(`${kind} ${file}#${qualifiedName}`);
@@ -26,13 +27,29 @@ export function compareJavaStructure(reference, result, typeIdentity, methods) {
   for (const node of result.graph.nodes) {
     const type = typeIdentity(node);
     if (type) actual.push(`${node.label} ${type}`);
-    else if (methods && node.label === 'Method')
+    else if (methods && node.label === 'Method') {
       actual.push(`Method ${node.properties.filePath}#${node.properties.name}`);
+      methodAccess.set(graphDeclaration(node), node.properties.isExported);
+    }
   }
   assert.ok(expected.length, 'javac produced no source declarations');
   actual.sort(compareCodeUnits);
   expected.sort(compareCodeUnits);
   assert.deepEqual(actual, expected, 'Java source declarations');
+  if (methods) {
+    assert.equal(
+      reference.methodAccess.length,
+      reference.declarations.filter(({ kind }) => kind === 'Method').length,
+      'javac must report access for every explicit source method',
+    );
+    for (const { declaration, isPublic } of reference.methodAccess) {
+      assert.equal(
+        methodAccess.get(declaration),
+        isPublic,
+        'Java public modifier at ' + declaration,
+      );
+    }
+  }
   const heritage = [];
   for (const relation of ['EXTENDS', 'IMPLEMENTS']) {
     for (const edge of result.graph.iterRelationshipsByType(relation)) {

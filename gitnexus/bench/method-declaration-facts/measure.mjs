@@ -194,7 +194,7 @@ async function retainedTrees() {
   const Parser = createRequire(path.join(root, 'package.json'))('tree-sitter');
   const { getLanguageGrammar } = await load('core/tree-sitter/parser-loader.js');
   const { javaMethodConfig } = await load('core/ingestion/method-extractors/configs/jvm.js');
-  const { javaExportChecker } = await load('core/ingestion/export-detection.js');
+  const { javaProvider } = await load('core/ingestion/languages/java.js');
   const refs = (() => {
     const parser = new Parser();
     parser.setLanguage(getLanguageGrammar('java'));
@@ -203,7 +203,7 @@ async function retainedTrees() {
       const node = tree.rootNode.descendantsOfType('method_declaration')[0];
       javaMethodConfig.extractParameters(node);
       javaMethodConfig.extractParameters(node);
-      assert.equal(javaExportChecker(node.childForFieldName('name'), 'f'), false);
+      assert.equal(javaProvider.exportChecker(node.childForFieldName('name'), 'f'), false);
       return new WeakRef(tree);
     });
   })();

@@ -106,31 +106,3 @@ test('embeddings reuse the parsed Java class and preserve fields and line spans'
     }
   });
 });
-
-test('Java export checks retain sibling and enclosing class visibility across parser trees', async () => {
-  const parser = await loadParser();
-  await loadLanguage(SupportedLanguages.Java);
-  const provider = getProvider(SupportedLanguages.Java);
-  function visibility(method: Parser.SyntaxNode) {
-    const name = method.childForFieldName('name');
-    assert.ok(name);
-    return provider.exportChecker(name, name.text);
-  }
-  const siblings = parser
-    .parse('class C { private void a() {} public void b() {} void c() {} }')
-    .rootNode.descendantsOfType('method_declaration');
-  for (const order of [siblings, [...siblings].reverse()]) {
-    assert.deepEqual(order.map(visibility), [false, true, false]);
-  }
-  for (const modifier of ['', 'public ', '']) {
-    const tree = parser.parse(
-      modifier + 'class C { private void a() {} class Inner { void b() {} } }',
-    );
-    const methods = tree.rootNode.descendantsOfType('method_declaration');
-    assert.equal(methods.length, 2);
-    for (const method of methods) {
-      assert.equal(visibility(method), modifier === 'public ');
-      assert.equal(visibility(method), modifier === 'public ');
-    }
-  }
-});

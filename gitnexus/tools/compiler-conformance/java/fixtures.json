@@ -29,6 +29,7 @@
     "constructors": true
   },
   "compiler-conformance/java-dollar-member-inheritance": 3,
+  "compiler-conformance/java-export-visibility": 0,
   "compiler-conformance/java-external-receiver": {
     "sites": 0
   },
@@ -53,6 +54,7 @@
       "inapplicable": 3
     }
   },
+  "compiler-conformance/java-lambda-wildcard-bounds": 8,
   "compiler-conformance/java-local-binary-name-collision": 3,
   "compiler-conformance/java-string-factory-overloads": 3,
   "compiler-conformance/java-method-ownership": {

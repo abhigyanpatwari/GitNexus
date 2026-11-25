@@ -851,7 +851,7 @@ function plainTypeArgument(
 ): TypeRef | undefined {
   // JLS 9.9 and 15.27.3 ground an implicitly typed lambda against the
   // non-wildcard parameterization of its target functional interface.
-  const chosen = written?.trim().replace(/^\?\s+(?:super|extends)\s+/, '') ?? '';
+  const chosen = written?.trim().replace(/^\?\s*(?:super|extends)\s+/, '') ?? '';
   // A qualified class name (`app.Other`) is looked up as written, where it was
   // written: `populateJavaQualifiedTypeBindings` registers its key there.
   const qualified = chosen.replaceAll(/\s+/g, '');

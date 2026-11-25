@@ -5,6 +5,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 function appendJavacRecord(report, kind, read) {
   switch (kind) {
+    case 'method-access': {
+      const [declaration, isPublic] = read(2);
+      report.methodAccess.push({ declaration, isPublic: isPublic === 'true' });
+      return;
+    }
     case 'diagnostic': {
       const [code] = read(1);
       report.diagnostics[code] = (report.diagnostics[code] ?? 0) + 1;
@@ -105,6 +110,7 @@ export function javacReports(fixtures) {
     edges: [],
     memberReferences: [],
     declarations: [],
+    methodAccess: [],
     heritage: [],
     implementations: [],
     constructors: [],

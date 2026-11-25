@@ -11,6 +11,7 @@ import java.nio.file.*;
 import java.util.*;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ExecutableElement;
+import javax.lang.model.element.Modifier;
 import javax.lang.model.element.Name;
 import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.TypeElement;
@@ -281,8 +282,9 @@ class DeclarationScanner extends TreePathScanner<Void, MethodTree> {
         if (method.getReturnType() != null
                 && getCurrentPath().getParentPath().getLeaf().getKind() != Tree.Kind.ANNOTATION_TYPE) {
             report.emit(DECLARATION, report.file(unit), "Method", method.getName().toString(), "", "");
-            if (families.contains("<implements>") && trees.getElement(getCurrentPath()) instanceof ExecutableElement member) {
-                implementations.recordMethod(member);
+            if (trees.getElement(getCurrentPath()) instanceof ExecutableElement member) {
+                report.emit("method-access", report.declaration(unit, method), Boolean.toString(member.getModifiers().contains(Modifier.PUBLIC)));
+                if (families.contains("<implements>")) implementations.recordMethod(member);
             }
         }
         return super.visitMethod(method, method);

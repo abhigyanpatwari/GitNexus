@@ -92,3 +92,5 @@ node compare.mjs compiler.json analyzer.json
 ```
 
 The standalone comparator reads `sites` and `edges`. The Java report also exposes `constructors`, `heritage`, and `implementations` for consumers that compare those relationships. The Java conformance job compares them with the published graph.
+
+Each `methodAccess` entry identifies a source method by file, line, and column. Its `isPublic` field includes methods that Java makes implicitly public. Projects that compare method declarations check this flag against the graph's `isExported` property.

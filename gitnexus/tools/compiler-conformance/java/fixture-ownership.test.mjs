@@ -35,6 +35,28 @@ test('detects a Java source map passed to the fixture helper, including spreads 
   );
 });
 
+test('follows CommonJS filesystem calls and respects locally defined require functions', () => {
+  const uses = javaFixtureUses(
+    `
+    const fs = require('fs');
+    const { readFile: read } = require('node:fs/promises');
+    const save = require('fs').writeFileSync;
+    fs.readFileSync('fixtures/java/Read.java');
+    read('Aliased.java');
+    require('fs').promises.rename('other', 'Renamed.java');
+    save('Written.java', '');
+    function write(path) { require('node:fs').writeFileSync(path, ''); }
+    write('Wrapped.java');
+    function inspect(require) { const local = require('fs'); local.readFileSync('Fake.java'); }
+  `,
+    'common.test.js',
+  );
+  assert.deepEqual(
+    uses.map(({ path }) => path),
+    ['fixtures/java/Read.java', 'Aliased.java', 'Renamed.java', 'Written.java', 'Wrapped.java'],
+  );
+});
+
 test('recognizes both paths in a real filesystem rename', () => {
   const uses = javaFixtureUses(`
     import fs from 'node:fs';

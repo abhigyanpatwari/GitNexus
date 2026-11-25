@@ -4,7 +4,7 @@ import { javaTypeText, javaTypeTextWithoutTrivia, stripGaps } from './type-spell
 
 export function parameterTypes(
   node: SyntaxNode,
-  spell: (type: SyntaxNode) => string = (type) => type.text,
+  spell: (type: SyntaxNode) => string = javaTypeTextWithoutTrivia,
 ): string[] {
   const parameters = node.childForFieldName('parameters')?.namedChildren ?? [];
   const result: string[] = [];
