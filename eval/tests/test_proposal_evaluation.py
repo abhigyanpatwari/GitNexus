@@ -69,6 +69,108 @@ def test_unusable_measurement_preserves_model_usage_and_stops_the_sweep(monkeypa
     assert row["cost_usd"] == cost and row["input_tokens"] == 14
 
 
+def test_probe_servers_classifies_sandbox_error_causes(monkeypatch, tmp_path):
+    import json
+    import urllib.request
+
+    source = evaluator.Source(tmp_path, tmp_path, [])
+    client = evaluator.ModelClient(Path("claude"), "claude-sonnet-4-6", "high", "fixture")
+
+    def make_fake_propose(
+        *,
+        ok=True,
+        write_patch=True,
+        patch_bytes=b"offline probe",
+        list_repos_target="benchmark-target",
+        tools=None,
+        tool_results=None,
+        error_detail=None,
+    ):
+        def _fake_propose(prompt, *, source, graph_repo, runtime, proposal, client, augmented, out, label):
+            if tools is None:
+                declared_tools = [{"name": f"mcp__checkout__{name}"} for name in evaluator.TOOLS]
+                if augmented:
+                    declared_tools.append({"name": "mcp__gitnexus__list_repos"})
+            else:
+                declared_tools = tools
+
+            if tool_results is None:
+                results_blocks = [{"type": "tool_result", "tool_use_id": "toolu_mock_0", "content": "submitted"}]
+                if augmented:
+                    results_blocks.append(
+                        {"type": "tool_result", "tool_use_id": "toolu_mock_1", "content": list_repos_target}
+                    )
+            else:
+                results_blocks = tool_results
+
+            req = urllib.request.Request(
+                f"{client.base_url}/v1/messages",
+                data=json.dumps({
+                    "tools": declared_tools,
+                    "messages": [{"role": "user", "content": results_blocks}],
+                }).encode("utf-8"),
+                headers={"content-type": "application/json"},
+            )
+            urllib.request.urlopen(req)
+
+            if write_patch:
+                (proposal / "change.patch").write_bytes(patch_bytes)
+
+            return {"ok": ok, "error_kind": "session-error" if not ok else None, "error_detail": error_detail}
+
+        return _fake_propose
+
+    # Success case passes cleanly across both unaugmented and augmented passes
+    monkeypatch.setattr(evaluator, "propose", make_fake_propose())
+    evaluator._probe_servers(source, client, tmp_path)
+
+    # Issue #4046: 2/2 tool results succeed, but list_repos output lacks 'benchmark-target'
+    monkeypatch.setattr(evaluator, "propose", make_fake_propose(list_repos_target="unexpected-output"))
+    with pytest.raises(evaluator.SandboxError, match="list_repos output missing expected 'benchmark-target'"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+    # Patch missing
+    monkeypatch.setattr(evaluator, "propose", make_fake_propose(write_patch=False))
+    with pytest.raises(evaluator.SandboxError, match="did not produce change.patch"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+    # Patch content mismatch
+    monkeypatch.setattr(evaluator, "propose", make_fake_propose(patch_bytes=b"unexpected patch content"))
+    with pytest.raises(evaluator.SandboxError, match="change.patch content mismatch"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+    # Session failure with exit code and diagnostics
+    monkeypatch.setattr(
+        evaluator,
+        "propose",
+        make_fake_propose(ok=False, error_detail={"returncode": 137, "stderr_tail": "out of memory"}),
+    )
+    with pytest.raises(evaluator.SandboxError, match=r"session failed: exit code 137 \(out of memory\)"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+    # Actual tool result count mismatch
+    monkeypatch.setattr(evaluator, "propose", make_fake_propose(tool_results=[]))
+    with pytest.raises(evaluator.SandboxError, match=r"failed: 0/1 successful tool results"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+    # Missing required tools
+    monkeypatch.setattr(evaluator, "propose", make_fake_propose(tools=[]))
+    with pytest.raises(evaluator.SandboxError, match="missing required tool"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+    # Declared unpermitted tool
+    monkeypatch.setattr(
+        evaluator,
+        "propose",
+        make_fake_propose(
+            tools=[{"name": f"mcp__checkout__{name}"} for name in evaluator.TOOLS]
+            + [{"name": "mcp__forbidden__exec"}]
+        ),
+    )
+    with pytest.raises(evaluator.SandboxError, match="declared unpermitted tool"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+
 @native
 def test_offline_worker_credentials_namespaces_and_readonly_checkout(tmp_path, monkeypatch):
     checkout = tmp_path / "checkout"
