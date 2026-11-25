@@ -2965,7 +2965,9 @@ const processFileGroupFiles = (
           name: nodeName,
           filePath: file.path,
           startLine,
-          ...(shouldObjectOwnerQualifyCallable(nodeLabel) ? { startColumn } : {}),
+          ...(shouldObjectOwnerQualifyCallable(nodeLabel) || nodeLabel === 'Property'
+            ? { startColumn }
+            : {}),
           endLine: definitionNode ? mapRow(definitionNode.endPosition.row) : startLine,
           language: language,
           isExported,

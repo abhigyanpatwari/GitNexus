@@ -58,6 +58,7 @@
     "lang-resolution/typescript-inline-constructor-receiver",
     "lang-resolution/typescript-instanceof-narrowing",
     "lang-resolution/typescript-interface-dispatch",
+    "lang-resolution/typescript-jsx-as-call",
     "lang-resolution/typescript-local-shadow",
     "lang-resolution/typescript-member-access-for-loop",
     "lang-resolution/typescript-member-calls",

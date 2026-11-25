@@ -65,7 +65,9 @@ function graphReport(graph, boundCalls, inventory, methodFacts) {
       const to = graph.getNode(edge.targetId);
       assert.ok(from && to, 'Unpublished endpoint: ' + edge.id);
       const target = graphIdentity(to);
-      result[relation].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
+      const kind =
+        relation === 'CALLS' && to.label === 'Property' ? 'CALLABLE_PROPERTIES' : relation;
+      result[kind].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
       if (relation === 'CALLS' || relation === 'USES') {
         const prefix = 'rel:' + relation + ':' + edge.sourceId + '->' + edge.targetId + ':';
         const span =
@@ -74,11 +76,11 @@ function graphReport(graph, boundCalls, inventory, methodFacts) {
           span &&
           span[1] !== span[2] &&
           !(
-            relation === 'CALLS' &&
+            kind === 'CALLS' &&
             boundRanges.has(JSON.stringify([from.properties.filePath, span[1], span[2]]))
           )
         ) {
-          result[relation].sites.push({
+          result[kind].sites.push({
             file: from.properties.filePath,
             start: span[1],
             end: span[2],

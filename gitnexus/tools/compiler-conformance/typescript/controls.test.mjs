@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compareReports } from '../compare.mjs';
@@ -9,6 +10,27 @@ const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('a JSX member and the function it invokes have different declarations at the same site', () => {
+  const fixture = 'lang-resolution/typescript-jsx-as-call';
+  const diagnostics = JSON.parse(
+    readFileSync(new URL('./diagnostics.json', import.meta.url), 'utf8'),
+  );
+  const project = fileURLToPath(new URL('../../../test/fixtures/' + fixture, import.meta.url));
+  const report = compilerReport(project, diagnostics[fixture]);
+  assert.equal(report.CALLABLE_PROPERTIES.sites.length, 1);
+  const [property] = report.CALLABLE_PROPERTIES.sites;
+  const invocation = report.CALLS.sites.find(
+    (site) =>
+      site.file === property.file && site.start === property.start && site.end === property.end,
+  );
+  assert.ok(invocation);
+  assert.notEqual(property.target, invocation.target);
+  assert.throws(
+    () => compareReports({ sites: [property] }, { sites: [invocation] }),
+    /Missing from actual/,
+  );
+});
 
 test('swapping the two unchecked save calls disagrees with ECMAScript dispatch', () => {
   const fixture = fileURLToPath(

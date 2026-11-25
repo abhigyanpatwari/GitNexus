@@ -1,4 +1,9 @@
 {
+  "compiler-conformance/typescript-shadowed-receiver": [
+    "app.ts:10:17 TS7006",
+    "app.ts:16:36 TS7006",
+    "app.ts:5:20 TS7006"
+  ],
   "compiler-conformance/typescript-type-value-namespaces": [
     "erased.ts:2:37 TS1361",
     "erased.ts:3:31 TS1361"

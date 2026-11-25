@@ -20,6 +20,7 @@ export const graphRelations = [
 ];
 export const relations = [
   ...graphRelations,
+  'CALLABLE_PROPERTIES',
   'TYPE_PARAMETER_USES',
   'VARIABLE_READS',
   'DECLARATIONS',
@@ -231,6 +232,21 @@ function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFa
       }
     }
 
+    function call(node, callee) {
+      const caller = enclosingCaller(node);
+      const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
+      edge('CALLS', caller, selected, node);
+      if (callee.kind === SyntaxKind.PropertyAccessExpression) {
+        const member = symbolDeclaration(checker.getSymbolAtLocation(callee.name), project);
+        if (
+          member?.kind === SyntaxKind.ShorthandPropertyAssignment ||
+          member?.kind === SyntaxKind.PropertyAssignment
+        )
+          edge('CALLABLE_PROPERTIES', caller, member, node);
+      }
+      return selected;
+    }
+
     function isMethod(node) {
       return (
         node?.kind === SyntaxKind.MethodDeclaration || node?.kind === SyntaxKind.MethodSignature
@@ -436,8 +452,7 @@ function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFa
         if (node.expression.kind === SyntaxKind.ImportKeyword && node.arguments.length) {
           edge('IMPORTS', node.getSourceFile(), importedDeclaration(node.arguments[0]));
         }
-        const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
-        edge('CALLS', enclosingCaller(node), selected, node);
+        const selected = call(node, node.expression);
         if (runtime && !selected && node.expression.kind === SyntaxKind.PropertyAccessExpression) {
           const source = node.getSourceFile();
           const start = source.getLineAndCharacterOfPosition(node.getStart());
@@ -454,8 +469,7 @@ function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFa
         node.kind === SyntaxKind.JsxOpeningElement ||
         node.kind === SyntaxKind.JsxSelfClosingElement
       ) {
-        const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
-        edge('CALLS', enclosingCaller(node), selected, node);
+        call(node, node.tagName);
       }
       if (node.kind === SyntaxKind.TypeReference) {
         const name = checker.getSymbolAtLocation(node.typeName);
