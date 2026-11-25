@@ -27,7 +27,7 @@
     "@sigma/edge-curve": "^3.1.0",
     "@tailwindcss/vite": "^4.3.5",
     "axios": "^1.20.0",
-    "d3": "^7.9.0",
+    "d3": "^7.9.2",
     "dompurify": "^3.4.17",
     "gitnexus-shared": "file:../gitnexus-shared",
     "graphology": "^0.26.0",
