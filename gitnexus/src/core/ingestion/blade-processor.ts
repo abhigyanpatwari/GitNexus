@@ -25,15 +25,28 @@ import type { KnowledgeGraph } from '../graph/types.js';
 const VIEWS_DIR = 'resources/views/';
 const BLADE_EXTENSION = '.blade.php';
 
-/** Directives whose FIRST argument is a view name. `(?<!@)` skips `@@include`, Blade's escape for literal text. */
-const FIRST_ARG_DIRECTIVE_RE =
-  /(?<!@)@(?:extends|include|includeIf|component|each)\s*\(\s*(['"])([^'"]+)\1/g;
-/** Directives whose SECOND argument is a view name; the first is a condition. */
-const SECOND_ARG_DIRECTIVE_RE =
-  /(?<!@)@(?:includeWhen|includeUnless)\s*\([^,]*,\s*(['"])([^'"]+)\1/g;
-/** `@includeFirst([...])` renders the first view that exists, so every listed view is a dependency. */
-const INCLUDE_FIRST_RE = /(?<!@)@includeFirst\s*\(\s*\[([^\]]*)\]/g;
+/** A view directive and its opening parenthesis. `(?<!@)` skips `@@include`, Blade's escape for literal text. */
+const VIEW_DIRECTIVE_RE =
+  /(?<!@)@(extends|includeIf|includeWhen|includeUnless|includeFirst|include|component|each)\s*\(/g;
+/**
+ * Which argument holds the view name. `@includeWhen` / `@includeUnless` take a
+ * condition first. `@includeFirst` takes an array, and every listed view is a
+ * dependency because whichever exists first is rendered.
+ */
+const VIEW_ARGUMENT_INDEX: Readonly<Record<string, number>> = {
+  extends: 0,
+  include: 0,
+  includeIf: 0,
+  includeFirst: 0,
+  component: 0,
+  each: 0,
+  includeWhen: 1,
+  includeUnless: 1,
+};
+const STRING_LITERAL_RE = /^(['"])([^'"]*)\1$/;
 const QUOTED_STRING_RE = /(['"])([^'"]+)\1/g;
+const OPENERS = '([{';
+const CLOSERS = ')]}';
 /** Anonymous component tags. `x-slot` and `x-dynamic-component` are Blade built-ins, not files. */
 const COMPONENT_TAG_RE = /<x-([a-z0-9][\w.-]*)/gi;
 const BUILT_IN_COMPONENT_TAGS = new Set(['slot', 'dynamic-component']);
@@ -47,6 +60,46 @@ interface BladeFile {
   content: string;
 }
 
+/**
+ * Split a directive's arguments, starting just after its `(`, on the commas
+ * that are not inside brackets or quotes, so `in_array($a, $b)` stays one
+ * argument. Returns null when the closing `)` is missing.
+ */
+export const splitDirectiveArguments = (text: string, start: number): string[] | null => {
+  const args: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let current = '';
+
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (quote !== null) {
+      current += ch;
+      if (ch === '\\') current += text[++i] ?? '';
+      else if (ch === quote) quote = null;
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+    } else if (OPENERS.includes(ch)) {
+      depth++;
+      current += ch;
+    } else if (CLOSERS.includes(ch)) {
+      if (depth === 0) {
+        args.push(current.trim());
+        return args;
+      }
+      depth--;
+      current += ch;
+    } else if (ch === ',' && depth === 0) {
+      args.push(current.trim());
+      current = '';
+    } else {
+      current += ch;
+    }
+  }
+  return null;
+};
+
 /** Every view name the template names. Exported for unit tests. */
 export const extractBladeViewReferences = (
   content: string,
@@ -55,10 +108,16 @@ export const extractBladeViewReferences = (
   const views: string[] = [];
   const components: string[] = [];
 
-  for (const match of text.matchAll(FIRST_ARG_DIRECTIVE_RE)) views.push(match[2]);
-  for (const match of text.matchAll(SECOND_ARG_DIRECTIVE_RE)) views.push(match[2]);
-  for (const match of text.matchAll(INCLUDE_FIRST_RE)) {
-    for (const item of match[1].matchAll(QUOTED_STRING_RE)) views.push(item[2]);
+  for (const match of text.matchAll(VIEW_DIRECTIVE_RE)) {
+    const args = splitDirectiveArguments(text, match.index + match[0].length);
+    const arg = args?.[VIEW_ARGUMENT_INDEX[match[1]]];
+    if (arg === undefined) continue;
+    if (match[1] === 'includeFirst') {
+      for (const item of arg.matchAll(QUOTED_STRING_RE)) views.push(item[2]);
+    } else {
+      const literal = STRING_LITERAL_RE.exec(arg);
+      if (literal) views.push(literal[2]);
+    }
   }
   for (const match of text.matchAll(COMPONENT_TAG_RE)) {
     if (!BUILT_IN_COMPONENT_TAGS.has(match[1].toLowerCase())) components.push(match[1]);

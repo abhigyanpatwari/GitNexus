@@ -32,6 +32,17 @@ describe('extractBladeViewReferences', () => {
     ]);
   });
 
+  it('keeps commas inside a condition or data array out of the argument split', () => {
+    const { views } = extractBladeViewReferences(`
+@includeWhen(in_array($item, $items), 'partials.item')
+@includeUnless(str_contains($title, ','), "partials.plain", ['a' => f(1, 2)])
+@include('partials.card', ['tags' => implode(', ', $tags)])
+@includeWhen($open, $dynamicView)
+@include('partials.unclosed'
+`);
+    expect(views).toEqual(['partials.item', 'partials.plain', 'partials.card']);
+  });
+
   it('reads anonymous component tags and ignores Blade built-in tags', () => {
     const { components } = extractBladeViewReferences(
       `<x-alert type="error"><x-slot name="title">Hi</x-slot></x-alert>
