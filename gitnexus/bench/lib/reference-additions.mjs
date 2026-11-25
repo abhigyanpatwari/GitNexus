@@ -14,6 +14,16 @@ export function expectedReferenceAdditions(revision) {
   return Object.hasOwn(manifest, revision) ? manifest[revision] : undefined;
 }
 
+/** Check every node field when a pinned compiler comparison adds declaration positions. */
+export function assertSemanticNodes(revision, baseline, candidate) {
+  const expected = expectedReferenceAdditions(revision)?.declarationPositions;
+  if (expected) {
+    assert.deepEqual({ baseline, candidate }, expected, 'Unexpected declaration positions');
+  } else {
+    assert.deepEqual(candidate, baseline, 'Semantic nodes differ');
+  }
+}
+
 /** Both the parity producer and the performance checker require the same evidence. */
 export function assertReferenceAdditionReceipt(revision, receipt, edgeDelta) {
   const expected = expectedReferenceAdditions(revision);

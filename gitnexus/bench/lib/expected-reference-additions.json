@@ -25,7 +25,17 @@
     }
   },
   "4db60ff34b782fb7818221a9f8d4e6837e1a504a:9c78863c80c71f87db2d303f7342fca24e50db0e": {
-    "_note": "#4084: TypeScript confirms the target declarations for 3,690 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The replaced rows are the 27 former IMPLEMENTS edges and two type references with revised confidence.",
+    "_note": "#4084: The compiler confirms 12,545 new property declaration columns and the targets of 3,690 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The replaced rows are the 27 former IMPLEMENTS edges and two type references with revised confidence.",
+    "declarationPositions": {
+      "baseline": {
+        "count": 27089,
+        "sha256": "452016828cd8c34435dbe65caf452765d69684c21a8c7f5417cce7d109a6deda"
+      },
+      "candidate": {
+        "count": 27089,
+        "sha256": "b849a8c34a05ba7593c20cdf35428821d84bb3823e243308f965679d34dd942a"
+      }
+    },
     "additions": {
       "count": 3791,
       "sha256": "7fc9d8df8af7b94651904a361bf4ff9e037b096cdc007cdd0f3b6123c2dabb19"

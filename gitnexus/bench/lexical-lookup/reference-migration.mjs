@@ -7,6 +7,7 @@ import tsGrammar from 'tree-sitter-typescript';
 import jsGrammar from 'tree-sitter-javascript';
 import {
   assertReferenceAdditionReceipt,
+  assertSemanticNodes,
   expectedReferenceAdditions,
 } from '../lib/reference-additions.mjs';
 
@@ -120,7 +121,7 @@ function sitesAt(source, file, line, col) {
 
 /** Compare exact graphs with independently checked reference changes on pinned corpora. */
 export function assertGraphParity(before, after, repo, revision) {
-  assert.deepEqual(after.graph.nodes, before.graph.nodes, 'Semantic nodes differ');
+  assertSemanticNodes(revision, before.graph.nodes, after.graph.nodes);
   if (
     before.graph.edges.count === after.graph.edges.count &&
     before.graph.edges.sha256 === after.graph.edges.sha256
