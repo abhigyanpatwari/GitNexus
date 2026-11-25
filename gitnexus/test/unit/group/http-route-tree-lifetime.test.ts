@@ -574,6 +574,47 @@ describe('HTTP source scan tree lifetime', () => {
     ).rejects.toMatchObject({ name: 'DataCloneError' });
   });
 
+  it('keeps no file source alive through the cached scan detections', async () => {
+    // One detection per file, whose path V8 slices from the file's source, and
+    // only the padding around it grows between the two runs.
+    const FILES = 16;
+    const LARGE_PAD = 1024 * 1024;
+    const projectScan = getPluginForFile('x.ts')?.projectScan;
+    if (!projectScan) throw new Error('expected the JS/TS project scan');
+    const heapAtResolve = async (padChars: number): Promise<number> => {
+      const root = fs.mkdtempSync(path.join(tmpDir, 'pad-'));
+      for (let i = 0; i < FILES; i++) {
+        write(
+          root,
+          `src/c${i}.ts`,
+          `// ${'x'.repeat(padChars)}\nexport const load${i} = () => fetch('/api/customer/preferences${i}');\n`,
+        );
+      }
+      // Every scanned file is cached by then; `liveTrees` runs a full GC.
+      let atResolve = 0;
+      const resolve = projectScan.resolve;
+      projectScan.resolve = (...args) => {
+        liveTrees();
+        atResolve = process.memoryUsage().heapUsed;
+        return resolve.apply(projectScan, args);
+      };
+      try {
+        liveTrees();
+        const before = process.memoryUsage().heapUsed;
+        const contracts = await new HttpRouteExtractor().extract(null, root, makeRepo(root));
+        expect(contracts).toHaveLength(FILES);
+        return atResolve - before;
+      } finally {
+        projectScan.resolve = resolve;
+      }
+    };
+
+    const small = await heapAtResolve(1024);
+    const large = await heapAtResolve(LARGE_PAD);
+    // The large run reads 16 MB more source; the detections must keep none of it.
+    expect(large - small).toBeLessThan((FILES * LARGE_PAD) / 4);
+  });
+
   it('keeps no scope view in the JS/TS project facts', () => {
     const plugin = getPluginForFile('x.ts');
     if (!plugin?.projectScan) throw new Error('expected the JS/TS project scan');

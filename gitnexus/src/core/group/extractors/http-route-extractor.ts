@@ -525,9 +525,10 @@ export class HttpRouteExtractor implements ContractExtractor {
 
     // Parse one file, run its plugin's `scan` and, inside a project-scan pass,
     // the family's `collect`. Synchronous so that the tree is unreachable as
-    // soon as this returns. The facts go through `structuredClone`: it throws
-    // if a plugin leaks a tree or a syntax node into them, and it copies
-    // strings sliced from the file's source so they do not keep it alive.
+    // soon as this returns. The detections and facts outlive the file, so both
+    // go through `structuredClone`: it throws if a plugin leaks a tree or a
+    // syntax node into them, and it copies strings sliced from the file's
+    // source so they do not keep it alive.
     const parseAndScan = (
       plugin: HttpLanguagePlugin,
       rel: string,
@@ -543,7 +544,7 @@ export class HttpRouteExtractor implements ContractExtractor {
       } catch {
         return null;
       }
-      ownDetections.set(rel, plugin.scan(tree, repoContext, rel));
+      ownDetections.set(rel, structuredClone(plugin.scan(tree, repoContext, rel)));
       return {
         facts: projectScan
           ? structuredClone(projectScan.collect({ filePath: rel, tree }, repoContext))
