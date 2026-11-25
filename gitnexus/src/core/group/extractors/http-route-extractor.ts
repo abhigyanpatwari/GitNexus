@@ -611,17 +611,27 @@ export class HttpRouteExtractor implements ContractExtractor {
       files: string[],
       onlyScan?: HttpProjectScan,
     ): Promise<void> => {
-      const byScan = new Map<HttpProjectScan, { facts: unknown[]; repoContext: unknown }>();
+      const byScan = new Map<
+        HttpProjectScan,
+        { facts: unknown[]; repoContext: unknown; plugins: Set<string> }
+      >();
       for (const rel of files) {
-        const projectScan = getPluginForFile(rel)?.projectScan;
+        const plugin = getPluginForFile(rel);
+        const projectScan = plugin?.projectScan;
         if (
+          !plugin ||
           !projectScan ||
           completedProjectScans.has(projectScan) ||
           (onlyScan && onlyScan !== projectScan)
         )
           continue;
-        const family = byScan.get(projectScan) ?? { facts: [], repoContext: undefined };
+        const family = byScan.get(projectScan) ?? {
+          facts: [],
+          repoContext: undefined,
+          plugins: new Set<string>(),
+        };
         byScan.set(projectScan, family);
+        family.plugins.add(plugin.name);
         if (ownDetections.has(rel)) continue;
         const analyzed = await analyzeFile(rel, projectScan);
         if (!analyzed) continue;
@@ -632,10 +642,19 @@ export class HttpRouteExtractor implements ContractExtractor {
 
       // Shared project-scan identity pools grammar variants without teaching
       // the orchestrator which languages belong to the same project family.
-      for (const [projectScan, { facts, repoContext }] of byScan) {
+      for (const [projectScan, { facts, repoContext, plugins }] of byScan) {
         completedProjectScans.add(projectScan);
         if (facts.length === 0) continue;
-        const results = projectScan.resolve(facts, repoContext);
+        let results: ReturnType<HttpProjectScan['resolve']>;
+        try {
+          results = projectScan.resolve(facts, repoContext);
+        } catch (err) {
+          // Fails the extraction, as before, naming the family's plugins.
+          const reason = err instanceof Error ? err.message : String(err);
+          throw new Error(`HTTP project scan of ${[...plugins].join(', ')} failed: ${reason}`, {
+            cause: err,
+          });
+        }
         for (const result of results) {
           const key = normalizeRepoRelPath(result.filePath);
           const existing = projectDetections.get(key) ?? [];

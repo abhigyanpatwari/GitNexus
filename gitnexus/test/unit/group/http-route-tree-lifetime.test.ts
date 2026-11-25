@@ -811,6 +811,27 @@ describe('HTTP source scan tree lifetime', () => {
     expect(large - small).toBeLessThan((FILES * LARGE_PAD) / 4);
   });
 
+  it('names the plugins of a project scan whose resolve throws', async () => {
+    writeMixedFixture(tmpDir);
+    const plugin = getPluginForFile('x.java');
+    const projectScan = plugin?.projectScan;
+    if (!projectScan) throw new Error('expected the Java project scan');
+    const cause = new Error('resolve failed (test)');
+    vi.spyOn(projectScan, 'resolve').mockImplementation(() => {
+      throw cause;
+    });
+
+    const failure = await new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir)).then(
+      () => null,
+      (err: unknown) => err,
+    );
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      `HTTP project scan of ${plugin?.name} failed: resolve failed (test)`,
+    );
+    expect((failure as Error).cause).toBe(cause);
+  });
+
   it('keeps no scope view in the JS/TS project facts', () => {
     const plugin = getPluginForFile('x.ts');
     if (!plugin?.projectScan) throw new Error('expected the JS/TS project scan');
