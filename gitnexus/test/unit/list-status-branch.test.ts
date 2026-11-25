@@ -157,6 +157,86 @@ describe('list branch rendering (#2106)', () => {
   });
 });
 
+describe('list --json (#1533)', () => {
+  it('emits one parseable document mapping each on-disk path to its registry name', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([
+      {
+        name: 'helix-db',
+        path: '/app/data/repos/HelixDB__helix-db',
+        storagePath: '/app/data/repos/HelixDB__helix-db/.gitnexus',
+        indexedAt: '2026-06-10T12:00:00.000Z',
+        lastCommit: 'b776c7b0',
+        branch: 'main',
+        remoteUrl: 'https://github.com/HelixDB/helix-db.git',
+        branches: [
+          { branch: 'feature/x', indexedAt: '2026-06-10T13:00:00.000Z', lastCommit: 'bbbbbbb2' },
+        ],
+        stats: { files: 1, nodes: 2, edges: 3 },
+        shareOptOut: true,
+        discovery: { internal: true },
+      },
+    ]);
+
+    await listCommand({ json: true });
+
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    const parsed = JSON.parse(output());
+    expect(parsed).toEqual({
+      schemaVersion: 1,
+      repositories: [
+        {
+          name: 'helix-db',
+          path: '/app/data/repos/HelixDB__helix-db',
+          storagePath: '/app/data/repos/HelixDB__helix-db/.gitnexus',
+          indexedAt: '2026-06-10T12:00:00.000Z',
+          lastCommit: 'b776c7b0',
+          branch: 'main',
+          remoteUrl: 'https://github.com/HelixDB/helix-db.git',
+          stats: { files: 1, nodes: 2, edges: 3 },
+          branches: [
+            {
+              branch: 'feature/x',
+              indexedAt: '2026-06-10T13:00:00.000Z',
+              lastCommit: 'bbbbbbb2',
+              stats: {},
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('fills absent optional fields with stable defaults', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([
+      {
+        name: 'solo',
+        path: '/solo',
+        storagePath: '/solo/.gitnexus',
+        indexedAt: '2026-06-10T12:00:00.000Z',
+        lastCommit: 'ccccccc3',
+      },
+    ]);
+
+    await listCommand({ json: true });
+
+    expect(JSON.parse(output()).repositories[0]).toMatchObject({
+      branch: null,
+      remoteUrl: null,
+      stats: {},
+      branches: [],
+    });
+  });
+
+  it('emits an empty repositories array instead of the human hint when nothing is indexed', async () => {
+    (listRegisteredRepos as any).mockResolvedValue([]);
+
+    await listCommand({ json: true });
+
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(output())).toEqual({ schemaVersion: 1, repositories: [] });
+  });
+});
+
 describe('status branch rendering (#2106)', () => {
   const baseRepo = {
     repoPath: '/repo',

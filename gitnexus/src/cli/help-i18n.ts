@@ -96,6 +96,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'serve|-p, --port <port>': 'help.option.port',
   'serve|--host <host>': 'help.option.serve.host',
   'status|--json': 'help.option.status.json',
+  'list|--json': 'help.option.list.json',
   'uninstall|-f, --force': 'help.option.uninstall.force',
   'clean|-f, --force': 'help.option.force.confirmation',
   'clean|--all': 'help.option.clean.all',

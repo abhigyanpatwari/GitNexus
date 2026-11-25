@@ -389,6 +389,7 @@ export const zhCN = {
     '跳过通配符服务匹配，仅按契约 ID 精确匹配建立跨仓链接（清单声明的链接仍然生效）',
   'help.option.group.sync.verbose': '显示额外的同步诊断信息',
   'help.option.status.json': '输出机器可读的索引和分析器来源信息',
+  'help.option.list.json': '输出机器可读的 JSON（每个仓库的名称、路径、存储位置、提交和统计信息）',
   'help.option.json': 'JSON 输出',
   'help.option.group.impact.target': '要分析的符号或文件名',
   'help.option.group.impact.repo': 'group.yaml 中的成员路径（如 app/backend），不是已索引仓库名称',

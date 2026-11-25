@@ -4,11 +4,44 @@
  * Shows all indexed repositories from the global registry.
  */
 
-import { listRegisteredRepos } from '../storage/repo-manager.js';
+import { listRegisteredRepos, type RegistryEntry } from '../storage/repo-manager.js';
 import { t } from './i18n/index.js';
 
-export const listCommand = async () => {
+export interface ListOptions {
+  /** Emit the registry as machine-readable JSON instead of formatted text (#1533). */
+  json?: boolean;
+}
+
+/**
+ * Stable `list --json` row. Fields are picked explicitly so internal registry
+ * bookkeeping (e.g. discovery evidence, share opt-out) never leaks into the
+ * contract; optional values are `null` rather than absent so consumers can
+ * rely on every key being present.
+ */
+const toJsonRow = (entry: RegistryEntry) => ({
+  name: entry.name,
+  path: entry.path,
+  storagePath: entry.storagePath,
+  indexedAt: entry.indexedAt,
+  lastCommit: entry.lastCommit,
+  branch: entry.branch ?? null,
+  remoteUrl: entry.remoteUrl ?? null,
+  stats: entry.stats ?? {},
+  branches: (entry.branches ?? []).map((b) => ({
+    branch: b.branch,
+    indexedAt: b.indexedAt,
+    lastCommit: b.lastCommit,
+    stats: b.stats ?? {},
+  })),
+});
+
+export const listCommand = async (options: ListOptions = {}) => {
   const entries = await listRegisteredRepos({ validate: true });
+
+  if (options.json) {
+    console.log(JSON.stringify({ schemaVersion: 1, repositories: entries.map(toJsonRow) }));
+    return;
+  }
 
   if (entries.length === 0) {
     console.log(t('common.notIndexed'));

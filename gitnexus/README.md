@@ -307,6 +307,7 @@ gitnexus mcp                     # Start MCP server (stdio) — serves all index
 gitnexus serve                   # Start local HTTP server (multi-repo) for web UI
 gitnexus index                   # Register an existing .gitnexus/ folder into the global registry
 gitnexus list                    # List all indexed repositories
+gitnexus list --json             # Same as JSON on stdout (name, path, storagePath, commit, stats) for scripts
 gitnexus status                  # Show index status for current repo
 gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes

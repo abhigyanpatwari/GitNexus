@@ -429,6 +429,8 @@ export const en = {
     'Skip wildcard service matching; cross-link on exact contract-id match only (manifest links still apply)',
   'help.option.group.sync.verbose': 'Show additional sync diagnostics',
   'help.option.status.json': 'Emit machine-readable index and analyzer provenance',
+  'help.option.list.json':
+    'Emit machine-readable JSON (name, path, storage, commit, stats per repo)',
   'help.option.json': 'JSON output',
   'help.option.group.impact.target': 'Symbol or file name to analyze',
   'help.option.group.impact.repo':
