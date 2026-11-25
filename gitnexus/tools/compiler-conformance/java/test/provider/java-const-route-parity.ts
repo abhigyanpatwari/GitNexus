@@ -41,8 +41,8 @@ const parseSource = (p: Parser, src: string): Parser.Tree => {
 const parse = (src: string): Parser.Tree => parseSource(parser, src);
 
 /** Group side: prepareRepo + a 3-argument scan over every .java file. */
-function groupProviders(files: Record<string, string>): string[] {
-  const ctx = JAVA_HTTP_PLUGIN.prepareRepo?.({
+async function groupProviders(files: Record<string, string>): Promise<string[]> {
+  const ctx = await JAVA_HTTP_PLUGIN.prepareRepo?.({
     repoPath: '/repo',
     files: Object.keys(files),
     parser: new Parser(),
@@ -92,7 +92,7 @@ public class ApiPaths {
 }`;
 
 describe('Java constant-valued routes: group ↔ ingestion parity (#2980)', () => {
-  it('resolves a constant-valued mapping to the same path on both sides', () => {
+  it('resolves a constant-valued mapping to the same path on both sides', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -102,11 +102,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), ['GET /api/v1/orders']);
-    assert.deepEqual(ingestionRoutes(files), groupProviders(files));
+    assert.deepEqual(await groupProviders(files), ['GET /api/v1/orders']);
+    assert.deepEqual(ingestionRoutes(files), await groupProviders(files));
   });
 
-  it('suppresses the method route under a CONSTANT class prefix on both sides', () => {
+  it('suppresses the method route under a CONSTANT class prefix on both sides', async () => {
     // The class prefix needs the repo-wide constant map, which does not exist
     // at extraction time on either side. Emitting the method route would drop
     // the prefix and publish `GET /api/v1/orders`-without-its-base — a path the
@@ -125,11 +125,11 @@ public class OrderController {
   public void literal() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), []);
+    assert.deepEqual(await groupProviders(files), []);
     assert.deepEqual(ingestionRoutes(files), []);
   });
 
-  it('still applies a LITERAL class prefix', () => {
+  it('still applies a LITERAL class prefix', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -140,7 +140,7 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), ['GET /api/v1/orders']);
+    assert.deepEqual(await groupProviders(files), ['GET /api/v1/orders']);
     assert.deepEqual(ingestionRoutes(files), ['GET /api/v1/orders']);
   });
 
@@ -160,7 +160,7 @@ public class OrderController {
     );
   });
 
-  it('suppresses a NO-ARGUMENT mapping under a constant class prefix on both sides', () => {
+  it('suppresses a NO-ARGUMENT mapping under a constant class prefix on both sides', async () => {
     // A bare `@GetMapping` IS the class prefix, so an unfoldable class prefix
     // leaves nothing to emit. Ingestion routes these through a separate loop
     // from the path-carrying ones, and that loop needs the same guard — without
@@ -176,10 +176,10 @@ public class OrderController {
 }`,
     };
     assert.deepEqual(ingestionRoutes(files), []);
-    assert.deepEqual(groupProviders(files), []);
+    assert.deepEqual(await groupProviders(files), []);
   });
 
-  it('measures import ambiguity over the same candidate set on both sides', () => {
+  it('measures import ambiguity over the same candidate set on both sides', async () => {
     // Ingestion's harvest gate also admits import-only files, so its repo map is
     // a superset of the group's. When ambiguity was measured over every key, a
     // duplicate FQN belonging to a class that defines NOTHING was invisible to
@@ -205,11 +205,11 @@ public class OrderController {
       javaProvider.moduleConstantHeuristic?.(src),
     ).length;
     assert.equal(ingestionKeys, 3);
-    assert.deepEqual(groupProviders(files), ['GET /api/v1/orders']);
+    assert.deepEqual(await groupProviders(files), ['GET /api/v1/orders']);
     assert.deepEqual(ingestionRoutes(files), ['GET /api/v1/orders']);
   });
 
-  it('resolves a wildcard-static-imported mapping on both sides', () => {
+  it('resolves a wildcard-static-imported mapping on both sides', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -220,11 +220,11 @@ public class OrderController {
 }`,
     };
     assert.equal(javaProvider.moduleConstantHeuristic?.(files[CTL]), true);
-    assert.deepEqual(groupProviders(files), ['GET /api/v1/orders']);
-    assert.deepEqual(ingestionRoutes(files), groupProviders(files));
+    assert.deepEqual(await groupProviders(files), ['GET /api/v1/orders']);
+    assert.deepEqual(ingestionRoutes(files), await groupProviders(files));
   });
 
-  it('keeps an unfoldable local field above a wildcard member on both sides', () => {
+  it('keeps an unfoldable local field above a wildcard member on both sides', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -235,11 +235,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), []);
+    assert.deepEqual(await groupProviders(files), []);
     assert.deepEqual(ingestionRoutes(files), []);
   });
 
-  it('imports only members owned by the wildcard target type on both sides', () => {
+  it('imports only members owned by the wildcard target type on both sides', async () => {
     const files = {
       [CONSTS]: `package com.example;
 public class ApiPaths { public static final String ORDERS = "/right"; }
@@ -251,11 +251,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), ['GET /right']);
+    assert.deepEqual(await groupProviders(files), ['GET /right']);
     assert.deepEqual(ingestionRoutes(files), ['GET /right']);
   });
 
-  it('floors duplicate wildcard members on both sides', () => {
+  it('floors duplicate wildcard members on both sides', async () => {
     const files = {
       'src/main/java/a/A.java': `package a;
 public class A { public static final String ROUTE = "/a"; }`,
@@ -269,11 +269,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), []);
+    assert.deepEqual(await groupProviders(files), []);
     assert.deepEqual(ingestionRoutes(files), []);
   });
 
-  it('does not fold a type-qualified ref from a static wildcard alone', () => {
+  it('does not fold a type-qualified ref from a static wildcard alone', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -283,11 +283,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), []);
+    assert.deepEqual(await groupProviders(files), []);
     assert.deepEqual(ingestionRoutes(files), []);
   });
 
-  it('leaves literal routes unchanged with no constant map at all', () => {
+  it('leaves literal routes unchanged with no constant map at all', async () => {
     const files = {
       [CTL]: `package com.example;
 public class OrderController {
@@ -295,7 +295,7 @@ public class OrderController {
   public void create() {}
 }`,
     };
-    assert.deepEqual(groupProviders(files), ['POST /api/v1/orders']);
+    assert.deepEqual(await groupProviders(files), ['POST /api/v1/orders']);
     assert.deepEqual(ingestionRoutes(files), ['POST /api/v1/orders']);
   });
 });

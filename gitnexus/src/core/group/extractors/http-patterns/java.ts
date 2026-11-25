@@ -1,5 +1,6 @@
 import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
+import { createTreeReleaser } from '../../../tree-sitter/native-tree-release.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -47,12 +48,7 @@ import {
   httpClientUriRootsAtNewBuilder,
   httpClientChainHasUriCall,
 } from './java-static-path.js';
-import type {
-  HttpDetection,
-  HttpFileDetections,
-  HttpLanguagePlugin,
-  HttpScanInput,
-} from './types.js';
+import type { HttpDetection, HttpLanguagePlugin, HttpProjectScan } from './types.js';
 
 /**
  * Java HTTP plugin. Handles:
@@ -849,11 +845,10 @@ function collectSpringTypes(filePath: string, tree: Parser.Tree): SharedSpringTy
 // The interface-based-controller inheritance algorithm is shared with kotlin.ts
 // (`scanSpringInheritanceProject`); this collects the `SharedSpringType` view and
 // delegates so Java and Kotlin emit byte-identical provider contracts.
-function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[] {
-  return scanSpringInheritanceProject(
-    files.flatMap((file) => collectSpringTypes(file.filePath, file.tree)),
-  );
-}
+const JAVA_PROJECT_SCAN: HttpProjectScan<SharedSpringType[]> = {
+  collect: ({ filePath, tree }) => collectSpringTypes(filePath, tree),
+  resolve: (facts) => scanSpringInheritanceProject(facts.flat()),
+};
 
 export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'java-http',
@@ -882,7 +877,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       content,
     );
   },
-  prepareRepo(args) {
+  async prepareRepo(args) {
     // Build the repo-wide Java string-constant map once per extract() run
     // (mirrors the Python binding's cost-gated pre-pass). A cheap content
     // gate keeps literal-only repos at zero parses: only files containing a
@@ -900,6 +895,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       string,
       import('../../../ingestion/route-extractors/constant-resolver.js').ModuleConstants
     >();
+    const releaseTrees = args.releaseTrees ?? createTreeReleaser();
     for (const rel of args.files) {
       if (!rel.endsWith('.java')) continue;
       try {
@@ -920,9 +916,13 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         if (!src || !isJavaConstantFile(src)) {
           continue;
         }
+        // Lets the previous iterations' dropped trees be freed.
+        await releaseTrees();
         const tree = args.parseSource(args.parser, src);
         if (!tree) continue;
-        const mc = extractJavaModuleConstants(tree);
+        // The context outlives this file; the clone copies the strings sliced
+        // from its source, so they do not keep the whole source alive.
+        const mc = structuredClone(extractJavaModuleConstants(tree));
         if (
           mc.literals.size > 0 ||
           mc.exprs.size > 0 ||
@@ -971,7 +971,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // *consumer* (it describes a remote call); the same annotation inside a
     // class is a Spring *provider*. A mapping on a non-Feign interface has no
     // enclosing class and is dropped here — interface→controller inheritance is
-    // handled by `scanProject`.
+    // handled by `projectScan`.
     // Lazy per-file constants view. prepareRepo only indexes constant-
     // DEFINING files (cheap gate); an importing controller is absent from
     // that map. When a route actually references a constant, extract THIS
@@ -1289,5 +1289,5 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
 
     return out;
   },
-  scanProject: scanSpringProject,
+  projectScan: JAVA_PROJECT_SCAN,
 };

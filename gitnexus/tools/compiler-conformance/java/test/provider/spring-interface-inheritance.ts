@@ -22,6 +22,7 @@ import {
 } from '../../../../../src/core/ingestion/route-extractors/spring.js';
 import { resolveInheritedSpringRoutes } from '../../../../../src/core/ingestion/route-extractors/spring-shared.js';
 import { JAVA_HTTP_PLUGIN } from '../../../../../src/core/group/extractors/http-patterns/java.js';
+import { runProjectScan } from '../../../../../test/helpers/run-project-scan.js';
 
 function parse(src: string): Parser.Tree {
   const p = new Parser();
@@ -48,7 +49,7 @@ function ingestionInheritedKeys(files: Array<{ path: string; src: string }>): Se
 function groupInheritedKeys(files: Array<{ path: string; src: string }>): Set<string> {
   const inputs = files.map((f) => ({ filePath: f.path, tree: parse(f.src) }));
   const out = new Set<string>();
-  for (const fileDet of JAVA_HTTP_PLUGIN.scanProject?.(inputs) ?? []) {
+  for (const fileDet of runProjectScan(JAVA_HTTP_PLUGIN, inputs)) {
     for (const d of fileDet.detections) {
       if (d.role === 'provider') out.add(`${d.method} ${d.path}`);
     }
@@ -168,7 +169,7 @@ public class C {
   });
 });
 
-describe('Spring interface-inheritance parity — ingestion vs group scanProject (#2078)', () => {
+describe('Spring interface-inheritance parity — ingestion vs group projectScan (#2078)', () => {
   // The strongest anti-drift guard: the same fixture must yield the same
   // inherited provider routes from the ingestion cross-file pass and the group
   // project-level scan. Both call the shared resolveInheritedSpringRoutes, so

@@ -276,6 +276,9 @@ const LBUG_NATIVE = [
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/group/graphql-resolve-symbol.test.ts',
+  // Group sync leases a real pool entry across extraction; the idle sweep and
+  // LRU eviction it guards against close native handles.
+  'test/integration/group/sync-extraction-lease.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/bm25-symbol-hydration.test.ts',
   'test/integration/local-backend-calltool.test.ts',
@@ -325,6 +328,9 @@ const SPAWN_CLI = [
   // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
   'test/unit/shard-timings-roundtrip.test.ts',
   'test/unit/run-cross-platform.test.ts',
+  // Spawns Node on the tree releaser's source (type stripping, file URLs) to
+  // check its real V8 nudge and the zero-fill flag spellings.
+  'test/unit/tree-sitter/native-tree-release.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',

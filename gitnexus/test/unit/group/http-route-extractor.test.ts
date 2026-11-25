@@ -3382,7 +3382,7 @@ interface PricingClient {
       'emits a provider for a class implementing a route interface (interface-based controller)',
       async () => {
         // One interface per file (real layout). Routes live on the interface; the
-        // @RestController override carries none → inherited via scanProject.
+        // @RestController override carries none → inherited via projectScan.
         const dir = path.join(tmpDir, 'kotlin-interface-based-controller');
         fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
         fs.writeFileSync(
