@@ -4,6 +4,7 @@ import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { createTreeReleaser } from '../../tree-sitter/native-tree-release.js';
 import {
   getPluginForFile,
   THRIFT_SCAN_GLOB,
@@ -303,6 +304,7 @@ export class ThriftExtractor implements ContractExtractor {
     });
 
     const parser = new Parser();
+    const releaseTrees = createTreeReleaser();
     for (const rel of sourceFiles) {
       const plugin = getPluginForFile(rel);
       if (!plugin) continue;
@@ -310,6 +312,8 @@ export class ThriftExtractor implements ContractExtractor {
       if (!content) continue;
 
       let detections: ThriftDetection[] = [];
+      // Lets the previous files' dropped trees be freed (see native-tree-release.ts).
+      await releaseTrees();
       try {
         parser.setLanguage(plugin.language);
         const tree = parseSourceSafe(parser, content);

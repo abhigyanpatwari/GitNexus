@@ -238,7 +238,7 @@ public class OrderController implements OrderApi {
     const dir = mkRepo({ 'OrderApi.java': IFACE, 'OrderController.java': CTRL });
     try {
       // Graph resolves only the controller-direct route; the inherited route is
-      // composed only by the group scanProject pass.
+      // composed only by the group projectScan pass.
       const out = await new HttpRouteExtractor().extract(
         makeDb([
           { file: 'OrderController.java', routePath: '/direct', method: 'GET', resolved: true },
