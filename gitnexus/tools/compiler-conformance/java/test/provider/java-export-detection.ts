@@ -4,6 +4,19 @@ import { javaExportChecker } from '../../../../../src/core/ingestion/languages/j
 import { getJavaParser } from '../../../../../src/core/ingestion/languages/java/query.js';
 
 describe('Java export detection', () => {
+  it('reads access from the text of methods and constructors without named children', (t) => {
+    const tree = getJavaParser().parse(
+      'class Box { public Box() {} public void open() {} void close() {} }',
+    );
+    const body = tree.rootNode.namedChildren[0]!.childForFieldName('body')!;
+    const exported = body.namedChildren.map((declaration) => {
+      const name = declaration.childForFieldName('name')!;
+      t.mock.getter(declaration, 'firstNamedChild', () => null);
+      return javaExportChecker(declaration, name.text);
+    });
+    assert.deepEqual(exported, [true, true, false]);
+  });
+
   it('does not scan sibling methods while checking a declaration', (t) => {
     const methods = Array.from({ length: 128 }, (_, i) => `void method${i}() {}`).join('\n');
     const tree = getJavaParser().parse(`class Wide { ${methods} }`);

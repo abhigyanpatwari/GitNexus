@@ -146,6 +146,40 @@ test('detects compiler-fixture projects through a directory, URL, or imported fi
   );
 });
 
+test('uses Node path rules to distinguish compiler fixtures from ordinary directories', () => {
+  const uses = javaFixtureUses(`
+    import path from 'node:path';
+    import { resolve as absolute } from 'node:path/posix';
+    import { win32 as windows } from 'path';
+    const project = '/projects/compiler-conformance/java-fixture';
+    absolute(project, '/work/ordinary');
+    path.posix.join(project, '/work/ordinary');
+    path.posix.resolve('/work', 'fixtures/java', '../go/Thing.go');
+    windows.resolve('C:/fixtures/java', 'D:/ordinary');
+    path.win32.resolve('C:/ordinary', 'D:/fixtures/java', 'input.txt');
+    const read = require('fs').readFileSync;
+    read(require('node:path/win32').join('D:/fixtures/java', '..', 'go/Thing.go'));
+    read(custom.resolve(project, 'ordinary.txt'));
+    const { resolve: fromWindows } = require('node:path').win32;
+    const unix = path.posix;
+    read(fromWindows('C:/ordinary', 'D:/src', 'Windows.java'));
+    read(unix.join('/src', 'Unix.java'));
+    function save(file) { require('node:fs').writeFileSync(file, 'data'); }
+    save(windows.join('D:/fixtures/java', 'readme.txt'));
+  `);
+  assert.deepEqual(
+    uses.map(({ method, path }) => [method, path]),
+    [
+      ['join', '/projects/compiler-conformance/java-fixture/work/ordinary'],
+      ['resolve', 'D:/fixtures/java/input.txt'],
+      ['readFileSync', 'D:/src/Windows.java'],
+      ['readFileSync', '/src/Unix.java'],
+      ['save', 'D:/fixtures/java/readme.txt'],
+      ['join', 'D:/fixtures/java/readme.txt'],
+    ],
+  );
+});
+
 test('follows constant project reader aliases in their declaration scope', () => {
   const uses = javaFixtureUses(`
     import { runPipelineFromRepo as analyze } from '../pipeline.js';

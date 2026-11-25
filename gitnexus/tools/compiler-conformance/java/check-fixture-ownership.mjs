@@ -87,10 +87,15 @@ function literal(node, bindings, seen = new Set()) {
     case 'NewExpression':
       return nameOf(node.callee) === 'URL' ? literal(node.arguments[0], bindings, seen) : '';
     case 'CallExpression': {
+      const op = nodePathExport(node.callee, bindings);
+      if (typeof op === 'function') {
+        const parts = node.arguments.map((n) => literal(n, bindings, seen));
+        // The scanner's working directory supplies no evidence about the test's paths.
+        if (op === path.posix.resolve || op === path.win32.resolve) return op('/', ...parts);
+        return op(...parts);
+      }
       const method =
         nameOf(node.callee.property) ?? nameOf(bindingFor(bindings, node.callee)?.imported);
-      if (['join', 'resolve'].includes(method))
-        return node.arguments.map((n) => literal(n, bindings, seen)).join('/');
       if (method === 'fileURLToPath' || node.callee.name === 'fileURLToPath')
         return literal(node.arguments[0], bindings, seen);
       return '';
@@ -137,7 +142,10 @@ function requiredModule(node, scope) {
   if (!owner || owner.imported) return undefined;
   const imported = node.property;
   if (node.computed && imported.type !== 'StringLiteral') return undefined;
-  return nameOf(imported) === 'promises' && /^(?:node:)?fs$/.test(owner.module)
+  const name = nameOf(imported);
+  if ((name === 'posix' || name === 'win32') && pathModule.test(owner.module))
+    return { module: 'node:path/' + name };
+  return name === 'promises' && /^(?:node:)?fs$/.test(owner.module)
     ? { module: owner.module + '/promises' }
     : { module: owner.module, imported };
 }
@@ -292,6 +300,32 @@ function callableBinding(scope, identifier) {
   return { name: identifier?.name, binding };
 }
 
+function pathMember(api, name) {
+  if (!api || typeof api === 'function') return undefined;
+  if (name === 'join' || name === 'resolve' || name === 'posix' || name === 'win32')
+    return api[name];
+  return undefined;
+}
+
+// Resolve only the Node path exports used to construct fixture paths.
+function nodePathExport(node, scope, seen = new Set()) {
+  if (!node || seen.has(node)) return undefined;
+  if (node.type === 'MemberExpression') {
+    if (node.computed && node.property.type !== 'StringLiteral') return undefined;
+    return pathMember(nodePathExport(node.object, scope, seen), nameOf(node.property));
+  }
+  const binding =
+    node.type === 'Identifier' ? bindingFor(scope, node) : requiredModule(node, scope);
+  if (binding?.path) {
+    seen.add(node);
+    return nodePathExport(binding.path.node, binding.path.scope, seen);
+  }
+  if (!pathModule.test(binding?.module ?? '')) return undefined;
+  const flavor = binding.module.split('/')[1];
+  const api = flavor ? path[flavor] : path;
+  return binding.imported ? pathMember(api, nameOf(binding.imported)) : api;
+}
+
 function fixtureCall(node, bindings, mocked) {
   const callee = node.callee;
   const identifier = callee.type === 'Identifier';
@@ -305,7 +339,7 @@ function fixtureCall(node, bindings, mocked) {
   const isProject = projectReaders.has(method) && identifier && (!binding || binding.module);
   const explicitProjectPath =
     (node.type === 'NewExpression' && method === 'URL') ||
-    (pathModule.test(binding?.module ?? '') && ['join', 'resolve'].includes(method));
+    typeof nodePathExport(callee, bindings) === 'function';
   return { binding, method, identifier, actualFs, isProject, explicitProjectPath };
 }
 
@@ -326,7 +360,10 @@ function fixtureArgument(node, bindings, { method, actualFs, isProject, explicit
 function writtenFixture(node, bindings, { identifier, binding }, mocked) {
   if (!identifier || !binding) return '';
   for (const arg of node.arguments) {
-    const candidate = javaSourceMap(arg, bindings) || literal(arg, bindings);
+    const candidate = (javaSourceMap(arg, bindings) || literal(arg, bindings)).replaceAll(
+      '\\',
+      '/',
+    );
     if ((candidate.endsWith('.java') || isFixturePath(candidate)) && writesFiles(binding, mocked))
       return candidate;
   }

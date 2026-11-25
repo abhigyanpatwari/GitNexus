@@ -6,7 +6,7 @@ const accessModifiers = new Set(['public', 'private', 'protected']);
 function explicitAccess(declaration: SyntaxNode): string | undefined {
   let first = declaration.firstNamedChild;
   if (
-    first === undefined &&
+    !first &&
     (declaration.type === 'method_declaration' || declaration.type === 'constructor_declaration')
   ) {
     // Partial syntax nodes can expose only the declaration text.
