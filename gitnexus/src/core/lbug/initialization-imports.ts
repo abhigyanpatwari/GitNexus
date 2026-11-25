@@ -1,4 +1,5 @@
 import {
+  BLADE_VIEW_REFERENCE_REASON,
   DEFERRED_IMPORT_REASON_SUFFIX,
   DOCUMENTATION_LINK_REASON,
   TYPE_ONLY_IMPORT_REASON_SUFFIX,
@@ -6,7 +7,11 @@ import {
 import { providerNonInitializingImportReasons } from '../ingestion/languages/query-providers.js';
 import { executeParameterized } from './pool-adapter.js';
 
-const nonInitializingReasons = [DOCUMENTATION_LINK_REASON, ...providerNonInitializingImportReasons];
+const nonInitializingReasons = [
+  DOCUMENTATION_LINK_REASON,
+  BLADE_VIEW_REFERENCE_REASON,
+  ...providerNonInitializingImportReasons,
+];
 
 /** Read only file dependencies that can constrain module initialization order. */
 export function readInitializationImports(repoId: string, limit: number) {
