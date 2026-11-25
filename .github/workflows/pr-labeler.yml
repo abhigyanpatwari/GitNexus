@@ -108,7 +108,7 @@ jobs:
       # Pinned to v7.2.0. Verify SHA via:
       #   gh api repos/release-drafter/release-drafter/git/refs/tags/v7.2.0
       # v7 removed `disable-releaser`; use `dry-run: true` to only autolabel.
-      - uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
+      - uses: release-drafter/release-drafter@d1a19e60e81a7e650d00a7de9277f87e439117ea # v7.11.0
         with:
           config-name: release-drafter.yml
           dry-run: true
