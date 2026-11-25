@@ -456,9 +456,19 @@ describe('HTTP source scan tree lifetime', () => {
     warmUp.setLanguage(registeredPlugins()[0].language);
     warmUp.parse('class WarmUp {}');
     const baseline = liveTrees();
+    // Every sample forces a full GC, which is slow in a test worker's large
+    // heap, so only the first, every SAMPLE_EVERY-th and the last scan or
+    // collect call samples. A leak grows with the files scanned, and one
+    // held by a pre-pass stays for the whole scan, so the stride still sees it.
+    const SAMPLE_EVERY = 8;
+    let calls = 0;
+    let lastCall = 0;
     let maxLive = 0;
     let samples = 0;
     const sample = (): void => {
+      calls += 1;
+      if (lastCall === 0) return;
+      if (calls !== 1 && calls % SAMPLE_EVERY !== 0 && calls !== lastCall) return;
       samples += 1;
       maxLive = Math.max(maxLive, liveTrees() - baseline);
     };
@@ -490,15 +500,21 @@ describe('HTTP source scan tree lifetime', () => {
 
     let contracts: ExtractedContract[];
     try {
+      // A first run only counts the calls, so that the second can sample its last.
+      await new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir));
+      lastCall = calls;
+      calls = 0;
       contracts = await new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir));
     } finally {
       for (const restore of restores) restore();
     }
 
     expect(contracts.length).toBeGreaterThan(0);
-    expect(samples).toBeGreaterThan(40);
+    expect(calls).toBe(lastCall);
+    expect(lastCall).toBeGreaterThan(40);
+    expect(samples).toBeGreaterThan(lastCall / SAMPLE_EVERY);
     expect(maxLive).toBeLessThanOrEqual(1);
-    // Every sample forces a full GC, which is slow in a test worker's large heap.
+    // A backstop: the samples take a few seconds.
   }, 120_000);
 
   it.each([
