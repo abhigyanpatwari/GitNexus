@@ -1,0 +1,15 @@
+{
+  "diagnostics": {},
+  "onDemand": {
+    "status": "known semantic gap for receivers: JLS selects c.T for every use; imports match",
+    "extraEdges": [
+      "CALLS Method:viaNew -> Class:src/c/T.java:T",
+      "IMPORTS File:U.java -> File:src/c/T.java:T.java"
+    ],
+    "missingCompilerEdges": [
+      "CALLS Method:viaField -> Method:src/c/T.java:run",
+      "CALLS Method:viaNew -> Method:src/c/T.java:run",
+      "CALLS Method:viaParam -> Method:src/c/T.java:run"
+    ]
+  }
+}

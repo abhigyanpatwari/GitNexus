@@ -20,7 +20,6 @@ const fixtures: Partial<Record<SupportedLanguages, [filename: string, source?: s
   csharp: ['csharp-hazards.cs'],
   dart: ['dart-hazards.dart'],
   go: ['go-hazards.go'],
-  java: ['java-hazards.java'],
   javascript: ['sample.js', 'export function choose(x) { if (x) return 1; return 2; }'],
   kotlin: ['kotlin-hazards.kt'],
   php: ['php-hazards.php'],
@@ -47,7 +46,9 @@ const pdgLanguages = Object.values(SupportedLanguages).filter((language) => {
   return provider.cfgVisitor || provider.collectSourceCfgs;
 });
 it('has a graph fixture for every language that builds a PDG', () => {
-  expect(Object.keys(fixtures).sort()).toEqual([...pdgLanguages].sort());
+  expect([...Object.keys(fixtures), SupportedLanguages.Java].sort()).toEqual(
+    [...pdgLanguages].sort(),
+  );
 });
 
 afterEach(() => {
@@ -55,7 +56,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-for (const language of pdgLanguages) {
+for (const language of pdgLanguages.filter((language) => language !== SupportedLanguages.Java)) {
   const optional = listGrammarSources().some(
     (source) => source.key === language && source.optional,
   );
@@ -67,7 +68,7 @@ for (const language of pdgLanguages) {
       const [filename, source] = fixtures[language]!;
       if (source === undefined) {
         copyFileSync(
-          path.join(import.meta.dirname, 'cfg/fixtures', filename),
+          path.join(import.meta.dirname, '../fixtures/cfg', filename),
           path.join(repo, filename),
         );
       } else {

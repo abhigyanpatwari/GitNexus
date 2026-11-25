@@ -1,0 +1,172 @@
+import { cleanupTempDirSync } from './test-db.js';
+import { fixtureGitExecutable } from './git-executable.js';
+import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from './cli-entry.js';
+
+/**
+ * Spawn the CLI with `analyze --skills` in the given cwd.
+ * Entry point comes from CLI_SPAWN_PREFIX (built dist in CI, tsx-on-source
+ * locally); the tsx path uses an absolute loader URL so it resolves from any cwd.
+ */
+export function runSkillsCli(cwd: string, timeoutMs = 45000) {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skills'], {
+    cwd,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: cliAnalysisEnv(),
+  });
+}
+
+/**
+ * Create a fixture repo: write files, git init, git add, git commit.
+ * Returns the tmp directory path.
+ */
+export function createFixtureRepo(prefix: string, files: Record<string, string>): string {
+  const git = fixtureGitExecutable();
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), `skills-e2e-${prefix}-`));
+  try {
+    for (const [relPath, content] of Object.entries(files)) {
+      const fullPath = path.join(tmpDir, relPath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, content, 'utf-8');
+    }
+    execFileSync(git, ['init'], { cwd: tmpDir, stdio: 'pipe' });
+    execFileSync(git, ['add', '-A'], { cwd: tmpDir, stdio: 'pipe' });
+    execFileSync(git, ['commit', '-m', 'initial commit'], {
+      cwd: tmpDir,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'test',
+        GIT_AUTHOR_EMAIL: 'test@test',
+        GIT_COMMITTER_NAME: 'test',
+        GIT_COMMITTER_EMAIL: 'test@test',
+      },
+    });
+    return tmpDir;
+  } catch (error) {
+    try {
+      cleanupTempDirSync(tmpDir);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        'Failed to create and clean up skills fixture',
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
+
+export function assertSkillsCliSucceeded(result: ReturnType<typeof runSkillsCli>) {
+  if (result.error) throw result.error;
+  assert.equal(
+    result.status,
+    0,
+    [
+      result.signal
+        ? `analyze --skills terminated by ${result.signal}`
+        : `analyze --skills exited with code ${result.status}`,
+      `stdout: ${result.stdout?.slice(-500)}`,
+      `stderr: ${result.stderr?.slice(-500)}`,
+    ].join('\n'),
+  );
+}
+
+/**
+ * Assert standard skill file properties:
+ * 1. CLI exits 0
+ * 2. .gitnexus/ exists
+ * 3. >= minSkills direct SKILL.md files under .claude/skills/gitnexus-area-<name>/
+ * 4. YAML frontmatter valid
+ * 5. ## Key Files section present
+ * 6. ## How to Explore section present
+ * 7. Content > 200 chars
+ *
+ * Returns false if skill generation was skipped (native parser crash
+ * or Leiden non-determinism producing 0 communities). Callers can
+ * use this to skip dependent assertions.
+ */
+export function assertSkillFiles(
+  result: ReturnType<typeof runSkillsCli>,
+  tmpDir: string,
+  minSkills = 1,
+): boolean {
+  assertSkillsCliSucceeded(result);
+
+  assert.equal(fs.existsSync(path.join(tmpDir, '.gitnexus')), true);
+
+  const skillsRoot = path.join(tmpDir, '.claude', 'skills');
+  if (!fs.existsSync(skillsRoot)) {
+    // Native parser may have crashed in worker or Leiden produced 0 communities.
+    // The pipeline still succeeds (exit 0) but no skills are generated.
+    // Skip skill assertions gracefully — this is platform-dependent.
+    return false;
+  }
+
+  const skillDirs = fs
+    .readdirSync(skillsRoot)
+    .filter(
+      (d) => d.startsWith('gitnexus-area-') && fs.statSync(path.join(skillsRoot, d)).isDirectory(),
+    );
+  if (skillDirs.length === 0) {
+    // Native parser may have crashed in worker or Leiden produced 0 communities.
+    // Standard skills still create the shared root, so absence is now detected
+    // by the reserved community-skill prefix rather than by the root directory.
+    return false;
+  }
+  const skillFiles: string[] = [];
+  for (const dir of skillDirs) {
+    const skillPath = path.join(skillsRoot, dir, 'SKILL.md');
+    if (fs.existsSync(skillPath)) {
+      skillFiles.push(skillPath);
+    }
+  }
+
+  assert.ok(skillFiles.length >= minSkills);
+
+  for (const skillPath of skillFiles) {
+    const content = fs.readFileSync(skillPath, 'utf-8');
+    assert.equal(content.startsWith('---'), true);
+    assert.ok(content.includes('name:'));
+    assert.ok(content.includes('description:'));
+    assert.ok(content.includes('## Key Files'));
+    assert.ok(content.includes('## How to Explore'));
+    assert.ok(content.length > 200);
+  }
+
+  return true;
+}
+
+/**
+ * Assert CLAUDE.md and AGENTS.md contain generated skill references.
+ * Automatically detects whether community skills were generated by checking
+ * for the reserved direct-child namespace.
+ */
+export function assertContextFiles(result: ReturnType<typeof runSkillsCli>, tmpDir: string) {
+  assertSkillsCliSucceeded(result);
+
+  const skillsRoot = path.join(tmpDir, '.claude', 'skills');
+  const skillsGenerated =
+    fs.existsSync(skillsRoot) &&
+    fs.readdirSync(skillsRoot).some((entry) => entry.startsWith('gitnexus-area-'));
+
+  const claudePath = path.join(tmpDir, 'CLAUDE.md');
+  assert.equal(fs.existsSync(claudePath), true);
+  if (skillsGenerated) {
+    const claudeContent = fs.readFileSync(claudePath, 'utf-8');
+    assert.ok(claudeContent.includes('.claude/skills/gitnexus-area-'));
+  }
+
+  const agentsPath = path.join(tmpDir, 'AGENTS.md');
+  assert.equal(fs.existsSync(agentsPath), true);
+  if (skillsGenerated) {
+    const agentsContent = fs.readFileSync(agentsPath, 'utf-8');
+    assert.ok(agentsContent.includes('.claude/skills/gitnexus-area-'));
+  }
+}

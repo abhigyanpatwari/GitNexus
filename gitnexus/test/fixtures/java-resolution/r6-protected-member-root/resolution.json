@@ -1,0 +1,14 @@
+{
+  "diagnostics": {"compiler.err.report.access": 1},
+  "calls": [
+    {"caller": "Method:b/Child2.java:Child2.run#1", "member": "save", "source": ["b/Child2.java#3:2"]},
+    {"caller": "Method:b/Child2.java:Child2.local#0", "member": "save", "source": ["b/Child2.java#4:2"]},
+    {"caller": "Method:b/Child2.java:Deep.deep#1", "member": "save", "source": ["b/Child2.java#5:15"]},
+    {"caller": "Method:b/Child2.java:Child2.pass#1", "member": "take", "source": ["b/Child2.java#8:2"]},
+    {"caller": "Method:pq/PkgChild.java:PkgChild.run#1", "member": "save", "source": ["pq/PkgChild.java#2:36"]},
+    {"caller": "Method:b/Stranger.java:Stranger.run#1", "member": "save", "source": ["b/Stranger.java#2:17"], "targets": 0}
+  ],
+  "nodes": [
+    "Method:b/Stranger.java:Stranger.run#1"
+  ]
+}

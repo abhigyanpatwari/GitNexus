@@ -1,0 +1,1 @@
+package i2; import lombok.*; public class GModel extends GBase { @Getter String name; }

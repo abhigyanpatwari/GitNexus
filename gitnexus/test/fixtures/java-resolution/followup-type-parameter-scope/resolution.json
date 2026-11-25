@@ -1,0 +1,8 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location.args": 1},
+  "calls": [
+    {"caller": "Method:app/App.java:App.run#1", "member": "save", "source": ["app/App.java#4:2"]},
+    {"caller": "Method:app/App.java:App.run2#1", "member": "save", "source": ["app/App.java#6:2"]},
+    {"caller": "Method:app/App.java:App.generic#1", "member": "save", "source": ["app/App.java#7:2"], "targets": 0}
+  ]
+}

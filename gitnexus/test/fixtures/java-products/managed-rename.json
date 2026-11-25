@@ -1,0 +1,229 @@
+[
+  {
+    "name": "refuses a public top-level Java Class rename requiring a file move",
+    "file": "Writer.java",
+    "source": "public class Writer { public Writer() {} }\n",
+    "target": "Writer",
+    "kind": "Class",
+    "newName": "Reader",
+    "error": "unsupported_occurrence",
+    "planning": "unsupported",
+    "message": "file move",
+    "absentFile": "Reader.java"
+  },
+  {
+    "name": "refuses a public top-level Java Constructor rename requiring a file move",
+    "file": "Writer.java",
+    "source": "public class Writer { public Writer() {} }\n",
+    "target": "Writer",
+    "kind": "Constructor",
+    "newName": "Reader",
+    "error": "unsupported_occurrence",
+    "planning": "unsupported",
+    "message": "file move",
+    "absentFile": "Reader.java"
+  },
+  {
+    "name": "refuses a public top-level Java Interface rename requiring a file move",
+    "file": "Writer.java",
+    "source": "public interface Writer {}\n",
+    "target": "Writer",
+    "kind": "Interface",
+    "newName": "Reader",
+    "error": "unsupported_occurrence",
+    "planning": "unsupported",
+    "message": "file move",
+    "absentFile": "Reader.java"
+  },
+  {
+    "name": "refuses a public top-level Java Enum rename requiring a file move",
+    "file": "Writer.java",
+    "source": "public enum Writer { VALUE }\n",
+    "target": "Writer",
+    "kind": "Enum",
+    "newName": "Reader",
+    "error": "unsupported_occurrence",
+    "planning": "unsupported",
+    "message": "file move",
+    "absentFile": "Reader.java"
+  },
+  {
+    "name": "refuses a public top-level Java Record rename requiring a file move",
+    "file": "Writer.java",
+    "source": "public record Writer() {}\n",
+    "target": "Writer",
+    "kind": "Record",
+    "newName": "Reader",
+    "error": "unsupported_occurrence",
+    "planning": "unsupported",
+    "message": "file move",
+    "absentFile": "Reader.java"
+  },
+  {
+    "name": "refuses a public top-level Java Annotation rename requiring a file move",
+    "file": "Writer.java",
+    "source": "public @interface Writer {}\n",
+    "target": "Writer",
+    "kind": "Annotation",
+    "newName": "Reader",
+    "error": "unsupported_occurrence",
+    "planning": "unsupported",
+    "message": "file move",
+    "absentFile": "Reader.java"
+  },
+  {
+    "name": "renames a package-private or nested Java Class without requiring a file move",
+    "file": "Outer.java",
+    "source": "class Writer { Writer() {} }\n",
+    "target": "Writer",
+    "kind": "Class",
+    "newName": "Reader",
+    "after": "class Reader { Reader() {} }\n"
+  },
+  {
+    "name": "renames a package-private or nested Java Constructor without requiring a file move",
+    "file": "Outer.java",
+    "source": "class Writer { Writer() {} }\n",
+    "target": "Writer",
+    "kind": "Constructor",
+    "newName": "Reader",
+    "after": "class Reader { Reader() {} }\n"
+  },
+  {
+    "name": "renames a package-private or nested Java Class without requiring a file move",
+    "file": "Outer.java",
+    "source": "public class Outer { public static class Writer { public Writer() {} } }\n",
+    "target": "Writer",
+    "kind": "Class",
+    "newName": "Reader",
+    "after": "public class Outer { public static class Reader { public Reader() {} } }\n"
+  },
+  {
+    "name": "renames a package-private or nested Java Constructor without requiring a file move",
+    "file": "Outer.java",
+    "source": "public class Outer { public static class Writer { public Writer() {} } }\n",
+    "target": "Writer",
+    "kind": "Constructor",
+    "newName": "Reader",
+    "after": "public class Outer { public static class Reader { public Reader() {} } }\n"
+  },
+  {
+    "name": "renames a package-private or nested Java Annotation without requiring a file move",
+    "file": "Outer.java",
+    "source": "@interface Writer {}\n",
+    "target": "Writer",
+    "kind": "Annotation",
+    "newName": "Reader",
+    "after": "@interface Reader {}\n"
+  },
+  {
+    "name": "renames a package-private or nested Java Annotation without requiring a file move",
+    "file": "Outer.java",
+    "source": "public class Outer { public @interface Writer {} }\n",
+    "target": "Writer",
+    "kind": "Annotation",
+    "newName": "Reader",
+    "after": "public class Outer { public @interface Reader {} }\n"
+  },
+  {
+    "name": "allows a Java public type rename that matches the existing file name",
+    "file": "Reader.java",
+    "source": "public class Writer { public Writer() {} }\n",
+    "target": "Writer",
+    "kind": "Class",
+    "newName": "Reader",
+    "after": "public class Reader { public Reader() {} }\n"
+  },
+  {
+    "name": "refuses collapsed same-name nested Java Constructor graph identities",
+    "file": "Outer.java",
+    "source": "class Outer { static class Writer { Writer() {} } }\nclass Other { static class Writer { Writer() {} } }\n",
+    "target": "Writer",
+    "kind": "Constructor",
+    "newName": "Reader",
+    "error": "stale_graph",
+    "planning": "blocked"
+  },
+  {
+    "name": "refuses collapsed same-name nested Java Annotation graph identities",
+    "file": "Outer.java",
+    "source": "class Outer { @interface Writer {} }\nclass Other { @interface Writer {} }\n",
+    "target": "Writer",
+    "kind": "Annotation",
+    "newName": "Reader",
+    "error": "stale_graph",
+    "planning": "blocked"
+  },
+  {
+    "name": "previews and applies calls and bare values",
+    "file": "model.java",
+    "source": "class Model { static int target() { return 1; } static int caller() { return target(); } }\n// target\n",
+    "target": "target",
+    "kind": "Method",
+    "newName": "renamed",
+    "after": "class Model { static int renamed() { return 1; } static int caller() { return renamed(); } }\n// target\n"
+  },
+  {
+    "name": "preserves shadow parameters",
+    "file": "model.java",
+    "source": "class Model { static int target() { return 1; } int caller(int target) { return target; } int use() { return target(); } }\n",
+    "target": "target",
+    "kind": "Method",
+    "newName": "renamed",
+    "after": "class Model { static int renamed() { return 1; } int caller(int target) { return target; } int use() { return renamed(); } }\n"
+  },
+  {
+    "name": "renames type uses and named constructors",
+    "file": "model.java",
+    "source": "class Target { Target() {} }\nclass User { Target value; Target make() { return new Target(); } }\n",
+    "target": "Target",
+    "kind": "Class",
+    "newName": "Renamed",
+    "after": "class Renamed { Renamed() {} }\nclass User { Renamed value; Renamed make() { return new Renamed(); } }\n"
+  },
+  {
+    "name": "preserves unrelated owners",
+    "file": "model.java",
+    "source": "class Model { void target() {} void caller(Model value) { value.target(); } }\nclass Other { void target() {} void caller(Other value) { value.target(); } }\n",
+    "target": "target",
+    "kind": "Method",
+    "newName": "renamed",
+    "after": "class Model { void renamed() {} void caller(Model value) { value.renamed(); } }\nclass Other { void target() {} void caller(Other value) { value.target(); } }\n"
+  },
+  {
+    "name": "renames proven interface declaration families",
+    "file": "model.java",
+    "source": "interface Base { void target(); }\nclass Child implements Base { public void target() {} }\n",
+    "target": "target",
+    "kind": "Method",
+    "newName": "renamed",
+    "after": "interface Base { void renamed(); }\nclass Child implements Base { public void renamed() {} }\n"
+  },
+  {
+    "name": "refuses scope collisions without writing model.java",
+    "file": "model.java",
+    "source": "class Model { void target() {} void renamed() {} void use() { target(); } }\n",
+    "target": "target",
+    "kind": "Method",
+    "newName": "renamed",
+    "error": "name_collision"
+  },
+  {
+    "name": "renames overload declaration groups and calls",
+    "file": "model.java",
+    "source": "class Model { void target() {} void target(int value) {} void use() { target(); target(1); } }\n",
+    "target": "target",
+    "kind": "Method",
+    "newName": "renamed",
+    "after": "class Model { void renamed() {} void renamed(int value) {} void use() { renamed(); renamed(1); } }\n"
+  },
+  {
+    "name": "renames a class with a name-coupled Java constructor",
+    "file": "model.java",
+    "source": "class Writer {\n Writer() {}\n static void use() { new Writer(); }\n}\n",
+    "target": "Writer",
+    "kind": "Class",
+    "newName": "Renamed",
+    "after": "class Renamed {\n Renamed() {}\n static void use() { new Renamed(); }\n}\n"
+  }
+]

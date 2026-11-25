@@ -1,0 +1,22 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location.args": 4, "compiler.err.foreach.not.applicable.to.type": 1, "compiler.err.prob.found.req": 1},
+  "calls": [
+    {"caller": "Method:Main.java:App.list#1", "member": "save", "source": ["Main.java#8:2"]},
+    {"caller": "Method:Main.java:App.stream#1", "member": "save", "source": ["Main.java#9:2"]},
+    {"caller": "Method:Main.java:App.array#1", "member": "save", "source": ["Main.java#11:2"]},
+    {"caller": "Method:Main.java:App.iterable#1", "member": "save", "source": ["Main.java#12:2"]},
+    {"caller": "Method:Main.java:App.mapValues#1", "member": "save", "source": ["Main.java#13:2"]},
+    {"caller": "Method:Main.java:App.typedLoop#1", "member": "save", "source": ["Main.java#15:2"]},
+    {"caller": "Method:Main.java:App.mapKeys#1", "member": "save", "source": ["Main.java#14:2"]},
+    {"caller": "Method:Main.java:App.typedLoop#1", "member": "audit", "source": ["Main.java#15:2"]},
+    {"caller": "Method:Main.java:App.map#1", "member": "save", "source": ["Main.java#10:2"], "targets": 2},
+    {"caller": "Method:Main.java:App.raw#1", "member": "save", "source": ["Main.java#16:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.wildcard#1", "member": "save", "published": [], "compilerTargets": ["Main.java#4:13"], "source": ["Main.java#17:2"]},
+    {"caller": "Method:Main.java:App.generic#1", "member": "save", "source": ["Main.java#18:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.changing#1", "member": "save", "published": [], "compilerTargets": ["Main.java#4:13"], "source": ["Main.java#19:2"]},
+    {"caller": "Method:Main.java:App.unrelated#1", "member": "save", "source": ["Main.java#20:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.containerAlias#1", "member": "save", "source": ["Main.java#21:2"], "targets": 0},
+    {"caller": "Method:Lookalike.java:Lookalike.custom#1", "member": "save", "source": ["Lookalike.java#6:2"], "targets": 0},
+    {"caller": "Method:Lookalike.java:Lookalike.customMap#1", "member": "save", "source": ["Lookalike.java#7:2"], "targets": 0}
+  ]
+}

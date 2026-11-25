@@ -1,0 +1,98 @@
+[
+  {
+    "name": "OkHttp builder verb inference",
+    "project": "okhttp-builder-verb-inference",
+    "expected": [
+      {
+        "role": "consumer",
+        "contractId": "http::POST::/api/things",
+        "framework": "okhttp",
+        "confidence": 0.7
+      }
+    ]
+  },
+  {
+    "name": "OkHttp verb + builder call before .url()",
+    "project": "okhttp-verb-builder-call-before-url",
+    "expected": [
+      {
+        "role": "consumer",
+        "contractId": "http::POST::/api/pre",
+        "framework": "okhttp",
+        "confidence": 0.7
+      }
+    ]
+  },
+  {
+    "name": "@RequestLine with @RequestMapping prefix fallback",
+    "project": "-requestline-with-requestmapping-prefix-fallback",
+    "expected": [
+      {
+        "role": "consumer",
+        "contractId": "http::GET::/orders/{param}",
+        "framework": "openfeign",
+        "confidence": 0.75
+      }
+    ]
+  },
+  {
+    "name": "named @RequestLine(value=...)",
+    "project": "named-requestline-value",
+    "expected": [
+      {
+        "role": "consumer",
+        "contractId": "http::POST::/create",
+        "framework": "openfeign",
+        "confidence": 0.75
+      }
+    ]
+  },
+  {
+    "name": "@FeignClient(path) + @GetMapping",
+    "project": "-feignclient-path-getmapping",
+    "expected": [
+      {
+        "role": "consumer",
+        "contractId": "http::GET::/api/users",
+        "framework": "openfeign",
+        "confidence": 0.7
+      }
+    ]
+  },
+  {
+    "name": "@HttpExchange(url) prefix + @GetExchange",
+    "project": "-httpexchange-url-prefix-getexchange",
+    "expected": [
+      {
+        "role": "consumer",
+        "contractId": "http::GET::/products/{param}",
+        "framework": "spring-http-interface",
+        "confidence": 0.75
+      }
+    ]
+  },
+  {
+    "name": "WebClient long-form method(HttpMethod.X).uri(...)",
+    "project": "webclient-long-form-method-httpmethod-x-uri",
+    "expected": [
+      {
+        "role": "consumer",
+        "contractId": "http::GET::/api/items",
+        "framework": "spring-web-client",
+        "confidence": 0.7
+      }
+    ]
+  },
+  {
+    "name": "interface-based controller inheritance",
+    "project": "interface-based-controller-inheritance",
+    "expected": [
+      {
+        "role": "provider",
+        "contractId": "http::GET::/warehouses/{param}/stock",
+        "framework": "spring",
+        "confidence": 0.8
+      }
+    ]
+  }
+]

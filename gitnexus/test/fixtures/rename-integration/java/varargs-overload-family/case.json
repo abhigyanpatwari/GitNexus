@@ -1,0 +1,10 @@
+{
+  "language": "java",
+  "description": "Preview a variadic overload family from either persisted declaration UID.",
+  "target": { "name": "total", "kind": "Method", "file": "Prices.java", "startLine": 1 },
+  "alternateTargets": [
+    { "name": "total", "kind": "Method", "file": "Prices.java", "startLine": 2 }
+  ],
+  "newName": "sum",
+  "expect": { "status": "success", "edits": 4 }
+}

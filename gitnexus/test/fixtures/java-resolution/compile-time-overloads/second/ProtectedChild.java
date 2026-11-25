@@ -1,0 +1,1 @@
+package second; import first.Base; class ProtectedChild extends Base { void superProtected() { super.protectedChoice(1); } }

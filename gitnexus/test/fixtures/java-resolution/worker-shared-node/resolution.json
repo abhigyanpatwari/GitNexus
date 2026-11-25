@@ -1,0 +1,10 @@
+{
+  "workerOrder": {
+    "file": "app/App.java",
+    "caller": "run",
+    "binding": "Node"
+  },
+  "diagnostics": {
+    "compiler.err.cant.resolve.location.args": 1
+  }
+}

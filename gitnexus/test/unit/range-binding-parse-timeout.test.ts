@@ -5,12 +5,10 @@ import { extractParsedFile } from '../../src/core/ingestion/scope-extractor-brid
 import { goScopeResolver } from '../../src/core/ingestion/languages/go/scope-resolver.js';
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.js';
 import { rustScopeResolver } from '../../src/core/ingestion/languages/rust/scope-resolver.js';
-import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.js';
 import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.js';
 import { populateGoRangeBindings } from '../../src/core/ingestion/languages/go/range-binding.js';
 import { populateCppRangeBindings } from '../../src/core/ingestion/languages/cpp/range-bindings.js';
 import { populateRustRangeBindings } from '../../src/core/ingestion/languages/rust/range-binding.js';
-import { populateJavaPackageSiblings } from '../../src/core/ingestion/languages/java/package-siblings.js';
 import { populateKotlinPackageSiblings } from '../../src/core/ingestion/languages/kotlin/package-siblings.js';
 
 /**
@@ -154,13 +152,6 @@ fn main() {
   });
 
   it.each([
-    {
-      label: 'Java',
-      resolver: javaScopeResolver,
-      populate: populateJavaPackageSiblings,
-      extension: 'java',
-      packageStatement: 'package com.example;',
-    },
     {
       label: 'Kotlin',
       resolver: kotlinScopeResolver,

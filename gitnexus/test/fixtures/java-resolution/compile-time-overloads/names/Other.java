@@ -1,0 +1,1 @@
+package names; public class Other { public static class Long {} }

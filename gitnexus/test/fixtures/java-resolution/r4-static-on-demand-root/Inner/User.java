@@ -1,0 +1,1 @@
+package Inner; public class User { public void save() {} }

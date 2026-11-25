@@ -1,0 +1,1 @@
+package app; import static a.Util.helper; import static a.Util.Inner; public class U { void wrong() { helper(); Inner.in(); } }

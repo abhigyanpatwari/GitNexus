@@ -1,0 +1,1 @@
+package custom4; public class Tags { public @interface Value {} }

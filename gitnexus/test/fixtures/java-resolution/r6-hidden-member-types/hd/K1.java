@@ -1,0 +1,1 @@
+package hd; public interface K1 extends K {}

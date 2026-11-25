@@ -1,0 +1,1 @@
+package p0; public class Base { public Foo baseMethod() { return new Foo(); } }

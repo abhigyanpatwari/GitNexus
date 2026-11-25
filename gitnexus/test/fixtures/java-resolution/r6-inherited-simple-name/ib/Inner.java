@@ -1,0 +1,1 @@
+package ib; public class Inner { public void save() {} }

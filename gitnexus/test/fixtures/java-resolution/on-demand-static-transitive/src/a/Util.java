@@ -1,0 +1,1 @@
+package a; import static b.Tools.*; public class Util {}

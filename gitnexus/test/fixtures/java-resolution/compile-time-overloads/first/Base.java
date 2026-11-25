@@ -1,0 +1,1 @@
+package first; public class Base { void access(String value) {} protected void protectedChoice(Integer value) {} protected void protectedChoice(long value) {} }

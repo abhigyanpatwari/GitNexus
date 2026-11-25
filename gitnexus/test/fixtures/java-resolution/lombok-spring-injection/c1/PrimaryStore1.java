@@ -1,0 +1,1 @@
+package c1; @org.springframework.stereotype.Repository("primary") public class PrimaryStore1 implements Store1 {}

@@ -1,7 +1,7 @@
 import type Parser from 'tree-sitter';
 import { CLASS_KINDS, SupportedLanguages } from 'gitnexus-shared';
 import type { RenameOccurrence, RenameProvider, RenameSource } from '../../rename-provider.js';
-import { simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
+import { resolveDefGraphId, simpleQualifiedName } from '../../scope-resolution/graph-bridge/ids.js';
 import {
   buildGraphNodeLookup,
   qualifiedKey,
@@ -119,11 +119,13 @@ export const javaRenameProvider: RenameProvider = {
       )
         return false;
     }
-    return (
-      buildGraphNodeLookup(graph, new Set([node.label])).get(
-        qualifiedKey(definition.filePath, node.label, name),
-      ) === node.id
-    );
+    const lookup = buildGraphNodeLookup(graph, new Set([node.label]));
+    if (node.label === 'Method' && node.id.startsWith(`Method:${definition.filePath}:${name}#`)) {
+      // An overload family shares one bare-name key. Match the selected
+      // declaration to its graph node by the current source position.
+      return resolveDefGraphId(definition.filePath, definition, lookup) === node.id;
+    }
+    return lookup.get(qualifiedKey(definition.filePath, node.label, name)) === node.id;
   },
   validateName(name) {
     const canonical = canonicalName(name);

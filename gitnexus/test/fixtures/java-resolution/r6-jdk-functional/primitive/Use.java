@@ -1,0 +1,1 @@
+package primitive; class Use { void go() { Api.run((user, count) -> user.save()); } }

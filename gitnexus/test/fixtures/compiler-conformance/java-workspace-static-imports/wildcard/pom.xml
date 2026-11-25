@@ -1,0 +1,13 @@
+<project>
+  <modelVersion>4.0.0</modelVersion>
+  <groupId>com.acme</groupId>
+  <artifactId>wildcard</artifactId>
+  <version>1</version>
+  <dependencies>
+    <dependency>
+      <groupId>com.acme</groupId>
+      <artifactId>lib</artifactId>
+      <version>1</version>
+    </dependency>
+  </dependencies>
+</project>

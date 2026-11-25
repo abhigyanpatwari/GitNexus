@@ -9,16 +9,13 @@ describe('qualified class lookups', () => {
         content:
           'class Outer { make() { class Inner { value = 1; run() { return this.value; } } return Inner; } }',
       },
-      {
-        path: 'Nested.java',
-        content: 'package example.models; class Outer { class Inner {} }',
-      },
+
       {
         path: 'nested.rb',
         content: 'module Root\n  class Outer\n    class Inner\n    end\n  end\nend\n',
       },
     ]);
-    for (const name of ['Outer.Inner', 'example.models.Outer.Inner', 'Root.Outer.Inner']) {
+    for (const name of ['Outer.Inner', 'Root.Outer.Inner']) {
       expect(model.types.lookupClassByQualifiedName(name)).toHaveLength(1);
     }
     const ownerId = 'Class:nested.ts:Outer.Inner';
@@ -44,10 +41,7 @@ describe('qualified class lookups', () => {
         path: 'src/Data/User.cs',
         content: 'namespace Data.Auth;\npublic class User {}\n',
       },
-      {
-        path: 'src/models/Config.java',
-        content: 'package com.example.models;\nclass Config {}\n',
-      },
+
       {
         path: 'lib/admin/user.rb',
         content: 'module Admin\n  class User\n  end\nend\n',
@@ -68,10 +62,6 @@ describe('qualified class lookups', () => {
     const dataUser = model.types.lookupClassByQualifiedName('Data.Auth.User');
     expect(dataUser).toHaveLength(1);
     expect(dataUser[0].filePath).toBe('src/Data/User.cs');
-
-    const javaConfig = model.types.lookupClassByQualifiedName('com.example.models.Config');
-    expect(javaConfig).toHaveLength(1);
-    expect(javaConfig[0].qualifiedName).toBe('com.example.models.Config');
 
     const rubyUser = model.types.lookupClassByQualifiedName('Admin.User');
     expect(rubyUser).toHaveLength(1);

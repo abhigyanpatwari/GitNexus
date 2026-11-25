@@ -1,0 +1,8 @@
+{
+  "diagnostics": {},
+  "sourceMethods": 4,
+  "reason": "GitNexus publishes the record component as the source position of its implicit accessor.",
+  "callDifferences": [
+    "+ Reader.java#3:10 -> User.java#1:25"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "diagnostics": {
+    "compiler.err.doesnt.exist": 2,
+    "compiler.err.cant.resolve.location": 1
+  },
+  "synthetic": {
+    "p/Model.java": [],
+    "p/Control.java": [
+      "Method:p/Control.java:Control.getName#0"
+    ]
+  }
+}

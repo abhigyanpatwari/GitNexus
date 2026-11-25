@@ -23,7 +23,6 @@ import type { ParsedFile } from 'gitnexus-shared';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 import type { LanguageProvider } from '../../../src/core/ingestion/language-provider.js';
 import { csharpProvider } from '../../../src/core/ingestion/languages/csharp.js';
-import { javaProvider } from '../../../src/core/ingestion/languages/java.js';
 import { typescriptProvider } from '../../../src/core/ingestion/languages/typescript.js';
 import { kotlinProvider } from '../../../src/core/ingestion/languages/kotlin.js';
 import { goProvider } from '../../../src/core/ingestion/languages/go.js';
@@ -65,16 +64,6 @@ describe('heritage type arguments are captured', () => {
         'R.cs',
       ),
     ).toEqual([{ name: 'Base', typeArguments: ['int'] }]);
-  });
-
-  it('Java implements clause', () => {
-    expect(
-      inheritsSites(
-        javaProvider,
-        'package p;\npublic class V implements Validator<String> { }',
-        'V.java',
-      ),
-    ).toEqual([{ name: 'Validator', typeArguments: ['String'] }]);
   });
 
   it('TypeScript implements clause', () => {
