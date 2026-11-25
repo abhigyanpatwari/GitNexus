@@ -76,16 +76,6 @@ function namedTypes(written: string, inventory: JavaWorkspaceTypeInventory): Qua
 type RootOrigin = 'package' | 'shadowed' | 'uncertain' | { type: string; local?: TypeEntry };
 type HeaderParameterLookup = (range: Range, name: string) => RootOrigin;
 
-function shadowsHeaderRoot(
-  type: TypeEntry,
-  root: string,
-  inventory: JavaWorkspaceTypeInventory,
-): boolean {
-  if (type.memberNames.has(root)) return true;
-  const inherited = inventory.namesOf(type);
-  return inherited.unknown || inherited.names.has(root);
-}
-
 function classHeaderRoot(
   owner: TypeEntry,
   root: string,
@@ -96,7 +86,11 @@ function classHeaderRoot(
   for (let type: TypeEntry | undefined = owner; type !== undefined; type = type.parent) {
     if (type.fact.simpleName === root) return 'shadowed';
     if (type.fact.typeParameters.includes(root)) return parameter(type.fact.range, root);
-    if (type !== owner && shadowsHeaderRoot(type, root, inventory)) return 'shadowed';
+    if (type !== owner) {
+      if (type.memberNames.has(root)) return 'shadowed';
+      const inherited = inheritedHeaderOrigin(type, root, inventory);
+      if (inherited !== undefined) return inherited;
+    }
     if (type.parent === undefined) {
       return type.declaringScope === module
         ? undefined

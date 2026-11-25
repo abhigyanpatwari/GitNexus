@@ -148,6 +148,11 @@ export const kotlinProvider = defineLanguage({
   rename: kotlinRenameProvider,
   id: SupportedLanguages.Kotlin,
   extensions: ['.kt', '.kts'],
+  readWorkspaceImports: (source) =>
+    Array.from(source.matchAll(/^[\t ]*import\s+([a-zA-Z]\w*(?:\.(?:\w+|\*))+)/gm), (match) => ({
+      name: match[1],
+      isStatic: false,
+    })),
   entryPointPatterns: [
     /^on(Create|Start|Resume|Pause|Stop|Destroy)$/,
     /^do[A-Z]/,

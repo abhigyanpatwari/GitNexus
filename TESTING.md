@@ -50,6 +50,8 @@ From `gitnexus-web/`:
 # gitnexus-shared/dist must exist first. `npm install` / `npm run build` in
 # gitnexus/ compiles it via parent `lib/tsc.js` (do not npm ci gitnexus-shared).
 cd gitnexus && npx tsc --noEmit && npm run typecheck:tests && npm test
+# For Java changes, set JAVA_HOME to JDK 21 and run the compiler comparisons.
+npm run build && npm run test:conformance:java
 cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```
 

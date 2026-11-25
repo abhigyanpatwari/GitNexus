@@ -31,15 +31,14 @@ import { populateJavaInheritedFieldTypes, type DirectParents } from './inherited
 
 /** A top-level, member or local type with a source declaration. */
 interface NamedType {
+  readonly kind: SymbolDefinition['type'];
   /** Qualified lookup key. A local declaration roots this key in its unique node ID. */
   readonly fqn: string;
   /** A local class or its member's source spelling, separate from its declaration key. */
   readonly localSpelling?: string;
   /** The package of the file that declares it. */
   readonly packageName: string;
-  /** The supertypes it names (`extends` / `implements`), type arguments
-   * erased. Without one, it inherits no member type: `Object`, `Enum` and
-   * `Record` declare none. */
+  /** Supertypes written in `extends` or `implements`, with type arguments erased. */
   readonly bases: readonly string[];
   /** The scope containing the declaration. */
   readonly enclosingScope: ScopeId;
@@ -110,7 +109,7 @@ function collectNamedTypes(
   const resolve = (scope: Scope): (NamedType & { readonly def: SymbolDefinition }) | undefined => {
     const known = result.get(scope.id);
     if (known !== undefined || scope.kind !== 'Class' || scope.parent === null) return known;
-    const def = scope.ownedDefs.find((item) => isClassLike(item.type));
+    const def = scope.ownedDefs.find(isJavaTypeDefinition);
     const fact = declarations.get(`${scope.range.endLine}:${scope.range.endCol}`);
     if (def === undefined || fact === undefined) return undefined;
     const bases = fact.bases.map((base) => eraseJavaTypeArguments(base).replaceAll(/\s+/g, ''));
@@ -134,6 +133,7 @@ function collectNamedTypes(
     kinds.set(scope.id, fact.kind);
     const named: NamedType & { readonly def: SymbolDefinition } = {
       def,
+      kind: def.type,
       fqn: namedTypeIdentity(local, def.nodeId, prefix, fact.simpleName),
       ...(localSpelling === undefined ? {} : { localSpelling }),
       packageName,
@@ -562,11 +562,11 @@ export function javaStaticOnDemandImportBringsNoType(
     JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES.has(owner)
   )
     return true;
-  return (
-    owners.length === 1 &&
-    owners[0]!.bases.length === 0 &&
-    !byFqn?.get(`${owner}.${name}`)?.some((member) => member.static)
-  );
+  if (owners.length !== 1) return false;
+  const [type] = owners;
+  // JLS 8.9 gives every enum the public static member type Enum.EnumDesc.
+  if (type.kind === 'Enum' && name === 'EnumDesc') return false;
+  return !type.bases.length && !byFqn?.get(`${owner}.${name}`)?.some((member) => member.static);
 }
 
 /**

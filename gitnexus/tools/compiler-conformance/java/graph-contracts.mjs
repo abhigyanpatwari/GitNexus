@@ -714,76 +714,36 @@ async function verifyJavaCrossFileBindingPropagation() {
   }
 }
 async function verifyJavaMethodEnrichment() {
-  let result;
-  result = await runPipelineFromRepo(path.join(FIXTURES, 'java-method-enrichment'), () => {});
-  // emits HAS_METHOD edges for Animal methods
-  {
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const animalMethods = new Set(
-      hasMethod.filter((e) => e.source === 'Animal').map((e) => e.target),
+  const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-method-enrichment'), () => {});
+  const ownership = getRelationships(result, 'HAS_METHOD');
+  for (const [owner, method] of [
+    ['Animal', 'speak'],
+    ['Animal', 'classify'],
+    ['Animal', 'breathe'],
+    ['Dog', 'speak'],
+  ]) {
+    assert.ok(
+      ownership.some((edge) => edge.source === owner && edge.target === method),
+      `${owner}.${method} ownership`,
     );
-    assert.ok(animalMethods.has('speak'));
-    assert.ok(animalMethods.has('classify'));
-    assert.ok(animalMethods.has('breathe'));
   }
-  // emits HAS_METHOD edge for Dog.speak
-  {
-    const hasMethod = getRelationships(result, 'HAS_METHOD');
-    const dogSpeak = hasMethod.find((e) => e.source === 'Dog' && e.target === 'speak');
-    assert.notEqual(dogSpeak, undefined);
-  }
-  // marks abstract speak as isAbstract (conditional)
-  {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const speak = methods.find(
-      (n) => n.name === 'speak' && n.properties.filePath?.includes('Animal.java'),
+
+  const methods = getNodesByLabelFull(result, 'Method');
+  function properties(file, name) {
+    const matches = methods.filter(
+      (method) => method.properties.filePath === file && method.name === name,
     );
-    if (speak?.properties.isAbstract !== void 0) {
-      assert.equal(speak.properties.isAbstract, true);
-    }
+    assert.equal(matches.length, 1, `${file} must declare one ${name} method`);
+    return matches[0].properties;
   }
-  // marks breathe as NOT isAbstract (conditional)
-  {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.isAbstract !== void 0) {
-      assert.equal(breathe.properties.isAbstract, false);
-    }
-  }
-  // marks classify as isStatic (conditional)
-  {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const classify = methods.find((n) => n.name === 'classify');
-    if (classify?.properties.isStatic !== void 0) {
-      assert.equal(classify.properties.isStatic, true);
-    }
-  }
-  // marks breathe as NOT isStatic (conditional)
-  {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const breathe = methods.find((n) => n.name === 'breathe');
-    if (breathe?.properties.isStatic !== void 0) {
-      assert.equal(breathe.properties.isStatic, false);
-    }
-  }
-  // captures @Override annotation on Dog.speak (conditional)
-  {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const dogSpeak = methods.find(
-      (n) => n.name === 'speak' && n.properties.annotations?.includes('@Override'),
-    );
-    if (dogSpeak) {
-      assert.ok(dogSpeak.properties.annotations.includes('@Override'));
-    }
-  }
-  // populates parameterTypes for classify (conditional)
-  {
-    const methods = getNodesByLabelFull(result, 'Function');
-    const classify = methods.find((n) => n.name === 'classify');
-    if (classify?.properties.parameterTypes !== void 0) {
-      assert.ok(classify.properties.parameterTypes.includes('String'));
-    }
-  }
+  assert.equal(properties('models/Animal.java', 'speak').isAbstract, true);
+  const breathe = properties('models/Animal.java', 'breathe');
+  assert.equal(breathe.isAbstract, false);
+  assert.equal(breathe.isStatic, false);
+  const classify = properties('models/Animal.java', 'classify');
+  assert.equal(classify.isStatic, true);
+  assert.deepEqual(classify.parameterTypes, ['String']);
+  assert.deepEqual(properties('models/Dog.java', 'speak').annotations, ['@Override']);
 }
 async function verifyJavaInterfaceDispatchMETHODIMPLEMENTS() {
   let result;

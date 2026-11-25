@@ -418,6 +418,17 @@ async function readJavaMemberTypes(file: string): Promise<Set<string>> {
   return names;
 }
 
+async function workspaceImports(file: string, content: string) {
+  const { getProviderForFile } = await import('../../ingestion/languages/index.js');
+  const provider = getProviderForFile(file);
+  try {
+    return provider?.readWorkspaceImports?.(content, file) ?? [];
+  } catch (error) {
+    logger.warn({ err: error, filePath: file }, 'Could not read workspace imports from this file');
+    return [];
+  }
+}
+
 async function scanJavaImports(
   repoPath: string,
   knownPackages: Map<string, JavaProjectMeta>,
@@ -435,17 +446,14 @@ async function scanJavaImports(
       continue;
     }
 
-    const importRegex = /^[\t ]*import\s+(static\s+)?([a-zA-Z]\w*(?:\.(?:\w+|\*))+)/gm;
-    let match;
-    while ((match = importRegex.exec(content)) !== null) {
-      const importedName = match[2];
+    for (const { name: importedName, isStatic } of await workspaceImports(absPath, content)) {
       for (const [basePkg, provider] of knownPackages) {
         if (!importedName.startsWith(basePkg + '.')) continue;
         const dot = importedName.lastIndexOf('.');
         const member = importedName.slice(dot + 1);
         const staticType =
-          match[1] && member !== '*' && (await isMemberType(provider.repoPath, importedName));
-        const owner = match[1] && !staticType ? importedName.slice(0, dot) : importedName;
+          isStatic && member !== '*' && (await isMemberType(provider.repoPath, importedName));
+        const owner = isStatic && !staticType ? importedName.slice(0, dot) : importedName;
         const typeMatch = /^[a-zA-Z][\w.]*\.([A-Z]\w*)/.exec(owner);
         const symbolName = staticType ? member : typeMatch?.[1];
         if (symbolName && (staticType || isPascalCase(symbolName))) {

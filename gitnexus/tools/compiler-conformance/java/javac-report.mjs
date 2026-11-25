@@ -182,7 +182,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     console.error('Usage: node javac-report.mjs <fixture-directory> [method-name ...]');
     process.exitCode = 1;
   } else {
-    const selected = families.length ? families : undefined;
+    const selected = families.length ? families : ['*'];
     const [report] = javacReports([{ dir, families: selected }]);
     const { sites, binarySites } = selectedJavacCalls(report, selected);
     console.log(JSON.stringify({ ...report, sites, binarySites }, null, 2));

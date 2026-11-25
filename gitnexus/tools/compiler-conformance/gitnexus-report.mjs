@@ -95,10 +95,11 @@ function collectGraphEdges(
 ) {
   const edges = [];
   for (const edge of result.graph.iterRelationshipsByType('CALLS')) {
-    if (excludeEdgeReasons.includes(edge.reason)) continue;
     const target = result.graph.getNode(edge.targetId);
-    if (!target || !selected.has(target.properties.name)) continue;
     const caller = result.graph.getNode(edge.sourceId);
+    assert.ok(target, `CALLS edge ${edge.id} has missing target ${edge.targetId}`);
+    assert.ok(caller, `CALLS edge ${edge.id} has missing source ${edge.sourceId}`);
+    if (excludeEdgeReasons.includes(edge.reason) || !selected.has(target.properties.name)) continue;
     const to = graphDeclaration(target);
     edges.push({ from: typeCaller?.(caller) ?? graphDeclaration(caller), to });
     const site = edgeSite(edge, caller.properties.filePath, to);

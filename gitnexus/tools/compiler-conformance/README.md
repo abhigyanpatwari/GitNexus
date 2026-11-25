@@ -72,7 +72,7 @@ The runner also compares source type identities, ordinary method names and count
 
 [The fixture manifest](java/fixtures.json) reuses projects outside the discovery directory and pins the number of compiler sites for migrated tests. A fixture can select method families or compare only type declarations when collapsed overloads give GitNexus a different method inventory. The manifest explains which projects require compiler recovery or product checks because they contain incomplete Java, invalid source layouts, or duplicate types across module boundaries. The runner automatically includes new `lang-resolution/java-*` source projects. The [generated matrix](java/conversion-matrix.mjs) independently pins all 100 argument ranges across 20 overload pairs.
 
-All Java source fixtures run through this command, including inline snippets and virtual projects. Add a Java resolution case as a fixture project so javac supplies its expected target. The [resolution checks](java/check-resolution.mjs) also handle partially invalid projects, cold and warm parses, and import storage. The [provider checks](java/test/provider) cover parser captures and other GitNexus-specific results. The [Spring checks](java/spring-check.mjs) and [product checks](java/product) cover framework behavior, rename, graph persistence, and mixed-language analysis. The conformance command checks Vitest suites for Java fixture I/O and virtual source maps. Vitest also reports Java parser calls made through shared helpers.
+All Java source fixtures run through this command, including inline snippets and virtual projects. Add a Java resolution case as a fixture project so javac supplies its expected target. The [resolution checks](java/check-resolution.mjs) also handle partially invalid projects, cold and warm parses, and import storage. The [provider checks](java/test/provider) cover parser captures and other GitNexus-specific results. The [Spring checks](java/spring-check.mjs) and [product checks](java/product) cover framework behavior, rename, graph persistence, and mixed-language analysis. The conformance command checks Vitest suites for Java fixture I/O and virtual source maps. Vitest also detects Java parsing in process and Java files submitted to the shared worker helper.
 
 For a project with unresolved dependencies, the manifest can specify the exact javac diagnostic codes and counts in `diagnostics`. The comparison still checks every source declaration and source inheritance edge that javac can attribute. An added or missing diagnostic fails the run.
 
@@ -84,9 +84,11 @@ The comparison also covers calls in the selected method families that resolve to
 
 Windows and macOS run `node tools/compiler-conformance/java/check-products.mjs --platform` from the GitNexus package. This checks rename, worker-cache persistence, the parser ABI, and projects with non-ASCII paths on each platform. The native runner fails if a selected file has no passing tests or contains a skipped case, a todo, or an empty suite.
 
-To compare another analyzer against javac, run the following from this directory. Omit the method names to report all source methods. Pass `'*' '<init>'` to include constructors in the Java report.
+To compare another analyzer against javac, run the following from this directory. With no method names, the standalone command includes source and library methods. Pass `'*' '<init>'` to include constructors. In the fixture manifest, omitting `families` compares method names declared by the fixture, including calls of those names on library types. Set `"families": ["*"]` to include every library method.
 
 ```sh
 node java/javac-report.mjs /path/to/fixture find resolve count > compiler.json
 node compare.mjs compiler.json analyzer.json
 ```
+
+The standalone comparator reads `sites` and `edges`. The Java report also exposes `constructors`, `heritage`, and `implementations` for consumers that compare those relationships. The Java conformance job compares them with the published graph.

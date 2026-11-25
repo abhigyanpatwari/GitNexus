@@ -32,8 +32,7 @@ public class K${i}${i % 4 < 2 ? ' extends Base' : ''} {
   );
 }
 
-function generateVariant(root, count, variant) {
-  const dir = path.join(root, 'large-' + count + '-' + variant);
+function generateVariant(dir, count, variant) {
   const element = variant === 'root-shadow' ? 'models.User' : 'User';
   write(dir, 'models/User.java', 'package models; public class User { public void save() {} }');
   write(dir, 'models/Other.java', 'package models; public class Other { public void save() {} }');
@@ -59,9 +58,8 @@ function generateVariant(root, count, variant) {
   return dir;
 }
 
-function generateQualified(root, variant) {
+function generateQualified(dir, variant) {
   const count = 205;
-  const dir = path.join(root, 'large-205-qualified-' + variant);
   write(dir, 'p/Base.java', 'package p; public class Base {}');
   write(dir, 'p/User.java', 'package p; public class User { public void save() {} }');
   write(dir, 'p/Other.java', 'package p; public class Other { public void save() {} }');
@@ -92,14 +90,22 @@ class K${i} extends Base {
   return dir;
 }
 
-export function generateLargePackages(root, corpus) {
+export function generateLargePackages(root, corpus, selector = '') {
   const dirs = [];
   for (const count of [205, 505]) {
-    for (const variant of ['imported', 'list-shadow', 'root-shadow', 'import-shadow'])
-      dirs.push(generateVariant(root, count, variant));
+    for (const variant of ['imported', 'list-shadow', 'root-shadow', 'import-shadow']) {
+      const name = `large-${count}-${variant}`;
+      if (name.includes(selector))
+        dirs.push(generateVariant(path.join(root, name), count, variant));
+    }
   }
-  for (const variant of ['demand', 'raw', 'shadow']) dirs.push(generateQualified(root, variant));
-  const dir = path.join(root, 'large-inherited-field-siblings');
+  for (const variant of ['demand', 'raw', 'shadow']) {
+    const name = 'large-205-qualified-' + variant;
+    if (name.includes(selector)) dirs.push(generateQualified(path.join(root, name), variant));
+  }
+  const name = 'large-inherited-field-siblings';
+  if (!name.includes(selector)) return dirs;
+  const dir = path.join(root, name);
   fs.cpSync(path.join(corpus, 'inherited-field-siblings'), dir, { recursive: true });
   for (let i = 0; i < 501; i++) write(dir, `src/app/F${i}.java`, `package app; class F${i} {}`);
   dirs.push(dir);

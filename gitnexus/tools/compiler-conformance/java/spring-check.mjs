@@ -22,4 +22,6 @@ await runInSequence(modules, async (module) => {
   });
 });
 assert.ok(count, 'No Spring conformance scenarios selected');
+if (process.argv.length === 2)
+  assert.ok(count >= 32, `Expected at least 32 migrated Spring scenarios, ran ${count}`);
 console.log(`${count} Spring framework conformance scenarios`);

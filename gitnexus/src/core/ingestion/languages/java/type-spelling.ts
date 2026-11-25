@@ -22,7 +22,7 @@ const nameGaps = new RegExp(
 /** Ignore spacing around punctuation while keeping separate identifier tokens separate. */
 export const stripGaps = (text: string) =>
   text
-    .replace(/\/\*[\s\S]*?\*\/|\/\/[^\r\n]*/g, ' ')
+    .replace(/\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\r\n]*/g, ' ')
     .replace(nameGaps, (_gap, preceding: string | undefined) => (preceding ? preceding + ' ' : ''));
 /** Identifier characters and dots only: a written name without type
  * arguments, whitespace or comments. It checks characters, not segments. */

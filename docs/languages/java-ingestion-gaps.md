@@ -61,9 +61,9 @@ class Cases {
 
 - [Language provider directory](../../gitnexus/src/core/ingestion/languages/java/).
 - [Scope resolver](../../gitnexus/src/core/ingestion/languages/java/scope-resolver.ts).
-- [java-receiver-alias-boundaries-review.test.ts](../../gitnexus/test/integration/java-receiver-alias-boundaries-review.test.ts).
-- [java-javac-local-types.test.ts](../../gitnexus/test/integration/resolvers/java-javac-local-types.test.ts).
-- [java.test.ts](../../gitnexus/test/integration/resolvers/java.test.ts).
+- [Receiver alias fixture](../../gitnexus/test/fixtures/compiler-conformance/java-receiver-alias/).
+- [Local class naming fixture](../../gitnexus/test/fixtures/lang-resolution/java-local-class-naming/).
+- [Java compiler and graph checks](../../gitnexus/tools/compiler-conformance/README.md).
 
 Evidence details: [receiver baseline notes](../../gitnexus/bench/receiver-resolution/BASELINE.md) and
 [current roadmap](../../type-resolution-roadmap.md#current-backlog).

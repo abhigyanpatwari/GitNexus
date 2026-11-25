@@ -19,6 +19,7 @@ export function parameterTypes(
       parameter.childForFieldName('type') ??
       parameter.namedChildren.find(
         (child) =>
+          !child.isExtra &&
           child.type !== 'modifiers' &&
           child.type !== 'variable_declarator' &&
           child.id !== name?.id,

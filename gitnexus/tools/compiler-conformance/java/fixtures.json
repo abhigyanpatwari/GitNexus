@@ -12,7 +12,7 @@
   "compiler-conformance/java-bounded-varargs-identities": 2,
   "compiler-conformance/java-callback-qualified-lookalike": 14,
   "compiler-conformance/java-colliding-type-bindings": {
-    "sites": 1,
+    "sites": 3,
     "constructors": true
   },
   "compiler-conformance/java-contextual-declaration-identity": 3,
@@ -107,6 +107,11 @@
     }
   },
   "compiler-conformance/java-sam-split-package": 8,
+  "compiler-conformance/java-static-enum-member-type": {
+    "sites": 2,
+    "diagnostics": { "compiler.err.ref.ambiguous": 1 },
+    "rejections": { "receiver-unresolved": 1 }
+  },
   "compiler-conformance/java-static-wildcard-inner-type": 2,
   "compiler-conformance/java-varargs-constructor-targets": {
     "sites": 0,
