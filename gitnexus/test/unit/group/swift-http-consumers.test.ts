@@ -120,9 +120,9 @@ describeSwift('Swift HTTP consumer plugin (#1677)', () => {
     ).toEqual([]);
   });
 
-  it('reports the line of the path literal', () => {
+  it('reports the call-site line, not the line of a wrapped path argument', () => {
     const tree = parser.parse(
-      'func a() {}\nfunc b() async throws {\n  _ = try await c.get("/x")\n}\n',
+      'func a() {}\nfunc b() async throws {\n  _ = try await c.post(\n    path: "/x",\n    body: d\n  )\n}\n',
     );
     expect(plugin().scan(tree)[0].line).toBe(3);
   });

@@ -180,7 +180,9 @@ export const SWIFT_HTTP_PLUGIN: HttpLanguagePlugin | null =
               method,
               path,
               name: null,
-              line: pathNode.startPosition.row + 1,
+              // Call site, per the HttpDetection.line contract; differs from the
+              // path literal's line when arguments wrap onto later lines.
+              line: (match.captures.call ?? pathNode).startPosition.row + 1,
               confidence: 0.7,
             });
           }
