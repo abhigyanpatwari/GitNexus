@@ -17,13 +17,17 @@ import type {
   ChatMessage,
   ToolCallInfo,
   MessageStep,
+  TokenUsage,
 } from '../core/llm/types';
 import {
   loadSettings,
   getActiveProviderConfig,
   getProviderCapabilities,
+  getAgentConfig,
+  getModelNameForSettings,
   saveSettings,
 } from '../core/llm/settings-service';
+import { estimateCostUsd } from '../core/llm/pricing';
 import type { AgentMessage } from '../core/llm/agent';
 import { type EdgeType } from '../lib/constants';
 import {
@@ -751,6 +755,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       chatAbortRef.current = chatAbortController;
 
       const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
+      const agentConfig = getAgentConfig(llmSettings);
+      const activeModelName = getModelNameForSettings(llmSettings);
 
       // Prepare message history for agent (convert our format to AgentMessage format)
       const history: AgentMessage[] = [...chatMessages, userMessage].flatMap<AgentMessage>((m) => {
@@ -776,6 +782,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       const toolCallsForMessage: ToolCallInfo[] = [];
       let stepCounter = 0;
       let assistantHistoryMessages: ChatMessage['historyMessages'];
+      let messageUsage: TokenUsage | undefined;
+      let estimatedCostUsd: number | null | undefined;
 
       // Helper to update the message with current steps
       const updateMessage = () => {
@@ -795,6 +803,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             historyMessages: assistantHistoryMessages,
             steps: [...stepsForMessage],
             toolCalls: [...toolCallsForMessage],
+            tokenUsage: messageUsage,
+            estimatedCostUsd,
             timestamp: existing?.timestamp ?? Date.now(),
           };
           if (existing) {
@@ -1082,6 +1092,59 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               }
               break;
 
+            case 'usage':
+              if (chunk.usage) {
+                messageUsage = chunk.usage;
+                estimatedCostUsd = estimateCostUsd(
+                  llmSettings.activeProvider,
+                  activeModelName,
+                  chunk.usage,
+                );
+                scheduleMessageUpdate();
+              }
+              break;
+
+            case 'budget_exceeded': {
+              if (chunk.usage) {
+                messageUsage = chunk.usage;
+                estimatedCostUsd = estimateCostUsd(
+                  llmSettings.activeProvider,
+                  activeModelName,
+                  chunk.usage,
+                );
+              }
+              const notice =
+                chunk.reason === 'token_budget'
+                  ? i18n.t('chat:budget.tokenLimitReached', { limit: chunk.limit })
+                  : i18n.t('chat:budget.iterationLimitReached', { limit: chunk.limit });
+              const markStoppedToolCall = (tc: ToolCallInfo): ToolCallInfo =>
+                tc.status === 'running' || tc.status === 'pending'
+                  ? { ...tc, status: 'stopped', result: notice }
+                  : tc;
+              for (let i = 0; i < toolCallsForMessage.length; i++) {
+                toolCallsForMessage[i] = markStoppedToolCall(toolCallsForMessage[i]);
+              }
+              for (let i = 0; i < stepsForMessage.length; i++) {
+                const step = stepsForMessage[i];
+                if (step.type === 'tool_call' && step.toolCall) {
+                  stepsForMessage[i] = { ...step, toolCall: markStoppedToolCall(step.toolCall) };
+                }
+              }
+              setCurrentToolCalls((prev) => prev.map(markStoppedToolCall));
+              stepsForMessage.push({
+                id: `step-${++stepCounter}`,
+                type: 'reasoning',
+                content: `\n\n> ⚠️ ${notice}`,
+              });
+              if (rafHandle != null) {
+                cancelAnimationFrame(rafHandle);
+                rafHandle = null;
+                pendingUpdate = false;
+              }
+              updateMessage();
+              break;
+            }
+
             case 'error':
               setAgentError(chunk.error ?? 'Unknown error');
               break;
@@ -1090,20 +1153,34 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               assistantHistoryMessages = providerCapabilities.preserveAssistantTranscript
                 ? chunk.historyMessages
                 : undefined;
-              // Finalize the assistant message - just call updateMessage one more time
-              scheduleMessageUpdate();
+              if (chunk.usage) {
+                messageUsage = chunk.usage;
+                estimatedCostUsd = estimateCostUsd(
+                  llmSettings.activeProvider,
+                  activeModelName,
+                  chunk.usage,
+                );
+              }
+              if (rafHandle != null) {
+                cancelAnimationFrame(rafHandle);
+                rafHandle = null;
+                pendingUpdate = false;
+              }
+              updateMessage();
               break;
           }
         };
 
         // Stream agent response using the full streaming generator
-        // (handles reasoning, tool_call, tool_result, content, and done events)
+        // (handles reasoning, tool_call, tool_result, usage, budget_exceeded, content, and done events)
         const agent = agentRef.current;
         if (!agent) throw new Error('Agent not initialized');
         const { streamAgentResponse } = await import('../core/llm/agent');
         for await (const chunk of streamAgentResponse(agent, history, {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
           signal: chatAbortController.signal,
+          maxIterations: agentConfig.maxIterations,
+          tokenBudget: agentConfig.tokenBudget,
         })) {
           if (chunk.type === 'cancelled') {
             break;
@@ -1136,7 +1213,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       clearAIToolHighlights,
       graph,
       embeddingStatus,
-      llmSettings.activeProvider,
+      llmSettings,
     ],
   );
 

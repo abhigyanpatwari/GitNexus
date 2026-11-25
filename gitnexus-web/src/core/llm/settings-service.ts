@@ -8,6 +8,12 @@
 import {
   LLMSettings,
   DEFAULT_LLM_SETTINGS,
+  DEFAULT_AGENT_CONFIG,
+  DEFAULT_MAX_ITERATIONS,
+  MIN_MAX_ITERATIONS,
+  MAX_MAX_ITERATIONS,
+  DEFAULT_TOKEN_BUDGET,
+  AgentConfig,
   LLMProvider,
   OpenAIConfig,
   AzureOpenAIConfig,
@@ -45,9 +51,59 @@ const mergeMiniMaxSettings = (
   return merged;
 };
 
+export const normalizeMaxIterations = (value?: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < MIN_MAX_ITERATIONS) {
+    return DEFAULT_MAX_ITERATIONS;
+  }
+  return Math.min(MAX_MAX_ITERATIONS, Math.floor(value));
+};
+
+export const normalizeTokenBudget = (value?: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return DEFAULT_TOKEN_BUDGET;
+  }
+  return Math.floor(value);
+};
+
+export const getAgentConfig = (settings?: Partial<LLMSettings> | null): AgentConfig => ({
+  maxIterations: normalizeMaxIterations(settings?.agent?.maxIterations),
+  tokenBudget: normalizeTokenBudget(settings?.agent?.tokenBudget),
+});
+
+export const getModelNameForSettings = (settings: LLMSettings): string => {
+  switch (settings.activeProvider) {
+    case 'openai':
+      return settings.openai?.model ?? '';
+    case 'azure-openai':
+      return settings.azureOpenAI?.model || settings.azureOpenAI?.deploymentName || '';
+    case 'gemini':
+      return settings.gemini?.model ?? '';
+    case 'anthropic':
+      return settings.anthropic?.model ?? '';
+    case 'ollama':
+      return settings.ollama?.model ?? '';
+    case 'openrouter':
+      return settings.openrouter?.model ?? '';
+    case 'minimax':
+      return settings.minimax?.model ?? '';
+    case 'glm':
+      return settings.glm?.model ?? '';
+    case 'deepseek':
+      return settings.deepseek?.model ?? '';
+  }
+};
+
 const mergeWithDefaults = (parsed?: Partial<LLMSettings> | null): LLMSettings => ({
   ...DEFAULT_LLM_SETTINGS,
   ...parsed,
+  agent: {
+    maxIterations: normalizeMaxIterations(
+      parsed?.agent?.maxIterations ?? DEFAULT_AGENT_CONFIG.maxIterations,
+    ),
+    tokenBudget: normalizeTokenBudget(
+      parsed?.agent?.tokenBudget ?? DEFAULT_AGENT_CONFIG.tokenBudget,
+    ),
+  },
   openai: {
     ...DEFAULT_LLM_SETTINGS.openai,
     ...parsed?.openai,

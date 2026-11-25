@@ -36,5 +36,15 @@
     "you": "You",
     "assistant": "Nexus AI"
   },
+  "usage": {
+    "tokensCount": "{{count}} tokens",
+    "conversationTitle": "Conversation token usage (input {{input}} / output {{output}})",
+    "turnBreakdown": "{{input}} in / {{output}} out",
+    "localCost": "Local (free)"
+  },
+  "budget": {
+    "tokenLimitReached": "Stopped: token budget limit ({{limit}} tokens) exceeded.",
+    "iterationLimitReached": "Stopped: max iterations limit ({{limit}}) reached."
+  },
   "newBadge": "NEW"
 }

@@ -36,5 +36,15 @@
     "you": "你",
     "assistant": "Nexus AI"
   },
+  "usage": {
+    "tokensCount": "{{count}} tokens",
+    "conversationTitle": "当前对话 Token 用量（输入 {{input}} / 输出 {{output}}）",
+    "turnBreakdown": "输入 {{input}} / 输出 {{output}}",
+    "localCost": "本地（免费）"
+  },
+  "budget": {
+    "tokenLimitReached": "已停止：超出单次提问 Token 预算（{{limit}} tokens）。",
+    "iterationLimitReached": "已停止：已达到最大迭代次数限制（{{limit}}）。"
+  },
   "newBadge": "新"
 }

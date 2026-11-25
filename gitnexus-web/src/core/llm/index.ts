@@ -18,7 +18,20 @@ export {
   clearSettings,
   getProviderDisplayName,
   getAvailableModels,
+  getAgentConfig,
+  getModelNameForSettings,
+  normalizeMaxIterations,
+  normalizeTokenBudget,
 } from './settings-service';
+
+// Pricing & Usage Formatting
+export {
+  getModelPricing,
+  estimateCostUsd,
+  formatCostUsd,
+  formatTokenCount,
+  type ModelPricing,
+} from './pricing';
 
 // Tools
 export { createGraphRAGTools } from './tools';
@@ -39,6 +52,8 @@ export {
   createGraphRAGAgent,
   streamAgentResponse,
   invokeAgent,
+  toRecursionLimit,
+  extractMessageUsage,
   BASE_SYSTEM_PROMPT,
   type AgentMessage,
 } from './agent';

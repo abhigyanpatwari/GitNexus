@@ -34,8 +34,10 @@ import type {
   AgentStreamChunk,
   AgentHistoryMessage,
   MiniMaxThinkingMode,
+  TokenUsage,
 } from './types';
 import { getMiniMaxModelCapabilities, MINIMAX_ANTHROPIC_BASE_URLS } from './types';
+import { normalizeMaxIterations, normalizeTokenBudget } from './settings-service';
 import {
   type CodebaseContext,
   buildDynamicSystemPrompt,
@@ -417,7 +419,59 @@ export interface AgentRuntimeOptions {
   captureHistory?: boolean;
   /** When aborted (e.g. user clicked Stop), the stream ends with a `cancelled` chunk. */
   signal?: AbortSignal;
+  /** Maximum ReAct tool/reasoning iterations (converted to LangGraph recursionLimit). */
+  maxIterations?: number;
+  /** Maximum total tokens allowed for this turn; 0 or omitted means unlimited. */
+  tokenBudget?: number;
 }
+
+/**
+ * Translate user-facing maxIterations to LangGraph recursionLimit.
+ * Each ReAct loop executes an agent step + tool step, plus the final answer step.
+ */
+export const toRecursionLimit = (maxIterations?: number): number =>
+  normalizeMaxIterations(maxIterations) * 2 + 1;
+
+const toFiniteNonNegative = (value: unknown): number =>
+  typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+
+/**
+ * Extract normalized token usage from LangChain AIMessage / AIMessageChunk metadata.
+ */
+export const extractMessageUsage = (rawMessage: unknown): TokenUsage | null => {
+  if (!rawMessage || typeof rawMessage !== 'object') return null;
+  const msg = rawMessage as Record<string, any>;
+  const candidates = [
+    msg.usage_metadata,
+    msg.response_metadata?.tokenUsage,
+    msg.response_metadata?.usage,
+  ];
+
+  for (const raw of candidates) {
+    if (!raw || typeof raw !== 'object') continue;
+    const inputTokens = toFiniteNonNegative(
+      raw.input_tokens ?? raw.prompt_tokens ?? raw.promptTokens,
+    );
+    const outputTokens = toFiniteNonNegative(
+      raw.output_tokens ?? raw.completion_tokens ?? raw.completionTokens,
+    );
+    const explicitTotal = toFiniteNonNegative(raw.total_tokens ?? raw.totalTokens);
+    const totalTokens = Math.max(explicitTotal, inputTokens + outputTokens);
+    if (totalTokens > 0 || inputTokens > 0 || outputTokens > 0) {
+      return { inputTokens, outputTokens, totalTokens };
+    }
+  }
+  return null;
+};
+
+const isRecursionLimitError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const err = error as Record<string, any>;
+  if (err.name === 'GraphRecursionError' || err.lc_error_code === 'GRAPH_RECURSION_LIMIT') {
+    return true;
+  }
+  return typeof err.message === 'string' && /recursion limit/i.test(err.message);
+};
 
 const isAbortError = (error: unknown, signal?: AbortSignal): boolean => {
   if (error instanceof DOMException && error.name === 'AbortError') return true;
@@ -493,15 +547,73 @@ export async function* streamAgentResponse(
   messages: AgentMessage[],
   options: AgentRuntimeOptions = {},
 ): AsyncGenerator<AgentStreamChunk> {
+  const maxIterations = options.maxIterations;
+  const recursionLimit = toRecursionLimit(maxIterations);
+  const tokenBudget = normalizeTokenBudget(options.tokenBudget);
+
+  let budgetAbortController: AbortController | null = null;
+  let effectiveSignal = options.signal;
+  let budgetExceeded = false;
+  let cleanupAbortListener: (() => void) | null = null;
+
+  if (tokenBudget > 0) {
+    budgetAbortController = new AbortController();
+    if (options.signal) {
+      if (options.signal.aborted) {
+        budgetAbortController.abort();
+      } else {
+        const onParentAbort = () => budgetAbortController?.abort();
+        options.signal.addEventListener('abort', onParentAbort, { once: true });
+        cleanupAbortListener = () => options.signal?.removeEventListener('abort', onParentAbort);
+      }
+    }
+    effectiveSignal = budgetAbortController.signal;
+  }
+
+  // Track cumulative token usage across agent LLM steps, deduplicating across
+  // 'messages' chunks and 'values' snapshots by message key.
+  const usageByMsgKey = new Map<string, TokenUsage>();
+  let cumulativeUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 };
+
+  const recordUsageForMessage = (msgKey: string, nextUsage: TokenUsage | null): boolean => {
+    if (!nextUsage) return false;
+    const prev = usageByMsgKey.get(msgKey);
+    const inputTokens = Math.max(prev?.inputTokens ?? 0, nextUsage.inputTokens);
+    const outputTokens = Math.max(prev?.outputTokens ?? 0, nextUsage.outputTokens);
+    const totalTokens = Math.max(
+      prev?.totalTokens ?? 0,
+      nextUsage.totalTokens,
+      inputTokens + outputTokens,
+    );
+    if (
+      prev &&
+      prev.inputTokens === inputTokens &&
+      prev.outputTokens === outputTokens &&
+      prev.totalTokens === totalTokens
+    ) {
+      return false;
+    }
+    usageByMsgKey.set(msgKey, { inputTokens, outputTokens, totalTokens });
+    let totalIn = 0;
+    let totalOut = 0;
+    let totalAll = 0;
+    for (const u of usageByMsgKey.values()) {
+      totalIn += u.inputTokens;
+      totalOut += u.outputTokens;
+      totalAll += u.totalTokens;
+    }
+    cumulativeUsage = { inputTokens: totalIn, outputTokens: totalOut, totalTokens: totalAll };
+    return true;
+  };
+
   try {
     const formattedMessages = buildLangChainMessages(messages);
 
     // Use BOTH modes: 'values' for structure, 'messages' for token streaming
     const stream = await agent.stream({ messages: formattedMessages }, {
       streamMode: ['values', 'messages'] as any,
-      // Allow longer tool/reasoning loops (more Cursor-like persistence)
-      recursionLimit: 50,
-      signal: options.signal,
+      recursionLimit,
+      signal: effectiveSignal,
     } as any);
 
     // Track what we've yielded to avoid duplicates
@@ -556,6 +668,23 @@ export async function* streamAgentResponse(
 
         // AIMessageChunk - streaming text tokens
         if (msgType === 'ai' || msgType === 'AIMessage' || msgType === 'AIMessageChunk') {
+          const msgKey = msg.id ? String(msg.id) : `anon-ai-${lastProcessedMsgCount}`;
+          const msgUsage = extractMessageUsage(msg);
+          if (recordUsageForMessage(msgKey, msgUsage)) {
+            yield { type: 'usage', usage: cumulativeUsage };
+            if (tokenBudget > 0 && cumulativeUsage.totalTokens > tokenBudget) {
+              budgetExceeded = true;
+              budgetAbortController?.abort();
+              yield {
+                type: 'budget_exceeded',
+                reason: 'token_budget',
+                limit: tokenBudget,
+                usage: cumulativeUsage,
+              };
+              return;
+            }
+          }
+
           const rawContent = msg.content;
           const toolCalls = msg.tool_calls || [];
 
@@ -653,10 +782,29 @@ export async function* streamAgentResponse(
           lastStepMessages = stepMessages;
         }
 
-        // Process new messages for tool calls/results we might have missed
+        // Process new messages for tool calls/results/usage we might have missed
         for (let i = lastProcessedMsgCount; i < stepMessages.length; i++) {
           const msg = stepMessages[i];
           const msgType = msg._getType?.() || msg.type || 'unknown';
+
+          if (msgType === 'ai' || msgType === 'AIMessage' || msgType === 'AIMessageChunk') {
+            const msgKey = msg.id ? String(msg.id) : `anon-ai-${i}`;
+            const msgUsage = extractMessageUsage(msg);
+            if (recordUsageForMessage(msgKey, msgUsage)) {
+              yield { type: 'usage', usage: cumulativeUsage };
+              if (tokenBudget > 0 && cumulativeUsage.totalTokens > tokenBudget) {
+                budgetExceeded = true;
+                budgetAbortController?.abort();
+                yield {
+                  type: 'budget_exceeded',
+                  reason: 'token_budget',
+                  limit: tokenBudget,
+                  usage: cumulativeUsage,
+                };
+                return;
+              }
+            }
+          }
 
           // Catch tool calls from values mode (backup)
           if ((msgType === 'ai' || msgType === 'AIMessage') && !yieldedToolCalls.size) {
@@ -710,6 +858,16 @@ export async function* streamAgentResponse(
       return;
     }
 
+    if (budgetExceeded) {
+      yield {
+        type: 'budget_exceeded',
+        reason: 'token_budget',
+        limit: tokenBudget,
+        usage: cumulativeUsage,
+      };
+      return;
+    }
+
     // DEBUG: Stream completed normally
     if (import.meta.env.DEV) {
       console.log('✅ Stream completed normally, yielding done');
@@ -721,9 +879,32 @@ export async function* streamAgentResponse(
         options.captureHistory && lastStepMessages
           ? serializeAgentHistoryMessages(lastStepMessages, formattedMessages.length)
           : undefined,
+      ...(cumulativeUsage.totalTokens > 0 ? { usage: cumulativeUsage } : {}),
     };
   } catch (error) {
     if (isAbortError(error, options.signal)) {
+      yield { type: 'cancelled' };
+      return;
+    }
+    if (budgetExceeded) {
+      yield {
+        type: 'budget_exceeded',
+        reason: 'token_budget',
+        limit: tokenBudget,
+        usage: cumulativeUsage,
+      };
+      return;
+    }
+    if (isRecursionLimitError(error)) {
+      yield {
+        type: 'budget_exceeded',
+        reason: 'max_iterations',
+        limit: normalizeMaxIterations(maxIterations),
+        usage: cumulativeUsage,
+      };
+      return;
+    }
+    if (isAbortError(error, effectiveSignal)) {
       yield { type: 'cancelled' };
       return;
     }
@@ -736,6 +917,8 @@ export async function* streamAgentResponse(
       type: 'error',
       error: message,
     };
+  } finally {
+    cleanupAbortListener?.();
   }
 }
 
