@@ -379,6 +379,37 @@ describe('graph write buffer exhaustion (#3526)', () => {
   const isRelationshipCopy = (sql: string) => /^COPY CodeRelation\b/.test(sql);
   const isFallbackInsert = (sql: string) => /CREATE \(a\)-\[:CodeRelation/.test(sql);
 
+  it('uses one execution thread for node COPY and its retry, then restores the relationship budget', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const { default: lbug } = await import('@ladybugdb/core');
+    const setting = "CALL CURRENT_SETTING('threads') RETURN *";
+    const [original] = await adapter.executeQuery(setting);
+    try {
+      await adapter.executeQuery('CALL threads=4');
+      const setThreads = vi.spyOn(lbug.Connection.prototype, 'setMaxNumThreadForExec');
+      const copies: [string, number][] = [];
+      await injectQueries((sql) => {
+        const node = sql.startsWith('COPY File(');
+        if (!node && !isRelationshipCopy(sql)) return;
+        copies.push([node ? 'node' : 'relationship', setThreads.mock.lastCall?.[0] ?? 4]);
+        if (!sql.includes('IGNORE_ERRORS')) return new Error('retry this COPY');
+      });
+      emitGraphCSVs();
+      await expect(
+        adapter.loadGraphToLbug(buildTestGraph([], []), tmpBase, storagePath),
+      ).resolves.toMatchObject({ success: true, warnings: [] });
+      expect(copies).toEqual([
+        ['node', 1],
+        ['node', 1],
+        ['relationship', 4],
+        ['relationship', 4],
+      ]);
+      expect(await adapter.executeQuery(setting)).toEqual([{ threads: '4' }]);
+    } finally {
+      await adapter.executeQuery(`CALL threads=${Number(original.threads)}`);
+    }
+  });
+
   it.each([
     { phase: 'node', isCopy: (sql: string) => /^COPY File\(/.test(sql) },
     { phase: 'relationship', isCopy: isRelationshipCopy },
