@@ -18,7 +18,7 @@ export function runProjectScan(
   repoContext?: RepoContext,
 ): HttpFileDetections[] {
   const scan = plugin.projectScan;
-  if (!scan) return [];
+  if (!scan || inputs.length === 0) return [];
   return scan.resolve(
     inputs.map((input) => scan.collect(input, repoContext)),
     repoContext,
