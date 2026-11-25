@@ -11,8 +11,9 @@
  */
 
 import fs from 'fs/promises';
+import { statSync } from 'node:fs';
 import path from 'path';
-import { execSync, execFileSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 import {
   initWikiDb,
@@ -67,6 +68,42 @@ import {
 import { splitModuleByDirectory } from './module-split.js';
 
 import { shouldIgnorePath } from '../../config/ignore-service.js';
+
+/** A repository being documented must not participate in finding the Git executable. */
+function resolveWikiGit(): string | undefined {
+  const configured = process.env.GITNEXUS_WIKI_GIT_PATH;
+  if (configured) {
+    if (
+      !path.isAbsolute(configured) ||
+      !statSync(configured, { throwIfNoEntry: false })?.isFile()
+    ) {
+      throw new Error('GITNEXUS_WIKI_GIT_PATH must be the absolute path of a Git executable');
+    }
+    return configured;
+  }
+  const candidates =
+    process.platform === 'win32'
+      ? [
+          path.join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'cmd', 'git.exe'),
+          path.join(
+            process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)',
+            'Git',
+            'cmd',
+            'git.exe',
+          ),
+          path.join(process.env.LOCALAPPDATA ?? '', 'Programs', 'Git', 'cmd', 'git.exe'),
+        ]
+      : [
+          '/usr/bin/git',
+          '/bin/git',
+          '/run/current-system/sw/bin/git',
+          '/opt/homebrew/bin/git',
+          '/usr/local/bin/git',
+        ];
+  return candidates.find(
+    (file) => path.isAbsolute(file) && statSync(file, { throwIfNoEntry: false })?.isFile(),
+  );
+}
 
 // ─── Types ────────────────────────────────────────────────────────────
 
@@ -162,6 +199,7 @@ const UNREADABLE_FILE = '(file not readable)';
 // ─── Generator Class ──────────────────────────────────────────────────
 
 export class WikiGenerator {
+  private readonly gitExecutable = resolveWikiGit();
   private repoPath: string;
   private storagePath: string;
   private wikiDir: string;
@@ -320,6 +358,7 @@ export class WikiGenerator {
     // Up-to-date check (skip if --force)
     if (
       !forceMode &&
+      currentCommit &&
       existingMeta &&
       existingMeta.fromCommit === currentCommit &&
       !existingMeta.failedModules?.length &&
@@ -1230,14 +1269,19 @@ export class WikiGenerator {
 
   // ─── Helpers ────────────────────────────────────────────────────────
 
+  private runGit(args: string[]): string {
+    if (!this.gitExecutable) throw new Error('Git unavailable for wiki generation');
+    return execFileSync(this.gitExecutable, args, {
+      cwd: this.repoPath,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+  }
+
   private getCurrentCommit(): string {
     try {
-      return execSync('git rev-parse HEAD', {
-        cwd: this.repoPath,
-        windowsHide: true,
-      })
-        .toString()
-        .trim();
+      return this.runGit(['rev-parse', 'HEAD']).trim();
     } catch {
       return '';
     }
@@ -1249,11 +1293,7 @@ export class WikiGenerator {
    */
   private isCommitReachable(fromCommit: string, toCommit: string): boolean {
     try {
-      execFileSync('git', ['merge-base', '--is-ancestor', fromCommit, toCommit], {
-        cwd: this.repoPath,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
+      this.runGit(['merge-base', '--is-ancestor', fromCommit, toCommit]);
       return true;
     } catch {
       return false;
@@ -1285,12 +1325,7 @@ export class WikiGenerator {
 
   /** The paths `git diff` lists between two commits, unquoted, as the graph stores them. */
   private diffPaths(fromCommit: string, toCommit: string, options: string[] = []): string[] {
-    return execFileSync(
-      'git',
-      ['diff', '-z', '--name-only', ...options, `${fromCommit}..${toCommit}`],
-      { cwd: this.repoPath, windowsHide: true },
-    )
-      .toString()
+    return this.runGit(['diff', '-z', '--name-only', ...options, `${fromCommit}..${toCommit}`])
       .split('\0')
       .filter(Boolean);
   }

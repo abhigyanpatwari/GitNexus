@@ -2083,8 +2083,7 @@ describe('WikiGenerator lang-mismatch cache guard', () => {
 
   it('throws an actionable error when commit matches but lang differs', async () => {
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockReturnValue('abc123\n'),
-      execFileSync: vi.fn(),
+      execFileSync: vi.fn().mockReturnValue('abc123\n'),
     }));
 
     const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
@@ -2117,8 +2116,7 @@ describe('WikiGenerator lang-mismatch cache guard', () => {
 
   it('returns up-to-date when commit and lang both match', async () => {
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockReturnValue('abc123\n'),
-      execFileSync: vi.fn(),
+      execFileSync: vi.fn().mockReturnValue('abc123\n'),
     }));
 
     const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
@@ -2151,8 +2149,7 @@ describe('WikiGenerator lang-mismatch cache guard', () => {
 
   it('returns up-to-date for legacy meta without lang field when no --lang given', async () => {
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockReturnValue('abc123\n'),
-      execFileSync: vi.fn(),
+      execFileSync: vi.fn().mockReturnValue('abc123\n'),
     }));
 
     const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
@@ -2211,10 +2208,9 @@ describe('WikiGenerator grouping prompt isolation', () => {
     }));
 
     vi.doMock('child_process', () => ({
-      execSync: vi.fn().mockImplementation(() => {
+      execFileSync: vi.fn().mockImplementation(() => {
         throw new Error('not a git repo');
       }),
-      execFileSync: vi.fn(),
     }));
 
     const llmClient = await import('../../src/core/wiki/llm-client.js');
