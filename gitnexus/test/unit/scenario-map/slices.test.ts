@@ -26,10 +26,10 @@ import {
 
 const PACKAGE_DIR = fileURLToPath(new URL('../../../', import.meta.url));
 
-// Sequential files with measured CI seconds in test/helpers/shard-balance.ts: 488, 91 and 147.
+// Sequential files with measured CI seconds in test/helpers/shard-balance.ts: 488, 91 and 46.
 const ORCHESTRATION = 'test/unit/incremental-orchestration.test.ts';
 const RENAME_PYTHON = 'test/integration/rename-provider-python.test.ts';
-const LIFECYCLE = 'test/integration/parse-cache-identity-lifecycle.test.ts';
+const LIFECYCLE = 'test/integration/mcp-index-generation.test.ts';
 const SEQUENTIAL = new Set([ORCHESTRATION, RENAME_PYTHON, LIFECYCLE]);
 const FILES = [
   'test/unit/scenario-map/slices.test.ts',

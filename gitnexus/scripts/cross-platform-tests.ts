@@ -192,7 +192,6 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
-  'test/integration/analysis-generation-routing.test.ts',
   'test/integration/analysis-publication-flow.test.ts',
   'test/integration/embedding-job-controller.test.ts',
   'test/integration/embedding-job-restart.test.ts',

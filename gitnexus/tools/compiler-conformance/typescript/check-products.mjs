@@ -9,6 +9,7 @@ const platform = process.argv.includes('--platform');
 const selected = platform
   ? [
       'product/analysis-embedding-flow.ts',
+      'product/analysis-generation-routing.ts',
       'product/cli-e2e.ts',
       'product/dangling-owner-edges.ts',
       'product/fetch-wrapper-persistence.ts',

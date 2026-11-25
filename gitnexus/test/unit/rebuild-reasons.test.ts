@@ -299,7 +299,10 @@ const REBUILD_REASON_COVERAGE = [
   { key: 'spring-vendor-prefixes', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'route-hook-config', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'runner-identity', file: 'test/unit/incremental-orchestration.test.ts' },
-  { key: 'parser-identity', file: 'test/integration/parse-cache-identity-lifecycle.test.ts' },
+  {
+    key: 'parser-identity',
+    file: 'tools/compiler-conformance/typescript/product/parse-cache-identity-lifecycle.ts',
+  },
   { key: 'cjk-segmentation', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'embedding-dims', file: 'test/unit/embedding-dims-guard.test.ts' },
   { key: 'spring-actuator', file: 'test/unit/incremental-orchestration.test.ts' },

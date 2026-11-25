@@ -10,7 +10,6 @@ const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
   'test/integration/embedding-vector-store.test.ts',
   'test/integration/legacy-vector-reuse-index.test.ts',
   'test/integration/legacy-vector-export.test.ts',
-  'test/integration/analysis-generation-routing.test.ts',
   'test/integration/analysis-publication-flow.test.ts',
   'test/integration/embedding-job-controller.test.ts',
   'test/integration/embedding-job-restart.test.ts',
@@ -157,8 +156,6 @@ export default defineConfig({
             // Shared sibling store (#3352): each file runs real analyses and opens
             // the resulting LadybugDB graphs.
             'test/integration/shared-store-analyze.test.ts',
-            'test/integration/parse-cache-identity-lifecycle.test.ts',
-            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',
@@ -300,8 +297,6 @@ export default defineConfig({
             // in two projects would be collected (and run) twice.
             'test/unit/incremental-index-extension-dml-gate.test.ts',
             'test/integration/shared-store-analyze.test.ts',
-            'test/integration/parse-cache-identity-lifecycle.test.ts',
-            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',

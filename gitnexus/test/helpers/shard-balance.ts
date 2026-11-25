@@ -11,8 +11,6 @@ const PACKAGE_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 // from CI measurements when suites grow; these are not timing assertions.
 const SEQUENTIAL_COVERAGE_SECONDS: Readonly<Record<string, number>> = {
   'test/integration/mcp-index-generation.test.ts': 46,
-  'test/integration/parse-cache-identity-lifecycle.test.ts': 147,
-  'test/integration/parse-cache-identity-package.test.ts': 67,
   'test/integration/rename-provider-c.test.ts': 52,
   'test/integration/rename-provider-cpp.test.ts': 88,
   'test/integration/rename-provider-csharp.test.ts': 71,
