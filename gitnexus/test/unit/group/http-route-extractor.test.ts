@@ -1727,7 +1727,7 @@ export default router;
 import { Router } from 'express';
 const router = Router();
 const BASE = '/api/v1';
-export const ROUTES = { USERS: '/api/v1/users' } as const;
+const ROUTES = { USERS: '/api/v1/users' } as const;
 
 router.get(ROUTES.USERS, listUsers);
 router.delete(BASE + '/users/:id', removeUser);

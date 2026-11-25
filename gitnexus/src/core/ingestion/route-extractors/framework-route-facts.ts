@@ -78,8 +78,8 @@ function unwrapTransparent(node: Node | null): Node | null {
  * Top-level `const` declarator names, including `export const`. `table` marks a
  * const bound to an object literal: its members stay writable, unlike a string.
  */
-function moduleConstNames(root: Node): { name: Node; table: boolean }[] {
-  const names: { name: Node; table: boolean }[] = [];
+function moduleConstNames(root: Node): { name: Node; table: boolean; exported: boolean }[] {
+  const names: { name: Node; table: boolean; exported: boolean }[] = [];
   for (const statement of children(root)) {
     const declaration =
       statement.type === 'export_statement'
@@ -91,7 +91,11 @@ function moduleConstNames(root: Node): { name: Node; table: boolean }[] {
       const name = declarator.childForFieldName('name');
       if (declarator.type !== 'variable_declarator' || name?.type !== 'identifier') continue;
       const value = unwrapTransparent(declarator.childForFieldName('value'));
-      names.push({ name, table: value?.type === 'object' });
+      names.push({
+        name,
+        table: value?.type === 'object',
+        exported: statement.type === 'export_statement',
+      });
     }
   }
   return names;
@@ -138,10 +142,15 @@ function writtenMember(node: Node): Node | null {
  * A table (a const bound to an object literal) is trusted only while every
  * reference to it in the file reads a string leaf (`T.A`, `T.N.A`) and none
  * writes one. Any other use lets the object escape (an alias, a call argument,
- * a shorthand property, an export specifier, a subscript, a sub-table read),
+ * a shorthand property, an export in any form, a subscript, a sub-table read),
  * and an escaped object can be written where this scan cannot follow, so the
- * table is not folded. Strings are immutable, so plain consts need no such
- * check.
+ * table is not folded. `as const` is a type, not `Object.freeze`, so an
+ * exported table is writable by its importers. Strings are immutable, so plain
+ * consts, exported or not, need no such check.
+ *
+ * Every reference in the path must fold on its own, so a const whose value is
+ * not a string leaves the path unknown instead of a `${…}` placeholder, while
+ * a string const that merely contains `${` keeps its text, as a literal would.
  *
  * The const scan and the module facts are built on first use, so a file whose
  * routes are all literals pays nothing.
@@ -153,16 +162,19 @@ function createConstantPaths(
 ): (node: Node | undefined) => string[] | null {
   // Top-level statements only: cheap, and enough to reject the common case (a
   // helper called with a local or a parameter) before any whole-file work.
-  let consts: { ids: Set<string>; tables: Set<string>; declared: Set<number> } | undefined;
+  let consts:
+    | { ids: Set<string>; tables: Set<string>; exportedTables: Set<string>; declared: Set<number> }
+    | undefined;
   const moduleConsts = () => {
     if (consts) return consts;
-    consts = { ids: new Set(), tables: new Set(), declared: new Set() };
-    for (const { name, table } of moduleConstNames(tree.rootNode)) {
+    consts = { ids: new Set(), tables: new Set(), exportedTables: new Set(), declared: new Set() };
+    for (const { name, table, exported } of moduleConstNames(tree.rootNode)) {
       const id = lexical.bindingId(name);
       if (!id || lexical.ambiguous(id)) continue;
       consts.ids.add(id);
       consts.declared.add(name.id);
       if (table) consts.tables.add(id);
+      if (table && exported) consts.exportedTables.add(id);
     }
     return consts;
   };
@@ -171,10 +183,10 @@ function createConstantPaths(
   let folding: { untrusted: Set<string>; facts: JsRepoFacts } | undefined;
   const fold = () => {
     if (folding) return folding;
-    const { tables, declared } = moduleConsts();
+    const { tables, exportedTables, declared } = moduleConsts();
     const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
     const leaves = facts.byFile.get(filePath)?.constants.literals ?? new Map<string, string>();
-    const untrusted = new Set<string>();
+    const untrusted = new Set(exportedTables);
     const pending: Node[] = tables.size > 0 ? [tree.rootNode] : [];
     for (let node = pending.pop(); node; node = pending.pop()) {
       for (const child of node.namedChildren) pending.push(child);
@@ -202,12 +214,14 @@ function createConstantPaths(
     const { ids } = moduleConsts();
     if (ids.size === 0) return null;
     const used: string[] = [];
+    const references: Node[] = [];
     const pending: Node[] = [node];
     for (let current = pending.pop(); current; current = pending.pop()) {
       if (current.type === 'identifier') {
         const id = lexical.bindingId(current, current.text, true);
         if (!id || !ids.has(id)) return null;
         used.push(id);
+        references.push(outermostMember(current));
       } else if (
         current.type === 'call_expression' ||
         current.type === 'new_expression' ||
@@ -220,8 +234,12 @@ function createConstantPaths(
     }
     const { untrusted, facts } = fold();
     if (used.some((id) => untrusted.has(id))) return null;
+    if (
+      references.some((reference) => resolveJsPathExpression(filePath, reference, facts) === null)
+    )
+      return null;
     const path = resolveJsPathExpression(filePath, node, facts);
-    return path !== null && path.startsWith('/') && !path.includes('${') ? [path] : null;
+    return path !== null && path.startsWith('/') ? [path] : null;
   };
 }
 

@@ -160,9 +160,9 @@ function handler() {} function other() {}`);
     expect(
       urls(`
       import express from 'express'; const app = express();
-      const USERS = '/api/users';
+      export const USERS = '/api/users';
       const BASE = '/api/v1';
-      export const PATHS = { ORDERS: '/api/orders', ADMIN: { AUDIT: '/api/admin/audit' } } as const;
+      const PATHS = { ORDERS: '/api/orders', ADMIN: { AUDIT: '/api/admin/audit' } } as const;
       const NESTED = BASE + '/nested';
       app.get(USERS, handler);
       app.post(BASE + '/items', handler);
@@ -182,6 +182,17 @@ function handler() {} function other() {}`);
       'POST /api/v1/items',
       'PUT /api/v1/items/:id',
     ]);
+  });
+
+  it('keeps a string constant that contains ${…} exactly as its literal would', () => {
+    const literal = urls(`import express from 'express'; const app = express();
+      app.get('/files/\${name}', handler);`);
+    expect(literal).toHaveLength(1);
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const FILES = '/files/\${name}';
+      app.get(FILES, handler);`),
+    ).toEqual(literal);
   });
 
   it('folds constant paths through route builders, mounts and one helper call', () => {
@@ -235,6 +246,17 @@ function handler() {} function other() {}`);
     [
       'a table read by subscript elsewhere',
       `const T = { A: '/a' }; const k = 'A'; T[k] = '/b'; app.get(T.A, h);`,
+    ],
+    ['an exported table', `export const T = { A: '/a' } as const; app.get(T.A, h);`],
+    ['a table exported by specifier', `const T = { A: '/a' }; export { T }; app.get(T.A, h);`],
+    ['a table exported as default', `const T = { A: '/a' }; export default T; app.get(T.A, h);`],
+    [
+      'a table on module.exports',
+      `const T = { A: '/a' }; module.exports = { T }; app.get(T.A, h);`,
+    ],
+    [
+      'a non-string const in a template',
+      `const P = '/p'; const S = other; app.get(\`\${P}/\${S}\`, h);`,
     ],
     ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
     ['a call', `const P = '/p'; app.get(build(P), h);`],
