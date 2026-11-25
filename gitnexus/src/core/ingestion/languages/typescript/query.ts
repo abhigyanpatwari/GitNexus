@@ -149,7 +149,12 @@ ${unboundCallableQuery('declaration.function')}
 ;; field-extractor's type-alias-with-object-type handling (in
 ;; field-extractors/typescript.ts) finds a scope for its members.
 (type_alias_declaration
+  !type_parameters
   value: (object_type)) @scope.class
+
+;; Every generic alias owns its parameters, including aliases for arrays and unions.
+(type_alias_declaration
+  type_parameters: (type_parameters)) @scope.class
 
 ;; Declarations — types
 ;; The type-parameter list is captured with \`?\` rather than as a second
@@ -199,7 +204,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; Function overload signatures (declaration-only; body in a separate
 ;; function_declaration). Extractors dedup by (name, parameterTypes).
 (function_signature
-  name: (identifier) @declaration.name) @declaration.function
+  name: (identifier) @declaration.name @declaration.overload-signature) @declaration.function
 
 ;; Arrow/function-expression assigned to a const/let/var — named by the
 ;; variable_declarator. Covers \`const fn = () => {}\` and its export
@@ -1326,7 +1331,7 @@ ${unboundCallableQuery('declaration.function')}
 
 (new_expression
   constructor: (member_expression
-    property: (property_identifier) @reference.name) @reference.call.constructor.qualified) @reference.call.constructor
+    property: (property_identifier) @reference.name) @reference.call.constructor.qualified @reference.qualified-name) @reference.call.constructor
 
 ;; References — write access: \`obj.field = value\`.
 (assignment_expression
@@ -1437,6 +1442,17 @@ ${unboundCallableQuery('declaration.function')}
 
 (type_arguments
   (type_identifier) @reference.name @reference.type_reference)
+
+;; Composite annotations retain the dependency of each named constituent.
+;; The parent context excludes type names being declared.
+[
+  (array_type (type_identifier) @reference.name @reference.type_reference)
+  (union_type (type_identifier) @reference.name @reference.type_reference)
+  (intersection_type (type_identifier) @reference.name @reference.type_reference)
+  (tuple_type (type_identifier) @reference.name @reference.type_reference)
+  (parenthesized_type (type_identifier) @reference.name @reference.type_reference)
+  (satisfies_expression (type_identifier) @reference.name @reference.type_reference)
+]
 
 ;; \`x as SomeType\` / \`satisfies SomeType\` — an assertion is a claim ABOUT a
 ;; declared type, so the code making it depends on that declaration.

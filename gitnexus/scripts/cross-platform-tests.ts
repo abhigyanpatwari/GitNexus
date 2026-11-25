@@ -232,7 +232,6 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-ruby.test.ts',
   'test/integration/rename-provider-rust.test.ts',
   'test/integration/rename-provider-swift.test.ts',
-  'test/integration/rename-provider-typescript.test.ts',
   'test/integration/rename-provider-vue.test.ts',
   'test/integration/rename-provider-zig.test.ts',
   'test/integration/pdg-explicit-owner.test.ts',

@@ -24,6 +24,7 @@
  */
 
 import v8 from 'node:v8';
+import type { HeritageSubstitutions } from '../../heritage-substitutions.js';
 import type {
   CallResultAssignmentSite,
   ParsedFile,
@@ -454,6 +455,7 @@ function preEmitInheritanceEdges(
   unresolvedInheritanceByClass: Set<string>,
   resolveImplicitBase: ScopeResolver['resolveImplicitInheritanceBase'],
   recordSourceBinding?: SourceBindingRecorder,
+  substitutions?: HeritageSubstitutions,
 ): Set<string> {
   const handledSites = new Set<string>();
   const seen = new Set<string>();
@@ -524,14 +526,16 @@ function preEmitInheritanceEdges(
     // symbol-kind-driven (no language is named here, per AGENTS.md): a base that
     // resolves to neither an Interface nor a Trait symbol always takes the
     // EXTENDS branch, so such languages are unchanged.
-    const edgeType: 'EXTENDS' | 'IMPLEMENTS' =
-      targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS';
+    const edgeType =
+      site.heritageKind ??
+      (targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS');
     emitInheritanceEdgeDirect(graph, seen, existing, callerGraphId, targetGraphId, edgeType, site);
     // The instantiation this heritage clause wrote (`: IValidator<string>`),
     // keyed by the same graph-id pair the edge itself carries. Only generic
     // bases produce an entry; the sink owns the first-writer-wins rule.
     if (site.typeArguments !== undefined) {
       recordTypeArguments(callerGraphId, targetGraphId, site.typeArguments);
+      substitutions?.registerBase(callerGraphId, targetGraphId, targetDef, site.typeArguments);
     }
   }
 
@@ -618,6 +622,7 @@ export type ScopeResolutionSubPhase =
   | 'linking symbols';
 
 interface RunScopeResolutionInput {
+  readonly heritageSubstitutions?: HeritageSubstitutions;
   /** Source-backed providers use the same executable-region cap as workers. */
   readonly pdgMaxFunctionLines?: number;
   /** Observe the completed semantic pass without changing its graph output. */
@@ -1203,7 +1208,15 @@ export function runScopeResolution(
         unresolvedInheritanceByClass,
         provider.resolveImplicitInheritanceBase,
         recordSourceBinding,
+        input.heritageSubstitutions,
       );
+  if (heritageTypeArguments.size && input.heritageSubstitutions) {
+    for (const def of finalized.defs.byId.values()) {
+      if (def.type !== 'Method' || !def.typeParameters?.length) continue;
+      const id = resolveDefGraphId(def.filePath, def, nodeLookup);
+      if (id) input.heritageSubstitutions.registerMethod(id, def);
+    }
+  }
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level

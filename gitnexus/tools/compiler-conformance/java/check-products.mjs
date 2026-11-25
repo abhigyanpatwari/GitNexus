@@ -26,7 +26,7 @@ execFileSync(
     'tsx',
     '--test',
     '--test-concurrency=1',
-    '--test-reporter=' + new URL('./native-reporter.mjs', import.meta.url).href,
+    '--test-reporter=' + new URL('../native-reporter.mjs', import.meta.url).href,
     ...files,
   ],
   {

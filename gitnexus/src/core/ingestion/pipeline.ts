@@ -24,6 +24,7 @@ import { GLOBAL_NAME_FALLBACK_REASON } from '../graph/edge-reasons.js';
 import { GraphEmitSink, type GraphEmitManifest } from '../lbug/graph-emit-sink.js';
 import { type PipelineProgress } from 'gitnexus-shared';
 import { PipelineResult } from '../../types/pipeline.js';
+import type { runScopeResolution } from './scope-resolution/pipeline/run.js';
 import {
   runPipeline,
   getPhaseOutput,
@@ -59,6 +60,8 @@ import {
 } from './pipeline-phases/index.js';
 
 export interface PipelineOptions {
+  /** Observe source bindings before call sites are combined into graph edges. */
+  onScopeResolved?: Parameters<typeof runScopeResolution>[0]['onResolved'];
   /** Cooperative cancellation checked between parser dispatch and graph phases. */
   signal?: AbortSignal;
   /**

@@ -76,6 +76,8 @@ export interface ReferenceSite {
   /** Lexical lookup anchor when it differs from the reference's structural owner. */
   readonly lookupScope?: ScopeId;
   readonly lookupPurpose?: import('./types.js').LookupPurpose;
+  /** The inheritance clause distinguishes extension from implementation at this site. */
+  readonly heritageKind?: 'EXTENDS' | 'IMPLEMENTS';
   /** The name being referenced (e.g., `'save'`, `'User'`, `'count'`). */
   readonly name: string;
   /**

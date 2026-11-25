@@ -1,0 +1,103 @@
+{
+  "lang-resolution/ts-deep-field-chain": [
+    "models.ts:10:2 TS2564",
+    "models.ts:11:2 TS2564",
+    "models.ts:19:2 TS2564",
+    "models.ts:20:2 TS2564",
+    "models.ts:2:2 TS2564"
+  ],
+  "lang-resolution/ts-dynamic-this-no-seed": ["app.ts:17:11 TS2339"],
+  "lang-resolution/ts-field-type-disambig": [
+    "address.ts:2:2 TS2564",
+    "user.ts:4:2 TS2564",
+    "user.ts:5:2 TS2564"
+  ],
+  "lang-resolution/ts-mixed-chain": ["models.ts:16:2 TS2564", "models.ts:8:2 TS2564"],
+  "lang-resolution/ts-nullable-chain": [
+    "src/app.ts:12:2 TS18047",
+    "src/app.ts:19:2 TS18048",
+    "src/app.ts:26:2 TS18047"
+  ],
+  "lang-resolution/ts-param-property-fields": ["models.ts:2:2 TS2564"],
+  "lang-resolution/ts-virtual-dispatch": ["src/app.ts:22:9 TS2339"],
+  "lang-resolution/ts-write-access": [
+    "models.ts:2:2 TS2564",
+    "models.ts:6:2 TS2564",
+    "models.ts:7:2 TS2564"
+  ],
+  "lang-resolution/typescript-callable-alternatives": [
+    "compare.ts:10:2 TS2349",
+    "compare.ts:15:2 TS2349",
+    "compare.ts:25:4 TS2349",
+    "compare.ts:29:14 TS2869",
+    "compare.ts:30:4 TS2349",
+    "compare.ts:34:14 TS2571",
+    "compare.ts:40:4 TS2349",
+    "index.ts:54:14 TS2774"
+  ],
+  "lang-resolution/typescript-double-cast-inference": ["src/app.ts:9:7 TS2339"],
+  "lang-resolution/typescript-generic-calls": [
+    "src/service.ts:5:22 TS2591",
+    "src/token.ts:6:20 TS2591"
+  ],
+  "lang-resolution/typescript-hoc-wrapped": [
+    "src/debounce.ts:9:40 TS2345",
+    "src/nested.tsx:56:2 TS2345",
+    "src/use-callback.ts:14:40 TS2345"
+  ],
+  "lang-resolution/typescript-hof-callbacks": [
+    "src/multi-action-store.ts:39:19 TS2322",
+    "src/multi-action-store.ts:41:14 TS7006",
+    "src/multi-action-store.ts:45:17 TS7006",
+    "src/store.ts:41:21 TS2322"
+  ],
+  "lang-resolution/typescript-instanceof-narrowing": ["src/app.ts:3:17 TS7006"],
+  "lang-resolution/typescript-jsx-as-call": [
+    "src/html-only.tsx:10:2 TS7026",
+    "src/html-only.tsx:7:2 TS7026",
+    "src/html-only.tsx:8:14 TS7026",
+    "src/html-only.tsx:8:4 TS7026",
+    "src/html-only.tsx:9:17 TS7026",
+    "src/html-only.tsx:9:4 TS7026"
+  ],
+  "lang-resolution/typescript-local-shadow": ["src/app.ts:1:9 TS2440"],
+  "lang-resolution/typescript-mcp-tools": [
+    "src/server.ts:18:69 TS2345",
+    "src/server.ts:19:25 TS2769",
+    "src/server.ts:20:55 TS2322",
+    "src/server.ts:21:33 TS2345",
+    "src/server.ts:24:48 TS2345",
+    "src/server.ts:28:32 TS2345",
+    "src/server.ts:31:0 TS2630",
+    "src/server.ts:32:35 TS2345",
+    "src/server.ts:36:35 TS2345",
+    "src/server.ts:40:30 TS2345",
+    "src/server.ts:43:52 TS2345",
+    "src/server.ts:47:38 TS2345",
+    "src/server.ts:51:39 TS2345"
+  ],
+  "lang-resolution/typescript-member-access-for-loop": ["src/app.ts:27:32 TS2339"],
+  "lang-resolution/typescript-namespace-const": ["config.ts:19:2 TS1235"],
+  "lang-resolution/typescript-pnpm-workspace-imports": [
+    "apps/web/src/alias.ts:1:23 TS2307",
+    "apps/web/src/baseurl.ts:1:23 TS2307",
+    "apps/web/src/guess.ts:1:21 TS2307",
+    "apps/web/src/main.ts:1:21 TS2307",
+    "apps/web/src/outside.ts:1:30 TS2307",
+    "apps/web/src/use.ts:1:24 TS2307"
+  ],
+  "lang-resolution/typescript-reexport-type": ["src/app.ts:4:19 TS1361", "src/app.ts:7:19 TS1361"],
+  "lang-resolution/typescript-side-effect-imports": [
+    "src/polyfill.ts:1:14 TS2397",
+    "src/polyfill.ts:2:11 TS7017",
+    "src/register.ts:1:14 TS2397",
+    "src/register.ts:2:12 TS7017"
+  ],
+  "lang-resolution/typescript-tsconfig-aliases": ["project TS5090", "project TS5102"],
+  "lang-resolution/typescript-tsx-jsx": [
+    "src/App.tsx:5:4 TS7026",
+    "src/App.tsx:7:4 TS7026",
+    "src/Button.tsx:4:30 TS7026",
+    "src/Button.tsx:4:9 TS7026"
+  ]
+}

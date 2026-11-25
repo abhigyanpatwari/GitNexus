@@ -1,0 +1,467 @@
+import assert from 'node:assert/strict';
+import { compilerImportTrace } from './import-trace.mjs';
+import { withWorkspacePackages } from './workspace.mjs';
+import { existsSync, globSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { API, SymbolFlags } from 'typescript/unstable/sync';
+import { NodeFlags, SyntaxKind } from 'typescript/unstable/ast';
+import { skipTrivia } from 'typescript/unstable/ast/scanner';
+
+export const graphRelations = [
+  'CALLS',
+  'USES',
+  'IMPORTS',
+  'EXTENDS',
+  'IMPLEMENTS',
+  'METHOD_OVERRIDES',
+  'METHOD_IMPLEMENTS',
+];
+export const relations = [
+  ...graphRelations,
+  'TYPE_PARAMETER_USES',
+  'VARIABLE_READS',
+  'DECLARATIONS',
+  'HAS_METHOD',
+  'REJECTED_CALLS',
+];
+
+export function emptyReport() {
+  return Object.fromEntries(relations.map((relation) => [relation, { sites: [], edges: [] }]));
+}
+
+function relative(root, source) {
+  return path.relative(root, source.fileName).split(path.sep).join('/');
+}
+
+function startOfDeclaration(node) {
+  // Tree-sitter represents export/default wrappers outside the declaration.
+  // A method's modifiers (including override) are part of the method.
+  if (
+    [
+      SyntaxKind.FunctionDeclaration,
+      SyntaxKind.ClassDeclaration,
+      SyntaxKind.InterfaceDeclaration,
+    ].includes(node.kind)
+  ) {
+    const prefix = Array.from(node.modifiers ?? []).filter(
+      (modifier) =>
+        modifier.kind === SyntaxKind.ExportKeyword || modifier.kind === SyntaxKind.DefaultKeyword,
+    );
+    if (prefix.length) return skipTrivia(node.getSourceFile().text, prefix.at(-1).end);
+  }
+  return node.getStart();
+}
+
+function identity(root, node) {
+  const source = node.getSourceFile();
+  if (node.kind === SyntaxKind.SourceFile) return relative(root, source);
+  const pos = source.getLineAndCharacterOfPosition(startOfDeclaration(node));
+  const fileLine = relative(root, source) + '#' + (pos.line + 1);
+  if (
+    [
+      SyntaxKind.ClassDeclaration,
+      SyntaxKind.InterfaceDeclaration,
+      SyntaxKind.TypeAliasDeclaration,
+      SyntaxKind.EnumDeclaration,
+    ].includes(node.kind)
+  ) {
+    return fileLine + ':' + node.name.getText();
+  }
+  return fileLine + ':' + pos.character;
+}
+
+// A TypeScript callable has one runtime method even when its signatures
+// occupy different lines. Keep the selected declaration in the site report.
+function graphIdentity(root, node, project) {
+  if (node.kind === SyntaxKind.Constructor) return identity(root, node.parent) + '.constructor';
+  if (node.kind === SyntaxKind.MethodDeclaration || node.kind === SyntaxKind.MethodSignature) {
+    const owner =
+      node.parent.kind === SyntaxKind.TypeLiteral &&
+      node.parent.parent.kind === SyntaxKind.TypeAliasDeclaration
+        ? node.parent.parent
+        : node.parent;
+    return identity(root, owner) + '.' + node.name.getText();
+  }
+  if (node.kind === SyntaxKind.FunctionDeclaration && node.name) {
+    const signatures = project.checker.getSymbolAtLocation(node.name)?.declarations;
+    if (signatures?.length > 1) return identity(root, signatures[0].resolve(project));
+  }
+  return identity(root, node);
+}
+
+function enclosingCaller(node) {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (
+      [
+        SyntaxKind.FunctionDeclaration,
+        SyntaxKind.MethodDeclaration,
+        SyntaxKind.MethodSignature,
+        SyntaxKind.Constructor,
+        SyntaxKind.ClassDeclaration,
+        SyntaxKind.InterfaceDeclaration,
+        SyntaxKind.TypeAliasDeclaration,
+        SyntaxKind.SourceFile,
+      ].includes(parent.kind)
+    ) {
+      return parent;
+    }
+    if (
+      (parent.kind === SyntaxKind.FunctionExpression || parent.kind === SyntaxKind.ArrowFunction) &&
+      parent.parent.kind === SyntaxKind.VariableDeclaration
+    )
+      return parent;
+  }
+  throw new Error('No source caller for ' + node.getText());
+}
+
+function symbolDeclaration(symbol, project) {
+  return (symbol?.valueDeclaration ?? symbol?.declarations[0])?.resolve(project);
+}
+
+export function compilerReport(root, expectedDiagnostics = [], inventory = false) {
+  return withWorkspacePackages(root, (projectRoot) =>
+    reportProject(projectRoot, expectedDiagnostics, inventory),
+  );
+}
+
+function reportProject(root, expectedDiagnostics, inventory) {
+  const localConfig = path.join(root, 'tsconfig.json');
+  const scratch = existsSync(localConfig)
+    ? undefined
+    : mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-config-'));
+  const config = scratch ? path.join(scratch, 'tsconfig.json') : localConfig;
+  const api = new API({ cwd: root });
+  try {
+    if (scratch) {
+      const files = globSync('**/*.{ts,tsx,mts,cts}', {
+        cwd: root,
+        exclude: ['**/node_modules/**'],
+      }).map((file) => path.join(root, file));
+      writeFileSync(
+        config,
+        JSON.stringify({
+          files,
+          compilerOptions: {
+            target: 'ES2022',
+            module: 'ESNext',
+            moduleResolution: 'Bundler',
+            jsx: 'preserve',
+            strict: true,
+            noEmit: true,
+            types: [],
+          },
+        }),
+      );
+    }
+    const project = api.updateSnapshot({ openProjects: [config] }).getProject(config);
+    assert.ok(project, 'TypeScript failed to open ' + config);
+    const { checker, program } = project;
+    const files = new Set(
+      program.getSourceFileNames().filter((file) => {
+        const relativePath = path.relative(root, file);
+        return (
+          relativePath &&
+          !path.isAbsolute(relativePath) &&
+          relativePath.split(path.sep)[0] !== '..' &&
+          !relativePath.split(path.sep).includes('node_modules')
+        );
+      }),
+    );
+    assert.ok(files.size, 'Empty TypeScript project ' + config);
+    const result = emptyReport();
+    const compilerDiagnostics = [
+      ...program.getConfigFileParsingDiagnostics(),
+      ...program.getProgramDiagnostics(),
+      ...program.getGlobalDiagnostics(),
+      ...program.getSyntacticDiagnostics(),
+      ...program.getSemanticDiagnostics(),
+    ];
+    const erasedValueUses = new Map();
+    const diagnostics = compilerDiagnostics
+      .map((diagnostic) => {
+        if (diagnostic.code === 1361 || diagnostic.code === 1362) {
+          const positions = erasedValueUses.get(diagnostic.fileName) ?? new Set();
+          positions.add(diagnostic.pos);
+          erasedValueUses.set(diagnostic.fileName, positions);
+        }
+        const file = diagnostic.fileName && program.getSourceFile(diagnostic.fileName);
+        if (!file) return 'project TS' + diagnostic.code;
+        const { line, character } = file.getLineAndCharacterOfPosition(diagnostic.pos);
+        return relative(root, file) + ':' + (line + 1) + ':' + character + ' TS' + diagnostic.code;
+      })
+      .sort();
+    assert.deepEqual(diagnostics, expectedDiagnostics, 'TypeScript diagnostics for ' + root);
+
+    let importTrace;
+    function importedDeclaration(literal) {
+      const declaration = symbolDeclaration(checker.getSymbolAtLocation(literal), project);
+      if (declaration || !literal.text?.startsWith('.')) return declaration;
+      importTrace ??= compilerImportTrace(root, config);
+      const target = importTrace
+        .get(path.resolve(literal.getSourceFile().fileName))
+        ?.get(literal.text);
+      return target && program.getSourceFile(target);
+    }
+
+    function edge(kind, from, to, site) {
+      if (to && files.has(to.getSourceFile().fileName)) {
+        const target = identity(root, to);
+        result[kind].edges.push({
+          from: graphIdentity(root, from, project),
+          to: graphIdentity(root, to, project),
+        });
+        if (site) {
+          const source = site.getSourceFile();
+          const position = (offset) => {
+            const { line, character } = source.getLineAndCharacterOfPosition(offset);
+            return line + 1 + ':' + character;
+          };
+          result[kind].sites.push({
+            file: relative(root, source),
+            start: position(site.getStart()),
+            end: position(site.end),
+            status: 'resolved',
+            target,
+          });
+        }
+      }
+    }
+
+    function isMethod(node) {
+      return (
+        node?.kind === SyntaxKind.MethodDeclaration || node?.kind === SyntaxKind.MethodSignature
+      );
+    }
+
+    function hasModifier(node, kind) {
+      return node.modifiers?.some((modifier) => modifier.kind === kind) ?? false;
+    }
+
+    function interfaceContracts(node, seen = new Set()) {
+      const contracts = [];
+      const key = identity(root, node);
+      if (seen.has(key)) return contracts;
+      seen.add(key);
+      for (const clause of node.heritageClauses ?? []) {
+        for (const base of clause.types) {
+          const type = checker.getTypeAtLocation(base);
+          const decl = symbolDeclaration(type?.getSymbol(), project);
+          if (clause.token === SyntaxKind.ImplementsKeyword && type) contracts.push(type);
+          else if (decl?.kind === SyntaxKind.ClassDeclaration)
+            contracts.push(...interfaceContracts(decl, seen));
+        }
+      }
+      return contracts;
+    }
+
+    function recordHeritage(node) {
+      for (const clause of node.heritageClauses ?? []) {
+        const extendsBase = clause.token === SyntaxKind.ExtendsKeyword;
+        for (const base of clause.types) {
+          const type = checker.getTypeAtLocation(base);
+          if (!type) continue;
+          edge(
+            extendsBase ? 'EXTENDS' : 'IMPLEMENTS',
+            node,
+            symbolDeclaration(type.getSymbol(), project),
+          );
+          if (!extendsBase || node.kind !== SyntaxKind.ClassDeclaration) continue;
+          for (const method of node.members) {
+            if (!isMethod(method)) continue;
+            const receiver = hasModifier(method, SyntaxKind.StaticKeyword)
+              ? checker.getTypeAtLocation(base.expression)
+              : type;
+            const member = receiver && checker.getPropertyOfType(receiver, method.name.getText());
+            const target = symbolDeclaration(member, project);
+            if (isMethod(target)) edge('METHOD_OVERRIDES', node, target);
+          }
+        }
+      }
+      if (node.kind !== SyntaxKind.ClassDeclaration || !node.name) return;
+      const classSymbol = checker.getSymbolAtLocation(node.name);
+      const instance = checker.getDeclaredTypeOfSymbol(classSymbol);
+      for (const contract of interfaceContracts(node)) {
+        for (const member of checker.getPropertiesOfType(contract)) {
+          const declaration = symbolDeclaration(member, project);
+          if (!isMethod(declaration)) continue;
+          const implementation = checker.getPropertyOfType(instance, member.name);
+          const method = symbolDeclaration(implementation, project);
+          if (
+            method?.kind === SyntaxKind.MethodDeclaration &&
+            !hasModifier(method, SyntaxKind.AbstractKeyword)
+          ) {
+            edge('METHOD_IMPLEMENTS', method, declaration);
+          }
+        }
+      }
+    }
+
+    function rejectedConstruction(expression) {
+      return (
+        expression?.kind === SyntaxKind.NewExpression &&
+        erasedValueUses
+          .get(expression.getSourceFile().fileName)
+          ?.has(expression.expression.getStart())
+      );
+    }
+
+    // The checker continues type-checking after an illegal value use and can
+    // return recovery signatures for a receiver initialized by that expression.
+    function rejectedCall(node) {
+      if (rejectedConstruction(node)) return true;
+      if (node.expression.kind !== SyntaxKind.PropertyAccessExpression) return false;
+      const receiver = node.expression.expression;
+      if (receiver.kind !== SyntaxKind.Identifier) return false;
+      const declaration = symbolDeclaration(checker.getSymbolAtLocation(receiver), project);
+      return (
+        declaration?.kind === SyntaxKind.VariableDeclaration &&
+        !declaration.type &&
+        (declaration.parent.flags & NodeFlags.Const) !== 0 &&
+        rejectedConstruction(declaration.initializer)
+      );
+    }
+
+    const declarationLabels = new Map([
+      [SyntaxKind.ClassDeclaration, 'Class'],
+      [SyntaxKind.InterfaceDeclaration, 'Interface'],
+      [SyntaxKind.FunctionDeclaration, 'Function'],
+      [SyntaxKind.MethodDeclaration, 'Method'],
+      [SyntaxKind.MethodSignature, 'Method'],
+    ]);
+    function visit(node) {
+      if (inventory && node.name) {
+        const label = declarationLabels.get(node.kind);
+        if (label) {
+          const target = graphIdentity(root, node, project);
+          result.DECLARATIONS.edges.push({
+            from: relative(root, node.getSourceFile()),
+            to: label + ':' + node.name.getText() + '@' + target,
+          });
+          if (label === 'Method')
+            result.HAS_METHOD.edges.push({ from: identity(root, node.parent), to: target });
+        }
+      }
+      if (
+        node.kind === SyntaxKind.ReturnStatement &&
+        node.expression?.kind === SyntaxKind.Identifier
+      ) {
+        const use = node.expression;
+        const symbol = checker.getSymbolAtLocation(use);
+        const target =
+          symbol && (symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol);
+        const variable = symbolDeclaration(target, project);
+        if (
+          variable?.kind === SyntaxKind.VariableDeclaration &&
+          files.has(variable.getSourceFile().fileName)
+        ) {
+          const source = use.getSourceFile();
+          const start = source.getLineAndCharacterOfPosition(use.getStart());
+          const end = source.getLineAndCharacterOfPosition(use.end);
+          result.VARIABLE_READS.sites.push({
+            file: relative(root, source),
+            start: start.line + 1 + ':' + start.character,
+            end: end.line + 1 + ':' + end.character,
+            status: 'resolved',
+            target: identity(root, variable.name),
+          });
+        }
+      }
+      if (
+        (node.kind === SyntaxKind.ImportDeclaration ||
+          node.kind === SyntaxKind.ExportDeclaration) &&
+        node.moduleSpecifier
+      ) {
+        const target = importedDeclaration(node.moduleSpecifier);
+        edge('IMPORTS', node.getSourceFile(), target);
+      }
+      const isCall =
+        node.kind === SyntaxKind.NewExpression || node.kind === SyntaxKind.CallExpression;
+      const rejected = isCall && erasedValueUses.size > 0 && rejectedCall(node);
+      if (rejected) {
+        const source = node.getSourceFile();
+        const start = source.getLineAndCharacterOfPosition(node.getStart());
+        const end = source.getLineAndCharacterOfPosition(node.end);
+        result.REJECTED_CALLS.sites.push({
+          file: relative(root, source),
+          start: start.line + 1 + ':' + start.character,
+          end: end.line + 1 + ':' + end.character,
+          status: 'unresolved',
+        });
+      }
+      if (!rejected && node.kind === SyntaxKind.NewExpression) {
+        const type = checker.getTypeAtLocation(node);
+        edge('CALLS', enclosingCaller(node), symbolDeclaration(type?.getSymbol(), project), node);
+      }
+      if (!rejected && node.kind === SyntaxKind.CallExpression) {
+        if (node.expression.kind === SyntaxKind.ImportKeyword && node.arguments.length) {
+          edge('IMPORTS', node.getSourceFile(), importedDeclaration(node.arguments[0]));
+        }
+        const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
+        edge('CALLS', enclosingCaller(node), selected, node);
+      }
+      if (
+        node.kind === SyntaxKind.JsxOpeningElement ||
+        node.kind === SyntaxKind.JsxSelfClosingElement
+      ) {
+        const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
+        edge('CALLS', enclosingCaller(node), selected, node);
+      }
+      if (node.kind === SyntaxKind.TypeReference) {
+        const name = checker.getSymbolAtLocation(node.typeName);
+        const target =
+          name && (name.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(name) : name);
+        const decl = symbolDeclaration(target, project);
+        if (decl?.kind === SyntaxKind.TypeParameter) {
+          const owner = decl.parent.name;
+          if (owner) {
+            const source = node.getSourceFile();
+            const position = (offset) => {
+              const p = source.getLineAndCharacterOfPosition(offset);
+              return p.line + 1 + ':' + p.character;
+            };
+            result.TYPE_PARAMETER_USES.sites.push({
+              file: relative(root, source),
+              start: position(node.typeName.getStart()),
+              end: position(node.typeName.end),
+              status: 'type-parameter',
+              target: identity(root, owner) + '/' + decl.name.getText(),
+            });
+          }
+        } else edge('USES', enclosingCaller(node), decl, node.typeName);
+      }
+      if (
+        node.kind === SyntaxKind.ClassDeclaration ||
+        node.kind === SyntaxKind.InterfaceDeclaration
+      ) {
+        recordHeritage(node);
+      }
+      node.forEachChild(visit);
+    }
+
+    for (const file of files) {
+      const source = program.getSourceFile(file);
+      assert.ok(source, 'Missing compiler source ' + file);
+      visit(source);
+    }
+    return result;
+  } finally {
+    api.close();
+    if (scratch) rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const [directory, relation = 'CALLS'] = process.argv.slice(2);
+  assert.ok(
+    directory && relations.includes(relation),
+    'Usage: node compiler-report.mjs <project> [' + relations.join('|') + ']',
+  );
+  const report = compilerReport(
+    path.resolve(directory),
+    [],
+    relation === 'DECLARATIONS' || relation === 'HAS_METHOD',
+  );
+  console.log(JSON.stringify({ producer: 'TypeScript', ...report[relation] }, null, 2));
+}

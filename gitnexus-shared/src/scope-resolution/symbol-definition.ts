@@ -72,6 +72,8 @@ export interface SymbolDefinition {
    *  (e.g. `App.Models.User`). Falls back to the simple symbol name when no
    *  package/namespace/module scope exists or no explicit qualified metadata is provided. */
   qualifiedName?: string;
+  /** A callable signature that participates in overload selection independently of its implementation. */
+  isOverloadSignature?: boolean;
   parameterCount?: number;
   /** Number of required (non-optional, non-default) parameters.
    *  Enables range-based arity filtering: argCount >= requiredParameterCount && argCount <= parameterCount. */

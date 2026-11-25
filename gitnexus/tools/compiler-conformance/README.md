@@ -94,3 +94,22 @@ node compare.mjs compiler.json analyzer.json
 The standalone comparator reads `sites` and `edges`. The Java report also exposes `constructors`, `heritage`, and `implementations` for consumers that compare those relationships. The Java conformance job compares them with the published graph.
 
 Each `methodAccess` entry identifies a source method by file, line, and column. Its `isPublic` field includes methods that Java makes implicitly public. Projects that compare method declarations check this flag against the graph's `isExported` property.
+
+## TypeScript fixtures
+
+Run `npm run build` and `npm run test:conformance:typescript` in `gitnexus/`. To check one project, pass its directory to `node tools/compiler-conformance/typescript/check.mjs`. Add new source projects under `test/fixtures/compiler-conformance/typescript-<case>/`. The runner also compares existing projects listed in `typescript/projects.json`.
+
+The oracle uses the TypeScript compiler installed by the package lock. It reads the fixture's tsconfig when present. Projects without a config use strict checking and bundler module resolution. The compiler and GitNexus read the same source. For npm workspaces, the compiler gets a temporary copy with the local packages linked.
+
+Each call comparison checks the source range and the selected declaration, including overloads. The runner also compares published graph edges for calls, imports, named types, inheritance, overrides, and interface implementations. The declaration inventory compares named functions, classes, interfaces, and their methods in the projects listed for that check. Negative controls deliberately swap same-named targets and verify that the comparison fails.
+
+Fixtures that exercise compiler recovery declare their expected diagnostics in `typescript/diagnostics.json`. For example, TypeScript 7 reports two configuration errors in the legacy baseUrl fixture. Unlisted or missing diagnostics fail the job. For a type-only import used as a constructor, the runner checks that GitNexus leaves the call unbound. Annotated receivers still have compiler-selected methods.
+
+The native product checks cover GitNexus behavior that has no compiler equivalent, including graph persistence, rename, and resuming an interrupted embedding run. Windows and macOS run the platform selection with `node tools/compiler-conformance/typescript/check-products.mjs --platform`.
+
+To use the TypeScript producer with another analyzer, run the following from `gitnexus/` using a project that passes type checking. Both reports use the format described above.
+
+```sh
+node tools/compiler-conformance/typescript/compiler-report.mjs path/to/project CALLS > compiler.json
+node tools/compiler-conformance/compare.mjs compiler.json analyzer.json
+```

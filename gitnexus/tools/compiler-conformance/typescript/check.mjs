@@ -1,0 +1,242 @@
+import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
+import { compareReports } from '../compare.mjs';
+import { graphDeclaration } from '../gitnexus-report.mjs';
+import { compilerReport, emptyReport, graphRelations, relations } from './compiler-report.mjs';
+
+function graphIdentity(node) {
+  if (['Class', 'Interface', 'TypeAlias', 'Enum'].includes(node.label)) {
+    const { filePath, startLine, name } = node.properties;
+    return filePath + '#' + (startLine + 1) + ':' + name;
+  }
+  return graphDeclaration(node);
+}
+
+function graphReport(graph, boundCalls, inventory) {
+  const owners = new Map();
+  for (const edge of graph.iterRelationshipsByType('HAS_METHOD')) {
+    const owner = graph.getNode(edge.sourceId);
+    if (owner) owners.set(edge.targetId, owner);
+  }
+  function callableIdentity(node) {
+    const owner = owners.get(node.id);
+    return node.label === 'Method' && owner
+      ? graphIdentity(owner) + '.' + node.properties.name
+      : graphIdentity(node);
+  }
+  const result = emptyReport();
+  if (inventory) {
+    for (const node of graph.nodes) {
+      if (!['Class', 'Interface', 'Method', 'Function'].includes(node.label)) continue;
+      result.DECLARATIONS.edges.push({
+        from: node.properties.filePath,
+        to: node.label + ':' + node.properties.name + '@' + callableIdentity(node),
+      });
+    }
+    for (const [id, owner] of owners) {
+      const method = graph.getNode(id);
+      if (method?.label === 'Method')
+        result.HAS_METHOD.edges.push({ from: graphIdentity(owner), to: callableIdentity(method) });
+    }
+  }
+  result.CALLS.sites.push(...boundCalls);
+  const boundRanges = new Set(
+    boundCalls.map((site) => JSON.stringify([site.file, site.start, site.end])),
+  );
+  for (const relation of graphRelations) {
+    for (const edge of graph.iterRelationshipsByType(relation)) {
+      if (edge.reason === 'interface-dispatch') continue;
+      if (relation === 'USES' && edge.reason !== 'scope-resolution: type-reference') continue;
+      const from = graph.getNode(edge.sourceId);
+      const to = graph.getNode(edge.targetId);
+      assert.ok(from && to, 'Unpublished endpoint: ' + edge.id);
+      const target = graphIdentity(to);
+      result[relation].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
+      if (relation === 'CALLS' || relation === 'USES') {
+        const prefix = 'rel:' + relation + ':' + edge.sourceId + '->' + edge.targetId + ':';
+        const span =
+          edge.id.startsWith(prefix) && /^(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
+        if (
+          span &&
+          span[1] !== span[2] &&
+          !(
+            relation === 'CALLS' &&
+            boundRanges.has(JSON.stringify([from.properties.filePath, span[1], span[2]]))
+          )
+        ) {
+          result[relation].sites.push({
+            file: from.properties.filePath,
+            start: span[1],
+            end: span[2],
+            status: 'resolved',
+            target,
+          });
+        }
+      }
+    }
+  }
+  return result;
+}
+
+function recordBindings(observation, calls, typeParameters, reads, unbound) {
+  const definitions = new Map(
+    observation.parsedFiles.flatMap((file) => file.localDefs.map((def) => [def.nodeId, def])),
+  );
+  for (const file of observation.parsedFiles) {
+    for (const site of file.referenceSites) {
+      const binding = observation.referenceBindings.get(site);
+      if (site.kind === 'read' && binding?.status === 'resolved') {
+        for (const id of binding.targetDefIds) {
+          const def = definitions.get(id);
+          if (!def?.nameRange) continue;
+          const range = site.atRange;
+          reads.push({
+            file: file.filePath,
+            start: range.startLine + ':' + range.startCol,
+            end: range.endLine + ':' + range.endCol,
+            status: 'resolved',
+            target: def.filePath + '#' + def.nameRange.startLine + ':' + def.nameRange.startCol,
+          });
+        }
+      }
+      if (binding?.basis === 'type-parameter') {
+        let scope = observation.indexes.scopeTree.getScope(site.inScope);
+        while (scope) {
+          const owner = scope.ownedDefs.find(
+            (def) =>
+              def.declarationRange?.startLine === scope.range.startLine &&
+              def.declarationRange?.startCol === scope.range.startCol &&
+              def.typeParameters?.some((p) => p.name === site.name),
+          );
+          if (owner?.nameRange) {
+            const name = owner.nameRange;
+            const range = site.atRange;
+            typeParameters.push({
+              file: file.filePath,
+              start: range.startLine + ':' + range.startCol,
+              end: range.endLine + ':' + range.endCol,
+              status: 'type-parameter',
+              target: owner.filePath + '#' + name.startLine + ':' + name.startCol + '/' + site.name,
+            });
+            break;
+          }
+          scope = observation.indexes.scopeTree.getParent(scope.id);
+        }
+      }
+      if (site.kind !== 'call') continue;
+      if (binding?.status !== 'resolved') {
+        if (binding && (binding.status === 'blocked' || binding.status === 'unresolved')) {
+          const range = site.atRange;
+          unbound.push({
+            file: file.filePath,
+            start: range.startLine + ':' + range.startCol,
+            end: range.endLine + ':' + range.endCol,
+            status: 'unresolved',
+          });
+        }
+        continue;
+      }
+      for (const id of binding.targetDefIds) {
+        const def = definitions.get(id);
+        if (!def?.declarationRange || !['Function', 'Method', 'Class'].includes(def.type)) continue;
+        const { startLine, startCol } = def.declarationRange;
+        const range = site.atRange;
+        calls.push({
+          file: file.filePath,
+          start: range.startLine + ':' + range.startCol,
+          end: range.endLine + ':' + range.endCol,
+          status: 'resolved',
+          target:
+            def.filePath +
+            '#' +
+            startLine +
+            ':' +
+            (def.type === 'Class' ? def.nodeId.slice(def.nodeId.lastIndexOf(':') + 1) : startCol),
+        });
+      }
+    }
+  }
+}
+
+const fixturesDirectory = fileURLToPath(new URL('../../../test/fixtures/', import.meta.url));
+const manifest = JSON.parse(readFileSync(new URL('./projects.json', import.meta.url), 'utf8'));
+
+export async function compareProject(root, options = {}, expectedDiagnostics = []) {
+  const key = path.relative(fixturesDirectory, root).split(path.sep).join('/');
+  const inventory = manifest.declarationInventory.includes(key);
+  const reference = compilerReport(root, expectedDiagnostics, inventory);
+  assert.ok(
+    relations.some((kind) => reference[kind].edges.length || reference[kind].sites.length),
+    root + ': TypeScript reported no project-local declarations at any reference',
+  );
+  const boundCalls = [];
+  const typeParameters = [];
+  const reads = [];
+  const unbound = [];
+  const pipeline = await runPipelineFromRepo(root, () => {}, {
+    ...options,
+    onScopeResolved(observation) {
+      recordBindings(observation, boundCalls, typeParameters, reads, unbound);
+    },
+  });
+  const observed = graphReport(pipeline.graph, boundCalls, inventory);
+  observed.TYPE_PARAMETER_USES.sites = typeParameters;
+  // Each compiler-selected variable read must have a binding at the same range.
+  // The observer also sees property reads, argument reads and other syntax.
+  const location = (site) => JSON.stringify([site.file, site.start, site.end]);
+  const rejectedLocations = new Set(reference.REJECTED_CALLS.sites.map(location));
+  observed.REJECTED_CALLS.sites = unbound.filter((site) => rejectedLocations.has(location(site)));
+  const checkedReads = new Set(reference.VARIABLE_READS.sites.map(location));
+  observed.VARIABLE_READS.sites = reads.filter((site) => checkedReads.has(location(site)));
+  for (const relation of relations) {
+    if (!reference[relation].edges.length && !reference[relation].sites.length) {
+      assert.deepEqual(
+        observed[relation],
+        { sites: [], edges: [] },
+        root + ': unexpected ' + relation,
+      );
+      continue;
+    }
+    try {
+      compareReports(
+        { producer: 'TypeScript', ...reference[relation] },
+        { producer: 'GitNexus', ...observed[relation] },
+      );
+    } catch (cause) {
+      throw new Error(path.basename(root) + ' ' + relation, { cause });
+    }
+  }
+  return {
+    pipeline,
+    counts: Object.fromEntries(
+      relations.map((kind) => [kind, reference[kind].sites.length || reference[kind].edges.length]),
+    ),
+  };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const corpus = fileURLToPath(
+    new URL('../../../test/fixtures/compiler-conformance/', import.meta.url),
+  );
+  const diagnostics = JSON.parse(
+    readFileSync(new URL('./diagnostics.json', import.meta.url), 'utf8'),
+  );
+  const fixtures =
+    process.argv.length > 2
+      ? process.argv.slice(2).map((dir) => path.resolve(dir))
+      : [
+          ...readdirSync(corpus, { withFileTypes: true })
+            .filter((entry) => entry.isDirectory() && entry.name.startsWith('typescript-'))
+            .map((entry) => path.join(corpus, entry.name)),
+          ...manifest.projects.map((project) => path.join(fixturesDirectory, project)),
+        ];
+  assert.ok(fixtures.length, 'No TypeScript fixtures found');
+  for (const root of fixtures) {
+    const key = path.relative(path.join(corpus, '..'), root).split(path.sep).join('/');
+    const { counts } = await compareProject(root, {}, diagnostics[key]);
+    console.log(path.basename(root), counts);
+  }
+}

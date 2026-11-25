@@ -803,6 +803,7 @@ function buildDefFromDeclarationMatch(
     ...(typeParameters !== undefined ? { typeParameters } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
+    ...(match['@declaration.overload-signature'] ? { isOverloadSignature: true } : {}),
     ...(isDeleted === true ? { isDeleted: true } : {}),
     ...(isSynthetic === true ? { isSynthetic: true } : {}),
     ...(isExported !== undefined ? { isExported } : {}),
@@ -1400,6 +1401,7 @@ function pass5CollectReferences(
     // sibling via the full-path QualifiedNameIndex before the simple-tail walk
     // (#1982). Absent for unqualified references — resolution stays unchanged.
     const qualifiedCap = match['@reference.qualified-name'];
+    const heritageKind = match['@reference.heritage-kind']?.text;
     // Generic ARGUMENTS written on a heritage reference (`: IValidator<string>`);
     // `inherits` only, because a call/read/write anchor spans the whole call
     // expression, whose `<…>` would be an argument list, a comparison, or
@@ -1473,6 +1475,9 @@ function pass5CollectReferences(
       kind,
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
+        : {}),
+      ...(kind === 'inherits' && (heritageKind === 'EXTENDS' || heritageKind === 'IMPLEMENTS')
+        ? { heritageKind }
         : {}),
       ...(typeArguments !== undefined ? { typeArguments } : {}),
       ...(propertyKeyCap?.text !== undefined && propertyKeyCap.text.length > 0
@@ -1986,6 +1991,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@reference.caller-scope',
   '@reference.lookup-scope',
   '@reference.lookup-purpose',
+  '@reference.heritage-kind',
   '@reference.receiver-chain',
   '@reference.qualified-name',
   // The generic arguments a heritage base was written with, when the emitter's
@@ -2016,6 +2022,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   // `normalizeNodeLabel` would return undefined for it, and the whole class def
   // would be dropped rather than merely losing its parameters.
   '@declaration.type-parameters',
+  '@declaration.overload-signature',
   '@declaration.is-explicit',
   '@declaration.is-deleted',
   // Synthesized on the HOC default-export function node itself, the same span as

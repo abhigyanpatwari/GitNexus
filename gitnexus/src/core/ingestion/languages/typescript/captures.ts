@@ -823,10 +823,9 @@ function relevantNodesRightFirst(root: SyntaxNode, types: readonly string[]): Sy
  * and `abstract class X implements I` produced no edge and every dispatch walk
  * dead-ended on a bodiless declaration). They reach their bases by different
  * shapes: an abstract class carries the same `class_heritage` child a concrete
- * one does, while an interface's bases hang off `extends_type_clause` directly. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
- * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
- * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
- * are emitted with the same `inherits` kind here. The base lookup name is
+ * one does, while an interface's bases hang off `extends_type_clause` directly.
+ * The source clause supplies the edge kind so an interface extending another
+ * interface keeps its EXTENDS relationship. The base lookup name is
  * normalized to its bare simple identifier (`BaseModel<string>` → `BaseModel`,
  * `models.Base` → `Base`) so `findClassBindingInScope` resolves it.
  */
@@ -895,9 +894,23 @@ function emitTsInheritanceBase(
   if (base === null) return;
   const nameNode = terminalTsTypeNameNode(base);
   if (nameNode === null) return;
+  const argumentsNode =
+    base.parent?.type === 'extends_clause'
+      ? (base.parent.childForFieldName('type_arguments') ?? base.nextNamedSibling)
+      : null;
   out.push({
+    ...(argumentsNode?.type === 'type_arguments'
+      ? {
+          '@reference.type-arguments': nodeToCapture('@reference.type-arguments', argumentsNode),
+        }
+      : {}),
     '@reference.inherits': nodeToCapture('@reference.inherits', base),
     '@reference.name': nodeToCapture('@reference.name', nameNode),
+    '@reference.heritage-kind': syntheticCapture(
+      '@reference.heritage-kind',
+      base,
+      base.parent?.type === 'implements_clause' ? 'IMPLEMENTS' : 'EXTENDS',
+    ),
     '@reference.lookup-purpose': syntheticCapture('@reference.lookup-purpose', base, purpose),
   });
 }
