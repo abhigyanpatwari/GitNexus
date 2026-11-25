@@ -1118,7 +1118,20 @@ function foldReceiverChainState(
               },
             )
           : (qualifiedElement ?? undefined);
-      if (elementClass === undefined) return undefined;
+      if (elementClass === undefined) {
+        // An element that is itself a container (`User[][]` → `User[]`) names
+        // no class, exactly like a container base. Carry it with the same
+        // no-class marker so a further index step can unwrap it; every member
+        // step declines on the marker, so `users[0].save()` stays unresolved.
+        if (options.elementTypeOf?.(element, { kind: 'index' }) === undefined) return undefined;
+        current = {
+          def: undefined,
+          declaredType: element,
+          declaredAtScope: scopeForLookup,
+          lookupPosition: current.lookupPosition,
+        };
+        continue;
+      }
       current = {
         def: elementClass,
         declaredType: element,
