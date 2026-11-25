@@ -76,36 +76,38 @@ export async function verifyBean() {
     [...graph.iterRelationshipsByType('HANDLES_ROUTE')].some((edge) => edge.targetId === ping.id),
   );
 }
+function injectionDetails(result) {
+  const names = nodeNames(result);
+  return result.graph.relationships
+    .filter((relationship) => relationship.type === 'INJECTS')
+    .map((relationship) => ({
+      pair: `${names.get(relationship.sourceId)}->${names.get(relationship.targetId)}`,
+      confidence: relationship.confidence,
+      reason: relationship.reason,
+    }))
+    .sort((left, right) => left.pair.localeCompare(right.pair));
+}
+
+function beanDeclarations(result) {
+  const names = nodeNames(result);
+  return result.graph.relationships
+    .filter((relationship) => relationship.type === 'DECLARES')
+    .flatMap((relationship) => {
+      const metadata = decodeSpringBeanFactoryReason(relationship.reason);
+      return metadata === undefined
+        ? []
+        : [
+            {
+              factory: names.get(relationship.sourceId),
+              bean: names.get(relationship.targetId),
+              metadata,
+            },
+          ];
+    })
+    .sort((left, right) => String(left.factory).localeCompare(String(right.factory)));
+}
+
 export async function verifyBeanResource() {
-  function injectionDetails(result) {
-    const names = nodeNames(result);
-    return result.graph.relationships
-      .filter((relationship) => relationship.type === 'INJECTS')
-      .map((relationship) => ({
-        pair: `${names.get(relationship.sourceId)}->${names.get(relationship.targetId)}`,
-        confidence: relationship.confidence,
-        reason: relationship.reason,
-      }))
-      .sort((left, right) => left.pair.localeCompare(right.pair));
-  }
-  function beanDeclarations(result) {
-    const names = nodeNames(result);
-    return result.graph.relationships
-      .filter((relationship) => relationship.type === 'DECLARES')
-      .flatMap((relationship) => {
-        const metadata = decodeSpringBeanFactoryReason(relationship.reason);
-        return metadata === undefined
-          ? []
-          : [
-              {
-                factory: names.get(relationship.sourceId),
-                bean: names.get(relationship.targetId),
-                metadata,
-              },
-            ];
-      })
-      .sort((left, right) => String(left.factory).localeCompare(String(right.factory)));
-  }
   // Spring Bean factories and Resource injection pipeline (#2413, #2633)
   const dir = springProject('bean-resources');
   const result = await runPipelineFromRepo(dir, () => {}, {}); // creates Java and Kotlin Bean declarations with names, aliases, and returned types

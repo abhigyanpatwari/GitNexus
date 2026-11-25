@@ -120,21 +120,29 @@ function classHeaderRoot(
   inventory: JavaWorkspaceTypeInventory,
   parameter: HeaderParameterLookup,
 ): RootOrigin | undefined {
-  for (let type: TypeEntry | undefined = owner; type !== undefined; type = type.parent) {
+  let type = owner;
+  while (true) {
     if (type.fact.simpleName === root) return 'shadowed';
     if (type.fact.typeParameters.includes(root)) return parameter(type.fact.range, root);
     if (type !== owner) {
-      if (type.memberNames.has(root)) return 'shadowed';
-      const inherited = inheritedHeaderOrigin(type, root, inventory);
-      if (inherited !== undefined) return inherited;
+      const member = enclosingHeaderMember(type, root, inventory);
+      if (member !== undefined) return member;
     }
-    if (type.parent === undefined) {
-      return type.declaringScope === module
-        ? undefined
-        : executableHeaderRoot(owner, root, module, inventory, parameter);
-    }
+    if (type.parent === undefined) break;
+    type = type.parent;
   }
-  return undefined;
+  return type.declaringScope === module
+    ? undefined
+    : executableHeaderRoot(owner, root, module, inventory, parameter);
+}
+
+function enclosingHeaderMember(
+  type: TypeEntry,
+  root: string,
+  inventory: JavaWorkspaceTypeInventory,
+): RootOrigin | undefined {
+  if (type.memberNames.has(root)) return 'shadowed';
+  return inheritedHeaderOrigin(type, root, inventory);
 }
 
 /** A local or anonymous declaration can use a package-qualified base. A type
@@ -188,6 +196,18 @@ function fileRootOrigin(
   root: string,
   inventory: JavaWorkspaceTypeInventory,
 ): RootOrigin {
+  const imported = singleImportRootOrigin(owner, root, inventory);
+  if (imported !== undefined) return imported;
+  if (inventory.packageTypes.get(owner.packageName)?.has(root))
+    return { type: owner.packageName ? owner.packageName + '.' + root : root };
+  return wildcardRootOrigin(owner, root, inventory);
+}
+
+function singleImportRootOrigin(
+  owner: TypeEntry,
+  root: string,
+  inventory: JavaWorkspaceTypeInventory,
+): RootOrigin | undefined {
   const single = new Set<string>();
   for (const item of owner.facts.imports) {
     if (item.wildcard) continue;
@@ -201,10 +221,7 @@ function fileRootOrigin(
     if (origin) single.add(origin.type);
   }
   if (single.size === 1) return { type: [...single][0]! };
-  if (single.size > 1) return 'uncertain';
-  if (inventory.packageTypes.get(owner.packageName)?.has(root))
-    return { type: owner.packageName ? owner.packageName + '.' + root : root };
-  return wildcardRootOrigin(owner, root, inventory);
+  return single.size > 1 ? 'uncertain' : undefined;
 }
 
 function wildcardRootOrigin(
@@ -439,7 +456,7 @@ function bindFileHeritage(
     const references = sites.get(scope.id);
     if (!references) continue;
     const owner = entries.get(javaOverloadRangeKey(scope.range));
-    if (!owner || references.length !== owner.fact.bases.length) continue;
+    if (references.length !== owner?.fact.bases.length) continue;
     const parameter = headerParameterLookup(parametersAt, owner, lookup.inventory);
     // The parser records extends and implements in source order, including same-named interfaces from different packages.
     references.sort(

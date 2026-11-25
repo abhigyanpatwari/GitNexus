@@ -575,7 +575,7 @@ export async function extractJavaWorkspaceLinks(
 }
 
 // Start each repository scan on demand to bound filesystem and parser work.
-function* projectImportScans(
+async function* projectImportScans(
   projects: Iterable<JavaProjectMeta>,
   projectsByKey: ReadonlyMap<string, JavaProjectMeta>,
 ) {
@@ -590,9 +590,6 @@ function* projectImportScans(
       if (depMeta) knownPackages.set(depMeta.basePackage, depMeta);
     }
 
-    yield scanJavaImports(proj.repoPath, knownPackages, isMemberType).then((imports) => ({
-      proj,
-      imports,
-    }));
+    yield { proj, imports: await scanJavaImports(proj.repoPath, knownPackages, isMemberType) };
   }
 }

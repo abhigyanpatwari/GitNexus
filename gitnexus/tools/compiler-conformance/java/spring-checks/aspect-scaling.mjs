@@ -117,6 +117,62 @@ function createRepoDir(serviceCount) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `spring-aop-bench-${serviceCount}-`));
 }
 
+function runKotlinAopCapture(classCount, run) {
+  const filePath = `src/SpringAopBench${classCount}_${run}.kt`;
+  const startedAt = performance.now();
+  const captures = emitKotlinScopeCaptures(denseKotlinAopSource(classCount), filePath);
+  const elapsedMs = performance.now() - startedAt;
+  const facts = collectKotlinCaptureSideChannel(filePath)?.springAopFacts ?? [];
+  return {
+    classCount,
+    elapsedMs,
+    captureCount: captures.length,
+    factCount: facts.length,
+    annotationNames: facts.flatMap((fact) => fact.annotations.map((annotation) => annotation.name)),
+  };
+}
+
+function writeMixedSpringAopRepo(root, serviceCount) {
+  const javaCount = serviceCount / 2;
+  const kotlinCount = serviceCount - javaCount;
+  writeFixture(
+    root,
+    'src/main/java/com/example/service/Services.java',
+    `package com.example.service;
+import org.springframework.transaction.annotation.Transactional;
+${javaServices(javaCount)}
+`,
+  );
+  writeFixture(
+    root,
+    'src/main/kotlin/com/example/service/Services.kt',
+    `package com.example.service
+import org.springframework.transaction.annotation.Transactional as Tx
+${kotlinServices(kotlinCount)}
+`,
+  );
+  writeFixture(
+    root,
+    'src/main/java/com/example/aspect/BenchmarkAspect.java',
+    `package com.example.aspect;
+import org.aspectj.lang.annotation.Aspect;
+import org.aspectj.lang.annotation.Before;
+
+@Aspect
+public class BenchmarkAspect {
+  @Before("@annotation(org.springframework.transaction.annotation.Transactional)")
+  public void transactionalAdvice() {}
+
+  @Before("within(com.example.service.KotlinService*)")
+  public void kotlinServiceAdvice() {}
+
+  @Before("execution(public * com.example.service.JavaService*.read*(..))")
+  public void javaReadAdvice() {}
+}
+`,
+  );
+}
+
 export async function verifyAopBenchmark() {
   /**
    * Spring AOP candidate-selection and Kotlin capture benchmarks (#2416).
@@ -218,22 +274,6 @@ export async function verifyAopBenchmark() {
     ];
   }
 
-  function runKotlinAopCapture(classCount, run) {
-    const filePath = `src/SpringAopBench${classCount}_${run}.kt`;
-    const startedAt = performance.now();
-    const captures = emitKotlinScopeCaptures(denseKotlinAopSource(classCount), filePath);
-    const elapsedMs = performance.now() - startedAt;
-    const facts = collectKotlinCaptureSideChannel(filePath)?.springAopFacts ?? [];
-    return {
-      classCount,
-      elapsedMs,
-      captureCount: captures.length,
-      factCount: facts.length,
-      annotationNames: facts.flatMap((fact) =>
-        fact.annotations.map((annotation) => annotation.name),
-      ),
-    };
-  }
   function runSelectorBenchmark(methods) {
     const fixture = candidateFixture(methods);
     const buildStartedAt = performance.now();
@@ -258,46 +298,6 @@ export async function verifyAopBenchmark() {
     };
   }
 
-  function writeMixedSpringAopRepo(root, serviceCount) {
-    const javaCount = serviceCount / 2;
-    const kotlinCount = serviceCount - javaCount;
-    writeFixture(
-      root,
-      'src/main/java/com/example/service/Services.java',
-      `package com.example.service;
-import org.springframework.transaction.annotation.Transactional;
-${javaServices(javaCount)}
-`,
-    );
-    writeFixture(
-      root,
-      'src/main/kotlin/com/example/service/Services.kt',
-      `package com.example.service
-import org.springframework.transaction.annotation.Transactional as Tx
-${kotlinServices(kotlinCount)}
-`,
-    );
-    writeFixture(
-      root,
-      'src/main/java/com/example/aspect/BenchmarkAspect.java',
-      `package com.example.aspect;
-import org.aspectj.lang.annotation.Aspect;
-import org.aspectj.lang.annotation.Before;
-
-@Aspect
-public class BenchmarkAspect {
-  @Before("@annotation(org.springframework.transaction.annotation.Transactional)")
-  public void transactionalAdvice() {}
-
-  @Before("within(com.example.service.KotlinService*)")
-  public void kotlinServiceAdvice() {}
-
-  @Before("execution(public * com.example.service.JavaService*.read*(..))")
-  public void javaReadAdvice() {}
-}
-`,
-    );
-  }
   async function runMixedPipelineBenchmark(serviceCount) {
     const root = createRepoDir(serviceCount);
     try {

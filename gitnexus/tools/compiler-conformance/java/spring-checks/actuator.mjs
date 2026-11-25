@@ -14,14 +14,15 @@ function writeFixture(root, relativePath, content) {
   fs.writeFileSync(target, content);
 }
 
+function writeJson(root, relativePath, value) {
+  writeFixture(root, relativePath, JSON.stringify(value));
+}
+
 export async function verifyActuatorRuntime() {
   const SECRET_ENV_VALUE = 'ACTUATOR_ENV_SECRET_2418';
   const SECRET_CONFIG_VALUE = 'ACTUATOR_CONFIG_SECRET_2418';
   const SECRET_CONDITION_MESSAGE = 'runtime condition details must stay private';
 
-  function writeJson(root, relativePath, value) {
-    writeFixture(root, relativePath, JSON.stringify(value));
-  }
   function runtimeFixture() {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-spring-actuator-'));
     tempRepos.push(repo);

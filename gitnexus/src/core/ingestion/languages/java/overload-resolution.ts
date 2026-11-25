@@ -1126,23 +1126,23 @@ function invocationReturnType(
     callForm: call.receiverSpelling === undefined ? 'free' : 'member',
     receiverChain: undefined,
   };
-  let selected: ReceiverMemberResolution | undefined;
   if (call.receiverSpelling === undefined) {
-    selected = resolveJavaUnqualifiedCall(site, state.scopes, state.model);
-  } else {
-    const owner = invocationReceiverType(call, qualifierShadowed, filePath, state);
-    if (owner.kind !== 'reference') return UNKNOWN_JAVA_TYPE;
-    if (!owner.sourceId) {
-      if (call.name !== 'valueOf' || qualifierShadowed) return UNKNOWN_JAVA_TYPE;
-      const args = call.arguments.map((arg) => argumentType(arg, filePath, state, site));
-      if (owner.name === 'java.lang.String') return stringValueOfType(owner, args, state);
-      return args.length === 1 ? wrapperValueOfType(owner, args[0]!, state) : UNKNOWN_JAVA_TYPE;
-    }
-    const definition = state.scopes.defs.get(owner.sourceId);
-    if (definition)
-      selected = resolveJavaReceiverMember(definition, call.name, site, state.scopes, state.model);
+    return resolvedReturnType(resolveJavaUnqualifiedCall(site, state.scopes, state.model), state);
   }
-  return resolvedReturnType(selected, state);
+  const owner = invocationReceiverType(call, qualifierShadowed, filePath, state);
+  if (owner.kind !== 'reference') return UNKNOWN_JAVA_TYPE;
+  if (!owner.sourceId) {
+    if (call.name !== 'valueOf' || qualifierShadowed) return UNKNOWN_JAVA_TYPE;
+    const args = call.arguments.map((arg) => argumentType(arg, filePath, state, site));
+    if (owner.name === 'java.lang.String') return stringValueOfType(owner, args, state);
+    return args.length === 1 ? wrapperValueOfType(owner, args[0]!, state) : UNKNOWN_JAVA_TYPE;
+  }
+  const definition = state.scopes.defs.get(owner.sourceId);
+  if (!definition) return UNKNOWN_JAVA_TYPE;
+  return resolvedReturnType(
+    resolveJavaReceiverMember(definition, call.name, site, state.scopes, state.model),
+    state,
+  );
 }
 
 function stringValueOfType(owner: JavaReferenceType, args: JavaType[], state: State): JavaType {

@@ -16,6 +16,11 @@ export function javaTypeIdentity(node) {
 }
 
 export function compareJavaStructure(reference, result, typeIdentity, methods) {
+  compareSourceDeclarations(reference, result.graph, typeIdentity, methods);
+  return compareHeritage(reference, result.graph, typeIdentity);
+}
+
+function compareSourceDeclarations(reference, graph, typeIdentity, methods) {
   const expected = [];
   const actual = [];
   const methodAccess = new Map();
@@ -24,7 +29,7 @@ export function compareJavaStructure(reference, result, typeIdentity, methods) {
     else if (qualifiedName) expected.push(`${kind} ${file}#${qualifiedName}`);
     else if (methods) expected.push(`Method ${file}#${name}`);
   }
-  for (const node of result.graph.nodes) {
+  for (const node of graph.nodes) {
     const type = typeIdentity(node);
     if (type) actual.push(`${node.label} ${type}`);
     else if (methods && node.label === 'Method') {
@@ -50,11 +55,14 @@ export function compareJavaStructure(reference, result, typeIdentity, methods) {
       );
     }
   }
+}
+
+function compareHeritage(reference, graph, typeIdentity) {
   const heritage = [];
   for (const relation of ['EXTENDS', 'IMPLEMENTS']) {
-    for (const edge of result.graph.iterRelationshipsByType(relation)) {
-      const from = typeIdentity(result.graph.getNode(edge.sourceId));
-      const to = typeIdentity(result.graph.getNode(edge.targetId));
+    for (const edge of graph.iterRelationshipsByType(relation)) {
+      const from = typeIdentity(graph.getNode(edge.sourceId));
+      const to = typeIdentity(graph.getNode(edge.targetId));
       heritage.push(`${relation} ${from} -> ${to}`);
     }
   }

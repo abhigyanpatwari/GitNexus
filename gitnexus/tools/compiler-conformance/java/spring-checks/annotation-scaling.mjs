@@ -453,6 +453,34 @@ export async function verifyDiBenchmark() {
   measureKotlinCaptureScaling();
   await measureDiPipeline();
 }
+function runJavaCapture(size, run) {
+  const filePath = `src/SpringBeanResource${size}_${run}.java`;
+  const start = performance.now();
+  const captures = emitJavaScopeCaptures(denseJavaSource(size), filePath);
+  const elapsedMs = performance.now() - start;
+  const facts = collectJavaCaptureSideChannel(filePath)?.springDiFacts ?? [];
+  return {
+    elapsedMs,
+    captureCount: captures.length,
+    factoryCount: facts.reduce((count, fact) => count + (fact.beanFactoryMethods?.length ?? 0), 0),
+    resourceCount: facts.reduce((count, fact) => count + fact.injectionSites.length, 0),
+  };
+}
+
+function runKotlinCapture(size, run) {
+  const filePath = `src/SpringBeanResource${size}_${run}.kt`;
+  const start = performance.now();
+  const captures = emitKotlinScopeCaptures(denseKotlinSource(size), filePath);
+  const elapsedMs = performance.now() - start;
+  const facts = collectKotlinCaptureSideChannel(filePath)?.springDiFacts ?? [];
+  return {
+    elapsedMs,
+    captureCount: captures.length,
+    factoryCount: facts.reduce((count, fact) => count + (fact.beanFactoryMethods?.length ?? 0), 0),
+    resourceCount: facts.reduce((count, fact) => count + fact.injectionSites.length, 0),
+  };
+}
+
 export async function verifyBeanResourceBenchmark() {
   /**
    * Spring @Bean / @Resource scaling benchmark (#2413, #2633).
@@ -466,38 +494,6 @@ export async function verifyBeanResourceBenchmark() {
 
   const BENCH_ENABLED = process.env.GITNEXUS_BENCH === '1';
 
-  function runJavaCapture(size, run) {
-    const filePath = `src/SpringBeanResource${size}_${run}.java`;
-    const start = performance.now();
-    const captures = emitJavaScopeCaptures(denseJavaSource(size), filePath);
-    const elapsedMs = performance.now() - start;
-    const facts = collectJavaCaptureSideChannel(filePath)?.springDiFacts ?? [];
-    return {
-      elapsedMs,
-      captureCount: captures.length,
-      factoryCount: facts.reduce(
-        (count, fact) => count + (fact.beanFactoryMethods?.length ?? 0),
-        0,
-      ),
-      resourceCount: facts.reduce((count, fact) => count + fact.injectionSites.length, 0),
-    };
-  }
-  function runKotlinCapture(size, run) {
-    const filePath = `src/SpringBeanResource${size}_${run}.kt`;
-    const start = performance.now();
-    const captures = emitKotlinScopeCaptures(denseKotlinSource(size), filePath);
-    const elapsedMs = performance.now() - start;
-    const facts = collectKotlinCaptureSideChannel(filePath)?.springDiFacts ?? [];
-    return {
-      elapsedMs,
-      captureCount: captures.length,
-      factoryCount: facts.reduce(
-        (count, fact) => count + (fact.beanFactoryMethods?.length ?? 0),
-        0,
-      ),
-      resourceCount: facts.reduce((count, fact) => count + fact.injectionSites.length, 0),
-    };
-  }
   // Spring Bean/Resource capture O(n²) regression tripwire (#2413, #2633)
 
   // captures 400 Java factories and Resource sites within a coarse linear-time budget
@@ -561,6 +557,22 @@ export async function verifyBeanResourceBenchmark() {
     assert.ok(wallRatio < Math.pow(sizeRatio, 1.5));
   }
 }
+function dynamicLookupCapture(extension, makeSource, emitCaptures, readFacts) {
+  return (consumerCount, run) => {
+    const filePath = `src/SpringDynamicLookupBench${consumerCount}_${run}.${extension}`;
+    const start = performance.now();
+    const captures = emitCaptures(makeSource(consumerCount), filePath);
+    const elapsedMs = performance.now() - start;
+    const facts = readFacts(filePath)?.springDynamicLookupFacts ?? [];
+    return {
+      consumers: consumerCount,
+      elapsedMs,
+      captureCount: captures.length,
+      factCount: facts.length,
+    };
+  };
+}
+
 export async function verifyDynamicLookupBenchmark() {
   /**
    * Spring programmatic lookup scaling for Java and Kotlin.
@@ -576,33 +588,18 @@ export async function verifyDynamicLookupBenchmark() {
   // Time growth divided by input growth: linear work stays near 1.
   const LINEAR_SCALING_TOLERANCE = 1.5;
 
-  function runJavaCaptureBenchmark(consumerCount, run) {
-    const filePath = `src/SpringDynamicLookupBench${consumerCount}_${run}.java`;
-    const start = performance.now();
-    const captures = emitJavaScopeCaptures(denseJavaLookupSource(consumerCount), filePath);
-    const elapsedMs = performance.now() - start;
-    const facts = collectJavaCaptureSideChannel(filePath)?.springDynamicLookupFacts ?? [];
-    return {
-      consumers: consumerCount,
-      elapsedMs,
-      captureCount: captures.length,
-      factCount: facts.length,
-    };
-  }
-
-  function runKotlinCaptureBenchmark(consumerCount, run) {
-    const filePath = `src/SpringDynamicLookupBench${consumerCount}_${run}.kt`;
-    const start = performance.now();
-    const captures = emitKotlinScopeCaptures(denseKotlinLookupSource(consumerCount), filePath);
-    const elapsedMs = performance.now() - start;
-    const facts = collectKotlinCaptureSideChannel(filePath)?.springDynamicLookupFacts ?? [];
-    return {
-      consumers: consumerCount,
-      elapsedMs,
-      captureCount: captures.length,
-      factCount: facts.length,
-    };
-  }
+  const runJavaCaptureBenchmark = dynamicLookupCapture(
+    'java',
+    denseJavaLookupSource,
+    emitJavaScopeCaptures,
+    collectJavaCaptureSideChannel,
+  );
+  const runKotlinCaptureBenchmark = dynamicLookupCapture(
+    'kt',
+    denseKotlinLookupSource,
+    emitKotlinScopeCaptures,
+    collectKotlinCaptureSideChannel,
+  );
 
   function assertCaptureScaling(results) {
     const first = results[0];

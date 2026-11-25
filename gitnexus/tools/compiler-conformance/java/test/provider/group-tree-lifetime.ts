@@ -292,8 +292,8 @@ func main() {
     write(
       root,
       `php/routes/web${i}.php`,
-      `<?php
-use Illuminate\\Support\\Facades\\Route;
+      String.raw`<?php
+use Illuminate\Support\Facades\Route;
 
 Route::get('/php/items${i}', function () { return []; });
 `,
@@ -644,17 +644,19 @@ describe('HTTP source scan tree lifetime', () => {
       if (!plugin?.prepareRepo) throw new Error(`expected a prepareRepo pass for ${sample}`);
       const files = new Map(Array.from({ length: BULK }, (_, i) => makeFile(i)));
 
-      await countingTurns(async () =>
-        plugin.prepareRepo?.({
-          repoPath: tmpDir,
-          files: [...files.keys()],
-          parser: new Parser(),
-          readFile: (rel) => files.get(rel) ?? null,
-          parseSource: (parser, src) => {
-            turnProbe.parseTurns.push(turnProbe.turn);
-            return parser.parse(src);
-          },
-        }),
+      await countingTurns(() =>
+        Promise.resolve(
+          plugin.prepareRepo?.({
+            repoPath: tmpDir,
+            files: [...files.keys()],
+            parser: new Parser(),
+            readFile: (rel) => files.get(rel) ?? null,
+            parseSource: (parser, src) => {
+              turnProbe.parseTurns.push(turnProbe.turn);
+              return parser.parse(src);
+            },
+          }),
+        ),
       );
 
       assert.equal(turnProbe.parseTurns.length, BULK);
@@ -704,7 +706,7 @@ describe('HTTP source scan tree lifetime', () => {
     assert.ok(failure instanceof Error);
     assert.match(
       failure.message,
-      new RegExp(`^HTTP plugin ${plugin?.name} failed on \\S+\\.java: `),
+      new RegExp(String.raw`^HTTP plugin ${plugin?.name} failed on \S+\.java: `),
     );
     assert.equal((failure.cause as Error).name, 'DataCloneError');
   });

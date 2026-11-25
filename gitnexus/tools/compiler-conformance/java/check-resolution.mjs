@@ -23,8 +23,8 @@ dirs.push(
   ...[...recovered.keys()].filter(
     (dir) => !process.argv[2] || path.basename(dir).includes(process.argv[2]),
   ),
+  ...generateLargePackages(work, corpus, process.argv[2]),
 );
-dirs.push(...generateLargePackages(work, corpus, process.argv[2]));
 const contracts = ['graph-contracts', 'lombok-contracts', 'overload-contracts'].filter(
   (name) => !process.argv[2] || name.includes(process.argv[2]),
 );
