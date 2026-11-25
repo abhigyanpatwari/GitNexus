@@ -156,6 +156,73 @@ function handler() {} function other() {}`);
     expect(urls(`${setup} r.get('/unsafe', handler);`)).toEqual([]);
   });
 
+  it('folds route paths written through the same file’s module constants', () => {
+    expect(
+      urls(`
+      import express from 'express'; const app = express();
+      const USERS = '/api/users';
+      const BASE = '/api/v1';
+      export const PATHS = { ORDERS: '/api/orders', ADMIN: { AUDIT: '/api/admin/audit' } } as const;
+      const NESTED = BASE + '/nested';
+      app.get(USERS, handler);
+      app.post(BASE + '/items', handler);
+      app.put(\`\${BASE}/items/:id\`, handler);
+      app.delete(PATHS.ORDERS, handler);
+      app.get(PATHS.ADMIN.AUDIT, handler);
+      app.patch(NESTED, handler);
+    `).sort(),
+    ).toEqual([
+      'DELETE /api/orders',
+      'GET /api/admin/audit',
+      'GET /api/users',
+      'PATCH /api/v1/nested',
+      'POST /api/v1/items',
+      'PUT /api/v1/items/:id',
+    ]);
+  });
+
+  it('folds constant paths through route builders, mounts and one helper call', () => {
+    const result = resolve({
+      'server.ts': `
+      import express from 'express';
+      import { mount } from './helper';
+      const API = '/api';
+      const BOOKS = API + '/books';
+      const app = express();
+      const books = express.Router();
+      books.route('/:id').get(handler);
+      app.use(BOOKS, books);
+      app.route(\`\${API}/authors\`).get(handler).post(handler);
+      mount(app, \`\${API}/health\`);`,
+      'helper.ts': `
+      export function mount(app, routePath) { app.get(routePath, handler); }`,
+    });
+    expect(
+      composeFrameworkRoutePaths(result)
+        .map((route) => `${route.httpMethod} ${route.routePath}`)
+        .sort(),
+    ).toEqual(['GET /api/authors', 'GET /api/books/:id', 'GET /api/health', 'POST /api/authors']);
+  });
+
+  it.each([
+    ['a shadowing local', `const P = '/top'; function f() { const P = '/local'; app.get(P, h); }`],
+    ['a shadowing parameter', `const P = '/top'; function f(P) { app.get(P, h); }`],
+    ['a let binding', `let P = '/let'; app.get(P, h);`],
+    ['a reassigned var', `var P = '/var'; P = '/other'; app.get(P, h);`],
+    ['a function-local const', `function f() { const P = '/local'; app.get(P, h); }`],
+    ['an imported constant', `import { P } from './paths'; app.get(P, h);`],
+    ['a written table member', `const T = { A: '/a' }; T.A = '/b'; app.get(T.A, h);`],
+    ['a deleted table member', `const T = { A: '/a' }; delete T.A; app.get(T.A, h);`],
+    ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
+    ['a call', `const P = '/p'; app.get(build(P), h);`],
+    ['a call in a template', `const P = '/p'; app.get(\`\${P}/\${id()}\`, h);`],
+    ['a runtime term in a template', `const P = '/p'; app.get(\`\${P}/\${slug}\`, h);`],
+    ['a relative constant', `const P = 'relative'; app.get(P, h);`],
+    ['an undeclared name', `app.get(UNDECLARED, h);`],
+  ])('leaves a constant path unknown through %s', (_label, body) => {
+    expect(urls(`import express from 'express'; const app = express(); ${body}`)).toEqual([]);
+  });
+
   // GitNexus's own server registers through helpers that receive the app and,
   // for SSE progress, the path (#3487): one call-site hop, never two.
   it('forwards a proven receiver and literal path through one helper call', () => {

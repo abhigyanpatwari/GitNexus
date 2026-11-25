@@ -4,6 +4,12 @@ import { plainString } from './data-route-table.js';
 import { unboundCallableName } from '../languages/typescript/unbound-callables.js';
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
 import {
+  buildJsRepoFacts,
+  extractJsModuleFacts,
+  resolveJsPathExpression,
+  type JsRepoFacts,
+} from './js-const-resolver.js';
+import {
   createLexicalBindings,
   importBindingKey,
   isCommonJsGlobal,
@@ -51,6 +57,136 @@ function literalPaths(node: Node | undefined): string[] | null {
     : null;
 }
 
+/** Expression shapes a module-constant path can be written in. */
+const CONSTANT_PATH_TYPES = new Set([
+  'identifier',
+  'member_expression',
+  'template_string',
+  'binary_expression',
+]);
+
+/** Top-level `const` declarator names, including `export const`. */
+function moduleConstNames(root: Node): Node[] {
+  const names: Node[] = [];
+  for (const statement of children(root)) {
+    const declaration =
+      statement.type === 'export_statement'
+        ? statement.childForFieldName('declaration')
+        : statement;
+    if (declaration?.type !== 'lexical_declaration') continue;
+    if (declaration.child(0)?.type !== 'const') continue;
+    for (const declarator of children(declaration)) {
+      const name = declarator.childForFieldName('name');
+      if (declarator.type === 'variable_declarator' && name?.type === 'identifier')
+        names.push(name);
+    }
+  }
+  return names;
+}
+
+/** The node at the root of a member chain (`PATHS.V1.USERS` → `PATHS`). */
+function memberRoot(node: Node | null): Node | null {
+  let current = node;
+  while (current?.type === 'member_expression' || current?.type === 'subscript_expression')
+    current = current.childForFieldName('object');
+  return current;
+}
+
+/** The member/subscript target an assignment, update or `delete` writes, if any. */
+function writtenMember(node: Node): Node | null {
+  let target: Node | null = null;
+  if (node.type === 'assignment_expression' || node.type === 'augmented_assignment_expression')
+    target = node.childForFieldName('left');
+  else if (node.type === 'update_expression') target = node.childForFieldName('argument');
+  else if (
+    node.type === 'unary_expression' &&
+    node.children.some((child) => child.type === 'delete')
+  )
+    target = node.childForFieldName('argument');
+  return target?.type === 'member_expression' || target?.type === 'subscript_expression'
+    ? target
+    : null;
+}
+
+/**
+ * Route paths written through the file's own module constants: `const USERS =
+ * '/api/users'`, a table member `PATHS.USERS`, `BASE + '/x'` and `` `${BASE}/x` ``.
+ *
+ * Folding reuses the consumer-side resolver (`resolveJsPathExpression`), so a
+ * provider and the code calling it read one constant the same way. Every
+ * identifier in the expression must resolve, at the use site, to a top-level
+ * `const` of this file. A local that shadows it, a `let`, an import, a
+ * parameter or any call leaves the path unknown, which keeps the previous
+ * behavior (no route) rather than inventing one. A table whose members are
+ * written anywhere in the file is not trusted either.
+ *
+ * The const/mutation scan and the module facts are built on first use, so a
+ * file whose routes are all literals pays nothing.
+ */
+function createConstantPaths(
+  tree: Parser.Tree,
+  filePath: string,
+  lexical: LexicalBindings,
+): (node: Node | undefined) => string[] | null {
+  // Top-level statements only: cheap, and enough to reject the common case (a
+  // helper called with a local or a parameter) before any whole-file work.
+  let constIds: Set<string> | undefined;
+  const moduleConsts = (): Set<string> => {
+    if (constIds) return constIds;
+    constIds = new Set<string>();
+    for (const name of moduleConstNames(tree.rootNode)) {
+      const id = lexical.bindingId(name);
+      if (id && !lexical.ambiguous(id)) constIds.add(id);
+    }
+    return constIds;
+  };
+  // Whole-file member writes and module facts, built once and only for a path
+  // whose every identifier is already a module const.
+  let folding: { mutatedIds: Set<string>; facts: JsRepoFacts } | undefined;
+  const fold = () => {
+    if (folding) return folding;
+    const mutatedIds = new Set<string>();
+    const pending: Node[] = [tree.rootNode];
+    for (let node = pending.pop(); node; node = pending.pop()) {
+      for (const child of node.namedChildren) pending.push(child);
+      const root = memberRoot(writtenMember(node));
+      if (root?.type !== 'identifier') continue;
+      const id = lexical.bindingId(root, root.text, true);
+      if (id) mutatedIds.add(id);
+    }
+    const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
+    folding = { mutatedIds, facts };
+    return folding;
+  };
+
+  return (node) => {
+    if (!node || node.hasError || !CONSTANT_PATH_TYPES.has(node.type)) return null;
+    const consts = moduleConsts();
+    if (consts.size === 0) return null;
+    const used: string[] = [];
+    const pending: Node[] = [node];
+    for (let current = pending.pop(); current; current = pending.pop()) {
+      if (current.type === 'identifier') {
+        const id = lexical.bindingId(current, current.text, true);
+        if (!id || !consts.has(id)) return null;
+        used.push(id);
+      } else if (
+        current.type === 'call_expression' ||
+        current.type === 'new_expression' ||
+        current.type === 'subscript_expression' ||
+        LEXICAL_FUNCTION_TYPES.has(current.type)
+      ) {
+        return null;
+      }
+      for (const child of current.namedChildren) pending.push(child);
+    }
+    const { mutatedIds, facts } = fold();
+    if (used.some((id) => mutatedIds.has(id))) return null;
+    const path = resolveJsPathExpression(filePath, node, facts);
+    return path !== null && path.startsWith('/') && !path.includes('${') ? [path] : null;
+  };
+}
+
 /**
  * Reuses the parser's AST and ParsedFile lexical ownership. The only additional
  * data is framework value flow; declarations/scopes are never reconstructed.
@@ -73,6 +209,9 @@ export function extractFrameworkRouteFacts(
     invocations: [],
   };
   const { bindingId, isGlobal, ambiguous } = lexical;
+  const constantPaths = createConstantPaths(tree, filePath, lexical);
+  const pathsOf = (node: Node | undefined): string[] | null =>
+    literalPaths(node) ?? constantPaths(node);
   const invalid = new Set<string>();
   const importsAtPosition = new Map<string, ParsedImport[]>();
   for (const imported of parsedFile.parsedImports) {
@@ -166,7 +305,7 @@ export function extractFrameworkRouteFacts(
           callee: expression(callee, depth + 1),
           construct: node.type === 'new_expression',
           argumentCount: arguments_.length,
-          paths: literalPaths(arguments_[0]),
+          paths: pathsOf(arguments_[0]),
         };
       }
     }
@@ -422,7 +561,7 @@ export function extractFrameworkRouteFacts(
           receiver: expression(callee.childForFieldName('object')),
           method,
           arguments: arguments_.map((argument) => expression(argument)),
-          paths: literalPaths(arguments_[0]),
+          paths: pathsOf(arguments_[0]),
           lineNumber: node.startPosition.row + lineOffset,
           ...(handlerName ? { handlerName } : {}),
         });
@@ -443,7 +582,7 @@ export function extractFrameworkRouteFacts(
           const value = expression(argument);
           return CARRIER_KINDS.has(value.kind) ? value : UNKNOWN;
         });
-        const paths = positional.map((argument) => literalPaths(argument));
+        const paths = positional.map((argument) => pathsOf(argument));
         if (carried.some((value) => value !== UNKNOWN) || paths.some((path) => path !== null))
           facts.invocations.push({ callee: expression(callee), arguments: carried, paths });
       }
