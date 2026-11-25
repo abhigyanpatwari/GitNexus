@@ -111,6 +111,8 @@ describeSwift('Swift HTTP consumer plugin (#1677)', () => {
     expect(
       scan(`
         let token = cache.get("authToken")
+        _ = try await client.get("//api.example.com/v1/items")
+        _ = try await client.get("\\(base)//v1/items")
         defaults.post("didLogin")
         _ = try await client.get(path: endpoint)
         _ = try await client.get(User.self, "/api/users")

@@ -114,7 +114,9 @@ function swiftStringLiteral(node: Parser.SyntaxNode | null | undefined): string 
 }
 
 function looksLikeUrlPath(s: string): boolean {
-  return /^(?:\/|https?:\/\/|(?:\$\{p\})+\/)/i.test(s);
+  // `//host/...` is protocol-relative (a host, not a path); reject it like
+  // `stripLeadingTemplatePrefix` does, here and after an interpolated base.
+  return /^(?:\/(?!\/)|https?:\/\/|(?:\$\{p\})+\/(?!\/))/i.test(s);
 }
 
 /** `.post` / `HTTPMethod.post` / `"POST"` → `POST`; anything else → `*`. */
