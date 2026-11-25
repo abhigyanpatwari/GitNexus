@@ -164,7 +164,7 @@ describe('createTreeReleaser', () => {
     // of its own. The module has no imports, so Node loads the source directly.
     const { withoutNudge, withNudge } = runReleaserChild(`
       import { PerformanceObserver, constants } from 'node:perf_hooks';
-      const { nudgeV8 } = await import(RELEASER_URL);
+      const { nudgeV8, holdNudgeBuffer } = await import(RELEASER_URL);
       let majors = 0;
       new PerformanceObserver((list) => {
         for (const e of list.getEntries()) if (e.detail?.kind === constants.NODE_PERFORMANCE_GC_MAJOR) majors += 1;
@@ -184,7 +184,9 @@ describe('createTreeReleaser', () => {
       };
       await sleep(50);
       const withoutNudge = await phase(false);
+      const end = holdNudgeBuffer();
       const withNudge = await phase(true);
+      end();
       console.log(JSON.stringify({ withoutNudge, withNudge }));
     `);
     // Not `withoutNudge === 0`: whether V8 runs a major GC of its own here
@@ -197,12 +199,14 @@ describe('createTreeReleaser', () => {
     // (see the module comment), so the nudge must keep it.
     const { afterFirst, afterSecond } = runReleaserChild(
       `
-      const { nudgeV8 } = await import(RELEASER_URL);
+      const { nudgeV8, holdNudgeBuffer } = await import(RELEASER_URL);
+      const end = holdNudgeBuffer();
       const arrayBuffers = () => { gc(); gc(); return process.memoryUsage().arrayBuffers; };
       nudgeV8();
       const afterFirst = arrayBuffers();
       nudgeV8();
       const afterSecond = arrayBuffers();
+      end();
       console.log(JSON.stringify({ afterFirst, afterSecond }));
     `,
       { nodeArgs: ['--expose-gc'] },
@@ -211,6 +215,38 @@ describe('createTreeReleaser', () => {
     // The second nudge replaces the first buffer instead of adding to it.
     expect(Number(afterSecond)).toBeGreaterThanOrEqual(64 * MB);
     expect(Number(afterSecond)).toBeLessThan(128 * MB);
+  });
+
+  it('shares one nudge buffer across standalone scans and frees it after the last scan', () => {
+    const result = runReleaserChild(
+      `
+      const { createTreeReleaser, holdNudgeBuffer, MAX_YIELDS_PER_NUDGE } = await import(RELEASER_URL);
+      const arrayBuffers = async () => {
+        await new Promise(setImmediate);
+        gc(); gc();
+        return process.memoryUsage().arrayBuffers;
+      };
+      const scan = async (release) => {
+        for (let i = 0; i < MAX_YIELDS_PER_NUDGE; i++) await release();
+      };
+      const baseline = await arrayBuffers();
+      let first = createTreeReleaser(1);
+      await scan(first);
+      let second = createTreeReleaser(1);
+      const endGroup = holdNudgeBuffer();
+      await scan(second);
+      const overlapping = await arrayBuffers();
+      second = undefined;
+      endGroup();
+      const standalone = await arrayBuffers();
+      await scan(first);
+      first = undefined;
+      const finished = await arrayBuffers();
+      console.log(JSON.stringify({ overlapping: overlapping - baseline, standalone: standalone - baseline, finished: finished - baseline }));
+    `,
+      { nodeArgs: ['--expose-gc'] },
+    );
+    expect(result).toEqual({ overlapping: 64 * MB, standalone: 64 * MB, finished: 0 });
   });
 
   it('drops the nudge buffer when the last hold ends', () => {
@@ -226,6 +262,8 @@ describe('createTreeReleaser', () => {
       endFirst();
       const afterFirstEnd = arrayBuffers();
       endLast();
+      // WeakRef keeps a dereferenced target alive through the current job.
+      await new Promise(setImmediate);
       const afterLastEnd = arrayBuffers();
       console.log(JSON.stringify({ held, afterFirstEnd, afterLastEnd }));
     `,

@@ -94,21 +94,38 @@ export function zeroFillBuffersRequested(
  */
 const ZERO_FILL_BUFFERS = zeroFillBuffersRequested(process.execArgv, process.env.NODE_OPTIONS);
 
-// One per process: every releaser replaces the same held buffer, which is
-// dropped when the last open hold ends (see `holdNudgeBuffer`).
-const nudgeState: { held: ArrayBuffer | Buffer | null; holds: number } = {
+interface NudgeBuffer extends TreeReleaserDeps {
+  allocation: ArrayBuffer | Buffer | null;
+}
+
+// Each live scan owns the same slot. A group hold keeps it alive between
+// extractors, while the weak reference lets standalone scans release it when
+// their last releaser goes out of scope, including after a failed scan.
+const nudgeState: { held: NudgeBuffer | null; current?: WeakRef<NudgeBuffer>; holds: number } = {
   held: null,
   holds: 0,
 };
 
+function sharedNudgeBuffer(): NudgeBuffer {
+  const current = nudgeState.held ?? nudgeState.current?.deref();
+  if (current) return current;
+  const buffer: NudgeBuffer = {
+    allocation: null,
+    readRss: () => process.memoryUsage.rss(),
+    nudge: nudgeV8,
+  };
+  nudgeState.current = new WeakRef(buffer);
+  return buffer;
+}
+
 /**
  * Open a hold on the nudge buffer for a stretch of work that runs tree
  * releasers, such as a group sync's contract extraction, and return the
- * function that ends it. When the last open hold ends the buffer is dropped,
- * so a long-lived process does not keep it after its last scan. Releasers run
- * outside any hold keep the buffer until a hold ends.
+ * function that ends it. The last hold releases the group's reference.
+ * Any concurrent standalone scan keeps its own reference until it finishes.
  */
 export function holdNudgeBuffer(): () => void {
+  nudgeState.held ??= sharedNudgeBuffer();
   nudgeState.holds += 1;
   let ended = false;
   return () => {
@@ -124,8 +141,9 @@ export function nudgeV8(): void {
   // Drop the old buffer before allocating the new one. Its memory is freed only
   // by the GC this allocation starts, so both are allocated until then: 128 MB
   // of address space, untouched except for zero-filled buffers on macOS.
-  nudgeState.held = null;
-  nudgeState.held = ZERO_FILL_BUFFERS
+  const buffer = sharedNudgeBuffer();
+  buffer.allocation = null;
+  buffer.allocation = ZERO_FILL_BUFFERS
     ? new ArrayBuffer(NUDGE_BYTES)
     : Buffer.allocUnsafeSlow(NUDGE_BYTES);
 }
@@ -136,11 +154,6 @@ export interface TreeReleaserDeps {
   nudge: () => void;
 }
 
-const defaultDeps: TreeReleaserDeps = {
-  readRss: () => process.memoryUsage.rss(),
-  nudge: nudgeV8,
-};
-
 /**
  * Return a function to `await` once per parse. Every `every`-th call checks
  * RSS, nudges V8 when it is due (see above), and yields one macrotask so
@@ -149,7 +162,7 @@ const defaultDeps: TreeReleaserDeps = {
  */
 export function createTreeReleaser(
   every: number = PARSES_PER_RELEASE,
-  deps: TreeReleaserDeps = defaultDeps,
+  deps: TreeReleaserDeps = sharedNudgeBuffer(),
 ): () => Promise<void> {
   let parses = 0;
   let yieldsSinceNudge = 0;
