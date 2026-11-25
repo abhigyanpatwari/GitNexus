@@ -32,8 +32,10 @@
  * instead let the bar ratchet up with every nudge (one 6,300-file scan reached
  * 2.3 GB). The cap bounds the dead trees between nudges to 128 parses of one
  * scan where RSS cannot show them, for example after glibc has reused freed
- * memory. The count is per releaser, so it holds per scan, not across scans: a
- * scan of fewer than 128 files never reaches it. On the same scan this peaks at
+ * memory. The count is per releaser, and an extraction uses one (the HTTP
+ * extraction shares it with its `prepareRepo` passes), so it holds per
+ * extraction, not across extractions: one of fewer than 128 parses never
+ * reaches it. On the same scan this peaks at
  * 0.47 GB. Four times the files ran about 400 major GCs; that left wall time
  * unchanged on a many-core host, but cost about 8 % on a single CPU, where the
  * GC work competes with parsing.
