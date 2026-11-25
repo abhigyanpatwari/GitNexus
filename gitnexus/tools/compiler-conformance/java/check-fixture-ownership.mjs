@@ -52,7 +52,7 @@ function nameOf(node) {
 
 function literalIdentifier(node, bindings, seen) {
   if (seen.has(node.name)) return '*';
-  const binding = bindingFor(bindings, node.name);
+  const binding = bindingFor(bindings, node);
   if (binding?.path)
     return literal(binding.path.node, binding.path.scope, new Set([...seen, node.name]));
   const name = binding ? nameOf(binding.imported) : node.name;
@@ -88,7 +88,7 @@ function literal(node, bindings, seen = new Set()) {
       return nameOf(node.callee) === 'URL' ? literal(node.arguments[0], bindings, seen) : '';
     case 'CallExpression': {
       const method =
-        nameOf(node.callee.property) ?? nameOf(bindingFor(bindings, node.callee.name)?.imported);
+        nameOf(node.callee.property) ?? nameOf(bindingFor(bindings, node.callee)?.imported);
       if (['join', 'resolve'].includes(method))
         return node.arguments.map((n) => literal(n, bindings, seen)).join('/');
       if (method === 'fileURLToPath' || node.callee.name === 'fileURLToPath')
@@ -103,7 +103,7 @@ function literal(node, bindings, seen = new Set()) {
 function javaSourceMap(node, bindings, seen = new Set()) {
   if (!node) return '';
   if (node.type === 'Identifier' && !seen.has(node.name)) {
-    const init = bindingFor(bindings, node.name)?.path;
+    const init = bindingFor(bindings, node)?.path;
     return init ? javaSourceMap(init.node, init.scope, new Set([...seen, node.name])) : '';
   }
   if (node.type === 'TSAsExpression' || node.type === 'TSSatisfiesExpression')
@@ -142,31 +142,69 @@ function requiredModule(node, scope) {
     : { module: owner.module, imported };
 }
 
-function bindingFor(scope, name) {
-  const declaration = name && scope.getBinding(name)?.path;
-  if (!declaration) return undefined;
+function directAssignmentValue(write, read) {
+  if (
+    !write.isAssignmentExpression({ operator: '=' }) ||
+    !write.get('left').isIdentifier({ name: read.node.name })
+  )
+    return undefined;
+  const statement = write.parentPath;
+  const block = statement.parentPath;
+  return statement.isExpressionStatement() &&
+    (block.isBlockStatement() || block.isProgram()) &&
+    block.isAncestor(read)
+    ? write.get('right')
+    : undefined;
+}
+
+// A write after a read can reach that read on the next loop iteration.
+function mayReadPreviousIteration(read, latest, writes) {
+  for (const loop of read.getAncestry().filter((path) => path.isLoop())) {
+    if (latest && loop.isAncestor(latest)) continue;
+    if (writes.some((write) => loop.isAncestor(write))) return true;
+  }
+  return false;
+}
+
+// A mutable binding has a known value after a direct assignment in a block
+// enclosing the read. Writes behind a branch or in another function can make
+// the value uncertain. Never substitute the initializer for an uncertain read.
+function valueAtReference(binding, node) {
+  const initial = binding.path.get('init');
+  if (binding.constant) return initial;
+  const read = binding.referencePaths.find((ref) => ref.node === node);
+  if (!read) return undefined;
+  const fn = read.getFunctionParent()?.node;
+  if (fn !== binding.path.getFunctionParent()?.node) return undefined;
+  let latest;
+  for (const write of binding.constantViolations) {
+    if (write.getFunctionParent()?.node !== fn) return undefined;
+    if (write.node.end <= node.start && write.node.end > (latest?.node.end ?? -1)) latest = write;
+  }
+  if (mayReadPreviousIteration(read, latest, binding.constantViolations)) return undefined;
+  return latest ? directAssignmentValue(latest, read) : initial;
+}
+
+function bindingFor(scope, identifier) {
+  const name = identifier?.name;
+  const binding = name && scope.getBinding(name);
+  if (!binding) return undefined;
+  const declaration = binding.path;
   if (declaration.parentPath.isImportDeclaration())
     return { module: declaration.parent.source.value, imported: declaration.node.imported };
   if (declaration.isFunctionDeclaration()) return { path: declaration };
-  if (declaration.isVariableDeclarator()) {
-    const { id, init } = declaration.node;
-    const required = requiredModule(init, declaration.scope);
-    if (required) {
-      if (id.type === 'Identifier') return required;
-      if (id.type === 'ObjectPattern' && !required.imported) {
-        const imported = id.properties.find((p) => nameOf(p.value) === name)?.key;
-        if (imported) return { module: required.module, imported };
-      }
-    }
-    if (id.type === 'Identifier') return init ? { path: declaration.get('init') } : {};
-    if (id.type === 'ObjectPattern' && nameOf(init?.callee) === 'createRenameFixtureHelpers') {
-      return {
-        writesFixture: id.properties.some(
-          (p) => nameOf(p.value) === name && ['fixture', 'expectRename'].includes(nameOf(p.key)),
-        ),
-      };
-    }
-  }
+  if (!declaration.isVariableDeclarator()) return {};
+  const { id, init } = declaration.node;
+  const value = valueAtReference(binding, identifier);
+  if (!value?.node) return {};
+  const required = requiredModule(value.node, value.scope);
+  if (value.node !== init || id.type === 'Identifier') return required ?? { path: value };
+  if (id.type !== 'ObjectPattern') return {};
+  const imported = id.properties.find((property) => nameOf(property.value) === name)?.key;
+  if (!imported) return {};
+  if (required && !required.imported) return { module: required.module, imported };
+  if (nameOf(init?.callee) === 'createRenameFixtureHelpers')
+    return { writesFixture: ['fixture', 'expectRename'].includes(nameOf(imported)) };
   return {};
 }
 
@@ -242,21 +280,16 @@ function completeFsMock(factory) {
   );
 }
 
-function callableBinding(scope, name) {
-  let binding = bindingFor(scope, name);
+function callableBinding(scope, identifier) {
+  let binding = bindingFor(scope, identifier);
   const seen = new Set();
-  while (
-    binding?.path?.isIdentifier() &&
-    scope.getBinding(name)?.constant &&
-    !seen.has(binding.path.node)
-  ) {
+  while (binding?.path?.isIdentifier() && !seen.has(binding.path.node)) {
     const alias = binding.path;
     seen.add(alias.node);
-    name = alias.node.name;
-    scope = alias.scope;
-    binding = bindingFor(scope, name);
+    identifier = alias.node;
+    binding = bindingFor(alias.scope, identifier);
   }
-  return { name, binding };
+  return { name: identifier?.name, binding };
 }
 
 function fixtureCall(node, bindings, mocked) {
@@ -264,7 +297,7 @@ function fixtureCall(node, bindings, mocked) {
   const identifier = callee.type === 'Identifier';
   let owner = callee.object;
   if (nameOf(owner?.property) === 'promises') owner = owner.object;
-  const target = callableBinding(bindings, identifier ? callee.name : owner?.name);
+  const target = callableBinding(bindings, identifier ? callee : owner);
   const binding = target.binding ?? requiredModule(owner, bindings);
   const method = identifier ? (nameOf(binding?.imported) ?? target.name) : nameOf(callee.property);
   const actualFs =

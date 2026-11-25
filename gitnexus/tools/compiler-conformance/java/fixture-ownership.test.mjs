@@ -35,6 +35,47 @@ test('detects a Java source map passed to the fixture helper, including spreads 
   );
 });
 
+test('reads the path and project reader assigned before each use', () => {
+  const uses = javaFixtureUses(`
+    import { readFileSync } from 'node:fs';
+    import { runPipelineFromRepo } from '../pipeline.js';
+    let file = 'ordinary.txt';
+    readFileSync(file);
+    file = 'fixtures/java/First.java';
+    const saved = file;
+    readFileSync(file);
+    file = 'ordinary.txt';
+    readFileSync(file);
+    readFileSync(saved);
+    {
+      let file;
+      file = 'Second.java';
+      readFileSync(file);
+    }
+    let run = () => {};
+    run = runPipelineFromRepo;
+    run('compiler-conformance/java-later');
+    run = () => {};
+    run('compiler-conformance/java-unused');
+    let fromOuter = 'ordinary.txt';
+    for (const name of names) {
+      fromOuter = 'Each.java';
+      readFileSync(fromOuter);
+      fromOuter = name;
+    }
+  `);
+  assert.deepEqual(
+    uses.map(({ method, path }) => [method, path]),
+    [
+      ['readFileSync', 'fixtures/java/First.java'],
+      ['readFileSync', 'fixtures/java/First.java'],
+      ['readFileSync', 'Second.java'],
+      ['runPipelineFromRepo', 'compiler-conformance/java-later'],
+      ['readFileSync', 'Each.java'],
+    ],
+  );
+});
+
 test('follows CommonJS filesystem calls and respects locally defined require functions', () => {
   const uses = javaFixtureUses(
     `
