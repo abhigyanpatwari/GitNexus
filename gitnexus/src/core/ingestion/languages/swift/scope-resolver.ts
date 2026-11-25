@@ -47,15 +47,21 @@
  *      import` is not a re-export.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-shared';
+import { makeScopeId, SupportedLanguages } from 'gitnexus-shared';
 import { loadSwiftWorkspaceConfig } from './workspace-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
-import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import type {
+  ReceiverMemberResolution,
+  ScopeResolver,
+} from '../../scope-resolution/contract/scope-resolver.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { SemanticModel } from '../../model/semantic-model.js';
+import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import {
   canonicalizeWorkspaceBindings,
   canonicalModuleExports,
@@ -134,6 +140,7 @@ const swiftScopeResolver: ScopeResolver = {
   // members after all files are available so extensions declared in sibling
   // files work as well as extensions beside the original type.
   populateWorkspaceOwners: populateSwiftExtensionOwners,
+  resolveUnqualifiedCall: resolveSwiftExtensionCall,
 
   // `super.method()` dispatches through the superclass chain.
   isSuperReceiver: (text) => text.trim() === 'super',
@@ -327,6 +334,68 @@ function defDeclaresThisClassScope(
   const line = /#(\d+):/.exec(def.nodeId);
   if (line === null) return true;
   return Number(line[1]) === parent.range.startLine;
+}
+
+function resolveSwiftExtensionCall(
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+  model: SemanticModel,
+): ReceiverMemberResolution | undefined {
+  const { scopeTree } = indexes;
+  let scope = scopeTree.getScope(site.inScope);
+  while (scope !== undefined && scope.kind !== 'Class') {
+    // A local function or value can shadow the implicit receiver's member.
+    if (
+      scope.bindings.has(site.name) ||
+      scope.typeBindings.has(site.name) ||
+      scope.lexicalNames?.has(site.name)
+    )
+      return undefined;
+    const parent = scopeTree.getParent(scope.id);
+    if (scope.kind === 'Function' && parent?.kind === 'Class') {
+      // Type declarations already have an implicit owner in the shared
+      // resolver. An extension supplies it through its enclosing method.
+      if (
+        parent.ownedDefs.some(
+          (def) => isClassLike(def.type) && defDeclaresThisClassScope(parent, def),
+        )
+      )
+        return undefined;
+      const member = scope.ownedDefs.find(
+        (def) => def.type === 'Method' || def.type === 'Constructor',
+      );
+      if (member?.ownerId === undefined) return undefined;
+
+      // A type method and an instance method can share a base name and arity.
+      // The Swift capture pass binds `self` only in instance method bodies.
+      const instanceCaller = scope.typeBindings.get('self')?.source === 'self';
+      const matchingReceiver: SymbolDefinition[] = [];
+      for (const candidate of model.methods.lookupAllByOwner(member.ownerId, site.name)) {
+        if (candidate.isExported === false && candidate.filePath !== scope.filePath) continue;
+        const range = candidate.declarationRange;
+        if (range === undefined) return undefined;
+        const targetScope = scopeTree.getScope(
+          makeScopeId({ filePath: candidate.filePath, range, kind: 'Function' }),
+        );
+        if (targetScope === undefined) return undefined;
+        const instanceTarget = targetScope.typeBindings.get('self')?.source === 'self';
+        if (instanceCaller === instanceTarget) matchingReceiver.push(candidate);
+      }
+      const candidates = narrowOverloadCandidates(
+        matchingReceiver,
+        site.arity,
+        site.argumentTypes,
+        { argumentTypeClasses: site.argumentTypeClasses },
+      );
+      if (candidates.length > 1) {
+        return { kind: 'ambiguous', candidateIds: candidates.map((def) => def.nodeId) };
+      }
+      const definition = candidates[0];
+      return definition === undefined ? undefined : { kind: 'resolved', definition };
+    }
+    scope = parent;
+  }
+  return undefined;
 }
 
 function uniqueOwnerForExtensionPrefix(
