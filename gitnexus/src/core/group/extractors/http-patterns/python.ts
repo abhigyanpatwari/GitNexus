@@ -1021,6 +1021,7 @@ async function buildPythonRepoContext(
   parser: Parser,
   readFile: (rel: string) => string | null,
   parseSource: (parser: Parser, src: string) => Parser.Tree | null,
+  releaseTrees: () => Promise<void> = createTreeReleaser(),
 ): Promise<PythonRepoContext> {
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
@@ -1078,7 +1079,6 @@ async function buildPythonRepoContext(
   // declared in one file to a router defined in another. Same-file
   // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree.
   const constantsByFile = new Map<string, ModuleConstants>();
-  const releaseTrees = createTreeReleaser();
   for (const [rel, src] of pyContents) {
     const needsRouter = src.includes('include_router');
     if (!needsRouter && !hasComposedRoute) continue;
@@ -1224,8 +1224,8 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       content,
     );
   },
-  prepareRepo({ files, parser, readFile, parseSource }): Promise<RepoContext> {
-    return buildPythonRepoContext(files, parser, readFile, parseSource);
+  prepareRepo({ files, parser, readFile, parseSource, releaseTrees }): Promise<RepoContext> {
+    return buildPythonRepoContext(files, parser, readFile, parseSource, releaseTrees);
   },
   scan(tree, repoContext, fileRel) {
     const out: HttpDetection[] = [];

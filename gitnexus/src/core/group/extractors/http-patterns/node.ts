@@ -420,6 +420,7 @@ async function buildNodeRepoContext(args: {
   files: string[];
   readFile: (rel: string) => string | null;
   parseSource: (parser: Parser, src: string) => Parser.Tree | null;
+  releaseTrees?: () => Promise<void>;
 }): Promise<NodeRepoContext> {
   const cached = REPO_CONTEXT_BY_FILE_LIST.get(args.files);
   if (cached) return cached;
@@ -460,7 +461,7 @@ async function buildNodeRepoContext(args: {
   }
 
   if (sawAxios) {
-    const releaseTrees = createTreeReleaser();
+    const releaseTrees = args.releaseTrees ?? createTreeReleaser();
     for (const { rel, language } of eligible) {
       try {
         const content = args.readFile(rel);

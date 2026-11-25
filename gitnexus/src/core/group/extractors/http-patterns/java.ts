@@ -895,7 +895,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       string,
       import('../../../ingestion/route-extractors/constant-resolver.js').ModuleConstants
     >();
-    const releaseTrees = createTreeReleaser();
+    const releaseTrees = args.releaseTrees ?? createTreeReleaser();
     for (const rel of args.files) {
       if (!rel.endsWith('.java')) continue;
       try {

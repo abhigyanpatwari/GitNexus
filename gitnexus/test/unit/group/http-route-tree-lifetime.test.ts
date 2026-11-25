@@ -536,6 +536,47 @@ describe('HTTP source scan tree lifetime', () => {
     expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
   });
 
+  it('counts the prepareRepo parses and the scan parses together', async () => {
+    // Fewer constant files than one batch, and as many controllers: each pass
+    // alone stays under the bound, the two together in one turn would not.
+    const half = PARSES_PER_RELEASE - 1;
+    for (let i = 0; i < half; i++) {
+      write(
+        tmpDir,
+        `src/main/java/com/example/C${i}.java`,
+        `package com.example;\n\npublic class C${i} {\n  public static final String P = "/c${i}";\n}\n`,
+      );
+      write(
+        tmpDir,
+        `src/main/java/com/example/Ctl${i}.java`,
+        `package com.example;\n\nimport org.springframework.web.bind.annotation.*;\n\n@RestController\npublic class Ctl${i} {\n  @GetMapping("/ctl${i}")\n  public String get() { return "j"; }\n}\n`,
+      );
+    }
+
+    const contracts = await countingTurns(() =>
+      new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir)),
+    );
+
+    expect(contracts.length).toBe(half);
+    // The constant files are parsed by `prepareRepo` and again by the scan.
+    expect(turnProbe.parseTurns.length).toBe(3 * half);
+    expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
+  });
+
+  it('counts failed parses toward the yield', async () => {
+    writeBulkFixture(tmpDir);
+
+    const contracts = await countingTurns(() => {
+      turnProbe.failParse = (source) => source.includes('class Ctl');
+      return new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir));
+    });
+
+    // Java and Kotlin parses fail; the TS and Go files still give contracts.
+    expect(contracts.length).toBeGreaterThan(0);
+    expect(turnProbe.parseTurns.length).toBe(4 * BULK);
+    expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
+  });
+
   it.each(PREPARE_PASS_FILES)(
     'yields to the event loop between parse batches in the %s prepareRepo pass',
     async (sample, makeFile) => {

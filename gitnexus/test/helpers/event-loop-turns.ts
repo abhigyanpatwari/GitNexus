@@ -12,7 +12,12 @@ import type * as SafeParseModule from '../../src/core/tree-sitter/safe-parse.js'
  *     return recordParseTurns(await importOriginal());
  *   });
  */
-export const turnProbe = { turn: 0, parseTurns: [] as number[] };
+export const turnProbe = {
+  turn: 0,
+  parseTurns: [] as number[],
+  /** Sources for which the recorded parse throws, as a timed-out parse does. */
+  failParse: null as ((source: string) => boolean) | null,
+};
 
 /** `safe-parse` with a pass-through `parseSourceSafe` that records each parse's turn. */
 export function recordParseTurns(actual: typeof SafeParseModule): typeof SafeParseModule {
@@ -20,6 +25,7 @@ export function recordParseTurns(actual: typeof SafeParseModule): typeof SafePar
     ...actual,
     parseSourceSafe: (...args: Parameters<typeof actual.parseSourceSafe>) => {
       turnProbe.parseTurns.push(turnProbe.turn);
+      if (turnProbe.failParse?.(args[1])) throw new Error('parse failed (test)');
       return actual.parseSourceSafe(...args);
     },
   };
@@ -40,6 +46,7 @@ export async function countingTurns<T>(fn: () => Promise<T>): Promise<T> {
     return await fn();
   } finally {
     running = false;
+    turnProbe.failParse = null;
   }
 }
 

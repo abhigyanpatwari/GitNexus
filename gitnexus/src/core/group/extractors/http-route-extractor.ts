@@ -493,6 +493,8 @@ export class HttpRouteExtractor implements ContractExtractor {
     const ownDetections = new Map<string, HttpDetection[]>();
     const projectDetections = new Map<string, HttpDetection[]>();
     const completedProjectScans = new Set<HttpProjectScan>();
+    // One releaser for the whole extraction; the plugins' `prepareRepo` passes
+    // share it, so their parses and the scans' count together.
     const releaseTrees = createTreeReleaser();
 
     // Per-plugin cross-file context (e.g. Python's FastAPI router →
@@ -514,6 +516,7 @@ export class HttpRouteExtractor implements ContractExtractor {
           parser,
           readFile: (rel) => readSafe(repoPath, rel),
           parseSource: (p, src) => parseSourceSafe(p, src),
+          releaseTrees,
         });
         repoContextByPlugin.set(plugin.name, ctx);
         return ctx;
@@ -532,11 +535,10 @@ export class HttpRouteExtractor implements ContractExtractor {
     const parseAndScan = (
       plugin: HttpLanguagePlugin,
       rel: string,
+      content: string,
       repoContext: unknown,
       projectScan: HttpProjectScan | undefined,
     ): { facts: unknown } | null => {
-      const content = readSafe(repoPath, rel);
-      if (!content) return null;
       let tree: Parser.Tree;
       try {
         parser.setLanguage(plugin.language);
@@ -565,13 +567,16 @@ export class HttpRouteExtractor implements ContractExtractor {
     ): Promise<{ facts: unknown; repoContext: unknown } | null> => {
       const plugin = getPluginForFile(rel);
       const repoContext = plugin ? await ensureRepoContext(plugin) : undefined;
-      const result = plugin ? parseAndScan(plugin, rel, repoContext, projectScan) : null;
+      const content = plugin ? readSafe(repoPath, rel) : null;
+      // Let the dropped trees' native memory go (see native-tree-release.ts).
+      // Every parse counts, also one that fails or times out.
+      if (content) await releaseTrees();
+      const result =
+        plugin && content ? parseAndScan(plugin, rel, content, repoContext, projectScan) : null;
       if (!result) {
         ownDetections.set(rel, []);
         return null;
       }
-      // Let the dropped trees' native memory go (see native-tree-release.ts).
-      await releaseTrees();
       return { facts: result.facts, repoContext };
     };
 

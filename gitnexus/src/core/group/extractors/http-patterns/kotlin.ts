@@ -1350,7 +1350,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
         // per-file try/catch below then skips everything harmlessly.
       }
       const constants = new Map<string, ModuleConstants>();
-      const releaseTrees = createTreeReleaser();
+      const releaseTrees = args.releaseTrees ?? createTreeReleaser();
       for (const rel of args.files) {
         if (!rel.endsWith('.kt') && !rel.endsWith('.kts')) continue;
         try {
