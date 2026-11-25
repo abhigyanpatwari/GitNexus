@@ -10,15 +10,17 @@
  * only `using UnityEngine;` names `UnityEngine.Color` (external, not indexed),
  * yet used to receive a CALLS edge to the vendored `Vendor.Proto.Color`.
  *
- * A type in namespace `N` is visible by its bare name from a caller when:
+ * A type in namespace `N` is visible by its bare name from a call site when:
  *
- *  1. the caller is declared in `N` or a namespace nested in it (C# lookup
- *     walks the enclosing namespaces outward);
- *  2. the caller's file has `using N;` (or a `using static` / alias whose
- *     target lives under `N`) — a using inside a namespace block may be
- *     written relative to that namespace, so a suffix match also counts;
- *  3. any file in the project has `global using N;`, or an MSBuild
- *     `<Using Include="N" />` item imports it;
+ *  1. the call site is lexically inside `N` or a namespace nested in it (C#
+ *     lookup walks the enclosing namespaces outward);
+ *  2. the caller's file has `using N;`. A using directive is resolved against
+ *     the call site's enclosing namespaces (`namespace A { using B; }` may name
+ *     `A.B`), and a namespace import reaches only that namespace — not its
+ *     parent. `using static T;` / an alias reach types under `T`'s namespace;
+ *  3. the caller's compilation imports `N` globally: `global using N;` in a
+ *     file of the same project, `<Using Include="N" />` in that project's
+ *     `.csproj`, or in a `Directory.Build.props` / `.targets` above it;
  *  4. `N` is under `System` / `Microsoft`, which SDK `ImplicitUsings`
  *     may import without any source evidence.
  *
@@ -28,11 +30,14 @@
  * never ran (global usings unknown). Only a provably invisible type is refused.
  */
 
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId, SymbolDefinition } from 'gitnexus-shared';
+import type { CSharpNamespaceEvidence } from '../../language-config.js';
 import type { CsharpResolutionConfig } from './resolution-config.js';
 
 /** Namespace roots SDK `ImplicitUsings` can bring in with no source trace. */
 const IMPLICIT_USING_ROOTS: ReadonlySet<string> = new Set(['System', 'Microsoft']);
+
+type CsharpScope = ParsedFile['scopes'][number];
 
 function normalizeNamespace(raw: string): string {
   return raw
@@ -46,8 +51,67 @@ function topSegment(ns: string): string {
   return dot === -1 ? ns : ns.slice(0, dot);
 }
 
-/** Namespaces the caller's file declares (block-scoped or file-scoped). */
-function callerNamespaces(callerParsed: ParsedFile): Set<string> {
+/** `A.B.C` → `['A.B.C', 'A.B', 'A']`: the namespaces C# searches, innermost first. */
+function enclosingChain(ns: string | undefined): string[] {
+  if (ns === undefined || ns === '') return [];
+  const chain: string[] = [];
+  let current = ns;
+  for (;;) {
+    chain.push(current);
+    const dot = current.lastIndexOf('.');
+    if (dot === -1) return chain;
+    current = current.slice(0, dot);
+  }
+}
+
+function namespaceDeclaredBy(scope: CsharpScope): string | undefined {
+  const q = scope.ownedDefs.find((d) => d.type === 'Namespace')?.qualifiedName;
+  return q !== undefined && q.length > 0 ? normalizeNamespace(q) : undefined;
+}
+
+/**
+ * The innermost namespace lexically enclosing the call site, mirroring
+ * `populateCsharpNamespacePrefixes`: the nearest ancestor Namespace scope,
+ * else a file-scoped `namespace X;` (whose scope spans only its own line, so
+ * the file's types hang off the Module scope). A block namespace that does not
+ * contain the call site does not apply — the site is in the global namespace.
+ *
+ * Returns `null` when the site's scope is unknown, so the caller can fall back
+ * to the file-wide (permissive) view.
+ */
+function callSiteNamespace(
+  callerParsed: ParsedFile,
+  inScope: ScopeId | undefined,
+): string | undefined | null {
+  if (inScope === undefined) return null;
+  const scopesById = new Map<ScopeId, CsharpScope>();
+  for (const scope of callerParsed.scopes) scopesById.set(scope.id, scope);
+  if (!scopesById.has(inScope)) return null;
+
+  const visited = new Set<ScopeId>();
+  let current: ScopeId | null = inScope;
+  while (current !== null && !visited.has(current)) {
+    visited.add(current);
+    const scope = scopesById.get(current);
+    if (scope === undefined) break;
+    if (scope.kind === 'Namespace') {
+      const ns = namespaceDeclaredBy(scope);
+      if (ns !== undefined) return ns;
+    }
+    current = scope.parent;
+  }
+
+  const namespaceScopes = callerParsed.scopes.filter((s) => s.kind === 'Namespace');
+  const fileScoped =
+    namespaceScopes.length === 1 &&
+    namespaceScopes[0]!.range.startLine === namespaceScopes[0]!.range.endLine
+      ? namespaceScopes[0]
+      : undefined;
+  return fileScoped !== undefined ? namespaceDeclaredBy(fileScoped) : undefined;
+}
+
+/** Every namespace any declaration in the file sits in — the permissive fallback. */
+function fileNamespaces(callerParsed: ParsedFile): string[] {
   const namespaces = new Set<string>();
   for (const def of callerParsed.localDefs) {
     if (def.type === 'Namespace' && def.qualifiedName) {
@@ -55,25 +119,76 @@ function callerNamespaces(callerParsed: ParsedFile): Set<string> {
     }
     if (def.namespacePrefix) namespaces.add(normalizeNamespace(def.namespacePrefix));
   }
-  return namespaces;
+  return [...namespaces];
 }
 
-/** Whether a using target `target` brings namespace `ns` (or a type in it) into scope. */
-function importReaches(target: string, ns: string): boolean {
-  return (
-    target === ns ||
-    // `using static N.Type;` / `using Alias = N.Type;`
-    target.startsWith(ns + '.') ||
-    // `namespace A { using B; }` may mean `A.B`.
-    ns.endsWith('.' + target)
+/** Nearest `.csproj` directory at or above `filePath` (`''` = repo root / none). */
+function owningProjectDir(filePath: string, projectDirs: ReadonlySet<string>): string {
+  let dir = filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
+  for (;;) {
+    if (projectDirs.has(dir)) return dir;
+    if (dir === '') return '';
+    dir = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '';
+  }
+}
+
+function isUnderDir(filePath: string, dir: string): boolean {
+  return dir === '' || filePath.startsWith(dir + '/');
+}
+
+/** Whether the caller's compilation imports `ns` with a `global using` / MSBuild item. */
+function importedGlobally(
+  ns: string,
+  callerPath: string,
+  evidence: CSharpNamespaceEvidence,
+): boolean {
+  const projectDirs = evidence.projectDirs ?? new Set<string>();
+  const callerProject = owningProjectDir(callerPath, projectDirs);
+  return (evidence.globalUsings ?? []).some(
+    (g) =>
+      normalizeNamespace(g.namespace) === ns &&
+      (g.reach === 'tree' ? isUnderDir(callerPath, g.scopeDir) : g.scopeDir === callerProject),
   );
+}
+
+/**
+ * Whether one of the caller's using directives brings the candidate into
+ * scope. `using X;` binds `X` relative to the site's enclosing namespaces
+ * first, then as written.
+ */
+function importedByUsing(
+  ns: string,
+  candidateName: string,
+  callerParsed: ParsedFile,
+  enclosing: readonly string[],
+  declaredNamespaces: ReadonlySet<string> | undefined,
+): boolean {
+  for (const imported of callerParsed.parsedImports) {
+    if (!('targetRaw' in imported) || typeof imported.targetRaw !== 'string') continue;
+    const written = normalizeNamespace(imported.targetRaw);
+    const resolutions = [...enclosing.map((outer) => `${outer}.${written}`), written];
+    for (const target of resolutions) {
+      if (imported.kind === 'alias') {
+        // `using Color = N.Color;` — only an alias spelled like the type names it.
+        if (imported.localName === candidateName && target.startsWith(ns + '.')) return true;
+        continue;
+      }
+      if (target === ns) return true;
+      // C# decomposes `using static T;` to the same shape as `using N;`. A path
+      // the repo declares as a namespace is a namespace import and reaches
+      // only that namespace; any other path may be a type whose nested types
+      // `using static` exposes, so it may reach under its namespace.
+      if (declaredNamespaces?.has(target) !== true && target.startsWith(ns + '.')) return true;
+    }
+  }
+  return false;
 }
 
 export function csharpIsGlobalNameFallbackPlausible(ctx: {
   readonly callerParsed: ParsedFile;
   readonly candidate: SymbolDefinition;
   readonly resolutionConfig?: unknown;
-  readonly site?: { readonly rawQualifiedName?: string };
+  readonly site?: { readonly rawQualifiedName?: string; readonly inScope?: ScopeId };
 }): boolean {
   // `new N.Type()` names its namespace in source; not a bare-name guess.
   if (ctx.site?.rawQualifiedName !== undefined) return true;
@@ -88,16 +203,21 @@ export function csharpIsGlobalNameFallbackPlausible(ctx: {
   if (evidence?.globalUsings === undefined || evidence.truncated === true) return true;
 
   if (IMPLICIT_USING_ROOTS.has(topSegment(ns))) return true;
-  if (evidence.globalUsings.has(ns)) return true;
+  if (importedGlobally(ns, ctx.callerParsed.filePath, evidence)) return true;
 
-  for (const callerNs of callerNamespaces(ctx.callerParsed)) {
-    if (callerNs === ns || callerNs.startsWith(ns + '.')) return true;
-  }
+  const siteNamespace = callSiteNamespace(ctx.callerParsed, ctx.site?.inScope);
+  const enclosing =
+    siteNamespace === null
+      ? [...new Set(fileNamespaces(ctx.callerParsed).flatMap((n) => enclosingChain(n)))]
+      : enclosingChain(siteNamespace);
+  if (enclosing.includes(ns)) return true;
 
-  for (const imported of ctx.callerParsed.parsedImports) {
-    if (!('targetRaw' in imported) || typeof imported.targetRaw !== 'string') continue;
-    if (importReaches(normalizeNamespace(imported.targetRaw), ns)) return true;
-  }
-
-  return false;
+  const candidateName = (ctx.candidate.qualifiedName ?? '').split('.').pop() ?? '';
+  return importedByUsing(
+    ns,
+    candidateName,
+    ctx.callerParsed,
+    enclosing,
+    evidence.declaredNamespaces,
+  );
 }

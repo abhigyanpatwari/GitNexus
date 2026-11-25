@@ -158,4 +158,118 @@ namespace MyGame
     });
     expect(callTargetsFrom(result, 'Paint', 'App/Painter.cs')).toEqual([['Color', 'Lib/Color.cs']]);
   }, 60_000);
+
+  it('ignores an MSBuild `<Using Include>` inside an XML comment', async () => {
+    const result = await analyze({
+      'Lib/Color.cs': VENDOR_COLOR,
+      'App/App.csproj': `<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <!-- <Using Include="Vendor.Proto" /> -->
+  </ItemGroup>
+</Project>
+`,
+      'App/Painter.cs': PAINTER_IN_MYGAME,
+    });
+    expect(callTargetsFrom(result, 'Paint', 'App/Painter.cs')).toEqual([]);
+  }, 60_000);
+
+  it('scopes a `global using` to the project that declares it', async () => {
+    const result = await analyze({
+      'Lib/Color.cs': VENDOR_COLOR,
+      'A/A.csproj': '<Project Sdk="Microsoft.NET.Sdk" />\n',
+      'A/GlobalUsings.cs': 'global using Vendor.Proto;\n',
+      'A/Painter.cs': PAINTER_IN_MYGAME,
+      'B/B.csproj': '<Project Sdk="Microsoft.NET.Sdk" />\n',
+      'B/Painter.cs': PAINTER_IN_MYGAME,
+    });
+    expect(callTargetsFrom(result, 'Paint', 'A/Painter.cs')).toEqual([['Color', 'Lib/Color.cs']]);
+    expect(callTargetsFrom(result, 'Paint', 'B/Painter.cs')).toEqual([]);
+  }, 60_000);
+
+  it('applies a `Directory.Build.props` `<Using>` to every project below it', async () => {
+    const result = await analyze({
+      'Lib/Color.cs': VENDOR_COLOR,
+      'src/Directory.Build.props': `<Project>
+  <ItemGroup><Using Include="Vendor.Proto" /></ItemGroup>
+</Project>
+`,
+      'src/B/B.csproj': '<Project Sdk="Microsoft.NET.Sdk" />\n',
+      'src/B/Painter.cs': PAINTER_IN_MYGAME,
+      'other/C.csproj': '<Project Sdk="Microsoft.NET.Sdk" />\n',
+      'other/Painter.cs': PAINTER_IN_MYGAME,
+    });
+    expect(callTargetsFrom(result, 'Paint', 'src/B/Painter.cs')).toEqual([
+      ['Color', 'Lib/Color.cs'],
+    ]);
+    expect(callTargetsFrom(result, 'Paint', 'other/Painter.cs')).toEqual([]);
+  }, 60_000);
+});
+
+const PAINTER_IN_MYGAME = `namespace MyGame
+{
+    public class Painter
+    {
+        public void Paint() { var c = new Color(); }
+    }
+}
+`;
+
+describe('C# global-name fallback: using and namespace scoping', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-csharp-fallback-scope-'));
+    writeFixtureRepo(repoDir, {
+      // `Vendor.Tools` is a declared namespace holding `Gadget`.
+      'Lib/Gadget.cs': 'namespace Vendor.Tools { public class Gadget { public Gadget() { } } }\n',
+      'App/RelativeElsewhere.cs': `namespace Game
+{
+    using Tools;
+
+    public class RelativeElsewhere
+    {
+        public void Build() { var g = new Gadget(); }
+    }
+}
+`,
+      'App/RelativeInside.cs': `namespace Vendor.App
+{
+    using Tools;
+
+    public class RelativeInside
+    {
+        public void Build() { var g = new Gadget(); }
+    }
+}
+`,
+      'App/TwoNamespaces.cs': `namespace Vendor.Tools.Extra
+{
+    public class Helper { }
+}
+
+namespace Game
+{
+    public class Caller
+    {
+        public void Build() { var g = new Gadget(); }
+    }
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {});
+  }, 60_000);
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves a relative using against the site namespace, not any suffix', () => {
+    expect(callTargetsFrom(result, 'Build', 'App/RelativeElsewhere.cs')).toEqual([]);
+    expect(callTargetsFrom(result, 'Build', 'App/RelativeInside.cs')).toEqual([
+      ['Gadget', 'Lib/Gadget.cs'],
+    ]);
+  });
+
+  it('uses the namespace enclosing the call site, not every namespace in the file', () => {
+    expect(callTargetsFrom(result, 'Build', 'App/TwoNamespaces.cs')).toEqual([]);
+  });
 });

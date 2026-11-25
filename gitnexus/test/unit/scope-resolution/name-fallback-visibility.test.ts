@@ -19,6 +19,7 @@ import { dartIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/l
 import { rustIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/languages/rust/name-fallback-visibility.js';
 import { swiftIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/languages/swift/name-fallback-visibility.js';
 import { rubyIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/languages/ruby/name-fallback-visibility.js';
+import { csharpIsGlobalNameFallbackPlausible } from '../../../src/core/ingestion/languages/csharp/name-fallback-visibility.js';
 import { isJsSelfBoundCallableFallbackPlausible } from '../../../src/core/ingestion/languages/javascript/callable-visibility.js';
 import { javascriptProvider } from '../../../src/core/ingestion/languages/typescript.js';
 import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
@@ -1044,5 +1045,106 @@ describe('Ruby: isGlobalNameFallbackPlausible', () => {
         parsedFileOf: ownerFile('def:anon', 'Class'),
       }),
     ).toBe(true);
+  });
+});
+
+describe('C#: isGlobalNameFallbackPlausible', () => {
+  const nsImport = (targetRaw: string): ParsedImport => ({
+    kind: 'namespace',
+    localName: targetRaw.split('.').pop()!,
+    importedName: targetRaw,
+    targetRaw,
+  });
+  const mkType = (filePath: string, name: string, namespacePrefix?: string): SymbolDefinition =>
+    ({
+      nodeId: `def:${filePath}:${name}`,
+      filePath,
+      type: 'Class',
+      qualifiedName: name,
+      namespacePrefix,
+    }) as unknown as SymbolDefinition;
+  const config = (
+    overrides: {
+      declaredNamespaces?: string[];
+      globalUsings?: { namespace: string; scopeDir: string; reach: 'project' | 'tree' }[];
+      projectDirs?: string[];
+      truncated?: boolean;
+    } = {},
+  ) => ({
+    csharpConfigs: [],
+    namespaces: {
+      declaredNamespaces: new Set(overrides.declaredNamespaces ?? []),
+      rootNamespaces: new Set<string>(),
+      globalUsings: overrides.globalUsings ?? [],
+      projectDirs: new Set(overrides.projectDirs ?? []),
+      truncated: overrides.truncated ?? false,
+    },
+  });
+  const plausible = (
+    callerParsed: ParsedFile,
+    candidate: SymbolDefinition,
+    resolutionConfig: unknown = config(),
+    site: { rawQualifiedName?: string } = {},
+  ) => csharpIsGlobalNameFallbackPlausible({ callerParsed, candidate, resolutionConfig, site });
+
+  const color = mkType('Lib/Color.cs', 'Color', 'Vendor.Proto');
+
+  it('REFUSES a type whose namespace the caller never imports', () => {
+    expect(plausible(mkCaller('App/Painter.cs', [nsImport('UnityEngine')]), color)).toBe(false);
+  });
+
+  it('allows the type when its namespace is imported', () => {
+    expect(plausible(mkCaller('App/Painter.cs', [nsImport('Vendor.Proto')]), color)).toBe(true);
+  });
+
+  it('REFUSES a parent-namespace type through a child namespace import', () => {
+    const widget = mkType('Lib/Widget.cs', 'Widget', 'Vendor');
+    expect(
+      plausible(
+        mkCaller('App/Caller.cs', [nsImport('Vendor.Tools')]),
+        widget,
+        config({ declaredNamespaces: ['Vendor', 'Vendor.Tools'] }),
+      ),
+    ).toBe(false);
+  });
+
+  it('allows a type path that is not a declared namespace (`using static T;`)', () => {
+    const nested = mkType('Lib/Outer.cs', 'Nested', 'Vendor');
+    expect(
+      plausible(
+        mkCaller('App/Caller.cs', [nsImport('Vendor.Outer')]),
+        nested,
+        config({ declaredNamespaces: ['Vendor'] }),
+      ),
+    ).toBe(true);
+  });
+
+  it('scopes a project `global using` to that project', () => {
+    const resolutionConfig = config({
+      projectDirs: ['A', 'B'],
+      globalUsings: [{ namespace: 'Vendor.Proto', scopeDir: 'A', reach: 'project' }],
+    });
+    expect(plausible(mkCaller('A/Painter.cs'), color, resolutionConfig)).toBe(true);
+    expect(plausible(mkCaller('B/Painter.cs'), color, resolutionConfig)).toBe(false);
+  });
+
+  it('applies a `Directory.Build.props` using to every file below its directory', () => {
+    const resolutionConfig = config({
+      projectDirs: ['src/B', 'other'],
+      globalUsings: [{ namespace: 'Vendor.Proto', scopeDir: 'src', reach: 'tree' }],
+    });
+    expect(plausible(mkCaller('src/B/Painter.cs'), color, resolutionConfig)).toBe(true);
+    expect(plausible(mkCaller('other/Painter.cs'), color, resolutionConfig)).toBe(false);
+  });
+
+  it('allows what it cannot decide: qualified calls, no namespace, truncated scans, implicit usings', () => {
+    const caller = mkCaller('App/Painter.cs');
+    expect(plausible(caller, color, config(), { rawQualifiedName: 'Vendor.Proto.Color' })).toBe(
+      true,
+    );
+    expect(plausible(caller, mkType('Lib/G.cs', 'Global'))).toBe(true);
+    expect(plausible(caller, color, config({ truncated: true }))).toBe(true);
+    expect(plausible(caller, color, { csharpConfigs: [] })).toBe(true);
+    expect(plausible(caller, mkType('Lib/Text.cs', 'Encoder', 'System.Text'))).toBe(true);
   });
 });
