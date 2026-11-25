@@ -27,7 +27,10 @@ vi.mock('../../../src/core/tree-sitter/safe-parse.js', async (importOriginal) =>
 import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
 import { getPluginForFile } from '../../../src/core/group/extractors/http-patterns/index.js';
 import type { HttpLanguagePlugin } from '../../../src/core/group/extractors/http-patterns/types.js';
-import { PARSES_PER_RELEASE } from '../../../src/core/tree-sitter/native-tree-release.js';
+import {
+  createTreeReleaser,
+  PARSES_PER_RELEASE,
+} from '../../../src/core/tree-sitter/native-tree-release.js';
 import { countingTurns, maxParsesPerTurn, turnProbe } from '../../helpers/event-loop-turns.js';
 import type { CypherExecutor } from '../../../src/core/group/contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../../../src/core/group/types.js';
@@ -641,6 +644,37 @@ describe('HTTP source scan tree lifetime', () => {
 
       expect(turnProbe.parseTurns.length).toBe(BULK);
       expect(maxParsesPerTurn()).toBeLessThanOrEqual(PARSES_PER_RELEASE);
+    },
+  );
+
+  it.each(PREPARE_PASS_FILES)(
+    'awaits the releaser it is given once per parse in the %s prepareRepo pass',
+    async (sample, makeFile) => {
+      const plugin = getPluginForFile(sample);
+      if (!plugin?.prepareRepo) throw new Error(`expected a prepareRepo pass for ${sample}`);
+      const files = new Map(Array.from({ length: BULK }, (_, i) => makeFile(i)));
+      // The orchestrator's releaser, counted; every third parse fails.
+      const release = createTreeReleaser();
+      let released = 0;
+      let parses = 0;
+
+      await plugin.prepareRepo({
+        repoPath: tmpDir,
+        files: [...files.keys()],
+        parser: new Parser(),
+        readFile: (rel) => files.get(rel) ?? null,
+        parseSource: (parser, src) => {
+          parses += 1;
+          return parses % 3 === 0 ? null : parser.parse(src);
+        },
+        releaseTrees: async () => {
+          released += 1;
+          await release();
+        },
+      });
+
+      expect(parses).toBe(BULK);
+      expect(released).toBe(parses);
     },
   );
 
