@@ -242,14 +242,31 @@ function completeFsMock(factory) {
   );
 }
 
+function callableBinding(scope, name) {
+  let binding = bindingFor(scope, name);
+  const seen = new Set();
+  while (
+    binding?.path?.isIdentifier() &&
+    scope.getBinding(name)?.constant &&
+    !seen.has(binding.path.node)
+  ) {
+    const alias = binding.path;
+    seen.add(alias.node);
+    name = alias.node.name;
+    scope = alias.scope;
+    binding = bindingFor(scope, name);
+  }
+  return { name, binding };
+}
+
 function fixtureCall(node, bindings, mocked) {
   const callee = node.callee;
   const identifier = callee.type === 'Identifier';
   let owner = callee.object;
   if (nameOf(owner?.property) === 'promises') owner = owner.object;
-  const binding =
-    bindingFor(bindings, identifier ? callee.name : owner?.name) ?? requiredModule(owner, bindings);
-  const method = identifier ? (nameOf(binding?.imported) ?? callee.name) : nameOf(callee.property);
+  const target = callableBinding(bindings, identifier ? callee.name : owner?.name);
+  const binding = target.binding ?? requiredModule(owner, bindings);
+  const method = identifier ? (nameOf(binding?.imported) ?? target.name) : nameOf(callee.property);
   const actualFs =
     fsModule.test(binding?.module ?? '') && !mocked.has(binding.module.replace(/^node:/, ''));
   const isProject = projectReaders.has(method) && identifier && (!binding || binding.module);

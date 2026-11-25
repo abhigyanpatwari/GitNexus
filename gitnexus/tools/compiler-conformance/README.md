@@ -76,7 +76,7 @@ All Java source fixtures run through this command, including inline snippets and
 
 For a project with unresolved dependencies, the manifest can specify the exact javac diagnostic codes and counts in `diagnostics`. The comparison still checks every source declaration and source inheritance edge that javac can attribute. An added or missing diagnostic fails the run.
 
-The Java compiler comparison is strict by default. A difference in a source range, target, rejection, or published edge fails the job and prints the fixture and the two observations.
+The Java compiler comparison is strict by default. A difference in a source range, target, rejection, or published edge fails the job and prints the fixture and the two observations. When a fixture selects method families, javac reports overload rejections for those families. Other compilation errors, such as an ambiguous type declaration, still need an exact diagnostic entry.
 
 Each javac task uses the fixture sources, the JDK 21 platform, and an empty application classpath. GitNexus resolves wildcard imports against indexed source packages and known platform types. Adding a dependency JAR to javac's classpath can introduce another type of the same name and change its answer.
 

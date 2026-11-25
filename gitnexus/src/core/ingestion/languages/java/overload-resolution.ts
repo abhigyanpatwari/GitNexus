@@ -812,41 +812,84 @@ function qualifierRoot(
     : 'unknown';
 }
 
+function memberTypeAccessible(
+  type: JavaOverloadTypeFact,
+  owner: SymbolDefinition,
+  context: TypeContext,
+  state: State,
+): boolean {
+  if (type.modifiers?.includes('public')) return true;
+  const caller = getJavaOverloadFacts(context.filePath);
+  if (type.modifiers?.includes('private')) {
+    if (!caller || owner.filePath !== context.filePath) return false;
+    const nest = enclosingClasses(context, caller, state).at(-1);
+    return nest !== undefined && javaRangeContains(nest.fact.range, type.range);
+  }
+  if (packageName(owner.filePath) === packageName(context.filePath)) return true;
+  if (!caller || !type.modifiers?.includes('protected')) return false;
+  return enclosingClasses(context, caller, state).some(
+    ({ id }) =>
+      id !== undefined &&
+      (id === owner.nodeId || state.scopes.methodDispatch.mroFor(id).includes(owner.nodeId)),
+  );
+}
+
+function declaredMemberPath(
+  roots: readonly SymbolDefinition[],
+  members: readonly string[],
+  context: TypeContext,
+  state: State,
+): JavaType {
+  let matches = roots;
+  for (const member of members) {
+    if (matches.length !== 1) return UNKNOWN_JAVA_TYPE;
+    const owner = matches[0]!;
+    const facts = getJavaOverloadFacts(owner.filePath);
+    if (facts === undefined) return UNKNOWN_JAVA_TYPE;
+    const types = fileTypeIndex(facts, state).bySimpleName.get(member) ?? [];
+    matches = types.flatMap((type) => {
+      const declarations = definitionsOfType(type, owner.filePath, state).filter(
+        (def) => def.ownerId === owner.nodeId,
+      );
+      return declarations.length && memberTypeAccessible(type, owner, context, state)
+        ? declarations
+        : [];
+    });
+  }
+  return matches.length === 1 ? sourceReference(matches[0]!) : UNKNOWN_JAVA_TYPE;
+}
+
 function resolveTypeName(name: string, context: TypeContext, state: State): JavaType {
   const facts = getJavaOverloadFacts(context.filePath);
   if (facts === undefined)
     return name.includes('.') ? qualifiedReference(name, state) : UNKNOWN_JAVA_TYPE;
   const index = fileFactIndex(facts, state);
-  const parameter = typeParameterDeclaration(index, name, context.at);
+  const members = name.split('.');
+  const first = members.shift()!;
+  const parameter = typeParameterDeclaration(index, first, context.at);
+  if (parameter && members.length) return UNKNOWN_JAVA_TYPE;
   if (parameter)
     return {
       kind: 'variable',
       declaration: `${context.filePath}:${parameter.startLine}:${parameter.startCol}:${name}`,
     };
-  const first = name.split('.')[0]!;
   const nearest = nearestVisibleType(first, context.at, facts, state);
-  if (!name.includes('.')) {
-    const inherited = inheritedSimpleType(name, nearest, context, facts, state);
-    if (inherited !== undefined) return inherited;
+  if (nearest !== undefined || members.length === 0) {
+    const inherited = inheritedSimpleType(first, nearest, context, facts, state);
+    if (inherited !== undefined) {
+      if (members.length === 0 || inherited.kind !== 'reference') return inherited;
+      const owner =
+        inherited.sourceId === undefined ? undefined : state.scopes.defs.get(inherited.sourceId);
+      return owner ? declaredMemberPath([owner], members, context, state) : UNKNOWN_JAVA_TYPE;
+    }
   }
   if (nearest !== undefined) {
-    let unique = definitionsOfType(nearest, context.filePath, state);
-    if (name.includes('.')) {
-      // A member of a lexically visible local type is in the same Java nest.
-      // Follow the structural owner id, including for legal '$' identifiers.
-      if (nearest.name === nearest.simpleName) return UNKNOWN_JAVA_TYPE;
-      const types = fileTypeIndex(facts, state).bySimpleName;
-      for (const member of name.slice(first.length + 1).split('.')) {
-        const [owner] = unique;
-        if (!owner || unique.length !== 1) return UNKNOWN_JAVA_TYPE;
-        unique = (types.get(member) ?? []).flatMap((type) =>
-          definitionsOfType(type, context.filePath, state).filter(
-            (def) => def.ownerId === owner.nodeId,
-          ),
-        );
-      }
-    }
-    return unique.length === 1 ? sourceReference(unique[0]!) : UNKNOWN_JAVA_TYPE;
+    return declaredMemberPath(
+      definitionsOfType(nearest, context.filePath, state),
+      members,
+      context,
+      state,
+    );
   }
   if (name.includes('.')) {
     const root = qualifierRoot(first, context, facts, state);

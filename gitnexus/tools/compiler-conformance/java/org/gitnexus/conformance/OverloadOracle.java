@@ -320,18 +320,22 @@ final class InvocationScanner extends DeclarationScanner {
     private void constructorEdge(MethodTree caller) {
         var call = getCurrentPath();
         var unit = call.getCompilationUnit();
-        if (!families.contains("<init>") || trees.getSourcePositions().getEndPosition(unit, call.getLeaf()) < 0) return;
+        boolean selected = families.contains("<init>");
+        if ((!selected && diagnostics.errors.isEmpty()) || trees.getSourcePositions().getEndPosition(unit, call.getLeaf()) < 0) return;
         var tree = call.getLeaf();
         var select = tree instanceof MethodInvocationTree invocation ? invocation.getMethodSelect() : tree;
         var diagnostic = diagnostics.invocationError(unit, tree, select);
         if (diagnostic.isPresent()) {
             var error = diagnostic.get();
             diagnostics.errors.remove(error);
-            report.emit("rejected-constructor", report.file(unit),
-                    report.position(unit, trees.getSourcePositions().getStartPosition(unit, tree)),
-                    CallDiagnostics.rejection(error));
+            if (selected) {
+                report.emit("rejected-constructor", report.file(unit),
+                        report.position(unit, trees.getSourcePositions().getStartPosition(unit, tree)),
+                        CallDiagnostics.rejection(error));
+            }
             return;
         }
+        if (!selected) return;
         var constructor = trees.getElement(call);
         var target = constructor == null ? null : trees.getPath(constructor);
         if (target == null) return;
@@ -393,7 +397,13 @@ final class InvocationScanner extends DeclarationScanner {
             constructorEdge(caller);
             return super.visitMethodInvocation(call, caller);
         }
-        if (families.contains("*") || families.contains(name)) reportCall(call, caller, select, name);
+        if (families.contains("*") || families.contains(name)) {
+            reportCall(call, caller, select, name);
+        } else if (!diagnostics.errors.isEmpty()) {
+            // Enclosing calls have already inspected this receiver (preorder).
+            // Only an error at this invocation belongs to the unselected family.
+            diagnostics.callError(getCurrentPath().getCompilationUnit(), call).ifPresent(diagnostics.errors::remove);
+        }
         return super.visitMethodInvocation(call, caller);
     }
 

@@ -105,6 +105,23 @@ test('detects compiler-fixture projects through a directory, URL, or imported fi
   );
 });
 
+test('follows constant project reader aliases in their declaration scope', () => {
+  const uses = javaFixtureUses(`
+    import { runPipelineFromRepo as analyze } from '../pipeline.js';
+    const first = analyze;
+    const run = first;
+    function visit(analyze) { run('compiler-conformance/java-project'); }
+    function inspect(run) { run('compiler-conformance/java-virtual'); }
+    let reassigned = analyze;
+    reassigned = () => {};
+    reassigned('compiler-conformance/java-unused');
+  `);
+  assert.deepEqual(
+    uses.map(({ method, path }) => [method, path]),
+    [['runPipelineFromRepo', 'compiler-conformance/java-project']],
+  );
+});
+
 test('respects loop bindings and restores the filesystem import after each loop', () => {
   const uses = javaFixtureUses(`
     import fs from 'node:fs';

@@ -5,6 +5,13 @@ const accessModifiers = new Set(['public', 'private', 'protected']);
 
 function explicitAccess(declaration: SyntaxNode): string | undefined {
   let first = declaration.firstNamedChild;
+  if (
+    first === undefined &&
+    (declaration.type === 'method_declaration' || declaration.type === 'constructor_declaration')
+  ) {
+    // Partial syntax nodes can expose only the declaration text.
+    return /^\s*(public|protected|private)(?=\s|\/|@)/u.exec(declaration.text)?.[1];
+  }
   while (first?.type === 'line_comment' || first?.type === 'block_comment') {
     first = first.nextNamedSibling;
   }
