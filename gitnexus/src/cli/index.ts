@@ -378,6 +378,7 @@ program
 program
   .command('list')
   .description('List all indexed repositories')
+  .option('--json', 'Emit machine-readable JSON')
   .action(createLazyAction(() => import('./list.js'), 'listCommand'));
 
 program
