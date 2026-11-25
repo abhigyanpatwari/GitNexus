@@ -5,6 +5,7 @@ import { unboundCallableName } from '../languages/typescript/unbound-callables.j
 import type { FrameworkExpression, FrameworkRouteFacts } from './framework-route-types.js';
 import {
   buildJsRepoFacts,
+  dottedNameOf,
   extractJsModuleFacts,
   resolveJsPathExpression,
   type JsRepoFacts,
@@ -65,9 +66,20 @@ const CONSTANT_PATH_TYPES = new Set([
   'binary_expression',
 ]);
 
-/** Top-level `const` declarator names, including `export const`. */
-function moduleConstNames(root: Node): Node[] {
-  const names: Node[] = [];
+/** `x as const`, `(x)`, `x satisfies T` → `x`. */
+function unwrapTransparent(node: Node | null): Node | null {
+  let current = node;
+  while (current && TRANSPARENT_EXPRESSION_TYPES.has(current.type))
+    current = transparentInner(current);
+  return current;
+}
+
+/**
+ * Top-level `const` declarator names, including `export const`. `table` marks a
+ * const bound to an object literal: its members stay writable, unlike a string.
+ */
+function moduleConstNames(root: Node): { name: Node; table: boolean }[] {
+  const names: { name: Node; table: boolean }[] = [];
   for (const statement of children(root)) {
     const declaration =
       statement.type === 'export_statement'
@@ -77,18 +89,22 @@ function moduleConstNames(root: Node): Node[] {
     if (declaration.child(0)?.type !== 'const') continue;
     for (const declarator of children(declaration)) {
       const name = declarator.childForFieldName('name');
-      if (declarator.type === 'variable_declarator' && name?.type === 'identifier')
-        names.push(name);
+      if (declarator.type !== 'variable_declarator' || name?.type !== 'identifier') continue;
+      const value = unwrapTransparent(declarator.childForFieldName('value'));
+      names.push({ name, table: value?.type === 'object' });
     }
   }
   return names;
 }
 
-/** The node at the root of a member chain (`PATHS.V1.USERS` → `PATHS`). */
-function memberRoot(node: Node | null): Node | null {
+/** The outermost member read a name heads (`T` in `T.A.B` → `T.A.B`). */
+function outermostMember(node: Node): Node {
   let current = node;
-  while (current?.type === 'member_expression' || current?.type === 'subscript_expression')
-    current = current.childForFieldName('object');
+  while (
+    current.parent?.type === 'member_expression' &&
+    current.parent.childForFieldName('object')?.id === current.id
+  )
+    current = current.parent;
   return current;
 }
 
@@ -117,11 +133,18 @@ function writtenMember(node: Node): Node | null {
  * identifier in the expression must resolve, at the use site, to a top-level
  * `const` of this file. A local that shadows it, a `let`, an import, a
  * parameter or any call leaves the path unknown, which keeps the previous
- * behavior (no route) rather than inventing one. A table whose members are
- * written anywhere in the file is not trusted either.
+ * behavior (no route) rather than inventing one.
  *
- * The const/mutation scan and the module facts are built on first use, so a
- * file whose routes are all literals pays nothing.
+ * A table (a const bound to an object literal) is trusted only while every
+ * reference to it in the file reads a string leaf (`T.A`, `T.N.A`) and none
+ * writes one. Any other use lets the object escape (an alias, a call argument,
+ * a shorthand property, an export specifier, a subscript, a sub-table read),
+ * and an escaped object can be written where this scan cannot follow, so the
+ * table is not folded. Strings are immutable, so plain consts need no such
+ * check.
+ *
+ * The const scan and the module facts are built on first use, so a file whose
+ * routes are all literals pays nothing.
  */
 function createConstantPaths(
   tree: Parser.Tree,
@@ -130,45 +153,60 @@ function createConstantPaths(
 ): (node: Node | undefined) => string[] | null {
   // Top-level statements only: cheap, and enough to reject the common case (a
   // helper called with a local or a parameter) before any whole-file work.
-  let constIds: Set<string> | undefined;
-  const moduleConsts = (): Set<string> => {
-    if (constIds) return constIds;
-    constIds = new Set<string>();
-    for (const name of moduleConstNames(tree.rootNode)) {
+  let consts: { ids: Set<string>; tables: Set<string>; declared: Set<number> } | undefined;
+  const moduleConsts = () => {
+    if (consts) return consts;
+    consts = { ids: new Set(), tables: new Set(), declared: new Set() };
+    for (const { name, table } of moduleConstNames(tree.rootNode)) {
       const id = lexical.bindingId(name);
-      if (id && !lexical.ambiguous(id)) constIds.add(id);
+      if (!id || lexical.ambiguous(id)) continue;
+      consts.ids.add(id);
+      consts.declared.add(name.id);
+      if (table) consts.tables.add(id);
     }
-    return constIds;
+    return consts;
   };
-  // Whole-file member writes and module facts, built once and only for a path
+  // Whole-file table escapes and module facts, built once and only for a path
   // whose every identifier is already a module const.
-  let folding: { mutatedIds: Set<string>; facts: JsRepoFacts } | undefined;
+  let folding: { untrusted: Set<string>; facts: JsRepoFacts } | undefined;
   const fold = () => {
     if (folding) return folding;
-    const mutatedIds = new Set<string>();
-    const pending: Node[] = [tree.rootNode];
+    const { tables, declared } = moduleConsts();
+    const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
+    const leaves = facts.byFile.get(filePath)?.constants.literals ?? new Map<string, string>();
+    const untrusted = new Set<string>();
+    const pending: Node[] = tables.size > 0 ? [tree.rootNode] : [];
     for (let node = pending.pop(); node; node = pending.pop()) {
       for (const child of node.namedChildren) pending.push(child);
-      const root = memberRoot(writtenMember(node));
-      if (root?.type !== 'identifier') continue;
-      const id = lexical.bindingId(root, root.text, true);
-      if (id) mutatedIds.add(id);
+      if (node.type === 'shorthand_property_identifier') {
+        const id = lexical.bindingId(node, node.text, true);
+        if (id && tables.has(id)) untrusted.add(id);
+        continue;
+      }
+      if (node.type !== 'identifier' || declared.has(node.id)) continue;
+      const id = lexical.bindingId(node, node.text, true);
+      if (!id || !tables.has(id)) continue;
+      const read = outermostMember(node);
+      // `typeof T` in a type position reads nothing at runtime.
+      if (read.parent?.type === 'type_query') continue;
+      const dotted = read.id === node.id ? null : dottedNameOf(read);
+      const written = read.parent ? writtenMember(read.parent)?.id === read.id : false;
+      if (dotted === null || !leaves.has(dotted) || written) untrusted.add(id);
     }
-    const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
-    folding = { mutatedIds, facts };
+    folding = { untrusted, facts };
     return folding;
   };
 
   return (node) => {
     if (!node || node.hasError || !CONSTANT_PATH_TYPES.has(node.type)) return null;
-    const consts = moduleConsts();
-    if (consts.size === 0) return null;
+    const { ids } = moduleConsts();
+    if (ids.size === 0) return null;
     const used: string[] = [];
     const pending: Node[] = [node];
     for (let current = pending.pop(); current; current = pending.pop()) {
       if (current.type === 'identifier') {
         const id = lexical.bindingId(current, current.text, true);
-        if (!id || !consts.has(id)) return null;
+        if (!id || !ids.has(id)) return null;
         used.push(id);
       } else if (
         current.type === 'call_expression' ||
@@ -180,8 +218,8 @@ function createConstantPaths(
       }
       for (const child of current.namedChildren) pending.push(child);
     }
-    const { mutatedIds, facts } = fold();
-    if (used.some((id) => mutatedIds.has(id))) return null;
+    const { untrusted, facts } = fold();
+    if (used.some((id) => untrusted.has(id))) return null;
     const path = resolveJsPathExpression(filePath, node, facts);
     return path !== null && path.startsWith('/') && !path.includes('${') ? [path] : null;
   };

@@ -170,6 +170,9 @@ function handler() {} function other() {}`);
       app.delete(PATHS.ORDERS, handler);
       app.get(PATHS.ADMIN.AUDIT, handler);
       app.patch(NESTED, handler);
+      // Leaf reads and type-only queries do not let the table escape.
+      logger.info(PATHS.ORDERS, PATHS.ADMIN.AUDIT);
+      export type Path = (typeof PATHS)[keyof typeof PATHS];
     `).sort(),
     ).toEqual([
       'DELETE /api/orders',
@@ -213,6 +216,26 @@ function handler() {} function other() {}`);
     ['an imported constant', `import { P } from './paths'; app.get(P, h);`],
     ['a written table member', `const T = { A: '/a' }; T.A = '/b'; app.get(T.A, h);`],
     ['a deleted table member', `const T = { A: '/a' }; delete T.A; app.get(T.A, h);`],
+    [
+      'a table written through an alias',
+      `const T = { A: '/a' }; const alias = T; alias.A = '/b'; app.get(T.A, h);`,
+    ],
+    [
+      'a table passed to a call',
+      `const T = { A: '/a' }; Object.assign(T, { A: '/b' }); app.get(T.A, h);`,
+    ],
+    [
+      'a table in a shorthand property',
+      `const T = { A: '/a' }; const o = { T }; o.T.A = '/b'; app.get(T.A, h);`,
+    ],
+    [
+      'a sub-table written through an alias',
+      `const T = { N: { A: '/a' } }; const n = T.N; n.A = '/b'; app.get(T.N.A, h);`,
+    ],
+    [
+      'a table read by subscript elsewhere',
+      `const T = { A: '/a' }; const k = 'A'; T[k] = '/b'; app.get(T.A, h);`,
+    ],
     ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
     ['a call', `const P = '/p'; app.get(build(P), h);`],
     ['a call in a template', `const P = '/p'; app.get(\`\${P}/\${id()}\`, h);`],
