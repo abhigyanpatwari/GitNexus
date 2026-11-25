@@ -9431,6 +9431,18 @@ export class LocalBackend {
 
     // ── Enrichment: affected processes, modules, risk ──────────────
     const directCount = (grouped[1] || []).length;
+
+    // #3602: count nodes reached exclusively via IMPORTS edges. These represent
+    // file-level module imports, not direct usage of the target symbol. The
+    // relType argmax (relType ASC) guarantees a node reachable by both CALLS and
+    // IMPORTS is stamped CALLS, so relationType === 'IMPORTS' truly identifies
+    // IMPORTS-only nodes.
+    const importsOnlyCount = impacted.filter(
+      (item: { relationType?: string }) => item.relationType === 'IMPORTS',
+    ).length;
+    const importsOnlyDirectCount = (grouped[1] || []).filter(
+      (item: { relationType?: string }) => item.relationType === 'IMPORTS',
+    ).length;
     let affectedProcesses: any[] = [];
     let affectedModules: any[] = [];
     // Per-symbol process membership: maps impacted symbol id -> list of processes
@@ -9846,12 +9858,16 @@ export class LocalBackend {
       enrichmentTruncated:
         !skipEnrichment && MAX_CHUNKS > 0 && impacted.length > MAX_CHUNKS * CHUNK_SIZE,
     });
+    // #3602: exclude IMPORTS-only nodes from risk tier for symbol targets.
+    // File targets legitimately answer "who imports this file?" via IMPORTS edges.
+    const tierImportsOnlyCount = isFileTarget ? 0 : importsOnlyCount;
+    const tierImportsOnlyDirectCount = isFileTarget ? 0 : importsOnlyDirectCount;
     const { risk, riskSharedAxes, riskScale } = scoreImpactRisk({
       direction,
-      directCount,
+      directCount: directCount - tierImportsOnlyDirectCount,
       processCount,
       moduleCount,
-      impactedCount: impacted.length,
+      impactedCount: impacted.length - tierImportsOnlyCount,
       incompleteWalk,
       unusedAxes,
     });
@@ -9928,7 +9944,14 @@ export class LocalBackend {
                           'produces no edge to find. Confirm with a text search before treating the ' +
                           'change as safe.',
             }
-          : {}),
+          : tierImportsOnlyCount > 0
+            ? {
+                riskNote:
+                  `${tierImportsOnlyCount} of ${impacted.length} impacted nodes were reached only ` +
+                  'through IMPORTS edges (file-level imports, not direct usage). Risk tier reflects ' +
+                  'CALLS/USES/EXTENDS evidence only.',
+              }
+            : {}),
       ...epistemic,
       ...((typeImportsIncomplete || omittedNameOnlyCalls > 0) &&
         !opts.skipEpistemic && {
@@ -9947,6 +9970,7 @@ export class LocalBackend {
         direct: directCount,
         processes_affected: processCount,
         modules_affected: moduleCount,
+        ...(importsOnlyCount > 0 ? { imports_only: importsOnlyCount } : {}),
       },
       byDepthCounts,
       affected_processes: affectedProcesses,
