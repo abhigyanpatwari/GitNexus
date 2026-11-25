@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type Parser from 'tree-sitter';
@@ -167,7 +168,7 @@ describe('Java Lombok workspace proof inherited member types', () => {
       });
       assert.deepEqual(
         getters(result.after.get('Dto.java')).sort(),
-        [`Dto.${accessor}`, 'Dto.getName', 'Dto.setName'].sort(),
+        [`Dto.${accessor}`, 'Dto.getName', 'Dto.setName'].sort(compareCodeUnits),
       );
     });
   }

@@ -14,6 +14,7 @@
  * the provider method/path combinations match, so the two implementations
  * can't drift apart on the semantics they share.
  */
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Parser from 'tree-sitter';
@@ -81,7 +82,7 @@ describe('Spring route extractor parity (ingestion vs group)', () => {
     const group = groupPairs(tree);
 
     // Both must agree on the full set — no route only one side sees.
-    assert.deepEqual([...ingestion].sort(), [...group].sort());
+    assert.deepEqual([...ingestion].sort(compareCodeUnits), [...group].sort(compareCodeUnits));
 
     // Sanity: the expected combinations are actually present (guards against
     // both extractors silently agreeing on an empty set).
@@ -109,6 +110,9 @@ public class HealthController {
 }
 `);
 
-    assert.deepEqual([...ingestionPairs(tree)].sort(), [...groupPairs(tree)].sort());
+    assert.deepEqual(
+      [...ingestionPairs(tree)].sort(compareCodeUnits),
+      [...groupPairs(tree)].sort(compareCodeUnits),
+    );
   });
 });

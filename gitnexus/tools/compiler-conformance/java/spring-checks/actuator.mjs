@@ -298,7 +298,7 @@ export async function verifyActuatorRuntime() {
       ),
     );
     const configOwner = nodeNamed('RuntimeConfig', 'Class');
-    assert.ok((configOwner?.properties.description).includes('Spring Actuator conditions matched'));
+    assert.ok(configOwner?.properties.description?.includes('Spring Actuator conditions matched'));
     const configMethodId = [...result.graph.iterRelationshipsByType('HAS_METHOD')].find(
       (edge) =>
         edge.sourceId === configOwner?.id &&
@@ -379,10 +379,9 @@ export async function verifyActuatorRuntime() {
       (node) =>
         node.properties.name === 'billingService' && node.properties.springDiProvider !== undefined,
     );
-    assert.ok(
-      !(declaredProvider?.properties.description).includes(
-        'Spring Actuator beans runtime-confirmed',
-      ),
+    assert.equal(
+      declaredProvider?.properties.description?.includes('Spring Actuator beans runtime-confirmed'),
+      false,
     );
     assert.equal(
       nodes.some(
@@ -691,7 +690,7 @@ export async function verifyActuatorRuntime() {
     const otherFile = [...result.graph.iterNodes()].find(
       (node) => node.label === 'File' && node.properties.filePath.endsWith('OtherController.java'),
     );
-    assert.ok((route?.properties.filePath).includes('RuntimeApplication.java'));
+    assert.ok(route?.properties.filePath?.includes('RuntimeApplication.java'));
     assert.notEqual(
       route?.properties.handlerSymbolId,
       [...result.graph.iterNodes()].find(

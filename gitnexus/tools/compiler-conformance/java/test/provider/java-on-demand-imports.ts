@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../../compare.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -45,7 +46,7 @@ function resolve(
     targets: [...graph.iterRelationships()]
       .filter((edge) => edge.type === 'IMPORTS' && edge.sourceId === `File:${main}`)
       .map((edge) => edge.targetId.replace('File:', ''))
-      .sort(),
+      .sort(compareCodeUnits),
     parsedFiles,
   };
 }
@@ -347,7 +348,10 @@ describe('Java AST-bound package on-demand dependencies (JLS 6.5, 7.5.2)', () =>
           importUses,
         },
       }));
-      assert.deepEqual(rerun(source, cached).targets, Object.keys(declarations).sort());
+      assert.deepEqual(
+        rerun(source, cached).targets,
+        Object.keys(declarations).sort(compareCodeUnits),
+      );
     });
   }
   for (const example of [
@@ -382,8 +386,10 @@ describe('Java AST-bound package on-demand dependencies (JLS 6.5, 7.5.2)', () =>
     );
     const parsed = parsedFiles.find((file) => file.filePath === 'Main.java');
     assert.deepEqual(
-      [...((parsed?.captureSideChannel as JavaCaptureSideChannel).importUses?.names ?? [])].sort(),
-      ['Order', 'Object', 'User'].sort(),
+      [...((parsed?.captureSideChannel as JavaCaptureSideChannel).importUses?.names ?? [])].sort(
+        compareCodeUnits,
+      ),
+      ['Order', 'Object', 'User'].sort(compareCodeUnits),
     );
   });
   for (const example of [

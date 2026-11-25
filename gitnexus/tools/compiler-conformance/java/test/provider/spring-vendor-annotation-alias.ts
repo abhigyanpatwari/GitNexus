@@ -12,6 +12,7 @@
  * 3. End-to-end `extractSpringRoutes` with a fixture using vendor annotations
  * 4. Parity: both ingestion and group extractors surface the same routes
  */
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it, afterEach, beforeEach } from 'node:test';
 import Parser from 'tree-sitter';
@@ -59,7 +60,7 @@ public class OrderController {
 
     const postRoutes = routes.filter((r) => r.httpMethod === 'POST');
     assert.equal(postRoutes.length, 2);
-    const postPaths = postRoutes.map((r) => r.routePath).sort();
+    const postPaths = postRoutes.map((r) => r.routePath).sort(compareCodeUnits);
     assert.deepEqual(postPaths, ['/create', '/update']);
     for (const r of postRoutes) {
       assert.equal(r.prefix, '/api/opt');
@@ -89,7 +90,7 @@ public class MixedController {
     const routes = extractSpringRoutes(tree, 'MixedController.java');
     assert.equal(routes.length, 3);
 
-    const paths = routes.map((r) => r.routePath).sort();
+    const paths = routes.map((r) => r.routePath).sort(compareCodeUnits);
     assert.deepEqual(paths, ['/std-create', '/std-get', '/win-create']);
   });
 
@@ -118,8 +119,11 @@ public class ParityController {
         .map((d) => `${d.method} ${normalizeExtractedRoutePath(d.path, null)}`),
     );
 
-    assert.deepEqual([...ingestionRoutes].sort(), [...groupRoutes].sort());
-    assert.deepEqual([...ingestionRoutes].sort(), [
+    assert.deepEqual(
+      [...ingestionRoutes].sort(compareCodeUnits),
+      [...groupRoutes].sort(compareCodeUnits),
+    );
+    assert.deepEqual([...ingestionRoutes].sort(compareCodeUnits), [
       'GET /api/parity/query',
       'POST /api/parity/create',
     ]);

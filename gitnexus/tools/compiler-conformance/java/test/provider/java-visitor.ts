@@ -634,9 +634,7 @@ describe('Java CfgVisitor — call-site sites[] substrate', () => {
     const cfg = cfgOf(`exec(cmd);`);
     const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'exec');
     assert.notEqual(site, undefined);
-    assert.ok(
-      (site?.args?.[0]).some((actual) => isDeepStrictEqual(actual, bindingIdx(cfg, 'cmd'))),
-    );
+    assert.ok(site?.args?.[0]?.some((actual) => isDeepStrictEqual(actual, bindingIdx(cfg, 'cmd'))));
   });
 
   it('a receiver call (`db.query(x)`) records the receiver binding + dotted callee', () => {
@@ -646,15 +644,15 @@ describe('Java CfgVisitor — call-site sites[] substrate', () => {
     const site = allSites(cfg).find((s) => s.kind === 'call' && s.callee === 'db.query');
     assert.notEqual(site, undefined);
     assert.equal(site?.receiver, bindingIdx(cfg, 'db'));
-    assert.ok((site?.args?.[0]).some((actual) => isDeepStrictEqual(actual, bindingIdx(cfg, 'x'))));
+    assert.ok(site?.args?.[0]?.some((actual) => isDeepStrictEqual(actual, bindingIdx(cfg, 'x'))));
   });
 
   it('`new Foo(x)` records a `new` site with the type as callee', () => {
     const cfg = cfgOf(`Object p = new Foo(x);`);
     const site = allSites(cfg).find((s) => s.kind === 'new');
     assert.equal(site?.callee, 'Foo');
-    assert.ok((site?.args?.[0]).some((actual) => isDeepStrictEqual(actual, bindingIdx(cfg, 'x'))));
-    assert.ok((site?.resultDefs).includes(bindingIdx(cfg, 'p')));
+    assert.ok(site?.args?.[0]?.some((actual) => isDeepStrictEqual(actual, bindingIdx(cfg, 'x'))));
+    assert.ok(site?.resultDefs?.includes(bindingIdx(cfg, 'p')));
   });
 
   it('a nested call via-tags the inner site (sanitizer substrate)', () => {
@@ -665,8 +663,8 @@ describe('Java CfgVisitor — call-site sites[] substrate', () => {
     assert.ok(exec >= 0);
     assert.ok(escape >= 0);
     const x = bindingIdx(cfg, 'x');
-    assert.ok((sites[escape].args?.[0]).some((actual) => isDeepStrictEqual(actual, x)));
-    assert.ok((sites[exec].args?.[0]).some((actual) => isDeepStrictEqual(actual, [x, escape])));
+    assert.ok(sites[escape].args?.[0]?.some((actual) => isDeepStrictEqual(actual, x)));
+    assert.ok(sites[exec].args?.[0]?.some((actual) => isDeepStrictEqual(actual, [x, escape])));
   });
 
   it('a CFG-only function (no calls) emits NO sites key (omit-when-empty)', () => {

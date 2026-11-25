@@ -104,7 +104,7 @@ describe('cross-language property inference (RV-5)', () => {
       const hit = inference().crossLanguageNames.find((e) => e.name === 'loyaltyPointsBalance');
       assert.notEqual(hit, undefined);
       // The actionable half: not just "we declined" but "look in Java".
-      assert.ok((hit?.languages).includes('java'));
+      assert.ok(hit?.languages?.includes('java'));
     });
 
     // Ambiguity and cross-language are different failures with different
@@ -126,7 +126,7 @@ describe('cross-language property inference (RV-5)', () => {
     it('reports the same fact for a language that opts OUT of name inference', () => {
       const hit = inference().crossLanguageNames.find((e) => e.name === 'jsOnlyThreshold');
       assert.notEqual(hit, undefined);
-      assert.ok((hit?.languages).includes('javascript'));
+      assert.ok(hit?.languages?.includes('javascript'));
     });
 
     // The assertion that makes `reportOnly` load-bearing. The cross-language

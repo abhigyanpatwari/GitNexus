@@ -65,7 +65,7 @@ export async function verifyConfig() {
     assert.deepStrictEqual(targetsFrom(timeout), ['payment.timeout']);
     assert.deepStrictEqual(targetsFrom(missing), []);
     assert.ok(
-      (missing?.properties.description).includes('Spring config unresolved: payment.missing'),
+      missing?.properties.description?.includes('Spring config unresolved: payment.missing'),
     );
     const ktTimeout = nodeNamed('timeout', 'ConfigConsumers.kt');
     const ktMissing = nodeNamed('missing', 'ConfigConsumers.kt');
@@ -77,7 +77,7 @@ export async function verifyConfig() {
     assert.deepStrictEqual(targetsFrom(ktTimeout), ['payment.timeout']);
     assert.deepStrictEqual(targetsFrom(ktMissing), []);
     assert.ok(
-      (ktMissing?.properties.description).includes('Spring config unresolved: payment.missing'),
+      ktMissing?.properties.description?.includes('Spring config unresolved: payment.missing'),
     );
     // links ConfigurationProperties classes and relaxed field names to their prefix
     {

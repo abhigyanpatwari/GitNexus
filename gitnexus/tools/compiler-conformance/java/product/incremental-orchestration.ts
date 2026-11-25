@@ -1,6 +1,7 @@
+import { fixtureGitExecutable } from '../../../../test/helpers/git-executable.js';
 import { compareCodeUnits } from '../../compare.mjs';
 import assert from 'node:assert/strict';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { copyFile, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -53,7 +54,7 @@ async function setupSpringBeanIncrementalRepo() {
   const src = path.join(repo.dbPath, 'src', 'com', 'other');
   await mkdir(src, { recursive: true });
   await copyFile(incrementalSource('WildcardService.java'), path.join(src, 'WildcardService.java'));
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  execFileSync(fixtureGitExecutable(), ['init'], { cwd: repo.dbPath, stdio: 'pipe' });
   gitCommitAll(repo.dbPath, 'initial spring bean candidate');
   return repo;
 }
@@ -63,7 +64,7 @@ async function setupJavaEnumHeritageIncrementalRepo() {
   const src = path.join(repo.dbPath, 'src');
   await mkdir(src, { recursive: true });
   await copyFile(incrementalSource('Status.java'), path.join(src, 'Status.java'));
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  execFileSync(fixtureGitExecutable(), ['init'], { cwd: repo.dbPath, stdio: 'pipe' });
   gitCommitAll(repo.dbPath, 'initial Java enum heritage');
   return repo;
 }
@@ -103,7 +104,7 @@ async function setupSpringAopIncrementalRepo() {
     ),
     writeFile(path.join(resources, 'application.properties'), 'feature.enabled=true\n', 'utf-8'),
   ]);
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  execFileSync(fixtureGitExecutable(), ['init'], { cwd: repo.dbPath, stdio: 'pipe' });
   gitCommitAll(repo.dbPath, 'initial spring aop fixture');
   return repo;
 }
@@ -116,7 +117,7 @@ async function setupSpringBeanFactoryIncrementalRepo() {
     incrementalSource('WildcardConfiguration.java'),
     path.join(src, 'WildcardConfiguration.java'),
   );
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  execFileSync(fixtureGitExecutable(), ['init'], { cwd: repo.dbPath, stdio: 'pipe' });
   gitCommitAll(repo.dbPath, 'initial spring bean factory');
   return repo;
 }

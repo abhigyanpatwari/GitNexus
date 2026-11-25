@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../src/lib/utils.js';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -45,7 +46,7 @@ const canonical = (value: unknown): unknown => {
   if (value && typeof value === 'object')
     return Object.fromEntries(
       Object.entries(value)
-        .sort()
+        .sort(([left], [right]) => compareCodeUnits(left, right))
         .filter(([k]) => k !== 'routePosition')
         .map(([k, v]) => [k, canonical(v)]),
     );

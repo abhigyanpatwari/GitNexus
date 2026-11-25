@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../src/lib/utils.js';
 import crypto from 'node:crypto';
 import type { PipelineResult } from '../../src/types/pipeline.js';
 /**
@@ -31,10 +32,10 @@ export function graphDigest(result: PipelineResult): {
     const dst = nodeKey.get(rel.targetId) ?? `?:${rel.targetId}`;
     triples.push(`${rel.type}|${src}|${dst}`);
   }
-  triples.sort();
+  triples.sort(compareCodeUnits);
   const sortObj = (o: Record<string, number>): Record<string, number> => {
     const out: Record<string, number> = {};
-    for (const k of Object.keys(o).sort()) out[k] = o[k];
+    for (const k of Object.keys(o).sort(compareCodeUnits)) out[k] = o[k];
     return out;
   };
   return {

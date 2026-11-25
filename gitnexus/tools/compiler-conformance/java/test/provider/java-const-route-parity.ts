@@ -18,6 +18,7 @@
  *   • literal routes are untouched.
  */
 
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Parser from 'tree-sitter';
@@ -55,7 +56,7 @@ function groupProviders(files: Record<string, string>): string[] {
       if (d.role === 'provider') out.push(`${d.method} ${d.path}`);
     }
   }
-  return out.sort();
+  return out.sort(compareCodeUnits);
 }
 
 /** Ingestion side: extract routes, then fold operands against the same map. */
@@ -77,7 +78,7 @@ function ingestionRoutes(files: Record<string, string>): string[] {
       out.push(`${route.httpMethod} ${`${route.prefix ?? ''}${path}`.replace(/\/{2,}/g, '/')}`);
     }
   }
-  return out.sort();
+  return out.sort(compareCodeUnits);
 }
 
 const CONSTS = 'src/main/java/com/example/ApiPaths.java';

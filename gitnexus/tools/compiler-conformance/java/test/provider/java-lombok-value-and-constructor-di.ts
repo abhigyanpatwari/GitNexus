@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Parser from 'tree-sitter';
@@ -50,7 +51,9 @@ describe('Lombok Value accessor identity', () => {
   String $internal;
 }`);
     assert.deepEqual(
-      result.graph.symbols.map((symbol) => [symbol.name, symbol.returnType]).sort(),
+      result.graph.symbols
+        .map((symbol) => [symbol.name, symbol.returnType])
+        .sort(([left], [right]) => compareCodeUnits(left, right)),
       [
         ['getBoxed', 'Boolean'],
         ['getFirst', 'String[]'],
@@ -62,8 +65,11 @@ describe('Lombok Value accessor identity', () => {
     const scopeNames = result.captures
       .map((capture) => capture['@declaration.name']?.text)
       .filter((name) => name !== undefined)
-      .sort();
-    assert.deepEqual(scopeNames, result.graph.symbols.map((symbol) => symbol.name).sort());
+      .sort(compareCodeUnits);
+    assert.deepEqual(
+      scopeNames,
+      result.graph.symbols.map((symbol) => symbol.name).sort(compareCodeUnits),
+    );
   });
 
   it('preserves field suppression, explicit methods and unsupported Accessors', () => {
@@ -121,7 +127,9 @@ import java.util.*;
 @Data class Consumer { private String name; private List<String> tags; }
 class Other { String getName() { return null; } }`);
     assert.deepEqual(
-      result.graph.symbols.map((symbol) => `${symbol.ownerId}.${symbol.name}`).sort(),
+      result.graph.symbols
+        .map((symbol) => `${symbol.ownerId}.${symbol.name}`)
+        .sort(compareCodeUnits),
       [
         'Class:Example.java:Consumer.getName',
         'Class:Example.java:Consumer.getTags',
@@ -137,7 +145,9 @@ import lombok.*;
 @Entity @Getter @Setter class Consumer { private String email; }
 class Other { String getEmail() { return null; } }`);
     assert.deepEqual(
-      result.graph.symbols.map((symbol) => `${symbol.ownerId}.${symbol.name}`).sort(),
+      result.graph.symbols
+        .map((symbol) => `${symbol.ownerId}.${symbol.name}`)
+        .sort(compareCodeUnits),
       ['Class:Example.java:Consumer.getEmail', 'Class:Example.java:Consumer.setEmail'],
     );
   });
@@ -152,7 +162,9 @@ import lombok.experimental.NonFinal;
 }
 @Data @FieldDefaults(makeFinal = false) class Open { String name; }`);
     assert.deepEqual(
-      result.graph.symbols.map((symbol) => `${symbol.ownerId}.${symbol.name}`).sort(),
+      result.graph.symbols
+        .map((symbol) => `${symbol.ownerId}.${symbol.name}`)
+        .sort(compareCodeUnits),
       [
         'Class:Example.java:Consumer.getFixed',
         'Class:Example.java:Consumer.getMutable',
@@ -178,7 +190,7 @@ import lombok.experimental.FieldDefaults;
   @lombok.Setter String fixed;
   @lombok.Setter @lombok.experimental.NonFinal String mutable;
 }`);
-    assert.deepEqual(result.graph.symbols.map((symbol) => symbol.name).sort(), [
+    assert.deepEqual(result.graph.symbols.map((symbol) => symbol.name).sort(compareCodeUnits), [
       'getFixed',
       'getMutable',
       'setMutable',

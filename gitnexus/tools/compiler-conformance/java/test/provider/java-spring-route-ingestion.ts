@@ -6,6 +6,7 @@
  * and validates per-class prefix resolution, multi-class handling, and
  * all HTTP method annotations.
  */
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Parser from 'tree-sitter';
@@ -97,7 +98,7 @@ public class HealthController {
     for (const route of routes) {
       assert.equal(route.prefix, undefined);
     }
-    const paths = routes.map((r) => r.routePath).sort();
+    const paths = routes.map((r) => r.routePath).sort(compareCodeUnits);
     assert.deepEqual(paths, ['/health', '/ready']);
   });
 

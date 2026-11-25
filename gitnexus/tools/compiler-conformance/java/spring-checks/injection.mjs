@@ -23,6 +23,7 @@ export async function verifyDi() {
     result.graph.forEachNode((n) => {
       if (n.label === 'Property' && n.properties.name === name) found = n;
     });
+    if (!found) throw new Error(`Consumer.${name} should be a Property node`);
     return found;
   }
 
@@ -61,7 +62,6 @@ export async function verifyDi() {
     // THE extraction pin: both no-op incarnations broke exactly here — the
     // graph never carried a matchable generic type or the gating annotation.
     const foos = findProperty(result, 'foos');
-    assert.ok(foos, 'Consumer.foos should be a Property node');
     assert.partialDeepStrictEqual(foos.properties, {
       declaredType: 'List',
       rawDeclaredType: 'List<IFoo>',
@@ -70,7 +70,6 @@ export async function verifyDi() {
     // extracts the non-annotated field with the same type contract but NO annotations key
 
     const plain = findProperty(result, 'plain');
-    assert.ok(plain, 'Consumer.plain should be a Property node');
     assert.partialDeepStrictEqual(plain.properties, {
       declaredType: 'List',
       rawDeclaredType: 'List<IFoo>',

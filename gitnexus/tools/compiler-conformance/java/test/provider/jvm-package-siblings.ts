@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../../compare.mjs';
 import { createJvmPackageSiblingVisibility } from '../../../../../src/core/ingestion/languages/jvm/package-siblings.js';
 import type { ScopeResolutionIndexes } from '../../../../../src/core/ingestion/model/scope-resolution-indexes.js';
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
@@ -217,7 +218,7 @@ describe('JVM sibling injection cap (#2732)', () => {
     );
 
     const injected = indexes.bindingAugmentations.get('module:0');
-    assert.deepEqual([...(injected?.keys() ?? [])].sort(), [
+    assert.deepEqual([...(injected?.keys() ?? [])].sort(compareCodeUnits), [
       'NearType0',
       'NearType2',
       'NearType4',
@@ -257,7 +258,7 @@ describe('JVM sibling injection cap (#2732)', () => {
     );
 
     const targetModule = parsedFiles[0].scopes.find((scope) => scope.kind === 'Module');
-    assert.deepEqual([...(targetModule?.typeBindings.keys() ?? [])].sort(), [
+    assert.deepEqual([...(targetModule?.typeBindings.keys() ?? [])].sort(compareCodeUnits), [
       'Binding_NearType0',
       'Binding_NearType2',
       'Binding_NearType4',

@@ -1,3 +1,4 @@
+import { fixtureGitExecutable } from './git-executable.js';
 import { execFileSync } from 'node:child_process';
 import { getStoragePaths, type RepoMeta } from '../../src/storage/repo-manager.js';
 
@@ -30,6 +31,7 @@ export async function readWildcardServiceAnnotations(repoPath: string): Promise<
 
 export function gitCommitAll(cwd: string, message: string): void {
   const overrides = ['-c', 'user.name=test', '-c', 'user.email=t@t', '-c', 'commit.gpgsign=false'];
-  execFileSync('git', [...overrides, 'add', '-A'], { cwd, stdio: 'pipe' });
-  execFileSync('git', [...overrides, 'commit', '-q', '-m', message], { cwd, stdio: 'pipe' });
+  const git = fixtureGitExecutable();
+  execFileSync(git, [...overrides, 'add', '-A'], { cwd, stdio: 'pipe' });
+  execFileSync(git, [...overrides, 'commit', '-q', '-m', message], { cwd, stdio: 'pipe' });
 }

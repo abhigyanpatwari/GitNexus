@@ -5,6 +5,7 @@
  * Fixtures use proven lombok imports / FQNs — bare `@Data` without provenance
  * must not synthesize.
  */
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import Parser from 'tree-sitter';
@@ -85,7 +86,7 @@ public class Order {
       const classNodeIds = ownerMapBySimpleName(tree, FILE_PATH);
       const result = synthesizeLombokAccessors(tree, FILE_PATH, classNodeIds);
       assert.equal(result.symbols.length, 4);
-      const names = result.symbols.map((s) => s.name).sort();
+      const names = result.symbols.map((s) => s.name).sort(compareCodeUnits);
       assert.deepEqual(names, ['getAmount', 'getOrderId', 'setAmount', 'setOrderId']);
     });
 
@@ -123,7 +124,7 @@ public class Pair {
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      assert.deepEqual(result.symbols.map((s) => s.name).sort(), [
+      assert.deepEqual(result.symbols.map((s) => s.name).sort(compareCodeUnits), [
         'getFirst',
         'getSecond',
         'setFirst',
@@ -134,12 +135,10 @@ public class Pair {
         captures.some((match) => match['@scope.function'] !== undefined),
         false,
       );
-      assert.deepEqual(captures.map((match) => match['@declaration.qualified_name']?.text).sort(), [
-        'Pair.getFirst',
-        'Pair.getSecond',
-        'Pair.setFirst',
-        'Pair.setSecond',
-      ]);
+      assert.deepEqual(
+        captures.map((match) => match['@declaration.qualified_name']?.text).sort(compareCodeUnits),
+        ['Pair.getFirst', 'Pair.getSecond', 'Pair.setFirst', 'Pair.setSecond'],
+      );
     });
 
     it('creates HAS_METHOD relationships linking to the class', () => {
@@ -233,7 +232,7 @@ public class Order {
       assert.deepEqual(
         synthesizeLombokAccessors(coreOnly, FILE_PATH, ownerMapBySimpleName(coreOnly, FILE_PATH))
           .symbols.map((symbol) => symbol.name)
-          .sort(),
+          .sort(compareCodeUnits),
         ['getOrderId', 'setOrderId'],
       );
 
@@ -343,7 +342,10 @@ public class Flag {
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      assert.deepEqual(result.symbols.map((s) => s.name).sort(), ['isActive', 'setActive']);
+      assert.deepEqual(result.symbols.map((s) => s.name).sort(compareCodeUnits), [
+        'isActive',
+        'setActive',
+      ]);
     });
 
     it('does not double-prefix primitive boolean isEnabled', () => {
@@ -359,7 +361,10 @@ public class Flag {
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      assert.deepEqual(result.symbols.map((s) => s.name).sort(), ['isEnabled', 'setEnabled']);
+      assert.deepEqual(result.symbols.map((s) => s.name).sort(compareCodeUnits), [
+        'isEnabled',
+        'setEnabled',
+      ]);
       assert.equal(
         result.symbols.find((s) => s.name === 'isIsEnabled'),
         undefined,
@@ -379,7 +384,10 @@ public class Flag {
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      assert.deepEqual(result.symbols.map((s) => s.name).sort(), ['getActive', 'setActive']);
+      assert.deepEqual(result.symbols.map((s) => s.name).sort(compareCodeUnits), [
+        'getActive',
+        'setActive',
+      ]);
     });
   });
 
@@ -517,7 +525,10 @@ public class Order {
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      assert.deepEqual(result.symbols.map((s) => s.name).sort(), ['getOrderId', 'setOrderId']);
+      assert.deepEqual(result.symbols.map((s) => s.name).sort(compareCodeUnits), [
+        'getOrderId',
+        'setOrderId',
+      ]);
       assert.equal(result.symbols.find((s) => s.name === 'getOrderId')!.parameterCount, 0);
     });
 
@@ -629,7 +640,10 @@ public class Order {
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      assert.deepEqual(result.symbols.map((s) => s.name).sort(), ['getOrderId', 'setOrderId']);
+      assert.deepEqual(result.symbols.map((s) => s.name).sort(compareCodeUnits), [
+        'getOrderId',
+        'setOrderId',
+      ]);
     });
 
     it('omits when proven Accessors fluent=true', () => {
@@ -707,7 +721,10 @@ public class Order {
         FILE_PATH,
         ownerMapBySimpleName(tree, FILE_PATH),
       );
-      assert.deepEqual(result.symbols.map((s) => s.name).sort(), ['getOrderId', 'setOrderId']);
+      assert.deepEqual(result.symbols.map((s) => s.name).sort(compareCodeUnits), [
+        'getOrderId',
+        'setOrderId',
+      ]);
     });
 
     it('lets field @Accessors(chain=false) restore void setters under class chain=true', () => {

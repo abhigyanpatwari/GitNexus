@@ -224,7 +224,10 @@ describe('CONTAINING_FILES_QUERY against a real LadybugDB', () => {
         }
         const key = JSON.stringify([query, params ?? {}]);
         let rows = replayed.get(key);
-        if (!rows) replayed.set(key, (rows = db(query, params)));
+        if (rows === undefined) {
+          rows = db(query, params);
+          replayed.set(key, rows);
+        }
         return (await rows).map((row) => ({ ...row }));
       };
       return { executor, counts };

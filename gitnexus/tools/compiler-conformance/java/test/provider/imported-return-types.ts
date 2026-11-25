@@ -24,6 +24,7 @@
  * purpose. Java fixtures also cover import-chain storage and traversal order.
  */
 
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { extractParsedFile } from '../../../../../src/core/ingestion/scope-extractor-bridge.js';
@@ -97,7 +98,7 @@ public class C${i} { public C${i} create${i}() { return this; } }`,
       files
         .map((file) => ({
           path: file.filePath,
-          names: [...moduleTypeBindings(file).keys()].sort(),
+          names: [...moduleTypeBindings(file).keys()].sort(compareCodeUnits),
         }))
         .sort((a, b) => a.path.localeCompare(b.path));
     assert.deepEqual(bindings(forward), bindings(reversed));

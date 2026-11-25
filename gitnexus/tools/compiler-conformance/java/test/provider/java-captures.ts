@@ -11,6 +11,7 @@
  * drift before the integration parity gate.
  */
 
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
@@ -60,7 +61,7 @@ function inheritanceRefs(src: string): string[] {
   return emitJavaScopeCaptures(src, 'C.java')
     .filter((m) => m['@reference.inherits'] !== undefined)
     .flatMap((m) => m['@reference.name']?.text ?? [])
-    .sort();
+    .sort(compareCodeUnits);
 }
 
 function recordAccessorDeclarations(src: string) {
@@ -249,7 +250,10 @@ describe('emitJavaScopeCaptures — record component accessors (#2917)', () => {
       'record User(String name) { public String name(int repeat) { return name; } }',
     ).filter((declaration) => declaration.name === 'name');
 
-    assert.deepEqual(declarations.map((declaration) => declaration.arity).sort(), ['0', '1']);
+    assert.deepEqual(declarations.map((declaration) => declaration.arity).sort(compareCodeUnits), [
+      '0',
+      '1',
+    ]);
   });
 
   // A component is named by a real `identifier` and nothing else. tree-sitter's

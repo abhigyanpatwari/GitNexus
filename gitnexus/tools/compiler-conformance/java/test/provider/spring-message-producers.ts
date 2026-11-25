@@ -264,7 +264,7 @@ describe('Spring messaging producer capture regressions', () => {
       JAVA_FILE,
     );
     const sideChannel = collectJavaCaptureSideChannel(JAVA_FILE);
-    assert.equal((sideChannel?.springMessageProducerFacts).length, 1);
+    assert.equal(sideChannel?.springMessageProducerFacts?.length, 1);
     assert.deepEqual(
       sideChannel?.springDynamicLookupFacts?.map((fact) => fact.targetTypeName),
       ['OrderService'],

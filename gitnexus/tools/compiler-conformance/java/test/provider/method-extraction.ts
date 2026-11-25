@@ -1,3 +1,4 @@
+import { compareCodeUnits } from '../../../compare.mjs';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
@@ -197,7 +198,10 @@ describe('Java MethodExtractor', () => {
       assert.notEqual(result, null);
       const finds = result!.methods.filter((m) => m.name === 'find');
       assert.equal(finds.length, 3);
-      assert.deepEqual(finds.map((m) => m.parameters.length).sort(), [1, 2, 3]);
+      assert.deepEqual(
+        finds.map((m) => m.parameters.length).sort((left, right) => left - right),
+        [1, 2, 3],
+      );
     });
   });
 
@@ -308,7 +312,10 @@ describe('Java MethodExtractor', () => {
       assert.notEqual(result, null);
       assert.equal(result!.ownerName, 'MyAnnotation');
       assert.equal(result!.methods.length, 2);
-      assert.deepEqual(result!.methods.map((m) => m.name).sort(), ['count', 'value']);
+      assert.deepEqual(result!.methods.map((m) => m.name).sort(compareCodeUnits), [
+        'count',
+        'value',
+      ]);
     });
   });
 
@@ -427,7 +434,10 @@ describe('Java MethodExtractor', () => {
       const accessors = result!.methods.filter((method) => method.name === 'name');
 
       assert.equal(accessors.length, 2);
-      assert.deepEqual(accessors.map((method) => method.parameters.length).sort(), [0, 1]);
+      assert.deepEqual(
+        accessors.map((method) => method.parameters.length).sort((left, right) => left - right),
+        [0, 1],
+      );
     });
 
     // #2936: the accessor is minted at the COMPONENT's position, so on a single
@@ -442,7 +452,7 @@ describe('Java MethodExtractor', () => {
       const keys = result!.methods
         .filter((method) => method.name === 'name')
         .map((method) => methodInfoKey(method.name, method.line, method.column))
-        .sort();
+        .sort(compareCodeUnits);
 
       assert.deepEqual(keys, ['name:1:19', 'name:1:34']);
     });

@@ -1,3 +1,4 @@
+import { createTempDir } from '../../../../../test/helpers/test-db.js';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
@@ -43,12 +44,14 @@ describe('Java class annotation capture', () => {
     );
   });
 
-  it('clears worker side-channel facts at the start of each workspace pass', async () => {
+  it('clears worker side-channel facts at the start of each workspace pass', async (t) => {
     const filePath = 'src/Stale.java';
     emitJavaScopeCaptures('@Service class Stale {}', filePath);
-    assert.equal((collectJavaCaptureSideChannel(filePath)?.classAnnotations).length, 1);
+    assert.equal(collectJavaCaptureSideChannel(filePath)?.classAnnotations?.length, 1);
 
-    await javaScopeResolver.loadResolutionConfig?.('/tmp/repo');
+    const workspace = await createTempDir('gn-java-bean-workspace-');
+    t.after(workspace.cleanup);
+    await javaScopeResolver.loadResolutionConfig?.(workspace.dbPath);
 
     assert.equal(collectJavaCaptureSideChannel(filePath), undefined);
   });

@@ -380,7 +380,7 @@ async function verifyJavaRecordMethodResolution2564() {
           fanout.map((edge) => edge.targetFilePath).sort(compareCodeUnits),
         ),
       );
-      assert.ok((directTags?.targetFilePath).includes('User.java'));
+      assert.ok(directTags?.targetFilePath?.includes('User.java'));
     } finally {
       fs.rmSync(root, {
         recursive: true,
