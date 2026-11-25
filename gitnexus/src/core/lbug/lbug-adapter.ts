@@ -1180,6 +1180,26 @@ const throwIfFtsIndexInconsistent = (error: unknown, context?: string): void => 
   );
 };
 
+// LadybugDB 0.22 can deadlock while bulk-building a string primary-key index
+// for node COPY or the FTS term dictionary (LadybugDB/ladybug#1669). The caller
+// owns the connection lock until the operation drains and the setting is restored.
+const withSingleExecutionThread = async (
+  c: lbug.Connection,
+  operation: () => Promise<void>,
+): Promise<void> => {
+  const [setting] = await readQueryRows(await c.query("CALL CURRENT_SETTING('threads') RETURN *"));
+  const previousThreads = Number(setting?.threads);
+  if (!Number.isSafeInteger(previousThreads) || previousThreads < 1) {
+    throw new Error('Cannot read the LadybugDB thread count before building a string index.');
+  }
+  c.setMaxNumThreadForExec(1);
+  try {
+    await operation();
+  } finally {
+    c.setMaxNumThreadForExec(previousThreads);
+  }
+};
+
 /**
  * Run a COPY, retrying once with IGNORE_ERRORS=true (which skips row-level
  * errors) on a recoverable first failure. Buffer exhaustion and FTS inconsistency
@@ -1192,10 +1212,15 @@ const copyCsvWithRetry = async (
   targetConn: lbug.Connection,
   copyQuery: string,
   onError: (retryErr: unknown) => void,
-  expectedRows?: number,
+  nodeImport?: { expectedRows: number },
 ): Promise<void> => {
+  const expectedRows = nodeImport?.expectedRows;
+  const runAttempt = (operation: () => Promise<void>) => {
+    const run = nodeImport ? () => withSingleExecutionThread(targetConn, operation) : operation;
+    return isSharedSingletonConn(targetConn) ? withConnLock(run) : run();
+  };
   try {
-    await queryAndDrain(targetConn, copyQuery);
+    await runAttempt(async () => drainQueryResult(await targetConn.query(copyQuery)));
   } catch (firstError) {
     throwIfBufferPoolExhausted(firstError);
     // FTS consistency failures describe the index, not a malformed CSV row.
@@ -1261,7 +1286,7 @@ const copyCsvWithRetry = async (
           );
         }
       };
-      await (isSharedSingletonConn(targetConn) ? withConnLock(retry) : retry());
+      await runAttempt(retry);
     } catch (retryErr) {
       const firstMessage = firstError instanceof Error ? firstError.message : String(firstError);
       const retryMessage = retryErr instanceof Error ? retryErr.message : String(retryErr);
@@ -1349,7 +1374,7 @@ const copyNodeCSVs = async (
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
       },
-      rows,
+      { expectedRows: rows },
     );
   }
 };
@@ -1575,7 +1600,7 @@ export const loadGraphToLbug = async (
       // COPY, matching the node COPY above — one captured reference for the whole
       // bulk load (#2264 review P3). Same object during analyze (`conn` is only
       // reassigned at open/close under the session lock, never mid-load), so the
-      // queryAndDrain `targetConn === conn` lock gate still engages.
+      // COPY takes the singleton connection lock.
       await copyCsvWithRetry(writeConn, copyQuery, (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
@@ -3777,7 +3802,8 @@ export const createFTSIndex = async (
   properties: string[],
   stemmer: string = DEFAULT_FTS_STEMMER,
 ): Promise<void> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
 
@@ -3795,7 +3821,9 @@ export const createFTSIndex = async (
   const query = `CALL CREATE_FTS_INDEX('${tableName}', '${indexName}', [${propList}], stemmer := '${stemmer}')`;
 
   try {
-    await queryAndDrain(conn, query);
+    await withConnLock(() =>
+      withSingleExecutionThread(c, async () => drainQueryResult(await c.query(query))),
+    );
     ensuredFTSIndexes.add(key);
   } catch (e: any) {
     if (e.message?.includes('already exists')) {
