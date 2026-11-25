@@ -29,16 +29,19 @@ import { javaImportedSpellingFacts, javaReturnElementFacts } from './capture-sid
 import { javaReturnElementRef, type JavaImportedSpellingFact } from './declared-type-captures.js';
 import { populateJavaInheritedFieldTypes, type DirectParents } from './inherited-field-types.js';
 
-/** A top-level or member type, the only kinds a type spelling can name. */
+/** A top-level, member or local type with a source declaration. */
 interface NamedType {
+  /** Qualified lookup key. A local declaration roots this key in its unique node ID. */
   readonly fqn: string;
+  /** A local class or its member's source spelling, separate from its declaration key. */
+  readonly localSpelling?: string;
   /** The package of the file that declares it. */
   readonly packageName: string;
   /** The supertypes it names (`extends` / `implements`), type arguments
    * erased. Without one, it inherits no member type: `Object`, `Enum` and
    * `Record` declare none. */
   readonly bases: readonly string[];
-  /** The scope the declaration sits in: the module, or the enclosing type. */
+  /** The scope containing the declaration. */
   readonly enclosingScope: ScopeId;
   /** The enclosing type's def; absent for a top-level type. */
   readonly ownerId?: string;
@@ -115,6 +118,10 @@ function collectNamedTypes(
     if (local && (!parent || parent.kind === 'Class')) return undefined;
     const modifiers = fact.modifiers ?? [];
     const prefix = owner?.fqn ?? packageName;
+    let localSpelling: string | undefined;
+    if (local) localSpelling = fact.simpleName;
+    else if (owner?.localSpelling !== undefined)
+      localSpelling = `${owner.localSpelling}.${fact.simpleName}`;
     const ownerKind = owner === undefined ? undefined : kinds.get(scope.parent);
     const access: NamedType['access'] =
       (['public', 'protected', 'private'] as const).find((modifier) =>
@@ -128,6 +135,7 @@ function collectNamedTypes(
         : prefix === ''
           ? fact.simpleName
           : `${prefix}.${fact.simpleName}`,
+      ...(localSpelling === undefined ? {} : { localSpelling }),
       packageName,
       bases,
       enclosingScope: scope.parent,
@@ -170,11 +178,14 @@ function memberTypeNamesByOwner(indexes: ScopeResolutionIndexes): MemberTypeName
   if (cached !== undefined) return cached;
   const byOwner = new Map<string, Map<string, string[]>>();
   const all = new Set<string>();
+  const hierarchies = hierarchiesByIndexes.get(indexes);
   for (const def of indexes.defs.byId.values()) {
     if (def.ownerId === undefined || !(isClassLike(def.type) || def.type === 'Annotation'))
       continue;
     const spelling = def.qualifiedName ?? def.nodeId;
-    const name = spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1);
+    const name =
+      hierarchies?.get(def.nodeId)?.name ??
+      spelling.slice(Math.max(spelling.lastIndexOf('.'), spelling.lastIndexOf(':')) + 1);
     let owned = byOwner.get(def.ownerId);
     if (owned === undefined) byOwner.set(def.ownerId, (owned = new Map()));
     const ids = owned.get(name);
@@ -312,6 +323,28 @@ const unindexedBases = new WeakMap<ScopeResolutionIndexes, Map<string, boolean>>
 
 const writtenParentsByIndexes = new WeakMap<ScopeResolutionIndexes, Map<string, DirectParents>>();
 
+/** A local type in scope at the declaration takes precedence over an import,
+ * including when both types occur in the same superclass chain. */
+function localBaseKey(
+  base: string,
+  root: string,
+  scope: ScopeId,
+  position: TypeRef['lookupPosition'],
+  types: ReadonlyMap<string, NamedType>,
+  indexes: ScopeResolutionIndexes,
+): string | undefined {
+  const claim = lookupJavaTypeNameClaim(scope, root, indexes, position);
+  const first = claim.bindings[0]?.def;
+  if (
+    claim.status !== 'resolved' ||
+    !first ||
+    claim.bindings.some(({ def }) => def.nodeId !== first.nodeId)
+  )
+    return undefined;
+  const local = types.get(first.nodeId);
+  return local?.localSpelling === undefined ? undefined : local.fqn + base.slice(root.length);
+}
+
 /** Match the direct bases written in the declaration to resolved ancestors.
  * A redundant direct interface still supplies its own path (JLS 8.3). */
 function writtenJavaParents(classId: string, indexes: ScopeResolutionIndexes): DirectParents {
@@ -321,7 +354,8 @@ function writtenJavaParents(classId: string, indexes: ScopeResolutionIndexes): D
   if (cached !== undefined) return cached;
   const hierarchies = hierarchiesByIndexes.get(indexes);
   const type = hierarchies?.get(classId);
-  const file = indexes.defs.get(classId)?.filePath;
+  const definition = indexes.defs.get(classId);
+  const file = definition?.filePath;
   if (type === undefined || file === undefined)
     return { ids: directSupertypes(classId, indexes), complete: false };
   const ids: string[] = [];
@@ -330,8 +364,10 @@ function writtenJavaParents(classId: string, indexes: ScopeResolutionIndexes): D
     const types = namedTypesByIndexes.get(indexes);
     const ancestors = new Map<string, string | null>();
     for (const id of indexes.methodDispatch.mroFor(classId)) {
-      const fqn = types?.get(id)?.fqn ?? hierarchies?.get(id)?.name;
+      const ancestor = types?.get(id);
+      const fqn = ancestor?.localSpelling ?? ancestor?.fqn ?? hierarchies?.get(id)?.name;
       if (fqn === undefined || id === classId) continue;
+      if (ancestor?.localSpelling !== undefined) ancestors.set(ancestor.fqn, id);
       for (let start = 0; start < fqn.length; ) {
         const spelling = fqn.slice(start);
         const previous = ancestors.get(spelling);
@@ -341,14 +377,27 @@ function writtenJavaParents(classId: string, indexes: ScopeResolutionIndexes): D
         start = dot + 1;
       }
     }
+    const declaration = types?.get(classId);
     for (const base of type.bases) {
       const root = base.split('.')[0]!;
-      const imports = importIndex(file).single.get(root);
+      const local =
+        declaration?.localSpelling !== undefined && types
+          ? localBaseKey(
+              base,
+              root,
+              declaration.enclosingScope,
+              definition?.declarationRange,
+              types,
+              indexes,
+            )
+          : undefined;
+      const imports = local === undefined ? importIndex(file).single.get(root) : undefined;
       if (imports !== undefined && imports.length !== 1) {
         complete = false;
         continue;
       }
-      const written = imports === undefined ? base : imports[0]!.name + base.slice(root.length);
+      const written =
+        local ?? (imports === undefined ? base : imports[0]!.name + base.slice(root.length));
       const ancestor = ancestors.get(written);
       if (ancestor === undefined && written === 'java.lang.Object') continue;
       if (ancestor == null || (imports !== undefined && types?.get(ancestor)?.fqn !== written))
@@ -432,9 +481,7 @@ export function javaInheritedMemberType(
   return undefined;
 }
 
-/** Whether `ancestorId` is reached from `classId` one written supertype at a
- * time: each step goes to an MRO entry whose FQN the class's own base spelling
- * names (in full, or as a suffix such as `Base` or `Outer.Base`). */
+/** Follow the declared supertypes to the owner of an inherited member type. */
 function reachesThroughWrittenBases(
   classId: string,
   ancestorId: string,
@@ -445,16 +492,22 @@ function reachesThroughWrittenBases(
   const seen = new Set(pending);
   for (let current = pending.pop(); current !== undefined; current = pending.pop()) {
     if (current === ancestorId) return true;
-    const bases = namedTypes.get(current)?.bases ?? [];
-    if (bases.length === 0) continue;
-    for (const parent of indexes.methodDispatch.mroFor(current)) {
-      const fqn = namedTypes.get(parent)?.fqn;
-      if (
-        fqn === undefined ||
-        seen.has(parent) ||
-        !bases.some((base) => fqn === base || fqn.endsWith(`.${base}`))
-      )
-        continue;
+    const type = namedTypes.get(current);
+    if (!type?.bases.length) continue;
+    // Local class names need lexical identity. For package and member types,
+    // an MRO can contain multiple qualified declarations with the written suffix.
+    const parents =
+      type.localSpelling !== undefined
+        ? writtenJavaParents(current, indexes).ids
+        : indexes.methodDispatch.mroFor(current).filter((id) => {
+            const fqn = namedTypes.get(id)?.fqn;
+            return (
+              fqn !== undefined &&
+              type.bases.some((base) => fqn === base || fqn.endsWith(`.${base}`))
+            );
+          });
+    for (const parent of parents) {
+      if (seen.has(parent)) continue;
       seen.add(parent);
       pending.push(parent);
     }

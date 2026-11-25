@@ -135,9 +135,11 @@ describe('Lombok Value and generated constructor DI through worker/cache paths',
     'retains exact accessor and dependency owners on cold worker parse and warm replay',
     { timeout: 120_000 },
     async () => {
-      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-value-'));
-      const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-value-cache-'));
+      const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-java-lombok-value-'));
       try {
+        const root = path.join(scratch, 'repo');
+        const storage = path.join(scratch, 'cache');
+        fs.mkdirSync(storage);
         writeFixtureRepo(root, sources);
         const identity = await runtimeParseIdentity();
         const coldCache: ParseCache = {
@@ -261,8 +263,7 @@ describe('Lombok Value and generated constructor DI through worker/cache paths',
           synthetic,
         );
       } finally {
-        fs.rmSync(root, { recursive: true, force: true });
-        fs.rmSync(storage, { recursive: true, force: true });
+        fs.rmSync(scratch, { recursive: true, force: true });
       }
     },
   );

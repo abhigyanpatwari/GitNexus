@@ -87,7 +87,7 @@
   "compiler-conformance/java-r5-non-ascii-spelling": 7,
   "compiler-conformance/java-r6-annotated-producer-returns": 15,
   "compiler-conformance/java-r6-sam-callee-scope": 4,
-  "compiler-conformance/java-r6-shadow-root": 10,
+  "compiler-conformance/java-r6-shadow-root": 15,
   "compiler-conformance/java-raw-generic-base": {
     "sites": 0
   },
