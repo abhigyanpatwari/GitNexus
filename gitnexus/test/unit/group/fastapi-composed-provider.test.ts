@@ -26,14 +26,14 @@ interface RunResult {
   parseCalls: number;
 }
 
-function run(files: Record<string, string>): RunResult {
+async function run(files: Record<string, string>): Promise<RunResult> {
   let parseCalls = 0;
   const countingParse = (p: Parser, src: string): Parser.Tree => {
     parseCalls++;
     return parseSource(p, src);
   };
   const readFile = (rel: string): string | null => files[rel] ?? null;
-  const ctx = PYTHON_HTTP_PLUGIN.prepareRepo?.({
+  const ctx = await PYTHON_HTTP_PLUGIN.prepareRepo?.({
     repoPath: '/repo',
     files: Object.keys(files),
     parser,
@@ -62,8 +62,8 @@ const CONSTANTS = [
 ].join('\n');
 
 describe('group FastAPI composed-constant providers (#2391)', () => {
-  it('resolves an imported composed constant to its full path', () => {
-    const { providers } = run({
+  it('resolves an imported composed constant to its full path', async () => {
+    const { providers } = await run({
       'app/constants.py': CONSTANTS,
       'app/routes.py': [
         'from fastapi import APIRouter',
@@ -76,8 +76,8 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(providers).toContainEqual({ method: 'POST', path: '/api/v1/widgets/get' });
   });
 
-  it('stacks an APIRouter(prefix=…) onto a resolved composed path', () => {
-    const { providers } = run({
+  it('stacks an APIRouter(prefix=…) onto a resolved composed path', async () => {
+    const { providers } = await run({
       'app/constants.py': CONSTANTS,
       'app/routes.py': [
         'from fastapi import APIRouter',
@@ -90,8 +90,8 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(providers).toContainEqual({ method: 'POST', path: '/v2/api/v1/widgets/get' });
   });
 
-  it('leaves a string-literal route unchanged and emits no provider for an unresolvable arg', () => {
-    const { providers } = run({
+  it('leaves a string-literal route unchanged and emits no provider for an unresolvable arg', async () => {
+    const { providers } = await run({
       'app/routes.py': [
         'from fastapi import APIRouter',
         'router = APIRouter()',
@@ -105,10 +105,10 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(providers.some((p) => p.method === 'DELETE')).toBe(false);
   });
 
-  it('cost gate: a literal-only repo parses no files for constants', () => {
+  it('cost gate: a literal-only repo parses no files for constants', async () => {
     // No non-literal decorator and no include_router ⇒ prepareRepo does zero
     // parsing (the constant map is never built).
-    const { parseCalls } = run({
+    const { parseCalls } = await run({
       'app/routes.py': [
         'from fastapi import APIRouter',
         'router = APIRouter()',
@@ -119,18 +119,18 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(parseCalls).toBe(0);
   });
 
-  it('cost gate: a composed repo does parse for constants', () => {
-    const { parseCalls } = run({
+  it('cost gate: a composed repo does parse for constants', async () => {
+    const { parseCalls } = await run({
       'app/constants.py': CONSTANTS,
       'app/routes.py': '@router.post(API_V1_WIDGETS_GET)\nasync def f(): return {}\n',
     });
     expect(parseCalls).toBeGreaterThan(0);
   });
 
-  it('resolves a string-literal-LEADING concat as the sole composed route (#2393 parity)', () => {
+  it('resolves a string-literal-LEADING concat as the sole composed route (#2393 parity)', async () => {
     // `@router.get("/api" + SUFFIX)` starts with a quote, so the pre-widen cost
     // gate missed it and the group dropped a route ingestion resolved.
-    const { providers, parseCalls } = run({
+    const { providers, parseCalls } = await run({
       'app/constants.py': 'SUFFIX = "/users"',
       'app/routes.py': [
         'from fastapi import APIRouter',
@@ -144,10 +144,10 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(providers).toContainEqual({ method: 'GET', path: '/api/users' });
   });
 
-  it('parses a file that needs both the router pre-pass and the constant map once (#2393)', () => {
+  it('parses a file that needs both the router pre-pass and the constant map once (#2393)', async () => {
     // The file has BOTH include_router and a composed route; before the single
     // parse-pass merge it was parsed twice in prepareRepo, now once.
-    const { parseCalls } = run({
+    const { parseCalls } = await run({
       'app/main.py': [
         'from fastapi import APIRouter',
         'from .sub import sub_router',
@@ -161,8 +161,8 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(parseCalls).toBe(1);
   });
 
-  it('resolves a multiline (Black-formatted) literal-leading concat (#2393)', () => {
-    const { providers, parseCalls } = run({
+  it('resolves a multiline (Black-formatted) literal-leading concat (#2393)', async () => {
+    const { providers, parseCalls } = await run({
       'app/constants.py': 'SUFFIX = "/users"',
       'app/routes.py': [
         'from fastapi import APIRouter',
@@ -179,8 +179,8 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(providers).toContainEqual({ method: 'GET', path: '/api/users' });
   });
 
-  it('resolves a composed @app.<verb>(CONST) provider (#2393 EXPR-branch coverage)', () => {
-    const { providers } = run({
+  it('resolves a composed @app.<verb>(CONST) provider (#2393 EXPR-branch coverage)', async () => {
+    const { providers } = await run({
       'app/constants.py': 'API_CONST = "/health"',
       'app/main.py': [
         'from fastapi import FastAPI',

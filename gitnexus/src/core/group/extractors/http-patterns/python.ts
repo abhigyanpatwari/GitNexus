@@ -7,6 +7,7 @@ import {
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
 import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
+import { createTreeReleaser } from '../../../tree-sitter/native-tree-release.js';
 import {
   extractFastAPIRouterBindings,
   type ExtractedRouterConstructorPrefix,
@@ -1015,12 +1016,13 @@ function recordPrefix(target: Map<string, Set<string>>, key: string, prefix: str
 const NONLITERAL_ROUTE_DECORATOR_RE =
   /@\s*(?:app|router)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*(?:[A-Za-z_]|["'][^)]*\+)/;
 
-function buildPythonRepoContext(
+async function buildPythonRepoContext(
   files: string[],
   parser: Parser,
   readFile: (rel: string) => string | null,
   parseSource: (parser: Parser, src: string) => Parser.Tree | null,
-): PythonRepoContext {
+  releaseTrees: () => Promise<void> = createTreeReleaser(),
+): Promise<PythonRepoContext> {
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
   const routerIncludes: ExtractedRouterInclude[] = [];
@@ -1080,6 +1082,8 @@ function buildPythonRepoContext(
   for (const [rel, src] of pyContents) {
     const needsRouter = src.includes('include_router');
     if (!needsRouter && !hasComposedRoute) continue;
+    // Lets the previous iterations' dropped trees be freed.
+    await releaseTrees();
     parser.setLanguage(Python);
     const tree = parseSource(parser, src);
     if (!tree) continue;
@@ -1183,12 +1187,14 @@ function buildPythonRepoContext(
     }
   }
 
-  return {
+  // The context outlives every file; the clone copies the prefixes, keys and
+  // constants sliced from their sources, so they do not keep the sources alive.
+  return structuredClone({
     prefixesByFile,
     prefixesByLongKey,
     prefixesByShortKey,
     constantsByFile,
-  };
+  });
 }
 
 function joinPrefix(prefix: string, route: string): string {
@@ -1220,8 +1226,8 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       content,
     );
   },
-  prepareRepo({ files, parser, readFile, parseSource }): RepoContext {
-    return buildPythonRepoContext(files, parser, readFile, parseSource);
+  prepareRepo({ files, parser, readFile, parseSource, releaseTrees }): Promise<RepoContext> {
+    return buildPythonRepoContext(files, parser, readFile, parseSource, releaseTrees);
   },
   scan(tree, repoContext, fileRel) {
     const out: HttpDetection[] = [];

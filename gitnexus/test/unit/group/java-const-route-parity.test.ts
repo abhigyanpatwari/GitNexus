@@ -39,8 +39,8 @@ const parseSource = (p: Parser, src: string): Parser.Tree => {
 const parse = (src: string): Parser.Tree => parseSource(parser, src);
 
 /** Group side: prepareRepo + a 3-argument scan over every .java file. */
-function groupProviders(files: Record<string, string>): string[] {
-  const ctx = JAVA_HTTP_PLUGIN.prepareRepo?.({
+async function groupProviders(files: Record<string, string>): Promise<string[]> {
+  const ctx = await JAVA_HTTP_PLUGIN.prepareRepo?.({
     repoPath: '/repo',
     files: Object.keys(files),
     parser: new Parser(),
@@ -89,7 +89,7 @@ public class ApiPaths {
 }`;
 
 describe('Java constant-valued routes: group ↔ ingestion parity (#2980)', () => {
-  it('resolves a constant-valued mapping to the same path on both sides', () => {
+  it('resolves a constant-valued mapping to the same path on both sides', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -99,11 +99,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
-    expect(ingestionRoutes(files)).toEqual(groupProviders(files));
+    expect(await groupProviders(files)).toEqual(['GET /api/v1/orders']);
+    expect(ingestionRoutes(files)).toEqual(await groupProviders(files));
   });
 
-  it('suppresses the method route under a CONSTANT class prefix on both sides', () => {
+  it('suppresses the method route under a CONSTANT class prefix on both sides', async () => {
     // The class prefix needs the repo-wide constant map, which does not exist
     // at extraction time on either side. Emitting the method route would drop
     // the prefix and publish `GET /api/v1/orders`-without-its-base — a path the
@@ -122,11 +122,11 @@ public class OrderController {
   public void literal() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual([]);
+    expect(await groupProviders(files)).toEqual([]);
     expect(ingestionRoutes(files)).toEqual([]);
   });
 
-  it('still applies a LITERAL class prefix', () => {
+  it('still applies a LITERAL class prefix', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -137,7 +137,7 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
+    expect(await groupProviders(files)).toEqual(['GET /api/v1/orders']);
     expect(ingestionRoutes(files)).toEqual(['GET /api/v1/orders']);
   });
 
@@ -154,7 +154,7 @@ public class OrderController {
     expect(detections.filter((d) => d.role === 'provider')).toEqual([]);
   });
 
-  it('suppresses a NO-ARGUMENT mapping under a constant class prefix on both sides', () => {
+  it('suppresses a NO-ARGUMENT mapping under a constant class prefix on both sides', async () => {
     // A bare `@GetMapping` IS the class prefix, so an unfoldable class prefix
     // leaves nothing to emit. Ingestion routes these through a separate loop
     // from the path-carrying ones, and that loop needs the same guard — without
@@ -170,10 +170,10 @@ public class OrderController {
 }`,
     };
     expect(ingestionRoutes(files)).toEqual([]);
-    expect(groupProviders(files)).toEqual([]);
+    expect(await groupProviders(files)).toEqual([]);
   });
 
-  it('measures import ambiguity over the same candidate set on both sides', () => {
+  it('measures import ambiguity over the same candidate set on both sides', async () => {
     // Ingestion's harvest gate also admits import-only files, so its repo map is
     // a superset of the group's. When ambiguity was measured over every key, a
     // duplicate FQN belonging to a class that defines NOTHING was invisible to
@@ -199,11 +199,11 @@ public class OrderController {
       javaProvider.moduleConstantHeuristic?.(src),
     ).length;
     expect(ingestionKeys).toBe(3);
-    expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
+    expect(await groupProviders(files)).toEqual(['GET /api/v1/orders']);
     expect(ingestionRoutes(files)).toEqual(['GET /api/v1/orders']);
   });
 
-  it('resolves a wildcard-static-imported mapping on both sides', () => {
+  it('resolves a wildcard-static-imported mapping on both sides', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -214,11 +214,11 @@ public class OrderController {
 }`,
     };
     expect(javaProvider.moduleConstantHeuristic?.(files[CTL])).toBe(true);
-    expect(groupProviders(files)).toEqual(['GET /api/v1/orders']);
-    expect(ingestionRoutes(files)).toEqual(groupProviders(files));
+    expect(await groupProviders(files)).toEqual(['GET /api/v1/orders']);
+    expect(ingestionRoutes(files)).toEqual(await groupProviders(files));
   });
 
-  it('keeps an unfoldable local field above a wildcard member on both sides', () => {
+  it('keeps an unfoldable local field above a wildcard member on both sides', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -229,11 +229,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual([]);
+    expect(await groupProviders(files)).toEqual([]);
     expect(ingestionRoutes(files)).toEqual([]);
   });
 
-  it('imports only members owned by the wildcard target type on both sides', () => {
+  it('imports only members owned by the wildcard target type on both sides', async () => {
     const files = {
       [CONSTS]: `package com.example;
 public class ApiPaths { public static final String ORDERS = "/right"; }
@@ -245,11 +245,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual(['GET /right']);
+    expect(await groupProviders(files)).toEqual(['GET /right']);
     expect(ingestionRoutes(files)).toEqual(['GET /right']);
   });
 
-  it('floors duplicate wildcard members on both sides', () => {
+  it('floors duplicate wildcard members on both sides', async () => {
     const files = {
       'src/main/java/a/A.java': `package a;
 public class A { public static final String ROUTE = "/a"; }`,
@@ -263,11 +263,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual([]);
+    expect(await groupProviders(files)).toEqual([]);
     expect(ingestionRoutes(files)).toEqual([]);
   });
 
-  it('does not fold a type-qualified ref from a static wildcard alone', () => {
+  it('does not fold a type-qualified ref from a static wildcard alone', async () => {
     const files = {
       [CONSTS]: CONSTS_SRC,
       [CTL]: `package com.example;
@@ -277,11 +277,11 @@ public class OrderController {
   public void list() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual([]);
+    expect(await groupProviders(files)).toEqual([]);
     expect(ingestionRoutes(files)).toEqual([]);
   });
 
-  it('leaves literal routes unchanged with no constant map at all', () => {
+  it('leaves literal routes unchanged with no constant map at all', async () => {
     const files = {
       [CTL]: `package com.example;
 public class OrderController {
@@ -289,7 +289,7 @@ public class OrderController {
   public void create() {}
 }`,
     };
-    expect(groupProviders(files)).toEqual(['POST /api/v1/orders']);
+    expect(await groupProviders(files)).toEqual(['POST /api/v1/orders']);
     expect(ingestionRoutes(files)).toEqual(['POST /api/v1/orders']);
   });
 });

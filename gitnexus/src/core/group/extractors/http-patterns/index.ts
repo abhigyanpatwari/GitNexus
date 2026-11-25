@@ -12,6 +12,7 @@ export type {
   HttpDetection,
   HttpFileDetections,
   HttpLanguagePlugin,
+  HttpProjectScan,
   HttpRole,
   HttpScanInput,
 } from './types.js';

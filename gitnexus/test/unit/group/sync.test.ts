@@ -1436,8 +1436,15 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
     const releaseSpies: Array<ReturnType<typeof vi.fn>> = [];
     const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
     const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    // Leases held at the moment of each pinRepo call, in call order.
+    const heldAtPin: number[] = [];
+    let held = 0;
     const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {
-      const release = vi.fn();
+      heldAtPin.push(held);
+      held += 1;
+      const release = vi.fn(() => {
+        held -= 1;
+      });
       releaseSpies.push(release);
       return release;
     });
@@ -1446,34 +1453,66 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
       execSpy.mockRestore();
       pinSpy.mockRestore();
     };
-    return { releaseSpies, initSpy, execSpy, pinSpy, restore };
+    return { releaseSpies, heldAtPin, initSpy, execSpy, pinSpy, restore };
   };
 
-  it('pins only the repos referenced by manifest links, not the whole group', async () => {
-    const { pinSpy, restore } = await setupPoolSpies();
+  const repoIds = (n: number): string[] => Array.from({ length: n }, (_, i) => `app-repo-${i + 1}`);
+
+  it('leases each repo only while its contracts are extracted, and windows only the linked repos', async () => {
+    const { pinSpy, heldAtPin, restore } = await setupPoolSpies();
     try {
       await syncGroup(groupConfig(8, [httpLink('app/repo-1', 'app/repo-2')]), {
         resolveRepoHandle: okHandle,
         skipWrite: true,
       });
-      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]).sort();
-      // Only the windowed (link-referenced) repos are leased — bounded residency,
-      // not the whole 8-repo group.
-      expect(pinnedIds).toEqual(['app-repo-1', 'app-repo-2']);
-      expect(pinnedIds).not.toContain('app-repo-3');
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]);
+      // One extraction lease per repo, in repo order, each released before
+      // the next repo's: residency stays bounded, never the whole 8-repo group.
+      expect(pinnedIds.slice(0, 8)).toEqual(repoIds(8));
+      expect(heldAtPin.slice(0, 8)).toEqual(Array(8).fill(0));
+      // Then only the windowed (link-referenced) repos are leased.
+      expect(pinnedIds.slice(8).sort()).toEqual(['app-repo-1', 'app-repo-2']);
     } finally {
       restore();
     }
   });
 
-  it('does not pin during the init loop when there are no manifest links', async () => {
-    const { pinSpy, restore } = await setupPoolSpies();
+  it('holds one extraction lease at a time when there are no manifest links', async () => {
+    const { pinSpy, heldAtPin, releaseSpies, restore } = await setupPoolSpies();
     try {
       await syncGroup(groupConfig(8, []), { resolveRepoHandle: okHandle, skipWrite: true });
-      // The init loop extracts contracts without pinning; with no links there
-      // are no resolution windows, so nothing is ever pinned.
-      expect(pinSpy.mock.calls.length).toBe(0);
+      // With no links there are no resolution windows: the only leases are the
+      // per-repo extraction leases, taken one at a time and all released.
+      expect(pinSpy.mock.calls.map((c) => c[0])).toEqual(repoIds(8));
+      expect(heldAtPin).toEqual(Array(8).fill(0));
+      for (const release of releaseSpies) expect(release).toHaveBeenCalledTimes(1);
     } finally {
+      restore();
+    }
+  });
+
+  it('releases the extraction lease of a repo whose extraction throws before leasing the next', async () => {
+    const { HttpRouteExtractor } =
+      await import('../../../src/core/group/extractors/http-route-extractor.js');
+    const { pinSpy, heldAtPin, releaseSpies, restore } = await setupPoolSpies();
+    const extractSpy = vi
+      .spyOn(HttpRouteExtractor.prototype, 'extract')
+      .mockImplementation(async (_executor, repoPath) => {
+        if (repoPath.endsWith('repo-2')) throw new Error('extract boom');
+        return [];
+      });
+    try {
+      const result = await syncGroup(groupConfig(3, []), {
+        resolveRepoHandle: okHandle,
+        skipWrite: true,
+      });
+      expect(result.failedRepos.map((f) => f.repo)).toEqual(['app/repo-2']);
+      expect(pinSpy.mock.calls.map((c) => c[0])).toEqual(repoIds(3));
+      // The failed repo's lease was released before repo-3 was leased.
+      expect(heldAtPin).toEqual([0, 0, 0]);
+      for (const release of releaseSpies) expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      extractSpy.mockRestore();
       restore();
     }
   });
@@ -1562,10 +1601,11 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
           skipWrite: true,
         }),
       ).rejects.toThrow('window init boom');
-      // Exactly one lease was acquired (app-repo-1) before app-repo-2's init
-      // threw, and the window finally released it — no leaked lease.
-      expect(releaseSpies.length).toBe(1);
-      expect(releaseSpies[0]).toHaveBeenCalled();
+      // Two extraction leases (one per repo, released after extraction), then
+      // one window lease (app-repo-1) acquired before app-repo-2's window init
+      // threw. The window finally released it — no leaked lease.
+      expect(releaseSpies.length).toBe(3);
+      for (const release of releaseSpies) expect(release).toHaveBeenCalled();
     } finally {
       initSpy.mockRestore();
       execSpy.mockRestore();
