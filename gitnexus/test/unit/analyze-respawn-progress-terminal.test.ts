@@ -11,6 +11,7 @@ interface CapturedTerminal {
 }
 
 interface CapturedBarOptions {
+  format?: string;
   noTTYOutput?: boolean;
   notTTYSchedule?: number;
   terminal?: CapturedTerminal;
@@ -151,5 +152,79 @@ describe('analyzeCommand respawn progress terminal bridge', () => {
 
     options.terminal.write('abc😀def', true);
     expect(stderrWriteSpy).toHaveBeenLastCalledWith('abc😀def');
+  });
+});
+
+describe('analyzeCommand progress without a terminal (#1194)', () => {
+  const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
+  const ORIGINAL_RESPAWN_PROGRESS = process.env.GITNEXUS_RESPAWN_PROGRESS_TTY;
+  let restoreStderrIsTTY: (() => void) | undefined;
+  let stdoutWriteSpy: ReturnType<typeof vi.spyOn>;
+  let stderrWriteSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.resetModules();
+    mocks.runFullAnalysisMock.mockReset();
+    mocks.capturedBarOptions.length = 0;
+    // A log line during the run goes through the progress-aware console.
+    mocks.runFullAnalysisMock.mockImplementation(async () => {
+      console.log('a log line during analysis');
+      return { repoName: 'repo', repoPath: '/repo', stats: {}, alreadyUpToDate: true };
+    });
+    process.exitCode = undefined;
+    process.env.NODE_OPTIONS = '--max-old-space-size=8192';
+    delete process.env.GITNEXUS_RESPAWN_PROGRESS_TTY;
+    stdoutWriteSpy = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    stderrWriteSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdoutWriteSpy.mockRestore();
+    stderrWriteSpy.mockRestore();
+    restoreStderrIsTTY?.();
+    restoreStderrIsTTY = undefined;
+    if (ORIGINAL_NODE_OPTIONS === undefined) delete process.env.NODE_OPTIONS;
+    else process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
+    if (ORIGINAL_RESPAWN_PROGRESS === undefined) delete process.env.GITNEXUS_RESPAWN_PROGRESS_TTY;
+    else process.env.GITNEXUS_RESPAWN_PROGRESS_TTY = ORIGINAL_RESPAWN_PROGRESS;
+  });
+
+  it('prints a plain progress line every ten seconds when stderr is not a terminal', async () => {
+    restoreStderrIsTTY = setStreamIsTTY(process.stderr, false);
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(mocks.capturedBarOptions).toHaveLength(1);
+    const options = mocks.capturedBarOptions[0];
+    expect(options.noTTYOutput).toBe(true);
+    expect(options.notTTYSchedule).toBe(10_000);
+    expect(options.format).toBe('  {percentage}% | {phase}');
+    expect(options.terminal).toBeUndefined();
+  });
+
+  it('writes no cursor controls around log lines when stderr is not a terminal', async () => {
+    restoreStderrIsTTY = setStreamIsTTY(process.stderr, false);
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    expect(mocks.runFullAnalysisMock).toHaveBeenCalledTimes(1);
+    expect(stdoutWriteSpy).not.toHaveBeenCalledWith('\x1b[2K\r');
+  });
+
+  it('keeps the redrawn bar and its line clearing on a terminal', async () => {
+    restoreStderrIsTTY = setStreamIsTTY(process.stderr, true);
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, {});
+
+    const options = mocks.capturedBarOptions[0];
+    expect(options.noTTYOutput).toBeUndefined();
+    expect(options.notTTYSchedule).toBeUndefined();
+    expect(options.format).toBe('  {bar} {percentage}% | {phase}');
+    expect(options.terminal).toBeUndefined();
+    expect(mocks.runFullAnalysisMock).toHaveBeenCalledTimes(1);
+    expect(stdoutWriteSpy).toHaveBeenCalledWith('\x1b[2K\r');
   });
 });

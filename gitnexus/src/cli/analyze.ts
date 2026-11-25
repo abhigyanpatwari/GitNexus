@@ -204,6 +204,8 @@ const STACK_KB = 4096;
 const STACK_FLAG = `--stack-size=${STACK_KB}`;
 const RESPAWN_OUTPUT_TAIL_CHARS = 1024 * 1024;
 const RESPAWN_PROGRESS_ENV = 'GITNEXUS_RESPAWN_PROGRESS_TTY';
+/** How often analyze prints a progress line when stderr is not a terminal. */
+const PLAIN_PROGRESS_INTERVAL_MS = 10_000;
 
 interface CliProgressTerminal {
   cursorSave(): void;
@@ -1666,13 +1668,24 @@ const analyzeCommandImpl = async (
     clearOnComplete: false,
     stopOnComplete: false,
   };
-  if (process.env[RESPAWN_PROGRESS_ENV] === '1' && process.stderr.isTTY !== true) {
+  const bridgesParentTty =
+    process.env[RESPAWN_PROGRESS_ENV] === '1' && process.stderr.isTTY !== true;
+  const redrawsInPlace = bridgesParentTty || process.stderr.isTTY === true;
+  if (bridgesParentTty) {
     // Heap respawn pipes stderr so the parent can classify native/OOM crashes.
     // The parent was a real TTY when it opted into this env var, so forward
     // ANSI cursor controls through the pipe instead of cli-progress' non-TTY
     // newline mode. That keeps one-line redraw UX while retaining stderr tail
     // capture for diagnostics.
     barOptions.terminal = createAnsiPipeTerminal(process.stderr);
+  }
+  if (!redrawsInPlace) {
+    // Without a terminal (Docker without -t, CI, stderr sent to a file),
+    // cli-progress prints nothing, so a long run looks hung. Print a plain
+    // line on a schedule instead; the phase's elapsed time shows it is alive.
+    barOptions.format = '  {percentage}% | {phase}';
+    barOptions.noTTYOutput = true;
+    barOptions.notTTYSchedule = PLAIN_PROGRESS_INTERVAL_MS;
   }
   const bar = new cliProgress.SingleBar(barOptions, cliProgress.Presets.shades_grey);
 
@@ -1723,7 +1736,8 @@ const analyzeCommandImpl = async (
   const origError = console.error.bind(console);
   let barCurrentValue = 0;
   const barLog = (...args: unknown[]) => {
-    process.stdout.write('\x1b[2K\r');
+    // Clearing the bar's line only means something where the bar is redrawn.
+    if (redrawsInPlace) process.stdout.write('\x1b[2K\r');
     origLog(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' '));
     bar.update(barCurrentValue);
   };

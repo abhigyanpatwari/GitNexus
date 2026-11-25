@@ -47,6 +47,8 @@ You can also query the graph directly from the terminal — `gitnexus query`, `c
 
 Impact defaults to 30 symbols per depth when pagination is omitted. Use `--limit` and `--offset` for explicit pages, or `GITNEXUS_IMPACT_DEFAULT_LIMIT=0` for all symbols. `--summary-only`, group queries and PDG mode bypass this default. Symbols list at most three processes, with `processCount` preserving the full count when shortened. `--max-tokens` is explicit on the CLI; `GITNEXUS_MCP_DEFAULT_MAX_TOKENS` applies only to MCP.
 
+Without a terminal (Docker without `-t`, CI, or stderr redirected to a file), `gitnexus analyze` prints a plain progress line such as `32% | Parsing chunks 79-93/128...` every ten seconds instead of the redrawn bar.
+
 `gitnexus analyze --watch` requires a Git repository. It runs one initial
 analysis, then debounces scanner-admitted working-tree changes for 300 ms by
 default and applies serialized incremental refreshes. Events arriving during a
