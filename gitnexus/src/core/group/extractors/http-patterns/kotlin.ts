@@ -1,17 +1,13 @@
 import type Parser from 'tree-sitter';
 import { requireVendoredGrammar } from '../../../tree-sitter/vendored-grammars.js';
+import { createTreeReleaser } from '../../../tree-sitter/native-tree-release.js';
 import {
   compilePatterns,
   runCompiledPatterns,
   unquoteLiteral,
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
-import type {
-  HttpDetection,
-  HttpFileDetections,
-  HttpLanguagePlugin,
-  HttpScanInput,
-} from './types.js';
+import type { HttpDetection, HttpLanguagePlugin, HttpProjectScan } from './types.js';
 import {
   findEnclosingClass,
   intersectSpringHttpMethods,
@@ -1157,7 +1153,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
   // ─── Provider via interface inheritance (Spring interface-based controller) ─
   // Pattern: `@RestController class X(...) : XApi` where the route annotations
   // live on the `XApi` interface and the controller's `override fun` carries
-  // none. Java resolves this in `scanProject` (scanSpringProject); this is the
+  // none. Java resolves this in `projectScan` (JAVA_PROJECT_SCAN); this is the
   // Kotlin port. tree-sitter-kotlin models BOTH class and interface as
   // `class_declaration`; the `interface` keyword token distinguishes them.
   const KOTLIN_TYPE_DECLARATION_PATTERNS = compilePatterns({
@@ -1334,15 +1330,15 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
   // `SharedSpringType` view and delegates. kotlinClassIsController handles every
   // controller form (bare, paired, and the arg-form `@RestController("bean")`)
   // via the `modifiers` `annotation`/`constructor_invocation` shape.
-  const scanKotlinProject = (files: readonly HttpScanInput[]): HttpFileDetections[] =>
-    scanSpringInheritanceProject(
-      files.flatMap((f) => collectKotlinSpringTypes(f.filePath, f.tree)),
-    );
+  const kotlinProjectScan: HttpProjectScan<SharedSpringType[]> = {
+    collect: ({ filePath, tree }) => collectKotlinSpringTypes(filePath, tree),
+    resolve: (facts) => scanSpringInheritanceProject(facts.flat()),
+  };
 
   return {
     name: 'kotlin-http',
     language,
-    prepareRepo(args) {
+    async prepareRepo(args) {
       // Build the repo-wide Kotlin string-constant map and import index once per
       // extract() run. The orchestrator hands over a bare Parser with no language
       // bound; bind Kotlin explicitly or `parseSource` spins to its whole time
@@ -1354,6 +1350,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
         // per-file try/catch below then skips everything harmlessly.
       }
       const constants = new Map<string, ModuleConstants>();
+      const releaseTrees = args.releaseTrees ?? createTreeReleaser();
       for (const rel of args.files) {
         if (!rel.endsWith('.kt') && !rel.endsWith('.kts')) continue;
         try {
@@ -1365,9 +1362,13 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
           // rare file that actually references a constant. A gate that also
           // matched `import …` would parse the entire repository here.
           if (!src || !isKotlinConstantFile(src)) continue;
+          // Lets the previous iterations' dropped trees be freed.
+          await releaseTrees();
           const tree = args.parseSource(args.parser, src);
           if (!tree) continue;
-          const mc = extractKotlinModuleConstants(tree);
+          // The context outlives this file; the clone copies the strings sliced
+          // from its source, so they do not keep the whole source alive.
+          const mc = structuredClone(extractKotlinModuleConstants(tree));
           if (
             mc.literals.size > 0 ||
             mc.exprs.size > 0 ||
@@ -1600,7 +1601,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
         if (enclosingClass && classesWithUnfoldablePrefix.has(enclosingClass.id)) continue;
         // A @(Get|...)Mapping on a (non-Feign) interface declares a route
         // *contract*, not a route this service serves — the implementing
-        // @RestController is the provider, emitted via scanProject's interface
+        // @RestController is the provider, emitted via projectScan's interface
         // inheritance. Java drops these implicitly (findEnclosingClass returns
         // null for an interface_declaration); tree-sitter-kotlin models an
         // interface as a class_declaration, so skip it explicitly here.
@@ -1796,7 +1797,7 @@ function buildKotlinPlugin(language: Parser.Language): HttpLanguagePlugin {
 
       return out;
     },
-    scanProject: scanKotlinProject,
+    projectScan: kotlinProjectScan,
   };
 }
 

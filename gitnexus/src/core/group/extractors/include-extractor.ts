@@ -31,6 +31,7 @@ import {
   filterDotDirectorySymlinks,
 } from '../../ingestion/utils/include-dot-dirs.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { createTreeReleaser } from '../../tree-sitter/native-tree-release.js';
 import { logger } from '../../logger.js';
 
 /**
@@ -538,6 +539,7 @@ export class IncludeExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
     // Compile the include query once per grammar to avoid re-compilation per file
     const queryCache = new Map<unknown, Parser.Query>();
+    const releaseTrees = createTreeReleaser();
 
     for (const rel of sourceFiles) {
       const lang = getLanguageForFile(rel);
@@ -561,6 +563,8 @@ export class IncludeExtractor implements ContractExtractor {
       // regex-fallback contracts stay auditable post-hoc (PR #1156 review finding #6).
       let rawIncludes: string[];
       let extractionSource: 'tree_sitter' | 'regex_fallback';
+      // Lets the previous files' dropped trees be freed (see native-tree-release.ts).
+      await releaseTrees();
       try {
         parser.setLanguage(lang);
         const tree = parseSourceSafe(parser, content);
