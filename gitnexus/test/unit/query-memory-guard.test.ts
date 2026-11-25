@@ -11,6 +11,7 @@ import {
   resolveQueryRssBudgetBytes,
   FOOTPRINT_INTERVAL_MS,
   QUERY_MAX_RSS_ENV,
+  QUERY_MEMORY_LIMIT_EXIT_CODE,
   QUERY_TRACE_ENV,
   type QueryMemoryGuardDeps,
 } from '../../src/core/lbug/query-memory-guard.js';
@@ -111,6 +112,12 @@ describe('createQueryMemoryGuard', () => {
     h.setRss(1500);
     h.guard.begin('RETURN 1');
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+    expect(h.deps.onBreach).toHaveBeenCalledWith({
+      memoryBytes: 1500 * MIB,
+      measurement: 'rss',
+      budgetBytes: 1000 * MIB,
+      activeQueries: [{ label: 'RETURN 1', startBytes: 1500 * MIB, runningMs: 0 }],
+    });
   });
 
   it('checks memory growth when a query ends between sampler ticks', () => {
@@ -119,6 +126,12 @@ describe('createQueryMemoryGuard', () => {
     h.setRss(1500);
     h.guard.end(t, 1);
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+    expect(h.deps.onBreach).toHaveBeenCalledWith({
+      memoryBytes: 1500 * MIB,
+      measurement: 'rss',
+      budgetBytes: 1000 * MIB,
+      activeQueries: [{ label: 'RETURN 1', startBytes: 500 * MIB, runningMs: 0 }],
+    });
   });
 
   it('reports a breach with every running query once RSS passes the budget', () => {
@@ -135,17 +148,77 @@ describe('createQueryMemoryGuard', () => {
     h.tick();
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
     expect(h.deps.onBreach).toHaveBeenCalledWith({
-      rssBytes: 1500 * MIB,
+      memoryBytes: 1500 * MIB,
+      measurement: 'rss',
       budgetBytes: 1000 * MIB,
-      activeLabels: [
-        'MATCH (caller)-[r]->(n) RETURN caller',
-        'MATCH (s)-[r]->(p:Process) RETURN p',
+      activeQueries: [
+        { label: 'MATCH (caller)-[r]->(n) RETURN caller', startBytes: 500 * MIB, runningMs: 0 },
+        { label: 'MATCH (s)-[r]->(p:Process) RETURN p', startBytes: 500 * MIB, runningMs: 0 },
       ],
     });
 
     // Only once, even if the exit is slow to take effect.
     h.tick();
     expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports the starting RSS even when memory is freed and allocated again during the query', () => {
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
+    // Memory allocated outside any query: the guard does not sample then.
+    h.setRss(900);
+    h.guard.begin('MATCH (n) RETURN n');
+    h.setRss(100);
+    h.tick();
+    h.advance(2_500);
+    h.setRss(1100);
+    h.tick();
+    h.tick();
+    expect(h.deps.onBreach).toHaveBeenCalledTimes(1);
+    expect(h.deps.onBreach).toHaveBeenCalledWith({
+      memoryBytes: 1100 * MIB,
+      measurement: 'rss',
+      budgetBytes: 1000 * MIB,
+      activeQueries: [{ label: 'MATCH (n) RETURN n', startBytes: 900 * MIB, runningMs: 2_500 }],
+    });
+    const message = formatBreachMessage(vi.mocked(h.deps.onBreach).mock.calls[0][0]);
+    expect(message).toContain('RSS was already 0.8 GB or more');
+    expect(message).toContain('+0.2 GB since start');
+    expect(message).not.toContain('not attributable');
+    expect(QUERY_MEMORY_LIMIT_EXIT_CODE).toBe(70);
+  });
+
+  it("keeps each running query's own start memory and running time", () => {
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
+    h.guard.begin('A');
+    h.advance(1_500);
+    h.setRss(800);
+    h.guard.begin('B');
+    h.advance(700);
+    h.setRss(1100);
+    h.tick();
+    expect(h.deps.onBreach).toHaveBeenCalledWith({
+      memoryBytes: 1100 * MIB,
+      measurement: 'rss',
+      budgetBytes: 1000 * MIB,
+      activeQueries: [
+        { label: 'A', startBytes: 500 * MIB, runningMs: 2_200 },
+        { label: 'B', startBytes: 800 * MIB, runningMs: 700 },
+      ],
+    });
+    const msg = formatBreachMessage(vi.mocked(h.deps.onBreach).mock.calls[0][0]);
+    expect(msg).toContain('  - A (RSS at start 0.5 GB, +0.6 GB since start, running 2.2 s)');
+    expect(msg).toContain('  - B (RSS at start 0.8 GB, +0.3 GB since start, running 0.7 s)');
+  });
+
+  it('never reports a negative running time when the clock steps back', () => {
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' });
+    h.guard.begin('Q');
+    h.advance(-400);
+    h.setRss(1100);
+    h.tick();
+    expect(vi.mocked(h.deps.onBreach).mock.calls[0][0].activeQueries).toEqual([
+      { label: 'Q', startBytes: 500 * MIB, runningMs: 0 },
+    ]);
   });
 
   it('does not sample between queries', () => {
@@ -243,10 +316,30 @@ describe('createQueryMemoryGuard: physical footprint (macOS)', () => {
     expect(readFootprint).toHaveBeenCalledTimes(1);
     await flush();
     expect(h.deps.onBreach).toHaveBeenCalledWith({
-      rssBytes: 3 * GIB,
+      memoryBytes: 3 * GIB,
+      measurement: 'footprint',
       budgetBytes: 1000 * MIB,
-      activeLabels: ['MATCH (a), (b) RETURN a, b'],
+      activeQueries: [
+        {
+          label: 'MATCH (a), (b) RETURN a, b',
+          startBytes: 500 * MIB,
+          runningMs: FOOTPRINT_INTERVAL_MS,
+        },
+      ],
     });
+  });
+
+  it('names the footprint in the message and does not mix it with RSS', async () => {
+    const h = harness({ [QUERY_MAX_RSS_ENV]: '1000' }, 64 * GIB, async () => 3 * GIB);
+    h.guard.begin('Q');
+    h.setRss(300);
+    h.advance(FOOTPRINT_INTERVAL_MS);
+    h.tick();
+    await flush();
+    const msg = formatBreachMessage(vi.mocked(h.deps.onBreach).mock.calls[0][0]);
+    expect(msg).toContain('physical footprint reached 3.0 GB, over the 1.0 GB limit');
+    expect(msg).toContain('  - Q (RSS at start 0.5 GB, running 1.0 s)');
+    expect(msg).not.toContain('since start');
   });
 
   it('reads at most once per interval and never overlaps reads', async () => {
@@ -355,16 +448,96 @@ describe('parsePhysFootprintBytes', () => {
 });
 
 describe('formatBreachMessage', () => {
+  const rssBreach = (memoryBytes: number, starts: number[]) =>
+    formatBreachMessage({
+      memoryBytes,
+      measurement: 'rss',
+      budgetBytes: 16 * GIB,
+      activeQueries: starts.map((startBytes, i) => ({
+        label: `Q${i}`,
+        startBytes,
+        runningMs: 1_000,
+      })),
+    });
+
   it('names the limit, the running queries and how to change it', () => {
     const msg = formatBreachMessage({
-      rssBytes: 17 * GIB,
+      memoryBytes: 17 * GIB,
+      measurement: 'rss',
       budgetBytes: 16 * GIB,
-      activeLabels: ['MATCH (a) RETURN a'],
+      activeQueries: [{ label: 'MATCH (a) RETURN a', startBytes: 1 * GIB, runningMs: 3_000 }],
     });
-    expect(msg).toContain('17.0 GB');
-    expect(msg).toContain('16.0 GB limit');
-    expect(msg).toContain('  - MATCH (a) RETURN a');
+    expect(msg).toContain('process memory (RSS) reached 17.0 GB, over the 16.0 GB limit');
+    expect(msg).toContain('while running a graph query');
+    expect(msg).toContain(
+      '  - MATCH (a) RETURN a (RSS at start 1.0 GB, +16.0 GB since start, running 3.0 s)',
+    );
+    expect(msg).toContain('cannot cancel a running query');
     expect(msg).toContain(`${QUERY_MAX_RSS_ENV}=<MiB>`);
     expect(msg).toContain('#3696');
+  });
+
+  it('says when every query started with more than half of the memory in use', () => {
+    const msg = rssBreach(17 * GIB, [15 * GIB, 16 * GIB]);
+    expect(msg).toContain('RSS was already 15.0 GB or more when each query listed below started.');
+    expect(msg).not.toContain('while running a graph query');
+    expect(msg).toContain('  - Q0 (RSS at start 15.0 GB, +2.0 GB since start, running 1.0 s)');
+    expect(msg).toContain('  - Q1 (RSS at start 16.0 GB, +1.0 GB since start, running 1.0 s)');
+    expect(msg).toContain('cannot cancel a running query');
+    expect(msg).toContain(`${QUERY_MAX_RSS_ENV}=<MiB>`);
+    expect(msg).toContain('#3696');
+  });
+
+  it('reports the starting RSS in the headline only above half', () => {
+    expect(rssBreach(16 * GIB, [8 * GIB])).toContain('while running a graph query');
+    const above = rssBreach(16 * GIB, [8 * GIB + MIB]);
+    expect(above).not.toContain('while running a graph query');
+    // Rounded, the floor equals half of the reached value; the text must not
+    // claim more than the printed numbers show.
+    expect(above).toContain('reached 16.0 GB');
+    expect(above).toContain('RSS was already 8.0 GB or more');
+    expect(above).not.toContain('more than half');
+  });
+
+  it('rounds the start floor down so "or more" stays true', () => {
+    const msg = rssBreach(16.5 * GIB, [8.29 * GIB]);
+    expect(msg).toContain('RSS was already 8.2 GB or more');
+  });
+
+  it('prints a single minus sign when the reported RSS is below the starting value', () => {
+    const msg = rssBreach(17 * GIB, [17.5 * GIB]);
+    expect(msg).toContain('RSS at start 17.5 GB, -0.5 GB since start');
+  });
+
+  it('uses the lowest start memory, not the oldest query', () => {
+    // The oldest query started at a peak that was later released; the newer
+    // one started low and grew 13.5 GB.
+    const msg = rssBreach(16.5 * GIB, [12 * GIB, 3 * GIB]);
+    expect(msg).toContain('while running a graph query');
+    expect(msg).not.toContain('RSS was already');
+    expect(msg).toContain('process memory (RSS) reached 16.5 GB');
+  });
+
+  it('omits the starting RSS when no queries are listed', () => {
+    const msg = rssBreach(17 * GIB, []);
+    expect(msg).not.toMatch(/NaN|Infinity/);
+    expect(msg).toContain('process memory (RSS) reached 17.0 GB, over the 16.0 GB limit, while');
+  });
+
+  it('computes no growth or share across RSS and the footprint', () => {
+    for (const startBytes of [1 * GIB, 12 * GIB]) {
+      const msg = formatBreachMessage({
+        memoryBytes: 16.5 * GIB,
+        measurement: 'footprint',
+        budgetBytes: 16 * GIB,
+        activeQueries: [{ label: 'Q', startBytes, runningMs: 1_000 }],
+      });
+      expect(msg).toContain('physical footprint reached 16.5 GB, over the 16.0 GB limit');
+      expect(msg).toContain('excludes compressed and swapped pages');
+      expect(msg).toContain(`  - Q (RSS at start ${startBytes / GIB}.0 GB, running 1.0 s)`);
+      expect(msg).not.toContain('since start');
+      expect(msg).not.toContain('RSS was already');
+      expect(msg).not.toContain('process memory');
+    }
   });
 });
