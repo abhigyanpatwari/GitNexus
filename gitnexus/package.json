@@ -116,7 +116,7 @@
     "proxy-addr": "^2.0.7",
     "smol-toml": "^1.8.0",
     "tree-sitter": "0.25.1",
-    "tree-sitter-c-sharp": "0.23.5",
+    "tree-sitter-c-sharp": "0.24.0",
     "tree-sitter-cpp": "0.23.4",
     "tree-sitter-go": "0.25.0",
     "tree-sitter-java": "0.23.5",
