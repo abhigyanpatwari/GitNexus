@@ -333,6 +333,28 @@ def test_exited_parent_cannot_leave_a_quiet_descendant(tmp_path: Path) -> None:
     assert not sentinel.exists()
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux zombie process group")
+def test_exited_parent_with_a_group_awaiting_reaping(monkeypatch):
+    # Keep a real, exited group member waitable until the supervisor signals
+    # the group. This makes the runner's observed orphan-reaping order deterministic.
+    with subprocess.Popen([PYTHON, "-c", "pass"], start_new_session=True) as zombie:
+        os.waitid(os.P_PID, zombie.pid, os.WEXITED | os.WNOWAIT)
+        killpg = os.killpg
+        signals = []
+
+        def signal_group(_pgid, sig):
+            killpg(zombie.pid, sig)
+            if sig:
+                signals.append(sig)
+                zombie.wait()
+
+        monkeypatch.setattr(os, "killpg", signal_group)
+        result = run_managed([PYTHON, "-c", "pass"], timeout=5)
+
+    assert result.ok and not result.forced_kill
+    assert signals == [signal.SIGSTOP]
+
+
 def test_required_pid_namespace_fails_before_plain_command_starts(tmp_path: Path) -> None:
     sentinel = tmp_path / "started"
 

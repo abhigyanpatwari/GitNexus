@@ -239,6 +239,25 @@ def _group_exists(pgid: int) -> bool:
     return True
 
 
+def _kill_remaining_group(pgid: int, reap_grace: float) -> bool:
+    """Return whether the exited leader's process group needed SIGKILL."""
+    if sys.platform == "linux":
+        # killpg succeeds even when all that remains is a zombie awaiting
+        # reaping by init. Stop any live descendants immediately so they
+        # cannot keep working while we wait for the kernel to retire the group.
+        os.killpg(pgid, signal.SIGSTOP)
+        deadline = time.monotonic() + reap_grace
+        while True:
+            if not _group_exists(pgid):
+                return False
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.02, remaining))
+    os.killpg(pgid, signal.SIGKILL)
+    return True
+
+
 class _WindowsJob:
     """Kill-on-close Job Object assigned before the child resumes."""
 
@@ -680,9 +699,9 @@ def _run_managed_inner(
         raise
     if quiet_descendant_exists:
         try:
-            os.killpg(owned_pgid, signal.SIGKILL)
-            forced_kill = True
-            state = "forced-kill"
+            if _kill_remaining_group(owned_pgid, terminate_grace):
+                forced_kill = True
+                state = "forced-kill"
         except ProcessLookupError:
             pass
         except (KeyboardInterrupt, SystemExit):
