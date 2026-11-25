@@ -27,7 +27,7 @@ import type {
 } from '../../../ingestion/route-extractors/framework-route-types.js';
 import { typescriptScopeResolver } from '../../../ingestion/languages/typescript/scope-resolver.js';
 import { javascriptScopeResolver } from '../../../ingestion/languages/javascript/scope-resolver.js';
-import { getLanguageFromFilename, SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { MAX_FOLD_LENGTH } from '../../../ingestion/route-extractors/constant-resolver.js';
 import {
   DATA_ROUTE_TABLE_SOURCE,
@@ -531,30 +531,32 @@ function frameworkDetection(route: FrameworkRoute, facts: FrameworkRouteFacts): 
   };
 }
 
-/** What `collect` keeps of one JS/TS file: the scope view and its route facts. */
+/**
+ * What `collect` keeps of one JS/TS file: its framework route facts, or null
+ * when it has none. The scope view they are read from is not kept; the import
+ * resolvers need only the file paths.
+ */
 interface NodeFileFacts {
   readonly filePath: string;
-  readonly entry: { parsed: ParsedFile; facts: FrameworkRouteFacts | null } | null;
+  readonly facts: FrameworkRouteFacts | null;
 }
 
-/** Reduce one parsed file to its scope view and framework route facts. */
+/** Reduce one parsed file to its framework route facts. */
 function collectNodeFileFacts(
   { filePath: rawPath, tree }: { filePath: string; tree: Parser.Tree },
   repoContext?: RepoContext,
 ): NodeFileFacts {
   const filePath = normalizeRel(rawPath);
   const context = repoContext as NodeRepoContext | undefined;
-  if (context?.configurationAvailable === false) return { filePath, entry: null };
+  if (context?.configurationAvailable === false) return { filePath, facts: null };
   const provider = getProviderForFile(filePath);
-  if (!provider) return { filePath, entry: null };
-  let parsed: ParsedFile | undefined;
+  if (!provider) return { filePath, facts: null };
   try {
-    parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
-    if (!parsed) return { filePath, entry: null };
-    return { filePath, entry: { parsed, facts: extractFrameworkRouteFacts(tree, parsed) } };
+    const parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
+    return { filePath, facts: parsed ? extractFrameworkRouteFacts(tree, parsed) : null };
   } catch {
     // A malformed file contributes no framework facts; other files survive.
-    return { filePath, entry: parsed ? { parsed, facts: null } : null };
+    return { filePath, facts: null };
   }
 }
 
@@ -565,13 +567,8 @@ function resolveNodeProject(
 ): HttpFileDetections[] {
   const context = repoContext as NodeRepoContext | undefined;
   if (context?.configurationAvailable === false) return [];
-  const parsedFiles: ParsedFile[] = [];
   const facts = new Map<string, FrameworkRouteFacts>();
-  for (const { filePath, entry } of collected) {
-    if (!entry) continue;
-    parsedFiles.push(entry.parsed);
-    if (entry.facts) facts.set(filePath, entry.facts);
-  }
+  for (const file of collected) if (file.facts) facts.set(file.filePath, file.facts);
   const filePaths = context?.files ?? new Set(collected.map((file) => file.filePath));
   const routes = resolveFrameworkRoutePaths([...facts.values()], (fromFile, specifier) => {
     const resolver =
@@ -583,7 +580,6 @@ function resolveNodeProject(
       fromFile,
       filePaths,
       context?.resolutionConfig,
-      { parsedFiles },
     );
     return typeof target === 'string' ? [target] : (target ?? []);
   });

@@ -558,6 +558,28 @@ describe('HTTP source scan tree lifetime', () => {
     ).rejects.toMatchObject({ name: 'DataCloneError' });
   });
 
+  it('keeps no scope view in the JS/TS project facts', () => {
+    const plugin = getPluginForFile('x.ts');
+    if (!plugin?.projectScan) throw new Error('expected the JS/TS project scan');
+    const parser = new Parser();
+    parser.setLanguage(plugin.language);
+    const tree = parser.parse(
+      "import { Router } from 'express';\nexport const r = Router();\nr.get('/items', (_req, res) => res.send('x'));\n",
+    );
+    const collected = plugin.projectScan.collect({ filePath: 'src/r.ts', tree });
+    // A scope view (ParsedFile) has a module scope and its scope list; the
+    // import resolvers need only file paths, so `resolve` must not get one.
+    const scopeViews: string[] = [];
+    const visit = (value: unknown, at: string): void => {
+      if (value === null || typeof value !== 'object') return;
+      if ('moduleScope' in value && 'scopes' in value) scopeViews.push(at);
+      for (const [key, child] of Object.entries(value)) visit(child, `${at}.${key}`);
+    };
+    visit(collected, 'facts');
+    expect(scopeViews).toEqual([]);
+    expect(collected).toMatchObject({ filePath: 'src/r.ts', facts: { filePath: 'src/r.ts' } });
+  });
+
   it('emits the same contracts without a graph', async () => {
     writeMixedFixture(tmpDir);
     const contracts = await new HttpRouteExtractor().extract(null, tmpDir, makeRepo(tmpDir));
