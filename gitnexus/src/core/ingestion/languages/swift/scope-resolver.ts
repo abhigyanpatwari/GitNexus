@@ -74,6 +74,7 @@ import {
 } from './index.js';
 import { stripSwiftTypePreservingDecoration } from './interpret.js';
 import { groupSwiftFilesByModule } from './target-grouping.js';
+import { lineStartsOf, swiftExtensionOwner } from './target-siblings.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
 
@@ -251,22 +252,25 @@ function buildSwiftMro(
 
 function populateSwiftExtensionOwners(
   parsedFiles: readonly ParsedFile[],
-  ctx?: { readonly fileContents: ReadonlyMap<string, string>; readonly resolutionConfig?: unknown },
+  ctx: { readonly fileContents: ReadonlyMap<string, string>; readonly resolutionConfig?: unknown },
 ): void {
   // Every membership: a shared file may extend a type compiled only into a
   // later target. Stamping never overwrites an owner, so the first match wins.
   const filesByTarget = groupSwiftFilesByModule(
     parsedFiles,
     (parsed) => parsed.filePath,
-    ctx?.resolutionConfig,
+    ctx.resolutionConfig,
     { allMemberships: true },
   );
   for (const files of filesByTarget.values()) {
-    stampSwiftExtensionOwnersInTarget(files);
+    stampSwiftExtensionOwnersInTarget(files, ctx.fileContents);
   }
 }
 
-function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): void {
+function stampSwiftExtensionOwnersInTarget(
+  parsedFiles: readonly ParsedFile[],
+  fileContents: ReadonlyMap<string, string>,
+): void {
   const ownersByName = new Map<string, SymbolDefinition[]>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
@@ -282,6 +286,9 @@ function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): 
   // Function — leave those ownerless so they cannot enter implicit-self CALLS.
   for (const parsed of parsedFiles) {
     const byId = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
+    const source = fileContents.get(parsed.filePath);
+    const writtenOwners = new Map<string, string | undefined>();
+    let lineStarts: number[] | undefined;
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Function') continue;
       const parent = scope.parent === null ? undefined : byId.get(scope.parent);
@@ -292,11 +299,19 @@ function stampSwiftExtensionOwnersInTarget(parsedFiles: readonly ParsedFile[]): 
       // not suppress stamping `func added` onto `Foo`.
       if (parent.ownedDefs.some((d) => isClassLike(d.type) && defDeclaresThisClassScope(parent, d)))
         continue;
+      if (source !== undefined && !writtenOwners.has(parent.id)) {
+        lineStarts ??= lineStartsOf(source);
+        writtenOwners.set(parent.id, swiftExtensionOwner(source, parent, lineStarts));
+      }
       for (const def of scope.ownedDefs) {
         if (def.ownerId !== undefined || def.qualifiedName === undefined) continue;
         const dot = def.qualifiedName.lastIndexOf('.');
         if (dot <= 0) continue;
-        const owner = uniqueOwnerForExtensionPrefix(ownersByName, def.qualifiedName.slice(0, dot));
+        const owner = uniqueOwnerForExtensionPrefix(
+          ownersByName,
+          def.qualifiedName.slice(0, dot),
+          writtenOwners.get(parent.id),
+        );
         if (owner !== undefined) {
           (def as { ownerId?: string }).ownerId = owner.nodeId;
         }
@@ -317,7 +332,14 @@ function defDeclaresThisClassScope(
 function uniqueOwnerForExtensionPrefix(
   ownersByName: ReadonlyMap<string, readonly SymbolDefinition[]>,
   prefix: string,
+  writtenOwner: string | undefined,
 ): SymbolDefinition | undefined {
+  // Member defs keep the short owner spelling for graph-id lookup. The
+  // extension header distinguishes `Handler` from `Container.Handler`.
+  const exactOwner =
+    writtenOwner !== undefined && (writtenOwner === prefix || writtenOwner.endsWith('.' + prefix))
+      ? writtenOwner
+      : undefined;
   const seen = new Set<string>();
   const matches: SymbolDefinition[] = [];
   const consider = (defs: readonly SymbolDefinition[] | undefined): void => {
@@ -328,8 +350,8 @@ function uniqueOwnerForExtensionPrefix(
       matches.push(def);
     }
   };
-  consider(ownersByName.get(prefix));
-  if (!prefix.includes('.')) {
+  consider(ownersByName.get(exactOwner ?? prefix));
+  if (exactOwner === undefined && !prefix.includes('.')) {
     for (const [qn, defs] of ownersByName) {
       if (qn !== prefix && qn.endsWith('.' + prefix)) consider(defs);
     }

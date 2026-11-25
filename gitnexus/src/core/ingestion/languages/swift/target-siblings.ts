@@ -210,7 +210,7 @@ const EXTENSION_OWNER = new RegExp(
   'u',
 );
 
-function swiftExtensionOwner(
+export function swiftExtensionOwner(
   source: string,
   scope: Scope,
   lineStarts?: readonly number[],
@@ -222,7 +222,7 @@ function swiftExtensionOwner(
 }
 
 /** `Scope.range` is 1-based on lines. Columns are Tree-sitter UTF-8 bytes. */
-function lineStartsOf(source: string): number[] {
+export function lineStartsOf(source: string): number[] {
   const starts = [0, 0];
   for (let index = 0; index < source.length; index += 1) {
     if (source[index] === '\n') starts.push(index + 1);

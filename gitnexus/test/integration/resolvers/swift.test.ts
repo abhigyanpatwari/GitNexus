@@ -17,6 +17,7 @@ import {
   getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
+  useFixture,
   writeFixtureRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -359,6 +360,47 @@ describe.skipIf(!swiftAvailable)('Swift protocol-extension implicit self (#3273)
           outcome.name === 'execute',
       ),
     ).toBe(false);
+  });
+});
+
+describe.skipIf(!swiftAvailable)('Swift cross-file extension ownership (#3426)', () => {
+  const result = useFixture('swift-extension-owner-collision', {
+    'Types.swift': `
+enum Handler {
+    static func run() -> Int { makeValue(input: 1) }
+}
+
+enum Container {
+    enum Handler {
+        static func runNested() -> Int { makeValue(input: 2) }
+    }
+}
+`,
+    'HandlerExtension.swift': `
+extension Handler {
+    static func makeValue(input: Int) -> Int { input }
+}
+`,
+    'NestedHandlerExtension.swift': `
+extension Container.Handler {
+    static func makeValue(input: Int) -> Int { input + 10 }
+}
+`,
+    'Unrelated.swift': `
+enum Unrelated {
+    static func makeValue(other: Int) -> Int { other - 1 }
+}
+`,
+  });
+
+  it.each([
+    ['run', 'Function:HandlerExtension.swift:Handler.makeValue#1'],
+    ['runNested', 'Function:NestedHandlerExtension.swift:Container.Handler.makeValue#1'],
+  ])('resolves %s to its own extension despite same-name types and methods', (caller, targetId) => {
+    const calls = getRelationships(result(), 'CALLS').filter(
+      (call) => call.source === caller && call.target === 'makeValue',
+    );
+    expect(calls.map((call) => call.rel.targetId)).toEqual([targetId]);
   });
 });
 
