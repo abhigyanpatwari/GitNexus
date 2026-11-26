@@ -686,6 +686,18 @@ describe('/api/search search-lane degradation', () => {
     expect(body.warning).toMatch(/keyword search failed/i);
   });
 
+  it.each(['hybrid', 'bm25'])('reports partial FTS failure in %s mode', async (mode) => {
+    mocks.search.mockResolvedValue({
+      results: [{ filePath: 'keyword.ts', score: 2, rank: 1 }],
+      ftsAvailable: true,
+      nonBenignErrors: ['connection reset'],
+    });
+    const { body } = await invoke('/api/search', {}, { mode });
+    expect(body.results).toContainEqual(expect.objectContaining({ filePath: 'keyword.ts' }));
+    expect(body.warning).toMatch(/keyword search partially failed/i);
+    expect(body.warning).not.toContain('connection reset');
+  });
+
   it('distinguishes an unready embedder from a healthy empty semantic query', async () => {
     mocks.isEmbedderReady.mockReturnValue(false);
     const unavailable = await invoke('/api/search', {}, { mode: 'semantic' });
