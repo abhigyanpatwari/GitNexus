@@ -12,6 +12,7 @@ const selected = platform
       'product/analysis-generation-routing.ts',
       'product/analysis-publication-flow.ts',
       'product/analyze-dirty-snapshot.ts',
+      'product/analyze-wal-checkpoint-failure.ts',
       'product/class-expression-owners.ts',
       'product/cli-e2e.ts',
       'product/dangling-owner-edges.ts',

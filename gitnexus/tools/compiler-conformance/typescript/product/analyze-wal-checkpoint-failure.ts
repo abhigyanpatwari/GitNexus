@@ -1,21 +1,23 @@
+import { registerCases } from '../support/cases.mjs';
+import assert from 'node:assert/strict';
 /**
  * Real filesystem obstruction at the previous graph's checkpoint path.
  * Staged writes must not conceal damaged recovery files by publishing beside
  * them (#3852). Selective writes must also fail, preserving bytes before mutation or
  * retaining a recovery marker after mutation begins.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
+import { expect } from 'expect';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../../../../test/helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import { cleanupTempDirSync } from '../helpers/test-db.js';
-import { getStoragePaths } from '../../src/storage/repo-manager.js';
+import { cleanupTempDirSync } from '../../../../test/helpers/test-db.js';
+import { getStoragePaths } from '../../../../src/storage/repo-manager.js';
 
-const testDir = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
+const FIXTURE_SRC = fileURLToPath(new URL('../../../../test/fixtures/mini-repo', import.meta.url));
 
 let tmpParent: string;
 let suiteGitnexusHome: string;
@@ -64,7 +66,9 @@ const runAnalyze = (walCheckpointThreshold: string, atomicIncremental = false) =
   });
 
 describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
-  it.each([false, true])(
+  registerCases(
+    it,
+    [false, true],
     'refuses damaged recovery files and succeeds after removing the obstruction (atomic=%s)',
     (atomicIncremental) => {
       // 1) Clean full analyze (no blocker) — builds the index into staging and
@@ -72,7 +76,7 @@ describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
       // Use the normal 64 MiB threshold while seeding the index. Checkpointing
       // every setup write needlessly stalls schema and FTS creation on Windows.
       const first = runAnalyze('67108864');
-      expect(first.status === null ? 'timeout' : first.status, first.stderr).toBe(0);
+      assert.equal(first.status, 0, first.error?.message ?? first.stderr);
       const { lbugPath, metaPath } = getStoragePaths(repoPath);
       const graphBefore = fs.readFileSync(lbugPath);
       const metadataBefore = fs.readFileSync(metaPath);
@@ -106,7 +110,7 @@ describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
       const combined = `${result.stderr}\n${result.stdout}`;
 
       // The blocked checkpoint must produce an error, rather than a timeout.
-      expect(result.status, combined).not.toBeNull();
+      assert.notEqual(result.status, null, combined);
       expect(result.status).not.toBe(0);
 
       expect(combined).toContain('lbug.wal.checkpoint');
@@ -138,7 +142,7 @@ describe('analyze blocked checkpoint family (real lbug, no mocks)', () => {
 
       fs.rmSync(blockerDir, { recursive: true });
       const recovered = runAnalyze('67108864', atomicIncremental);
-      expect(recovered.status === null ? 'timeout' : recovered.status, recovered.stderr).toBe(0);
+      assert.equal(recovered.status, 0, recovered.error?.message ?? recovered.stderr);
       expect(JSON.parse(fs.readFileSync(metaPath, 'utf8')).incrementalInProgress).toBeUndefined();
     },
     180_000,
