@@ -2,6 +2,7 @@ import { makeScopeId } from 'gitnexus-shared';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { findAllCallableBindingsInScope } from '../../scope-resolution/scope/walkers.js';
+import { selectTsPrimitiveOverload } from './call-arguments.js';
 
 export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] = (
   site,
@@ -14,9 +15,8 @@ export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] 
     purpose: 'value',
     callee: true,
   });
-  if (visible.length !== 1) return undefined;
   const def = visible[0];
-  if (def.type !== 'Function' || !def.declarationRange || !def.qualifiedName) return undefined;
+  if (def?.type !== 'Function' || !def.declarationRange || !def.qualifiedName) return undefined;
   const scope = makeScopeId({
     filePath: def.filePath,
     range: def.declarationRange,
@@ -24,9 +24,15 @@ export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] 
   });
   const siblings = scopes.scopeTree.getParent(scope)?.bindings.get(def.qualifiedName);
   if (!siblings?.some((binding) => binding.def.isOverloadSignature)) return undefined;
+  if (visible.length > 1) {
+    const family = new Set(siblings.map((binding) => binding.def.nodeId));
+    if (!visible.every((candidate) => family.has(candidate.nodeId))) return undefined;
+  }
   const signatures = siblings
     .filter((binding) => binding.def.isOverloadSignature)
     .map((binding) => binding.def);
+  const selected = selectTsPrimitiveOverload(signatures, site, scopes);
+  if (selected) return { kind: 'resolved', definition: selected };
   const matches = narrowOverloadCandidates(signatures, site.arity, site.argumentTypes);
   if (matches.length === 1) return { kind: 'resolved', definition: matches[0] };
   return {

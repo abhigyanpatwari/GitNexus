@@ -173,7 +173,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; both. \`tsBindingScopeFor\` already implements the other half of the rule:
 ;; \`var\` hoists past blocks to the enclosing Function/Module, \`let\`/\`const\`
 ;; take the innermost scope, which is now the block.
-(statement_block) @scope.block
+[(statement_block) (switch_body)] @scope.block
 
 
 ;; The alias owns its type parameters, members and references on its right-hand side.

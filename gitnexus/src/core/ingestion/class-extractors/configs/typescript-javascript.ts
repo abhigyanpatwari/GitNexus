@@ -16,7 +16,9 @@ function needsPosition(node: SyntaxNode): boolean {
   // Only block-local declarations can hide an ordinary class of the same name.
   // Keep the public graph IDs of module declarations and unique local classes.
   let parent = node.parent;
-  while (parent && parent.type !== 'statement_block') parent = parent.parent;
+  while (parent && parent.type !== 'statement_block' && parent.type !== 'switch_body') {
+    parent = parent.parent;
+  }
   if (!parent || ['internal_module', 'module'].includes(parent.parent?.type ?? '')) return false;
   const tree = node.tree;
   if (!tree) return false;

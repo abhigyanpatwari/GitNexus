@@ -520,12 +520,8 @@ function preEmitInheritanceEdges(
       unresolvedInheritanceByClass.add(callerClass.nodeId);
       continue;
     }
-    // Discriminate EXTENDS vs IMPLEMENTS by the resolved target's symbol kind:
-    // conforming to an interface OR mixing in a trait/protocol is IMPLEMENTS,
-    // deriving from a class-like is EXTENDS. The discriminator is purely
-    // symbol-kind-driven (no language is named here, per AGENTS.md): a base that
-    // resolves to neither an Interface nor a Trait symbol always takes the
-    // EXTENDS branch, so such languages are unchanged.
+    // Use the relationship captured at the declaration. If the provider omits
+    // it, infer conformance to interfaces and traits from the resolved target.
     const edgeType =
       site.heritageKind ??
       (targetDef.type === 'Interface' || targetDef.type === 'Trait' ? 'IMPLEMENTS' : 'EXTENDS');
@@ -1374,10 +1370,28 @@ export function runScopeResolution(
     }
   }
 
-  const selectedCalls =
-    provider.receiverCallSite === undefined
-      ? undefined
-      : new Map<string, SymbolDefinition | null>();
+  // A receiver and its producing call are in the same source file. An inline
+  // chain can consume a selected result even without an assignment.
+  const receiverCallSite = provider.receiverCallSite;
+  const callResultFiles = new Set<string>();
+  if (receiverCallSite !== undefined) {
+    for (const file of parsedFiles) {
+      if (
+        file.callResultAssignmentSites?.some((site) => !refusedCallResultSites.has(site)) ||
+        file.referenceSites.some(
+          (site) =>
+            site.kind === 'call' &&
+            site.explicitReceiver !== undefined &&
+            receiverCallSite(site, indexes) !== undefined,
+        )
+      ) {
+        callResultFiles.add(file.filePath);
+      }
+    }
+  }
+  const selectedCalls = callResultFiles.size
+    ? new Map<string, SymbolDefinition | null>()
+    : undefined;
   const pendingCallReceivers = selectedCalls === undefined ? undefined : new Map<string, string>();
   const callResultProducers =
     selectedCalls === undefined ? undefined : new Map<string, CallResultAssignmentSite>();
@@ -1541,7 +1555,9 @@ export function runScopeResolution(
   const callResultAssignmentSites = new Set<string>();
   for (const parsed of emitParsedFiles) {
     for (const site of parsed.callResultAssignmentSites ?? []) {
-      callResultAssignmentSites.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+      if (!refusedCallResultSites.has(site)) {
+        callResultAssignmentSites.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+      }
     }
   }
   if (input.pdg !== true && deferredIndirectSites.size > 0) {
@@ -1561,7 +1577,7 @@ export function runScopeResolution(
     input.pdg === true ||
     deferredIndirectSites.size > 0 ||
     callResultAssignmentSites.size > 0 ||
-    provider.receiverCallSite !== undefined
+    selectedCalls !== undefined
       ? createCalleeIdAccumulator(
           input.pdg === true
             ? undefined
@@ -1700,10 +1716,14 @@ export function runScopeResolution(
         );
   if (replayedCallResultBindings > 0 || selectedCalls !== undefined) {
     const handledBeforeReplay = new Set(handledSites);
+    const replayFiles =
+      selectedCalls === undefined
+        ? emitParsedFiles
+        : emitParsedFiles.filter((file) => callResultFiles.has(file.filePath));
     const replayedReceiverBound = emitReceiverBoundCalls(
       graph,
       indexes,
-      emitParsedFiles,
+      replayFiles,
       postHeritageNodeLookup,
       handledSites,
       provider,

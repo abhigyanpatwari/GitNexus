@@ -89,10 +89,13 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
       const call = calls.get(rangeKey(fact.callSite));
       if (!call || call.argumentTypes?.[fact.parameterIndex] !== '') continue;
       const owners = overloads.get(call.name);
-      if (!owners) continue;
+      // Imports may rename a free overload. Its lexical declaration is
+      // checked during resolution, after the imports have been bound.
+      if (!owners && !(overloadedFunctions.size && call.callForm === 'free')) continue;
       const args = argumentsByCall.get(call);
       if (args) args.push(fact);
       else argumentsByCall.set(call, [fact]);
+      if (!owners) continue;
       const uses = usesByName.get(fact.source.name);
       const use = { argument: fact, call, owners };
       if (uses) uses.push(use);
@@ -314,8 +317,19 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
   const signatures = methods.filter((def) => def.isOverloadSignature);
   // Static and instance overload families can share an owner and a spelling.
   if (signatures.length < 2 || methods.length - signatures.length > 1) return undefined;
+  const selected = selectTsPrimitiveOverload(signatures, site, indexes);
+  return selected && { kind: 'resolved', definition: selected };
+};
+
+/** Compare written primitive annotations in declaration order for one overload family. */
+export function selectTsPrimitiveOverload(
+  signatures: SymbolDefinition[],
+  site: ReferenceSite,
+  indexes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  if (!site.argumentTypes) return undefined;
   const types = [...site.argumentTypes];
-  for (const { source, parameterIndex } of argumentsAtSite) {
+  for (const { source, parameterIndex } of argumentsByCall.get(site) ?? []) {
     const binding = findReceiverTypeBinding(source.inScope, source.name, indexes, {
       purpose: 'value',
       position: source.atRange,
@@ -330,7 +344,7 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
   for (const signature of signatures) {
     const applicable = acceptsPrimitiveArguments(signature, types, indexes);
     if (applicable === undefined) return undefined;
-    if (applicable) return { kind: 'resolved', definition: signature };
+    if (applicable) return signature;
   }
   return undefined;
-};
+}
