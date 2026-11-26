@@ -78,6 +78,10 @@ describe('parseTypeParameterList', () => {
     // `'a` declares nothing a member lookup can be performed on. The sibling
     // type parameter in the same list still parses.
     expect(parseTypeParameterList("<'a, T: Repo>")).toEqual([{ name: 'T', bound: 'Repo' }]);
+    expect(parseTypeParameterList("<'a, T: Repo, 'b, U>")).toEqual([
+      { name: 'T', bound: 'Repo' },
+      { name: 'U' },
+    ]);
   });
 });
 

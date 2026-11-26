@@ -101,6 +101,8 @@ Run `npm run build` and `npm run test:conformance:typescript` in `gitnexus/`. To
 
 The oracle uses the TypeScript compiler installed by the package lock. It reads the fixture's tsconfig when present. Projects without a config use strict checking and bundler module resolution. The compiler and GitNexus read the same source. For npm workspaces, the compiler gets a temporary copy with the local packages linked.
 
+For generic classes, the runner compares each type parameter's name, constraint, and default in declaration order. It joins the parameters from GitNexus scope resolution to the published class by source location.
+
 Each call comparison checks the source range and the selected declaration, including overloads. The runner also compares published graph edges for calls, imports, named types, inheritance, overrides, and interface implementations. The declaration inventory compares named functions, classes, interfaces, and their methods in the projects listed for that check. Negative controls deliberately swap same-named targets and verify that the comparison fails.
 
 Fixtures that exercise compiler recovery declare their expected diagnostics in `typescript/diagnostics.json`. For example, TypeScript 7 reports two configuration errors in the legacy baseUrl fixture. Unlisted or missing diagnostics fail the job. For a type-only import used as a constructor, the runner checks that GitNexus leaves the call unbound. Annotated receivers still have compiler-selected methods.

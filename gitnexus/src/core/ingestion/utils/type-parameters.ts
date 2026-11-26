@@ -73,7 +73,7 @@ function innerListText(text: string): string | undefined {
   const start = text.indexOf('<');
   if (start === -1) return undefined;
   let depth = 0;
-  for (let i = start; i < text.length; i += 1) {
+  for (const i of syntaxOffsets(text, start)) {
     const ch = text[i];
     if (ch === '<') depth += 1;
     else if (ch === '>') {
@@ -100,7 +100,7 @@ function splitTopLevel(inner: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let start = 0;
-  for (let i = 0; i < inner.length; i += 1) {
+  for (const i of syntaxOffsets(inner)) {
     const ch = inner[i];
     if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
     else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
@@ -156,11 +156,11 @@ function parseEntry(entry: string): TypeParameter | undefined {
  *  bound. `=>` and `>=`/`<=` are not defaults; only a bare `=` at depth 0 is. */
 function beforeTopLevelDefault(entry: string): string {
   let depth = 0;
-  for (let i = 0; i < entry.length; i += 1) {
+  for (const i of syntaxOffsets(entry)) {
     const ch = entry[i];
     if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
     else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
-    else if (ch === '=' && depth === 0 && entry[i + 1] !== '=' && entry[i + 1] !== '>') {
+    else if (ch === '=' && depth === 0 && entry[i - 1] !== '=' && entry[i + 1] !== '=') {
       return entry.slice(0, i);
     }
   }
@@ -183,7 +183,7 @@ function beforeTopLevelDefault(entry: string): string {
  */
 function findBoundIntroducer(head: string): { index: number; length: number } | undefined {
   let depth = 0;
-  for (let i = 0; i < head.length; i += 1) {
+  for (const i of syntaxOffsets(head)) {
     const ch = head[i];
     if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
     else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
@@ -204,6 +204,41 @@ function isWholeWord(text: string, index: number, length: number): boolean {
   const before = index === 0 ? '' : text[index - 1]!;
   const after = text[index + length] ?? '';
   return !isIdentifierChar(before) && !isIdentifierChar(after);
+}
+
+/** Source offsets outside quoted literals and two-character function arrows. */
+function* syntaxOffsets(text: string, start = 0): Generator<number> {
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      let end = i + 1;
+      for (; end < text.length && text[end] !== ch; end++) {
+        if (text[end] === '\\') end++;
+      }
+      if (end < text.length && !isLifetimePair(text, i, end)) {
+        i = end;
+        continue;
+      }
+    }
+    yield i;
+  }
+}
+
+/** In <'a, T, 'b> each apostrophe starts a name. Neither quotes the comma. */
+function isLifetimePair(text: string, start: number, end: number): boolean {
+  if (
+    text[start] !== "'" ||
+    !isIdentifierChar(text[start + 1] ?? '') ||
+    !isIdentifierChar(text[end + 1] ?? '')
+  )
+    return false;
+  let prior = start - 1;
+  while (prior >= 0 && /\s/.test(text.charAt(prior))) prior--;
+  return prior < 0 || '<,:&+'.includes(text.charAt(prior));
 }
 
 function isIdentifierChar(ch: string): boolean {

@@ -23,6 +23,7 @@ function graphReport(
   // Class nodes carry a line. The real graph bridge joins their IDs to the
   // exact scope declarations, including two local classes on that same line.
   const classPositions = new Map();
+  const result = emptyReport();
   const lookup = buildGraphNodeLookup(graph);
   for (const def of classes) {
     const id = resolveDefGraphId(def.filePath, def, lookup);
@@ -32,6 +33,18 @@ function graphReport(
     const previous = classPositions.get(id);
     assert.ok(!previous || previous === position, id + ' merges ' + previous + ' and ' + position);
     classPositions.set(id, position);
+    if (def.typeParameters?.length) {
+      result.CLASS_TYPE_PARAMETERS.edges.push({
+        from: position,
+        to: JSON.stringify(
+          def.typeParameters.map(({ name, bound, defaultType }) => [
+            name,
+            bound ?? null,
+            defaultType ?? null,
+          ]),
+        ),
+      });
+    }
   }
   function graphIdentity(node) {
     if (node.label === 'Class') {
@@ -56,7 +69,6 @@ function graphReport(
       ? graphIdentity(owner) + '.' + node.properties.name
       : graphIdentity(node);
   }
-  const result = emptyReport();
   result.PARAMETER_CALLS.sites = publishedParameterCalls(graph, parameterCalls);
   const parameterRanges = new Set(parameterCalls.map(siteKey));
   if (propertyAccess) {

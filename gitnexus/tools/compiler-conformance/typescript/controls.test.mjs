@@ -14,6 +14,25 @@ const root = fileURLToPath(
 );
 const facts = compilerReport(root);
 
+test('dropping an arrow from a class type parameter default changes its compiler facts', () => {
+  const project = path.resolve(root, '../typescript-literal-type-parameters');
+  const expected = compilerReport(project).CLASS_TYPE_PARAMETERS;
+  assert.equal(expected.edges.length, 1);
+  const [edge] = expected.edges;
+  const parameters = JSON.parse(edge.to);
+  const callback = parameters.find(([name]) => name === 'Callback');
+  assert.deepEqual(callback, ['Callback', '(value: Pair) => void', '(value: Pair) => void']);
+  callback[2] = '(value: Pair) =';
+  assert.throws(
+    () =>
+      compareReports(expected, {
+        ...expected,
+        edges: [{ ...edge, to: JSON.stringify(parameters) }],
+      }),
+    /Missing from actual/,
+  );
+});
+
 test('quoted, escaped and numeric methods use the same property key across declarations', (t) => {
   const project = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-method-keys-'));
   t.after(() => rmSync(project, { recursive: true, force: true }));

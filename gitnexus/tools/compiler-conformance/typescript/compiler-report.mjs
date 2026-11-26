@@ -25,6 +25,7 @@ export const relations = [
   'PROPERTY_READS',
   'PROPERTY_WRITES',
   'TYPE_PARAMETER_USES',
+  'CLASS_TYPE_PARAMETERS',
   'PARAMETER_CALLS',
   'CALLBACK_TARGETS',
   'VARIABLE_READS',
@@ -498,6 +499,18 @@ function reportProject(
     }
 
     function visit(node) {
+      if (node.kind === SyntaxKind.ClassDeclaration && node.typeParameters?.length) {
+        result.CLASS_TYPE_PARAMETERS.edges.push({
+          from: identity(root, node),
+          to: JSON.stringify(
+            Array.from(node.typeParameters, (parameter) => [
+              parameter.name.text,
+              parameter.constraint?.getText() ?? null,
+              parameter.defaultType?.getText() ?? null,
+            ]),
+          ),
+        });
+      }
       if (
         (node.kind === SyntaxKind.VariableDeclaration || node.kind === SyntaxKind.Parameter) &&
         node.name.kind === SyntaxKind.Identifier &&
