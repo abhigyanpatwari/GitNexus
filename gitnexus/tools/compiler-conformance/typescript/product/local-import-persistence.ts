@@ -1,32 +1,55 @@
-import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
+import { after as afterAll, before as beforeAll, describe, it, mock } from 'node:test';
+import assert from 'node:assert/strict';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
-import * as scopeBridge from '../../../src/core/ingestion/scope-extractor-bridge.js';
-import { getProviderForFile } from '../../../src/core/ingestion/languages/index.js';
-import { summarizeUnresolvedReceivers } from '../../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
+import * as scopeBridge from '../../../../dist/core/ingestion/scope-extractor-bridge.js';
+import { getProviderForFile } from '../../../../dist/core/ingestion/languages/index.js';
+import { summarizeUnresolvedReceivers } from '../../../../dist/core/ingestion/scope-resolution/unresolved-receivers.js';
 import {
   loadParseCache,
   loadParseCacheFiles,
   pruneCache,
   saveParseCache,
   type ParseCache,
-} from '../../../src/storage/parse-cache.js';
+} from '../../../../dist/storage/parse-cache.js';
 import {
   clearParsedFileStore,
   loadParsedFilesForPaths,
-} from '../../../src/storage/parsedfile-store.js';
-import { loadFileResultStore, pinFileResults } from '../../../src/storage/file-result-store.js';
-import { describeGrammarPresence, optionalGrammarGate } from '../../helpers/optional-grammar.js';
-import { runPipelineFromRepo, writeFixtureRepo, type PipelineResult } from './helpers.js';
+} from '../../../../dist/storage/parsedfile-store.js';
+import { loadFileResultStore, pinFileResults } from '../../../../dist/storage/file-result-store.js';
+import { isLanguageAvailable } from '../../../../dist/core/tree-sitter/parser-loader.js';
+import { writeFixtureRepo } from '../../../../test/helpers/resolution-graph.js';
+import type { PipelineResult } from '../../../../dist/types/pipeline.js';
+
+const extract = mock.fn(scopeBridge.extractParsedFile);
+const bridgeMock = mock.module(
+  new URL('../../../../dist/core/ingestion/scope-extractor-bridge.js', import.meta.url).href,
+  {
+    namedExports: { ...scopeBridge, extractParsedFile: extract },
+  },
+);
+afterAll(() => bridgeMock.restore());
+const { runPipelineFromRepo } = await import('../../../../dist/core/ingestion/pipeline.js');
+const { runScopeResolution } =
+  await import('../../../../dist/core/ingestion/scope-resolution/pipeline/run.js');
+const { typescriptScopeResolver } =
+  await import('../../../../dist/core/ingestion/languages/typescript/scope-resolver.js');
+import { createKnowledgeGraph } from '../../../../dist/core/graph/graph.js';
+import { createSemanticModel } from '../../../../dist/core/ingestion/model/semantic-model.js';
 
 const parseIdentity = await runtimeParseIdentity();
 
-const zig = optionalGrammarGate(SupportedLanguages.Zig);
-describeGrammarPresence(zig);
+const zigAvailable = isLanguageAvailable(SupportedLanguages.Zig);
+if (process.env.GITNEXUS_REQUIRE_ZIG === '1') {
+  it('loads the required Zig grammar for the mixed-language project', () => {
+    assert.ok(zigAvailable, 'GITNEXUS_REQUIRE_ZIG=1 requires a working Zig grammar');
+  });
+}
 
 interface ExpectedCall {
   file: string;
@@ -51,8 +74,11 @@ describe('local-import graph targets across both persistent parse stores', () =>
     storageDir = path.join(tempDir, 'storage');
     marker = path.join(tempDir, 'worker.jsonl');
     const workerPath = path.join(tempDir, 'observed-worker.mjs');
-    const actual = new URL('../../../dist/core/ingestion/workers/parse-worker.js', import.meta.url);
-    expect(fs.existsSync(actual), 'build gitnexus before real-worker persistence tests').toBe(true);
+    const actual = new URL(
+      '../../../../dist/core/ingestion/workers/parse-worker.js',
+      import.meta.url,
+    );
+    assert.ok(fs.existsSync(actual), 'build gitnexus before real-worker persistence tests');
     fs.writeFileSync(
       workerPath,
       `
@@ -229,7 +255,7 @@ function denied(require) { const ns = require('./a'); return ns.run(); }
         target: 'run',
       });
     }
-    if (zig.available) {
+    if (zigAvailable) {
       files['zig/main.zig'] = `pub fn allowed() void { const ns = @import("target.zig"); ns.run(); }
 pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
 `;
@@ -249,13 +275,15 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
-  const run = (parseCache: ParseCache) =>
-    runPipelineFromRepo(repoDir, noOp, {
+  const run = (parseCache: ParseCache) => {
+    const options = {
       skipGraphPhases: true,
       workerPoolSize: 1,
       workerUrlForTest: worker,
       parseCache,
-    });
+    };
+    return runPipelineFromRepo(repoDir, noOp, options);
+  };
 
   async function persist(cache: ParseCache): Promise<void> {
     pruneCache(cache, cache.usedKeys);
@@ -294,7 +322,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
           node.properties.name === name &&
           (node.label === 'Function' || node.label === 'Method'),
       );
-      expect(nodes, `one callable ${filePath}:${name}`).toHaveLength(1);
+      assert.equal(nodes.length, 1, `one callable ${filePath}:${name}`);
       return nodes[0]!.id;
     };
     const calls = [...result.graph.iterRelationships()].filter(
@@ -311,12 +339,13 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
     );
     // The exact set rejects both sibling-target leakage and every denied call.
     for (const filePath of ['py/branch_modules.py', 'py/branch_builtin.py']) {
-      expect(
+      assert.deepEqual(
         summarizeUnresolvedReceivers(
           result.resolutionOutcomes.filter((outcome) => outcome.filePath === filePath),
         ),
+        { counts: { run: 1 }, totalSites: 1 },
         `one in-program/unknown branch call for ${filePath}`,
-      ).toEqual({ counts: { run: 1 }, totalSites: 1 });
+      );
     }
     expect(
       summarizeUnresolvedReceivers(
@@ -327,18 +356,30 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
     ).toBeUndefined();
   }
 
-  it('reuses genuine cold output, retains exact targets, and invalidates changed ownership', async () => {
-    const parsedPaths = Object.keys(files).filter(
-      (filePath) => getProviderForFile(filePath) !== null,
-    );
-    const extract = vi.spyOn(scopeBridge, 'extractParsedFile');
-    try {
+  it(
+    'reuses genuine cold output, retains exact targets, and invalidates changed ownership',
+    { timeout: 180_000 },
+    async () => {
+      const parsedPaths = Object.keys(files).filter(
+        (filePath) => getProviderForFile(filePath) !== null,
+      );
+      // Prove this observer sees extraction in the parent process before measuring worker reuse.
+      runScopeResolution(
+        {
+          graph: createKnowledgeGraph(),
+          model: createSemanticModel(),
+          files: [{ path: 'control.ts', content: 'export const value = 1;' }],
+        },
+        typescriptScopeResolver,
+      );
+      assert.ok(extract.mock.calls.some(({ arguments: args }) => args[2] === 'control.ts'));
+      extract.mock.resetCalls();
       const coldCache = await loadParseCache(storageDir, parseIdentity, storageDir);
       const cold = await run(coldCache);
       expect(cold.usedWorkerPool).toBe(true);
       expect(cold.reparsedFileCount).toBe(parsedPaths.length);
       expect(cold.parseCacheHitFileCount).toBe(0);
-      expect(extract).not.toHaveBeenCalled();
+      assert.equal(extract.mock.callCount(), 0);
       const observed = fs
         .readFileSync(marker, 'utf8')
         .trim()
@@ -425,10 +466,10 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
         'hoisted',
         'merge',
       ] as const) {
-        expect(
+        assert.ok(
           claims.some((claim) => claim[key] !== undefined),
           `durable NameClaim.${key}`,
-        ).toBe(true);
+        );
       }
       const policies = scopes.flatMap((scope) => (scope.lookupPolicy ? [scope.lookupPolicy] : []));
       for (const key of [
@@ -439,17 +480,17 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
         'callerScopeIsAuthoritative',
         'nameClaimsComplete',
       ] as const) {
-        expect(
+        assert.ok(
           policies.some((policy) => policy[key] !== undefined),
           `durable Scope.lookupPolicy.${key}`,
-        ).toBe(true);
+        );
       }
       const types = scopes.flatMap((scope) => [...scope.typeBindings.values()]);
       for (const key of ['lookupPosition', 'lookupPurpose', 'bindingRange'] as const) {
-        expect(
+        assert.ok(
           types.some((type) => type[key] !== undefined),
           `durable TypeRef.${key}`,
-        ).toBe(true);
+        );
       }
       expect(
         scopes
@@ -458,10 +499,10 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       ).toBe(true);
       const imports = [...coldRecords.values()].flatMap((file) => file.parsedImports);
       for (const key of ['atRange', 'declaredAtScope', 'bindsAtLexicalScope'] as const) {
-        expect(
+        assert.ok(
           imports.some((imp) => imp[key] !== undefined),
           `durable ParsedImport.${key}`,
-        ).toBe(true);
+        );
       }
       const references = [...coldRecords.values()].flatMap((file) => file.referenceSites);
       expect(references.some((site) => site.lookupPurpose !== undefined)).toBe(true);
@@ -501,7 +542,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       expect(warm.reparsedFileCount).toBe(0);
       expect(warm.parseCacheHitFileCount).toBe(parsedPaths.length);
       expect(fs.existsSync(marker)).toBe(false);
-      expect(extract).not.toHaveBeenCalled();
+      assert.equal(extract.mock.callCount(), 0);
       assertExactCalls(warm, expected);
       expect(graphEdges(warm)).toEqual(graphEdges(cold));
       await persist(warmCache);
@@ -528,7 +569,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       expect(edited.parseCacheHitFileCount).toBeGreaterThan(0);
       expect(edited.reparsedFileCount! + edited.parseCacheHitFileCount!).toBe(parsedPaths.length);
       expect(fs.existsSync(marker)).toBe(true);
-      expect(extract).not.toHaveBeenCalled();
+      assert.equal(extract.mock.callCount(), 0);
       const changedExpected = expected
         .filter((item) => item.file !== 'js/main.js')
         .map((item) => {
@@ -577,7 +618,7 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       expect(editedWarm.reparsedFileCount).toBe(0);
       expect(editedWarm.parseCacheHitFileCount).toBe(parsedPaths.length);
       expect(fs.existsSync(marker)).toBe(false);
-      expect(extract).not.toHaveBeenCalled();
+      assert.equal(extract.mock.callCount(), 0);
       assertExactCalls(editedWarm, changedExpected);
       expect(graphEdges(editedWarm)).toEqual(graphEdges(edited));
 
@@ -610,13 +651,11 @@ pub fn denied() void { ns.run(); const ns = @import("target.zig"); }
       expect(rebuilt.usedWorkerPool).toBe(true);
       expect(rebuilt.reparsedFileCount).toBe(parsedPaths.length);
       expect(rebuilt.parseCacheHitFileCount).toBe(0);
-      expect(extract).not.toHaveBeenCalled();
+      assert.equal(extract.mock.callCount(), 0);
       assertExactCalls(rebuilt, changedExpected);
       expect(graphEdges(rebuilt)).toEqual(graphEdges(edited));
       await persist(upgradedCache);
       expect(await durableRecords()).toEqual(editedRecords);
-    } finally {
-      extract.mockRestore();
-    }
-  }, 180_000);
+    },
+  );
 });

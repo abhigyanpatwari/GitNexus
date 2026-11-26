@@ -400,7 +400,6 @@ const WORKER_THREADS = [
   // Real parse workers and both on-disk parse stores must retain lexical
   // local-import ownership on each platform's native grammar/runtime pair.
   'test/integration/local-import-worker-parity.test.ts',
-  'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
 ];
 
@@ -434,7 +433,6 @@ const FILESYSTEM = [
   // mounts — are Windows- and macOS-flavored, and the permission-based case
   // skips itself where chmod cannot block a delete, so run it everywhere.
   'test/unit/parsedfile-store.test.ts',
-  'test/integration/filesystem-walker.test.ts',
   'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/unit/watch-external-config.test.ts',

@@ -1,17 +1,18 @@
 import { execSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanCommand } from '../../src/cli/clean.js';
-import { branchSlug } from '../../src/storage/branch-index.js';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
+import { cleanCommand } from '../../../../src/cli/clean.js';
+import { branchSlug } from '../../../../src/storage/branch-index.js';
 import {
   listRegisteredRepos,
   registerRepo,
   saveMeta,
   type RepoMeta,
-} from '../../src/storage/repo-manager.js';
-import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
-import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
+} from '../../../../src/storage/repo-manager.js';
+import { commitAll, initGitRepo } from '../../../../test/helpers/temp-git-repo.js';
+import { createTempDir, type TestDBHandle } from '../../../../test/helpers/test-db.js';
 
 /**
  * Issue #3331 repro: a pinned per-branch slot survives deleting the git
@@ -30,7 +31,7 @@ describe('clean --stale leftover branch slots (#3331)', () => {
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
+    mock.restoreAll();
     if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
     else process.env.GITNEXUS_HOME = savedHome;
     await fixture.cleanup();
@@ -66,8 +67,8 @@ describe('clean --stale leftover branch slots (#3331)', () => {
     if (opts?.deleteBranch) {
       execSync('git branch -D feature/x', { cwd: repo, stdio: 'ignore', windowsHide: true });
     }
-    vi.spyOn(process, 'cwd').mockReturnValue(repo);
-    vi.spyOn(console, 'log').mockImplementation(() => {});
+    mock.method(process, 'cwd', () => repo);
+    mock.method(console, 'log', () => {});
     return { repo, dir, storagePath };
   }
 

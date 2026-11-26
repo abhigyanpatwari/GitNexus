@@ -1,14 +1,23 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  mock,
+  before as beforeAll,
+  after as afterAll,
+  beforeEach,
+  afterEach,
+} from 'node:test';
+import { expect } from 'expect';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
 import {
   walkRepositoryPaths,
   readFileContents,
-} from '../../src/core/ingestion/filesystem-walker.js';
-import { _resetMaxFileSizeWarnings } from '../../src/core/ingestion/utils/max-file-size.js';
+} from '../../../../src/core/ingestion/filesystem-walker.js';
+import { _resetMaxFileSizeWarnings } from '../../../../src/core/ingestion/utils/max-file-size.js';
 
-import { _captureLogger } from '../../src/core/logger.js';
+import { _captureLogger } from '../../../../src/core/logger.js';
 describe('filesystem-walker', () => {
   let tmpDir: string;
 
@@ -82,9 +91,9 @@ describe('filesystem-walker', () => {
     });
 
     it('calls progress callback', async () => {
-      const onProgress = vi.fn();
+      const onProgress = mock.fn();
       await walkRepositoryPaths(tmpDir, onProgress);
-      expect(onProgress).toHaveBeenCalled();
+      expect(onProgress.mock.callCount()).toBeGreaterThan(0);
     });
 
     // ─── Unhappy paths ────────────────────────────────────────────────
@@ -773,18 +782,18 @@ describe('filesystem-walker', () => {
 
     it('routes large-file notices through console.warn while analyze progress is active', async () => {
       const originalProgressActive = process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
-      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const warnSpy = mock.method(console, 'warn', () => undefined);
       try {
         process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE = '1';
         await walkRepositoryPaths(sizeDir);
-        const messages = warnSpy.mock.calls.map(([msg]) => String(msg));
+        const messages = warnSpy.mock.calls.map(({ arguments: [msg] }) => String(msg));
         expect(messages.some((m) => m.includes('Skipped 1 large files'))).toBe(true);
         expect(messages.some((m) => m.includes(BIG_FILE))).toBe(true);
         expect(cap.records().filter((r) => String(r.msg ?? '').includes('Skipped '))).toHaveLength(
           0,
         );
       } finally {
-        warnSpy.mockRestore();
+        warnSpy.mock.restore();
         if (originalProgressActive === undefined) {
           delete process.env.GITNEXUS_ANALYZE_PROGRESS_ACTIVE;
         } else {
