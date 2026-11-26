@@ -68,7 +68,7 @@ const ANNOTATED_CLIENT_PATTERNS = compilePatterns({
         (field_declaration
           (modifiers
             (marker_annotation
-              name: (identifier) @annotation_name))
+              name: (_) @annotation_name))
           type: (_) @type
           declarator: (variable_declarator
             name: (identifier) @var))
@@ -80,7 +80,7 @@ const ANNOTATED_CLIENT_PATTERNS = compilePatterns({
         (field_declaration
           (modifiers
             (annotation
-              name: (identifier) @annotation_name))
+              name: (_) @annotation_name))
           type: (_) @type
           declarator: (variable_declarator
             name: (identifier) @var))
@@ -149,30 +149,35 @@ export function serviceFromAnnotatedClient(
   annotationName: string,
 ): ServiceTypeMatch | null {
   // Only process annotations that look like thrift client annotations
-  if (!annotationName.includes('ThriftClient') && !annotationName.includes('RpcClient')) {
+  // Handle both simple (@ThriftClient) and qualified (@com.example.ThriftClient) names
+  const annotationSimpleName = annotationName.split('.').at(-1) || annotationName;
+  if (!annotationSimpleName.includes('ThriftClient') && !annotationSimpleName.includes('RpcClient')) {
     return null;
   }
 
-  // Extract service name from interface types like ISimpleClient → SimpleClient
-  // or SimpleServiceClient → SimpleService
+  // Extract service name from client interface types
+  // Examples: ISimpleServiceClient → SimpleService, OrderClient → Order
   const segments = typeText.split('.').filter((segment) => segment.length > 0);
   const last = segments.at(-1);
   if (!last) return null;
 
   // Pattern 1: I{Service}Client → {Service}
-  const iClientMatch = last.match(/^I([A-Z][A-Za-z0-9]+)Client$/);
+  // Matches ISimpleServiceClient → SimpleService, IAClient → A (single-char service)
+  const iClientMatch = last.match(/^I([A-Z][A-Za-z0-9]*)Client$/);
   if (iClientMatch) {
     return { serviceName: iClientMatch[1], usesGeneratedServiceMember: true };
   }
 
   // Pattern 2: {Service}ServiceClient → {Service}Service
-  const serviceClientMatch = last.match(/^([A-Z][A-Za-z0-9]+Service)Client$/);
+  // Matches UserServiceServiceClient → UserServiceService
+  const serviceClientMatch = last.match(/^([A-Z][A-Za-z0-9]*Service)Client$/);
   if (serviceClientMatch) {
     return { serviceName: serviceClientMatch[1], usesGeneratedServiceMember: true };
   }
 
   // Pattern 3: {Service}Client → {Service}
-  const clientMatch = last.match(/^([A-Z][A-Za-z0-9]+)Client$/);
+  // Matches OrderClient → Order, AClient → A (single-char service)
+  const clientMatch = last.match(/^([A-Z][A-Za-z0-9]*)Client$/);
   if (clientMatch) {
     return { serviceName: clientMatch[1], usesGeneratedServiceMember: true };
   }

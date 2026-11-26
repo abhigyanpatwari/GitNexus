@@ -280,6 +280,25 @@ service LeakedService {
         usesGeneratedServiceMember: true,
       });
     });
+
+    it('handles qualified annotation names', () => {
+      const result = serviceFromAnnotatedClient(
+        'IUserClient',
+        'com.example.annotations.UserThriftClient',
+      );
+      expect(result).toEqual({
+        serviceName: 'User',
+        usesGeneratedServiceMember: true,
+      });
+    });
+
+    it('handles single-character service names', () => {
+      const result = serviceFromAnnotatedClient('IAClient', 'AThriftClient');
+      expect(result).toEqual({
+        serviceName: 'A',
+        usesGeneratedServiceMember: true,
+      });
+    });
   });
 });
 
