@@ -479,6 +479,38 @@ describe('@declaration.is-default-export (#3956)', () => {
       expect(defaultExports(emitTsScopeCaptures, src(expr), 'x.ts')).toEqual(['Foo']);
   });
 
+  it('unwraps TypeScript assertions and parentheses around the component initializer', () => {
+    for (const init of [
+      '(forwardRef((p, r) => 1))',
+      'forwardRef((p, r) => 1) as Comp',
+      'forwardRef((p, r) => 1) satisfies Comp',
+      '((p) => 1) as Comp',
+      'memo((forwardRef((p, r) => 1)))',
+    ])
+      expect(
+        defaultExports(
+          emitTsScopeCaptures,
+          `const Field = ${init};\nexport default memo(Field);`,
+          'x.tsx',
+        ),
+        init,
+      ).toEqual(['Field']);
+    expect(
+      defaultExports(
+        emitJsScopeCaptures,
+        'const Field = (forwardRef((p, r) => 1));\nexport default memo(Field);',
+        'x.jsx',
+      ),
+    ).toEqual(['Field']);
+    expect(
+      defaultExports(
+        emitTsScopeCaptures,
+        'const store = (createStore(() => 1)) as Store;\nexport default memo(store);',
+        'x.ts',
+      ),
+    ).toEqual([]);
+  });
+
   it('keeps the wrapped component, not its inline comparator, as the default', () => {
     for (const [emit, file] of [
       [emitJsScopeCaptures, 'Widget.jsx'],

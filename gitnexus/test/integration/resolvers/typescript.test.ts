@@ -3909,6 +3909,23 @@ export function Screen() { return <div><Card a={1} /><Input a={2} /><Line a={3} 
 `,
     'src/Named.tsx':
       "import { Card } from './c/Card';\nexport function Named() { return <Card a={4} />; }\n",
+    'src/c/Paren.tsx': `import { forwardRef, memo } from 'react';
+const Paren = (forwardRef((props: { a: number }, ref) => <input />));
+export default memo(Paren);
+`,
+    'src/c/Asserted.tsx': `import { forwardRef, memo, type FC } from 'react';
+const Asserted = forwardRef((props: { a: number }, ref) => <input />) as FC<{ a: number }>;
+export default memo(Asserted);
+`,
+    'src/c/Satisfied.tsx': `import { forwardRef, memo } from 'react';
+const Satisfied = forwardRef((props: { a: number }, ref) => <input />) satisfies object;
+export default memo(Satisfied);
+`,
+    'src/Form.tsx': `import Paren from './c/Paren';
+import Asserted from './c/Asserted';
+import Satisfied from './c/Satisfied';
+export function Form() { return <div><Paren a={1} /><Asserted a={2} /><Satisfied a={3} /></div>; }
+`,
   });
   const callsFrom = (source: string, targetFilePath: string) =>
     getRelationships(result(), 'CALLS')
@@ -3923,5 +3940,71 @@ export function Screen() { return <div><Card a={1} /><Input a={2} /><Line a={3} 
 
   it('publishes the wrapped component only as the default, not under its own name', () => {
     expect(callsFrom('Named', 'src/c/Card.tsx')).toEqual([]);
+  });
+
+  it('links components whose initializer sits under parentheses, `as` or `satisfies`', () => {
+    expect(callsFrom('Form', 'src/c/Paren.tsx')).toEqual(['Paren']);
+    expect(callsFrom('Form', 'src/c/Asserted.tsx')).toEqual(['Asserted']);
+    expect(callsFrom('Form', 'src/c/Satisfied.tsx')).toEqual(['Satisfied']);
+  });
+});
+
+// #323 follow-up: a callable initializer under `(…)` / `as` / `satisfies` is
+// the same Function its unwrapped form declares, for callers and for calls
+// made inside it.
+describe('TypeScript callable initializers under parentheses, `as` or `satisfies`', () => {
+  const result = useFixture('ts-wrapped-callable-initializers', {
+    'src/lib.ts': `export function helper() { return 1; }
+export const paren = (() => helper());
+export const asserted = ((x: number) => helper()) as (x: number) => number;
+export const satisfied = (() => helper()) satisfies () => number;
+export const hoc = wrap(() => helper()) as () => number;
+export const mapped = (xs.map((x: number) => helper())) as number[];
+export const nested = (memo(forwardRef(() => helper())));
+const local = (() => helper()) satisfies () => number;
+export function useLocal() { return local(); }
+declare const xs: number[];
+declare function wrap<T>(f: T): T;
+declare function memo<T>(f: T): T;
+declare function forwardRef<T>(f: T): T;
+`,
+    'src/use.ts': `import { paren, asserted, satisfied, hoc } from './lib';
+export function useAll() { return paren() + asserted(1) + satisfied() + hoc(); }
+`,
+  });
+  const calls = () => getRelationships(result(), 'CALLS');
+
+  it('links named imports of wrapped initializers to their Functions', () => {
+    const targets = calls()
+      .filter((c) => c.source === 'useAll' && c.targetFilePath === 'src/lib.ts')
+      .map((c) => c.target)
+      .sort();
+    expect(targets).toEqual(['asserted', 'hoc', 'paren', 'satisfied']);
+  });
+
+  it('attributes calls inside a wrapped initializer to its Function', () => {
+    const sources = calls()
+      .filter((c) => c.target === 'helper' && c.sourceFilePath === 'src/lib.ts')
+      .map((c) => c.source);
+    for (const name of ['paren', 'asserted', 'satisfied', 'hoc']) expect(sources).toContain(name);
+  });
+
+  it('declares each wrapped initializer as one Function node, with no Const twin', () => {
+    const functions = getNodesByLabel(result(), 'Function');
+    const consts = getNodesByLabel(result(), 'Const');
+    for (const name of ['paren', 'asserted', 'satisfied', 'hoc', 'local']) {
+      expect(functions, name).toContain(name);
+      expect(consts, name).not.toContain(name);
+    }
+    expect(functions).not.toContain('mapped');
+    expect(functions).not.toContain('nested');
+  });
+
+  it('keeps array-method results and nested HOCs as values, as without the wrapper', () => {
+    const sources = calls()
+      .filter((c) => c.target === 'helper' && c.sourceFilePath === 'src/lib.ts')
+      .map((c) => c.source);
+    expect(sources).not.toContain('mapped');
+    expect(sources).not.toContain('nested');
   });
 });

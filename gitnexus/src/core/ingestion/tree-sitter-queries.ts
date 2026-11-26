@@ -14,6 +14,9 @@
 import {
   ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
   DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+  JS_INITIALIZER_WRAPPERS,
+  TS_INITIALIZER_WRAPPERS,
+  wrappedCallableDeclarationQueries,
 } from './ts-js-hoc-utils.js';
 import { unboundCallableQuery } from './languages/typescript/unbound-callables.js';
 
@@ -505,6 +508,12 @@ ${unboundCallableQuery('definition.function')}
       arguments: (arguments
         (function_expression))))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Wrapped callable initializers (#323): \`const F = (fn)\`, \`fn as T\`,
+; \`fn satisfies T\`, \`((p) => ...) as FC\`, \`forwardRef((p, r) => ...) as FC\`.
+; The shapes of the plain and HOC-wrapped rules above under one wrapper
+; chain (\`TS_INITIALIZER_WRAPPERS\`), with the same anchors.
+${wrappedCallableDeclarationQueries(TS_INITIALIZER_WRAPPERS, { name: '@name', fn: '', definition: ' @definition.function', exportVariants: true })}
 
 ; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
 ; The worker rewrites the wrapper-derived @name to a file-derived symbol name
@@ -1277,6 +1286,12 @@ ${unboundCallableQuery('definition.function')}
       arguments: (arguments
         (function_expression))))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE}) @definition.function
+
+; Wrapped callable initializers (#323): \`const F = (fn)\`, \`fn as T\`,
+; \`fn satisfies T\`, \`((p) => ...) as FC\`, \`forwardRef((p, r) => ...) as FC\`.
+; The shapes of the plain and HOC-wrapped rules above under one wrapper
+; chain (\`JS_INITIALIZER_WRAPPERS\`), with the same anchors.
+${wrappedCallableDeclarationQueries(JS_INITIALIZER_WRAPPERS, { name: '@name', fn: '', definition: ' @definition.function', exportVariants: true })}
 
 ; HOC-wrapped default exports (JS parity with TS patterns above).
  (export_statement

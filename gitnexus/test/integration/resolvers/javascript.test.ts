@@ -1006,6 +1006,46 @@ describe('JavaScript default imports (#3956)', () => {
   });
 });
 
+// #323 follow-up: a parenthesized callable initializer declares the same
+// Function as the bare one.
+describe('JavaScript parenthesized callable initializers', () => {
+  const result = useFixture('js-parenthesized-callable-initializers', {
+    'lib.js': `export function helper() { return 1; }
+export const paren = (() => helper());
+export const hoc = (wrap(() => helper()));
+export const mapped = (xs.map(() => helper()));
+`,
+    'use.js':
+      "import { paren, hoc } from './lib';\nexport function useAll() { return paren() + hoc(); }\n",
+  });
+  const calls = () => getRelationships(result(), 'CALLS');
+
+  it('links named imports and attributes inner calls to the Function', () => {
+    expect(
+      calls()
+        .filter((c) => c.source === 'useAll' && c.targetFilePath === 'lib.js')
+        .map((c) => c.target)
+        .sort(),
+    ).toEqual(['hoc', 'paren']);
+    const sources = calls()
+      .filter((c) => c.target === 'helper' && c.sourceFilePath === 'lib.js')
+      .map((c) => c.source);
+    expect(sources).toContain('paren');
+    expect(sources).toContain('hoc');
+    expect(sources).not.toContain('mapped');
+  });
+
+  it('declares each parenthesized initializer as one Function node, with no Const twin', () => {
+    const functions = getNodesByLabel(result(), 'Function');
+    const consts = getNodesByLabel(result(), 'Const');
+    for (const name of ['paren', 'hoc']) {
+      expect(functions, name).toContain(name);
+      expect(consts, name).not.toContain(name);
+    }
+    expect(functions).not.toContain('mapped');
+  });
+});
+
 // #323: `export default memo(Card)` publishes `Card` as the default export.
 describe('JavaScript default imports of wrapped components (#323)', () => {
   const result = useFixture('js-wrapped-default-import', {

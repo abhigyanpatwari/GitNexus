@@ -98,6 +98,64 @@ export const ARRAY_METHOD_NOT_ANY_OF_PREDICATE = buildNotAnyOfPredicate(
 export const DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE =
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST.map((value) => `(#not-eq? @hoc "${value}")`).join('\n  ');
 
+/**
+ * Wrapper chains (outermost first) a callable initializer may sit under and
+ * still bind the declared name: `const F = (fn)`, `fn as T`, `fn satisfies T`,
+ * and the parenthesized arrow an `as` / `satisfies` needs
+ * (`((p) => …) as FC`). JavaScript has only the parentheses.
+ */
+export const TS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
+  ['parenthesized_expression'],
+  ['as_expression'],
+  ['satisfies_expression'],
+  ['as_expression', 'parenthesized_expression'],
+  ['satisfies_expression', 'parenthesized_expression'],
+];
+export const JS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
+  ['parenthesized_expression'],
+];
+
+/**
+ * Declaration patterns for a callable initializer under one wrapper chain: a
+ * function / arrow / generator expression, or one HOC call around an inline
+ * function (`forwardRef((p, r) => …) as FC`). The same shapes the plain
+ * `variable_declarator` rules declare as Functions; nested HOCs stay out,
+ * as there. `name` / `fn` / `definition` are the query's own capture names
+ * (`fn` and `definition` may be empty). `exportVariants` adds the
+ * `export_statement` forms the definition queries use so an exported binding's
+ * `@definition.const` twin is claimed by the Function (#2687).
+ */
+export function wrappedCallableDeclarationQueries(
+  chains: readonly (readonly string[])[],
+  captures: {
+    readonly name: string;
+    readonly fn: string;
+    readonly definition: string;
+    readonly exportVariants?: boolean;
+  },
+): string {
+  const fn = `[(arrow_function) (function_expression)]${captures.fn}`;
+  const values: { value: string; predicate?: string }[] = [
+    { value: `[(arrow_function) (function_expression) (generator_function)]${captures.fn}` },
+    { value: `(call_expression function: (identifier) arguments: (arguments ${fn}))` },
+    {
+      value: `(call_expression function: (member_expression property: (property_identifier) @callee) arguments: (arguments ${fn}))`,
+      predicate: ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+    },
+  ];
+  const patterns: string[] = [];
+  for (const chain of chains)
+    for (const { value, predicate } of values)
+      for (const declaration of ['lexical_declaration', 'variable_declaration']) {
+        const wrapped = chain.reduceRight((inner, wrapper) => `(${wrapper} ${inner})`, value);
+        const pattern = `(${declaration}\n  (variable_declarator\n    name: (identifier) ${captures.name}\n    value: ${wrapped})${predicate ? `\n  ${predicate}` : ''})`;
+        patterns.push(`${pattern}${captures.definition}`);
+        if (captures.exportVariants)
+          patterns.push(`(export_statement\n  declaration: ${pattern})${captures.definition}`);
+      }
+  return patterns.join('\n\n');
+}
+
 export function deriveDefaultExportHocName(filePath: string): string {
   const normalized = filePath.replace(/\\/g, '/');
   // Use individual path.posix helpers instead of path.posix.parse() to avoid
@@ -194,11 +252,12 @@ function callArguments(call: SyntaxNode): SyntaxNode[] | undefined {
 }
 
 /**
- * Follow first arguments through component wrappers: `memo(forwardRef(x))` →
- * `x`. Undefined at any other call, which may build a different value.
+ * Follow first arguments through component wrappers and `as` / `satisfies` /
+ * parentheses / `!`: `(memo(forwardRef(x)) as T)` → `x`. Undefined at any
+ * other call, which may build a different value.
  */
 function unwrapComponentWrappers(node: SyntaxNode): SyntaxNode | undefined {
-  let current = node;
+  let current = unwrapTransparentExpression(node);
   while (current.type === 'call_expression') {
     if (!isComponentWrapperCallee(current.childForFieldName('function'))) return undefined;
     const [first] = callArguments(current) ?? [];
