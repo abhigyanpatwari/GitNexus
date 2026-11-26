@@ -1234,6 +1234,11 @@ export interface ScopeResolver {
    */
   readonly isNamespaceMemberVisible?: (ctx: { readonly member: SymbolDefinition }) => boolean;
 
+  /** Which owned member kind can also name a type when qualified by this declaration. */
+  readonly qualifiedTypeMemberKind?: (
+    owner: SymbolDefinition,
+  ) => SymbolDefinition['type'] | undefined;
+
   /** Optional compatibility rule for bare class-name receivers. Runs before
    * namespace precedence selection, so an incompatible declaration cannot
    * hide a compatible declaration in an enclosing namespace. Value receivers

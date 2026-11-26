@@ -27,6 +27,7 @@
  */
 
 import { recordCommonJsModuleKind } from './module-kind.js';
+import { enumConstants, type EnumValues } from './enum-arguments.js';
 import { argumentEvidence, callRangeKey, type CallEvidence } from './argument-evidence.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { isAnonymousDefaultClass } from '../../class-extractors/configs/typescript-javascript.js';
@@ -428,6 +429,7 @@ export function emitTsScopeCaptures(
   let awaitedCalls: Map<string, Capture> | undefined;
   let bracketReceivers: Map<string, string> | undefined;
   let callArguments: CallEvidence | undefined;
+  let enumValues: EnumValues | undefined;
 
   for (const m of rawMatches) {
     // Group captures by their tag name. Tree-sitter strips the leading
@@ -441,6 +443,15 @@ export function emitTsScopeCaptures(
       groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    const enumeration = groupedNodes['@declaration.enum'];
+    if (enumeration) {
+      const values = enumConstants(enumeration);
+      if (values.length) {
+        enumValues ??= {};
+        enumValues[`${enumeration.startPosition.row + 1}:${enumeration.startPosition.column}`] =
+          values;
+      }
+    }
     const methodKey = grouped['@declaration.method']
       ? '@declaration.name'
       : grouped['@reference.call.member']
@@ -934,7 +945,7 @@ export function emitTsScopeCaptures(
       '[]',
     );
   }
-  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out, callArguments);
+  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out, callArguments, enumValues);
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
   return out;

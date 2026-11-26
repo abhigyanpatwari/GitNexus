@@ -1477,6 +1477,7 @@ export function runScopeResolution(
   const { referenceIndex, stats: resolveStats } = resolveReferenceSites({
     scopes: indexes,
     providers: registryProviders,
+    qualifiedTypeMemberKind: provider.qualifiedTypeMemberKind,
     isNamespaceMemberVisible:
       memberVisibleToQualifier === undefined
         ? undefined

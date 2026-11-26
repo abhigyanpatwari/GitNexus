@@ -134,6 +134,7 @@ const typescriptScopeResolver: ScopeResolver = {
   // than a second one left undefined.
   elementTypeOf: indexOnlyElementType,
   qualifiedTypeLookupSpelling: tsQualifiedTypeLookupSpelling,
+  qualifiedTypeMemberKind: (owner) => (owner.type === 'Enum' ? 'Property' : undefined),
 
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },

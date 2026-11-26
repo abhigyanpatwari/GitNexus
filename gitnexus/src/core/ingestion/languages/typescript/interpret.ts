@@ -373,7 +373,7 @@ function stripGeneric(text: string): string {
 /** `User[]` / `(User)[]` → `User`. Chained `User[][]` unwraps one
  *  level at a time per resolve pass. */
 function stripArraySuffix(text: string): string {
-  if (text.endsWith('[]')) {
+  if (text.length > 2 && text.endsWith('[]')) {
     const inner = text.slice(0, -2).trim();
     // Unwrap a single pair of parentheses introduced for precedence
     // disambiguation: `(User | Admin)[]` — we leave the union intact

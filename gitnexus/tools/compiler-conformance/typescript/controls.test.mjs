@@ -148,6 +148,10 @@ test('published calls retain the compiler target at each stored call range', () 
   assert.throws(() => comparePublishedCalls(calls, swapped), /Unexpected published CALLS/);
   comparePublishedCalls(calls, [{ caller: 'main', target: 'first' }, calls[2]]);
   assert.throws(
+    () => comparePublishedCalls(calls, [calls[0], { caller: 'main', target: 'first' }, calls[2]]),
+    /Mixed located and positionless CALLS/,
+  );
+  assert.throws(
     () => comparePublishedCalls(calls, [...calls, { caller: 'other', target: 'first' }]),
     /Unexpected published CALLS/,
   );

@@ -68,7 +68,8 @@ function graphReport(
   }
   function callableIdentity(node) {
     const owner = owners.get(node.id);
-    if (node.label === 'Method' && owner?.label === 'Interface') return graphDeclaration(node);
+    if (node.label === 'Method' && ['Interface', 'Const', 'Variable'].includes(owner?.label))
+      return graphDeclaration(node);
     return node.label === 'Method' && owner
       ? graphIdentity(owner) + (node.properties.isStatic ? '.static.' : '.') + node.properties.name
       : graphIdentity(node);
@@ -201,6 +202,7 @@ export function comparePublishedCalls(expected, published) {
     sites.add(row(call));
   }
   const located = new Set();
+  const locatedPairs = new Set();
   const collapsed = new Set();
   for (const call of published) {
     const endpoints = pair(call);
@@ -209,6 +211,7 @@ export function comparePublishedCalls(expected, published) {
       assert.ok(!located.has(site), 'Duplicate published CALLS ' + site);
       assert.ok(remaining.get(endpoints)?.delete(site), 'Unexpected published CALLS ' + site);
       located.add(site);
+      locatedPairs.add(endpoints);
     } else {
       assert.ok(remaining.has(endpoints), 'Unexpected published CALLS ' + endpoints);
       assert.ok(!collapsed.has(endpoints), 'Duplicate published CALLS ' + endpoints);
@@ -216,6 +219,10 @@ export function comparePublishedCalls(expected, published) {
     }
   }
   for (const [endpoints, sites] of remaining) {
+    assert.ok(
+      !(collapsed.has(endpoints) && locatedPairs.has(endpoints)),
+      'Mixed located and positionless CALLS ' + endpoints,
+    );
     if (sites.size) assert.ok(collapsed.has(endpoints), 'Missing published CALLS ' + [...sites][0]);
     else assert.ok(!collapsed.has(endpoints), 'Duplicate published CALLS ' + endpoints);
   }

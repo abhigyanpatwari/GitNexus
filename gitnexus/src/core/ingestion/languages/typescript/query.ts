@@ -571,19 +571,19 @@ ${unboundCallableQuery('declaration.function')}
 ;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
   name: [(property_identifier) (private_property_identifier) (string) (number)
-    (computed_property_name [(string) (number)])] @declaration.name
+    (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Abstract method signatures in abstract classes.
 (abstract_method_signature
-  name: [(property_identifier) (string) (number) (computed_property_name [(string) (number)])] @declaration.name
+  name: [(property_identifier) (string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Interface method signatures.
 (method_signature
-  name: [(property_identifier) (string) (number) (computed_property_name [(string) (number)])] @declaration.name @declaration.overload-signature
+  name: [(property_identifier) (string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @declaration.name @declaration.overload-signature
   type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
@@ -640,7 +640,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; Bare members (no value): Red, Blue — property_identifier inside enum_body.
 ;; Members with value: Green = 1 — enum_assignment with name field.
 (enum_body
-  (property_identifier) @declaration.name) @declaration.property
+  (property_identifier) @declaration.name @declaration.property)
 
 (enum_assignment
   name: (_) @declaration.name) @declaration.property
@@ -680,6 +680,14 @@ ${unboundCallableQuery('declaration.function')}
   function: (import)) @import.dynamic
 
 ;; Type bindings — parameter annotations: \`function f(u: User)\`
+${['function_signature', 'method_signature', 'abstract_method_signature']
+  .map((kind) => `(${kind} parameters: (formal_parameters
+    (required_parameter
+      pattern: (rest_pattern (identifier) @type-binding.name)
+      type: (type_annotation [(array_type) (tuple_type) (readonly_type)] @type-binding.type))
+      @type-binding.parameter))`)
+  .join('\n')}
+
 (required_parameter
   pattern: (identifier) @type-binding.name
   type: (type_annotation
@@ -706,7 +714,7 @@ ${unboundCallableQuery('declaration.function')}
 (required_parameter
   pattern: (identifier) @type-binding.name
   type: (type_annotation
-    (array_type) @type-binding.type)) @type-binding.parameter
+    [(array_type) (tuple_type)] @type-binding.type)) @type-binding.parameter
 
 (required_parameter
   pattern: (identifier) @type-binding.name
@@ -813,7 +821,7 @@ ${unboundCallableQuery('declaration.function')}
 (variable_declarator
   name: (identifier) @type-binding.name
   type: (type_annotation
-    (array_type) @type-binding.type)) @type-binding.annotation
+    [(array_type) (tuple_type)] @type-binding.type)) @type-binding.annotation
 
 (variable_declarator
   name: (identifier) @type-binding.name
@@ -1273,7 +1281,7 @@ ${unboundCallableQuery('declaration.function')}
 (call_expression
   function: (subscript_expression
     object: (_) @reference.receiver
-    index: [(string) (number)] @reference.name)) @reference.call.member
+    index: [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))] @reference.name)) @reference.call.member
 
 (call_expression
   function: (member_expression

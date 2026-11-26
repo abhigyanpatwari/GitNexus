@@ -54,6 +54,7 @@ import {
   type MacroRegistry,
   type MethodRegistry,
   type NameClaimResult,
+  type NameLookupOptions,
   type Reference,
   type ReferenceIndex,
   type ReferenceSite,
@@ -76,6 +77,7 @@ import {
   resolveQualifiedInheritanceBase,
 } from './scope-resolution/scope/walkers.js';
 import { normalizeQualifiedName } from './utils/qualified-name.js';
+import type { ScopeResolver } from './scope-resolution/contract/scope-resolver.js';
 import {
   sourceBindingForDefinition,
   type SourceBindingRecorder,
@@ -97,6 +99,7 @@ export interface ResolveReferencesInput {
    * (the default) accepts whatever the namespace's target files declare.
    */
   readonly isNamespaceMemberVisible?: (def: SymbolDefinition) => boolean;
+  readonly qualifiedTypeMemberKind?: ScopeResolver['qualifiedTypeMemberKind'];
 }
 
 export interface ResolveStats {
@@ -114,6 +117,43 @@ export interface ResolveStats {
 export interface ResolveReferencesOutput {
   readonly referenceIndex: ReferenceIndex;
   readonly stats: ResolveStats;
+}
+
+function lookupOwnedTypeMember(
+  input: ResolveReferencesInput,
+  scope: ScopeId,
+  parts: readonly string[],
+  claim: NameClaimResult,
+  options: NameLookupOptions,
+): SymbolDefinition | undefined {
+  if (!input.qualifiedTypeMemberKind || parts.length < 2) return;
+  const owner =
+    parts.length === 2
+      ? claim.bindings[0]?.def
+      : findClassBindingInScope(scope, parts.slice(0, -1).join('.'), input.scopes, undefined, {
+          ...options,
+          uniqueQualifiedNameFallback: false,
+          namespaceMemberVisible: input.isNamespaceMemberVisible,
+        });
+  if (!owner) return;
+  const kind = input.qualifiedTypeMemberKind(owner);
+  if (!kind) return;
+  const sameOwner = (def?: SymbolDefinition) =>
+    def?.type === owner.type &&
+    def.filePath === owner.filePath &&
+    def.qualifiedName === owner.qualifiedName;
+  if (parts.length === 2 && claim.bindings.some(({ def }) => !sameOwner(def))) return;
+  const name = parts.at(-1)!;
+  const members = new Map<string, SymbolDefinition>();
+  // A qualified type can span declarations. Each fragment owns its own members.
+  for (const id of input.scopes.qualifiedNames.get(owner.qualifiedName)) {
+    const fragment = input.scopes.defs.get(id);
+    if (!sameOwner(fragment)) continue;
+    for (const def of input.ownedMembersByOwner(id, name)) {
+      if (def.type === kind) members.set(def.nodeId, def);
+    }
+  }
+  return members.size === 1 ? members.values().next().value : undefined;
 }
 
 /** Preserve every candidate for callers that must reject ambiguous edits. */
@@ -161,7 +201,8 @@ export function createReferenceLookup(
     if (site.kind === 'type-reference' && site.rawQualifiedName !== undefined) {
       const scope = site.lookupScope ?? site.inScope;
       const qualified = normalizeQualifiedName(site.rawQualifiedName);
-      const root = qualified.split('.', 1)[0]!;
+      const parts = qualified.split('.');
+      const root = parts[0]!;
       const options = { position: site.atRange, purpose: site.lookupPurpose ?? ('type' as const) };
       const claim = lookupNameClaim(scope, root, scopes, options);
       if (
@@ -184,28 +225,33 @@ export function createReferenceLookup(
       // are owners. Preserve the former's file constraint and require the
       // latter to own the exact qualified declaration.
       const namespaceImport = claim.imports.some((edge) => edge.kind === 'namespace');
-      const member = namespaceImport
-        ? undefined
-        : publishedNamespaceMember(claim.bindings, qualified.split('.').slice(1), scopes);
-      const definition = namespaceImport
-        ? findClassBindingInScope(scope, qualified, scopes, undefined, {
-            ...options,
-            uniqueQualifiedNameFallback: false,
-            namespaceMemberVisible: input.isNamespaceMemberVisible,
-          })
-        : member === undefined
-          ? resolveQualifiedInheritanceBase(
-              scope,
-              site.rawQualifiedName,
-              scopes,
-              findEnclosingClassDef(scope, scopes),
-            )
-          : member && CLASS_KINDS.includes(member.def.type)
-            ? member.def
-            : undefined;
+      const ownedMember = lookupOwnedTypeMember(input, scope, parts, claim, options);
+      const member =
+        namespaceImport || ownedMember
+          ? undefined
+          : publishedNamespaceMember(claim.bindings, parts.slice(1), scopes);
+      const definition =
+        ownedMember ??
+        (namespaceImport
+          ? findClassBindingInScope(scope, qualified, scopes, undefined, {
+              ...options,
+              uniqueQualifiedNameFallback: false,
+              namespaceMemberVisible: input.isNamespaceMemberVisible,
+            })
+          : member === undefined
+            ? resolveQualifiedInheritanceBase(
+                scope,
+                site.rawQualifiedName,
+                scopes,
+                findEnclosingClassDef(scope, scopes),
+              )
+            : member && CLASS_KINDS.includes(member.def.type)
+              ? member.def
+              : undefined);
       if (
         definition === undefined ||
-        (!namespaceImport &&
+        (!ownedMember &&
+          !namespaceImport &&
           !member &&
           ((claim.imports.length > 0 && claim.bindings.length === 0) ||
             !claim.bindings.every(({ def }) => qualifierOwnsDefinition(def, definition, scopes))))

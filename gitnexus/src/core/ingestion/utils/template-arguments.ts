@@ -1,5 +1,5 @@
 import type { TypeRef } from 'gitnexus-shared';
-import { syntaxOffsets } from './type-parameters.js';
+import { syntaxOffsets, withoutTypeComments } from './type-parameters.js';
 
 /**
  * Parse top-level generic/template arguments from a type-like string.
@@ -124,7 +124,7 @@ function splitTopLevelArguments(inner: string): string[] {
   let depth = 0;
   let tokenStart = 0;
   const push = (end: number): void => {
-    const token = inner.slice(tokenStart, end).trim();
+    const token = withoutTypeComments(inner.slice(tokenStart, end)).trim();
     if (token.length > 0) args.push(token);
   };
   for (const i of syntaxOffsets(inner)) {

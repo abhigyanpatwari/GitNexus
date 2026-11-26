@@ -7,7 +7,11 @@ import {
   signedNumericLiteral,
 } from './identifiers.js';
 
-export type ArgumentEvidence = string | { fields: [string, string][] } | { parameters: number };
+export type ArgumentEvidence =
+  | string
+  | { fields: [string, string][] }
+  | { parameters: number }
+  | { spread: string | null };
 export type CallEvidence = Record<string, (ArgumentEvidence | null)[]>;
 
 export function callRangeKey(range: Range): string {
@@ -19,6 +23,10 @@ export function argumentEvidence(
   arg: SyntaxNode,
   typeOf: (node: SyntaxNode) => string,
 ): ArgumentEvidence | null {
+  if (arg.type === 'spread_element') {
+    const value = arg.namedChildren.find((node) => node.type !== 'comment');
+    return { spread: value?.type === 'identifier' ? canonicalTypeScriptName(value.text) : null };
+  }
   if (['string', 'number', 'true', 'false'].includes(arg.type)) return arg.text;
   if (arg.type === 'unary_expression') return signedNumericLiteral(arg) ?? null;
   if (arg.type === 'object') {
@@ -82,7 +90,7 @@ export function acceptsArgumentEvidence(
     if (type === 'any' || type === '' || type === 'unknown') return undefined;
     return false;
   }
-  if (typeof evidence !== 'object' || evidence === null) return undefined;
+  if (typeof evidence !== 'object' || evidence === null || 'spread' in evidence) return undefined;
   if ('parameters' in evidence) {
     const fn = /^\(([^()]*)\)\s*=>\s*void$/u.exec(annotation);
     if (!fn) return undefined;

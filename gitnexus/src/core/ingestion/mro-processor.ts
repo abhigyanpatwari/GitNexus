@@ -435,7 +435,12 @@ export function computeMRO(
 
     for (const methodId of ownMethods) {
       const methodNode = graph.getNode(methodId);
-      if (!methodNode || methodNode.label === 'Property' || !methodNode.properties.name) continue;
+      if (
+        !methodNode ||
+        methodNode.label === 'Property' ||
+        typeof methodNode.properties.name !== 'string'
+      )
+        continue;
       const methodName = methodNode.properties.name;
       const ownParamTypes = (methodNode.properties.parameterTypes as string[] | undefined) ?? [];
       const ownParamCount = methodNode.properties.parameterCount as number | undefined;

@@ -2,7 +2,11 @@ import { makeScopeId } from 'gitnexus-shared';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { findAllCallableBindingsInScope } from '../../scope-resolution/scope/walkers.js';
-import { mayCallTsFunctionOverload, selectTsPrimitiveOverload } from './call-arguments.js';
+import {
+  hasSpreadArguments,
+  mayCallTsFunctionOverload,
+  selectTsPrimitiveOverload,
+} from './call-arguments.js';
 
 export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] = (
   site,
@@ -34,7 +38,9 @@ export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] 
     .map((binding) => binding.def);
   const selected = selectTsPrimitiveOverload(signatures, site, scopes);
   if (selected) return { kind: 'resolved', definition: selected };
-  const matches = narrowOverloadCandidates(signatures, site.arity, site.argumentTypes);
+  const matches = hasSpreadArguments(site)
+    ? signatures
+    : narrowOverloadCandidates(signatures, site.arity, site.argumentTypes);
   if (matches.length === 1) return { kind: 'resolved', definition: matches[0] };
   return {
     kind: matches.length ? 'unknown' : 'inapplicable',

@@ -9,17 +9,25 @@ import { positionQualifiedCallableName } from '../../workers/callable-id.js';
 
 const classDeclarations = ['class_declaration', 'abstract_class_declaration'];
 const repeatedClasses = new WeakMap<SyntaxNode['tree'], ReadonlySet<number>>();
+const enumPositions = new WeakMap<
+  SyntaxNode['tree'],
+  ReadonlyMap<number, SyntaxNode['startPosition']>
+>();
+
+function localBlock(node: SyntaxNode): SyntaxNode | undefined {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (parent.type === 'statement_block' || parent.type === 'switch_body') {
+      return ['internal_module', 'module'].includes(parent.parent?.type ?? '') ? undefined : parent;
+    }
+  }
+}
 
 function needsPosition(node: SyntaxNode): boolean {
   if (node.type === 'class') return true;
   if (!classDeclarations.includes(node.type)) return false;
   // Only block-local declarations can hide an ordinary class of the same name.
   // Keep the public graph IDs of module declarations and unique local classes.
-  let parent = node.parent;
-  while (parent && parent.type !== 'statement_block' && parent.type !== 'switch_body') {
-    parent = parent.parent;
-  }
-  if (!parent || ['internal_module', 'module'].includes(parent.parent?.type ?? '')) return false;
+  if (!localBlock(node)) return false;
   const tree = node.tree;
   if (!tree) return false;
   let repeated = repeatedClasses.get(tree);
@@ -40,6 +48,46 @@ function needsPosition(node: SyntaxNode): boolean {
     repeated = duplicates;
   }
   return repeated.has(node.id);
+}
+
+/** Declarations of one enum can merge within a scope. A shadowing enum in
+ * another scope needs a different owner for both its type and its members. */
+function localTypeName(node: SyntaxNode, name: string): string | undefined {
+  if (node.type !== 'enum_declaration') {
+    return needsPosition(node)
+      ? positionQualifiedCallableName(name, node.startPosition)
+      : undefined;
+  }
+  if (!node.tree || !localBlock(node)) return;
+  let positions = enumPositions.get(node.tree);
+  if (!positions) {
+    const groups = new Map<string, Map<number, SyntaxNode[]>>();
+    for (const decl of node.tree.rootNode.descendantsOfType('enum_declaration')) {
+      const simple = decl.childForFieldName('name')?.text;
+      if (!simple) continue;
+      const key = positionlessClassExtractor.qualifyScopeName!(decl, simple) ?? simple;
+      const scope = localBlock(decl)?.id ?? 0;
+      let owners = groups.get(key);
+      if (!owners) {
+        owners = new Map();
+        groups.set(key, owners);
+      }
+      const declarations = owners.get(scope);
+      if (declarations) declarations.push(decl);
+      else owners.set(scope, [decl]);
+    }
+    const result = new Map<number, SyntaxNode['startPosition']>();
+    for (const owners of groups.values()) {
+      if (owners.size < 2) continue;
+      for (const declarations of owners.values()) {
+        for (const decl of declarations) result.set(decl.id, declarations[0].startPosition);
+      }
+    }
+    enumPositions.set(node.tree, result);
+    positions = result;
+  }
+  const anchor = positions.get(node.id);
+  return anchor && positionQualifiedCallableName(name, anchor);
 }
 
 const shared: Omit<ClassExtractionConfig, 'language'> = {
@@ -64,9 +112,8 @@ const shared: Omit<ClassExtractionConfig, 'language'> = {
   ],
   extractScopeSegments(node) {
     const name = node.childForFieldName('name');
-    return name !== null && needsPosition(node)
-      ? [positionQualifiedCallableName(name.text, node.startPosition)]
-      : undefined;
+    const localName = name && localTypeName(node, name.text);
+    return localName ? [localName] : undefined;
   },
 };
 
@@ -107,12 +154,8 @@ export const createTsJsClassExtractor = (config: ClassExtractionConfig) => {
   const extractor = createClassExtractor(config);
   const extract: typeof extractor.extract = (node, fallback) => {
     const owner = extractor.extract(node, fallback);
-    return owner !== null && needsPosition(node)
-      ? {
-          ...owner,
-          qualifiedName: positionQualifiedCallableName(owner.qualifiedName, node.startPosition),
-        }
-      : owner;
+    const qualifiedName = owner && localTypeName(node, owner.qualifiedName);
+    return owner && qualifiedName ? { ...owner, qualifiedName } : owner;
   };
   return {
     ...extractor,

@@ -25,10 +25,20 @@ import {
   type ArgumentEvidence,
 } from './argument-evidence.js';
 import { declarationScope } from './module-kind.js';
+import { typeApplicationArguments } from '../../utils/template-arguments.js';
+import { acceptsEnum, enumArgument, indexEnumArguments } from './enum-arguments.js';
 
 type Argument = Extract<CallableFlowSite, { kind: 'argument' }>;
 const argumentsByCall = new WeakMap<ReferenceSite, Argument[]>();
 const evidenceByCall = new WeakMap<ReferenceSite, (ArgumentEvidence | null)[]>();
+
+export function hasSpreadArguments(site: ReferenceSite): boolean {
+  return (
+    evidenceByCall
+      .get(site)
+      ?.some((arg) => arg !== null && typeof arg === 'object' && 'spread' in arg) === true
+  );
+}
 const receiverCalls = new WeakMap<ReferenceSite, ReferenceSite>();
 type OverloadUse = { argument: Argument; call: ReferenceSite; owners: ReadonlySet<string> };
 type AssignmentUse = {
@@ -116,6 +126,7 @@ export function indexTsCallArguments(
   }
   if (!overloads.size && !names.size) return;
   for (const file of files) {
+    indexEnumArguments(file, indexes);
     const argumentFacts = declarationScope(file.captureSideChannel)?.callArguments;
     if (
       !file.callableFlowSites?.length &&
@@ -151,7 +162,11 @@ export function indexTsCallArguments(
       if (!scopes.has(inScope)) scopes.set(inScope, []);
     }
     for (const fact of file.callableFlowSites ?? []) {
-      if (fact.kind !== 'argument' || fact.source.expressionKind !== 'binding') continue;
+      if (
+        fact.kind !== 'argument' ||
+        (fact.source.expressionKind !== 'binding' && fact.source.expressionKind !== 'bound-member')
+      )
+        continue;
       const call = calls.get(rangeKey(fact.callSite));
       if (!call || call.argumentTypes?.[fact.parameterIndex] !== '') continue;
       const owners = overloads.get(call.name);
@@ -159,6 +174,7 @@ export function indexTsCallArguments(
       const args = argumentsByCall.get(call);
       if (args) args.push(fact);
       else argumentsByCall.set(call, [fact]);
+      if (fact.source.expressionKind === 'bound-member') continue;
       if (!owners) continue;
       const scopes = usesByScope.get(fact.source.name);
       if (!scopes) continue;
@@ -317,6 +333,15 @@ function byPosition(a: Range, b: Range): number {
   return a.startLine - b.startLine || a.startCol - b.startCol;
 }
 
+/** A tuple with a statically known length and primitive element types. */
+function fixedPrimitiveTuple(spelling?: string): string[] | undefined {
+  const tuple = spelling?.replace(/^readonly\s+/u, '').trim();
+  if (!tuple?.startsWith('[') || !tuple.endsWith(']')) return undefined;
+  if (/^\[\s*\]$/u.test(tuple)) return [];
+  const items = typeApplicationArguments(tuple);
+  return items?.every((item) => primitiveTypes.has(item)) ? items : undefined;
+}
+
 /** For primitive arguments, compare the written parameter annotation. The
  * receiver-oriented parameterTypes view strips array and generic wrappers. */
 function acceptsPrimitiveArguments(
@@ -324,10 +349,12 @@ function acceptsPrimitiveArguments(
   types: string[],
   indexes: ScopeResolutionIndexes,
   evidence?: readonly (ArgumentEvidence | null)[],
+  enumArguments?: ReadonlyMap<number, NonNullable<ReturnType<typeof enumArgument>>>,
 ): boolean | undefined {
-  if (signature.parameterCount === undefined || !signature.declarationRange) return undefined;
+  if (!signature.declarationRange) return undefined;
+  const formals = signature.parameterTypes;
   if (
-    types.length > signature.parameterCount ||
+    (signature.parameterCount !== undefined && types.length > signature.parameterCount) ||
     types.length < (signature.requiredParameterCount ?? 0)
   )
     return false;
@@ -339,13 +366,29 @@ function acceptsPrimitiveArguments(
     }),
   );
   if (!scope) return undefined;
-  const params = [...scope.typeBindings.values()].filter(
-    (binding) => binding.source === 'parameter-annotation' && binding.bindingRange,
-  );
+  const params = [...scope.typeBindings.values()]
+    .filter((binding) => binding.source === 'parameter-annotation' && binding.bindingRange)
+    .sort((a, b) => byPosition(a.bindingRange!, b.bindingRange!))
+    .map((binding) => binding.declaredSpelling ?? binding.rawName);
   let annotations: readonly string[];
-  if (params.length === signature.parameterCount) {
-    params.sort((a, b) => byPosition(a.bindingRange!, b.bindingRange!));
-    annotations = params.map((p) => p.declaredSpelling ?? p.rawName);
+  let restElement: string | undefined;
+  if (signature.parameterCount === undefined && formals?.at(-1) === 'params') {
+    if (params.length !== formals.length - 1) return undefined;
+    const rest = params.pop();
+    if (!rest) return undefined;
+    const tuple = fixedPrimitiveTuple(rest);
+    if (tuple) {
+      const count = params.length + tuple.length;
+      if (types.length > count || (tuple.length > 0 && types.length < count)) return false;
+      if (types.length < params.length) return undefined;
+      annotations = [...params, ...tuple];
+    } else {
+      if (!rest.endsWith('[]') || types.length < params.length) return undefined;
+      restElement = rest.slice(0, -2).trim();
+      annotations = params;
+    }
+  } else if (params.length === signature.parameterCount) {
+    annotations = params;
   } else if (
     signature.parameterTypes?.length === signature.parameterCount &&
     signature.parameterTypes.every(
@@ -356,8 +399,14 @@ function acceptsPrimitiveArguments(
   } else return undefined;
   let unknown = false;
   for (const [i, type] of types.entries()) {
-    const annotation = annotations[i];
-    const checked = acceptsArgumentEvidence(annotation, type, evidence?.[i]);
+    const annotation = annotations[i] ?? restElement;
+    if (annotation === undefined) return undefined;
+    if (annotation.startsWith('[') && primitiveTypes.has(type) && fixedPrimitiveTuple(annotation))
+      return false;
+    const enumValue = enumArguments?.get(i);
+    const checked = enumValue
+      ? acceptsEnum(annotation, enumValue, signature, scope.id, indexes)
+      : acceptsArgumentEvidence(annotation, type, evidence?.[i]);
     if (checked === false) return false;
     if (checked === true) continue;
     const alternatives = annotation.split('|').map((part) => part.trim());
@@ -422,7 +471,9 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
     if (methods.length) {
       const selected = selectTsPrimitiveOverload(methods, site, indexes, declarations);
       if (selected) return { kind: 'resolved', definition: selected };
-      const candidates = narrowOverloadCandidates(methods, site.arity, site.argumentTypes);
+      const candidates = hasSpreadArguments(site)
+        ? methods
+        : narrowOverloadCandidates(methods, site.arity, site.argumentTypes);
       if (candidates.length === 1) return { kind: 'resolved', definition: candidates[0] };
       return {
         kind: candidates.length ? 'unknown' : 'inapplicable',
@@ -430,7 +481,8 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
       };
     }
   }
-  if (!argumentsByCall.has(site) || !site.argumentTypes) return undefined;
+  if ((!argumentsByCall.has(site) && !evidenceByCall.has(site)) || !site.argumentTypes)
+    return undefined;
   let methods = model.methods.lookupAllByOwner(owner.nodeId, name);
   if (!methods.length) {
     if (model.fields.lookupAllByOwner(owner.nodeId, name).length) return undefined;
@@ -444,7 +496,10 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
   // Static and instance overload families can share an owner and a spelling.
   if (signatures.length < 2 || methods.length - signatures.length > 1) return undefined;
   const selected = selectTsPrimitiveOverload(signatures, site, indexes);
-  return selected && { kind: 'resolved', definition: selected };
+  if (selected) return { kind: 'resolved', definition: selected };
+  return hasSpreadArguments(site)
+    ? { kind: 'unknown', candidateIds: signatures.map((sig) => sig.nodeId) }
+    : undefined;
 };
 
 /** Compare written primitive annotations in declaration order for one overload family. */
@@ -455,8 +510,16 @@ export function selectTsPrimitiveOverload(
   declarations?: ReadonlyMap<string, number>,
 ): SymbolDefinition | undefined {
   if (!site.argumentTypes) return undefined;
-  const types = [...site.argumentTypes];
+  let types = [...site.argumentTypes];
+  let enumArguments: Map<number, NonNullable<ReturnType<typeof enumArgument>>> | undefined;
   for (const { source, parameterIndex } of argumentsByCall.get(site) ?? []) {
+    if (source.expressionKind === 'bound-member') {
+      const value =
+        source.qualifiedName &&
+        enumArgument(source.qualifiedName, source.inScope, indexes, source.atRange);
+      if (value) (enumArguments ??= new Map()).set(parameterIndex, value);
+      continue;
+    }
     const binding = findReceiverTypeBinding(source.inScope, source.name, indexes, {
       purpose: 'value',
       position: source.atRange,
@@ -464,8 +527,41 @@ export function selectTsPrimitiveOverload(
     const type = binding?.declaredSpelling ?? binding?.rawName;
     if (type && primitiveTypes.has(type)) types[parameterIndex] = type;
   }
-  const evidence = evidenceByCall.get(site);
-  if (!types.every((type, i) => primitiveTypes.has(type) || evidence?.[i] != null))
+  let evidence = evidenceByCall.get(site);
+  if (evidence && hasSpreadArguments(site)) {
+    const expandedTypes: string[] = [];
+    const expandedEvidence: (ArgumentEvidence | null)[] = [];
+    const expandedEnums =
+      enumArguments && new Map<number, NonNullable<ReturnType<typeof enumArgument>>>();
+    for (const [index, arg] of evidence.entries()) {
+      if (arg !== null && typeof arg === 'object' && 'spread' in arg) {
+        if (!arg.spread) return undefined;
+        const binding = findReceiverTypeBinding(site.inScope, arg.spread, indexes, {
+          purpose: 'value',
+          position: site.atRange,
+        });
+        const items = fixedPrimitiveTuple(binding?.declaredSpelling ?? binding?.rawName);
+        if (!items) return undefined;
+        for (const item of items) {
+          expandedTypes.push(item);
+          expandedEvidence.push(null);
+        }
+      } else {
+        const value = enumArguments?.get(index);
+        if (value) expandedEnums?.set(expandedTypes.length, value);
+        expandedTypes.push(types[index]);
+        expandedEvidence.push(arg);
+      }
+    }
+    types = expandedTypes;
+    evidence = expandedEvidence;
+    enumArguments = expandedEnums;
+  }
+  if (
+    !types.every(
+      (type, i) => primitiveTypes.has(type) || evidence?.[i] != null || enumArguments?.has(i),
+    )
+  )
     return undefined;
   if (!signatures.every((sig) => sig.filePath === signatures[0].filePath && sig.declarationRange))
     return undefined;
@@ -477,7 +573,13 @@ export function selectTsPrimitiveOverload(
       byPosition(a.declarationRange!, b.declarationRange!),
   );
   for (const signature of signatures) {
-    const applicable = acceptsPrimitiveArguments(signature, types, indexes, evidence);
+    const applicable = acceptsPrimitiveArguments(
+      signature,
+      types,
+      indexes,
+      evidence,
+      enumArguments,
+    );
     if (applicable === undefined) return undefined;
     if (applicable) return signature;
   }

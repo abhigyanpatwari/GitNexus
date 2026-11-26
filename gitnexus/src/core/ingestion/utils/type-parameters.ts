@@ -70,6 +70,7 @@ export function parseTypeParameterList(text: string): TypeParameter[] | undefine
 /** The text between the outermost `<` and its matching `>`, or `undefined` when
  *  there is no balanced pair or it is empty. */
 function innerListText(text: string): string | undefined {
+  text = withoutTypeComments(text);
   const start = text.indexOf('<');
   if (start === -1) return undefined;
   let depth = 0;
@@ -217,26 +218,57 @@ function* ungroupedOffsets(text: string, start = 0): Generator<number> {
   }
 }
 
-/** Source offsets outside quoted literals and two-character function arrows. */
-export function* syntaxOffsets(text: string, start = 0): Generator<number> {
+/** Comments and quoted strings are opaque even when they contain each other's delimiters. */
+function* opaqueSpans(text: string, start: number) {
   for (let i = start; i < text.length; i++) {
     const ch = text[i];
-    if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
+    if (ch === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
+      let end = i + 2;
+      if (text[i + 1] === '*') {
+        const close = text.indexOf('*/', end);
+        end = close === -1 ? text.length : close + 2;
+      } else {
+        while (end < text.length && !'\n\r\u2028\u2029'.includes(text[end])) end++;
+      }
+      yield { start: i, end, comment: true };
+      i = end - 1;
+    } else if ((ch === '=' || ch === '-') && text[i + 1] === '>') {
+      yield { start: i, end: i + 2, comment: false };
       i++;
-      continue;
-    }
-    if (ch === '"' || ch === "'" || ch === '`') {
+    } else if (ch === '"' || ch === "'" || ch === '`') {
       let end = i + 1;
       for (; end < text.length && text[end] !== ch; end++) {
         if (text[end] === '\\') end++;
       }
       if (end < text.length && !isLifetimePair(text, i, end)) {
+        yield { start: i, end: end + 1, comment: false };
         i = end;
-        continue;
       }
     }
-    yield i;
   }
+}
+
+/** Structural offsets in the original source spelling. */
+export function* syntaxOffsets(text: string, start = 0): Generator<number> {
+  let i = start;
+  for (const span of opaqueSpans(text, start)) {
+    for (; i < span.start; i++) yield i;
+    i = span.end;
+  }
+  for (; i < text.length; i++) yield i;
+}
+
+/** Preserve token boundaries in semantic type spellings when discarding comments. */
+export function withoutTypeComments(text: string): string {
+  if (!text.includes('/*') && !text.includes('//')) return text;
+  let result = '';
+  let start = 0;
+  for (const span of opaqueSpans(text, 0)) {
+    if (!span.comment) continue;
+    result += text.slice(start, span.start) + ' ';
+    start = span.end;
+  }
+  return start ? result + text.slice(start) : text;
 }
 
 /** In <'a, T, 'b> each apostrophe starts a name. Neither quotes the comma. */
@@ -247,13 +279,16 @@ function isLifetimePair(text: string, start: number, end: number): boolean {
     !isIdentifierChar(text[end + 1] ?? '')
   )
     return false;
-  // Each lifetime starts at a token boundary. The closing quote in a C++
-  // character literal such as 'x'_tag follows its value, not a delimiter.
-  return [start, end].every((index) => {
-    let prior = index - 1;
-    while (prior >= 0 && /\s/.test(text.charAt(prior))) prior--;
-    return prior < 0 || '<,:&+'.includes(text.charAt(prior));
-  });
+  const startsToken = (index: number) => {
+    let before = index - 1;
+    while (before >= 0 && /\s/u.test(text[before])) before--;
+    return before < 0 || '<,:&+'.includes(text[before]);
+  };
+  if (!startsToken(start)) return false;
+  if (startsToken(end)) return true;
+  // A comment between lifetime parameters can contain the next apostrophe.
+  // A character literal with a suffix, such as 'x'_tag, closes at the value.
+  return /^'[A-Za-z_]\w*\s*,\s*\/[*/]/u.test(text.slice(start, end));
 }
 
 function isIdentifierChar(ch: string): boolean {

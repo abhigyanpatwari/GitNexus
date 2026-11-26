@@ -36,6 +36,10 @@ ${unboundCallableQuery('definition.function')}
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
 
+(enum_declaration name: (identifier) @name) @definition.enum
+(enum_body (property_identifier) @name @definition.property)
+(enum_assignment name: (_) @name) @definition.property
+
 ; Type aliases (A4). TypeScript was the only language whose aliases minted no
 ; node: Rust (type_item), Kotlin (type_alias), Swift (typealias_declaration)
 ; and Dart all emit @definition.type. The alias was declared for scope
@@ -92,9 +96,9 @@ ${unboundCallableQuery('definition.function')}
 
 ; Literal class and interface keys take their name from the provider so that
 ; escaped strings and different numeric spellings resolve to the same key.
-[(method_definition name: [(string) (number) (computed_property_name [(string) (number)])] @name @name.literal)
- (method_signature name: [(string) (number) (computed_property_name [(string) (number)])] @name @name.literal)
- (abstract_method_signature name: [(string) (number) (computed_property_name [(string) (number)])] @name @name.literal)] @definition.method
+[(method_definition name: [(string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @name @name.literal)
+ (method_signature name: [(string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @name @name.literal)
+ (abstract_method_signature name: [(string) (number) (computed_property_name [(string) (number) (unary_expression operator: ["+" "-"] argument: (number))])] @name @name.literal)] @definition.method
 
 ; Abstract method signatures in abstract classes
 (abstract_method_signature

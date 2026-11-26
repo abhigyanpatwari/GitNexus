@@ -6,6 +6,7 @@ import { isCommonJsModule } from './cjs-export-assignment.js';
 import { canonicalTypeScriptName } from './identifiers.js';
 import { boundNames } from './local-loaders.js';
 import type { CallEvidence } from './argument-evidence.js';
+import type { EnumValues } from './enum-arguments.js';
 
 type CaptureEmitter = NonNullable<LanguageProvider['emitScopeCaptures']>;
 
@@ -18,6 +19,7 @@ type DeclarationScope = {
   containsJsx?: boolean;
   referencePaths?: string[];
   callArguments?: CallEvidence;
+  enumValues?: EnumValues;
   possibleCommonJsDefaults?: string[];
 };
 
@@ -63,13 +65,22 @@ export function recordCommonJsModuleKind(
   sourceText?: string,
   captures?: CaptureMatch[],
   callArguments?: CallEvidence,
+  enumValues?: EnumValues,
 ): void {
   const commonJs = isCommonJsModule(root, filePath);
   pending = {
     filePath,
-    value: callArguments
-      ? { kind: 'typescript-declarations', commonJs, script: false, globalNames: [], callArguments }
-      : commonJs,
+    value:
+      callArguments || enumValues
+        ? {
+            kind: 'typescript-declarations',
+            commonJs,
+            script: false,
+            globalNames: [],
+            ...(callArguments && { callArguments }),
+            ...(enumValues && { enumValues }),
+          }
+        : commonJs,
   };
   const declarationFile = /\.d\.[cm]?ts$/.test(filePath);
   const ordinarySource = /\.[cm]?tsx?$/.test(filePath);
@@ -197,6 +208,7 @@ export function recordCommonJsModuleKind(
       script,
       globalNames,
       ...(callArguments && { callArguments }),
+      ...(enumValues && { enumValues }),
       ...(referencePaths.length ? { referencePaths } : {}),
       ...(script && !declarationFile ? { scriptNames } : {}),
       ...(script &&

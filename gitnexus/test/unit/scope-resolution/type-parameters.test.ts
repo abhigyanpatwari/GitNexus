@@ -66,6 +66,11 @@ describe('parseTypeParameterList', () => {
     ['<T extends Repo & Closeable>', [{ name: 'T', bound: 'Repo & Closeable' }]],
     // A capture that spans the `template` keyword parses like a bare list.
     ['template <class T>', [{ name: 'T' }]],
+    [
+      'template <class /* ,> */ T, int N = (3 >= 2)>',
+      [{ name: 'T' }, { name: 'N', defaultType: '(3 >= 2)' }],
+    ],
+    ["<'a, /* 'x, > */ T: Repo, 'b>", [{ name: 'T', bound: 'Repo' }]],
   ])('parses %s', (text, expected) => {
     expect(parseTypeParameterList(text)).toEqual(expected);
   });

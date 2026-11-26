@@ -73,11 +73,17 @@ function startOfDeclaration(node) {
   return node.getStart();
 }
 
-function declarationName(node) {
+function declarationName(node, checker) {
   if (node.name) {
     const name = node.name;
     if (name.kind === SyntaxKind.ComputedPropertyName) {
       const key = name.expression;
+      if (
+        checker &&
+        key.kind === SyntaxKind.PrefixUnaryExpression &&
+        key.operand.kind === SyntaxKind.NumericLiteral
+      )
+        return checker.getSymbolAtLocation(name)?.name;
       if (key.kind === SyntaxKind.StringLiteral || key.kind === SyntaxKind.NumericLiteral)
         return key.text;
     }
@@ -123,9 +129,14 @@ function graphIdentity(root, node, project) {
     const separator = node.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
       ? '.static.'
       : '.';
-    return identity(root, owner) + separator + declarationName(node);
+    return identity(root, owner) + separator + declarationName(node, project.checker);
   }
-  if (node.kind === SyntaxKind.FunctionDeclaration && node.name) {
+  // Nested functions carry positional graph identities for each declaration.
+  if (
+    node.kind === SyntaxKind.FunctionDeclaration &&
+    node.name &&
+    enclosingCaller(node).kind === SyntaxKind.SourceFile
+  ) {
     const signatures = project.checker.getSymbolAtLocation(node.name)?.declarations;
     if (signatures?.length > 1) return identity(root, signatures[0].resolve(project));
   }
@@ -385,7 +396,7 @@ function reportProject(
     }
 
     function propertyBySymbolName(receiver, name) {
-      if (!receiver || !name) return undefined;
+      if (!receiver || name === undefined) return undefined;
       // getPropertyOfType accepts a source-level string key. Unique symbols
       // are available through the checker's property symbols on the receiver.
       return (
@@ -622,7 +633,7 @@ function reportProject(
         const name =
           node.kind === SyntaxKind.Constructor
             ? 'constructor'
-            : declarationName(variableFunction ? node.parent : node);
+            : declarationName(variableFunction ? node.parent : node, checker);
         if (label && name !== undefined) {
           const target = graphIdentity(root, node, project);
           result.DECLARATIONS.edges.push({

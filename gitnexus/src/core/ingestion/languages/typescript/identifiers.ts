@@ -40,15 +40,8 @@ export function literalMethodName(node: SyntaxNode | null): string | undefined {
     node = node.namedChildren.find((child) => child.type !== 'comment') ?? null;
   }
   if (node?.type === 'string') return decodeStringLiteral(node.text) ?? undefined;
-  if (node?.type !== 'number') return undefined;
-  const digits = node.text.replaceAll('_', '');
-  if (digits.endsWith('n')) {
-    try {
-      return String(BigInt(digits.slice(0, -1)));
-    } catch {
-      return undefined;
-    }
-  }
-  const value = Number(digits);
-  return Number.isNaN(value) ? undefined : String(value);
+  if (!node) return undefined;
+  const spelling = node.type === 'number' ? node.text : signedNumericLiteral(node);
+  const value = spelling === undefined ? undefined : numericLiteralValue(spelling);
+  return value === undefined ? undefined : String(value);
 }
