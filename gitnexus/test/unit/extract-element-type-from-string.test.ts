@@ -162,4 +162,56 @@ describe('extractElementTypeFromString', () => {
       expect(extractElementTypeFromString('[ ]')).toBeUndefined();
     });
   });
+
+  it('returns undefined when base is not a simple word: user model[]', () => {
+    expect(extractElementTypeFromString('user model[]')).toBeUndefined();
+  });
+
+  it('returns last arg explicitly for Map<String, User>: → User', () => {
+    expect(extractElementTypeFromString('Map<String, User>', 'last')).toBe('User');
+  });
+
+  it('returns undefined for nested generics: List<Map<String, User>>', () => {
+    // The inner arg "Map<String, User>" is not a simple word (/^\w+$/ fails)
+    expect(extractElementTypeFromString('List<Map<String, User>>')).toBeUndefined();
+  });
+
+  it('accepts a valid container at the 2048-character limit', () => {
+    const element = 'A'.repeat(2041);
+    const input = `Array<${element}>`;
+
+    expect(input.length).toBe(2048);
+    expect(extractElementTypeFromString(input)).toBe(element);
+  });
+
+  it('rejects a valid container exceeding the 2048-character limit', () => {
+    const element = 'A'.repeat(2042);
+    const input = `Array<${element}>`;
+
+    expect(input.length).toBe(2049);
+    expect(extractElementTypeFromString(input)).toBeUndefined();
+  });
+
+  it('returns undefined for malformed brackets: Map<String, User]', () => {
+    // Mismatched bracket at depth 0 → malformed
+    expect(extractElementTypeFromString('Map<String, User]')).toBeUndefined();
+  });
+
+  it('returns undefined for just closing angle brackets: >', () => {
+    expect(extractElementTypeFromString('>')).toBeUndefined();
+  });
+
+  it('does not treat [User] as Swift if it contains angle bracket (impossible case sanity-check)', () => {
+    // [User<X>] — starts with [ ends with ] but contains <, so Swift path is skipped.
+    // Falls to generic extraction: openSquare=0, extracts "User<X>" which is not /^\w+$/.
+    expect(extractElementTypeFromString('[User<X>]')).toBeUndefined();
+  });
+
+  it('returns same result for Vec<User> with pos=first', () => {
+    expect(extractElementTypeFromString('Vec<User>', 'first')).toBe('User');
+  });
+
+  it('handles whitespace in generic args: Array< User > → User', () => {
+    expect(extractElementTypeFromString('Array< User >')).toBe('User');
+  });
 });
