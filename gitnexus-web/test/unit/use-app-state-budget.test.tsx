@@ -1,6 +1,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CodebaseContext } from '../../src/core/llm/context-builder';
+import { buildCodebaseContext } from '../../src/core/llm/context-builder';
 import { clearSettings, loadSettings, saveSettings } from '../../src/core/llm/settings-service';
 import { AppStateProvider, useAppState } from '../../src/hooks/useAppState';
 
@@ -206,5 +207,55 @@ describe('useAppState token budget visibility', () => {
       window.requestAnimationFrame = originalRaf;
       window.cancelAnimationFrame = originalCancelRaf;
     }
+  });
+
+  it('cancels pending send when clearChat runs while agent initialization is awaiting context', async () => {
+    let resolveContext!: (ctx: CodebaseContext) => void;
+    vi.mocked(buildCodebaseContext).mockImplementationOnce(
+      () =>
+        new Promise<CodebaseContext>((resolve) => {
+          resolveContext = resolve;
+        }),
+    );
+
+    const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+
+    act(() => {
+      result.current.refreshLLMSettings();
+    });
+
+    let sendPromise!: Promise<void>;
+    act(() => {
+      sendPromise = result.current.sendChatMessage('explain before clear');
+    });
+
+    await vi.waitFor(() => {
+      expect(resolveContext).toBeTypeOf('function');
+    });
+
+    // Clear chat before buildCodebaseContext resolves during initializeAgent()
+    act(() => {
+      result.current.clearChat();
+    });
+
+    await act(async () => {
+      resolveContext({
+        stats: {
+          projectName: 'stub',
+          fileCount: 0,
+          functionCount: 0,
+          classCount: 0,
+          interfaceCount: 0,
+          methodCount: 0,
+        },
+        hotspots: [],
+        folderTree: '',
+      });
+      await sendPromise;
+    });
+
+    expect(mockStream).not.toHaveBeenCalled();
+    expect(result.current.chatMessages).toEqual([]);
+    expect(result.current.isChatLoading).toBe(false);
   });
 });

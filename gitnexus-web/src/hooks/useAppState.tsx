@@ -710,6 +710,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const sendChatMessage = useCallback(
     async (message: string): Promise<void> => {
       if (chatStateRef.current !== 'idle') return;
+      const turnGeneration = chatGenerationRef.current;
 
       // Refresh Code panel for the new question: keep user-pinned refs, clear old AI citations
       clearAICodeReferences();
@@ -719,6 +720,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       if (!isAgentReady) {
         // Try to initialize first
         await initializeAgent();
+        if (turnGeneration !== chatGenerationRef.current) return;
         if (!agentRef.current) return;
       }
 
@@ -754,7 +756,6 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       chatAbortRef.current?.abort();
       const chatAbortController = new AbortController();
       chatAbortRef.current = chatAbortController;
-      const turnGeneration = chatGenerationRef.current;
 
       const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
       const agentConfig = getAgentConfig(llmSettings);
@@ -1190,13 +1191,16 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const agent = agentRef.current;
         if (!agent) throw new Error('Agent not initialized');
         const { streamAgentResponse } = await import('../core/llm/agent');
+        if (turnGeneration !== chatGenerationRef.current || chatAbortController.signal.aborted) {
+          return;
+        }
         for await (const chunk of streamAgentResponse(agent, history, {
           captureHistory: providerCapabilities.preserveAssistantTranscript,
           signal: chatAbortController.signal,
           maxIterations: agentConfig.maxIterations,
           tokenBudget: agentConfig.tokenBudget,
         })) {
-          if (chunk.type === 'cancelled') {
+          if (turnGeneration !== chatGenerationRef.current || chunk.type === 'cancelled') {
             break;
           }
           onChunk(chunk);
