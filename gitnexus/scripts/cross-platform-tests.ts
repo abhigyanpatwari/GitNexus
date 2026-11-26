@@ -226,7 +226,6 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-vue.test.ts',
   'test/integration/rename-provider-zig.test.ts',
   'test/integration/pdg-explicit-owner.test.ts',
-  'test/integration/skip-fts.test.ts',
   // Dirty snapshot freshness depends on native FTS, Git paths and file reads.
 
   'test/integration/incremental-worktree-context.test.ts',

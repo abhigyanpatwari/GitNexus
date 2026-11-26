@@ -52,6 +52,7 @@ const selected = platform
       'product/shard-timings-roundtrip.ts',
       'product/shared-store-embedding-reuse.ts',
       'product/skills-e2e.ts',
+      'product/skip-fts.ts',
       'product/watch-filesystem.ts',
       'provider/rename-typescript-member-keys.ts',
     ]
