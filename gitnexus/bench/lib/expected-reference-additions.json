@@ -25,7 +25,7 @@
     }
   },
   "4db60ff34b782fb7818221a9f8d4e6837e1a504a:9c78863c80c71f87db2d303f7342fca24e50db0e": {
-    "_note": "#4084: The compiler confirms 12,545 new property declaration columns and the targets of 3,690 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The replaced rows are the 27 former IMPLEMENTS edges and two type references with revised confidence.",
+    "_note": "#4084: The compiler confirms 12,545 property declaration columns, 3,920 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The alias and generic-constraint comparison verified both ends of 379 USES edges, including all 334 reattributions from their enclosing file or function.",
     "declarationPositions": {
       "baseline": {
         "count": 27089,
@@ -37,12 +37,12 @@
       }
     },
     "additions": {
-      "count": 3791,
-      "sha256": "7fc9d8df8af7b94651904a361bf4ff9e037b096cdc007cdd0f3b6123c2dabb19"
+      "count": 4021,
+      "sha256": "57d1fae38a43eec87a208a9e006cd558e2b27f9a7c889047fc2c71a5a9eea1a5"
     },
     "removals": {
-      "count": 29,
-      "sha256": "fa29c8289cefc8100dc78628175ea93cfaaa7b376fe280cdca3083a89d4ab175"
+      "count": 214,
+      "sha256": "0f7e816f17103fd0af91990b0627a78afacb3463ed99b8e911a2c4eba471507b"
     },
     "typeOnlyImports": {
       "count": 0,

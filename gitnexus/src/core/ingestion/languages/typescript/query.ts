@@ -88,6 +88,7 @@ const namedTypeReference = `[
 const typeReferencePatterns = [
   'type_annotation',
   'type_arguments',
+  'constraint',
   'default_type',
   'array_type',
   'union_type',
@@ -168,17 +169,8 @@ ${unboundCallableQuery('declaration.function')}
 (statement_block) @scope.block
 
 
-;; Type aliases that contain an object_type are structurally class-like —
-;; they define a shape with named members. Emit @scope.class so the
-;; field-extractor's type-alias-with-object-type handling (in
-;; field-extractors/typescript.ts) finds a scope for its members.
-(type_alias_declaration
-  !type_parameters
-  value: (object_type)) @scope.class
-
-;; Every generic alias owns its parameters, including aliases for arrays and unions.
-(type_alias_declaration
-  type_parameters: (type_parameters)) @scope.class
+;; The alias owns its type parameters, members and references on its right-hand side.
+(type_alias_declaration) @scope.class
 
 ;; Declarations — types
 ;; The type-parameter list is captured with \`?\` rather than as a second
@@ -1471,6 +1463,8 @@ ${unboundCallableQuery('declaration.function')}
 ;; would also match the identifier in \`type X = …\` and \`interface X\`, making
 ;; every declaration a consumer of itself.
 ${typeReferencePatterns}
+(type_alias_declaration value: ${namedTypeReference})
+(type_alias_declaration value: (generic_type name: ${namedTypeReference}))
 `;
 
 /**
