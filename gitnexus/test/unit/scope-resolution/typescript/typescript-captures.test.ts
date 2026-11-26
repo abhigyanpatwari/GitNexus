@@ -795,28 +795,24 @@ export async function run(token: string) {
   return [a, b];
 }
 `;
-  const argumentFacts = () =>
-    emitTsScopeCaptures(src, 'test.ts')
+  it.each([
+    ['@reference.call.free', 'verifyToken', 'verifyToken'],
+    ['@reference.call.member', 'verify', undefined],
+  ] as const)('links the callable argument to its %s site', (kind, name, directCallee) => {
+    const matches = emitTsScopeCaptures(src, 'test.ts');
+    const call = matches.find((m) => m[kind] && m['@reference.name']?.text === name)?.[kind];
+    expect(call).toBeDefined();
+    const argumentsAtCalls = matches
       .filter((m) => m['@callable-flow.argument'] !== undefined)
       .map((m) => ({
-        call: m['@callable-flow.argument']!.text,
+        range: m['@callable-flow.argument']!.range,
         source: m['@callable-flow.source']!.text,
         directCallee: m['@callable-flow.direct-callee-name']?.text,
       }));
-
-  it('an awaited generic DIRECT call keeps its direct-callee-name', () => {
-    expect(argumentFacts()).toContainEqual({
-      call: 'await verifyToken<string>(token, () => {})',
+    expect(argumentsAtCalls).toContainEqual({
+      range: call?.range,
       source: '<anonymous>',
-      directCallee: 'verifyToken',
-    });
-  });
-
-  it('an awaited generic MEMBER call has no direct-callee-name', () => {
-    expect(argumentFacts()).toContainEqual({
-      call: 'await svc.verify<string>(token, () => {})',
-      source: '<anonymous>',
-      directCallee: undefined,
+      directCallee,
     });
   });
 });

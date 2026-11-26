@@ -28,3 +28,6 @@ export class Bare extends Defaults {
 export class Explicit extends Defaults<number> {
   override collect(value: number[]): void {}
 }
+
+// The closing angle of the bound can sit directly beside the default assignment.
+export class Compact<T extends Collection<string>=Collection<string>> {}
