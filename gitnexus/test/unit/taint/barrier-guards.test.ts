@@ -207,6 +207,18 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings).toHaveLength(0);
   });
 
+  it('still suppresses when a prior stmt exists and the member write is after the sink', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        const unused = 1;
+        exec(req.body);
+        req.body = req.query;
+      }
+    `);
+    expect(flows.findings).toHaveLength(0);
+  });
+
   it('does not suppress after the validated object binding is rebound', () => {
     const { flows } = analyze(`
       function f(req: any) {
@@ -476,6 +488,26 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(cfgs.some((c) => c.functionName === 'safeKey')).toBe(true);
     expect([...discoverProtoGuardCallees(cfgs)]).toContain('safeKey');
     // Discovery only — proto-only name must not kind-blind kill command-injection.
+    const { flows } = analyze(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('discovers named function expressions by their outer binding name', () => {
+    const code = `
+      const isValidKey = function helper(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      };
+      function write(req: any) {
+        const key = req.body;
+        if (!isValidKey(key)) return;
+        exec(key);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect(cfgs.some((c) => c.functionName === 'isValidKey')).toBe(true);
+    expect(cfgs.some((c) => c.functionName === 'helper')).toBe(false);
+    expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
+    // Excluded by bare call-site name — must not kind-blind suppress.
     const { flows } = analyze(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });

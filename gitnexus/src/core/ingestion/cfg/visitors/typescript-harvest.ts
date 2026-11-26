@@ -1309,21 +1309,10 @@ class FactAccumulator {
 }
 
 /**
- * Function name for CFG decoration (#3913 proto-guard discovery).
- * Prefers the node's own `name` field; for anonymous `arrow_function` /
- * `function_expression`, walks up to `const safeKey = …` / `safeKey = …`.
+ * Enclosing binding name for an expression assigned to a variable/field
+ * (`const isValidKey = function helper() {}` → `isValidKey`).
  */
-export function resolveTsFunctionName(fnNode: SyntaxNode): string | undefined {
-  const nameNode = fnNode.childForFieldName('name');
-  if (
-    nameNode &&
-    (nameNode.type === 'identifier' ||
-      nameNode.type === 'property_identifier' ||
-      nameNode.type === 'private_property_identifier')
-  ) {
-    return nameNode.text;
-  }
-
+function enclosingTsBindingName(fnNode: SyntaxNode): string | undefined {
   let parent = fnNode.parent;
   // Skip wrapping parentheses: const f = (x => …)
   while (parent?.type === 'parenthesized_expression') parent = parent.parent;
@@ -1355,6 +1344,30 @@ export function resolveTsFunctionName(fnNode: SyntaxNode): string | undefined {
     ) {
       return key.text;
     }
+  }
+
+  return undefined;
+}
+
+/**
+ * Function name for CFG decoration (#3913 proto-guard discovery).
+ * Prefers the enclosing binding for assigned expressions so
+ * `const isValidKey = function helper() {}` is discovered/excluded as
+ * `isValidKey` (the call-site name), not the inner `helper`.
+ * Falls back to the node's own `name` for declarations / methods.
+ */
+export function resolveTsFunctionName(fnNode: SyntaxNode): string | undefined {
+  const fromEnclosing = enclosingTsBindingName(fnNode);
+  if (fromEnclosing) return fromEnclosing;
+
+  const nameNode = fnNode.childForFieldName('name');
+  if (
+    nameNode &&
+    (nameNode.type === 'identifier' ||
+      nameNode.type === 'property_identifier' ||
+      nameNode.type === 'private_property_identifier')
+  ) {
+    return nameNode.text;
   }
 
   return undefined;

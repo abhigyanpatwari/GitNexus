@@ -381,12 +381,23 @@ export function subjectBindingAssignedOnValidatedPath(
   return false;
 }
 
+/** Index of the sink call expression in `block.text`, or -1. */
+function sinkCallTextIndex(block: FunctionCfg['blocks'][number], sinkPoint: ProgramPoint): number {
+  const stmt = block.statements?.[sinkPoint.stmtIndex];
+  const call = stmt?.sites?.find((s) => s.kind === 'call' && s.callee);
+  if (!call?.callee) return -1;
+  const leaf = call.callee.includes('.')
+    ? (call.callee.split('.').pop() ?? call.callee)
+    : call.callee;
+  const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return block.text.search(new RegExp(`\\b${escaped}\\s*\\(`));
+}
+
 /**
  * True when a validated member property is assigned on the controller's
  * validated branch *before* the sink (`req.body = …` then `exec(req.body)`).
- * Uses statement order within the sink block so same-line
- * `req.body = x; exec(req.body)` is caught. Writes after the sink must not
- * disable the barrier.
+ * In the sink block, compares assign vs sink-call positions in `block.text`
+ * so post-sink writes (and multiline pre-sink writes) are ordered correctly.
  */
 export function memberPropertyAssignedOnValidatedPath(
   cfg: FunctionCfg,
@@ -404,11 +415,11 @@ export function memberPropertyAssignedOnValidatedPath(
     const block = cfg.blocks[edge.dependentBlock];
     if (!block?.text) continue;
     if (block.index === sinkPoint.blockIndex) {
-      // stmtIndex is a statements[] index, not a physical-line index. If any
-      // earlier statement exists in this block, under-kill on any property
-      // assign in the block text (multiline writes evade line-prefix scans).
-      // Sink-then-write keeps stmtIndex 0 so post-sink writes do not match.
-      if (sinkPoint.stmtIndex > 0 && assignRe.test(block.text)) return true;
+      const assignIdx = block.text.search(assignRe);
+      if (assignIdx < 0) continue;
+      const sinkIdx = sinkCallTextIndex(block, sinkPoint);
+      // Assign before sink call in source text (same-line / multiline safe).
+      if (sinkIdx < 0 || assignIdx < sinkIdx) return true;
       continue;
     }
     if (block.endLine < sinkPoint.line) {
