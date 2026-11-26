@@ -151,3 +151,19 @@ it('captures primitive parameter bindings so they shadow lexical names', () => {
     ['third', 'bool'],
   ]);
 });
+
+it('captures array-typed parameter bindings so index receivers unwrap to the element type (#4098)', () => {
+  const captures = emitCsharpScopeCaptures(
+    'class Cap { void indexElement(Service svc, User[] repos, int[] nums) {} }',
+    'cap.cs',
+  );
+  expect(
+    captures
+      .filter((capture) => capture['@type-binding.parameter'])
+      .map((capture) => [capture['@type-binding.name']?.text, capture['@type-binding.type']?.text]),
+  ).toEqual([
+    ['svc', 'Service'],
+    ['repos', 'User[]'],
+    ['nums', 'int[]'],
+  ]);
+});

@@ -149,9 +149,13 @@ const CSHARP_SCOPE_QUERY = `
 ;; Imports — single anchor per directive; interpretCsharpImport classifies
 (using_directive) @import.statement
 
-;; Type bindings — parameter annotations: \`void F(User u)\`
+;; Type bindings — parameter annotations: \`void F(User u)\` / \`void F(User[] u)\`
 (parameter
   type: (identifier) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
+(parameter
+  type: (array_type) @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.parameter
 
 (parameter
