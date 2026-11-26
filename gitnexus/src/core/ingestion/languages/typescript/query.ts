@@ -219,7 +219,8 @@ ${unboundCallableQuery('declaration.function')}
 ;; Declarations — methods / functions / constructors
 (function_declaration
   name: (identifier) @declaration.name
-  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.function
+  type_parameters: (type_parameters)? @declaration.type-parameters
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.function
 
 (generator_function_declaration
   name: (identifier) @declaration.name
@@ -228,7 +229,8 @@ ${unboundCallableQuery('declaration.function')}
 ;; Function overload signatures (declaration-only; body in a separate
 ;; function_declaration). Extractors dedup by (name, parameterTypes).
 (function_signature
-  name: (identifier) @declaration.name @declaration.overload-signature) @declaration.function
+  name: (identifier) @declaration.name @declaration.overload-signature
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.function
 
 ;; Arrow/function-expression assigned to a const/let/var — named by the
 ;; variable_declarator. Covers \`const fn = () => {}\` and its export
@@ -620,7 +622,8 @@ ${unboundCallableQuery('declaration.function')}
 ;; bodies. The @scope.class for class expressions (see (class) above)
 ;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
-  name: (property_identifier) @declaration.name) @declaration.method
+  name: (property_identifier) @declaration.name
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 (method_definition
   name: (private_property_identifier) @declaration.name) @declaration.method
@@ -631,7 +634,8 @@ ${unboundCallableQuery('declaration.function')}
 
 ;; Interface method signatures.
 (method_signature
-  name: (property_identifier) @declaration.name) @declaration.method
+  name: (property_identifier) @declaration.name @declaration.overload-signature
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Members of a declared SHAPE — interface bodies and object-type aliases both
 ;; spell them as property_signature (A4). The sibling method_signature rule
@@ -876,6 +880,15 @@ ${unboundCallableQuery('declaration.function')}
   name: (identifier) @type-binding.name
   value: (new_expression
     constructor: (identifier) @type-binding.type)) @type-binding.constructor
+
+;; The returned type belongs to the selected overload. A constant cannot be
+;; reassigned between the initializer and its use as an argument.
+(lexical_declaration
+  kind: "const"
+  (variable_declarator
+    name: (identifier) @call-result-assignment.lhs
+    !type
+    value: (call_expression) @call-result-assignment.call))
 
 ;; Qualified constructor: \`const u = new models.User()\`. Captures the
 ;; member_expression's text as the type — resolver's QualifiedNameIndex

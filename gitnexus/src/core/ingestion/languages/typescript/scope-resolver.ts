@@ -18,7 +18,12 @@ import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
-import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
+import {
+  indexTsCallArguments,
+  resolveTsMemberArguments,
+  tsCallResultAssignmentApplies,
+  tsReceiverCallSite,
+} from './call-arguments.js';
 import { resolveTsFunctionOverload } from './function-overloads.js';
 import { tsQualifiedTypeLookupSpelling } from './interpret.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
@@ -90,7 +95,10 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 
 const typescriptScopeResolver: ScopeResolver = {
   resolveUnqualifiedCall: resolveTsFunctionOverload,
-  populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
+  populateWorkspaceReferences: indexTsCallArguments,
+  resolveReceiverMember: resolveTsMemberArguments,
+  receiverCallSite: tsReceiverCallSite,
+  callResultAssignmentApplies: tsCallResultAssignmentApplies,
   // One hook, both routes. TypeScript exposes collection views as METHOD calls
   // (`.values()`), which the call-expression branch already handles, so the
   // accessor route yields nothing here — but it is now the same hook rather

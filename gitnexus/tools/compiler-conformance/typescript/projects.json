@@ -36,6 +36,7 @@
     "lang-resolution/ts-param-property-fields",
     "lang-resolution/ts-readonly-foreach",
     "lang-resolution/ts-return-type-inference",
+    "lang-resolution/ts-same-arity-cross-file",
     "lang-resolution/ts-virtual-dispatch",
     "lang-resolution/ts-write-access",
     "lang-resolution/typescript-alias-fields",

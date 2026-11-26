@@ -92,3 +92,20 @@ test('a local variable and an imported alias of the same name resolve to distinc
   wrong.sites[2].target = wrong.sites[0].target;
   assert.throws(() => compareReports(reads, wrong), /Missing from actual/);
 });
+
+test('a returned string selects the first applicable overload across files', () => {
+  const fixture = fileURLToPath(
+    new URL(
+      '../../../test/fixtures/compiler-conformance/typescript-overload-results/',
+      import.meta.url,
+    ),
+  );
+  const calls = compilerReport(fixture).CALLS;
+  const selected = calls.sites.find((site) => site.file === 'consumer.ts' && site.start === '21:2');
+  assert.ok(selected);
+  assert.equal(selected.target, 'consumer.ts#11:2');
+  for (const target of ['consumer.ts#10:2', 'consumer.ts#12:2']) {
+    const mutated = calls.sites.map((site) => (site === selected ? { ...site, target } : site));
+    assert.throws(() => compareReports(calls, { ...calls, sites: mutated }), /Missing from actual/);
+  }
+});
