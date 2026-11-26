@@ -663,8 +663,10 @@ describe('Go structural interface detection O(n²) regression tripwire', () => {
     const STRUCT_COUNT = 8;
     const result = detectGoInterfaceImplementations(
       generateSyntheticInterfaceData(2, STRUCT_COUNT),
-      // Detection never reads either argument for data without embedding or
-      // generic instantiations; `never` keeps that cast lint-clean.
+      // Empty stand-ins, as in the suites below: detection only reads the
+      // indexes through `indexes.imports?.edgesAt(...)`, which tolerates an
+      // empty object, and never uses the model. `never` keeps the cast
+      // lint-clean.
       {} as never,
       {} as never,
     );
