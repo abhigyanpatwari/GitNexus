@@ -149,19 +149,20 @@ describe('immutable rename preview capabilities', () => {
   it('checks the final bytes of an oversized unindexed source without retaining its text', async () => {
     const file = path.join(root, 'generated.ts');
     const bytes = 16 * 1024 * 1024;
-    const handle = await fs.open(file, 'w');
-    await handle.truncate(bytes);
-    await handle.close();
-    const sources = await renameSourceInventory(root);
-    const token = await store.remember(root, plan, nodes, [], sources);
-    const retained = await take(token);
-    expect(retained.evidence.has(file)).toBe(true);
-    expect(retained.snapshots.size).toBe(1);
-    const changed = await store.remember(root, plan, nodes, [], sources);
-    const update = await fs.open(file, 'r+');
-    await update.write(Buffer.from('x'), 0, 1, bytes - 1);
-    await update.close();
-    await expect(take(changed)).rejects.toMatchObject({ code: 'source_changed' });
+    const handle = await fs.open(file, 'wx');
+    try {
+      await handle.truncate(bytes);
+      const sources = await renameSourceInventory(root);
+      const token = await store.remember(root, plan, nodes, [], sources);
+      const retained = await take(token);
+      expect(retained.evidence.has(file)).toBe(true);
+      expect(retained.snapshots.size).toBe(1);
+      const changed = await store.remember(root, plan, nodes, [], sources);
+      await handle.write(Buffer.from('x'), 0, 1, bytes - 1);
+      await expect(take(changed)).rejects.toMatchObject({ code: 'source_changed' });
+    } finally {
+      await handle.close();
+    }
   });
   it('rejects expiry and capabilities from another server', async () => {
     const token = await save();

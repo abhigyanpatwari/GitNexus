@@ -5,7 +5,6 @@ import { expect } from 'expect';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { GraphNode } from 'gitnexus-shared';
 import { planGraphRename } from '../../../../src/mcp/local/rename/graph-rename.js';
 import { renameSymbol } from '../../../../src/mcp/local/rename/rename-plan.js';
 

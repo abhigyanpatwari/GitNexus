@@ -26,15 +26,6 @@ function countMatches(src: string, predicate: (tags: string[]) => boolean): numb
   return matches.filter((m) => predicate(Object.keys(m))).length;
 }
 
-function countMatchesTsx(src: string, predicate: (tags: string[]) => boolean): number {
-  // TSX-specific query path: file extension drives query selection inside
-  // emitTsScopeCaptures. Without `.tsx` the JSX call-anchored variants
-  // never fire, so this test would silently pass on the TypeScript-only
-  // path instead of exercising the JSX-anchor case the rewrite cares about.
-  const matches = emitTsScopeCaptures(src, 'test.tsx');
-  return matches.filter((m) => predicate(Object.keys(m))).length;
-}
-
 describe('captures.ts ancestor-walk rewrite (U8 / B5)', () => {
   it('member call `obj.foo()` emits exactly one @reference.call.member capture', () => {
     // call_expression anchor → self in ancestor walk. Baseline case the

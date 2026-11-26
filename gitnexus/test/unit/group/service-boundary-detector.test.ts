@@ -2,9 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import {
-  detectServiceBoundaries,
-} from '../../../src/core/group/service-boundary-detector.js';
+import { detectServiceBoundaries } from '../../../src/core/group/service-boundary-detector.js';
 
 describe('ServiceBoundaryDetector', () => {
   let tmpDir: string;

@@ -46,7 +46,10 @@ describe('shared store clean (#3352)', () => {
     return runFullAnalysis(checkout, {}, { onProgress: () => {} });
   };
 
-  const cleanIn = async (checkout: string, options: Record<string, unknown>) => {
+  const cleanIn = async (
+    checkout: string,
+    options: Parameters<typeof import('../../../../src/cli/clean.js').cleanCommand>[0],
+  ) => {
     const { cleanCommand } = await import('../../../../src/cli/clean.js');
     process.chdir(checkout);
     const log = mock.method(console, 'log', () => {});

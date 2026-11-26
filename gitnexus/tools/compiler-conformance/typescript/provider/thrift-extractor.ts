@@ -5,9 +5,7 @@ import fsp from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
 
-import {
-  ThriftExtractor,
-} from '../../../../src/core/group/extractors/thrift-extractor.js';
+import { ThriftExtractor } from '../../../../src/core/group/extractors/thrift-extractor.js';
 import type { RepoHandle } from '../../../../src/core/group/types.js';
 
 describe('ThriftExtractor', () => {

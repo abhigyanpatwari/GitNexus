@@ -255,7 +255,6 @@ class Runner {
   });
 });
 
-
 describe('Kotlin generic interface dispatch (#2912)', () => {
   // Kotlin needs no per-language wiring: it emits heritage through the shared
   // pre-pass, so the arguments are read off the clause's own spelling. The

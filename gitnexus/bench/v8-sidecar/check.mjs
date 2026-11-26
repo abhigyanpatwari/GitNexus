@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { assertReferenceAdditionReceipt, assertSemanticNodes } from '../lib/reference-additions.mjs';
+import {
+  assertReferenceAdditionReceipt,
+  assertSemanticNodes,
+} from '../lib/reference-additions.mjs';
 import { quantile } from '../mcp-query/statistics.mjs';
 
 export function assessPairs(pairs) {
