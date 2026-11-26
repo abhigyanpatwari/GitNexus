@@ -22,6 +22,8 @@ import {
 } from '../../src/core/analyzer-identity.js';
 import {
   _setWindowsDirectoryPrivacyHooksForTests,
+  isWindowsDirectoryPrivate,
+  readWindowsDirectoryAccess,
   type WindowsDirectoryAccess,
 } from '../../src/utils/windows-directory-privacy.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -72,6 +74,15 @@ async function createFixture(): Promise<Fixture> {
       await fixture.cleanup();
     },
   };
+}
+
+/** The cache files in a directory, or none when the directory does not exist. */
+async function readCacheEntries(directory: string): Promise<string[]> {
+  try {
+    return (await readdir(directory)).filter((entry) => /^[0-9a-f]{64}\.json$/.test(entry));
+  } catch {
+    return [];
+  }
 }
 
 async function withWindowsCache(
@@ -179,6 +190,36 @@ describe('analyzer identity cache on Windows', () => {
     }
   });
 
+  it('removes the temporary file of a write that was interrupted a day ago', async () => {
+    const fixture = await createFixture();
+    try {
+      await withWindowsCache(fixture, async (hashedBytes) => {
+        await mkdir(fixture.cachePath, { recursive: true });
+        const abandoned = `${'a'.repeat(64)}.json.4242.${'b'.repeat(12)}.tmp`;
+        const running = `${'c'.repeat(64)}.json.4243.${'d'.repeat(12)}.tmp`;
+        await writeFile(path.join(fixture.cachePath, abandoned), 'interrupted\n');
+        await writeFile(path.join(fixture.cachePath, running), 'in flight\n');
+        const old = new Date(Date.now() - 48 * 60 * 60 * 1000);
+        await utimes(path.join(fixture.cachePath, abandoned), old, old);
+
+        _setWindowsDirectoryPrivacyHooksForTests({
+          read: () => privateAccess(),
+          lock: () => privateAccess(),
+        });
+
+        expect(hashedBytes()).toBeGreaterThanOrEqual(64 * 1024);
+
+        const entries = await readdir(fixture.cachePath);
+        // The abandoned write is gone; a temporary file that may still belong
+        // to a running process is left alone.
+        expect(entries).not.toContain(abandoned);
+        expect(entries).toContain(running);
+      });
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it('discards the files a writable directory may contain before locking it', async () => {
     const fixture = await createFixture();
     try {
@@ -207,4 +248,51 @@ describe('analyzer identity cache on Windows', () => {
       await fixture.cleanup();
     }
   });
+});
+
+/**
+ * The cases above replace the probe, so they cannot say whether the real one
+ * and the real cache agree with each other. These do: the OS is asked, and
+ * whatever it answers decides whether the identity is cached.
+ */
+describe.skipIf(process.platform !== 'win32')('the real Windows access-control list', () => {
+  it('caches the identity exactly when the OS proves the directory private', async () => {
+    const fixture = await createFixture();
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(fixture.homePath);
+    try {
+      let bytes = 0;
+      resolveAnalyzerRunnerIdentity(fixture.url, {
+        onHashedInput: (input) => {
+          bytes += input.bytes;
+        },
+      });
+      const hashed = bytes;
+
+      const access = readWindowsDirectoryAccess(fixture.cachePath);
+      expect(access).not.toBeNull();
+      const proven = access !== null && isWindowsDirectoryPrivate(access);
+      const cached = await readCacheEntries(fixture.cachePath);
+
+      if (proven) {
+        expect(cached).toHaveLength(1);
+        _clearAnalyzerIdentityProcessCacheForTests();
+        bytes = 0;
+        resolveAnalyzerRunnerIdentity(fixture.url, {
+          onHashedInput: (input) => {
+            bytes += input.bytes;
+          },
+        });
+        expect(bytes).toBe(0);
+      } else {
+        // The directory could not be proven private, so nothing is written
+        // and the identity is recomputed on every run.
+        expect(cached).toHaveLength(0);
+        expect(hashed).toBeGreaterThanOrEqual(64 * 1024);
+      }
+    } finally {
+      homedir.mockRestore();
+      _clearAnalyzerIdentityProcessCacheForTests();
+      await fixture.cleanup();
+    }
+  }, 120_000);
 });

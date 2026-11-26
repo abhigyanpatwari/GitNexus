@@ -2048,6 +2048,24 @@ function ensurePrivateChild(parent: string, childName: string): string | null {
 const IDENTITY_CACHE_FILE_PATTERN = /^[0-9a-f]{64}\.json$/;
 
 /**
+ * The temporary file names a cache write leaves behind when it is interrupted.
+ *
+ * A cache file carries the analyzer's file inventory, so an interrupted write
+ * can leave a megabyte-sized temporary file behind. The name carries the
+ * writing process and a random suffix, so the file can be recognised without
+ * reading it.
+ */
+const IDENTITY_CACHE_TEMP_FILE_PATTERN = /^[0-9a-f]{64}\.json\.\d+\.[0-9a-f]{12}\.tmp$/;
+
+/**
+ * How long an interrupted write may keep its temporary file.
+ *
+ * A write that is still running belongs to a live process, so only files that
+ * have been untouched for a day are removed.
+ */
+const IDENTITY_CACHE_TEMP_FILE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
  * Removes the persisted identity cache files of `directory`.
  *
  * A directory that other principals could write to may already hold files
@@ -2095,6 +2113,7 @@ function pruneIdentityCacheFiles(directory: string, keep: string): void {
   } catch {
     return;
   }
+  pruneInterruptedCacheWrites(directory, entries);
   const files = entries.filter((entry) => IDENTITY_CACHE_FILE_PATTERN.test(entry));
   if (files.length <= MAX_PERSISTED_CACHE_FILES) return;
   const modified = new Map<string, number>();
@@ -2117,6 +2136,27 @@ function pruneIdentityCacheFiles(directory: string, keep: string): void {
     if (file === keep) continue;
     try {
       unlinkSync(path.join(directory, file));
+    } catch {
+      /* a file that cannot be removed is refused by the cache reader anyway */
+    }
+  }
+}
+
+/**
+ * Removes the temporary files of writes that were interrupted.
+ *
+ * A write that never reached its rename leaves a file of the analyzer's size
+ * behind. Only files that no live process is writing any more are removed,
+ * so a concurrent run never loses the file it is about to publish.
+ */
+function pruneInterruptedCacheWrites(directory: string, entries: string[]): void {
+  const now = Date.now();
+  for (const entry of entries) {
+    if (!IDENTITY_CACHE_TEMP_FILE_PATTERN.test(entry)) continue;
+    const target = path.join(directory, entry);
+    try {
+      if (now - statSync(target).mtimeMs < IDENTITY_CACHE_TEMP_FILE_MAX_AGE_MS) continue;
+      unlinkSync(target);
     } catch {
       /* a file that cannot be removed is refused by the cache reader anyway */
     }

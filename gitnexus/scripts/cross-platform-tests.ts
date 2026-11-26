@@ -111,6 +111,11 @@ const PLATFORM_LOGIC = [
   // policy cases run everywhere; the two live-probe cases are skipped off
   // Windows, which is why the file has to be on this matrix.
   'test/unit/windows-directory-privacy.test.ts',
+  // The same proof, one level up: this file asks the real Windows for the
+  // access-control list of the directory the identity cache actually uses, so
+  // the probe and the cache are proven to agree. Its other cases pin
+  // `process.platform` and run everywhere.
+  'test/unit/analyzer-identity-windows-cache.test.ts',
   // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
   // plus a live-probe test whose only real non-4K coverage is macos-arm64's
   // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).
