@@ -207,10 +207,10 @@
       "basis": "Both instantiate JobManager before each test, use identical URLs and job transitions, and assert the same result. Extra mock/timer restoration happens after the assertions."
     },
     {
-      "a": "test/unit/cobol-preprocessor.test.ts#extractCobolSymbolsWithRegex > Linkage & Data Flow > PROCEDURE DIVISION USING RETURNING excludes return value from USING list",
+      "a": "test/fixtures/scenario-map-recall/retired-cobol-preprocessor.ts#extractCobolSymbolsWithRegex > Linkage & Data Flow > PROCEDURE DIVISION USING RETURNING excludes return value from USING list",
       "b": "test/unit/cobol-preprocessor.test.ts#extractCobolSymbolsWithRegex > PROCEDURE DIVISION USING edge cases > excludes RETURNING value from USING parameter list",
-      "category": "same-file",
-      "basis": "Identical scenario body in one file, using the same helpers, input data and assertions. Enclosing setup has no relevant difference."
+      "category": "pure-helper",
+      "basis": "Originally in the same file. Both pass identical COBOL source and filename to extractCobolSymbolsWithRegex and expect only WS-INPUT in procedureUsing."
     },
     {
       "a": "test/unit/embedder.test.ts#embedder > getEmbeddingDims > returns 384 (MiniLM default)",
