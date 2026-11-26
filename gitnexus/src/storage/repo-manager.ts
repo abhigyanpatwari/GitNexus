@@ -59,6 +59,7 @@ import {
   inspectResolvedStorage,
   inspectRegisteredStorage,
   inspectStoragePath,
+  isRepositoryLocalStoragePath,
   isTransientStorageInspection,
   LIST_STORAGE_REQUIREMENTS,
   requireDeletableStoragePath,
@@ -974,14 +975,24 @@ const recoverBranchSummaries = async (
 ): Promise<BranchSummary[]> => {
   const root = path.join(storagePath, BRANCHES_DIR);
   const dirs = await fs.readdir(root, { withFileTypes: true }).catch((err: unknown) => {
-    if (isMissingFilesystemError(err)) return [];
-    throw err;
+    if (!isMissingFilesystemError(err)) {
+      logger.warn({ dir: root, err }, 'Could not list pinned branches; registering the flat index');
+    }
+    return [];
   });
   const summaries: BranchSummary[] = [];
   for (const dir of dirs) {
     if (!dir.isDirectory()) continue;
     const slot = path.join(root, dir.name);
-    const meta = await loadMeta(slot);
+    let receipt = await readReconcileMetadata(slot, INDEX_METADATA_FILE);
+    if (receipt.state === 'absent') {
+      receipt = await readReconcileMetadata(slot, LEGACY_METADATA_FILE);
+    }
+    if (receipt.state === 'invalid') {
+      logger.warn({ dir: slot, err: receipt.error }, 'Skipping unreadable pinned branch metadata');
+    }
+    if (receipt.state !== 'valid') continue;
+    const meta = receipt.meta;
     if (
       !meta ||
       typeof meta.branch !== 'string' ||
@@ -990,9 +1001,10 @@ const recoverBranchSummaries = async (
       branchSlug(meta.branch) !== dir.name ||
       typeof meta.repoPath !== 'string' ||
       !registryPathEquals(canonicalizePath(meta.repoPath), repoPath) ||
-      (meta.storagePath !== undefined &&
-        (typeof meta.storagePath !== 'string' ||
-          !registryPathEquals(canonicalizePath(meta.storagePath), canonicalizePath(storagePath)))) ||
+      (meta.storagePath === undefined
+        ? !isRepositoryLocalStoragePath(repoPath, storagePath)
+        : typeof meta.storagePath !== 'string' ||
+          !registryPathEquals(canonicalizePath(meta.storagePath), canonicalizePath(storagePath))) ||
       typeof meta.indexedAt !== 'string' ||
       typeof meta.lastCommit !== 'string'
     ) {
@@ -1001,8 +1013,10 @@ const recoverBranchSummaries = async (
     try {
       await fs.access(path.join(slot, LBUG_DIRECTORY));
     } catch (err) {
-      if (isMissingFilesystemError(err)) continue;
-      throw err;
+      if (!isMissingFilesystemError(err)) {
+        logger.warn({ dir: slot, err }, 'Skipping unreadable pinned branch database');
+      }
+      continue;
     }
     const { branch, indexedAt, lastCommit, stats } = meta;
     summaries.push({ branch, indexedAt, lastCommit, stats });
@@ -1074,13 +1088,7 @@ const registerRepoUnlocked = async (
         `Refusing to register ${resolved}: metadata belongs to ${meta.repoPath}, not this repository.`,
       );
     }
-    if (
-      meta.storagePath === undefined &&
-      !registryPathEquals(
-        canonicalizePath(storagePath),
-        canonicalizePath(defaultStoragePath(resolved)),
-      )
-    ) {
+    if (meta.storagePath === undefined && !isRepositoryLocalStoragePath(resolved, storagePath)) {
       throw new Error(
         `Refusing to register ${resolved}: external storage metadata must bind storagePath to the selected directory.`,
       );

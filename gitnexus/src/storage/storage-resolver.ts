@@ -179,7 +179,7 @@ export const isUnusableIndexInspection = (
 const samePath = (left: string, right: string): boolean =>
   process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right;
 
-const isRepositoryLocalStoragePath = (repoPath: string, storagePath: string): boolean =>
+export const isRepositoryLocalStoragePath = (repoPath: string, storagePath: string): boolean =>
   samePath(comparablePath(defaultStoragePath(repoPath)), comparablePath(storagePath));
 
 const isMissingFilesystemError = (error: unknown): boolean => {

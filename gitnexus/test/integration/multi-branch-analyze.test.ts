@@ -166,6 +166,8 @@ describe('multi-branch analyze (#2106)', () => {
         branches: [{ branch: 'feature/x', lastCommit: featureCommit, stats: branchMeta?.stats }],
       });
 
+      process.env.GITNEXUS_HOME = tmpHome.dbPath;
+
       // A plain analyze on the pinned branch adopts the flat workspace slot
       // and removes the now-shadowed sub-index (#2354): the flat handle would
       // always win for this label, leaving the sub-index unreachable bloat.
