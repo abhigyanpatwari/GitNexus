@@ -8,7 +8,7 @@
  * production search systems.
  */
 
-import { searchFTSFromLbug, type BM25SearchResult } from './bm25-index.js';
+import { searchFTSFromLbug, type BM25SearchResult, type FTSSearchResponse } from './bm25-index.js';
 import type { SemanticSearchResult } from '../embeddings/types.js';
 import type { FtsDisabledReason } from './fts-policy.js';
 import { rethrowSymbolIdentityError } from '../lbug/query-result-integrity.js';
@@ -173,7 +173,11 @@ export const hybridSearch = async (
     k?: number,
   ) => Promise<SemanticSearchResult[]>,
   disabledReason?: FtsDisabledReason,
-): Promise<HybridSearchResult[]> => {
+): Promise<{
+  results: HybridSearchResult[];
+  ftsAvailable: boolean;
+  ftsQueryFailed: boolean;
+}> => {
   // Use LadybugDB FTS for fresh BM25 results — skipped entirely when this
   // index recorded an explicit FTS opt-out (`disabledReason`, #3091).
   // If FTS fails (e.g. extension not loaded in MCP process), fall back to
@@ -181,13 +185,12 @@ export const hybridSearch = async (
   // Both lanes share the caller's database session. Drain the sibling before
   // propagating corruption so it cannot query after that session is released.
   const [keyword, semantic] = await Promise.allSettled([
-    (async (): Promise<BM25SearchResult[]> => {
+    (async (): Promise<FTSSearchResponse & { queryThrew?: boolean }> => {
       try {
-        const ftsResponse = await searchFTSFromLbug(query, limit, undefined, disabledReason);
-        return ftsResponse?.results ?? [];
+        return await searchFTSFromLbug(query, limit, undefined, disabledReason);
       } catch (error) {
         rethrowSymbolIdentityError(error);
-        return [];
+        return { results: [], ftsAvailable: false, queryThrew: true };
       }
     })(),
     semanticSearch(executeQuery, query, limit).catch((error) => {
@@ -197,5 +200,10 @@ export const hybridSearch = async (
   ]);
   if (keyword.status === 'rejected') throw keyword.reason;
   if (semantic.status === 'rejected') throw semantic.reason;
-  return mergeWithRRF(keyword.value, semantic.value, limit);
+  const fts = keyword.value;
+  return {
+    results: mergeWithRRF(fts.results, semantic.value, limit),
+    ftsAvailable: fts.ftsAvailable,
+    ftsQueryFailed: !!fts.queryThrew || !!fts.nonBenignErrors?.length,
+  };
 };
