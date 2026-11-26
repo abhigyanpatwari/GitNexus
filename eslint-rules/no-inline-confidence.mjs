@@ -10,37 +10,37 @@ function propertyName(node, computed = false) {
   }
 }
 
-function isNumericLiteral(node) {
-  if (node?.type === 'UnaryExpression' && (node.operator === '+' || node.operator === '-')) {
-    node = node.argument;
-  }
-  return node?.type === 'Literal' && typeof node.value === 'number';
-}
+const comparisonOperators = new Set([
+  '===',
+  '!==',
+  '==',
+  '!=',
+  '<',
+  '<=',
+  '>',
+  '>=',
+  'in',
+  'instanceof',
+]);
 
-function* inlineConfidenceLiterals(node) {
+function* inlineConfidenceLiterals(node, visitorKeys) {
   if (!node) return;
-  if (isNumericLiteral(node)) {
+  if (node.type === 'Literal' && typeof node.value === 'number') {
     yield node;
     return;
   }
 
-  switch (node.type) {
-    case 'ConditionalExpression':
-      yield* inlineConfidenceLiterals(node.consequent);
-      yield* inlineConfidenceLiterals(node.alternate);
-      break;
-    case 'LogicalExpression':
-    case 'BinaryExpression':
-      if (node.type === 'LogicalExpression' || node.operator === '*') {
-        yield* inlineConfidenceLiterals(node.left);
-        yield* inlineConfidenceLiterals(node.right);
-      }
-      break;
-    case 'TSAsExpression':
-    case 'TSSatisfiesExpression':
-    case 'TSNonNullExpression':
-      yield* inlineConfidenceLiterals(node.expression);
-      break;
+  if (node.type === 'BinaryExpression' && comparisonOperators.has(node.operator)) return;
+
+  for (const key of visitorKeys[node.type] ?? []) {
+    if (node.type === 'ConditionalExpression' && key === 'test') continue;
+    if (node.type === 'MemberExpression' && node.computed && key === 'property') continue;
+    const child = node[key];
+    if (Array.isArray(child)) {
+      for (const entry of child) yield* inlineConfidenceLiterals(entry, visitorKeys);
+    } else {
+      yield* inlineConfidenceLiterals(child, visitorKeys);
+    }
   }
 }
 
@@ -56,9 +56,11 @@ export default {
     },
   },
   create(context) {
+    const { visitorKeys } = context.sourceCode;
+
     function check(name, value) {
       if (name !== 'confidence' && !name?.endsWith('CONFIDENCE')) return;
-      for (const node of inlineConfidenceLiterals(value)) {
+      for (const node of inlineConfidenceLiterals(value, visitorKeys)) {
         context.report({ node, messageId: 'useEdgeConfidence', data: { name } });
       }
     }
@@ -74,7 +76,6 @@ export default {
         check(propertyName(node.id), node.init);
       },
       AssignmentExpression(node) {
-        if (node.operator !== '=') return;
         const target = node.left;
         const name =
           target.type === 'MemberExpression'

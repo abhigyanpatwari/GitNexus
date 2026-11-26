@@ -19,6 +19,10 @@ tester.run('no-inline-confidence', rule, {
     'const edge = { [confidence]: 0.85 };',
     'const edge = { [`${key}`]: 0.5 };',
     'const confidence = a ? EdgeConfidence.x : EdgeConfidence.y;',
+    'const e = { confidence: weights[0] };',
+    'const e = { confidence: EdgeConfidence.a - EdgeConfidence.b };',
+    'const confidence = targets.size === 1 ? EdgeConfidence.a : EdgeConfidence.b;',
+    'const e = { confidence: n > 0 && ok ? EdgeConfidence.a : EdgeConfidence.b };',
   ],
   invalid: [
     { code: 'const edge = { confidence: 0.85 };', errors: [error] },
@@ -36,5 +40,12 @@ tester.run('no-inline-confidence', rule, {
     { code: 'const e = { confidence: x ?? 0.5 };', errors: [error] },
     { code: 'const e = { confidence: 0.85 as number };', errors: [error] },
     { code: 'const confidence = (0.85 satisfies number)!;', errors: [error] },
+    { code: 'edge.confidence *= 0.8;', errors: [error] },
+    { code: 'confidence /= 2;', errors: [error] },
+    { code: 'confidence += 0.1;', errors: [error] },
+    { code: 'const e = { confidence: score / 2 };', errors: [error] },
+    { code: 'const e = { confidence: 1 - penalty };', errors: [error] },
+    { code: 'const e = { confidence: Math.min(1, x) };', errors: [error] },
+    { code: 'const e = { confidence: -(0.5) };', errors: [error] },
   ],
 });
