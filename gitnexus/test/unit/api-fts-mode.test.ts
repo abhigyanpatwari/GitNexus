@@ -668,11 +668,27 @@ describe('/api/search search-lane degradation', () => {
   );
 
   it('reports query failure without exposing the error string or misleading repair advice', async () => {
-    mocks.search.mockRejectedValue(new Error('connection failed at /tmp/private-space/repo'));
-    const { body } = await invoke('/api/search', {}, { mode: 'hybrid' });
-    expect(body.results).toHaveLength(1);
-    expect(body.warning).toMatch(/keyword search failed/i);
-    expect(body.warning).not.toMatch(/private-space|repair-fts/);
+    const log = _captureLogger();
+    try {
+      mocks.search.mockRejectedValue(
+        new Error("connection failed at '/tmp/private space/repo'", {
+          cause: new Error('nested diagnostic not for logs'),
+        }),
+      );
+      const { body } = await invoke('/api/search', {}, { mode: 'hybrid' });
+      expect(body.results).toHaveLength(1);
+      expect(body.warning).toMatch(/keyword search failed/i);
+      expect(body.warning).not.toMatch(/connection failed|private space|repair-fts/);
+      expect(log.records()).toContainEqual(
+        expect.objectContaining({
+          errors: ["connection failed at '<path>'"],
+          msg: 'HTTP search keyword lane reported FTS query errors',
+        }),
+      );
+      expect(log.text()).not.toMatch(/private space|nested diagnostic/);
+    } finally {
+      log.restore();
+    }
   });
 
   it('reports non-benign FTS errors returned as metadata', async () => {
