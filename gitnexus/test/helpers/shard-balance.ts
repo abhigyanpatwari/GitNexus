@@ -26,8 +26,6 @@ const SEQUENTIAL_COVERAGE_SECONDS: Readonly<Record<string, number>> = {
   'test/integration/shared-store-adoption.test.ts': 147,
   'test/integration/shared-store-analyze.test.ts': 70,
   'test/integration/shared-store-clean.test.ts': 41,
-  'test/integration/shared-store-clone-optin.test.ts': 103,
-  'test/integration/shared-store-seed.test.ts': 74,
   'test/integration/skills-e2e.test.ts': 71,
   'test/integration/skip-fts.test.ts': 44,
   'test/unit/incremental-index-extension-dml-gate.test.ts': 67,

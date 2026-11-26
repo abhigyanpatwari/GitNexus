@@ -40,103 +40,18 @@
  * fixture is shared by eight suites including a snapshot test, so growing it to
  * cover one seam churns unrelated expectations.
  */
-import { describe, it, expect, beforeAll } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
-import { createTempDirPool } from '../../helpers/temp-dir-pool.js';
+import { describe, it, before as beforeAll } from 'node:test';
+import { expect } from 'expect';
+import { fileURLToPath } from 'node:url';
+import { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
 // The PRODUCTION reader of the cell: splits on `CALLEE_ID_SEP`
 // (src/core/ingestion/cfg/emit.ts) and drops the truncation sentinel. Both the
 // statement-precise bridge and the inter-procedural descent go through it, so
 // asserting on its output is asserting on exactly the ids the descent sees —
 // and it yields whole ids, which a substring match over the raw cell would not.
-import { splitCalleeIds } from '../../../src/mcp/local/pdg-impact.js';
+import { splitCalleeIds } from '../../../../src/mcp/local/pdg-impact.js';
 
 const FIXTURE_PATH = 'src/app.ts';
-
-// Every caller below chains `.compute()` onto the RESULT of `.inner()`; the
-// second call has no named receiver, so it resolves only if the receiver's type
-// is carried through the chain. Only the receiver FORM varies between rows.
-const CHAINED_SOURCE = `export class Mid {
-  compute(v: number): number {
-    return v * 3;
-  }
-}
-
-export class Inner {
-  compute(v: number): number {
-    return v * 2;
-  }
-  mid(): Mid {
-    return new Mid();
-  }
-}
-
-export class Outer {
-  inner(): Inner {
-    return new Inner();
-  }
-}
-
-export function makeOuter(): Outer {
-  return new Outer();
-}
-
-export function runLocalConst(x: number): number {
-  const localConst = new Outer();
-  const r = localConst.inner().compute(x);
-  return r;
-}
-
-export function runCallResultReceiver(x: number): number {
-  const r = makeOuter().inner().compute(x);
-  return r;
-}
-
-export function runThreeLink(x: number): number {
-  const threeLink = new Outer();
-  const r = threeLink.inner().mid().compute(x);
-  return r;
-}
-
-export class AnnotatedFieldCaller {
-  private annotated: Outer = new Outer();
-  run(x: number): number {
-    const r = this.annotated.inner().compute(x);
-    return r;
-  }
-}
-
-export class InferredFieldCaller {
-  private inferred = new Outer();
-  run(x: number): number {
-    const r = this.inferred.inner().compute(x);
-    return r;
-  }
-}
-
-export class CtorAssignedAnnotatedCaller {
-  private ctorTyped: Outer;
-  constructor() {
-    this.ctorTyped = new Outer();
-  }
-  run(x: number): number {
-    const r = this.ctorTyped.inner().compute(x);
-    return r;
-  }
-}
-
-export class CtorAssignedInferredCaller {
-  private ctorUntyped;
-  constructor() {
-    this.ctorUntyped = new Outer();
-  }
-  run(x: number): number {
-    const r = this.ctorUntyped.inner().compute(x);
-    return r;
-  }
-}
-`;
 
 // EXACT resolved ids — never substrings. `Inner.compute` as a substring is also
 // satisfied by `Inner.computeExtra` and by `OtherInner.compute`, while the
@@ -218,7 +133,12 @@ interface BlockCell {
   readonly ids: readonly string[];
 }
 
-const repos = createTempDirPool('gn-pdg-chain-');
+const dir = fileURLToPath(
+  new URL(
+    '../../../../test/fixtures/compiler-conformance/typescript-pdg-chained-receivers/',
+    import.meta.url,
+  ),
+);
 let blocks: readonly BlockCell[] = [];
 
 function blocksFor(marker: string): readonly BlockCell[] {
@@ -243,22 +163,21 @@ function assertChainReachesPdg(shape: ReceiverShape): void {
 }
 
 describe('PDG calleeIds — chained receiver calls by receiver form (#2802 follow-up)', () => {
-  beforeAll(async () => {
-    const dir = repos.dir();
-    fs.mkdirSync(path.join(dir, path.dirname(FIXTURE_PATH)));
-    fs.writeFileSync(path.join(dir, FIXTURE_PATH), CHAINED_SOURCE);
-
-    const result = await runPipelineFromRepo(dir, () => {}, { pdg: true });
-    const collected: BlockCell[] = [];
-    result.graph.forEachNode((n) => {
-      if (n.label !== 'BasicBlock') return;
-      collected.push({
-        text: typeof n.properties.text === 'string' ? n.properties.text : '',
-        ids: splitCalleeIds(n.properties.calleeIds),
+  beforeAll(
+    async () => {
+      const result = await runPipelineFromRepo(dir, () => {}, { pdg: true });
+      const collected: BlockCell[] = [];
+      result.graph.forEachNode((n) => {
+        if (n.label !== 'BasicBlock') return;
+        collected.push({
+          text: typeof n.properties.text === 'string' ? n.properties.text : '',
+          ids: splitCalleeIds(n.properties.calleeIds),
+        });
       });
-    });
-    blocks = collected;
-  }, 180000);
+      blocks = collected;
+    },
+    { timeout: 180000 },
+  );
 
   it('every receiver shape contributes exactly one chained-call block', () => {
     const counts = Object.fromEntries(

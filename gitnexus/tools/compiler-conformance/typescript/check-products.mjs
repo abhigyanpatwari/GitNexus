@@ -10,6 +10,7 @@ const selected = platform
   ? [
       'product/analysis-embedding-flow.ts',
       'product/analysis-generation-routing.ts',
+      'product/analysis-publication-flow.ts',
       'product/cli-e2e.ts',
       'product/dangling-owner-edges.ts',
       'product/fetch-wrapper-persistence.ts',
@@ -17,6 +18,7 @@ const selected = platform
       'product/ignore-and-skip-e2e.ts',
       'product/pipeline-graph-golden.ts',
       'product/rename.ts',
+      'product/shared-store-embedding-reuse.ts',
       'provider/rename-typescript-member-keys.ts',
     ]
   : globSync(['product/*.ts', 'provider/*.ts'], { cwd: directory });

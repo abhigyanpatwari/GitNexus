@@ -1,4 +1,4 @@
-import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
+import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
 /**
  * Integration tests for PR #1718 production-readiness review (U4).
  *
@@ -18,15 +18,15 @@ import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
  * caller. Asserting the edge directly avoids wiring an entire `withTestLbugDB`
  * fixture for what is effectively a graph-shape assertion.
  *
- * Test set (all through the worker pool — the sole parse path; skipped locally
- * when `dist/parse-worker.js` is missing, with a CI tripwire so CI never skips):
+ * Test set (all through the production worker pool):
  *   - Test A: pipeline produces both edges with the right `ownerId`
  *   - Test C: local-scoped object literal inside a function emits no false-
  *     positive HAS_METHOD (proves the boundary guard is load-bearing)
  *   - Test D: nested object literal binds neither method to outer (safe
  *     under-approximation proof)
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,44 +35,20 @@ import {
   getNodesByLabel,
   runPipelineFromRepo,
   type PipelineResult,
-} from './resolvers/helpers.js';
-import { generateId } from '../../src/lib/utils.js';
+} from '../support/fixture.js';
+import { generateId } from '../../../../src/lib/utils.js';
 import {
   loadParseCache,
   pruneCache,
   saveParseCache,
   type ParseCache,
-} from '../../src/storage/parse-cache.js';
+} from '../../../../src/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
-} from '../../src/storage/parsedfile-store.js';
+} from '../../../../src/storage/parsedfile-store.js';
 
 const parseIdentity = await runtimeParseIdentity();
-
-const DIST_WORKER = path.resolve(
-  __dirname,
-  '..',
-  '..',
-  'dist',
-  'core',
-  'ingestion',
-  'workers',
-  'parse-worker.js',
-);
-const hasDistWorker = fs.existsSync(DIST_WORKER);
-
-// CI tripwire: these suites silently skip when `dist/parse-worker.js` is
-// missing. That's fine locally — devs may not have run `npm run build` — but on
-// CI a missing dist would leave worker-path ownerId emission unverified. Fail
-// hard so a missing dist surfaces as a red build, not a silent skip.
-// Locally, run `npm run build` before this suite.
-if (!hasDistWorker && process.env.CI) {
-  throw new Error(
-    'dist/parse-worker.js missing on CI — worker-parity test would silently skip. ' +
-      'Ensure the build runs before this suite.',
-  );
-}
 
 /** Materialise a tiny fixture repo on disk. Returns the absolute repo root. */
 function writeFixture(files: Record<string, string>): string {
@@ -104,19 +80,22 @@ export function caller(id: string) {
 
 // ── Test A: worker pipeline ──────────────────────────────────────────────────
 
-describe.skipIf(!hasDistWorker)('object-literal owner resolution — worker pipeline', () => {
+describe('object-literal owner resolution — worker pipeline', () => {
   let repoRoot: string;
   let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/service.ts': SERVICE_TS,
-      'src/consumer.ts': CONSUMER_TS,
-    });
-    result = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-    });
-  }, 60000);
+  beforeAll(
+    async () => {
+      repoRoot = writeFixture({
+        'src/service.ts': SERVICE_TS,
+        'src/consumer.ts': CONSUMER_TS,
+      });
+      result = await runPipelineFromRepo(repoRoot, () => undefined, {
+        skipGraphPhases: true,
+      });
+    },
+    { timeout: 60000 },
+  );
 
   afterAll(() => removeFixture(repoRoot));
 
@@ -176,13 +155,12 @@ describe.skipIf(!hasDistWorker)('object-literal owner resolution — worker pipe
 
 // ── Test C: negative — local object literal inside a function body ──────────
 
-describe.skipIf(!hasDistWorker)(
-  'object-literal owner resolution — negative (local literal)',
-  () => {
-    let repoRoot: string;
-    let result: PipelineResult;
+describe('object-literal owner resolution — negative (local literal)', () => {
+  let repoRoot: string;
+  let result: PipelineResult;
 
-    beforeAll(async () => {
+  beforeAll(
+    async () => {
       repoRoot = writeFixture({
         'src/p.ts': `export function processAll() {
   const handler = { run(id: string) { return id; } };
@@ -193,38 +171,38 @@ describe.skipIf(!hasDistWorker)(
       result = await runPipelineFromRepo(repoRoot, () => undefined, {
         skipGraphPhases: true,
       });
-    }, 60000);
+    },
+    { timeout: 60000 },
+  );
 
-    afterAll(() => removeFixture(repoRoot));
+  afterAll(() => removeFixture(repoRoot));
 
-    it('emits no HAS_METHOD edge targeting `run` (no false-positive owner attribution)', () => {
-      const hasMethod = getRelationships(result, 'HAS_METHOD');
-      const targetingRun = hasMethod.filter((e) => e.target === 'run');
-      expect(targetingRun.length).toBe(0);
+  it('emits no HAS_METHOD edge targeting `run` (no false-positive owner attribution)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const targetingRun = hasMethod.filter((e) => e.target === 'run');
+    expect(targetingRun.length).toBe(0);
+  });
+
+  it('the run method node carries no ownerId property', () => {
+    let runNode: { properties: { name: string; ownerId?: string }; label: string } | undefined;
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Method' && n.properties.name === 'run') {
+        runNode = n as typeof runNode;
+      }
     });
-
-    it('the run method node carries no ownerId property', () => {
-      let runNode: { properties: { name: string; ownerId?: string }; label: string } | undefined;
-      result.graph.forEachNode((n) => {
-        if (n.label === 'Method' && n.properties.name === 'run') {
-          runNode = n as typeof runNode;
-        }
-      });
-      expect(runNode).toBeDefined();
-      expect(runNode!.properties.ownerId).toBe(undefined);
-    });
-  },
-);
+    expect(runNode).toBeDefined();
+    expect(runNode!.properties.ownerId).toBe(undefined);
+  });
+});
 
 // ── Test D: negative — nested object literal ─────────────────────────────────
 
-describe.skipIf(!hasDistWorker)(
-  'object-literal owner resolution — negative (nested literal)',
-  () => {
-    let repoRoot: string;
-    let result: PipelineResult;
+describe('object-literal owner resolution — negative (nested literal)', () => {
+  let repoRoot: string;
+  let result: PipelineResult;
 
-    beforeAll(async () => {
+  beforeAll(
+    async () => {
       repoRoot = writeFixture({
         'src/n.ts': `export const s = {
   nested: { method(id: string) { return id; } },
@@ -235,30 +213,30 @@ describe.skipIf(!hasDistWorker)(
       result = await runPipelineFromRepo(repoRoot, () => undefined, {
         skipGraphPhases: true,
       });
-    }, 60000);
+    },
+    { timeout: 60000 },
+  );
 
-    afterAll(() => removeFixture(repoRoot));
+  afterAll(() => removeFixture(repoRoot));
 
-    it('binds the top-level outer method to s but does NOT bind the nested method', () => {
-      const hasMethod = getRelationships(result, 'HAS_METHOD');
-      const fromS = hasMethod
-        .filter((e) => e.source === 's')
-        .map((e) => e.target)
-        .sort();
-      expect(fromS).toEqual(['outer']);
-    });
-  },
-);
+  it('binds the top-level outer method to s but does NOT bind the nested method', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fromS = hasMethod
+      .filter((e) => e.source === 's')
+      .map((e) => e.target)
+      .sort();
+    expect(fromS).toEqual(['outer']);
+  });
+});
 
 // ── #3041: same-named function-valued properties ───────────────────────────
 
-describe.skipIf(!hasDistWorker)(
-  'object-literal owner resolution — same-named property callables (#3041)',
-  () => {
-    let repoRoot: string;
-    let result: PipelineResult;
+describe('object-literal owner resolution — same-named property callables (#3041)', () => {
+  let repoRoot: string;
+  let result: PipelineResult;
 
-    beforeAll(async () => {
+  beforeAll(
+    async () => {
       repoRoot = writeFixture({
         'src/convex.ts': `function query<T>(config: T): T { return config; }
 function helperA(ctx: unknown) { return ctx; }
@@ -272,93 +250,97 @@ export let third = query({ handler: async (ctx: unknown) => helperC(ctx) });
       result = await runPipelineFromRepo(repoRoot, () => undefined, {
         skipGraphPhases: true,
       });
-    }, 60000);
+    },
+    { timeout: 60000 },
+  );
 
-    afterAll(() => removeFixture(repoRoot));
+  afterAll(() => removeFixture(repoRoot));
 
-    it('creates one owner-qualified handler node per exported const', () => {
-      const handlerIds: string[] = [];
-      result.graph.forEachNode((node) => {
-        if (node.label === 'Function' && node.properties.name === 'handler') {
-          handlerIds.push(node.id);
-        }
-      });
-
-      expect(handlerIds.sort()).toEqual(
-        [
-          generateId('Function', 'src/convex.ts:first.handler'),
-          generateId('Function', 'src/convex.ts:second.handler'),
-          generateId('Function', 'src/convex.ts:third.handler'),
-        ].sort(),
-      );
+  it('creates one owner-qualified handler node per exported const', () => {
+    const handlerIds: string[] = [];
+    result.graph.forEachNode((node) => {
+      if (node.label === 'Function' && node.properties.name === 'handler') {
+        handlerIds.push(node.id);
+      }
     });
 
-    it('links each exported const to only its own handler', () => {
-      const ownership = getRelationships(result, 'HAS_METHOD')
-        .filter((edge) => edge.target === 'handler')
-        .map((edge) => `${edge.source}:${edge.rel.targetId}`)
-        .sort();
+    expect(handlerIds.sort()).toEqual(
+      [
+        generateId('Function', 'src/convex.ts:first.handler'),
+        generateId('Function', 'src/convex.ts:second.handler'),
+        generateId('Function', 'src/convex.ts:third.handler'),
+      ].sort(),
+    );
+  });
 
-      expect(ownership).toEqual(
-        [
-          `first:${generateId('Function', 'src/convex.ts:first.handler')}`,
-          `second:${generateId('Function', 'src/convex.ts:second.handler')}`,
-          `third:${generateId('Function', 'src/convex.ts:third.handler')}`,
-        ].sort(),
-      );
-    });
+  it('links each exported const to only its own handler', () => {
+    const ownership = getRelationships(result, 'HAS_METHOD')
+      .filter((edge) => edge.target === 'handler')
+      .map((edge) => `${edge.source}:${edge.rel.targetId}`)
+      .sort();
 
-    it('keeps each handler call on its real owner with no cross-attribution', () => {
-      const calls = getRelationships(result, 'CALLS')
-        .filter(
-          (edge) =>
-            edge.target === 'helperA' || edge.target === 'helperB' || edge.target === 'helperC',
-        )
-        .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
-        .sort();
+    expect(ownership).toEqual(
+      [
+        `first:${generateId('Function', 'src/convex.ts:first.handler')}`,
+        `second:${generateId('Function', 'src/convex.ts:second.handler')}`,
+        `third:${generateId('Function', 'src/convex.ts:third.handler')}`,
+      ].sort(),
+    );
+  });
 
-      expect(calls).toEqual(
-        [
-          `${generateId('Function', 'src/convex.ts:first.handler')}->helperA`,
-          `${generateId('Function', 'src/convex.ts:second.handler')}->helperB`,
-          `${generateId('Function', 'src/convex.ts:third.handler')}->helperC`,
-        ].sort(),
-      );
-    });
+  it('keeps each handler call on its real owner with no cross-attribution', () => {
+    const calls = getRelationships(result, 'CALLS')
+      .filter(
+        (edge) =>
+          edge.target === 'helperA' || edge.target === 'helperB' || edge.target === 'helperC',
+      )
+      .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
+      .sort();
 
-    it('keeps owner-qualified handlers reachable from their file definition', () => {
-      const defined = getRelationships(result, 'DEFINES')
-        .filter((edge) => edge.target === 'handler')
-        .map((edge) => edge.rel.targetId)
-        .sort();
+    expect(calls).toEqual(
+      [
+        `${generateId('Function', 'src/convex.ts:first.handler')}->helperA`,
+        `${generateId('Function', 'src/convex.ts:second.handler')}->helperB`,
+        `${generateId('Function', 'src/convex.ts:third.handler')}->helperC`,
+      ].sort(),
+    );
+  });
 
-      expect(defined).toEqual(
-        [
-          generateId('Function', 'src/convex.ts:first.handler'),
-          generateId('Function', 'src/convex.ts:second.handler'),
-          generateId('Function', 'src/convex.ts:third.handler'),
-        ].sort(),
-      );
-    });
-  },
-);
+  it('keeps owner-qualified handlers reachable from their file definition', () => {
+    const defined = getRelationships(result, 'DEFINES')
+      .filter((edge) => edge.target === 'handler')
+      .map((edge) => edge.rel.targetId)
+      .sort();
 
-describe.skipIf(!hasDistWorker)('object-literal shorthand method identity (#3041)', () => {
+    expect(defined).toEqual(
+      [
+        generateId('Function', 'src/convex.ts:first.handler'),
+        generateId('Function', 'src/convex.ts:second.handler'),
+        generateId('Function', 'src/convex.ts:third.handler'),
+      ].sort(),
+    );
+  });
+});
+
+describe('object-literal shorthand method identity (#3041)', () => {
   let repoRoot: string;
   let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/shorthand.ts': `function helperA(value: string) { return value; }
+  beforeAll(
+    async () => {
+      repoRoot = writeFixture({
+        'src/shorthand.ts': `function helperA(value: string) { return value; }
 function helperB(value: string) { return value; }
 export const alpha = { run(value: string) { return helperA(value); } };
 export const beta = { run(value: string) { return helperB(value); } };
 `,
-    });
-    result = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-    });
-  }, 60_000);
+      });
+      result = await runPipelineFromRepo(repoRoot, () => undefined, {
+        skipGraphPhases: true,
+      });
+    },
+    { timeout: 60_000 },
+  );
 
   afterAll(() => removeFixture(repoRoot));
 
@@ -396,22 +378,25 @@ export const beta = { run(value: string) { return helperB(value); } };
   });
 });
 
-describe.skipIf(!hasDistWorker)('object-literal dotted property identity (#3041)', () => {
+describe('object-literal dotted property identity (#3041)', () => {
   let repoRoot: string;
   let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/dotted.ts': `function helperC(value: number) { return value; }
+  beforeAll(
+    async () => {
+      repoRoot = writeFixture({
+        'src/dotted.ts': `function helperC(value: number) { return value; }
 function helperD(value: number) { return value; }
 export const p = { 'q.r': (value: number) => helperC(value) };
 export const z = { r: (value: number) => helperD(value) };
 `,
-    });
-    result = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-    });
-  }, 60_000);
+      });
+      result = await runPipelineFromRepo(repoRoot, () => undefined, {
+        skipGraphPhases: true,
+      });
+    },
+    { timeout: 60_000 },
+  );
 
   afterAll(() => removeFixture(repoRoot));
 
@@ -430,24 +415,27 @@ export const z = { r: (value: number) => helperD(value) };
   });
 });
 
-describe.skipIf(!hasDistWorker)('object-literal array ownership barrier (#3041)', () => {
+describe('object-literal array ownership barrier (#3041)', () => {
   let repoRoot: string;
   let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/array.ts': `function helperA(value: number) { return value; }
+  beforeAll(
+    async () => {
+      repoRoot = writeFixture({
+        'src/array.ts': `function helperA(value: number) { return value; }
 function helperB(value: number) { return value; }
 export const handlers = [
   { handle: (value: number) => helperA(value) },
   { handle: (value: number) => helperB(value) },
 ];
 `,
-    });
-    result = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-    });
-  }, 60_000);
+      });
+      result = await runPipelineFromRepo(repoRoot, () => undefined, {
+        skipGraphPhases: true,
+      });
+    },
+    { timeout: 60_000 },
+  );
 
   afterAll(() => removeFixture(repoRoot));
 
@@ -476,13 +464,14 @@ export const handlers = [
   });
 });
 
-describe.skipIf(!hasDistWorker)('nested array object Method identity (#3041)', () => {
+describe('nested array object Method identity (#3041)', () => {
   let repoRoot: string;
   let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoRoot = writeFixture({
-      'src/nested-array.ts': `function helperA(value: number) { return value; }
+  beforeAll(
+    async () => {
+      repoRoot = writeFixture({
+        'src/nested-array.ts': `function helperA(value: number) { return value; }
 function helperB(value: number) { return value; }
 export const registry = {
   groups: [[
@@ -491,11 +480,13 @@ export const registry = {
   ]],
 };
 `,
-    });
-    result = await runPipelineFromRepo(repoRoot, () => undefined, {
-      skipGraphPhases: true,
-    });
-  }, 60_000);
+      });
+      result = await runPipelineFromRepo(repoRoot, () => undefined, {
+        skipGraphPhases: true,
+      });
+    },
+    { timeout: 60_000 },
+  );
 
   afterAll(() => removeFixture(repoRoot));
 
@@ -520,61 +511,65 @@ export const registry = {
   });
 });
 
-describe.skipIf(!hasDistWorker)('object-literal callable durable cache (#3041)', () => {
-  it('replays owner-qualified handler identities and calls without workers', async () => {
-    const repoRoot = writeFixture({
-      'src/convex.ts': `function query<T>(config: T): T { return config; }
+describe('object-literal callable durable cache (#3041)', () => {
+  it(
+    'replays owner-qualified handler identities and calls without workers',
+    { timeout: 120_000 },
+    async () => {
+      const repoRoot = writeFixture({
+        'src/convex.ts': `function query<T>(config: T): T { return config; }
 function helperA(ctx: unknown) { return ctx; }
 function helperB(ctx: unknown) { return ctx; }
 export const first = query({ handler: (ctx: unknown) => helperA(ctx) });
 export const second = query({ handler: (ctx: unknown) => helperB(ctx) });
 `,
-    });
-    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gnx-objlit-cache-'));
-    try {
-      const coldCache: ParseCache = {
-        identity: parseIdentity,
-        entries: new Map(),
-        usedKeys: new Set(),
-        storagePath: storage,
-        writeStoragePath: storage,
-        onDiskKeys: new Set(),
-      };
-      const cold = await runPipelineFromRepo(repoRoot, () => undefined, {
-        skipGraphPhases: true,
-        parseCache: coldCache,
-        workerPoolSize: 1,
       });
-      pruneCache(coldCache, coldCache.usedKeys);
-      const savedKeys = await saveParseCache(storage, coldCache);
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storage),
-        parseIdentity.base,
-        new Set(savedKeys),
-      );
-      const warmCache = await loadParseCache(storage, parseIdentity, storage);
-      const warm = await runPipelineFromRepo(repoRoot, () => undefined, {
-        skipGraphPhases: true,
-        parseCache: warmCache ?? undefined,
-        workerPoolSize: 1,
-      });
+      const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gnx-objlit-cache-'));
+      try {
+        const coldCache: ParseCache = {
+          identity: parseIdentity,
+          entries: new Map(),
+          usedKeys: new Set(),
+          storagePath: storage,
+          writeStoragePath: storage,
+          onDiskKeys: new Set(),
+        };
+        const cold = await runPipelineFromRepo(repoRoot, () => undefined, {
+          skipGraphPhases: true,
+          parseCache: coldCache,
+          workerPoolSize: 1,
+        });
+        pruneCache(coldCache, coldCache.usedKeys);
+        const savedKeys = await saveParseCache(storage, coldCache);
+        await pruneAndSaveDurableParsedFileStore(
+          getDurableParsedFileDir(storage),
+          parseIdentity.base,
+          new Set(savedKeys),
+        );
+        const warmCache = await loadParseCache(storage, parseIdentity, storage);
+        const warm = await runPipelineFromRepo(repoRoot, () => undefined, {
+          skipGraphPhases: true,
+          parseCache: warmCache ?? undefined,
+          workerPoolSize: 1,
+        });
 
-      const project = (pipeline: PipelineResult) =>
-        getRelationships(pipeline, 'CALLS')
-          .filter((edge) => edge.target === 'helperA' || edge.target === 'helperB')
-          .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
-          .sort();
-      expect(warm.usedWorkerPool).toBe(false);
-      expect(project(warm)).toEqual(project(cold));
-      expect(project(warm)).toEqual(
-        [
-          `${generateId('Function', 'src/convex.ts:first.handler')}->helperA`,
-          `${generateId('Function', 'src/convex.ts:second.handler')}->helperB`,
-        ].sort(),
-      );
-    } finally {
-      removeFixture(repoRoot);
-      fs.rmSync(storage, { recursive: true, force: true });
-    }
-  }, 120_000);
+        const project = (pipeline: PipelineResult) =>
+          getRelationships(pipeline, 'CALLS')
+            .filter((edge) => edge.target === 'helperA' || edge.target === 'helperB')
+            .map((edge) => `${edge.rel.sourceId}->${edge.target}`)
+            .sort();
+        expect(warm.usedWorkerPool).toBe(false);
+        expect(project(warm)).toEqual(project(cold));
+        expect(project(warm)).toEqual(
+          [
+            `${generateId('Function', 'src/convex.ts:first.handler')}->helperA`,
+            `${generateId('Function', 'src/convex.ts:second.handler')}->helperB`,
+          ].sort(),
+        );
+      } finally {
+        removeFixture(repoRoot);
+        fs.rmSync(storage, { recursive: true, force: true });
+      }
+    },
+  );
 });

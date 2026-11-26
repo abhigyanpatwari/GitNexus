@@ -84,6 +84,7 @@
     "lang-resolution/typescript-variadic-resolution"
   ],
   "declarationInventory": [
+    "compiler-conformance/typescript-exported-doc-comment",
     "cross-file-binding/ts-circular",
     "cross-file-binding/ts-consumer-before-provider",
     "cross-file-binding/ts-deep-alias-chain",

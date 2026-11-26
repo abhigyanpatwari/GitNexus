@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+import { registerCases } from '../support/cases.mjs';
 /**
  * Exercise a legacy native staged DB -> durable checkpoint -> SIGKILL ->
  * current CLI recovery -> graph rebuild -> publication chain. The endpoint is
@@ -9,13 +11,18 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { cliAnalysisEnv, CLI_SPAWN_PREFIX, tsxLoaderUrl } from '../helpers/cli-entry.js';
+import { after as afterAll, before as beforeAll, describe, it } from 'node:test';
+import { expect } from 'expect';
+import {
+  cliAnalysisEnv,
+  CLI_SPAWN_PREFIX,
+  tsxLoaderUrl,
+} from '../../../../test/helpers/cli-entry.js';
 
 const DIMS = 8;
 const NODE_COUNT = 5_128;
 const DEADLINE = process.env.CI ? 180_000 : 120_000;
-const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const packageRoot = fileURLToPath(new URL('../../../../', import.meta.url));
 const nativeUrl = pathToFileURL(path.join(packageRoot, 'src/core/lbug/lbug-config.ts')).href;
 const analysisUrl = pathToFileURL(
   path.join(
@@ -156,10 +163,12 @@ async function successfulAnalyze(repo: string, flags: string[] = []): Promise<st
   currentRepo = repo;
   const result = await runAnalyze(repo, flags).done;
   lastOutput = result.output;
-  expect(result.output, `CLI exited ${result.code}, signal ${result.signal}`).not.toContain(
-    'SIGABRT',
+  assert.doesNotMatch(
+    result.output,
+    /SIGABRT/,
+    `CLI exited ${result.code}, signal ${result.signal}`,
   );
-  expect(result.code, result.output).toBe(0);
+  assert.equal(result.code, 0, result.output);
   return [...submitted];
 }
 
@@ -223,7 +232,7 @@ function readPublishedRows(
         0,
         4096,
       );
-    expect(result.status, diagnostic).toBe(0);
+    assert.equal(result.status, 0, diagnostic);
     expect(result.stdout).toMatch(/ROWS_RECEIPT:\d+/);
     return JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
   } finally {
@@ -299,109 +308,112 @@ function removeLegacyInputProvenance(repo: string): void {
     ['--import', tsxLoaderUrl(), '--input-type=module', '-e', script],
     { cwd: packageRoot, env: cliEnv(repo), encoding: 'utf8', timeout: 30_000 },
   );
-  expect(result.status, `${result.error ?? ''}\n${result.stderr}\n${result.stdout}`).toBe(0);
+  assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stderr}\n${result.stdout}`);
   expect(result.stdout).toContain('LEGACY_INPUT_PROVENANCE_REMOVED');
 }
 
-beforeAll(async () => {
-  if (process.platform === 'win32') return;
-  root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-staged-recovery-e2e-'));
-  fs.mkdirSync(path.join(root, 'tmp'));
-  stoppedRepo = path.join(root, 'interrupted');
-  currentRepo = stoppedRepo;
-  fs.mkdirSync(stoppedRepo);
-  const shortFunctions = Array.from(
-    { length: NODE_COUNT - 1 },
-    (_, index) => `export function recoverable${index}() { return ${index}; }`,
-  );
-  // Missing legacy input provenance must invalidate the whole multi-chunk
-  // group, while retaining every provably compatible single-chunk group.
-  const longFunction = `export function longRecoverable() {\n${Array.from({ length: 80 }, (_, index) => `  // retained chunk marker ${index} ${'x'.repeat(80)}`).join('\n')}\n  return 42;\n}`;
-  fs.writeFileSync(
-    path.join(stoppedRepo, 'functions.ts'),
-    `${longFunction}\n${shortFunctions.join('\n')}\n`,
-  );
-  const gitEnv = {
-    ...process.env,
-    GIT_AUTHOR_NAME: 'test',
-    GIT_AUTHOR_EMAIL: 'test@test',
-    GIT_COMMITTER_NAME: 'test',
-    GIT_COMMITTER_EMAIL: 'test@test',
-  };
-  for (const args of [['init'], ['add', 'functions.ts'], ['commit', '-m', 'recovery fixture']]) {
-    const result = spawnSync('git', args, { cwd: stoppedRepo, env: gitEnv, encoding: 'utf8' });
-    expect(result.status, result.stderr).toBe(0);
-  }
-  server = http.createServer((request, response) => {
-    let body = '';
-    request.on('data', (chunk) => {
-      body += chunk;
-    });
-    request.on('end', () => {
-      const { input } = JSON.parse(body) as { input: string[] };
-      submitted.push(...input);
-      if (
-        stopAfterCheckpoint &&
-        (readMeta(currentRepo).embeddingCheckpoint?.nodesProcessed ?? 0) >= 5000
-      ) {
-        if (activeWindowCompleted.length > 0) {
-          held = [...input];
-          gateResolve?.();
-          // One sub-batch has already inserted rows inside the unsafe window.
-          // Awaiting the next real request gates a crash before it completes.
-          return;
+beforeAll(
+  async () => {
+    if (process.platform === 'win32') return;
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-staged-recovery-e2e-'));
+    fs.mkdirSync(path.join(root, 'tmp'));
+    stoppedRepo = path.join(root, 'interrupted');
+    currentRepo = stoppedRepo;
+    fs.mkdirSync(stoppedRepo);
+    const shortFunctions = Array.from(
+      { length: NODE_COUNT - 1 },
+      (_, index) => `export function recoverable${index}() { return ${index}; }`,
+    );
+    // Missing legacy input provenance must invalidate the whole multi-chunk
+    // group, while retaining every provably compatible single-chunk group.
+    const longFunction = `export function longRecoverable() {\n${Array.from({ length: 80 }, (_, index) => `  // retained chunk marker ${index} ${'x'.repeat(80)}`).join('\n')}\n  return 42;\n}`;
+    fs.writeFileSync(
+      path.join(stoppedRepo, 'functions.ts'),
+      `${longFunction}\n${shortFunctions.join('\n')}\n`,
+    );
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'test',
+      GIT_AUTHOR_EMAIL: 'test@test',
+      GIT_COMMITTER_NAME: 'test',
+      GIT_COMMITTER_EMAIL: 'test@test',
+    };
+    for (const args of [['init'], ['add', 'functions.ts'], ['commit', '-m', 'recovery fixture']]) {
+      const result = spawnSync('git', args, { cwd: stoppedRepo, env: gitEnv, encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    server = http.createServer((request, response) => {
+      let body = '';
+      request.on('data', (chunk) => {
+        body += chunk;
+      });
+      request.on('end', () => {
+        const { input } = JSON.parse(body) as { input: string[] };
+        submitted.push(...input);
+        if (
+          stopAfterCheckpoint &&
+          (readMeta(currentRepo).embeddingCheckpoint?.nodesProcessed ?? 0) >= 5000
+        ) {
+          if (activeWindowCompleted.length > 0) {
+            held = [...input];
+            gateResolve?.();
+            // One sub-batch has already inserted rows inside the unsafe window.
+            // Awaiting the next real request gates a crash before it completes.
+            return;
+          }
+          durableTexts = [...completed];
+          activeWindowCompleted.push(...input);
         }
-        durableTexts = [...completed];
-        activeWindowCompleted.push(...input);
-      }
-      completed.push(...input);
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(
-        JSON.stringify({
-          data: input.map((text, index) => ({
-            index,
-            embedding: Array.from(
-              { length: DIMS },
-              (_, dimension) => ((text.length + dimension * 17) % 101) / 101,
-            ),
-          })),
-        }),
-      );
+        completed.push(...input);
+        response.writeHead(200, { 'content-type': 'application/json' });
+        response.end(
+          JSON.stringify({
+            data: input.map((text, index) => ({
+              index,
+              embedding: Array.from(
+                { length: DIMS },
+                (_, dimension) => ((text.length + dimension * 17) % 101) / 101,
+              ),
+            })),
+          }),
+        );
+      });
     });
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address() as { port: number };
-  endpoint = `http://127.0.0.1:${address.port}/v1`;
-  await successfulAnalyze(stoppedRepo, ['--index-only']);
-  expect(readMeta(stoppedRepo).stats?.embeddings ?? 0).toBe(0);
-  completed = [];
-  held = [];
-  stopAfterCheckpoint = true;
-  const gate = new Promise<void>((resolve) => {
-    gateResolve = resolve;
-  });
-  const first = runAnalyze(stoppedRepo, [], undefined, true);
-  await Promise.race([
-    gate,
-    first.done.then((result) => {
-      throw new Error(`CLI exited before recovery gate: ${result.output}`);
-    }),
-  ]);
-  first.child.kill('SIGKILL');
-  expect((await first.done).signal).toBe('SIGKILL');
-  const interrupted = readMeta(stoppedRepo);
-  expect(interrupted.embeddingCheckpoint?.nodesProcessed).toBe(5000);
-  expect(interrupted.embeddingCheckpoint?.recovery?.stagingFile).toMatch(/^lbug\.staging\./);
-  expect(interrupted.stats?.embeddings ?? 0).toBe(0);
-  expect(completed.length).toBeGreaterThanOrEqual(5000);
-  expect(completed.filter((text) => text.includes('longRecoverable')).length).toBeGreaterThan(1);
-  expect(activeWindowCompleted).toHaveLength(64);
-  expect(held.length).toBeGreaterThan(0);
-  sourceAwareRepo = cloneStoppedRepo('source-aware');
-  removeLegacyInputProvenance(stoppedRepo);
-  gateResolve = undefined;
-  stopAfterCheckpoint = false;
-}, DEADLINE * 2);
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address() as { port: number };
+    endpoint = `http://127.0.0.1:${address.port}/v1`;
+    await successfulAnalyze(stoppedRepo, ['--index-only']);
+    expect(readMeta(stoppedRepo).stats?.embeddings ?? 0).toBe(0);
+    completed = [];
+    held = [];
+    stopAfterCheckpoint = true;
+    const gate = new Promise<void>((resolve) => {
+      gateResolve = resolve;
+    });
+    const first = runAnalyze(stoppedRepo, [], undefined, true);
+    await Promise.race([
+      gate,
+      first.done.then((result) => {
+        throw new Error(`CLI exited before recovery gate: ${result.output}`);
+      }),
+    ]);
+    first.child.kill('SIGKILL');
+    expect((await first.done).signal).toBe('SIGKILL');
+    const interrupted = readMeta(stoppedRepo);
+    expect(interrupted.embeddingCheckpoint?.nodesProcessed).toBe(5000);
+    expect(interrupted.embeddingCheckpoint?.recovery?.stagingFile).toMatch(/^lbug\.staging\./);
+    expect(interrupted.stats?.embeddings ?? 0).toBe(0);
+    expect(completed.length).toBeGreaterThanOrEqual(5000);
+    expect(completed.filter((text) => text.includes('longRecoverable')).length).toBeGreaterThan(1);
+    expect(activeWindowCompleted).toHaveLength(64);
+    expect(held.length).toBeGreaterThan(0);
+    sourceAwareRepo = cloneStoppedRepo('source-aware');
+    removeLegacyInputProvenance(stoppedRepo);
+    gateResolve = undefined;
+    stopAfterCheckpoint = false;
+  },
+  { timeout: DEADLINE * 2 },
+);
 
 afterAll(async () => {
   for (const child of running) child.kill('SIGKILL');
@@ -418,12 +430,13 @@ afterAll(async () => {
 });
 
 // Atomic publication is POSIX-specific; Windows uses the in-place path.
-describe.skipIf(process.platform === 'win32')(
+describe(
   'interrupted staged embedding recovery (real CLI and native DB)',
-  { concurrent: false },
+  { concurrency: false, skip: process.platform === 'win32' },
   () => {
     it(
       'reuses verified source-aware multi-chunk groups without repeat provider work',
+      { timeout: DEADLINE },
       async () => {
         const texts = await successfulAnalyze(sourceAwareRepo);
         expect(texts.filter((text) => durableTexts.includes(text))).toEqual([]);
@@ -432,13 +445,14 @@ describe.skipIf(process.platform === 'win32')(
         for (const text of activeWindowCompleted) expect(texts).toContain(text);
         expectPublishedComplete(sourceAwareRepo, NODE_COUNT);
       },
-      DEADLINE,
     );
 
-    it.each([
-      ['plain', []],
-      ['forced', ['--force', '--embeddings']],
-    ] as const)(
+    registerCases(
+      it,
+      [
+        ['plain', []],
+        ['forced', ['--force', '--embeddings']],
+      ] as const,
       '%s retry reuses verified groups and explains unverified legacy input',
       async (name, flags) => {
         const repo = cloneStoppedRepo(name);
@@ -453,6 +467,7 @@ describe.skipIf(process.platform === 'win32')(
 
     it(
       'manual checkpoint opt-out retains verified staged groups',
+      { timeout: DEADLINE },
       async () => {
         const repo = cloneStoppedRepo('manual-checkpoint-opt-out');
         const previous = process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT;
@@ -466,11 +481,11 @@ describe.skipIf(process.platform === 'win32')(
           else process.env.GITNEXUS_WAL_MANUAL_CHECKPOINT = previous;
         }
       },
-      DEADLINE,
     );
 
     it(
       'survives another crash after harvesting but before the replacement is durable',
+      { timeout: DEADLINE * 2 },
       async () => {
         const repo = cloneStoppedRepo('crash-again');
         const source = readMeta(repo).embeddingCheckpoint?.recovery?.stagingFile;
@@ -486,7 +501,7 @@ describe.skipIf(process.platform === 'win32')(
           }
         });
         const result = await retry.done;
-        expect(killed, result.output).toBe(true);
+        assert.equal(killed, true, result.output);
         expect(result.signal).toBe('SIGKILL');
         expect(submitted).toEqual([]);
         expect(readMeta(repo).embeddingCheckpoint?.recovery?.stagingFile).toBe(source);
@@ -495,11 +510,11 @@ describe.skipIf(process.platform === 'win32')(
         expectLegacyReuse(finalTexts, 128);
         expectPublishedComplete(repo, NODE_COUNT);
       },
-      DEADLINE * 2,
     );
 
     it(
       'regenerates changed content and removes deleted nodes while reusing the other complete groups',
+      { timeout: DEADLINE },
       async () => {
         const repo = cloneStoppedRepo('changed');
         const source = path.join(repo, 'functions.ts');
@@ -522,11 +537,11 @@ describe.skipIf(process.platform === 'win32')(
         expectLegacyReuse(texts, 129);
         expectPublishedComplete(repo, NODE_COUNT - 1);
       },
-      DEADLINE,
     );
 
     it(
       'a forced retry with a different model does not import the staged cache',
+      { timeout: DEADLINE },
       async () => {
         const repo = cloneStoppedRepo('different-model');
         const texts = await successfulAnalyze(repo, [
@@ -539,11 +554,11 @@ describe.skipIf(process.platform === 'win32')(
         expect(texts.length).toBeGreaterThanOrEqual(NODE_COUNT);
         expectPublishedComplete(repo, NODE_COUNT);
       },
-      DEADLINE,
     );
 
     it(
       'explicit drop abandons staged vectors without contacting the provider',
+      { timeout: DEADLINE },
       async () => {
         const repo = cloneStoppedRepo('drop');
         expect(await successfulAnalyze(repo, ['--force', '--drop-embeddings'])).toEqual([]);
@@ -551,7 +566,6 @@ describe.skipIf(process.platform === 'win32')(
         expect(readMeta(repo).stats?.embeddings ?? 0).toBe(0);
         expect(readPublishedRows(repo)).toEqual([]);
       },
-      DEADLINE,
     );
   },
 );
