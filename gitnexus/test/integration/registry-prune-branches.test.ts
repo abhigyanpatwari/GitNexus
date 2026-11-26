@@ -1,4 +1,4 @@
-import { execFileSync, execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -38,7 +38,11 @@ describe('registry prune-branches (#3332)', () => {
     initGitRepo(repo);
     await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
     commitAll(repo, 'init');
-    execSync('git branch -M main', { cwd: repo, stdio: 'ignore', windowsHide: true });
+    execFileSync('git', ['branch', '-M', 'main'], {
+      cwd: repo,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
 
     const storagePath = path.join(repo, '.gitnexus');
     const meta = (branch: string): RepoMeta => ({
@@ -54,7 +58,7 @@ describe('registry prune-branches (#3332)', () => {
 
     const dirs: Record<string, string> = {};
     for (const branch of [...opts.deleted, ...opts.live]) {
-      execSync(`git branch ${branch}`, { cwd: repo, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['branch', branch], { cwd: repo, stdio: 'ignore', windowsHide: true });
       await registerRepo(repo, meta(branch), { branch });
       const dir = path.join(storagePath, 'branches', branchSlug(branch));
       await saveMeta(dir, meta(branch));
@@ -62,7 +66,11 @@ describe('registry prune-branches (#3332)', () => {
     }
 
     for (const branch of opts.deleted) {
-      execSync(`git branch -D ${branch}`, { cwd: repo, stdio: 'ignore', windowsHide: true });
+      execFileSync('git', ['branch', '-D', branch], {
+        cwd: repo,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
     }
 
     return { repo, storagePath, dirs };
@@ -151,5 +159,45 @@ describe('registry prune-branches (#3332)', () => {
     await expect(fs.access(dirs['feat/cli-gone'])).rejects.toThrow();
     const [entry] = await listRegisteredRepos();
     expect(entry.branches).toBeUndefined();
+  });
+
+  it('reports probe-failed branch slots in plain output instead of claiming none were found', async () => {
+    const repo = fixture.dbPath;
+    initGitRepo(repo);
+    await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+    commitAll(repo, 'init');
+    execFileSync('git', ['branch', '-M', 'main'], {
+      cwd: repo,
+      stdio: 'ignore',
+      windowsHide: true,
+    });
+
+    const storagePath = path.join(repo, '.gitnexus');
+    const meta = (branch: string): RepoMeta => ({
+      repoPath: repo,
+      lastCommit: 'aaa',
+      indexedAt: '2026-10-01T00:00:00.000Z',
+      branch,
+      stats: { files: 1, nodes: 1 },
+    });
+
+    await saveMeta(storagePath, meta('main'));
+    await registerRepo(repo, meta('main'));
+    await registerRepo(repo, meta('feat/unreadable'), { branch: 'feat/unreadable' });
+
+    // Place a regular file at the slot path so probeDirectory classifies it as 'probe-failed'.
+    const branchesDir = path.join(storagePath, 'branches');
+    await fs.mkdir(branchesDir, { recursive: true });
+    await fs.writeFile(path.join(branchesDir, branchSlug('feat/unreadable')), 'not-a-dir');
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await pruneBranchesCommand({ repo });
+
+    expect(result.pruned).toEqual([]);
+    expect(result.probeFailed).toEqual(['feat/unreadable']);
+    const output = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+    expect(output).toContain('Could not inspect 1 branch slot(s): feat/unreadable');
+    expect(output).not.toContain('No stale branch indexes found.');
   });
 });

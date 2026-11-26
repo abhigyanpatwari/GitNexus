@@ -145,16 +145,28 @@ export const pruneBranchesCommand = async (
 
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));
-  } else if (pruned.length === 0 && failed.length === 0) {
+  } else if (pruned.length === 0 && failed.length === 0 && probeFailed.length === 0) {
     console.log('No stale branch indexes found.');
   } else if (dryRun) {
-    console.log(`Dry run: would prune ${pruned.length} branch index(es): ${pruned.join(', ')}`);
+    if (pruned.length > 0) {
+      console.log(`Dry run: would prune ${pruned.length} branch index(es): ${pruned.join(', ')}`);
+    }
+    if (probeFailed.length > 0) {
+      console.log(
+        `Could not inspect ${probeFailed.length} branch slot(s): ${probeFailed.join(', ')}`,
+      );
+    }
   } else {
     if (pruned.length > 0) {
       console.log(`Pruned ${pruned.length} stale branch index(es): ${pruned.join(', ')}`);
     }
     if (skippedLive.length > 0) {
       console.log(`Skipped ${skippedLive.length} live branch(es): ${skippedLive.join(', ')}`);
+    }
+    if (probeFailed.length > 0) {
+      console.log(
+        `Could not inspect ${probeFailed.length} branch slot(s): ${probeFailed.join(', ')}`,
+      );
     }
     if (failed.length > 0) {
       for (const item of failed) {
