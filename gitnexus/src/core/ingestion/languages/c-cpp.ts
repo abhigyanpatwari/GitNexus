@@ -196,10 +196,30 @@ const CPP_OUT_OF_LINE_SCOPE_TYPES = new Set([
 ]);
 
 function splitCppScopeText(raw: string): string[] {
-  return raw
-    .split('::')
-    .map((segment) => segment.trim())
-    .filter(Boolean);
+  const segments: string[] = [];
+  let angleDepth = 0;
+  let parenDepth = 0;
+  let start = 0;
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (ch === '(') {
+      parenDepth += 1;
+    } else if (ch === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+    } else if (parenDepth === 0 && ch === '<') {
+      angleDepth += 1;
+    } else if (parenDepth === 0 && ch === '>') {
+      angleDepth = Math.max(0, angleDepth - 1);
+    } else if (angleDepth === 0 && parenDepth === 0 && ch === ':' && raw[i + 1] === ':') {
+      const segment = raw.slice(start, i).trim();
+      if (segment) segments.push(segment);
+      i += 1;
+      start = i + 1;
+    }
+  }
+  const tail = raw.slice(start).trim();
+  if (tail) segments.push(tail);
+  return segments;
 }
 
 /** Find the inner `function_declarator` of a C/C++ function declaration/definition. */

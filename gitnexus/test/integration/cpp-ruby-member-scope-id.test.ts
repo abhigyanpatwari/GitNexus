@@ -7,6 +7,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
+import Parser from 'tree-sitter';
+import CPP from 'tree-sitter-cpp';
+import { cppProvider } from '../../src/core/ingestion/languages/c-cpp.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 import { writeFixtureRepo } from '../helpers/resolution-graph.js';
 import { findDanglingEdges, getRelationships } from './resolvers/helpers.js';
@@ -172,6 +175,52 @@ PtrNs::Box& PtrNs::Box::ref() { return *this; }
     expect(methodIds.has('Method:main.cpp:run#0')).toBe(false);
 
     expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  }, 60000);
+
+  it('preserves :: inside template arguments on C++ out-of-line definitions (#4141)', async () => {
+    const repo = createTempRepo('cpp-template-arg-scope', {
+      'box.hpp': `
+namespace std {
+  struct string {};
+}
+namespace A {
+  template <class T>
+  struct Box {};
+
+  template <>
+  struct Box<std::string> {
+    void save();
+  };
+}
+`,
+      'main.cpp': `
+#include "box.hpp"
+
+namespace A {
+  void Box<std::string>::save() {}
+}
+`,
+    });
+
+    const result = await runPipelineFromRepo(repo, () => {}, { skipGraphPhases: true });
+    const methodIds = new Set<string>();
+    result.graph.forEachNode((node) => {
+      if (node.label === 'Method') methodIds.add(node.id);
+    });
+
+    expect(methodIds.has('Method:box.hpp:A.Box<std::string>.save#0')).toBe(true);
+    expect(methodIds.has('Method:main.cpp:A.Box<std::string>.save#0')).toBe(true);
+    expect(methodIds.has('Method:main.cpp:A.Box<std.string>.save#0')).toBe(false);
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+
+    const parser = new Parser();
+    parser.setLanguage(CPP);
+    const tree = parser.parse('void A::Box<std::string>::save() {}\n');
+    const fnDef = tree.rootNode.namedChild(0);
+    expect(fnDef?.type).toBe('function_definition');
+    expect(fnDef ? cppProvider.resolveDetachedOwnerName?.(fnDef) : undefined).toBe(
+      'A.Box<std::string>',
+    );
   }, 60000);
 
   it('keeps C++ anonymous namespace member IDs distinct and invariant to edits above', async () => {

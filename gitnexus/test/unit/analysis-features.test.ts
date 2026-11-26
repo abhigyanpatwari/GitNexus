@@ -134,6 +134,17 @@ describe('analysis feature versions', () => {
       [RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id]: RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.version,
     });
     expect(rubyFeatures).not.toHaveProperty(CPP_MEMBER_SCOPE_IDENTITY_FEATURE.id);
+
+    for (const filename of ['Rakefile', 'subdir/Gemfile', 'Guardfile', 'Vagrantfile', 'Brewfile']) {
+      expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, [filename])).toMatchObject({
+        [RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id]: RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.version,
+      });
+    }
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['C:\\repo\\Rakefile'])).toMatchObject(
+      {
+        [RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id]: RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.version,
+      },
+    );
   });
 
   it('rejects invalid or duplicate descriptors', () => {
