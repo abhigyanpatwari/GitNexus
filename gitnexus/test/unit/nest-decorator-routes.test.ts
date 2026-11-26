@@ -835,26 +835,26 @@ describe('NestJS decorator routes', () => {
 
   it.each([
     {
-      label: 'the controller redeclares the handler without a route decorator',
+      label: 'redeclared without a route decorator',
       controllerMember: 'list() {}',
       expected: ['GET /x/kept'],
     },
     {
-      label: 'the controller redeclares the handler with another route',
+      label: 'redeclared with another route',
       controllerMember: "@Post('changed') list() {}",
       expected: ['POST /x/changed', 'GET /x/kept'],
     },
     {
-      label: 'the controller declares an accessor of the same name',
+      label: 'hidden by an accessor of the same name',
       controllerMember: 'get list() { return () => 1; }',
       expected: ['GET /x/kept'],
     },
     {
-      label: 'the controller redeclares it under a quoted name',
+      label: 'redeclared under a quoted name',
       controllerMember: "'list'() {}",
       expected: ['GET /x/kept'],
     },
-  ])('drops an inherited route when $label', ({ controllerMember, expected }) => {
+  ])('drops an inherited route $label', ({ controllerMember, expected }) => {
     // Nest walks the prototype chain from the controller up and keeps the first
     // declaration of each name, so the base decorator is never read.
     expect(
@@ -968,12 +968,12 @@ describe('NestJS decorator routes', () => {
 
   it.each([
     {
-      label: 'the controller declares a method under a computed key',
+      label: 'the controller has a computed key',
       base: "@Get('list') list() {}",
       controllerMember: '[HANDLER]() {}',
     },
     {
-      label: 'the base handler itself is declared under a computed key',
+      label: 'the base handler has a computed key',
       base: "@Get('list') [HANDLER]() {}",
       controllerMember: '',
     },
