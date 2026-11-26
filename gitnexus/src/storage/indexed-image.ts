@@ -13,76 +13,111 @@
  * old side, and compare each with the recorded hash.
  */
 
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import { createHash } from 'crypto';
 import path from 'path';
+import { promisify } from 'util';
+import { mapConcurrent } from '../lib/utils.js';
 import { computeFileHash } from './file-hash.js';
 import type { DiffHunk, FileDiff, FileDiffPreImage } from './git.js';
 import { loadMeta } from './repo-meta.js';
 import { metadataMatchesGraph } from './vector-generation.js';
 
+const execFileAsync = promisify(execFile);
 const NULL_BLOB = /^0+$/;
+/** Hash checks in flight at once: each is a file read or one `git` process. */
+const HASH_CONCURRENCY = 8;
 
 /**
  * The bytes a checkout of `blob` at `filePath` writes (smudge and EOL filters
  * applied, as `analyze` read them from disk), hashed. `null` when git cannot
  * produce them.
  */
-function hashCheckedOutBlob(cwd: string, blob: string, filePath: string): string | null {
+async function hashCheckedOutBlob(
+  cwd: string,
+  blob: string,
+  filePath: string,
+): Promise<string | null> {
   try {
-    const bytes = execFileSync('git', ['cat-file', '--filters', `--path=${filePath}`, blob], {
-      cwd,
-      maxBuffer: 256 * 1024 * 1024,
-      timeout: 30_000,
-      windowsHide: true,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    return createHash('sha256').update(bytes).digest('hex');
+    const { stdout } = await execFileAsync(
+      'git',
+      ['cat-file', '--filters', `--path=${filePath}`, blob],
+      { cwd, encoding: 'buffer', maxBuffer: 256 * 1024 * 1024, timeout: 30_000, windowsHide: true },
+    );
+    return createHash('sha256').update(stdout).digest('hex');
   } catch {
     return null;
   }
 }
 
+/** Which side of its diff the index holds for each modified, indexed file. */
+export interface IndexedImages {
+  /** Files indexed as their diff's OLD side, with their old-side hunks. */
+  preImage: Map<FileDiff, DiffHunk[]>;
+  /**
+   * Indexed files whose recorded hash matches neither side (a third revision,
+   * a branch switch without re-analyzing) or could not be checked. Neither
+   * side's ranges fit their graph rows, so no verdict on them can be trusted.
+   */
+  neither: FileDiff[];
+}
+
 /**
- * The modified files whose indexed content is their diff's OLD side, each with
- * its old-side hunks.
- *
- * A file is listed only when the recorded hash matches the old side and not
- * the new one, so an index of the post-image, an unknown image, or a missing
- * hash keeps the post-image mapping `detect_changes` has always used. Deleted
- * files already map with their old side and are not considered.
+ * Compare each modified file's recorded hash with its diff's new side, then its
+ * old side. A post-image match keeps the post-image mapping `detect_changes`
+ * has always used, as does a file with no recorded hash. Added and deleted
+ * files are not considered: deleted files already map with their old side.
  *
  * `scope` is the `detect_changes` scope: for `staged` the new side is the
  * index blob, for every other scope it is the working-tree file in `cwd`.
  */
-export async function filesIndexedAsPreImage(
+export async function classifyIndexedImages(
   cwd: string,
   scope: string,
   fileHashes: Readonly<Record<string, string>>,
   files: readonly FileDiff[],
   preImages: ReadonlyMap<FileDiff, FileDiffPreImage>,
-): Promise<Map<FileDiff, DiffHunk[]>> {
-  const result = new Map<FileDiff, DiffHunk[]>();
+): Promise<IndexedImages> {
+  const result: IndexedImages = { preImage: new Map(), neither: [] };
+  const candidates: { file: FileDiff; hunks: DiffHunk[]; oldBlob: string; newBlob: string }[] = [];
   for (const file of files) {
-    const preImage = preImages.get(file);
-    if (!preImage?.oldBlob || !preImage.newBlob || file.hunks.length === 0) continue;
-    if (NULL_BLOB.test(preImage.oldBlob) || NULL_BLOB.test(preImage.newBlob)) continue;
+    const { hunks, oldBlob, newBlob } = preImages.get(file) ?? {};
+    if (!hunks || !oldBlob || !newBlob || file.hunks.length === 0) continue;
+    if (NULL_BLOB.test(oldBlob) || NULL_BLOB.test(newBlob)) continue;
     const oldPath = file.oldFilePath ?? file.filePath;
-    const indexedOld = fileHashes[oldPath];
-    if (indexedOld === undefined) continue;
-
-    const indexedNew = fileHashes[file.filePath];
-    if (indexedNew !== undefined) {
-      const newHash =
-        scope === 'staged'
-          ? hashCheckedOutBlob(cwd, preImage.newBlob, file.filePath)
-          : await computeFileHash(path.join(cwd, file.filePath));
-      if (newHash === indexedNew) continue;
-    }
-    if (hashCheckedOutBlob(cwd, preImage.oldBlob, oldPath) === indexedOld) {
-      result.set(file, preImage.hunks);
-    }
+    if (fileHashes[file.filePath] === undefined && fileHashes[oldPath] === undefined) continue;
+    candidates.push({ file, hunks, oldBlob, newBlob });
   }
+
+  const sides = await mapConcurrent(
+    candidates,
+    async ({ file, oldBlob, newBlob }): Promise<'post' | 'pre' | 'neither'> => {
+      const indexedNew = fileHashes[file.filePath];
+      if (indexedNew !== undefined) {
+        const newHash =
+          scope === 'staged'
+            ? await hashCheckedOutBlob(cwd, newBlob, file.filePath)
+            : await computeFileHash(path.join(cwd, file.filePath));
+        if (newHash === indexedNew) return 'post';
+      }
+      const oldPath = file.oldFilePath ?? file.filePath;
+      const indexedOld = fileHashes[oldPath];
+      if (
+        indexedOld !== undefined &&
+        (await hashCheckedOutBlob(cwd, oldBlob, oldPath)) === indexedOld
+      ) {
+        return 'pre';
+      }
+      return 'neither';
+    },
+    { concurrency: HASH_CONCURRENCY },
+  );
+
+  candidates.forEach(({ file, hunks }, i) => {
+    const side = sides[i] ?? 'neither';
+    if (side === 'pre') result.preImage.set(file, hunks);
+    else if (side === 'neither') result.neither.push(file);
+  });
   return result;
 }
 

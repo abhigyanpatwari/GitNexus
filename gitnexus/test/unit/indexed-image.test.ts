@@ -1,5 +1,5 @@
 /**
- * `filesIndexedAsPreImage` (#4136): which side of each modified file's diff the
+ * `classifyIndexedImages` (#4136): which side of each modified file's diff the
  * index holds, decided from `meta.fileHashes` against a real git repository.
  */
 import { describe, it, expect } from 'vitest';
@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'fs';
 import path from 'path';
 import { parseDiffWithPreImage } from '../../src/storage/git.js';
-import { filesIndexedAsPreImage } from '../../src/storage/indexed-image.js';
+import { classifyIndexedImages } from '../../src/storage/indexed-image.js';
 import { diffArgsFor } from '../helpers/detect-changes-diff-args.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
@@ -30,36 +30,61 @@ function editedRepo(configure?: (dir: string) => void): string {
   return dir;
 }
 
-async function preImageFiles(dir: string, scope: string, fileHashes: Record<string, string>) {
+async function classify(dir: string, scope: string, fileHashes: Record<string, string>) {
   const diff = execFileSync('git', diffArgsFor(scope), { cwd: dir, encoding: 'utf-8' });
   const { files, preImages } = parseDiffWithPreImage(diff);
-  const picked = await filesIndexedAsPreImage(dir, scope, fileHashes, files, preImages);
-  return files.filter((f) => picked.has(f)).map((f) => f.filePath);
+  const { preImage, neither } = await classifyIndexedImages(
+    dir,
+    scope,
+    fileHashes,
+    files,
+    preImages,
+  );
+  return {
+    pre: files.filter((f) => preImage.has(f)).map((f) => f.filePath),
+    neither: neither.map((f) => f.filePath),
+  };
 }
 
-describe('filesIndexedAsPreImage', () => {
+describe('classifyIndexedImages', () => {
   it('picks the old side when the index holds the analyzed pre-image', async () => {
     const dir = editedRepo();
-    expect(await preImageFiles(dir, 'unstaged', { 'f.ts': sha256(BEFORE) })).toEqual(['f.ts']);
+    expect(await classify(dir, 'unstaged', { 'f.ts': sha256(BEFORE) })).toEqual({
+      pre: ['f.ts'],
+      neither: [],
+    });
   });
 
   it('keeps the new side when the index already holds the edit', async () => {
     const dir = editedRepo();
-    expect(await preImageFiles(dir, 'unstaged', { 'f.ts': sha256(AFTER) })).toEqual([]);
+    expect(await classify(dir, 'unstaged', { 'f.ts': sha256(AFTER) })).toEqual({
+      pre: [],
+      neither: [],
+    });
   });
 
-  it('keeps the new side when the index holds neither image or has no hash', async () => {
+  it('reports a file whose recorded hash matches neither side', async () => {
     const dir = editedRepo();
-    expect(await preImageFiles(dir, 'unstaged', { 'f.ts': sha256('other\n') })).toEqual([]);
-    expect(await preImageFiles(dir, 'unstaged', {})).toEqual([]);
+    expect(await classify(dir, 'unstaged', { 'f.ts': sha256('other\n') })).toEqual({
+      pre: [],
+      neither: ['f.ts'],
+    });
+  });
+
+  it('makes no claim about a file with no recorded hash (legacy metadata)', async () => {
+    const dir = editedRepo();
+    expect(await classify(dir, 'unstaged', {})).toEqual({ pre: [], neither: [] });
   });
 
   it('compares the staged blob, not the working tree, for staged scope', async () => {
     const dir = editedRepo();
     execFileSync('git', ['add', 'f.ts'], { cwd: dir });
     writeFileSync(path.join(dir, 'f.ts'), 'unrelated working-tree edit\n');
-    expect(await preImageFiles(dir, 'staged', { 'f.ts': sha256(BEFORE) })).toEqual(['f.ts']);
-    expect(await preImageFiles(dir, 'staged', { 'f.ts': sha256(AFTER) })).toEqual([]);
+    expect((await classify(dir, 'staged', { 'f.ts': sha256(BEFORE) })).pre).toEqual(['f.ts']);
+    expect(await classify(dir, 'staged', { 'f.ts': sha256(AFTER) })).toEqual({
+      pre: [],
+      neither: [],
+    });
   });
 
   it('hashes the checked-out bytes under core.autocrlf, as analyze read them', async () => {
@@ -70,6 +95,6 @@ describe('filesIndexedAsPreImage', () => {
     execFileSync('git', ['checkout', '-q', 'HEAD', '--', 'f.ts'], { cwd: dir });
     const analyzed = readFileSync(path.join(dir, 'f.ts'));
     writeFileSync(path.join(dir, 'f.ts'), AFTER.replace(/\n/g, '\r\n'));
-    expect(await preImageFiles(dir, 'unstaged', { 'f.ts': sha256(analyzed) })).toEqual(['f.ts']);
+    expect((await classify(dir, 'unstaged', { 'f.ts': sha256(analyzed) })).pre).toEqual(['f.ts']);
   });
 });

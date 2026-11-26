@@ -53,6 +53,7 @@ type DetectChangesResult = {
   error?: unknown;
   summary: { changed_count: number; risk_level: string };
   changed_symbols: { name: string }[];
+  partial?: boolean;
 };
 
 withTestLbugDB(
@@ -113,6 +114,28 @@ withTestLbugDB(
       expect(
         await changedNames((lines) => [...lines.slice(0, 3), '// new', ...lines.slice(3)]),
       ).toEqual([]);
+    });
+
+    // Last: it commits, so HEAD no longer holds the analyzed bytes afterwards.
+    it('withholds a ranked verdict when the index holds neither side', async () => {
+      // analyze, commit an edit, edit again and stage: the staged diff's old
+      // side is the commit, its new side the index, and the graph neither.
+      // Dropping `first` shifts `third` onto the line the graph has for
+      // `second`, so either side's ranges would name a wrong, real symbol.
+      const committed = UTIL.split('\n').filter((l) => !l.includes('first'));
+      writeFileSync(path.join(repoDir, 'util.ts'), committed.join('\n'));
+      execFileSync('git', ['commit', '-qam', 'drop first'], { cwd: repoDir });
+      writeFileSync(
+        path.join(repoDir, 'util.ts'),
+        committed.map((l) => l.replace('helper(3)', 'helper(33)')).join('\n'),
+      );
+      execFileSync('git', ['add', 'util.ts'], { cwd: repoDir });
+      const result = (await backend.callTool('detect_changes', {
+        scope: 'staged',
+      })) as DetectChangesResult;
+      expect(result.error).toBeUndefined();
+      expect(result.partial).toBe(true);
+      expect(result.summary.risk_level).toBe('unknown');
     });
   },
   {

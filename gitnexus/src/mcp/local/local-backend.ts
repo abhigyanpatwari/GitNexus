@@ -134,7 +134,7 @@ import {
 } from '../../core/lbug/schema.js';
 import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { metadataMatchesGraph, selectVectorGeneration } from '../../storage/vector-generation.js';
-import { filesIndexedAsPreImage, loadIndexedFileHashes } from '../../storage/indexed-image.js';
+import { classifyIndexedImages, loadIndexedFileHashes } from '../../storage/indexed-image.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning, ftsQueryFailedWarning } from '../../core/search/fts-indexes.js';
 import { getFtsDisabledReason, type FtsDisabledReason } from '../../core/search/fts-policy.js';
@@ -7109,13 +7109,16 @@ export class LocalBackend {
     // analyze-then-edit that is the OLD side: the post-image ranges would land
     // every hunk below an inserted or removed line on the wrong symbol.
     const fileHashes = await loadIndexedFileHashes(repo.lbugPath);
-    const preImageHunks = fileHashes
-      ? await filesIndexedAsPreImage(diffCwd, scope, fileHashes, fileDiffs, preImages)
-      : new Map<FileDiff, DiffHunk[]>();
+    const indexedImages = fileHashes
+      ? await classifyIndexedImages(diffCwd, scope, fileHashes, fileDiffs, preImages)
+      : { preImage: new Map<FileDiff, DiffHunk[]>(), neither: [] };
     const rangeDiffs = fileDiffs.map((fileDiff) => {
-      const hunks = preImageHunks.get(fileDiff);
+      const hunks = indexedImages.preImage.get(fileDiff);
       return hunks ? { ...fileDiff, hunks } : fileDiff;
     });
+    // An index that holds neither side (analyzed at a third revision) fits no
+    // ranges: the rows below may name the wrong symbols, so withhold a verdict.
+    if (indexedImages.neither.length > 0) queryDegraded = true;
 
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).
