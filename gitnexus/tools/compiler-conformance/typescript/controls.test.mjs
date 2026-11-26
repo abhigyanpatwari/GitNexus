@@ -24,6 +24,26 @@ test('constructors with the same class name resolve in their own namespaces', ()
   assert.throws(() => compareReports(calls, { ...calls, sites }), /Missing from/);
 });
 
+test('a diamond keeps both implementation contracts and the method selected on its derived interface', () => {
+  const report = compilerReport(path.resolve(root, '../typescript-interface-contracts'));
+  const inherited = 'index.ts#1:Reader.read';
+  const specialized = 'index.ts#4:TextReader.read';
+  const contracts = report.METHOD_IMPLEMENTS;
+  assert.deepEqual(new Set(contracts.edges.map(({ to }) => to)), new Set([inherited, specialized]));
+  const edges = contracts.edges.filter(({ to }) => to !== inherited);
+  assert.throws(() => compareReports(contracts, { ...contracts, edges }), /Missing from actual/);
+  const overrides = report.METHOD_OVERRIDES;
+  const selected = overrides.edges.find(({ from }) => from === 'index.ts#8:Joined');
+  assert.equal(selected?.to, specialized);
+  const wrong = overrides.edges.map((edge) =>
+    edge === selected ? { ...edge, to: inherited } : edge,
+  );
+  assert.throws(
+    () => compareReports(overrides, { ...overrides, edges: wrong }),
+    /Missing from actual/,
+  );
+});
+
 test('workspace package links survive asynchronous readers and are cleaned up on rejection', async () => {
   const project = path.resolve(root, '../typescript-named-over-star');
   let scratch;

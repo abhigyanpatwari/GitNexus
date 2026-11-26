@@ -97,6 +97,7 @@ const typescriptScopeResolver: ScopeResolver = {
   resolveUnqualifiedCall: resolveTsFunctionOverload,
   populateWorkspaceReferences: indexTsCallArguments,
   resolveReceiverMember: resolveTsMemberArguments,
+  receiverMemberLookupCoversAllCalls: true,
   receiverCallSite: tsReceiverCallSite,
   callResultAssignmentApplies: tsCallResultAssignmentApplies,
   // One hook, both routes. TypeScript exposes collection views as METHOD calls

@@ -328,21 +328,59 @@ function reportProject(
       return node.modifiers?.some((modifier) => modifier.kind === kind) ?? false;
     }
 
-    function interfaceContracts(node, seen = new Set()) {
-      const contracts = [];
-      const key = identity(root, node);
-      if (seen.has(key)) return contracts;
-      seen.add(key);
-      for (const clause of node.heritageClauses ?? []) {
-        for (const base of clause.types) {
-          const type = checker.getTypeAtLocation(base);
-          const decl = symbolDeclaration(type?.getSymbol(), project);
-          if (clause.token === SyntaxKind.ImplementsKeyword && type) contracts.push(type);
-          else if (decl?.kind === SyntaxKind.ClassDeclaration)
-            contracts.push(...interfaceContracts(decl, seen));
+    function* baseHierarchy(types) {
+      const pending = [...types];
+      const seen = new Set();
+      for (let i = 0; i < pending.length; i++) {
+        const type = pending[i];
+        const symbol = type.getSymbol();
+        const declaration = symbolDeclaration(symbol, project);
+        if (!declaration || !files.has(declaration.getSourceFile().fileName)) continue;
+        const key = identity(root, declaration);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        yield type;
+        if (
+          declaration.kind === SyntaxKind.InterfaceDeclaration ||
+          declaration.kind === SyntaxKind.ClassDeclaration
+        ) {
+          pending.push(...checker.getBaseTypes(checker.getDeclaredTypeOfSymbol(symbol)));
         }
       }
-      return contracts;
+    }
+
+    function* interfaceContracts(instance) {
+      for (const owner of baseHierarchy([instance])) {
+        const declaration = symbolDeclaration(owner.getSymbol(), project);
+        for (const clause of declaration.heritageClauses ?? []) {
+          if (clause.token !== SyntaxKind.ImplementsKeyword) continue;
+          yield* baseHierarchy(
+            Array.from(clause.types, (base) => checker.getTypeAtLocation(base)).filter(Boolean),
+          );
+        }
+      }
+    }
+
+    function recordInheritedMethodSelection(node, instance) {
+      const inherited = new Map();
+      for (const base of baseHierarchy(checker.getBaseTypes(instance))) {
+        for (const member of checker.getPropertiesOfType(base)) {
+          const declaration = symbolDeclaration(member, project);
+          if (!isMethod(declaration)) continue;
+          const candidates = inherited.get(member.name) ?? new Set();
+          candidates.add(identity(root, declaration));
+          inherited.set(member.name, candidates);
+        }
+      }
+      // The graph represents a collision with an edge from the derived owner
+      // to the method visible on it. Ask the checker which declaration wins.
+      for (const [name, candidates] of inherited) {
+        if (candidates.size < 2) continue;
+        const selected = symbolDeclaration(checker.getPropertyOfType(instance, name), project);
+        if (isMethod(selected) && candidates.has(identity(root, selected))) {
+          edge('METHOD_OVERRIDES', node, selected);
+        }
+      }
     }
 
     function recordHeritage(node) {
@@ -374,13 +412,14 @@ function reportProject(
           }
         }
       }
-      if (node.kind !== SyntaxKind.ClassDeclaration) return;
       const classSymbol = node.name
         ? checker.getSymbolAtLocation(node.name)
         : checker.getTypeAtLocation(node)?.getSymbol();
       if (!classSymbol) return;
       const instance = checker.getDeclaredTypeOfSymbol(classSymbol);
-      for (const contract of interfaceContracts(node)) {
+      recordInheritedMethodSelection(node, instance);
+      if (node.kind !== SyntaxKind.ClassDeclaration) return;
+      for (const contract of interfaceContracts(instance)) {
         for (const member of checker.getPropertiesOfType(contract)) {
           const declaration = symbolDeclaration(member, project);
           if (!isMethod(declaration)) continue;

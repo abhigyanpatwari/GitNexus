@@ -302,10 +302,18 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
 ) => {
   const argumentsAtSite = argumentsByCall.get(site);
   if (!argumentsAtSite || !site.argumentTypes) return undefined;
-  const signatures = model.methods
-    .lookupAllByOwner(owner.nodeId, name)
-    .filter((def) => def.isOverloadSignature);
-  if (signatures.length < 2) return undefined;
+  let methods = model.methods.lookupAllByOwner(owner.nodeId, name);
+  if (!methods.length) {
+    if (model.fields.lookupAllByOwner(owner.nodeId, name).length) return undefined;
+    for (const ancestor of indexes.methodDispatch.mroFor(owner.nodeId)) {
+      methods = model.methods.lookupAllByOwner(ancestor, name);
+      if (methods.length) break;
+      if (model.fields.lookupAllByOwner(ancestor, name).length) return undefined;
+    }
+  }
+  const signatures = methods.filter((def) => def.isOverloadSignature);
+  // Static and instance overload families can share an owner and a spelling.
+  if (signatures.length < 2 || methods.length - signatures.length > 1) return undefined;
   const types = [...site.argumentTypes];
   for (const { source, parameterIndex } of argumentsAtSite) {
     const binding = findReceiverTypeBinding(source.inScope, source.name, indexes, {
