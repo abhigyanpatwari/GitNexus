@@ -342,7 +342,10 @@ export function collectEsmExportEvidence(
     localSpecifiers,
     commonJs,
     defaultLocal,
-    ...(wrappedLocal !== undefined ? { wrappedDefaultLocal: wrappedLocal } : {}),
+    // Conflicting defaults name none, and then nothing is exported through a wrapper.
+    ...(wrappedLocal !== undefined && wrappedLocal === defaultLocal
+      ? { wrappedDefaultLocal: wrappedLocal }
+      : {}),
   };
 }
 

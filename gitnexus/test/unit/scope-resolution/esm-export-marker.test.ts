@@ -404,6 +404,49 @@ describe('@declaration.is-default-export (#3956)', () => {
       ).toEqual(['F']);
       expect(wrapped('memo(/* pure */ Foo)')).toEqual(['Foo']);
       expect(wrapped('mobx.observer(Foo)')).toEqual(['Foo']);
+      expect(wrapped('withStyles(other)(Foo)')).toEqual(['Foo']);
+      expect(wrapped('compose(other, other)(Foo)')).toEqual(['Foo']);
+      expect(wrapped('React.\\u006demo(Foo)')).toEqual(['Foo']);
+      expect(
+        defaultExports(
+          emit,
+          'const F = memo(forwardRef((p, r) => 1));\nexport default withRouter(F);',
+          file,
+        ),
+      ).toEqual(['F']);
+    }
+  });
+
+  it('marks no default through a curried call unless the factory is a known HOC', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      for (const expr of ['make()(Card)', 'createApp(config)(Card)', 'wrap(Card)(opts)'])
+        expect(
+          defaultExports(emit, `function Card() {}\nexport default ${expr};`, file),
+          expr,
+        ).toEqual([]);
+    }
+  });
+
+  it('marks no default for a value an arbitrary callback-taking call returns', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      for (const decl of [
+        'const store = createStore(() => 1);',
+        'const store = xs.\\u006dap(() => 1);',
+        'const store = debounce(() => 1);',
+      ])
+        expect(defaultExports(emit, `${decl}\nexport default memo(store);`, file), decl).toEqual(
+          [],
+        );
+    }
+  });
+
+  it('marks nothing exported when two wrapped defaults conflict', () => {
+    const src =
+      'function A() {}\nfunction B() {}\nexport default memo(A);\nexport default memo(B);\n';
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(defaultExports(emit, src, file)).toEqual([]);
+      const v = verdicts(emit, src, file);
+      expect([v.A, v.B]).toEqual(['false', 'false']);
     }
   });
 

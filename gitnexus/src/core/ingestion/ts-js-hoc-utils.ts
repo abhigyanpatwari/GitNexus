@@ -157,40 +157,33 @@ export function unwrapTransparentExpression(node: SyntaxNode): SyntaxNode {
   return current;
 }
 
-function isInlineFunction(node: SyntaxNode): boolean {
-  return node.type === 'arrow_function' || node.type === 'function_expression';
-}
-
-/** Timer and array/promise-method callees register or map a callback; they never wrap it. */
-function isBlockedWrapperCallee(callee: SyntaxNode | null): boolean {
-  if (callee?.type === 'identifier')
-    return DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(decodeIdentifierEscapes(callee.text));
-  const property =
-    callee?.type === 'member_expression' ? callee.childForFieldName('property') : null;
-  return (
-    property?.type === 'property_identifier' && ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
-  );
-}
-
 /** Wrappers that return a component standing in for their first argument. */
 const COMPONENT_WRAPPERS: ReadonlySet<string> = new Set(['memo', 'forwardRef', 'observer']);
+/** Factories whose result is such a wrapper: `connect(mapState)(Card)`. */
+const HOC_FACTORIES: ReadonlySet<string> = new Set(['connect', 'compose', 'inject']);
 const HOC_NAME = /^with[A-Z]/;
+
+/** `memo`, `React.memo` → `memo`; anything else has no static name. */
+function calleeName(callee: SyntaxNode | null): string | undefined {
+  const node = callee?.type === 'member_expression' ? callee.childForFieldName('property') : callee;
+  return node?.type === 'identifier' || node?.type === 'property_identifier'
+    ? decodeIdentifierEscapes(node.text)
+    : undefined;
+}
 
 /**
  * Does this callee return a wrapped version of its first argument? Known
  * wrappers (`memo`, `React.memo`, `forwardRef`, `observer`), `withX` HOCs, and
- * curried HOC factories (`connect(m)(Card)`, `withStyles(s)(Card)`). Any other
- * call may build a value from the argument (`createElement(Card)`,
- * `createApp(App)`), which is not the argument itself.
+ * the HOC a known factory returns (`connect(m)(Card)`, `withStyles(s)(Card)`).
+ * Any other call may build a value from the argument (`createElement(Card)`,
+ * `createApp(config)(App)`), which is not the argument itself.
  */
 function isComponentWrapperCallee(callee: SyntaxNode | null): boolean {
-  if (callee?.type === 'call_expression') return true;
-  const name =
-    callee?.type === 'identifier'
-      ? decodeIdentifierEscapes(callee.text)
-      : callee?.type === 'member_expression'
-        ? callee.childForFieldName('property')?.text
-        : undefined;
+  if (callee?.type === 'call_expression') {
+    const factory = calleeName(callee.childForFieldName('function'));
+    return factory !== undefined && (HOC_FACTORIES.has(factory) || HOC_NAME.test(factory));
+  }
+  const name = calleeName(callee);
   return name !== undefined && (COMPONENT_WRAPPERS.has(name) || HOC_NAME.test(name));
 }
 
@@ -201,13 +194,18 @@ function callArguments(call: SyntaxNode): SyntaxNode[] | undefined {
 }
 
 /**
- * `const X = hoc(() => …)` — the HOC-wrapped variable the queries declare as a
- * Function (`forwardRef`, `memo`, `observer`, …).
+ * Follow first arguments through component wrappers: `memo(forwardRef(x))` →
+ * `x`. Undefined at any other call, which may build a different value.
  */
-function isHocWrappedFunction(value: SyntaxNode | null): boolean {
-  if (value?.type !== 'call_expression') return false;
-  if (isBlockedWrapperCallee(value.childForFieldName('function'))) return false;
-  return callArguments(value)?.some(isInlineFunction) ?? false;
+function unwrapComponentWrappers(node: SyntaxNode): SyntaxNode | undefined {
+  let current = node;
+  while (current.type === 'call_expression') {
+    if (!isComponentWrapperCallee(current.childForFieldName('function'))) return undefined;
+    const [first] = callArguments(current) ?? [];
+    if (first === undefined) return undefined;
+    current = unwrapTransparentExpression(first);
+  }
+  return current;
 }
 
 const CALLABLE_DECLARATIONS: ReadonlySet<string> = new Set([
@@ -224,8 +222,9 @@ const CALLABLE_VALUES: ReadonlySet<string> = new Set([
 
 /**
  * Is `name` a top-level function or class: declared directly, or bound to a
- * function, class or HOC-wrapped function? A wrapper around anything else
- * (`make(config)`) returns a value the graph cannot attribute to the argument.
+ * function or class expression, bare or inside component wrappers
+ * (`const Field = forwardRef((p, r) => …)`)? Any other initializer
+ * (`createStore(() => …)`, `{ … }`) is a value, not the component.
  */
 function declaresTopLevelCallable(root: SyntaxNode, name: string): boolean {
   return root.namedChildren.some((stmt) => {
@@ -242,7 +241,8 @@ function declaresTopLevelCallable(root: SyntaxNode, name: string): boolean {
       return (
         binding?.type === 'identifier' &&
         decodeIdentifierEscapes(binding.text) === name &&
-        (CALLABLE_VALUES.has(value?.type ?? '') || isHocWrappedFunction(value))
+        value !== null &&
+        CALLABLE_VALUES.has(unwrapComponentWrappers(value)?.type ?? '')
       );
     });
   });
@@ -256,15 +256,9 @@ function declaresTopLevelCallable(root: SyntaxNode, name: string): boolean {
  * first argument is not a name: the synthesized HOC default above owns it.
  */
 export function wrappedDefaultLocal(call: SyntaxNode, root: SyntaxNode): string | undefined {
-  let current = call;
-  while (current.type === 'call_expression') {
-    if (!isComponentWrapperCallee(current.childForFieldName('function'))) return undefined;
-    const [first] = callArguments(current) ?? [];
-    if (first === undefined) return undefined;
-    current = unwrapTransparentExpression(first);
-  }
-  if (current.type !== 'identifier') return undefined;
-  const name = decodeIdentifierEscapes(current.text);
+  const wrapped = unwrapComponentWrappers(call);
+  if (wrapped?.type !== 'identifier') return undefined;
+  const name = decodeIdentifierEscapes(wrapped.text);
   return declaresTopLevelCallable(root, name) ? name : undefined;
 }
 
