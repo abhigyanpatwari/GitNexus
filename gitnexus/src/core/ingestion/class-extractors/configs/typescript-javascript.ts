@@ -49,6 +49,8 @@ const shared: Omit<ClassExtractionConfig, 'language'> = {
     'enum_declaration',
   ],
   ancestorScopeNodeTypes: [
+    'internal_module',
+    'module',
     'class',
     'class_declaration',
     'abstract_class_declaration',

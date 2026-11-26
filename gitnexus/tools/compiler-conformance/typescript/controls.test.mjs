@@ -13,6 +13,17 @@ const root = fileURLToPath(
 );
 const facts = compilerReport(root);
 
+test('constructors with the same class name resolve in their own namespaces', () => {
+  const calls = compilerReport(path.resolve(root, '../typescript-namespace-constructors')).CALLS;
+  const [localA, localB, qualifiedA, qualifiedB] = calls.sites;
+  assert.equal(calls.sites.length, 4);
+  assert.notEqual(localA.target, localB.target);
+  assert.equal(qualifiedA.target, localA.target);
+  assert.equal(qualifiedB.target, localB.target);
+  const sites = [localA, localB, qualifiedA, { ...qualifiedB, target: qualifiedA.target }];
+  assert.throws(() => compareReports(calls, { ...calls, sites }), /Missing from/);
+});
+
 test('workspace package links survive asynchronous readers and are cleaned up on rejection', async () => {
   const project = path.resolve(root, '../typescript-named-over-star');
   let scratch;
