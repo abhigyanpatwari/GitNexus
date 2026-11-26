@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   abortCachedEmbeddingsBuilder,
   cacheRowCount,
+  compatibleEmbeddingIdentity,
   createCachedEmbeddingsBuilder,
   DEFAULT_EMBEDDING_CACHE_IN_MEMORY_ROW_LIMIT,
   discardLiveEmbeddingSpills,
@@ -12,6 +13,7 @@ import {
   disposeEmbeddingSpill,
   EmbeddingSpillReader,
   finalizeCachedEmbeddingsSnapshot,
+  findReusableEmbeddingChunks,
   ingestCachedEmbeddingRow,
   materializeCachedEmbeddings,
   normalizeCachedEmbeddings,
@@ -270,5 +272,29 @@ describe('embedding-restore-spill (#3306)', () => {
         },
       ]),
     ).toThrow(/missing cached embedding Function:missing:bar:0/);
+  });
+
+  it('allows cross-branch reuse only when vector and input identities both match', () => {
+    const identity = { vectorIdentity: 'model-a:384', inputIdentity: 'text-v7:ast' };
+    expect(compatibleEmbeddingIdentity(identity, identity)).toBe(true);
+    expect(compatibleEmbeddingIdentity(identity, { ...identity, vectorIdentity: 'model-b:384' })).toBe(false);
+    expect(compatibleEmbeddingIdentity(identity, { ...identity, inputIdentity: 'text-v8:ast' })).toBe(false);
+    expect(compatibleEmbeddingIdentity(identity, undefined)).toBe(false);
+  });
+
+  it('returns only a complete matching chunk group from a spill-backed source', () => {
+    const builder = createCachedEmbeddingsBuilder({ inMemoryRowLimit: 0 });
+    ingestCachedEmbeddingRow(builder, { ...row('source-a', 0.25), chunkIndex: 0, contentHash: 'same' }, true);
+    ingestCachedEmbeddingRow(builder, { ...row('source-a', 0.5), chunkIndex: 1, contentHash: 'same' }, true);
+    const snapshot = finalizeCachedEmbeddingsSnapshot(builder);
+    if (snapshot.spill) spills.push(snapshot.spill);
+    const identity = { vectorIdentity: 'model-a:8', inputIdentity: 'text-v7' };
+    const source = [{ identity, snapshot }];
+
+    const hits = findReusableEmbeddingChunks(source, identity, 'same', 2, DIMS);
+    expect(hits?.map((vector) => vector[0])).toEqual([0.25, 0.5]);
+    expect(findReusableEmbeddingChunks(source, identity, 'same', 3, DIMS)).toBeUndefined();
+    expect(findReusableEmbeddingChunks(source, identity, 'changed', 2, DIMS)).toBeUndefined();
+    expect(findReusableEmbeddingChunks(source, { ...identity, inputIdentity: 'text-v8' }, 'same', 2, DIMS)).toBeUndefined();
   });
 });

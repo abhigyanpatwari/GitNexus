@@ -106,6 +106,66 @@ describe('embedding identity integrity (#3569)', () => {
     }
   }, 180_000);
 
+  it('reuses completed vectors across pinned local branches while keeping target rows branch-local', async () => {
+    tmp = await createTempDir('gitnexus-test-branch-embedding-reuse-');
+    const repo = path.join(tmp.dbPath, 'repo');
+    await fs.mkdir(repo);
+    vi.stubEnv('GITNEXUS_HOME', path.join(tmp.dbPath, 'home'));
+    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'never');
+    vi.stubEnv('GITNEXUS_EMBEDDING_URL', '');
+    vi.stubEnv('GITNEXUS_EMBEDDING_MODEL', '');
+    vi.stubEnv('GITNEXUS_EMBEDDING_DIMS', String(EMBEDDING_DIMS));
+    vi.spyOn(runtimeSupport, 'getLocalEmbeddingRuntimeBlocker').mockReturnValue(null);
+    vi.spyOn(sidecar, 'ensureEmbeddingSidecar').mockResolvedValue({ device: 'cpu' });
+    vi.spyOn(sidecar, 'reapEmbeddingSidecarAndWait').mockResolvedValue(undefined);
+    let embeddedInputs = 0;
+    vi.spyOn(sidecar, 'sidecarEmbedBatch').mockImplementation(async (texts) => {
+      embeddedInputs += texts.length;
+      return texts.map(() => new Float32Array(EMBEDDING_DIMS).fill(0.5));
+    });
+    await fs.writeFile(path.join(repo, 'main.ts'), 'export function main() { return 1; }\n');
+    await fs.writeFile(path.join(repo, 'util.ts'), 'export function util() { return 2; }\n');
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
+    git('init', '-q');
+    git('add', '.');
+    git('-c', 'user.name=test', '-c', 'user.email=test@test', 'commit', '-qm', 'main');
+    git('branch', '-M', 'main');
+
+    const options = { force: true, embeddings: true, skipFts: true, skipAgentsMd: true, skipSkills: true };
+    await runFullAnalysis(repo, options, { onProgress: () => {} });
+    expect(embeddedInputs).toBeGreaterThan(0);
+    const mainRows = await readBranchRows(repo, undefined);
+    expect(mainRows.length).toBeGreaterThan(0);
+
+    git('checkout', '-b', 'feature/reuse');
+    await fs.writeFile(path.join(repo, 'util.ts'), 'export function util() { return 3; }\n');
+    await fs.writeFile(path.join(repo, 'extra.ts'), 'export function extra() { return 4; }\n');
+    git('add', '.');
+    git('-c', 'user.name=test', '-c', 'user.email=test@test', 'commit', '-qm', 'feature');
+    embeddedInputs = 0;
+    await runFullAnalysis(repo, { ...options, branch: 'feature/reuse' }, { onProgress: () => {} });
+
+    const featureRows = await readBranchRows(repo, 'feature/reuse');
+    expect(featureRows.length).toBeGreaterThan(mainRows.length);
+    // main.ts is unchanged and reused; util.ts changed and extra.ts is new.
+    expect(embeddedInputs).toBe(2);
+    expect(mainRows.map((row) => row.nodeId)).not.toEqual(featureRows.map((row) => row.nodeId));
+    expect(await readBranchRows(repo, undefined)).toEqual(mainRows);
+  }, 240_000);
+
+  async function readBranchRows(repo: string, branch: string | undefined) {
+    const lbugPath = getStoragePaths(repo, branch).lbugPath;
+    await adapter.initLbug(lbugPath, { skipFts: true });
+    try {
+      return await adapter.executeQuery(
+        'MATCH (e:CodeEmbedding) RETURN e.nodeId AS nodeId, e.contentHash AS hash ORDER BY nodeId',
+      );
+    } finally {
+      await adapter.closeLbug();
+    }
+  }
+
   it.each([
     '',
     '   ',

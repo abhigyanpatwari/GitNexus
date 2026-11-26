@@ -20,6 +20,7 @@ import {
   STRUCTURAL_LABELS,
 } from '../../src/core/embeddings/types.js';
 import { STALE_HASH_SENTINEL } from '../../src/core/lbug/schema.js';
+import { normalizeCachedEmbeddings } from '../../src/core/embeddings/embedding-restore-spill.js';
 
 const CLASS_OVERLAP = 10;
 
@@ -773,6 +774,48 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(insertedNodeIds).toContain(functionNode.id);
     expect(insertedNodeIds).not.toContain(fileNode.id);
     expect(result.nodesProcessed).toBe(1);
+  });
+
+  it('reuses a compatible sibling chunk under the target node identity', async () => {
+    mockEmbedderSetup();
+    const target = makeNode();
+    const executeQuery = mockExecuteQuery([target]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+    const { runEmbeddingPipeline } = await import('../../src/core/embeddings/embedding-pipeline.js');
+    const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
+    const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
+    const identity = { vectorIdentity: 'vector-v1', inputIdentity: 'input-v7' };
+    const snapshot = normalizeCachedEmbeddings({
+      embeddings: [{
+        nodeId: 'Function:old-branch:src/main.ts',
+        chunkIndex: 0,
+        startLine: 1,
+        endLine: 1,
+        embedding: Array.from({ length: 384 }, () => 0.25),
+        contentHash: contentHashForNode(target),
+      }],
+    });
+
+    const result = await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      undefined,
+      undefined,
+      {
+        reusableEmbeddingSources: [{ identity, snapshot }],
+        reusableEmbeddingIdentity: identity,
+        reusableEmbeddingDimensions: 384,
+      },
+    );
+
+    expect(embedBatch).not.toHaveBeenCalled();
+    expect(initEmbedder).not.toHaveBeenCalled();
+    const inserts = stmtCalls.filter((call) => call.cypher.includes('CREATE'));
+    expect(inserts.flatMap((call) => call.params).map((param) => param.nodeId)).toEqual([target.id]);
+    expect(inserts[0]?.params[0]?.embedding[0]).toBeCloseTo(0.25);
+    expect(result.reusedChunks).toBe(1);
   });
 
   it('skips unchanged nodes when hash matches', async () => {

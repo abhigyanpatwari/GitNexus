@@ -69,6 +69,60 @@ export interface CachedEmbeddingsBuilder {
   writer: EmbeddingSpillWriter;
 }
 
+export interface ReusableEmbeddingIdentity {
+  vectorIdentity: string;
+  inputIdentity: string;
+}
+
+export interface ReusableEmbeddingSource {
+  identity: ReusableEmbeddingIdentity;
+  snapshot: CachedEmbeddingsSnapshot;
+}
+
+/**
+ * Cross-branch vectors are reusable only when both the vector space and the
+ * exact embedding-input policy match. Missing legacy identities are a cache
+ * miss, never an implicit match.
+ */
+export function compatibleEmbeddingIdentity(
+  target: ReusableEmbeddingIdentity,
+  source: ReusableEmbeddingIdentity | undefined,
+): boolean {
+  return Boolean(
+    source &&
+      target.vectorIdentity &&
+      target.inputIdentity &&
+      source.vectorIdentity === target.vectorIdentity &&
+      source.inputIdentity === target.inputIdentity,
+  );
+}
+
+/** Return vectors only for an exact, complete chunk group with compatible provenance. */
+export function findReusableEmbeddingChunks(
+  sources: readonly ReusableEmbeddingSource[],
+  targetIdentity: ReusableEmbeddingIdentity,
+  contentHash: string,
+  chunkCount: number,
+  dimensions: number,
+): Float32Array[] | undefined {
+  if (!contentHash || !Number.isSafeInteger(chunkCount) || chunkCount < 1 || dimensions < 1)
+    return undefined;
+  for (const source of sources) {
+    if (!compatibleEmbeddingIdentity(targetIdentity, source.identity)) continue;
+    const group = source.snapshot.rows
+      .filter((row) => row.contentHash === contentHash)
+      .sort((a, b) => a.chunkIndex - b.chunkIndex);
+    if (group.length !== chunkCount || group.some((row, i) => row.chunkIndex !== i)) continue;
+    if (snapshotEmbeddingDims(source.snapshot) !== dimensions) continue;
+    const vectors = materializeCachedEmbeddings(source.snapshot, group).map((row) =>
+      Float32Array.from(row.embedding),
+    );
+    if (vectors.length === chunkCount && vectors.every((vector) => vector.length === dimensions))
+      return vectors;
+  }
+  return undefined;
+}
+
 export function emptyCachedEmbeddingsSnapshot(): CachedEmbeddingsSnapshot {
   return { embeddingNodeIds: new Set(), embeddings: [], rows: [] };
 }

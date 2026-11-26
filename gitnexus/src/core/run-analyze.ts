@@ -5580,6 +5580,9 @@ async function runFullAnalysisInner(
     // pipeline attempted work and produced nothing" apart from "the pipeline
     // had nothing to attempt" (#2790). `undefined` ≡ the pipeline never ran.
     let embeddingResult: EmbeddingPipelineResult | undefined;
+    let branchEmbeddingIdentity:
+      | { vectorIdentity: string; inputIdentity: string }
+      | undefined;
     // What Phase 5 stamps as `embeddingCheckpoint`. `undefined` ≡ clear it
     // (the clean-run contract). Built inside Phase 4 so it carries the identity
     // of the run that actually wrote it — see the assignment below (#2790).
@@ -5660,6 +5663,46 @@ async function runFullAnalysisInner(
         embeddingIdentityForRun = resolveEmbeddingIdentity();
       }
       const embeddingIdentity = embeddingIdentityForRun;
+      let branchEmbeddingCaches:
+        | import('./embeddings/branch-embedding-cache.js').BranchEmbeddingCaches
+        | undefined;
+      // Search the repository's branch slots and validated sibling checkout
+      // slots in a shared store; graph paths are resolved through the storage
+      // ownership validator before any read-only open.
+      try {
+        const [cacheModule, identityModule, configModule, pipelineModule] = await Promise.all([
+          import('./embeddings/branch-embedding-cache.js'),
+          import('./embeddings/embedding-job-identity.js'),
+          import('./embeddings/config.js'),
+          import('./embeddings/embedding-pipeline.js'),
+        ]);
+        const identity = {
+          vectorIdentity: identityModule.embeddingVectorIdentity(embeddingIdentity),
+          inputIdentity: identityModule.embeddingInputIdentity(
+            pipelineModule.EMBEDDING_TEXT_VERSION,
+            configModule.resolveEmbeddingConfig(),
+            contentRetention,
+          ),
+        };
+        branchEmbeddingIdentity = identity;
+        branchEmbeddingCaches = await cacheModule.loadBranchEmbeddingCaches({
+          storagePath,
+          targetMetaDir: metaDir,
+          excludeGraphPath: lbugPath,
+          additionalMetaRoots: writeTarget.sharedStore ? [writeTarget.sharedStore.checkoutsDir] : [],
+          identity,
+          dimensions: embeddingIdentity.dimensions,
+          bufferPoolBytes: options.resources?.embedding.vectorPoolBytes,
+          threads: options.resources?.embedding.nativeThreads,
+        });
+        if (branchEmbeddingCaches.sources.length > 0) {
+          log(`Found ${branchEmbeddingCaches.sources.length} compatible branch embedding cache(s).`);
+        }
+      } catch (cacheErr) {
+        log(
+          `Branch embedding cache unavailable; embedding the target branch normally (${cacheErr instanceof Error ? cacheErr.message : String(cacheErr)}).`,
+        );
+      }
       const stagedRecoveryEnabled = useAtomicSwap && isManualCheckpointEnabled();
       if (useAtomicSwap && !stagedRecoveryEnabled) {
         log(
@@ -5768,75 +5811,85 @@ async function runFullAnalysisInner(
         });
       };
 
-      embeddingResult = await runEmbeddingPipeline(
-        executeQuery,
-        executeWithReusedStatement,
-        (p) => {
-          const scaled = 90 + Math.round((p.percent / 100) * 8);
-          const label =
-            p.phase === 'loading-model'
-              ? httpMode
-                ? 'Connecting to embedding endpoint...'
-                : 'Loading embedding model...'
-              : `Embedding ${p.nodesProcessed || 0}/${p.totalNodes || '?'}`;
-          progress('embeddings', scaled, label);
-        },
-        {},
-        cachedSnapshot.embeddingNodeIds.size > 0 ? cachedSnapshot.embeddingNodeIds : undefined,
-        existingEmbeddings,
-        {
-          source: { repoPath, fileHashes: newFileHashes, contentRetention },
-          forceReembedNodeIds: pendingEmbeddingNodeIds,
-          onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
-            const handoff = stagedRecoveryEnabled && !recoveryGenerationDurable;
-            if (handoff) {
-              if (!(await checkpointOnce())) {
-                throw new Error(
-                  'Could not checkpoint restored embeddings before recovery handoff.',
+      try {
+        embeddingResult = await runEmbeddingPipeline(
+          executeQuery,
+          executeWithReusedStatement,
+          (p) => {
+            const scaled = 90 + Math.round((p.percent / 100) * 8);
+            const label =
+              p.phase === 'loading-model'
+                ? httpMode
+                  ? 'Connecting to embedding endpoint...'
+                  : 'Loading embedding model...'
+                : `Embedding ${p.nodesProcessed || 0}/${p.totalNodes || '?'}`;
+            progress('embeddings', scaled, label);
+          },
+          {},
+          cachedSnapshot.embeddingNodeIds.size > 0 ? cachedSnapshot.embeddingNodeIds : undefined,
+          existingEmbeddings,
+          {
+            source: { repoPath, fileHashes: newFileHashes, contentRetention },
+            forceReembedNodeIds: pendingEmbeddingNodeIds,
+            reusableEmbeddingSources: branchEmbeddingCaches?.sources,
+            reusableEmbeddingIdentity: branchEmbeddingCaches?.sources[0]?.identity,
+            reusableEmbeddingDimensions: embeddingIdentity.dimensions,
+            onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
+              const handoff = stagedRecoveryEnabled && !recoveryGenerationDurable;
+              if (handoff) {
+                if (!(await checkpointOnce())) {
+                  throw new Error(
+                    'Could not checkpoint restored embeddings before recovery handoff.',
+                  );
+                }
+                recoveryGenerationDurable = true;
+              }
+              activeWindowNodeIds = nodeIds;
+              for (const id of nodeIds) unsafeRecoveryNodeIds.add(id);
+              await saveEmbeddingCheckpoint(checkpoint, nodeIds);
+              // Reclaim the old source only after the new durable generation's
+              // reference is saved. Later windows retain this same generation.
+              if (handoff) sweepStagingArtifacts(metaDir, log);
+            },
+            // ── The mid-run count is a DIAGNOSTIC, not a gate (#2790) ──────
+            // This used to run the count query bare. THIS callback's rejection
+            // propagates out of `runEmbeddingPipeline` and kills the whole
+            // analyze, so an unavailable count took the run down BEFORE Phase 5
+            // ran at all — meaning the tri-state Phase 5 added for exactly this
+            // case could never execute.
+            //
+            // The shared counter (embedding-count.ts) answers `unknown` instead,
+            // and `undefined` is already `saveEmbeddingCheckpoint`'s "do not
+            // touch stats.embeddings" signal — so the checkpoint still lands,
+            // with whatever count is already on disk left alone.
+            onCheckpoint: async (checkpoint) => {
+              const durable = await checkpointOnce();
+              if (stagedRecoveryEnabled && !durable) {
+                throw new Error('Could not checkpoint the completed embedding window for recovery.');
+              }
+              for (const id of activeWindowNodeIds) unsafeRecoveryNodeIds.delete(id);
+              activeWindowNodeIds = [];
+              const measured = await measurePersistedEmbeddingCount(executeQuery);
+              if (measured.kind === 'unknown') {
+                log(
+                  `Warning: could not measure persisted embeddings at the embedding checkpoint ` +
+                    `(${measured.reason}); the checkpoint is saved with the last known count.`,
                 );
               }
-              recoveryGenerationDurable = true;
-            }
-            activeWindowNodeIds = nodeIds;
-            for (const id of nodeIds) unsafeRecoveryNodeIds.add(id);
-            await saveEmbeddingCheckpoint(checkpoint, nodeIds);
-            // Reclaim the old source only after the new durable generation's
-            // reference is saved. Later windows retain this same generation.
-            if (handoff) sweepStagingArtifacts(metaDir, log);
-          },
-          // ── The mid-run count is a DIAGNOSTIC, not a gate (#2790) ──────
-          // This used to run the count query bare. THIS callback's rejection
-          // propagates out of `runEmbeddingPipeline` and kills the whole
-          // analyze, so an unavailable count took the run down BEFORE Phase 5
-          // ran at all — meaning the tri-state Phase 5 added for exactly this
-          // case could never execute.
-          //
-          // The shared counter (embedding-count.ts) answers `unknown` instead,
-          // and `undefined` is already `saveEmbeddingCheckpoint`'s "do not
-          // touch stats.embeddings" signal — so the checkpoint still lands,
-          // with whatever count is already on disk left alone.
-          onCheckpoint: async (checkpoint) => {
-            const durable = await checkpointOnce();
-            if (stagedRecoveryEnabled && !durable) {
-              throw new Error('Could not checkpoint the completed embedding window for recovery.');
-            }
-            for (const id of activeWindowNodeIds) unsafeRecoveryNodeIds.delete(id);
-            activeWindowNodeIds = [];
-            const measured = await measurePersistedEmbeddingCount(executeQuery);
-            if (measured.kind === 'unknown') {
-              log(
-                `Warning: could not measure persisted embeddings at the embedding checkpoint ` +
-                  `(${measured.reason}); the checkpoint is saved with the last known count.`,
+              await saveEmbeddingCheckpoint(
+                checkpoint,
+                [],
+                persistedEmbeddingCountOrUndefined(measured),
               );
-            }
-            await saveEmbeddingCheckpoint(
-              checkpoint,
-              [],
-              persistedEmbeddingCountOrUndefined(measured),
-            );
+            },
           },
-        },
-      );
+        );
+        if (embeddingResult.reusedChunks) {
+          log(`Reused ${embeddingResult.reusedChunks} embedding chunk(s) from sibling branches.`);
+        }
+      } finally {
+        branchEmbeddingCaches?.close();
+      }
       // ── A partial run must NOT clear the checkpoint (#2790) ───────────
       // Dropped nodes hold zero embedding rows, but "zero rows" alone heals
       // nothing: a plain `gitnexus analyze` derives shouldGenerateEmbeddings
@@ -6052,6 +6105,20 @@ async function runFullAnalysisInner(
       indexedAt: new Date().toISOString(),
       contentRetention,
       contentRetentionSchemaVersion: CONTENT_RETENTION_SCHEMA_VERSION,
+      ...(!embeddingResult && existingMeta?.branchEmbeddingCache
+        ? { branchEmbeddingCache: existingMeta.branchEmbeddingCache }
+        : embeddingResult &&
+            branchEmbeddingIdentity &&
+            embeddingResult.failedNodeIds.length === 0
+          ? {
+              branchEmbeddingCache: {
+                version: 1 as const,
+                ...branchEmbeddingIdentity,
+                dimensions: embeddingIdentityForRun?.dimensions ?? 0,
+                chunks: embeddingResult.chunksProcessed,
+              },
+            }
+          : {}),
       ftsProfile,
       runnerIdentity,
       // Persist only normalized repo-relative exclusions, never absolute paths

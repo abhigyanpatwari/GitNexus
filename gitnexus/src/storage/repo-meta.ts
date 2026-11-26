@@ -162,6 +162,14 @@ export interface RepoMeta {
     exclusionReason?: 'input-rejected';
     indexKind: 'hnsw' | 'exact';
   };
+  /** Completed, branch-local vector snapshot eligible as a sibling compute cache. */
+  branchEmbeddingCache?: {
+    version: 1;
+    vectorIdentity: string;
+    inputIdentity: string;
+    dimensions: number;
+    chunks: number;
+  };
   lastCommit: string;
   indexedAt: string;
   /** Missing on legacy metadata means the upstream-compatible `full` profile. */

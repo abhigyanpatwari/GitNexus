@@ -16,6 +16,31 @@ export interface EmbeddingGraphIdentity {
 const digest = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+export function embeddingVectorIdentity(vector: EmbeddingIdentity): string {
+  return digest([vector.provider, vector.model, vector.dimensions]);
+}
+
+export function embeddingInputIdentity(
+  textVersion: string,
+  config: Pick<
+    EmbeddingConfig,
+    'chunkSize' | 'overlap' | 'maxSnippetLength' | 'maxDescriptionLength' | 'maxInputChars'
+  > & Partial<Pick<EmbeddingConfig, 'chunkStrategy'>>,
+  contentRetention: ContentRetention = 'full',
+): string {
+  return digest([
+    'source-aware-ast-inputs:v1',
+    textVersion,
+    config.chunkStrategy ?? 'ast',
+    contentRetention,
+    config.chunkSize,
+    config.overlap,
+    config.maxSnippetLength,
+    config.maxDescriptionLength,
+    config.maxInputChars,
+  ]);
+}
+
 /** Explicit fields exclude credentials and scheduling settings from persisted identity. */
 export function embeddingJobIdentity(
   graph: EmbeddingGraphIdentity,
@@ -59,18 +84,8 @@ export function embeddingJobIdentity(
   )
     throw new Error('Incomplete embedding job identity');
   const sourceIdentity = digest(source);
-  const vectorIdentity = digest([vector.provider, vector.model, vector.dimensions]);
-  const inputIdentity = digest([
-    'source-aware-ast-inputs:v1',
-    textVersion,
-    config.chunkStrategy ?? 'ast',
-    contentRetention,
-    config.chunkSize,
-    config.overlap,
-    config.maxSnippetLength,
-    config.maxDescriptionLength,
-    config.maxInputChars,
-  ]);
+  const vectorIdentity = embeddingVectorIdentity(vector);
+  const inputIdentity = embeddingInputIdentity(textVersion, config, contentRetention);
   return {
     sourceIdentity,
     vectorIdentity,

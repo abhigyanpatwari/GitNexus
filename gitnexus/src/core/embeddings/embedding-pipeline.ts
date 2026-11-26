@@ -66,6 +66,11 @@ import {
   type EmbeddingSourceContext,
 } from './source-reader.js';
 import type { VectorSearchSnapshot } from './vector-generation-search.js';
+import {
+  findReusableEmbeddingChunks,
+  type ReusableEmbeddingIdentity,
+  type ReusableEmbeddingSource,
+} from './embedding-restore-spill.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
@@ -486,6 +491,7 @@ export interface EmbeddingPipelineResult {
    * them from scratch. Empty on a clean run.
    */
   failedNodeIds: string[];
+  reusedChunks?: number;
 }
 
 /**
@@ -639,6 +645,10 @@ export interface EmbeddingPipelineOptions {
   signal?: AbortSignal;
   checkpointEveryNodes?: number;
   forceReembedNodeIds?: ReadonlySet<string>;
+  /** Verified, read-only sibling snapshots; target identity gates every hit. */
+  reusableEmbeddingSources?: readonly ReusableEmbeddingSource[];
+  reusableEmbeddingIdentity?: ReusableEmbeddingIdentity;
+  reusableEmbeddingDimensions?: number;
   onCheckpointWindowStart?: (window: EmbeddingPipelineCheckpointWindow) => Promise<void>;
   onCheckpoint?: (checkpoint: EmbeddingPipelineCheckpoint) => Promise<void>;
 }
@@ -705,6 +715,7 @@ export const runEmbeddingPipeline = async (
 ): Promise<EmbeddingPipelineResult> => {
   const finalConfig = resolveEmbeddingConfig(config);
   let totalChunks = 0;
+  let reusedChunks = 0;
   const checkpointEveryNodes = pipelineOptions.checkpointEveryNodes ?? 5_000;
   if (!Number.isSafeInteger(checkpointEveryNodes) || checkpointEveryNodes <= 0) {
     throw new Error('checkpointEveryNodes must be a positive integer');
@@ -740,23 +751,8 @@ export const runEmbeddingPipeline = async (
       modelDownloadPercent: 0,
     });
 
-    if (!isHttpMode()) {
-      await initEmbedder((modelProgress: ModelProgress) => {
-        const downloadPercent = modelProgress.progress ?? 0;
-        onProgress({
-          phase: 'loading-model',
-          percent: Math.round(downloadPercent * 0.2),
-          modelDownloadPercent: downloadPercent,
-        });
-      }, finalConfig);
-      throwIfCancelled();
-    }
-
-    onProgress({
-      phase: 'loading-model',
-      percent: 20,
-      modelDownloadPercent: 100,
-    });
+    let embedderInitialized = false;
+    let loadingProgressCompleted = false;
 
     // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
     // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them
@@ -833,6 +829,7 @@ export const runEmbeddingPipeline = async (
         vectorIndexReady,
         semanticMode: vectorIndexReady ? 'vector-index' : 'exact-scan',
         failedNodeIds: [],
+        reusedChunks: 0,
       };
     }
 
@@ -915,6 +912,14 @@ export const runEmbeddingPipeline = async (
         startLine: number;
         endLine: number;
         contentHash: string;
+      }> = [];
+      const reusedUpdates: Array<{
+        nodeId: string;
+        chunkIndex: number;
+        startLine: number;
+        endLine: number;
+        contentHash: string;
+        embedding: number[];
       }> = [];
 
       for (const indexedNode of batch) {
@@ -1058,6 +1063,36 @@ export const runEmbeddingPipeline = async (
               allUpdates[i].contentHash = storedHash;
           }
         }
+
+        const nodeChunkCount = allUpdates.length - inputStart;
+        if (
+          nodeChunkCount > 0 &&
+          pipelineOptions.reusableEmbeddingSources?.length &&
+          pipelineOptions.reusableEmbeddingIdentity &&
+          pipelineOptions.reusableEmbeddingDimensions
+        ) {
+          const nodeHash = allUpdates[inputStart]?.contentHash;
+          const vectors = nodeHash
+            ? findReusableEmbeddingChunks(
+                pipelineOptions.reusableEmbeddingSources,
+                pipelineOptions.reusableEmbeddingIdentity,
+                nodeHash,
+                nodeChunkCount,
+                pipelineOptions.reusableEmbeddingDimensions,
+              )
+            : undefined;
+          if (
+            vectors &&
+            vectors.length === nodeChunkCount &&
+            vectors.every((vector) => vector.length === pipelineOptions.reusableEmbeddingDimensions)
+          ) {
+            for (let i = 0; i < nodeChunkCount; i++) {
+              reusedUpdates.push({ ...allUpdates[inputStart + i]!, embedding: [...vectors[i]!] });
+            }
+            allTexts.length = inputStart;
+            allUpdates.length = inputStart;
+          }
+        }
       }
 
       // Validate every source in the batch before mutating even cache metadata.
@@ -1071,12 +1106,39 @@ export const runEmbeddingPipeline = async (
         throwIfCancelled();
       }
 
+      if (allTexts.length > 0 && !isHttpMode() && !embedderInitialized) {
+        await initEmbedder((modelProgress: ModelProgress) => {
+          const downloadPercent = modelProgress.progress ?? 0;
+          onProgress({
+            phase: 'loading-model',
+            percent: Math.round(downloadPercent * 0.2),
+            modelDownloadPercent: downloadPercent,
+          });
+        }, finalConfig);
+        embedderInitialized = true;
+        throwIfCancelled();
+      }
+      if (!loadingProgressCompleted) {
+        onProgress({
+          phase: 'loading-model',
+          percent: 20,
+          modelDownloadPercent: 100,
+        });
+        loadingProgressCompleted = true;
+      }
+
       // U6 / KTD7: delete this batch's stale rows immediately before its inserts,
       // so an interrupted re-embed loses at most one batch (not the whole index).
       // Preserves Kuzu's required DELETE-before-INSERT for vector-indexed rows.
       const batchStaleIds = batch.filter((n) => staleNodeIds.has(n.id)).map((n) => n.id);
       await deleteStaleEmbeddingRows(executeWithReusedStatement, batchStaleIds);
       throwIfCancelled();
+
+      if (reusedUpdates.length > 0) {
+        await batchInsertEmbeddings(executeWithReusedStatement, reusedUpdates);
+        reusedChunks += reusedUpdates.length;
+        throwIfCancelled();
+      }
 
       // Embed chunk texts in sub-batches to control memory
       const EMBED_SUB_BATCH = finalConfig.subBatchSize;
@@ -1231,7 +1293,9 @@ export const runEmbeddingPipeline = async (
       // window-aligned and terminal checkpoints from ever firing.
       const traversedNodes = batchIndex + batch.length;
       processedNodes += batch.length - batchFailedNodeIds.size;
-      totalChunks += allUpdates.filter((u) => !batchFailedNodeIds.has(u.nodeId)).length;
+      totalChunks +=
+        reusedUpdates.filter((u) => !batchFailedNodeIds.has(u.nodeId)).length +
+        allUpdates.filter((u) => !batchFailedNodeIds.has(u.nodeId)).length;
 
       const embeddingProgress = 20 + (traversedNodes / totalNodes) * 70;
       onProgress({
@@ -1297,6 +1361,7 @@ export const runEmbeddingPipeline = async (
       vectorIndexReady,
       semanticMode: vectorIndexReady ? 'vector-index' : 'exact-scan',
       failedNodeIds: [...failedNodeIds],
+      reusedChunks,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
