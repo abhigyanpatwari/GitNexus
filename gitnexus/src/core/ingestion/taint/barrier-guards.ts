@@ -435,8 +435,9 @@ function sinkCallTextIndex(
 /**
  * True when a validated member property is assigned on the controller's
  * validated branch *before* the sink (`req.body = …` then `exec(req.body)`).
- * In the sink block, compares assign vs *this* sink-call position in
- * `block.text` (not the first call in the statement).
+ * Matches the *receiver binding* plus property (`req.body =`), not a bare
+ * `.body =` on a different object. In the sink block, compares assign vs
+ * *this* sink-call position in `block.text` (not the first call).
  */
 export function memberPropertyAssignedOnValidatedPath(
   cfg: FunctionCfg,
@@ -447,8 +448,15 @@ export function memberPropertyAssignedOnValidatedPath(
 ): boolean {
   const prop = controller.subjectProperty;
   if (!prop) return false;
-  const escaped = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const assignRe = new RegExp(`(\\.${escaped}|\\[['"]${escaped}['"]\\])\\s*=`);
+  const receiver = cfg.bindings?.[controller.subjectBinding]?.name;
+  if (!receiver) return false;
+  const escapedProp = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapedRecv = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Require the validated object name — `other.body =` must not invalidate
+  // a barrier over `req.body`.
+  const assignRe = new RegExp(
+    `\\b${escapedRecv}\\s*(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])\\s*=`,
+  );
   for (const edge of index.cdg) {
     if (edge.controllerBlock !== controller.controllerBlock) continue;
     if (edge.label !== controller.validatedLabel) continue;

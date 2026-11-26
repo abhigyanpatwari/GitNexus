@@ -119,6 +119,8 @@ describe('barrier-guards CDG index', () => {
 
 describe('barrier-guards via computeTaintFlows (#3913)', () => {
   it('suppresses dns-sync early-return shape', () => {
+    // #3913: name-heuristic barriers (`isValid*`) intentionally do not require
+    // a resolvable callee body — patched CVE shapes use opaque validators.
     const { flows } = analyze(`
       function f(req: any) {
         const hostname = req.body;
@@ -184,6 +186,18 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
       }
     `);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('still suppresses when a different object writes the same property name', () => {
+    // `other.body =` must not be treated as overwriting validated `req.body`.
+    const { flows } = analyze(`
+      function f(req: any, other: any) {
+        if (!isValidHostName(req.body)) return;
+        other.body = req.query;
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings).toHaveLength(0);
   });
 
   it('does not suppress same-line member overwrite before the sink', () => {
