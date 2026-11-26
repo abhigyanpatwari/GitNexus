@@ -32,13 +32,19 @@ const MECH: SourceSinkSanitizerSpec = {
   sanitizers: [],
 };
 
-function analyze(code: string, fnIndex = 0) {
+function analyze(
+  code: string,
+  fnIndex = 0,
+  opts?: { excludeBarrierCallees?: ReadonlySet<string>; extraCfgs?: ReturnType<typeof cfgsOf> },
+) {
   const cfgs = cfgsOf(code);
   const cfg = cfgs[fnIndex] ?? cfgOf(code, fnIndex);
   expect(hasTaintSafeSites(cfg)).toBe(true);
   const defUse = computeReachingDefs(cfg);
   const matches = matchFunctionSites(cfg, MECH, buildTaintImportIndex(importsFor(code)));
-  const excludeBarrierCallees = discoverProtoGuardCallees(cfgs);
+  const excludeBarrierCallees =
+    opts?.excludeBarrierCallees ??
+    discoverProtoGuardCallees(opts?.extraCfgs ? [...opts.extraCfgs, ...cfgs] : cfgs);
   return {
     cfg,
     flows: computeTaintFlows(
@@ -186,6 +192,19 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
       }
     `);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress after a compound member write reintroduces taint', () => {
+    // `req.body += req.query` must invalidate the barrier the same as `=`.
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        req.body += req.query;
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
   });
 
   it('does not suppress after a $-prefixed receiver member is overwritten', () => {
@@ -527,6 +546,30 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     `;
     const { flows } = analyze(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not kind-blind suppress imported proto-only isValidKey from another file', () => {
+    // Caller-only discovery misses the helper body; cross-file exclusion must apply.
+    const helper = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const caller = `
+      import { isValidKey } from './helpers';
+      function write(req: any) {
+        if (!isValidKey(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const helperCfgs = cfgsOf(helper);
+    expect([...discoverProtoGuardCallees(cfgsOf(caller))]).not.toContain('isValidKey');
+    expect([...discoverProtoGuardCallees([...helperCfgs, ...cfgsOf(caller)])]).toContain(
+      'isValidKey',
+    );
+    const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
   });
 
   it('suppresses when isValidKey vouchers the value (not proto-only)', () => {

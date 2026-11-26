@@ -69,6 +69,7 @@ import {
   DEFAULT_PDG_MAX_TAINT_HOPS,
   type TaintEmitLimits,
 } from '../../taint/emit.js';
+import { discoverProtoGuardCallees } from '../../taint/barrier-guards.js';
 import { registerBuiltinTaintModels } from '../../taint/typescript-model.js';
 import { createMemoizedRefinement } from '../../taint/guard-refinement.js';
 import { getSourceSinkConfig } from '../../taint/source-sink-registry.js';
@@ -2084,6 +2085,16 @@ export function runScopeResolution(
     // harvest needs it for EVERY language (it is pure data-dependence, no taint
     // model), and the taint summary harvest reuses it when taintSpec is present.
     const fnNodeIndex = input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph);
+    // Cross-file proto-reject helpers (even named isValid*): discover once
+    // over every emit-safe CFG so an import of a proto-only helper cannot
+    // kind-blind suppress command-injection in the caller file.
+    const repoExcludeBarrierCallees = discoverProtoGuardCallees(
+      emitParsedFiles.flatMap((pf) => {
+        const side = pf.cfgSideChannel;
+        if (!Array.isArray(side)) return [];
+        return (side as readonly (FunctionCfg | undefined | null)[]).filter(isEmitSafeCfg);
+      }),
+    );
     for (const pf of emitParsedFiles) {
       const cfgs = pf.cfgSideChannel;
       // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
@@ -2223,6 +2234,7 @@ export function runScopeResolution(
             rdSolve,
             pf,
             refine,
+            repoExcludeBarrierCallees,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;

@@ -459,9 +459,11 @@ export function memberPropertyAssignedOnValidatedPath(
   const escapedProp = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const escapedRecv = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   // Identifier start boundary — not `\b`, which fails before `$`-prefixed
-  // names (`$req.body =` has no word boundary before `$`).
+  // names (`$req.body =` has no word boundary before `$`). Include compound
+  // assignments (`+=`, `||=`, …): `req.body += req.query` reintroduces taint.
+  const assignOp = '(?:\\+|-|\\*|\\/|%|\\*\\*|<<|>>>|>>|&|\\||\\^|&&|\\|\\||\\?\\?)?=(?!=)';
   const assignRe = new RegExp(
-    `(?<![A-Za-z0-9_$])${escapedRecv}\\s*(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])\\s*=`,
+    `(?<![A-Za-z0-9_$])${escapedRecv}\\s*(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])\\s*${assignOp}`,
   );
   for (const edge of index.cdg) {
     if (edge.controllerBlock !== controller.controllerBlock) continue;

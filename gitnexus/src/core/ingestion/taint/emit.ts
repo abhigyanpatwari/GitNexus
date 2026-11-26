@@ -170,6 +170,13 @@ export function emitFileTaint(
   solve: ReachingDefsSolver = computeReachingDefs,
   parsed?: ParsedFile,
   refine: RefinementSolver = createFunctionRefinement,
+  /**
+   * Proto-reject helper names discovered across the repo (or file). When
+   * omitted, discovered from `cfgs` alone — callers that import a proto-only
+   * `isValid*` from another file must pass the cross-file set or the name
+   * heuristic would kind-blind suppress command-injection.
+   */
+  excludeBarrierCallees?: ReadonlySet<string>,
 ): TaintEmitResult {
   const result: TaintEmitResult = {
     functionsAnalyzed: 0,
@@ -191,8 +198,8 @@ export function emitFileTaint(
   const maxHops = limits?.maxHops ?? DEFAULT_PDG_MAX_TAINT_HOPS;
   const maxFacts = limits?.maxFacts ?? DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION;
   // Proto-reject helpers (even if named isValid*) must not KIND_ORDER-suppress.
-  const excludeBarrierCallees = discoverProtoGuardCallees(cfgs);
-  const barrierOptions = excludeBarrierCallees.size > 0 ? { excludeBarrierCallees } : undefined;
+  const excluded = excludeBarrierCallees ?? discoverProtoGuardCallees(cfgs);
+  const barrierOptions = excluded.size > 0 ? { excludeBarrierCallees: excluded } : undefined;
 
   // Defensive cross-CFG id guard: finding identity is unique WITHIN a
   // function by construction (the propagation engine dedups), so a repeat can
