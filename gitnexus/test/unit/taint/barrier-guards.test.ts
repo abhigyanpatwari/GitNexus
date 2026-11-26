@@ -586,6 +586,33 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(functionContainsProtoGuard(cfgs[0])).toBe(true);
   });
 
+  it('accepts if (key === "__proto__") throw as a proto-guard', () => {
+    const cfgs = cfgsOf(`
+      function isValidKey(key: string) {
+        if (key === "__proto__") throw new Error();
+        return true;
+      }
+    `);
+    expect(functionContainsProtoGuard(cfgs[0])).toBe(true);
+    expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
+  });
+
+  it('does not kind-blind suppress throw-style __proto__-only isValidKey', () => {
+    const code = `
+      function isValidKey(key: string) {
+        if (key === "__proto__") throw new Error();
+        return true;
+      }
+      function write(req: any) {
+        const command = req.body;
+        if (!isValidKey(command)) return;
+        exec(command);
+      }
+    `;
+    const { flows } = analyze(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('rejects helpers that only log a !== __proto__ check then return true', () => {
     const cfgs = cfgsOf(`
       function logOk(key: string) {

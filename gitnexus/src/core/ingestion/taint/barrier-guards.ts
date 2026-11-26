@@ -126,11 +126,17 @@ function hasProtoEquality(text: string): boolean {
   );
 }
 
+/** True when a block rejects the key via `return false` or `throw`. */
+function isProtoRejectAction(text: string): boolean {
+  return /\breturn\s+false\b/.test(text) || /\bthrow\b/.test(text);
+}
+
 /**
  * True when a function CFG body *rejects* the `__proto__` key.
  * Under-kill: affirming `return … !== "__proto__"`, or
- * `if (key === "__proto__") return false` where `return false` is
- * control-dependent on the equality's true branch (not merely co-present).
+ * `if (key === "__proto__") return false` / `throw …` where the reject
+ * action is control-dependent on the equality's true branch (not merely
+ * co-present). Throw and return-false are equivalent rejection forms.
  */
 export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
   for (const block of cfg.blocks) {
@@ -141,7 +147,7 @@ export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
   const cdg = computeControlDependence(cfg).edges;
   for (const controller of equalityControllers) {
     for (const dep of cfg.blocks) {
-      if (!/\breturn\s+false\b/.test(dep.text)) continue;
+      if (!isProtoRejectAction(dep.text)) continue;
       const onTrue = cdg.some(
         (e) =>
           e.controllerBlock === controller.index &&
