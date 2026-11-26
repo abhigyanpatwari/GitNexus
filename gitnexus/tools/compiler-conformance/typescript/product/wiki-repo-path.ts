@@ -4,67 +4,90 @@
  * temporary repositories; the LLM config and the generator are mocked, and
  * the first block also mocks the index lookup.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { after, afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { StorageState } from '../../src/storage/storage-resolver.js';
+import * as resolver from '../../../../dist/storage/storage-resolver.js';
+import * as manager from '../../../../dist/storage/repo-manager.js';
+import * as llm from '../../../../dist/core/wiki/llm-client.js';
+import type { StorageState } from '../../../../dist/storage/storage-resolver.js';
 
-/** Mocks the LLM config, the generator and the progress bar for one `wiki` run. */
-function mockWikiRun() {
-  const generatorCtor = vi.fn().mockImplementation(function () {
-    return { run: vi.fn().mockResolvedValue({ mode: 'up-to-date', pagesGenerated: 0 }) };
-  });
-  vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
-    ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
-    loadMeta: vi.fn().mockResolvedValue({ createdAt: '2026-01-01T00:00:00Z' }),
-    loadCLIConfig: vi.fn().mockResolvedValue({
-      apiKey: 'sk-test',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o',
-      provider: 'openai',
-    }),
-    saveCLIConfig: vi.fn(),
-  }));
-  vi.doMock('../../src/core/wiki/llm-client.js', async (importActual) => ({
-    ...(await importActual<typeof import('../../src/core/wiki/llm-client.js')>()),
-    resolveLLMConfig: vi.fn().mockResolvedValue({
-      apiKey: 'sk-test',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-4o',
-      maxTokens: 16_384,
-      temperature: 0,
-      provider: 'openai',
-    }),
-  }));
-  vi.doMock('../../src/core/wiki/generator.js', () => ({ WikiGenerator: generatorCtor }));
-  vi.doMock('cli-progress', () => ({
-    default: {
-      SingleBar: vi.fn(function () {
-        return { start: vi.fn(), update: vi.fn(), stop: vi.fn() };
-      }),
+const requireStorage = mock.fn(resolver.requireStoragePath);
+const recorded = mock.fn((_repo: string, _storage: string, _lbug: string) => {});
+const config = {
+  apiKey: 'test',
+  baseUrl: 'https://example.invalid/v1',
+  model: 'test',
+  provider: 'openai',
+};
+const modules = [
+  mock.module(new URL('../../../../dist/storage/storage-resolver.js', import.meta.url).href, {
+    namedExports: { ...resolver, requireStoragePath: requireStorage },
+  }),
+  mock.module(new URL('../../../../dist/storage/repo-manager.js', import.meta.url).href, {
+    namedExports: {
+      ...manager,
+      loadMeta: async () => ({ createdAt: '2026-01-01T00:00:00Z' }),
+      loadCLIConfig: async () => config,
+      saveCLIConfig: async () => {},
+    },
+  }),
+  mock.module(new URL('../../../../dist/core/wiki/llm-client.js', import.meta.url).href, {
+    namedExports: {
+      ...llm,
+      resolveLLMConfig: async () => ({ ...config, maxTokens: 16_384, temperature: 0 }),
+    },
+  }),
+  mock.module(new URL('../../../../dist/core/wiki/generator.js', import.meta.url).href, {
+    namedExports: {
+      WikiGenerator: class {
+        constructor(repo: string, storage: string, lbug: string) {
+          recorded(repo, storage, lbug);
+        }
+        async run() {
+          return { mode: 'up-to-date', pagesGenerated: 0 };
+        }
+      },
+    },
+  }),
+  mock.module('cli-progress', {
+    defaultExport: {
+      SingleBar: class {
+        start() {}
+        update() {}
+        stop() {}
+      },
       Presets: { shades_grey: {} },
     },
-  }));
-  return generatorCtor;
-}
+  }),
+];
+after(() => {
+  for (const module of modules) module.restore();
+});
+const { wikiCommand } = await import('../../../../dist/cli/wiki.js');
 
-/** Runs `gitnexus wiki <target>`: what it documented, from which storage, and what it printed. */
-async function runWiki(target: string, generatorCtor: ReturnType<typeof mockWikiRun>) {
-  const log = vi.spyOn(console, 'log').mockImplementation(() => {});
-  const { wikiCommand } = await import('../../src/cli/wiki.js');
-  await wikiCommand(target, {});
-  const [documented, storagePath, lbugPath] = (generatorCtor.mock.calls[0] ?? []) as (
-    | string
-    | undefined
-  )[];
-  return {
-    documented,
-    storagePath,
-    lbugPath,
-    output: log.mock.calls.map((call) => call.join(' ')).join('\n'),
-  };
+beforeEach(() => {
+  recorded.mock.resetCalls();
+  requireStorage.mock.mockImplementation(resolver.requireStoragePath);
+});
+
+async function runWiki(target: string) {
+  const log = mock.method(console, 'log', () => {});
+  try {
+    await wikiCommand(target, {});
+    const [documented, storagePath, lbugPath] = recorded.mock.calls[0]?.arguments ?? [];
+    return {
+      documented,
+      storagePath,
+      lbugPath,
+      output: log.mock.calls.map((call) => call.arguments.join(' ')).join('\n'),
+    };
+  } finally {
+    log.mock.restore();
+  }
 }
 
 const ENV_KEYS = [
@@ -85,34 +108,7 @@ describe('wikiCommand path inside a repository', () => {
   /** The storage state of folders that are not indexed; `missing` when absent. */
   let states: Map<string, { state: StorageState; hasCodeIndexDB?: boolean; reason?: string }>;
 
-  async function wiki(target: string) {
-    vi.doMock('../../src/storage/storage-resolver.js', async (importActual) => {
-      const actual = await importActual<typeof import('../../src/storage/storage-resolver.js')>();
-      return {
-        ...actual,
-        // A folder has an index only when it was analyzed itself.
-        requireStoragePath: vi.fn(async (repoPath: string) => {
-          const storagePath = path.join(repoPath, '.gitnexus');
-          if (indexed.has(repoPath)) return storagePath;
-          const {
-            state,
-            hasCodeIndexDB = false,
-            reason,
-          } = states.get(repoPath) ?? {
-            state: 'missing',
-          };
-          throw new actual.StorageRequirementError(
-            { repoPath, storagePath, state, hasCodeIndexDB, reason },
-            actual.STATUS_STORAGE_REQUIREMENTS,
-          );
-        }),
-      };
-    });
-    return runWiki(target, mockWikiRun());
-  }
-
   beforeEach(async () => {
-    vi.resetModules();
     process.exitCode = undefined;
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-repo-path-')));
     outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-no-repo-')));
@@ -127,15 +123,22 @@ describe('wikiCommand path inside a repository', () => {
     execFileSync('git', ['init', '-q'], { cwd: other });
     indexed = new Set([root]);
     states = new Map();
+    requireStorage.mock.mockImplementation(async (repoPath) => {
+      const storagePath = path.join(repoPath, '.gitnexus');
+      if (indexed.has(repoPath)) return storagePath;
+      const {
+        state,
+        hasCodeIndexDB = false,
+        reason,
+      } = states.get(repoPath) ?? { state: 'missing' };
+      throw new resolver.StorageRequirementError(
+        { repoPath, storagePath, state, hasCodeIndexDB, reason },
+        resolver.STATUS_STORAGE_REQUIREMENTS,
+      );
+    });
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
-    vi.doUnmock('../../src/storage/repo-manager.js');
-    vi.doUnmock('../../src/storage/storage-resolver.js');
-    vi.doUnmock('../../src/core/wiki/llm-client.js');
-    vi.doUnmock('../../src/core/wiki/generator.js');
-    vi.doUnmock('cli-progress');
     process.exitCode = originalExitCode;
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value === undefined) delete process.env[key];
@@ -145,7 +148,7 @@ describe('wikiCommand path inside a repository', () => {
   });
 
   it('documents the repository it is given', async () => {
-    const run = await wiki(root);
+    const run = await runWiki(root);
 
     expect(run.documented).toBe(root);
     expect(run.storagePath).toBe(path.join(root, '.gitnexus'));
@@ -154,7 +157,7 @@ describe('wikiCommand path inside a repository', () => {
   });
 
   it('documents the indexed repository that contains a folder', async () => {
-    const run = await wiki(path.join(root, 'api'));
+    const run = await runWiki(path.join(root, 'api'));
 
     expect(run.documented).toBe(root);
     expect(run.storagePath).toBe(path.join(root, '.gitnexus'));
@@ -164,7 +167,7 @@ describe('wikiCommand path inside a repository', () => {
   });
 
   it('documents the indexed repository that contains a file', async () => {
-    const run = await wiki(path.join(root, 'api', 'orders.ts'));
+    const run = await runWiki(path.join(root, 'api', 'orders.ts'));
 
     expect(run.documented).toBe(root);
     expect(run.storagePath).toBe(path.join(root, '.gitnexus'));
@@ -175,21 +178,23 @@ describe('wikiCommand path inside a repository', () => {
   it('keeps the index of a folder that was analyzed on its own', async () => {
     indexed.add(path.join(root, 'api'));
 
-    const run = await wiki(path.join(root, 'api'));
+    const run = await runWiki(path.join(root, 'api'));
 
     expect(run.documented).toBe(path.join(root, 'api'));
     expect(run.storagePath).toBe(path.join(root, 'api', '.gitnexus'));
     expect(run.output).not.toContain('Using the index of');
   });
 
-  it.each([
+  for (const [label, state] of [
     ['empty', 'empty'],
     ['owned without a code index', 'owned'],
-  ] as const)('uses the repository when the folder storage is %s', async (_label, state) => {
-    states.set(path.join(root, 'api'), { state });
+  ] as const) {
+    it(`uses the repository when the folder storage is ${label}`, async () => {
+      states.set(path.join(root, 'api'), { state });
 
-    expect((await wiki(path.join(root, 'api'))).documented).toBe(root);
-  });
+      expect((await runWiki(path.join(root, 'api'))).documented).toBe(root);
+    });
+  }
 
   it('does not move to the repository when the folder storage could not be read', async () => {
     states.set(path.join(root, 'api'), {
@@ -197,7 +202,7 @@ describe('wikiCommand path inside a repository', () => {
       reason: 'EIO: i/o error, access',
     });
 
-    const run = await wiki(path.join(root, 'api'));
+    const run = await runWiki(path.join(root, 'api'));
 
     expect(run.documented).toBeUndefined();
     expect(run.output).toContain(
@@ -206,24 +211,23 @@ describe('wikiCommand path inside a repository', () => {
     expect(process.exitCode).toBe(1);
   });
 
-  it.each(['foreign', 'unowned', 'invalid_storage'] as const)(
-    'reports a folder storage in the %s state instead of moving to the repository',
-    async (state) => {
+  for (const state of ['foreign', 'unowned', 'invalid_storage'] as const) {
+    it(`reports a folder storage in the ${state} state instead of moving to the repository`, async () => {
       states.set(path.join(root, 'api'), { state, hasCodeIndexDB: state === 'foreign' });
 
-      const run = await wiki(path.join(root, 'api'));
+      const run = await runWiki(path.join(root, 'api'));
 
       expect(run.documented).toBeUndefined();
       expect(run.output).toContain(`Error: Storage path is in state "${state}"`);
       expect(run.output).not.toContain('It is the index of');
       expect(process.exitCode).toBe(1);
-    },
-  );
+    });
+  }
 
   it("names the repository's index when neither the folder nor the repository is indexed", async () => {
     indexed.clear();
 
-    const run = await wiki(path.join(root, 'api'));
+    const run = await runWiki(path.join(root, 'api'));
 
     expect(run.documented).toBeUndefined();
     expect(run.output).toContain(`No GitNexus index found at ${path.join(root, '.gitnexus')}`);
@@ -234,7 +238,7 @@ describe('wikiCommand path inside a repository', () => {
     indexed.clear();
     states.set(root, { state: 'unowned' });
 
-    const run = await wiki(path.join(root, 'api'));
+    const run = await runWiki(path.join(root, 'api'));
 
     expect(run.documented).toBeUndefined();
     expect(run.output).toContain('Error: Storage path is in state "unowned"');
@@ -248,7 +252,7 @@ describe('wikiCommand path inside a repository', () => {
     const link = path.join(outside, 'repo-link');
     await fs.symlink(root, link, 'dir');
 
-    const run = await wiki(path.join(link, 'api'));
+    const run = await runWiki(path.join(link, 'api'));
 
     expect(run.documented).toBe(root);
     expect(process.exitCode).toBeUndefined();
@@ -259,7 +263,7 @@ describe('wikiCommand path inside a repository', () => {
     process.env.GIT_DIR = path.join(other, '.git');
     process.env.GIT_WORK_TREE = other;
 
-    const run = await wiki(path.join(root, 'api'));
+    const run = await runWiki(path.join(root, 'api'));
 
     expect(run.documented).toBeUndefined();
     expect(run.output).toContain(
@@ -269,7 +273,7 @@ describe('wikiCommand path inside a repository', () => {
   });
 
   it('still refuses a path outside any repository', async () => {
-    const run = await wiki(outside);
+    const run = await runWiki(outside);
 
     expect(run.documented).toBeUndefined();
     expect(run.output).toContain('Not a git repository');
@@ -277,7 +281,7 @@ describe('wikiCommand path inside a repository', () => {
   });
 
   it('reports a path it cannot read as outside any repository', async () => {
-    const run = await wiki(path.join(outside, 'x'.repeat(300)));
+    const run = await runWiki(path.join(outside, 'x'.repeat(300)));
 
     expect(run.documented).toBeUndefined();
     expect(run.output).toContain('Not a git repository');
@@ -293,7 +297,6 @@ describe('wikiCommand path inside a repository, with GITNEXUS_STORAGE_PATH', () 
   let storage: string;
 
   beforeEach(async () => {
-    vi.resetModules();
     process.exitCode = undefined;
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-storage-path-')));
     home = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-storage-home-')));
@@ -314,11 +317,6 @@ describe('wikiCommand path inside a repository, with GITNEXUS_STORAGE_PATH', () 
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
-    vi.doUnmock('../../src/storage/repo-manager.js');
-    vi.doUnmock('../../src/core/wiki/llm-client.js');
-    vi.doUnmock('../../src/core/wiki/generator.js');
-    vi.doUnmock('cli-progress');
     process.exitCode = originalExitCode;
     for (const [key, value] of Object.entries(originalEnv)) {
       if (value === undefined) delete process.env[key];
@@ -327,17 +325,19 @@ describe('wikiCommand path inside a repository, with GITNEXUS_STORAGE_PATH', () 
     for (const dir of [root, home]) await fs.rm(dir, { recursive: true, force: true });
   });
 
-  it.each([
+  for (const [label, relative] of [
     ['the repository', ''],
     ['a folder inside it', 'api'],
     ['a file inside it', path.join('api', 'orders.ts')],
-  ])('documents the repository from %s', async (_label, relative) => {
-    const run = await runWiki(path.join(root, relative), mockWikiRun());
+  ] as const) {
+    it(`documents the repository from ${label}`, async () => {
+      const run = await runWiki(path.join(root, relative));
 
-    expect(run.documented).toBe(root);
-    expect(run.storagePath).toBe(storage);
-    expect(run.lbugPath).toBe(path.join(storage, 'lbug'));
-    expect(run.output).not.toContain('Error');
-    expect(process.exitCode).toBeUndefined();
-  });
+      expect(run.documented).toBe(root);
+      expect(run.storagePath).toBe(storage);
+      expect(run.lbugPath).toBe(path.join(storage, 'lbug'));
+      expect(run.output).not.toContain('Error');
+      expect(process.exitCode).toBeUndefined();
+    });
+  }
 });

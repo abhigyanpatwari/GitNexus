@@ -119,6 +119,8 @@ function enclosingCaller(node) {
     if (
       [
         SyntaxKind.FunctionDeclaration,
+        SyntaxKind.FunctionExpression,
+        SyntaxKind.ArrowFunction,
         SyntaxKind.MethodDeclaration,
         SyntaxKind.MethodSignature,
         SyntaxKind.Constructor,
@@ -130,11 +132,6 @@ function enclosingCaller(node) {
     ) {
       return parent;
     }
-    if (
-      (parent.kind === SyntaxKind.FunctionExpression || parent.kind === SyntaxKind.ArrowFunction) &&
-      parent.parent.kind === SyntaxKind.VariableDeclaration
-    )
-      return parent;
   }
   throw new Error('No source caller for ' + node.getText());
 }

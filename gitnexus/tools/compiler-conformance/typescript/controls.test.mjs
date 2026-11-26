@@ -14,6 +14,17 @@ const root = fileURLToPath(
 );
 const facts = compilerReport(root);
 
+test('a call in a returned function belongs to that function', () => {
+  const project = path.resolve(root, '../typescript-local-binding-identities');
+  const calls = compilerReport(project).CALLS;
+  const edge = calls.edges.find(({ from }) => from === 'anon.ts#2:9');
+  assert.deepEqual(edge, { from: 'anon.ts#2:9', to: 'anon.ts#3:17' });
+  const edges = calls.edges.map((entry) =>
+    entry === edge ? { ...entry, from: 'anon.ts#1:7' } : entry,
+  );
+  assert.throws(() => compareReports(calls, { ...calls, edges }), /Missing from actual/);
+});
+
 test('dropping an arrow from a class type parameter default changes its compiler facts', () => {
   const project = path.resolve(root, '../typescript-literal-type-parameters');
   const expected = compilerReport(project).CLASS_TYPE_PARAMETERS;
