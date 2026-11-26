@@ -266,4 +266,10 @@ describe('impact tool runtime text matches the skill wording (#2975)', () => {
     expect(upstream).not.toContain('WILL BREAK');
     expect(downstream).not.toContain('WILL BREAK');
   });
+
+  it('describes depth-1 items for both directions in the tool description', () => {
+    const description = GITNEXUS_TOOLS.find((tool) => tool.name === 'impact')?.description;
+    expect(description).toContain('direct callers/importers upstream');
+    expect(description).toContain('direct callees/imports downstream');
+  });
 });
