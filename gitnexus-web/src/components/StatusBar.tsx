@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { translateProgressMessage } from '../i18n/progress';
 
 export const StatusBar = () => {
-  const { graph, graphMode, progress } = useAppState();
+  const { graph, graphMode, progress, queryReadiness } = useAppState();
   const { t } = useTranslation(['common', 'graph']);
 
   const nodeCount = graph?.nodes.length ?? 0;
@@ -42,12 +42,24 @@ export const StatusBar = () => {
             </div>
             <span>{translateProgressMessage(progress.message, t)}</span>
           </>
-        ) : (
+        ) : graph && queryReadiness === 'ready' ? (
           <div className="flex items-center gap-1.5" data-testid="status-ready">
             <span className="h-1.5 w-1.5 rounded-full bg-node-function" />
             <span>{t('common:progress.ready')}</span>
           </div>
-        )}
+        ) : graph ? (
+          <div
+            className="flex items-center gap-1.5 text-amber-400"
+            data-testid={`status-query-${queryReadiness}`}
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-amber-400" />
+            <span>
+              {queryReadiness === 'checking'
+                ? t('graph:queryFab.checkingReadiness')
+                : t('graph:queryFab.unavailable')}
+            </span>
+          </div>
+        ) : null}
       </div>
 
       {/* Center - Sponsor */}

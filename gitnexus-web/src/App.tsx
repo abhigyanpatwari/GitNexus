@@ -77,10 +77,11 @@ const AppContent = () => {
     setAvailableRepos,
     switchRepo,
     setCurrentRepo,
+    serverDisconnected,
+    setQueryServerConnected,
   } = useAppState();
 
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
-  const [serverDisconnected, setServerDisconnected] = useState(false);
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [dismissedUpdateVersion, setDismissedUpdateVersion] = useState<string | null>(() => {
     try {
@@ -316,7 +317,7 @@ const AppContent = () => {
 
     const cleanup = connectHeartbeat(
       () => {
-        setServerDisconnected(false);
+        setQueryServerConnected(true);
         if (wasDisconnectedRef.current) {
           wasDisconnectedRef.current = false;
           void refreshServerInfo();
@@ -324,12 +325,12 @@ const AppContent = () => {
       },
       () => {
         wasDisconnectedRef.current = true;
-        setServerDisconnected(true);
+        setQueryServerConnected(false);
       },
     );
 
     return cleanup;
-  }, [viewMode, refreshServerInfo]);
+  }, [viewMode, refreshServerInfo, setQueryServerConnected]);
 
   // Render based on view mode
   if (viewMode === 'onboarding') {

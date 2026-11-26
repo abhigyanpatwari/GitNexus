@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useId } from 'react';
 import {
   Terminal,
   Play,
@@ -45,6 +45,8 @@ export const QueryFAB = () => {
     graph,
     runQuery,
     isDatabaseReady,
+    queryReadiness,
+    serverDisconnected,
   } = useAppState();
 
   const [isExpanded, setIsExpanded] = useState(false);
@@ -56,6 +58,13 @@ export const QueryFAB = () => {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  const readinessMessageId = useId();
+  const readinessMessage =
+    queryReadiness === 'checking'
+      ? t('graph:queryFab.checkingReadiness')
+      : queryReadiness === 'unavailable'
+        ? t('graph:queryFab.dbNotReady')
+        : null;
 
   useEffect(() => {
     if (isExpanded && textareaRef.current) {
@@ -85,25 +94,19 @@ export const QueryFAB = () => {
   }, [isExpanded]);
 
   const handleRunQuery = useCallback(async () => {
-    if (!query.trim() || isRunning) return;
+    if (!query.trim() || isRunning || queryReadiness !== 'ready') return;
 
     if (!graph) {
       setError(t('graph:queryFab.noProject'));
       return;
     }
 
-    const ready = await isDatabaseReady();
-    if (!ready) {
-      setError(t('graph:queryFab.dbNotReady'));
-      return;
-    }
-
     setIsRunning(true);
     setError(null);
 
-    const startTime = performance.now();
-
     try {
+      if (!(await isDatabaseReady())) return;
+      const startTime = performance.now();
       const rows = await runQuery(query);
       const executionTime = performance.now() - startTime;
 
@@ -158,6 +161,7 @@ export const QueryFAB = () => {
   }, [
     query,
     isRunning,
+    queryReadiness,
     graph,
     isDatabaseReady,
     runQuery,
@@ -196,7 +200,10 @@ export const QueryFAB = () => {
   if (!isExpanded) {
     return (
       <button
-        onClick={() => setIsExpanded(true)}
+        onClick={() => {
+          setIsExpanded(true);
+          if (queryReadiness === 'unavailable') void isDatabaseReady();
+        }}
         className="group absolute bottom-4 left-4 z-20 flex items-center gap-2 rounded-xl bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-2.5 text-sm font-medium text-white shadow-[0_0_20px_rgba(6,182,212,0.4)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_30px_rgba(6,182,212,0.6)]"
       >
         <Terminal className="h-4 w-4" />
@@ -282,7 +289,8 @@ export const QueryFAB = () => {
             )}
             <button
               onClick={handleRunQuery}
-              disabled={!query.trim() || isRunning}
+              disabled={!query.trim() || isRunning || queryReadiness !== 'ready'}
+              aria-describedby={readinessMessage ? readinessMessageId : undefined}
               className="flex items-center gap-1.5 rounded-md bg-gradient-to-r from-cyan-500 to-teal-500 px-4 py-1.5 text-sm font-medium text-white shadow-[0_0_15px_rgba(6,182,212,0.3)] transition-all hover:shadow-[0_0_20px_rgba(6,182,212,0.5)] disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
             >
               {isRunning ? (
@@ -295,6 +303,18 @@ export const QueryFAB = () => {
             </button>
           </div>
         </div>
+        {readinessMessage && (
+          <div className="mt-2 flex items-center justify-between gap-2 text-xs text-amber-400">
+            <p id={readinessMessageId} role="status">
+              {readinessMessage}
+            </p>
+            {queryReadiness === 'unavailable' && !serverDisconnected && (
+              <button onClick={() => void isDatabaseReady()} className="shrink-0 underline">
+                {t('graph:queryFab.checkAgain')}
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {error && (
@@ -343,7 +363,7 @@ export const QueryFAB = () => {
           </div>
 
           {showResults && queryResult.rows.length > 0 && (
-            <div className="scrollbar-thin max-h-48 overflow-auto border-t border-border-subtle">
+            <div className="max-h-48 scrollbar-thin overflow-auto border-t border-border-subtle">
               <table className="w-full text-xs">
                 <thead className="sticky top-0 bg-surface">
                   <tr>

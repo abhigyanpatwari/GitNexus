@@ -41,6 +41,11 @@ vi.mock('../../src/hooks/useAppState', async () => {
         switchRepo: vi.fn(async () => {}),
         setCurrentRepo: vi.fn(),
       }).current;
+      const [serverDisconnected, setServerDisconnected] = React.useState(false);
+      const setQueryServerConnected = React.useCallback(
+        (connected: boolean) => setServerDisconnected(!connected),
+        [],
+      );
 
       return (
         <AppStateContext.Provider
@@ -59,6 +64,8 @@ vi.mock('../../src/hooks/useAppState', async () => {
             isCodePanelOpen: false,
             serverBaseUrl,
             setServerBaseUrl,
+            serverDisconnected,
+            setQueryServerConnected,
             availableRepos: [],
           }}
         >

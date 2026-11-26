@@ -61,7 +61,10 @@
     "examples": "示例",
     "run": "运行",
     "noProject": "未加载项目，请先加载项目。",
-    "dbNotReady": "数据库尚未就绪，请等待加载完成。",
+    "checkingReadiness": "正在检查查询是否可用…",
+    "unavailable": "查询不可用",
+    "dbNotReady": "查询服务不可用。请检查后端连接后重试。",
+    "checkAgain": "重新检查",
     "executionFailed": "查询执行失败",
     "exampleLabels": {
       "functions": "所有函数",

@@ -61,7 +61,10 @@
     "examples": "Examples",
     "run": "Run",
     "noProject": "No project loaded. Load a project first.",
-    "dbNotReady": "Database not ready. Please wait for loading to complete.",
+    "checkingReadiness": "Checking query availability…",
+    "unavailable": "Query unavailable",
+    "dbNotReady": "The query service is unavailable. Check the backend connection and try again.",
+    "checkAgain": "Check again",
     "executionFailed": "Query execution failed",
     "exampleLabels": {
       "functions": "All Functions",

@@ -196,6 +196,9 @@ interface AppState {
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
   isDatabaseReady: () => Promise<boolean>;
+  queryReadiness: 'checking' | 'ready' | 'unavailable';
+  serverDisconnected: boolean;
+  setQueryServerConnected: (connected: boolean) => void;
 
   // Embedding state
   embeddingStatus: EmbeddingStatus;
@@ -516,9 +519,43 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     return backendRunQuery(cypher, repoRef.current);
   }, []);
 
-  const isDatabaseReady = useCallback(async (): Promise<boolean> => {
-    return (await probeBackendStatus()) === 'ok';
+  const [queryReadiness, setQueryReadiness] = useState<AppState['queryReadiness']>('checking');
+  const [serverDisconnected, setServerDisconnected] = useState(false);
+  const serverDisconnectedRef = useRef(false);
+  const queryProbeId = useRef(0);
+  const invalidateQueryProbe = useCallback(() => {
+    ++queryProbeId.current;
   }, []);
+
+  const isDatabaseReady = useCallback(async (): Promise<boolean> => {
+    if (serverDisconnectedRef.current) return false;
+    const probeId = ++queryProbeId.current;
+    setQueryReadiness('checking');
+    const status = await probeBackendStatus();
+    if (probeId !== queryProbeId.current) return false;
+    setQueryReadiness(status === 'ok' ? 'ready' : 'unavailable');
+    return status === 'ok';
+  }, []);
+
+  const setQueryServerConnected = useCallback(
+    (connected: boolean) => {
+      serverDisconnectedRef.current = !connected;
+      setServerDisconnected(!connected);
+      if (connected) {
+        void isDatabaseReady();
+      } else {
+        invalidateQueryProbe();
+        setQueryReadiness('unavailable');
+      }
+    },
+    [invalidateQueryProbe, isDatabaseReady],
+  );
+
+  useEffect(() => {
+    if (viewMode !== 'exploring' || !graph) return;
+    void isDatabaseReady();
+    return invalidateQueryProbe;
+  }, [viewMode, graph, currentRepo, serverBaseUrl, invalidateQueryProbe, isDatabaseReady]);
 
   // Embedding methods — now trigger server-side via /api/embed
   const embedAbortRef = useRef<AbortController | null>(null);
@@ -1568,6 +1605,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     loadGraphAnyway,
     runQuery,
     isDatabaseReady,
+    queryReadiness,
+    serverDisconnected,
+    setQueryServerConnected,
     // Embedding state and methods
     embeddingStatus,
     embeddingProgress,
