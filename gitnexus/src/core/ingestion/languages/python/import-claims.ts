@@ -4,7 +4,8 @@ export interface PythonImportClaim {
   identity: string;
   packageRoot?: string;
   /** The source-side name a named or aliased import binds (`f` in
-   * `from m import f as g`); absent for module imports. */
+   * `from m import f as g`). Never set for module imports (`import m as g`),
+   * whose parsed `importedName` is the module path rather than a callable. */
   importedName?: string;
   claim: NameClaim;
 }

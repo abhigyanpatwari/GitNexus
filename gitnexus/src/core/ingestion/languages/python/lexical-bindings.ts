@@ -243,7 +243,9 @@ export function applyPythonLexicalBindings(
             ...(imp.kind === 'namespace' && !imp.explicitAlias
               ? { packageRoot: imp.localName }
               : {}),
-            ...('importedName' in imp && imp.importedName !== ''
+            // Only a named import binds a callable source name. A module
+            // import's `importedName` is the module path, not a call target.
+            ...((imp.kind === 'named' || imp.kind === 'alias') && imp.importedName !== ''
               ? { importedName: imp.importedName }
               : {}),
           });

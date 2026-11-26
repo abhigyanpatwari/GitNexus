@@ -69,6 +69,19 @@ def run():
 `,
     names: ['fast_impl', 'slowpoke', 'speedy'],
   },
+  // A module import's parsed `importedName` is the module path; it is not a
+  // callable target and must not be recorded as one.
+  module_alias_fallback: {
+    source: `try:
+    import pkg.fast as fast
+except ImportError:
+    fast = None
+
+def run():
+    return fast()
+`,
+    names: ['fast'],
+  },
 } as const;
 
 const PLAIN_IMPORT_FIXTURE = `from pkg.fast import speedy
@@ -130,7 +143,7 @@ describe('Python competing-binding barrier drops', () => {
   );
 
   it.each(Object.entries(ALIASED_FIXTURES))(
-    'records the dropped aliased call under its source names in %s',
+    'records the dropped call under its local and imported source names in %s',
     (name, { names }) => {
       const filePath = `${name}.py`;
       const drops = barrierDrops(filePath);
