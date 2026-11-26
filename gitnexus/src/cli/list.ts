@@ -11,7 +11,12 @@ export interface ListOptions {
   json?: boolean;
 }
 
-/** One `list --json` row. Field names match the MCP `list_repos` tool. */
+/**
+ * One `list --json` row: the registry fields, under the names the MCP
+ * `list_repos` tool gives them. It is not the whole `list_repos` row, which
+ * also carries `staleness`, `siblings`, `contentRetention` and
+ * `sourceAvailable`, computed per repository.
+ */
 const toJsonRow = (entry: RegistryEntry) => ({
   name: entry.name,
   path: entry.path,
