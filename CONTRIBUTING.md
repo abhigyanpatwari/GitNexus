@@ -232,8 +232,11 @@ lockfile therefore pins the same nine audited peers to exactly `0.25.1`.
 and `prepack` to keep installed dependency manifests consistent with that lockfile
 and the published bundle. It leaves grammar sources unchanged and replaces the
 incorrect `linux-arm64` prebuilds in five exact npm releases with audited AArch64
-binaries. It validates package versions, peer ranges, dependency layouts, and
-replacement checksums and architecture before writing manifests or binaries.
+binaries. It also replaces the runtime's `linux-x64` and `linux-arm64` prebuilds,
+which upstream built against a libstdc++ newer than Ubuntu 22.04 and Debian 12
+provide, with audited rebuilds. It validates package versions, peer ranges,
+dependency layouts, and replacement checksums and architecture before writing
+manifests or binaries.
 The upstream ranges remain in the script only as validation inputs; installed and
 published audited manifests require exactly `0.25.1`. See
 [`gitnexus/prebuilds/bundled/README.md`](gitnexus/prebuilds/bundled/README.md) for
@@ -241,7 +244,9 @@ the affected releases, provenance, and regeneration instructions.
 
 When upgrading these packages, update the exact pins, lockfile, and audited peer
 list together. If regenerating the lockfile restores upstream's older peer ranges,
-restore the same audited `0.25.1` peer pins before committing it. Verify ordinary
+restore the same audited `0.25.1` peer pins before committing it. A runtime upgrade
+also needs new runtime prebuild repairs, or a check that upstream's Linux prebuilds
+need no more than `GLIBCXX_3.4.29`, before the runtime pin can move. Verify ordinary
 `npm ci` and a subsequent `npm install` complete without peer-resolution warnings.
 Run the parser, extraction, CFG, and worker tests, then use a real
 `npm pack` (including `prepack`) to test a fresh consumer's `npm install`,

@@ -431,3 +431,54 @@ describe('bundled Linux ARM64 repair architecture', () => {
     }
   });
 });
+
+describe('bundled Linux tree-sitter runtime repairs', () => {
+  const dir = path.join(GITNEXUS_ROOT, 'prebuilds/bundled');
+  const manifest = JSON.parse(readFileSync(path.join(dir, 'runtime-manifest.json'), 'utf8'));
+  const tuples: Array<[string, string, string]> = [
+    ['linux-arm64', 'arm64', 'x64'],
+    ['linux-x64', 'x64', 'arm64'],
+  ];
+
+  it('pins the runtime identity, source provenance, and replacement checksums', () => {
+    // Independent audit pin: review regenerated artifacts and their provenance
+    // before updating this hash. Parse/stringify ignores formatting-only changes.
+    expect(createHash('sha256').update(JSON.stringify(manifest)).digest('hex')).toBe(
+      '652d738adcf7ebf46314656f442e2ea9724642b98769a8fc12deb09b71dbba08',
+    );
+    expect([manifest.schemaVersion, manifest.name, manifest.version]).toEqual([
+      1,
+      'tree-sitter',
+      JSON.parse(readFileSync(path.join(GITNEXUS_ROOT, 'package.json'), 'utf8')).dependencies[
+        'tree-sitter'
+      ],
+    ]);
+    expect(manifest.source.integrity).toMatch(/^sha512-/);
+    expect(manifest.source.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(manifest.binaries.map((entry: { tuple: string }) => entry.tuple)).toEqual(
+      tuples.map(([tuple]) => tuple),
+    );
+  });
+
+  for (const [tuple, arch, other] of tuples) {
+    it(`${tuple}: replacement is an N-API binary within the libstdc++ 3.4.29 ceiling`, () => {
+      const entry = manifest.binaries.find((item: { tuple: string }) => item.tuple === tuple);
+      const bytes = readFileSync(path.join(dir, entry.file));
+      expect(createHash('sha256').update(bytes).digest('hex')).toBe(entry.sha256);
+      expect(classifyBinaryHeader(bytes, bytes.length, 'linux', arch)).toBe('valid');
+      expect(classifyBinaryHeader(bytes, bytes.length, 'linux', other)).toBe('corrupt');
+      expect(bytes.includes(NAPI_SYMBOL)).toBe(true);
+      // Ubuntu 22.04 and Debian 12 stop at GLIBCXX_3.4.30 (#4165).
+      expect(bytes.includes('GLIBCXX_3.4.30')).toBe(false);
+      expect(bytes.includes('GLIBCXX_3.4.31')).toBe(false);
+    });
+
+    it(`${tuple}: installed runtime prebuild is the bundled replacement`, () => {
+      const entry = manifest.binaries.find((item: { tuple: string }) => item.tuple === tuple);
+      const installed = readFileSync(
+        path.join(NODE_MODULES, 'tree-sitter/prebuilds', tuple, 'tree-sitter.node'),
+      );
+      expect(installed.equals(readFileSync(path.join(dir, entry.file)))).toBe(true);
+    });
+  }
+});

@@ -6,12 +6,13 @@
  * ABI-compatible grammars still advertise older runtime peers, so bundling
  * alone leaves an invalid dependency tree. Admit only the runtime version we
  * tested, in only the audited manifests below. Five audited upstream Linux
- * ARM64 binaries are repaired before packing.
+ * ARM64 grammar binaries and the Linux runtime binaries are repaired before
+ * packing.
  */
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
-const { isArm64NapiSharedObject } = require('./arm64-prebuild.cjs');
+const { isArm64NapiSharedObject, isX64NapiSharedObject } = require('./arm64-prebuild.cjs');
 
 const RUNTIME = '0.25.1';
 // Upstream metadata is an input to validate, never the peer range we ship.
@@ -35,7 +36,14 @@ const ARM64_REPAIRS = new Set([
   'tree-sitter-javascript@0.23.1',
   'tree-sitter-typescript@0.23.2',
 ]);
+// The upstream runtime prebuilds for these tuples need GLIBCXX_3.4.31, which
+// Ubuntu 22.04 and Debian 12 lack (#4165); replace them with audited rebuilds.
+const RUNTIME_REPAIRS = new Map([
+  ['linux-arm64', isArm64NapiSharedObject],
+  ['linux-x64', isX64NapiSharedObject],
+]);
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
+const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 function readArm64Repairs(packageRoot) {
   const root = path.join(packageRoot, 'prebuilds', 'bundled');
@@ -56,7 +64,7 @@ function readArm64Repairs(packageRoot) {
       throw new Error(`Unexpected bundled ARM64 prebuild identity: ${identity}`);
     }
     const bytes = fs.readFileSync(path.join(root, entry.file));
-    if (createHash('sha256').update(bytes).digest('hex') !== entry.sha256) {
+    if (sha256(bytes) !== entry.sha256) {
       throw new Error(`Bundled ARM64 prebuild checksum mismatch: ${identity}`);
     }
     if (!isArm64NapiSharedObject(bytes)) {
@@ -65,6 +73,64 @@ function readArm64Repairs(packageRoot) {
     repairs.set(identity, bytes);
   }
   return repairs;
+}
+
+function readRuntimeRepairs(packageRoot) {
+  const root = path.join(packageRoot, 'prebuilds', 'bundled');
+  const manifest = readJson(path.join(root, 'runtime-manifest.json'));
+  if (
+    manifest.schemaVersion !== 1 ||
+    manifest.name !== 'tree-sitter' ||
+    manifest.version !== RUNTIME ||
+    !Array.isArray(manifest.binaries) ||
+    manifest.binaries.length !== RUNTIME_REPAIRS.size
+  ) {
+    throw new Error('Invalid bundled tree-sitter runtime prebuild manifest');
+  }
+  const repairs = new Map();
+  for (const entry of manifest.binaries) {
+    const matches = RUNTIME_REPAIRS.get(entry.tuple);
+    const expectedFile = `tree-sitter@${RUNTIME}/${entry.tuple}/tree-sitter.node`;
+    if (!matches || repairs.has(entry.tuple) || entry.file !== expectedFile) {
+      throw new Error(`Unexpected bundled runtime prebuild tuple: ${entry.tuple}`);
+    }
+    const bytes = fs.readFileSync(path.join(root, entry.file));
+    if (sha256(bytes) !== entry.sha256) {
+      throw new Error(`Bundled runtime prebuild checksum mismatch: ${entry.tuple}`);
+    }
+    if (!matches(bytes)) {
+      throw new Error(`Bundled runtime prebuild has the wrong architecture: ${entry.tuple}`);
+    }
+    repairs.set(entry.tuple, bytes);
+  }
+  return repairs;
+}
+
+// node-gyp-build prefers local build outputs over prebuilds, even when those
+// outputs were compiled on the publisher's other architecture.
+function buildOutputs(dir) {
+  const outputs = [];
+  for (const mode of ['Release', 'Debug']) {
+    const build = path.join(dir, 'build', mode);
+    if (fs.existsSync(build)) {
+      for (const name of fs.readdirSync(build)) {
+        if (name.endsWith('.node')) outputs.push(path.join(build, name));
+      }
+    }
+  }
+  return outputs;
+}
+
+// A changed upstream layout needs review rather than creating a second
+// candidate that node-gyp-build may not select.
+function assertSinglePrebuild(target, identity) {
+  const dir = path.dirname(target);
+  const candidates = fs.existsSync(dir)
+    ? fs.readdirSync(dir).filter((name) => name.endsWith('.node'))
+    : [];
+  if (candidates.length !== 1 || candidates[0] !== path.basename(target)) {
+    throw new Error(`Unexpected ${path.basename(dir)} prebuild layout for ${identity}`);
+  }
 }
 
 function prepareTreeSitterBundle(
@@ -155,29 +221,18 @@ function prepareTreeSitterBundle(
     const bytes = repairs.get(`${pkg.name}@${pkg.version}`);
     if (!bytes) continue;
     const target = path.join(dir, 'prebuilds', 'linux-arm64', `${pkg.name}.node`);
-    // A changed upstream layout needs review rather than creating a second
-    // candidate that node-gyp-build may not select.
-    const candidates = fs
-      .readdirSync(path.dirname(target))
-      .filter((name) => name.endsWith('.node'));
-    if (candidates.length !== 1 || candidates[0] !== path.basename(target)) {
-      throw new Error(`Unexpected ARM64 prebuild layout for ${pkg.name}@${pkg.version}`);
-    }
+    assertSinglePrebuild(target, `${pkg.name}@${pkg.version}`);
     binaries.push({ target, bytes });
-    if (forPublication) {
-      // node-gyp-build prefers local build outputs over prebuilds, even when
-      // those outputs were compiled on the publisher's other architecture.
-      // Preserve legitimate consumer source builds during ordinary postinstall.
-      for (const mode of ['Release', 'Debug']) {
-        const build = path.join(dir, 'build', mode);
-        if (fs.existsSync(build)) {
-          for (const name of fs.readdirSync(build)) {
-            if (name.endsWith('.node')) shadows.push(path.join(build, name));
-          }
-        }
-      }
-    }
+    // Preserve legitimate consumer source builds during ordinary postinstall.
+    if (forPublication) shadows.push(...buildOutputs(dir));
   }
+  const runtimeDir = fs.realpathSync(path.join(modulesRoot, 'tree-sitter'));
+  for (const [tuple, bytes] of readRuntimeRepairs(packageRoot)) {
+    const target = path.join(runtimeDir, 'prebuilds', tuple, 'tree-sitter.node');
+    assertSinglePrebuild(target, `tree-sitter@${RUNTIME}`);
+    binaries.push({ target, bytes });
+  }
+  if (forPublication) shadows.push(...buildOutputs(runtimeDir));
 
   // Validate the complete set before writing, so dependency drift cannot leave
   // a partially prepared bundle behind. Repeated pack operations are idempotent.

@@ -933,7 +933,8 @@ jobs:
   # (#836) plus native grammar loading from the bundled runtime. Runs on windows-latest because that is the platform the fix
   # targets; the in-repo `npm ci` job above only exercises the dev-tree path
   # and skips the tarball reify step where the historical EPERM occurred.
-  # Native Linux ARM64 also verifies the corrected bundled prebuilds (#3599).
+  # Native Linux ARM64 also verifies the corrected bundled prebuilds (#3599),
+  # and both Linux runners install on an older libstdc++ without a toolchain (#4165).
   packaged-install-smoke:
     name: packaged install smoke (${{ matrix.os }})
     strategy:
@@ -983,6 +984,39 @@ jobs:
       - name: Pack gitnexus tarball
         shell: bash
         run: npm pack
+        working-directory: gitnexus
+
+      # The runners' libstdc++ is newer than Ubuntu 22.04 and Debian 12
+      # (GLIBCXX_3.4.30), and they ship a compiler, so a native prebuild that
+      # needs a newer libstdc++ silently compiles here instead of failing (#4165).
+      # The base image has no compiler, make or Python, so a fallback fails.
+      - name: Install tarball on Ubuntu 22.04 without a toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          IMAGE: ubuntu:22.04@sha256:b000e69a50ff940390233025e7a337fb8469b509e2334fa4d018ac30f3e18cdb
+        run: |
+          set -euo pipefail
+          TARBALL=$(find "$PWD" -maxdepth 1 -name 'gitnexus-*.tgz' -print -quit)
+          test -n "$TARBALL"
+          NODE_DIR=$(dirname "$(dirname "$(command -v node)")")
+          docker run --rm -e SCARF_ANALYTICS=false \
+            -v "$TARBALL:/gitnexus.tgz:ro" -v "$NODE_DIR:/opt/node:ro" "$IMAGE" bash -c '
+              set -euo pipefail
+              export PATH=/opt/node/bin:$PATH
+              for tool in cc gcc g++ make python3; do
+                if command -v "$tool"; then echo "Unexpected toolchain: $tool" >&2; exit 1; fi
+              done
+              LIBSTDCXX=$(find /usr/lib -name "libstdc++.so.6" -print -quit)
+              grep -q GLIBCXX_3.4.30 "$LIBSTDCXX"
+              if grep -q GLIBCXX_3.4.31 "$LIBSTDCXX"; then echo "libstdc++ is too new" >&2; exit 1; fi
+              mkdir /consumer && cd /consumer
+              cp /gitnexus.tgz gitnexus.tgz
+              echo "{\"private\":true,\"dependencies\":{\"gitnexus\":\"file:./gitnexus.tgz\"}}" > package.json
+              npm install --no-audit --no-fund
+              node node_modules/gitnexus/dist/cli/index.js --version
+              node node_modules/gitnexus/scripts/assert-native-parsers.mjs node_modules/gitnexus
+            '
         working-directory: gitnexus
 
       - name: Index the PR tarball with npm, pnpm, and Bun
