@@ -1,3 +1,4 @@
+import { registerCases } from '../support/cases.mjs';
 /**
  * Locks the Layer 1 prefilter (tools/scenario-map/path-coverage/prefilter.ts): a file stays when a
  * test's checks-and-context key is shared, when its tests come from a helper or an alias the
@@ -9,8 +10,9 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { layer1Files } from '../../../tools/scenario-map/path-coverage/prefilter.js';
+import { after as afterAll, describe, it } from 'node:test';
+import { expect } from 'expect';
+import { layer1Files } from '../../../scenario-map/path-coverage/prefilter.js';
 
 const SOURCES: Record<string, string> = {
   'test/unit/shared.test.ts': [
@@ -86,13 +88,18 @@ describe('layer1Files', () => {
     (file) => !['test/unit/shared.test.ts', 'test/unit/unique.test.ts'].includes(file),
   );
 
-  it.each([
-    { changed: 'test/unit/unique.test.ts', files: UNKNOWN },
-    { changed: 'test/unit/shared.test.ts', files: ['test/unit/shared.test.ts', ...UNKNOWN] },
-    { changed: 'test/unit/helper.test.ts', files: UNKNOWN },
-  ])('in a diff scope, runs $changed only with what can pair with it', ({ changed, files }) => {
-    expect(layer1Files(root, FILES, new Set([changed])).files).toEqual(files);
-  });
+  registerCases(
+    it,
+    [
+      { changed: 'test/unit/unique.test.ts', files: UNKNOWN },
+      { changed: 'test/unit/shared.test.ts', files: ['test/unit/shared.test.ts', ...UNKNOWN] },
+      { changed: 'test/unit/helper.test.ts', files: UNKNOWN },
+    ],
+    'in a diff scope, runs $changed only with what can pair with it',
+    ({ changed, files }) => {
+      expect(layer1Files(root, FILES, new Set([changed])).files).toEqual(files);
+    },
+  );
 
   it('in a diff scope, runs the files whose tests share a changed test key', () => {
     const partner = 'test/unit/partner.test.ts';

@@ -1,3 +1,4 @@
+import { registerCases } from '../support/cases.mjs';
 /**
  * Locks the input facet of a test instance (U6, R5, R9, KTD6, design §2 "Input facet", §5.3
  * rules 1–8, D1, D2): table members collapse with their discarded values kept per position,
@@ -6,7 +7,8 @@
  * selectors stay exact, `it.each` rows are evaluated per instance, unresolvable inputs are
  * marked, and the residual-difference guard catches what the facet does not carry.
  */
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
 import {
   applyResidualGuard,
   computeFacet,
@@ -15,8 +17,8 @@ import {
   sameDiscardedValues,
   type FacetSources,
   type InputFacet,
-} from '../../../tools/scenario-map/facet/input-facet.js';
-import { expandCases } from '../../../tools/scenario-map/inventory/cases.js';
+} from '../../../scenario-map/facet/input-facet.js';
+import { expandCases } from '../../../scenario-map/inventory/cases.js';
 
 const TEST_FILE = 'gitnexus/test/unit/a.test.ts';
 const PACKAGE_FILE = 'test/unit/a.test.ts';
@@ -130,144 +132,149 @@ const positions = (facet: InputFacet): [number, string, string][] =>
   facet.discarded.map((entry) => [entry.position, entry.value, entry.origin]);
 
 describe('computeFacet: equal and different facets', () => {
-  it.each([
+  registerCases(
+    it,
     [
-      'two members of one production string table',
-      true,
-      TABLE,
-      `it('a', () => { expect(isCallable('Function')).toBe(true); });`,
-      `it('b', () => { expect(isCallable('Class')).toBe(true); });`,
+      [
+        'two members of one production string table',
+        true,
+        TABLE,
+        `it('a', () => { expect(isCallable('Function')).toBe(true); });`,
+        `it('b', () => { expect(isCallable('Class')).toBe(true); });`,
+      ],
+      [
+        'two members of a table two import hops away',
+        true,
+        NEAR_TABLE,
+        `it('a', () => { expect(isCallable('Function')).toBe(true); });`,
+        `it('b', () => { expect(isCallable('Class')).toBe(true); });`,
+      ],
+      [
+        'inline Rust against inline Go',
+        false,
+        NONE,
+        `it('a', () => { expect(parseSource('fn main() { let x = 1; }', SupportedLanguages.Rust)).toBe(true); });`,
+        `it('b', () => { expect(parseSource('package main\\nfunc main() { x := 1 }', SupportedLanguages.Go)).toBe(true); });`,
+      ],
+      [
+        'inline TypeScript differing only in a local variable name',
+        true,
+        NONE,
+        `it('a', () => { expect(parseSource('const alpha = compute(1);', SupportedLanguages.TypeScript)).toBe(true); });`,
+        `it('b', () => { expect(parseSource('const beta = compute(1);', SupportedLanguages.TypeScript)).toBe(true); });`,
+      ],
+      [
+        'COBOL using different reserved words',
+        false,
+        NONE,
+        `it('a', () => { expect(cobol('PERFORM X THRU Y')).toBe(true); });`,
+        `it('b', () => { expect(cobol('MOVE A TO B')).toBe(true); });`,
+      ],
+      [
+        '101 against 150 under a production LIMIT = 100',
+        false,
+        LIMIT,
+        `it('a', () => { expect(parse(101)).toBe(100); });`,
+        `it('b', () => { expect(parse(150)).toBe(100); });`,
+      ],
+      [
+        '150 against 170 under a production LIMIT = 100',
+        true,
+        LIMIT,
+        `it('a', () => { expect(parse(150)).toBe(100); });`,
+        `it('b', () => { expect(parse(170)).toBe(100); });`,
+      ],
+      [
+        '101 against 150 with LIMIT in a constants-only module the test never executes',
+        false,
+        CONSTANTS_ONLY,
+        `it('a', () => { expect(parse(101)).toBe(100); });`,
+        `it('b', () => { expect(parse(150)).toBe(100); });`,
+      ],
+      [
+        '101 against 150 under LIMIT = 2 * 50',
+        false,
+        FOLDED,
+        `it('a', () => { expect(parse(101)).toBe(100); });`,
+        `it('b', () => { expect(parse(150)).toBe(100); });`,
+      ],
+      [
+        'a literal 0 against a literal 5',
+        false,
+        NONE,
+        `it('a', () => { expect(clamp(0)).toBe(true); });`,
+        `it('b', () => { expect(clamp(5)).toBe(true); });`,
+      ],
+      [
+        'add(1, 2) against add(2, 3): 1 stays exact (D2)',
+        false,
+        NONE,
+        `it('a', () => { expect(add(1, 2)).toBe(3); });`,
+        `it('b', () => { expect(add(2, 3)).toBe(5); });`,
+      ],
+      [
+        'add(2, 3) against add(5, 5) (D2)',
+        true,
+        NONE,
+        `it('a', () => { expect(add(2, 3)).toBe(5); });`,
+        `it('b', () => { expect(add(5, 5)).toBe(10); });`,
+      ],
+      [
+        'a negative number against another negative number',
+        false,
+        NONE,
+        `it('a', () => { expect(clamp(-5)).toBe(true); });`,
+        `it('b', () => { expect(clamp(-7)).toBe(true); });`,
+      ],
+      [
+        'two entries of a production numeric Set (D3)',
+        true,
+        STATUS_SET,
+        `it('a', () => { expect(isSuccess(200)).toBe(true); });`,
+        `it('b', () => { expect(isSuccess(204)).toBe(true); });`,
+      ],
+      [
+        'literals [a, b] against [b, a] of different shapes',
+        false,
+        NONE,
+        `it('a', () => { expect(join('abc', 'Abc')).toBe(true); });`,
+        `it('b', () => { expect(join('Abc', 'abc')).toBe(true); });`,
+      ],
+      [
+        'two selector literals of an expect subject',
+        false,
+        NONE,
+        `it('a', () => { const r = build(); expect(getNodesByLabel(r, 'Function')).toHaveLength(2); });`,
+        `it('b', () => { const r = build(); expect(getNodesByLabel(r, 'Class')).toHaveLength(2); });`,
+      ],
+      [
+        'different object-literal keys',
+        false,
+        NONE,
+        `it('a', () => { expect(make({ alpha: 2 })).toBe(true); });`,
+        `it('b', () => { expect(make({ beta: 2 })).toBe(true); });`,
+      ],
+      [
+        'different builder calls',
+        false,
+        NONE,
+        `it('a', () => { expect(typeEdge('x')).toBe(true); });`,
+        `it('b', () => { expect(edge('x')).toBe(true); });`,
+      ],
+      [
+        'an empty string against a non-empty one',
+        false,
+        NONE,
+        `it('a', () => { expect(run('')).toBe(true); });`,
+        `it('b', () => { expect(run('x')).toBe(true); });`,
+      ],
     ],
-    [
-      'two members of a table two import hops away',
-      true,
-      NEAR_TABLE,
-      `it('a', () => { expect(isCallable('Function')).toBe(true); });`,
-      `it('b', () => { expect(isCallable('Class')).toBe(true); });`,
-    ],
-    [
-      'inline Rust against inline Go',
-      false,
-      NONE,
-      `it('a', () => { expect(parseSource('fn main() { let x = 1; }', SupportedLanguages.Rust)).toBe(true); });`,
-      `it('b', () => { expect(parseSource('package main\\nfunc main() { x := 1 }', SupportedLanguages.Go)).toBe(true); });`,
-    ],
-    [
-      'inline TypeScript differing only in a local variable name',
-      true,
-      NONE,
-      `it('a', () => { expect(parseSource('const alpha = compute(1);', SupportedLanguages.TypeScript)).toBe(true); });`,
-      `it('b', () => { expect(parseSource('const beta = compute(1);', SupportedLanguages.TypeScript)).toBe(true); });`,
-    ],
-    [
-      'COBOL using different reserved words',
-      false,
-      NONE,
-      `it('a', () => { expect(cobol('PERFORM X THRU Y')).toBe(true); });`,
-      `it('b', () => { expect(cobol('MOVE A TO B')).toBe(true); });`,
-    ],
-    [
-      '101 against 150 under a production LIMIT = 100',
-      false,
-      LIMIT,
-      `it('a', () => { expect(parse(101)).toBe(100); });`,
-      `it('b', () => { expect(parse(150)).toBe(100); });`,
-    ],
-    [
-      '150 against 170 under a production LIMIT = 100',
-      true,
-      LIMIT,
-      `it('a', () => { expect(parse(150)).toBe(100); });`,
-      `it('b', () => { expect(parse(170)).toBe(100); });`,
-    ],
-    [
-      '101 against 150 with LIMIT in a constants-only module the test never executes',
-      false,
-      CONSTANTS_ONLY,
-      `it('a', () => { expect(parse(101)).toBe(100); });`,
-      `it('b', () => { expect(parse(150)).toBe(100); });`,
-    ],
-    [
-      '101 against 150 under LIMIT = 2 * 50',
-      false,
-      FOLDED,
-      `it('a', () => { expect(parse(101)).toBe(100); });`,
-      `it('b', () => { expect(parse(150)).toBe(100); });`,
-    ],
-    [
-      'a literal 0 against a literal 5',
-      false,
-      NONE,
-      `it('a', () => { expect(clamp(0)).toBe(true); });`,
-      `it('b', () => { expect(clamp(5)).toBe(true); });`,
-    ],
-    [
-      'add(1, 2) against add(2, 3): 1 stays exact (D2)',
-      false,
-      NONE,
-      `it('a', () => { expect(add(1, 2)).toBe(3); });`,
-      `it('b', () => { expect(add(2, 3)).toBe(5); });`,
-    ],
-    [
-      'add(2, 3) against add(5, 5) (D2)',
-      true,
-      NONE,
-      `it('a', () => { expect(add(2, 3)).toBe(5); });`,
-      `it('b', () => { expect(add(5, 5)).toBe(10); });`,
-    ],
-    [
-      'a negative number against another negative number',
-      false,
-      NONE,
-      `it('a', () => { expect(clamp(-5)).toBe(true); });`,
-      `it('b', () => { expect(clamp(-7)).toBe(true); });`,
-    ],
-    [
-      'two entries of a production numeric Set (D3)',
-      true,
-      STATUS_SET,
-      `it('a', () => { expect(isSuccess(200)).toBe(true); });`,
-      `it('b', () => { expect(isSuccess(204)).toBe(true); });`,
-    ],
-    [
-      'literals [a, b] against [b, a] of different shapes',
-      false,
-      NONE,
-      `it('a', () => { expect(join('abc', 'Abc')).toBe(true); });`,
-      `it('b', () => { expect(join('Abc', 'abc')).toBe(true); });`,
-    ],
-    [
-      'two selector literals of an expect subject',
-      false,
-      NONE,
-      `it('a', () => { const r = build(); expect(getNodesByLabel(r, 'Function')).toHaveLength(2); });`,
-      `it('b', () => { const r = build(); expect(getNodesByLabel(r, 'Class')).toHaveLength(2); });`,
-    ],
-    [
-      'different object-literal keys',
-      false,
-      NONE,
-      `it('a', () => { expect(make({ alpha: 2 })).toBe(true); });`,
-      `it('b', () => { expect(make({ beta: 2 })).toBe(true); });`,
-    ],
-    [
-      'different builder calls',
-      false,
-      NONE,
-      `it('a', () => { expect(typeEdge('x')).toBe(true); });`,
-      `it('b', () => { expect(edge('x')).toBe(true); });`,
-    ],
-    [
-      'an empty string against a non-empty one',
-      false,
-      NONE,
-      `it('a', () => { expect(run('')).toBe(true); });`,
-      `it('b', () => { expect(run('x')).toBe(true); });`,
-    ],
-  ])('%s: equal facets is %s', async (_label, equal, world, first, second) => {
-    const [a, b] = await pairOf(world, first, second);
-    expect(a.fingerprint === b.fingerprint).toBe(equal);
-  });
+    '%s: equal facets is %s',
+    async (_label, equal, world, first, second) => {
+      const [a, b] = await pairOf(world, first, second);
+      expect(a.fingerprint === b.fingerprint).toBe(equal);
+    },
+  );
 
   it('keeps the data part equal when only the source order of the literals differs', async () => {
     const [a, b] = await pairOf(
@@ -305,56 +312,75 @@ describe('computeFacet: discarded values', () => {
     expect(facet.discarded[0].location).toEqual({ file: TEST_FILE, line: 5, column: 34 });
   });
 
-  it.each([
-    ['a boundary number', `it('a', () => { expect(add(1, -1)).toBe(0); });`, LIMIT],
-    ['a number within ±1 of a constant', `it('a', () => { expect(parse(99)).toBe(100); });`, LIMIT],
+  registerCases(
+    it,
     [
-      'a selector',
-      `it('a', () => { const r = build(); expect(getNodesByLabel(r, 'Function')).toHaveLength(1); });`,
-      NONE,
+      ['a boundary number', `it('a', () => { expect(add(1, -1)).toBe(0); });`, LIMIT],
+      [
+        'a number within ±1 of a constant',
+        `it('a', () => { expect(parse(99)).toBe(100); });`,
+        LIMIT,
+      ],
+      [
+        'a selector',
+        `it('a', () => { const r = build(); expect(getNodesByLabel(r, 'Function')).toHaveLength(1); });`,
+        NONE,
+      ],
     ],
-  ])('discards nothing for %s', async (_label, test, world) => {
-    const [facet] = await facetsOf(world, test);
-    expect(facet.discarded).toEqual([]);
-  });
+    'discards nothing for %s',
+    async (_label, test, world) => {
+      const [facet] = await facetsOf(world, test);
+      expect(facet.discarded).toEqual([]);
+    },
+  );
 
-  it.each([
+  registerCases(
+    it,
     [
-      'equal',
-      `it('a', () => { expect(parse(150)).toBe(100); });`,
-      `it('b', () => { expect(parse(150)).toBe(100); });`,
-      true,
+      [
+        'equal',
+        `it('a', () => { expect(parse(150)).toBe(100); });`,
+        `it('b', () => { expect(parse(150)).toBe(100); });`,
+        true,
+      ],
+      [
+        'different',
+        `it('a', () => { expect(parse(150)).toBe(100); });`,
+        `it('b', () => { expect(parse(170)).toBe(100); });`,
+        false,
+      ],
     ],
-    [
-      'different',
-      `it('a', () => { expect(parse(150)).toBe(100); });`,
-      `it('b', () => { expect(parse(170)).toBe(100); });`,
-      false,
-    ],
-  ])('compares %s discarded values', async (_label, first, second, same) => {
-    const [a, b] = await pairOf(LIMIT, first, second);
-    expect(sameDiscardedValues(a, b)).toBe(same);
-  });
+    'compares %s discarded values',
+    async (_label, first, second, same) => {
+      const [a, b] = await pairOf(LIMIT, first, second);
+      expect(sameDiscardedValues(a, b)).toBe(same);
+    },
+  );
 });
 
 describe('computeFacet: per-instance rows', () => {
-  it.each([
-    ['conditional alias', `const input = flag ? 'pool' : undefined;`],
-    ['transitive alias', `const selected = flag ? 'pool' : undefined; const input = selected;`],
-    ['captured helper', `function input() { return flag ? 'pool' : undefined; }`],
-  ])('does not resolve a captured loop %s from identical body text', async (_name, setup) => {
-    const facets = await facetsOf(
-      NONE,
-      `for (const flag of [false, true]) {`,
-      setup,
-      `it(String(flag), () => { expect(run(input, 'disabled')).toBe(false); });`,
-      `}`,
-    );
-    expect(facets).toHaveLength(2);
-    for (const facet of facets) {
-      expect(facet.unresolved).toContain('captured loop binding input: instance value unknown');
-    }
-  });
+  registerCases(
+    it,
+    [
+      ['conditional alias', `const input = flag ? 'pool' : undefined;`],
+      ['transitive alias', `const selected = flag ? 'pool' : undefined; const input = selected;`],
+      ['captured helper', `function input() { return flag ? 'pool' : undefined; }`],
+    ],
+    'does not resolve a captured loop %s from identical body text',
+    async (_name, setup) => {
+      const facets = await facetsOf(
+        NONE,
+        `for (const flag of [false, true]) {`,
+        setup,
+        `it(String(flag), () => { expect(run(input, 'disabled')).toBe(false); });`,
+        `}`,
+      );
+      expect(facets).toHaveLength(2);
+      for (const facet of facets) {
+        expect(facet.unresolved).toContain('captured loop binding input: instance value unknown');
+      }
+    },
+  );
 
   it('marks an outer loop alias captured inside an inner loop unresolved', async () => {
     const facets = await facetsOf(

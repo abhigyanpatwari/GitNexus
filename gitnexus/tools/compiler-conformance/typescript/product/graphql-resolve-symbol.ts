@@ -1,11 +1,13 @@
+import { createTestEnvironment } from '../support/environment.js';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { afterAll, expect, it, vi } from 'vitest';
-import { GraphqlExtractor } from '../../../src/core/group/extractors/graphql-extractor.js';
-import { syncGroup } from '../../../src/core/group/sync.js';
-import { closeLbug, executeParameterized } from '../../../src/core/lbug/pool-adapter.js';
-import type { GroupConfig, RepoHandle } from '../../../src/core/group/types.js';
-import { withTestLbugDB } from '../../helpers/test-indexed-db.js';
+import { after as afterAll, it } from 'node:test';
+import { expect } from 'expect';
+import { GraphqlExtractor } from '../../../../src/core/group/extractors/graphql-extractor.js';
+import { syncGroup } from '../../../../src/core/group/sync.js';
+import { closeLbug, executeParameterized } from '../../../../src/core/lbug/pool-adapter.js';
+import type { GroupConfig, RepoHandle } from '../../../../src/core/group/types.js';
+import { withTestLbugDB } from '../support/indexed-db.js';
 
 // Graph Method.startLine is 0-based (tree-sitter row). `health()` is source line 5.
 const SEED = [
@@ -94,8 +96,11 @@ withTestLbugDB(
         ]),
       );
 
-      const repoManager = await import('../../../src/storage/repo-manager.js');
-      const registrySpy = vi.spyOn(repoManager, 'readRegistryStrict').mockResolvedValue([]);
+      const environment = createTestEnvironment();
+      const registry = path.join(handle.tmpHandle.dbPath, 'registry-fixture');
+      await fs.mkdir(registry);
+      await fs.writeFile(path.join(registry, 'registry.json'), '[]');
+      environment.set('GITNEXUS_HOME', registry);
       const config: GroupConfig = {
         version: 1,
         name: 'graphql-production-wiring',
@@ -139,7 +144,7 @@ withTestLbugDB(
           }),
         ]);
       } finally {
-        registrySpy.mockRestore();
+        environment.restore();
       }
     });
 

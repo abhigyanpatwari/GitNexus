@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { registerCases } from '../support/cases.mjs';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -6,25 +8,22 @@ import {
   FixtureProfiler,
   compareFixtureProfiles,
   fixtureSimilarityReport,
-} from '../../../tools/scenario-map/facet/fixture-profile.js';
-import {
-  FixtureInputs,
-  withFixtureIdentity,
-} from '../../../tools/scenario-map/facet/fixture-inputs.js';
-import { expandCases } from '../../../tools/scenario-map/inventory/cases.js';
-import { findCandidates } from '../../../tools/scenario-map/path-coverage/candidates.js';
+} from '../../../scenario-map/facet/fixture-profile.js';
+import { FixtureInputs, withFixtureIdentity } from '../../../scenario-map/facet/fixture-inputs.js';
+import { expandCases } from '../../../scenario-map/inventory/cases.js';
+import { findCandidates } from '../../../scenario-map/path-coverage/candidates.js';
 import {
   computeFingerprints,
   type FingerprintTestInput,
-} from '../../../tools/scenario-map/verdict/fingerprint.js';
+} from '../../../scenario-map/verdict/fingerprint.js';
 import type {
   FacetSources,
   FacetSubject,
   InputFacet,
-} from '../../../tools/scenario-map/facet/input-facet.js';
+} from '../../../scenario-map/facet/input-facet.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { layer1Files } from '../../../tools/scenario-map/path-coverage/prefilter.js';
-import { isLanguageAvailable } from '../../../src/core/tree-sitter/parser-loader.js';
+import { layer1Files } from '../../../scenario-map/path-coverage/prefilter.js';
+import { isLanguageAvailable } from '../../../../src/core/tree-sitter/parser-loader.js';
 
 const ROOT = 'gitnexus/test/fixtures';
 const FILE = 'gitnexus/test/integration/example.test.ts';
@@ -88,7 +87,9 @@ const LANGUAGE_FIXTURES: Record<
   ],
 };
 
-it.each(Object.entries(LANGUAGE_FIXTURES))(
+registerCases(
+  it,
+  Object.entries(LANGUAGE_FIXTURES),
   'profiles real %s fixtures with the ingestion provider',
   async (language, [extension, content]) => {
     const root = `${ROOT}/language-${language}`;
@@ -315,10 +316,12 @@ describe('fixture input discovery', () => {
   });
 });
 
-it.each([
-  ['ts', 'py', 'input-shape-differs'],
-  ['broken', 'broken', 'input-unresolved'],
-])(
+registerCases(
+  it,
+  [
+    ['ts', 'py', 'input-shape-differs'],
+    ['broken', 'broken', 'input-unresolved'],
+  ],
   'does not confirm %s/%s fixtures despite equal paths, assertions, and clean traces',
   async (left, right, rule) => {
     const profiler = new FixtureProfiler(
