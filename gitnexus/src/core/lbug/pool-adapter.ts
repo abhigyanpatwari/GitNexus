@@ -23,6 +23,7 @@ import { warnIfQueryTextUnbounded } from './query-batch.js';
 import { queryMemoryGuard } from './query-memory-guard.js';
 import {
   createLbugDatabase,
+  isDbBusyError,
   isWalCorruptionError,
   sleep,
   throwIfStorageVersionMismatch,
@@ -776,11 +777,36 @@ function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
 
 type InitLbugAttempt = { status: 'done'; reopened: boolean } | { status: 'retry'; error: Error };
 
-function ladybugUnavailableError(repoId: string, err: Error | undefined): Error {
-  return new Error(
-    `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
-      `Retry later. (${err?.message || 'unknown error'})`,
-  );
+const NON_ASCII_PATH_RE = /[^\x00-\x7F]/;
+const WINDOWS_CODE_PAGE_ERROR_RE =
+  /no mapping for the unicode character|ERROR_NO_UNICODE_TRANSLATION|target multi-byte code page|no file found that matches the pattern|cannot open file/i;
+
+export function ladybugUnavailableError(
+  repoId: string,
+  err: Error | undefined,
+  dbPath?: string,
+  platform: NodeJS.Platform = process.platform,
+): Error {
+  const innerMessage = err?.message || 'unknown error';
+  if (err && isDbBusyError(err)) {
+    return new Error(
+      `LadybugDB unavailable for ${repoId}. Another process may be rebuilding the index. ` +
+        `Retry later. (${innerMessage})`,
+    );
+  }
+  if (
+    platform === 'win32' &&
+    dbPath !== undefined &&
+    NON_ASCII_PATH_RE.test(dbPath) &&
+    WINDOWS_CODE_PAGE_ERROR_RE.test(innerMessage)
+  ) {
+    return new Error(
+      `LadybugDB unavailable for ${repoId}: ${innerMessage}. ` +
+        'This may be caused by a non-ASCII path under the Windows ANSI code page; ' +
+        'move the repo to an ASCII path or use an ASCII junction.',
+    );
+  }
+  return new Error(`LadybugDB unavailable for ${repoId}: ${innerMessage}`);
 }
 
 /**
@@ -823,7 +849,7 @@ export const initLbug = async (
     if (attempt === LOCK_RETRY_ATTEMPTS) break;
     await sleep(LOCK_RETRY_DELAY_MS * attempt);
   }
-  throw ladybugUnavailableError(repoId, lastError);
+  throw ladybugUnavailableError(repoId, lastError, dbPath);
 };
 
 const initLbugInner = async (
@@ -1045,7 +1071,7 @@ async function doInitLbug(
         ) {
           return { status: 'retry', error: lastError };
         }
-        throw ladybugUnavailableError(repoId, lastError);
+        throw ladybugUnavailableError(repoId, lastError, dbPath);
       }
     }
   }
