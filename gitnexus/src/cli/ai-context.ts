@@ -289,13 +289,16 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 | \`gitnexus://repo/${projectName}/context\` | Codebase overview, check index freshness |
 | \`gitnexus://repo/${projectName}/clusters\` | All functional areas |
 | \`gitnexus://repo/${projectName}/processes\` | All execution flows |
-| \`gitnexus://repo/${projectName}/process/{name}\` | Step-by-step execution trace |
+| \`gitnexus://repo/${projectName}/process/{processName}\` | Step-by-step execution trace |
+| \`gitnexus://repo/${projectName}/schema\` | Graph schema for Cypher |
+
+\`gitnexus://repos\`, \`gitnexus://setup\`, \`gitnexus://repo/${projectName}/cluster/{clusterName}\`, and group \`contracts\`/\`status\` URIs: see \`gitnexus-guide\`.
 
 ${
   groupNames && groupNames.length > 0
     ? `## Cross-Repo Groups
 
-This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the project root: \`${runner} group list\`, \`${runner} group sync <name>\`, \`${runner} group impact <name> --target <symbol> --repo <group-path>\` (the \`${runnerPath}\` path is repo-root-relative).
+This repository is listed under GitNexus **group(s): ${groupNames.join(', ')}** (see \`~/.gitnexus/groups/\`). For cross-repo analysis, use MCP tools \`impact\`, \`query\`, and \`context\` with \`repo\` set to \`@<groupName>\` or \`@<groupName>/<memberPath>\` (paths match keys in that group’s \`group.yaml\`). Use \`group_list\` / \`group_sync\` for membership and sync. From the project root: \`${runner} group list\`, \`${runner} group sync <name>\`, \`${runner} group impact <name> --target <symbol> --repo <group-path>\` (the \`${runnerPath}\` path is repo-root-relative). **Warning:** \`group sync\` / \`group_sync\` writes the group's contract registry.
 
 `
     : ''

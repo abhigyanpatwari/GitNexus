@@ -165,6 +165,10 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('node .gitnexus/run.cjs group list');
     expect(content).toContain('node .gitnexus/run.cjs group sync');
     expect(content).toContain('node .gitnexus/run.cjs group impact');
+    // #2976: adjacent write warning for group sync / group_sync.
+    expect(content).toContain(
+      "**Warning:** `group sync` / `group_sync` writes the group's contract registry.",
+    );
     // Group commands must not hardcode a package manager.
     expect(content).not.toMatch(/dlx gitnexus@latest group/);
     expect(content).not.toMatch(/npx gitnexus group/);
@@ -347,6 +351,12 @@ describe('generateAIContextFiles', () => {
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');
     expect(content).toContain('gitnexus://repo/TestProject/context');
+    // #2976: schema + pointer to the full MCP resource families in gitnexus-guide.
+    expect(content).toContain('gitnexus://repo/TestProject/schema');
+    expect(content).toContain('gitnexus://repo/TestProject/process/{processName}');
+    expect(content).toContain('gitnexus://repos');
+    expect(content).toContain('gitnexus://setup');
+    expect(content).toContain('see `gitnexus-guide`');
     expect(content).toContain('gitnexus-impact-analysis/SKILL.md');
     expect(content).toContain('gitnexus-refactoring/SKILL.md');
     expect(content).toContain('gitnexus-debugging/SKILL.md');
@@ -386,7 +396,9 @@ describe('generateAIContextFiles', () => {
     // unconditional text load-bearing enough to warrant the budget), then
     // 0.65 → 0.70 for the #3291 always-on `staleness` blockquote line (a second
     // `>` line, not a new Always-Do bullet — the cheaper durable slot; the
-    // 0.65 band had ~3 chars of headroom so any useful line required a bump) —
+    // 0.65 band had ~3 chars of headroom so any useful line required a bump),
+    // then 0.70 → 0.74 for #2976 (schema row, MCP template param names, and a
+    // pointer to the full resource families documented in `gitnexus-guide`) —
     // each time with the same argument, that the added line is load-bearing and
     // the block is still meaningfully smaller than the original. That is a
     // ratchet with no ratchet: an absolute cap can only ever fail on the PR
@@ -404,7 +416,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.7);
+    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.74);
   });
 
   it('handles empty stats', async () => {
