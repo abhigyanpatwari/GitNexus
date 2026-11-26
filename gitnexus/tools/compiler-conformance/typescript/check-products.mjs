@@ -23,6 +23,7 @@ const selected = platform
       'product/cli-e2e.ts',
       'product/cross-platform-test-arguments.ts',
       'product/dangling-owner-edges.ts',
+      'product/detect-changes-worktree.ts',
       'product/embedding-identity-integrity.ts',
       'product/embedding-input-isolation.ts',
       'product/embedding-job-controller.ts',

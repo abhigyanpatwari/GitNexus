@@ -76,8 +76,17 @@ beforeAll(
     // an already-indexed repo is a cheap no-op (alreadyUpToDate fast path), so
     // retrying is safe. A genuine analyze/registration regression is still caught
     // loudly by the dedicated analyze tests below (which use isolated homes).
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (runCli('analyze', MINI_REPO, 90_000).status === 0) break;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const result = runCli('analyze', MINI_REPO, 90_000);
+      if (result.status === 0) return;
+      if (attempt === 3) {
+        throw (
+          result.error ??
+          new Error(
+            `Fixture indexing failed after ${attempt} attempts (status ${result.status}, signal ${result.signal}): ${result.stderr || result.stdout}`,
+          )
+        );
+      }
     }
   },
   { timeout: 300_000 },

@@ -36,10 +36,10 @@ function synthesizedCaptureFingerprint(): string {
 
 describe('TypeScript synthesized capture order', () => {
   it('preserves the ordered synthesized capture stream across the TypeScript fixture corpus', () => {
-    // Tuple captures retain actual positions and narrowings now anchor proven
-    // receiver expressions. Scope IDs use fixture-relative paths.
+    // Bare heritage clauses carry an explicit empty type-argument capture so
+    // the resolver can apply declared defaults. Match order is significant.
     expect(synthesizedCaptureFingerprint()).toBe(
-      '235d3d0ae84d7a28a48a10aab25ffecba28b5c3919d3f2637fa8452abbed569a',
+      '4452da90987201e04fa2e6d3dd7f9af64b35bcd01fe05aa9181d19d46445aea8',
     );
   });
 

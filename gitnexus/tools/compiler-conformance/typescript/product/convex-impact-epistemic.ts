@@ -1,31 +1,29 @@
-import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
-import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
+import { registerCases } from '../support/cases.mjs';
+import { summarizeUnresolvedOverloads } from '../../../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
+import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
 import fs from 'fs';
 import path from 'path';
-import { beforeAll, expect, it, vi } from 'vitest';
-import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
+import { before as beforeAll, it } from 'node:test';
+import { expect } from 'expect';
+import { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
 import {
   loadParseCache,
   pruneCache,
   saveParseCache,
   type ParseCache,
-} from '../../src/storage/parse-cache.js';
+} from '../../../../src/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
-} from '../../src/storage/parsedfile-store.js';
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
-import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+} from '../../../../src/storage/parsedfile-store.js';
+import { LocalBackend } from '../../../../src/mcp/local/local-backend.js';
+import { registerRepo, saveMeta, type RepoMeta } from '../../../../src/storage/repo-manager.js';
 
+import { withTestLbugDB } from '../support/indexed-db.js';
+import { isolateAnalysisHome } from '../support/analysis-home.js';
+
+await isolateAnalysisHome();
 const parseIdentity = await runtimeParseIdentity();
-
-vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
-  listRegisteredRepos: vi.fn().mockResolvedValue([]),
-  cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
-  findSiblingClones: vi.fn().mockResolvedValue([]),
-}));
 
 let repoDir = '';
 let warmReplayUsedWorkers = true;
@@ -54,12 +52,14 @@ withTestLbugDB(
       );
     });
 
-    it.each([
-      ['publicQuery', 'endpoints.ts', 'query'],
-      ['aliasedWrite', 'endpoints.ts', 'mutation'],
-      ['generatedAction', 'endpoints.ts', 'internalAction'],
-      ['javascriptQuery', 'endpoints.js', 'query'],
-    ])(
+    registerCases(
+      it,
+      [
+        ['publicQuery', 'endpoints.ts', 'query'],
+        ['aliasedWrite', 'endpoints.ts', 'mutation'],
+        ['generatedAction', 'endpoints.ts', 'internalAction'],
+        ['javascriptQuery', 'endpoints.js', 'query'],
+      ],
       'marks real indexed Convex endpoint %s as lower-bound',
       async (target, filePath, factory) => {
         const result = await backend.callTool('impact', {
@@ -86,19 +86,24 @@ withTestLbugDB(
       expect(result.causes.dispatchBoundary).toBe(0);
     });
 
-    it.each([
-      ['unrelatedQuery', 'endpoints.ts'],
-      ['localQuery', 'local.ts'],
-    ])('keeps non-Convex same-shape control %s exact', async (target, filePath) => {
-      const result = await backend.callTool('impact', {
-        target,
-        file_path: filePath,
-        direction: 'upstream',
-      });
+    registerCases(
+      it,
+      [
+        ['unrelatedQuery', 'endpoints.ts'],
+        ['localQuery', 'local.ts'],
+      ],
+      'keeps non-Convex same-shape control %s exact',
+      async (target, filePath) => {
+        const result = await backend.callTool('impact', {
+          target,
+          file_path: filePath,
+          direction: 'upstream',
+        });
 
-      expect(result.epistemic).toBe('exact');
-      expect(result.boundaries).toBeUndefined();
-    });
+        expect(result.epistemic).toBe('exact');
+        expect(result.boundaries).toBeUndefined();
+      },
+    );
 
     it('does not apply the inbound Convex boundary to downstream impact', async () => {
       const result = await backend.callTool('impact', {
@@ -138,32 +143,13 @@ withTestLbugDB(
       const storageDir = path.dirname(dbPath);
       repoDir = path.join(storageDir, 'repo');
       const cacheDir = path.join(storageDir, 'parse-cache');
-      fs.mkdirSync(repoDir, { recursive: true });
-      fs.writeFileSync(
-        path.join(repoDir, 'endpoints.ts'),
-        `import { queryGeneric as query, mutationGeneric as write } from 'convex/server';
-import { query as generatedQuery, internalAction as internalRun } from './_generated/server';
-import { query as dbQuery } from './database';
-
-export const publicQuery = // legal line-comment trivia
-  query({ handler: async () => null });
-export const aliasedWrite = write({ handler: async () => null });
-export const generatedAction = internalRun({ handler: async () => null });
-export const bareHandler = generatedQuery(async () => null);
-export const unrelatedQuery = dbQuery({ handler: async () => null });
-`,
-      );
-      fs.writeFileSync(
-        path.join(repoDir, 'local.ts'),
-        `function query(config: unknown) { return config; }
-export const localQuery = query({ handler: async () => null });
-`,
-      );
-      fs.writeFileSync(
-        path.join(repoDir, 'endpoints.js'),
-        `import { query } from './_generated/server.js';
-export const javascriptQuery = query({ handler: async () => null });
-`,
+      fs.cpSync(
+        new URL(
+          '../../../../test/fixtures/compiler-conformance/typescript-convex-endpoints/',
+          import.meta.url,
+        ),
+        repoDir,
+        { recursive: true },
       );
 
       const cold: ParseCache = {
@@ -198,28 +184,21 @@ export const javascriptQuery = query({ handler: async () => null });
         }
       });
 
-      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const adapter = await import('../../../../src/core/lbug/lbug-adapter.js');
       await adapter.loadGraphToLbug(replay.graph, repoDir, storageDir);
-      await saveMeta(storageDir, {
+      const meta = {
         repoPath: repoDir,
+        storagePath: storageDir,
         lastCommit: 'convex-e2e',
         indexedAt: new Date(0).toISOString(),
         scopeExtractionReceipt: 1,
         unresolvedOverloads: summarizeUnresolvedOverloads(replay.resolutionOutcomes),
-      } satisfies RepoMeta);
+      } satisfies RepoMeta;
+      await saveMeta(storageDir, meta);
+      await registerRepo(repoDir, meta, { name: 'convex-e2e', storagePath: storageDir });
     },
     poolAdapter: true,
     afterSetup: async (handle) => {
-      vi.mocked(listRegisteredRepos).mockResolvedValue([
-        {
-          name: 'convex-e2e',
-          path: repoDir,
-          storagePath: handle.tmpHandle.dbPath,
-          indexedAt: new Date().toISOString(),
-          lastCommit: 'convex-e2e',
-          stats: { files: 3, nodes: 6, communities: 0, processes: 0 },
-        },
-      ]);
       const backend = new LocalBackend();
       await backend.init();
       (handle as typeof handle & { _backend?: LocalBackend })._backend = backend;

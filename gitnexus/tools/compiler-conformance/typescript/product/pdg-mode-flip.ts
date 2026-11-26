@@ -14,10 +14,14 @@
  */
 
 import { describe, it } from 'node:test';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { expect } from 'expect';
 import assert from 'node:assert/strict';
 import { isolateAnalysisHome } from '../support/analysis-home.js';
 import { getStoragePaths, loadMeta, saveMeta } from '../../../../dist/storage/repo-manager.js';
+import { LocalBackend } from '../../../../dist/mcp/local/local-backend.js';
+import { decodeReachingDefReason } from '../../../../dist/core/ingestion/cfg/reaching-def-reason-codec.js';
 import { taintModelVersion } from '../../../../dist/core/ingestion/taint/typescript-model.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../../../../test/helpers/mini-repo.js';
 
@@ -58,37 +62,51 @@ describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
 
         const adapter = await import('../../../../dist/core/lbug/lbug-adapter.js');
         const { lbugPath } = getStoragePaths(repo.dbPath);
+        const filePath = 'src/handler.ts';
+        const sourcePath = path.join(repo.dbPath, filePath);
+        const lines = (await readFile(sourcePath, 'utf8')).split('\n');
+        const editedLine = lines.findIndex((line) => line.includes('const saved ='));
+        assert.ok(editedLine >= 0, 'Expected the assignment in RequestHandler.handleRequest');
         await adapter.initLbug(lbugPath);
         try {
           // Counterfactual: WITHOUT the U7 filter, line-bearing BasicBlock rows
           // exist on a pdg index (the noise detect_changes used to report).
-          const blocks = (await adapter.executeQuery(
-            `MATCH (n) WHERE n.id STARTS WITH 'BasicBlock:'
-             AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
-           RETURN n.id AS id`,
+          const blocks = (await adapter.executePrepared(
+            `MATCH (n:BasicBlock) WHERE n.filePath = $filePath
+               AND n.startLine <= $editedLine AND n.endLine >= $editedLine
+             RETURN n.id AS id`,
+            { filePath, editedLine },
           )) as Array<{ id: string }>;
           expect(blocks.length).toBeGreaterThan(0);
-          // With the U7 filter (the exact predicate detectChanges now runs —
-          // also validates STARTS WITH against the real engine): no BasicBlocks,
-          // real symbols intact.
-          const symbols = (await adapter.executeQuery(
-            `MATCH (n) WHERE NOT n.id STARTS WITH 'BasicBlock:'
-             AND n.startLine IS NOT NULL AND n.endLine IS NOT NULL
-           RETURN n.id AS id`,
-          )) as Array<{ id: string }>;
-          expect(symbols.length).toBeGreaterThan(0);
-          for (const row of symbols) {
-            expect(String(row.id)).not.toMatch(/^BasicBlock:/);
-          }
           // DB-level smoke for the M2 projection itself: REACHING_DEF rows
           // persisted with the variable name in `reason` (plan Validation).
           const rd = (await adapter.executeQuery(
             `MATCH (:BasicBlock)-[r:CodeRelation {type: 'REACHING_DEF'}]->(:BasicBlock)
-           RETURN count(r) AS c`,
-          )) as Array<{ c: number | bigint }>;
-          expect(Number(rd[0]?.c ?? 0)).toBeGreaterThan(0);
+           RETURN DISTINCT r.reason AS reason`,
+          )) as Array<{ reason: string }>;
+          expect(rd.map((row) => decodeReachingDefReason(row.reason).name)).toContain('validated');
         } finally {
           await adapter.closeLbug();
+        }
+        lines[editedLine] += ' // detect_changes probe';
+        await writeFile(sourcePath, lines.join('\n'));
+        const backend = new LocalBackend();
+        try {
+          await backend.init();
+          const result = await backend.callTool('detect_changes', {
+            scope: 'unstaged',
+            repo: repo.dbPath,
+          });
+          expect(result.error).toBeUndefined();
+          expect(result.changed_symbols).toContainEqual(
+            expect.objectContaining({ name: 'handleRequest', filePath }),
+          );
+          for (const symbol of result.changed_symbols) {
+            expect(symbol.type).not.toBe('BasicBlock');
+            expect(symbol.id).not.toMatch(/^BasicBlock:/);
+          }
+        } finally {
+          await backend.dispose();
         }
       } finally {
         await repo.cleanup();

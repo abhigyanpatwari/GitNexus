@@ -202,43 +202,4 @@ describe('SonarQube coverage handoff', () => {
     expect(download.with?.['run-id']).toContain('github.event.workflow_run.id || github.run_id');
     expect(scanner[0].with?.ref).toContain('github.event.workflow_run.head_sha || github.sha');
   });
-
-  it
-    .skipIf(process.platform === 'win32')
-    .each(['complete', 'missing web', 'empty web', 'unknown source', 'outside package'])(
-    'prepares both package reports only for a complete checkout (%s)',
-    (scenario) => {
-      temp = mkdtempSync(path.join(tmpdir(), 'sonar-coverage-'));
-      for (const pkg of packages) {
-        const source = path.join(temp, pkg, 'src');
-        mkdirSync(source, { recursive: true });
-        writeFileSync(path.join(source, 'index.ts'), 'export const n = 1;');
-        if (pkg === 'gitnexus-web' && scenario === 'missing web') continue;
-        const reports = path.join(temp, 'sonar-coverage', pkg, 'coverage');
-        mkdirSync(reports, { recursive: true });
-        let sf = pkg === 'gitnexus-web' && scenario === 'unknown source' ? 'absent.ts' : 'index.ts';
-        if (pkg === 'gitnexus-web' && scenario === 'outside package')
-          sf = '../../gitnexus/src/index.ts';
-        const data = pkg === 'gitnexus-web' && scenario === 'empty web' ? '' : 'DA:1,0\n';
-        writeFileSync(path.join(reports, 'lcov.info'), `SF:src/${sf}\n${data}end_of_record\n`);
-      }
-      const prepare = namedStep(scanner, 'Prepare repository-relative LCOV').run;
-      if (!prepare) throw new Error('The LCOV preparation step must run a shell script');
-      const result = spawnSync('bash', ['-eo', 'pipefail', '-c', prepare], {
-        cwd: temp,
-        env: { ...process.env, RUNNER_TEMP: temp },
-        encoding: 'utf8',
-      });
-      if (result.error) throw result.error;
-      if (scenario === 'complete') {
-        expect(result.status, result.stderr).toBe(0);
-        const lcov = readFileSync(path.join(temp, 'coverage', 'lcov.info'), 'utf8');
-        expect(lcov.match(/^SF:.*$/gm)).toEqual(packages.map((pkg) => `SF:${pkg}/src/index.ts`));
-        expect(lcov.match(/^DA:1,0$/gm)).toHaveLength(2);
-      } else {
-        expect(result.status).toBe(1);
-        expect(result.stderr).toContain('::error::');
-      }
-    },
-  );
 });

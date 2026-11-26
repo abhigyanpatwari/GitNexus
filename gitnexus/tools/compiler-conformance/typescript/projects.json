@@ -102,6 +102,7 @@
     "skills-e2e/typescript-python/packages/backend"
   ],
   "declarationInventory": [
+    "compiler-conformance/typescript-detect-changes-siblings",
     "compiler-conformance/typescript-exported-doc-comment",
     "cross-file-binding/ts-circular",
     "cross-file-binding/ts-consumer-before-provider",
@@ -124,6 +125,7 @@
     "lang-resolution/ts-optional-params",
     "lang-resolution/ts-overload-dispatch",
     "lang-resolution/ts-readonly-foreach",
+    "lang-resolution/ts-same-arity-cross-file",
     "lang-resolution/ts-return-type-inference",
     "lang-resolution/ts-virtual-dispatch",
     "lang-resolution/typescript-alias-imports",

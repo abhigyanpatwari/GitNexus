@@ -5,7 +5,6 @@ import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
-  getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
 } from '../support/fixture.js';
@@ -128,48 +127,5 @@ describe('TypeScript overloaded method disambiguation', () => {
         e.targetFilePath.includes('repository'),
     );
     expect(findEdges.length).toBe(1);
-  });
-});
-
-// ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
-
-describe('TypeScript same-arity overload cross-file resolution', () => {
-  let result: PipelineResult;
-
-  beforeAll(
-    async () => {
-      result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-same-arity-cross-file'), () => {});
-    },
-    { timeout: 60000 },
-  );
-
-  it('DbLookup.find overload signatures collapse to one node (type-hash skipped for TS)', () => {
-    const methods = getNodesByLabelFull(result, 'Method');
-    const findNodes = methods.filter(
-      (m) => m.name === 'find' && m.properties.filePath?.includes('db-lookup'),
-    );
-    // TS overload signatures collapse to the implementation body — 1 node
-    expect(findNodes.length).toBe(1);
-  });
-
-  it('ILookup.find interface declarations collapse to one node (type-hash skipped for TS)', () => {
-    const methods = getNodesByLabelFull(result, 'Method');
-    const findNodes = methods.filter(
-      (m) => m.name === 'find' && m.properties.filePath?.includes('ilookup'),
-    );
-    // Interface overloads also collapse — TS type-hash is skipped
-    expect(findNodes.length).toBe(1);
-  });
-
-  it('emits METHOD_IMPLEMENTS from DbLookup.find → ILookup.find', () => {
-    const mi = getRelationships(result, 'METHOD_IMPLEMENTS');
-    const edges = mi.filter(
-      (e) =>
-        e.source === 'find' &&
-        e.target === 'find' &&
-        e.sourceFilePath.includes('db-lookup') &&
-        e.targetFilePath.includes('ilookup'),
-    );
-    expect(edges.length).toBe(1);
   });
 });

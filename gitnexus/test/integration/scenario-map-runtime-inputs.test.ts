@@ -7,9 +7,9 @@ import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
 
 const inputs = [
-  ['typescript', 'ts', 'export function twice(x: number) { return x + x; }'],
+  ['javascript', 'js', 'export function twice(x) { return x + x; }'],
   ['python', 'py', 'def twice(x):\n    return x + x\n'],
-  ['loop', 'ts', 'export function twice(x: number) { while(x > 0) { x--; } return x; }'],
+  ['loop', 'js', 'export function twice(x) { while(x > 0) { x--; } return x; }'],
 ] as const;
 
 describe.each(inputs)('%s generated repository', (_name, extension, source) => {
@@ -39,7 +39,7 @@ it.each(['sync', 'promise'])('dynamic %s read survives cleanup', async (api) => 
   const root = mkdtempSync(path.join(tmpdir(), 'scenario-runtime-read-'));
   let text: string;
   try {
-    const file = path.join(root, 'main.ts');
+    const file = path.join(root, 'main.js');
     writeFileSync(file, inputs[0][2]);
     text = api === 'sync' ? readFileSync(file, 'utf8') : await readFile(file, 'utf8');
   } finally {

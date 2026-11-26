@@ -172,12 +172,12 @@ describe('atomic full-rebuild swap (#2)', () => {
         const { lbugPath } = getStoragePaths(repo);
         await expect(fs.stat(lbugPath)).resolves.toBeTruthy();
         expect(await lingeringTemp(lbugPath)).toEqual([]);
-        const first = await identity(lbugPath);
+        const first = await fs.stat(lbugPath, { bigint: true });
 
         await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
         expect(await lingeringTemp(lbugPath)).toEqual([]);
         // The atomic rename replaced the file — a new inode, not an in-place edit.
-        expect(await identity(lbugPath)).not.toBe(first);
+        expect((await fs.stat(lbugPath, { bigint: true })).ino).not.toBe(first.ino);
       } finally {
         await cleanup();
       }

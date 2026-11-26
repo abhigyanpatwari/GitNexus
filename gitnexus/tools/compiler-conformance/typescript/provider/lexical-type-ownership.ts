@@ -214,8 +214,10 @@ export namespace Container { export class Inside {} }
         .map((def) => [def.qualifiedName, def.isExported]),
     );
     expect(verdicts.get('AmbientBase')).toBe(true);
-    expect(verdicts.get('Nested')).toBe(false);
-    expect(verdicts.get('Inside')).toBe(false);
+    expect(verdicts.get("'external'.Nested")).toBe(false);
+    expect(verdicts.get('Container.Inside')).toBe(false);
+    expect(verdicts.has('Nested')).toBe(false);
+    expect(verdicts.has('Inside')).toBe(false);
   });
 
   registerCases(
