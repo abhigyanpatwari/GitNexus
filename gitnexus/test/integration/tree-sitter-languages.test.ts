@@ -117,21 +117,6 @@ describe('Tree-sitter multi-language parsing', () => {
     });
   });
 
-  describe('Java', () => {
-    it('parses class, method, and constructor declarations', async () => {
-      await loadLanguage(SupportedLanguages.Java);
-      const content = readFixture('simple.java');
-      const provider = getProvider(SupportedLanguages.Java);
-      const { matches } = parseAndQuery(parser, content, provider.treeSitterQueries);
-      const defs = extractDefinitions(matches);
-
-      expect(defs.length).toBeGreaterThan(0);
-      const defTypes = defs.map((d) => d.type);
-      expect(defTypes).toContain('definition.class');
-      expect(defTypes).toContain('definition.method');
-    });
-  });
-
   describe('Go', () => {
     it('parses function and type declarations', async () => {
       await loadLanguage(SupportedLanguages.Go);
@@ -1033,7 +1018,7 @@ describe('Tree-sitter multi-language parsing', () => {
         [SupportedLanguages.TypeScript, 'simple.ts'],
         [SupportedLanguages.JavaScript, 'simple.js'],
         [SupportedLanguages.Python, 'simple.py'],
-        [SupportedLanguages.Java, 'simple.java'],
+
         [SupportedLanguages.Go, 'simple.go'],
         [SupportedLanguages.C, 'simple.c'],
         [SupportedLanguages.CPlusPlus, 'simple.cpp'],

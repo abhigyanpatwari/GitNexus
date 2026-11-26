@@ -1,0 +1,10 @@
+{
+  "diagnostics": {},
+  "calls": [
+    {"caller": "Method:app/Outer.java:In.run#0", "member": "save", "source": ["app/Outer.java#8:4"]},
+    {"caller": "Method:app/Outer.java:In.loop#0", "member": "save", "source": ["app/Outer.java#9:4"]},
+    {"caller": "Method:app/Outer.java:Outer$1.run#0", "member": "save", "source": ["app/Outer.java#18:18"]},
+    {"caller": "Method:app/Outer.java:Impl.run#0", "member": "save", "source": ["app/Outer.java#12:4"]},
+    {"caller": "Method:app/Outer.java:Plain.run#0", "member": "save", "source": ["app/Outer.java#15:4"]}
+  ]
+}

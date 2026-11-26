@@ -2,84 +2,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { pathToFileURL } from 'node:url';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import { emptyParseCache, loadParseCache, saveParseCache } from '../../src/storage/parse-cache.js';
-import { mergeStagedDurableParsedFileStore } from '../../src/storage/parsedfile-store.js';
-import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
+import { createFileResultsFixture } from '../helpers/file-results-fixture.js';
+import { graphIdentity } from '../helpers/graph-identity.js';
 import * as fileResultCodec from '../../src/storage/file-result-codec.js';
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
-const worker = pathToFileURL(path.resolve('dist/core/ingestion/workers/parse-worker.js'));
-const canonical = (value: unknown): unknown =>
-  Array.isArray(value)
-    ? value.map(canonical)
-    : value && typeof value === 'object'
-      ? Object.fromEntries(
-          Object.keys(value)
-            .sort()
-            .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
-        )
-      : value;
-const rows = (run: Awaited<ReturnType<typeof runPipelineFromRepo>>) =>
-  [...run.graph.nodes]
-    .map((node) => 'N ' + JSON.stringify(canonical(node)))
-    .concat([...run.graph.relationships].map((edge) => 'R ' + JSON.stringify(canonical(edge))))
-    .sort();
 async function fixture(files: Record<string, string>) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-file-reuse-'));
   roots.push(root);
-  const repo = path.join(root, 'repo'),
-    live = path.join(root, 'live');
-  await fs.mkdir(repo);
-  for (const [name, content] of Object.entries(files)) {
-    await fs.mkdir(path.dirname(path.join(repo, name)), { recursive: true });
-    await fs.writeFile(path.join(repo, name), content);
-  }
-  let sequence = 0;
-  return {
-    repo,
-    live,
-    run: async (cacheKind: 'cold' | 'reuse' | 'none', pdg = false, repack = false) => {
-      const stage = path.join(root, `stage-${sequence++}`);
-      const cache =
-        cacheKind === 'none'
-          ? undefined
-          : cacheKind === 'cold'
-            ? emptyParseCache(TEST_PARSE_IDENTITY, { storagePath: live, writeStoragePath: stage })
-            : await loadParseCache(live, TEST_PARSE_IDENTITY, stage);
-      const progress: number[] = [];
-      const run = await runPipelineFromRepo(
-        repo,
-        (p) => {
-          if (p.phase === 'parsing' && p.percent >= 20 && p.percent <= 70) progress.push(p.percent);
-        },
-        {
-          parseWorkerUrl: worker,
-          workerPoolSize: 2,
-          parseCache: cache,
-          parsedFileStorePath: stage,
-          pdg,
-          ...(repack ? { chunkByteBudget: 1 } : {}),
-        },
-      );
-      if (cache) {
-        const keys = await saveParseCache(live, cache);
-        if (!('fileResults' in cache))
-          await mergeStagedDurableParsedFileStore(
-            live,
-            stage,
-            TEST_PARSE_IDENTITY.base,
-            new Set(keys),
-          );
-      }
-      await fs.rm(stage, { recursive: true, force: true });
-      return { ...run, progress };
-    },
-  };
+  return createFileResultsFixture(root, files);
 }
+const rows = (run: Awaited<ReturnType<typeof runPipelineFromRepo>>) => graphIdentity(run.graph);
 describe('per-file parse-result reuse', () => {
   it('preserves fresh facts and cache hits when optional string interning fails', async () => {
     const f = await fixture({
@@ -182,8 +118,6 @@ describe('per-file parse-result reuse', () => {
         'service.py': 'def value():\n    return 1\n',
         'api.py':
           'from fastapi import APIRouter\nfrom service import value\nrouter = APIRouter()\n@router.get("/items")\ndef items():\n    return value()\n',
-        'Main.java': 'class Main { int run() { return new Base().value(); } }',
-        'Base.java': 'class Base { int value() { return 1; } }',
         'main.go': 'package main\nfunc run() int { return value() }\n',
         'value.go': 'package main\nfunc value() int { return 1 }\n',
       });
@@ -200,7 +134,7 @@ describe('per-file parse-result reuse', () => {
       await fs.writeFile(path.join(f.repo, 'service.py'), 'def replacement():\n    return 2\n');
       const mixed = await f.run('reuse', pdg);
       expect(mixed.reparsedFileCount).toBe(2);
-      expect(mixed.parseCacheHitFileCount).toBe(8);
+      expect(mixed.parseCacheHitFileCount).toBe(6);
       expect(rows(mixed)).toEqual(rows(await f.run('none', pdg)));
       expect(rows(mixed)).not.toEqual(rows(full));
       expect(mixed.progress).toEqual([...mixed.progress].sort((a, b) => a - b));

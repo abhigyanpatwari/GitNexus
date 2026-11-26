@@ -1,0 +1,12 @@
+{
+  "diagnostics": {
+    "compiler.err.cant.resolve.location": 5
+  },
+  "onDemand": {
+    "status": "matches JLS 7.5.2/7.5.4",
+    "app": true,
+    "extraEdges": [
+      "correct -> src/c/Lib.java:Lib"
+    ]
+  }
+}

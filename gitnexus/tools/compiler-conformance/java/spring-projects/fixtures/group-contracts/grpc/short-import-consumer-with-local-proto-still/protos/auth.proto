@@ -1,0 +1,6 @@
+syntax = "proto3";
+package com.acme.auth.proto;
+
+service AuthService {
+    rpc Login (LoginRequest) returns (LoginResponse);
+}

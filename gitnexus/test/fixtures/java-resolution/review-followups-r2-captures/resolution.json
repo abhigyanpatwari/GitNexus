@@ -1,0 +1,26 @@
+{
+  "diagnostics": {"compiler.err.annotation.type.not.applicable.to.type": 1, "compiler.err.non-static.cant.be.ref": 3, "compiler.err.prob.found.req": 3},
+  "calls": [
+    {"caller": "Constructor:Switches.java:Switches.Switches#", "member": "save", "published": ["Method:Model.java:Other.save#0"], "compilerTargets": [], "source": []},
+    {"caller": "Method:Switches.java:Switches.unbracedGroup#", "member": "save", "source": ["Switches.java#5:2"]},
+    {"caller": "Method:Switches.java:Switches.producerInGroup#", "member": "save", "source": ["Switches.java#6:2"]},
+    {"caller": "Method:Switches.java:Switches.switchExpressionGroup#", "member": "save", "source": ["Switches.java#7:2"]},
+    {"caller": "Method:Switches.java:Switches.writtenInGroup#", "member": "save", "published": [], "compilerTargets": ["Model.java#3:14"], "source": ["Switches.java#11:2"]},
+    {"caller": "Method:Switches.java:Switches.writtenInLaterGroup#", "member": "save", "published": [], "compilerTargets": ["Model.java#3:14"], "source": ["Switches.java#12:2"]},
+    {"caller": "Method:Shadow.java:Shadow.localClassFieldAfterCopy#", "member": "save", "source": ["Shadow.java#4:2"]},
+    {"caller": "Method:Shadow.java:Shadow.localClassFieldBeforeCopy#", "member": "save", "source": ["Shadow.java#9:2"]},
+    {"caller": "Method:Shadow.java:Shadow.anonymousClassField#", "member": "save", "source": ["Shadow.java#15:2"]},
+    {"caller": "Method:Shadow.java:Shadow.localTypeNamedLikeProducerType#", "member": "save", "source": ["Shadow.java#21:2"]},
+    {"caller": "Method:Shadow.java:Shadow.realWrite#", "member": "save", "published": [], "compilerTargets": ["Model.java#3:14"], "source": ["Shadow.java#27:2"]},
+    {"caller": "Class:Init.java:FieldInit", "member": "id", "published": ["Method:Model.java:User.id#0"], "compilerTargets": [], "source": []},
+    {"caller": "Class:Init.java:BlockInit", "member": "save", "published": ["Method:Model.java:User.save#0"], "compilerTargets": [], "source": []},
+    {"caller": "Class:Init.java:LambdaFieldInit", "member": "save", "published": ["Method:Model.java:User.save#0"], "compilerTargets": [], "source": []},
+    {"caller": "Enum:Init.java:EnumInit", "member": "id", "published": ["Method:Model.java:User.id#0"], "compilerTargets": [], "source": []},
+    {"caller": "Enum:Init.java:EnumInit", "member": "save", "published": ["Method:Model.java:User.save#0"], "compilerTargets": [], "source": []},
+    {"caller": "Class:Init.java:StaticFieldInit", "member": "id", "published": [], "compilerTargets": [], "source": []},
+    {"caller": "Class:Init.java:StaticBlockInit", "member": "save", "published": [], "compilerTargets": [], "source": []},
+    {"caller": "Interface:Init.java:ConstantInit", "member": "id", "published": [], "compilerTargets": [], "source": []},
+    {"caller": "Method:Patterns.java:Patterns.annotated#", "member": "save", "source": ["Patterns.java#3:2"]},
+    {"caller": "Method:Patterns.java:Patterns.qualifiedAnnotated#", "member": "save", "source": ["Patterns.java#4:2"]}
+  ]
+}

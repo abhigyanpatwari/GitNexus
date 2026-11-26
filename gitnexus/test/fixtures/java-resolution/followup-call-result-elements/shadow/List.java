@@ -1,0 +1,1 @@
+package shadow; public class List<T> {}

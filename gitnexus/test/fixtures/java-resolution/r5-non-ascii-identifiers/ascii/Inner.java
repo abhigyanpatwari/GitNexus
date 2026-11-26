@@ -1,0 +1,1 @@
+package ascii; public class Inner { public void save() {} }

@@ -15,27 +15,40 @@ export const JAVA_IDENTIFIER_PART_CHARS = String.raw`${JAVA_IDENTIFIER_START_CHA
 export const JAVA_IDENTIFIER = `[${JAVA_IDENTIFIER_START_CHARS}][${JAVA_IDENTIFIER_PART_CHARS}]*`;
 /** A dotted name with no whitespace or comments between its parts. */
 export const JAVA_QUALIFIED_NAME = `${JAVA_IDENTIFIER}(?:\\.${JAVA_IDENTIFIER})*`;
+const nameGaps = new RegExp(
+  String.raw`([${JAVA_IDENTIFIER_PART_CHARS}])\s+(?=[${JAVA_IDENTIFIER_PART_CHARS}])|\s+`,
+  'gu',
+);
+/** Ignore spacing around punctuation while keeping separate identifier tokens separate. */
+export const stripGaps = (text: string) =>
+  text
+    .replace(/\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\r\n]*/g, ' ')
+    .replace(nameGaps, (_gap, preceding: string | undefined) => (preceding ? preceding + ' ' : ''));
 /** Identifier characters and dots only: a written name without type
  * arguments, whitespace or comments. It checks characters, not segments. */
 export const JAVA_DOTTED_SPELLING = new RegExp(`^[${JAVA_IDENTIFIER_PART_CHARS}.]+$`, 'u');
 
-/** Remove type-use annotations and comments structurally, including
- * annotation argument values and `//` comments that run to the line end. */
-export function javaTypeText(node: Parser.SyntaxNode): string {
+/** Preserve tokens such as wildcard bounds while removing whole annotations and comments. */
+export function javaTypeTextWithoutTrivia(node: Parser.SyntaxNode): string {
+  const written = node.text;
+  if (!written.includes('@') && !written.includes('/')) return written;
   const omitted = node
     .descendantsOfType(['annotation', 'marker_annotation', 'block_comment', 'line_comment'])
     .sort((a, b) => a.startIndex - b.startIndex || b.endIndex - a.endIndex);
-  const written = node.text;
   let cursor = 0;
   let text = '';
   for (const part of omitted) {
     const start = part.startIndex - node.startIndex;
     if (start < cursor) continue; // An outer annotation already consumed it.
-    text += written.slice(cursor, start);
+    text += written.slice(cursor, start) + ' ';
     cursor = part.endIndex - node.startIndex;
   }
-  text += written.slice(cursor);
-  return text.replace(/\s+/g, '');
+  return text + written.slice(cursor);
+}
+
+/** Compact spelling for capture fields that encode types without whitespace. */
+export function javaTypeText(node: Parser.SyntaxNode): string {
+  return javaTypeTextWithoutTrivia(node).replace(/\s+/g, '');
 }
 
 /** Declarator dimensions belong only to that declarator (JLS 10.2). */

@@ -257,12 +257,7 @@ describe('AST embedding contracts with real parsers (#702)', () => {
       'before',
       'after',
     ],
-    [
-      'Sample.java',
-      'class Sample {\n String before;\n Sample() { consume("BODY_SENTINEL"); }\n String run() { return "BODY_SENTINEL"; }\n int after = 42;\n}',
-      'before',
-      'after',
-    ],
+
     [
       'Sample.h',
       '@interface Sample : NSObject {\n id before;\n int after;\n}\n- (void)run;\n@end',

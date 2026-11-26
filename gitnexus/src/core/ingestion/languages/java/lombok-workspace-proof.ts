@@ -1,6 +1,6 @@
 /** Workspace-only annotation identity correction; never serialized into parse caches. */
 import type Parser from 'tree-sitter';
-import type { ParsedFile, Range, SymbolDefinition } from 'gitnexus-shared';
+import type { ParsedFile, Range, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
@@ -16,6 +16,8 @@ import {
   collectJavaCaptureSideChannel,
 } from './capture-side-channel.js';
 import { getJavaPackageFact } from './package-facts.js';
+import { JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES } from './overload-types.js';
+import { bindJavaQualifiedHeritage } from './qualified-heritage.js';
 import {
   getJavaOverloadFacts,
   type JavaOverloadFileFacts,
@@ -25,6 +27,7 @@ import {
   eraseJavaTypeArguments,
   JAVA_DOTTED_SPELLING,
   JAVA_IDENTIFIER_PART_CHARS,
+  stripGaps,
 } from './type-spelling.js';
 import {
   LOMBOK_ANNOTATION_NAMES,
@@ -49,11 +52,6 @@ const ANNOTATION_NAME = new RegExp(
   String.raw`@${GAP}(${NAME_PART}(?:${GAP}\.${GAP}${NAME_PART})*)`,
   'gu',
 );
-const stripGaps = (text: string) =>
-  text
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\n]*/g, '')
-    .replace(/\s+/g, '');
 const rangeKey = (range: Range) =>
   `${range.startLine}:${range.startCol}:${range.endLine}:${range.endCol}`;
 const nodeRange = (node: Parser.SyntaxNode): Range => ({
@@ -77,8 +75,9 @@ function hasAnnotationInLines(lines: readonly number[] | undefined, range: Range
   return low < lines.length && lines[low]! <= range.endLine;
 }
 
-interface TypeEntry {
+export interface TypeEntry {
   readonly filePath: string;
+  readonly declaringScope: ScopeId | null;
   readonly packageName: string;
   readonly fact: JavaOverloadTypeFact;
   readonly facts: JavaOverloadFileFacts;
@@ -133,11 +132,12 @@ interface Correction {
   readonly proof: JavaLombokWorkspaceProof;
   readonly removed: readonly SymbolDefinition[];
 }
-const corrections = new WeakMap<ParsedFile, Correction>();
+const corrections = new WeakMap<ParsedFile['scopes'], Correction>();
 
 function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
   const byFile = new Map<string, Map<string, TypeEntry>>();
   const byFqn = new Map<string, TypeEntry[]>();
+  const declaredNames: [string, TypeEntry][] = [];
   /** Top-level types by package, then simple name: one index per reconcile. */
   const packageTypes = new Map<string, Map<string, TypeEntry[]>>();
   const simpleNames = new Set<string>();
@@ -169,6 +169,7 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       }
       const entry: TypeEntry = {
         filePath: parsed.filePath,
+        declaringScope: scope.parent,
         packageName: pkg.packageName,
         fact,
         facts,
@@ -179,11 +180,11 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       byScope.set(scope.id, entry);
       if (!named) continue;
       simpleNames.add(fact.simpleName);
-      const fqn = pkg.packageName === '' ? fact.name : `${pkg.packageName}.${fact.name}`;
-      const candidates = byFqn.get(fqn) ?? [];
-      candidates.push(entry);
-      byFqn.set(fqn, candidates);
       if (scope.parent === parsed.moduleScope) {
+        declaredNames.push([
+          pkg.packageName ? `${pkg.packageName}.${fact.simpleName}` : fact.simpleName,
+          entry,
+        ]);
         const top = packageTypes.get(pkg.packageName) ?? new Map<string, TypeEntry[]>();
         const named = top.get(fact.simpleName) ?? [];
         named.push(entry);
@@ -203,12 +204,18 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     }
     byFile.set(parsed.filePath, entries);
   }
+  // Java source imports use canonical member names, regardless of the graph's binary spelling.
+  for (const [name, entry] of declaredNames) {
+    const candidates = byFqn.get(name) ?? [];
+    candidates.push(entry);
+    byFqn.set(name, candidates);
+    for (const member of entry.members)
+      declaredNames.push([`${name}.${member.fact.simpleName}`, member]);
+  }
 
   const visible = (from: Pick<TypeEntry, 'filePath' | 'packageName'>, target: TypeEntry) =>
     isJvmSourceVisible(from.filePath, target.filePath) &&
     (from.packageName === target.packageName || target.fact.modifiers?.includes('public') === true);
-  const fqnOf = (target: TypeEntry) =>
-    `${target.packageName === '' ? '' : target.packageName + '.'}${target.fact.name}`;
   /**
    * The member types a single-static-import of `head` brings into `entry`'s
    * file (JLS 7.5.3): declared or inherited by a workspace owner. `external`
@@ -246,11 +253,45 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     }
     return { types: [...types], external };
   };
+  const memberTypeNamed = (owner: TypeEntry, head: string): TypeEntry | 'unknown' | undefined => {
+    const declared = owner.memberNames.has(head);
+    const inherited = declared ? undefined : namesOf(owner);
+    if (inherited?.unknown) return 'unknown';
+    if (!declared && !inherited?.names.has(head)) return undefined;
+    const members = (inherited?.members ?? owner.members).filter(
+      (member) => member.fact.simpleName === head,
+    );
+    return members.length === 1 ? members[0] : 'unknown';
+  };
+  const nestedBase = (entry: TypeEntry, root: TypeEntry, names: string[]): ResolvedBase => {
+    let target = root;
+    for (const name of names) {
+      const member = memberTypeNamed(target, name);
+      if (!member || member === 'unknown' || !visible(entry, member)) return 'unknown';
+      target = member;
+    }
+    return target;
+  };
+  const lexicalBase = (entry: TypeEntry, raw: string, head: string): ResolvedBase | undefined => {
+    for (let owner = entry.parent; owner !== undefined; owner = owner.parent) {
+      if (owner.fact.typeParameters.includes(head)) return 'unknown';
+      const root =
+        memberTypeNamed(owner, head) ?? (owner.fact.simpleName === head ? owner : undefined);
+      if (root === undefined) continue;
+      return root === 'unknown' || raw === head
+        ? root
+        : nestedBase(entry, root, raw.split('.').slice(1));
+    }
+    return undefined;
+  };
   const resolveBase = (entry: TypeEntry, written: string): ResolvedBase => {
     const raw = eraseJavaTypeArguments(written).replace(/\s+/g, '');
     if (!JAVA_DOTTED_SPELLING.test(raw)) return 'unknown';
-    const imports = entry.facts.imports.filter((item) => !item.static && !item.wildcard);
     const head = raw.split('.')[0]!;
+    // Types in an enclosing body shadow both single imports and package names (JLS 6.4.1).
+    const lexical = lexicalBase(entry, raw, head);
+    if (lexical !== undefined) return lexical;
+    const imports = entry.facts.imports.filter((item) => !item.static && !item.wildcard);
     const explicit = imports.filter((item) => item.name.split('.').pop() === head);
     // A single-static-import of a member type shadows like a single-type import.
     const statics = staticImported(entry, head);
@@ -258,15 +299,8 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     if (statics.types.length > 0) {
       // Two single imports of one simple name must agree; do not pick one.
       if (explicit.length > 0) return 'unknown';
-      const candidates = [
-        ...new Set(
-          statics.types
-            .flatMap((type) => byFqn.get(fqnOf(type) + raw.slice(head.length)) ?? [])
-            .filter((target) => visible(entry, target)),
-        ),
-      ];
-      // A nested path through an imported member type may be inherited there.
-      return candidates.length === 1 ? candidates[0]! : 'unknown';
+      if (statics.types.length !== 1) return 'unknown';
+      return nestedBase(entry, statics.types[0]!, raw.split('.').slice(1));
     }
     const resolved = resolveUnimported(entry, raw, head, explicit);
     // An owner outside the workspace may import a type of this name, which
@@ -283,25 +317,12 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     if (explicit.length === 1) spellings = [explicit[0]!.name + raw.slice(head.length)];
     else if (raw.includes('.')) spellings = [raw];
     else {
-      spellings = [];
-      for (let owner = entry.parent; owner !== undefined; owner = owner.parent) {
-        if (owner.memberNames.has(raw)) {
-          spellings.push(
-            `${owner.packageName === '' ? '' : owner.packageName + '.'}${owner.fact.name}.${raw}`,
-          );
-          break;
-        }
-      }
-      if (spellings.length === 0) {
-        const same = `${entry.packageName === '' ? '' : entry.packageName + '.'}${raw}`;
-        if (byFqn.has(same)) spellings.push(same);
-        else
-          spellings.push(
-            ...entry.facts.imports
-              .filter((item) => item.wildcard && !item.static)
-              .map((item) => `${item.name.replace(/\.\*$/, '')}.${raw}`),
-          );
-      }
+      const same = `${entry.packageName === '' ? '' : entry.packageName + '.'}${raw}`;
+      spellings = byFqn.has(same)
+        ? [same]
+        : entry.facts.imports
+            .filter((item) => item.wildcard && !item.static)
+            .map((item) => `${item.name.replace(/\.\*$/, '')}.${raw}`);
     }
     const candidates = [
       ...new Set(
@@ -370,6 +391,28 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
     closed.set(entry, result);
     return result;
   };
+  const staticMemberType = (
+    from: Pick<TypeEntry, 'filePath' | 'packageName'>,
+    ownerName: string,
+    head: string,
+  ): JavaAnnotationProof => {
+    const owners = (byFqn.get(ownerName) ?? []).filter((target) => visible(from, target));
+    if (owners.length === 0 && JAVA_PLATFORM_OWNERS_WITHOUT_MEMBER_TYPES.has(ownerName))
+      return false;
+    if (owners.length !== 1) return 'uncertain';
+    const owner = owners[0]!;
+    let result: JavaAnnotationProof =
+      !isClosed(owner) || unmappedNames.get(owner.filePath)?.has(head) === true
+        ? 'uncertain'
+        : false;
+    for (const member of [...owner.members, ...namesOf(owner).members]) {
+      if (member.fact.simpleName !== head || !TYPE_NODES.has(member.fact.kind)) continue;
+      const imported = staticallyImportsMemberType(from, member);
+      if (imported === true) return true;
+      if (imported === 'uncertain') result = 'uncertain';
+    }
+    return result;
+  };
   /**
    * Whether a single-static-import of `head` in `from`'s file imports a member
    * type (JLS 7.5.3): `true` when a workspace owner declares or inherits an
@@ -388,42 +431,40 @@ function workspaceInventory(parsedFiles: readonly ParsedFile[]) {
       const name = stripGaps(item.name);
       const dot = name.lastIndexOf('.');
       if (dot < 0 || name.slice(dot + 1) !== head) continue;
-      const owners = (byFqn.get(name.slice(0, dot)) ?? []).filter((target) =>
-        visible(from, target),
-      );
-      // Outside the workspace, ambiguous, or named through an inherited member type.
-      if (owners.length !== 1) {
-        result = 'uncertain';
-        continue;
-      }
-      const owner = owners[0]!;
-      // A type fact without an extracted scope might be a member type missed here.
-      if (!isClosed(owner) || unmappedNames.get(owner.filePath)?.has(head) === true)
-        result = 'uncertain';
-      for (const member of [...owner.members, ...namesOf(owner).members]) {
-        if (member.fact.simpleName !== head || !TYPE_NODES.has(member.fact.kind)) continue;
-        const imported = staticallyImportsMemberType(from, member);
-        if (imported === true) return true;
-        if (imported === 'uncertain') result = 'uncertain';
-      }
+      const imported = staticMemberType(from, name.slice(0, dot), head);
+      if (imported === true) return true;
+      if (imported === 'uncertain') result = 'uncertain';
     }
     return result;
   };
-  return { byFile, packageTypes, namesOf, staticImportsType };
+  return { byFile, packageTypes, namesOf, staticImportsType, staticMemberType };
+}
+
+export type JavaWorkspaceTypeInventory = ReturnType<typeof workspaceInventory>;
+
+interface WorkspaceContext {
+  readonly fileContents: ReadonlyMap<string, string>;
+  readonly treeCache?: { get(filePath: string): unknown };
+}
+
+export function reconcileJavaWorkspaceReferences(
+  parsedFiles: ParsedFile[],
+  ctx: WorkspaceContext,
+): void {
+  const inventory = workspaceInventory(parsedFiles);
+  reconcileJavaLombokWorkspaceProof(parsedFiles, ctx, inventory);
+  bindJavaQualifiedHeritage(parsedFiles, inventory);
 }
 
 /** Reconcile only files whose file-local annotation proof can be shadowed by siblings. */
 export function reconcileJavaLombokWorkspaceProof(
   parsedFiles: ParsedFile[],
-  ctx: {
-    readonly fileContents: ReadonlyMap<string, string>;
-    readonly treeCache?: { get(filePath: string): unknown };
-  },
+  ctx: WorkspaceContext,
+  inventory = workspaceInventory(parsedFiles),
 ): void {
-  const inventory = workspaceInventory(parsedFiles);
   for (let i = 0; i < parsedFiles.length; i++) {
     const original = parsedFiles[i]!;
-    corrections.delete(original);
+    corrections.delete(original.scopes);
     const pkg = getJavaPackageFact(original.filePath);
     const facts = getJavaOverloadFacts(original.filePath);
     const entries = inventory.byFile.get(original.filePath);
@@ -591,7 +632,7 @@ export function reconcileJavaLombokWorkspaceProof(
       ]),
     });
     parsedFiles[i] = next;
-    corrections.set(next, { tree, proof, removed });
+    corrections.set(next.scopes, { tree, proof, removed });
   }
 }
 
@@ -602,7 +643,7 @@ export function emitJavaLombokWorkspaceCorrections(
   nodeLookup: GraphNodeLookup,
 ): void {
   for (const parsed of parsedFiles) {
-    const correction = corrections.get(parsed);
+    const correction = corrections.get(parsed.scopes);
     if (correction === undefined) continue;
     const owners = new Map<number, string>();
     const defs = new Map(
@@ -633,6 +674,6 @@ export function emitJavaLombokWorkspaceCorrections(
     );
     for (const node of result.nodes) if (graph.getNode(node.id) === undefined) graph.addNode(node);
     for (const edge of result.relationships) graph.addRelationship(edge);
-    corrections.delete(parsed);
+    corrections.delete(parsed.scopes);
   }
 }

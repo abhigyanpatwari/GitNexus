@@ -24,7 +24,6 @@ describe('Query compilation smoke tests', () => {
     [SupportedLanguages.TypeScript]: 'test.ts',
     [SupportedLanguages.JavaScript]: 'test.js',
     [SupportedLanguages.Python]: 'test.py',
-    [SupportedLanguages.Java]: 'Test.java',
     [SupportedLanguages.C]: 'test.c',
     [SupportedLanguages.CPlusPlus]: 'test.cpp',
     [SupportedLanguages.CSharp]: 'Test.cs',

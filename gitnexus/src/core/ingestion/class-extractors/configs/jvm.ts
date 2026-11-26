@@ -29,6 +29,7 @@ export const javaClassConfig: ClassExtractionConfig = {
   ancestorScopeNodeTypes: [
     'class_declaration',
     'interface_declaration',
+    'annotation_type_declaration',
     'enum_declaration',
     'record_declaration',
   ],

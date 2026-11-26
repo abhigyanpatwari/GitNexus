@@ -1,0 +1,1 @@
+package outside; public class Bridge extends app.PackageBase {}

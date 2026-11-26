@@ -1,0 +1,1 @@
+package a; public class Concrete extends Base {}

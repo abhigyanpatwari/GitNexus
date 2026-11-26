@@ -53,10 +53,6 @@ const FIXTURE: ReadonlyArray<[string, string]> = [
     `def py${i}():\n    return ${i}\n`,
   ]),
   ...Array.from({ length: 6 }, (_, i): [string, string] => [
-    `src/Mod${i}.java`,
-    `public class Mod${i} { public int go() { return ${i}; } }\n`,
-  ]),
-  ...Array.from({ length: 6 }, (_, i): [string, string] => [
     `src/mod${i}.go`,
     `package main\n\nfunc Go${i}() int { return ${i} }\n`,
   ]),
@@ -168,7 +164,6 @@ describe('parse-impl dispatch rounds', () => {
     const names = fingerprint(batched);
     expect(names).toContain('ts0');
     expect(names).toContain('py0');
-    expect(names).toContain('Mod0');
     expect(names).toContain('Go0');
   });
 

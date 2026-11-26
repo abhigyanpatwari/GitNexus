@@ -1,0 +1,9 @@
+{
+  "diagnostics": {"compiler.err.foreach.not.applicable.to.type": 1},
+  "calls": [
+    {"caller": "Method:app/Sub.java:Sub.run#0", "member": "save", "source": ["app/Sub.java#6:2"]},
+    {"caller": "Method:app/Sub.java:Sub.loop#0", "member": "save", "source": ["app/Sub.java#7:2"], "targets": 0},
+    {"caller": "Method:app/Sub2.java:Sub2.run#0", "member": "save", "source": ["app/Sub2.java#6:2"]},
+    {"caller": "Method:app/Sub.java:Plain.run#0", "member": "save", "source": ["app/Sub.java#11:2"]}
+  ]
+}

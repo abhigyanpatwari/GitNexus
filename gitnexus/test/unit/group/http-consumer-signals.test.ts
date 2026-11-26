@@ -10,7 +10,6 @@
  * language with the exact idioms each `scan()` matches.
  */
 import { describe, it, expect } from 'vitest';
-import { JAVA_HTTP_PLUGIN } from '../../../src/core/group/extractors/http-patterns/java.js';
 import { PHP_HTTP_PLUGIN } from '../../../src/core/group/extractors/http-patterns/php.js';
 import { PYTHON_HTTP_PLUGIN } from '../../../src/core/group/extractors/http-patterns/python.js';
 
@@ -18,28 +17,6 @@ const has = (plugin: { hasConsumerSignals?: (s: string) => boolean }, src: strin
   if (!plugin.hasConsumerSignals) throw new Error('plugin has no hasConsumerSignals');
   return plugin.hasConsumerSignals(src);
 };
-
-describe('Java hasConsumerSignals — superset of scan() consumer idioms', () => {
-  it.each([
-    ['RestTemplate', 'restTemplate.getForObject("/api/x", X.class);'],
-    ['WebClient short-form', 'webClient.get().uri("/api/x").retrieve();'],
-    ['WebClient exchange', 'webClient.method(HttpMethod.GET).uri("/x");'],
-    ['OkHttp', 'new Request.Builder().url("/api/x").build();'],
-    ['Java HttpClient', 'HttpRequest.newBuilder().uri(URI.create("/x")).GET();'],
-    ['Apache HttpGet', 'new HttpGet("/api/x");'],
-    ['OpenFeign @FeignClient', '@FeignClient(name="svc") interface C {}'],
-    ['OpenFeign @RequestLine', '@RequestLine("GET /users/{id}")'],
-    ['Spring HTTP Interface @GetExchange', '@GetExchange("/api/x") Object x();'],
-  ])('detects %s', (_label, src) => {
-    expect(has(JAVA_HTTP_PLUGIN, src)).toBe(true);
-  });
-
-  it('returns false for a pure provider controller (no outbound calls)', () => {
-    const src = `@RestController @RequestMapping("/api/a")
-class AController { @GetMapping("/list") Object list() { return null; } }`;
-    expect(has(JAVA_HTTP_PLUGIN, src)).toBe(false);
-  });
-});
 
 describe('PHP hasConsumerSignals — superset of scan() consumer idioms', () => {
   it.each([

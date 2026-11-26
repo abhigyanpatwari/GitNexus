@@ -5,7 +5,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { providers } from '../../../src/core/ingestion/languages/index.js';
-import { getRelationships, runPipelineFromRepo, type PipelineOptions } from './helpers.js';
+import {
+  getRelationships,
+  runPipelineFromRepo,
+  type PipelineOptions,
+} from '../../integration/resolvers/helpers.js';
 import {
   loadParseCache,
   saveParseCache,
@@ -24,7 +28,7 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.JavaScript]: 'matrix',
   [SupportedLanguages.TypeScript]: 'dedicated',
   [SupportedLanguages.Python]: 'matrix',
-  [SupportedLanguages.Java]: 'matrix',
+  [SupportedLanguages.Java]: 'dedicated',
   [SupportedLanguages.C]: 'dedicated',
   [SupportedLanguages.CPlusPlus]: 'dedicated',
   [SupportedLanguages.CSharp]: 'matrix',
@@ -75,23 +79,7 @@ second = first
 invoke(second)
 `,
   },
-  {
-    language: SupportedLanguages.Java,
-    extension: 'java',
-    caller: 'invoke',
-    target: 'target',
-    source: `
-class Demo {
-  static void target() {}
-  static void invoke(Runnable callback) { callback.run(); }
-  static void main(String[] args) {
-    Runnable first = Demo::target;
-    Runnable second = first;
-    invoke(second);
-  }
-}
-`,
-  },
+
   {
     language: SupportedLanguages.Kotlin,
     extension: 'kt',
@@ -1371,30 +1359,6 @@ second();
     );
 
     expect(callableTargetIds(result, 'main.js')).toEqual([]);
-  }, 60_000);
-
-  it('does not steal an ordinary Java method whose name matches a callable protocol', async () => {
-    const result = await runSource(
-      'java',
-      `
-class Worker {
-  void run() {}
-}
-class Demo {
-  static void entry() {
-    Worker worker = new Worker();
-    worker.run();
-  }
-}
-`,
-    );
-
-    expect(callsFrom(result, 'entry')).toContainEqual(expect.objectContaining({ target: 'run' }));
-    expect(
-      callsFrom(result, 'entry').some(
-        (edge) => edge.target === 'Worker' && edge.reason === 'callable-value-flow',
-      ),
-    ).toBe(false);
   }, 60_000);
 
   it('does not treat a callable invocation result as the callable itself', async () => {

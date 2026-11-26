@@ -1,0 +1,1 @@
+package i5; @org.springframework.stereotype.Component public class Clock {}

@@ -36,6 +36,7 @@ import {
   isJavaPackageSiblingVisibilityIncomplete,
 } from './package-siblings.js';
 import { JAVA_IDENTIFIER } from './type-spelling.js';
+import { platformPackageHasType } from './platform-packages.js';
 
 /**
  * Implicitly typed lambda parameters typed by a workspace functional interface.
@@ -78,6 +79,7 @@ interface AbstractMethod {
 }
 
 interface SamIndex {
+  readonly sourcePackages: ReadonlySet<string>;
   /** Each workspace type's body scope, by its definition id. */
   readonly classScopes: ReadonlyMap<string, ScopeId>;
   /** Per call with implicitly typed lambda arguments: each argument's lambda
@@ -119,8 +121,11 @@ export function indexJavaSamLambdaTargets(
   indexes: ScopeResolutionIndexes,
 ): void {
   const classScopes = new Map<string, ScopeId>();
+  const sourcePackages = new Set<string>();
   const lambdaCalls = new Map<string, (number | undefined)[]>();
   for (const parsed of parsedFiles) {
+    const pkg = packageOf(parsed.filePath);
+    if (pkg !== undefined) sourcePackages.add(pkg);
     for (const scope of parsed.scopes) {
       if (scope.kind !== 'Class') continue;
       const owner = scope.ownedDefs.find((definition) => isClassLike(definition.type));
@@ -143,6 +148,7 @@ export function indexJavaSamLambdaTargets(
     }
   }
   samIndexes.set(indexes, {
+    sourcePackages,
     classScopes,
     lambdaCalls,
     onDemand: new Map(),
@@ -256,9 +262,8 @@ function packageOf(filePath: string): string | undefined {
  * The workspace top-level type a file's type-import-on-demand declarations
  * supply for `name` (JLS 7.5.2), reached only when no declaration, single-type
  * import or same-package type claims it (JLS 6.4.1). Two candidates are
- * ambiguous. A dependency can also contribute types to an imported package
- * that contains workspace files. Every competing wildcard must be accounted
- * for, including when no workspace type matches its package.
+ * ambiguous. Check each competing wildcard against the indexed source
+ * packages and known platform types. An unknown package leaves the lookup open.
  */
 function onDemandType(
   name: string,
@@ -293,8 +298,12 @@ function onDemandType(
           supplied = true;
         }
       }
-      // java.lang is already imported implicitly and checked above.
-      if (!supplied && item.name !== 'java.lang') decidable = false;
+      const platformType = platformPackageHasType(item.name, name);
+      if (
+        platformType === true ||
+        (!supplied && platformType === undefined && !index.sourcePackages.has(item.name))
+      )
+        decidable = false;
     }
     const [only] = candidates.values();
     if (decidable && candidates.size === 1 && only !== undefined) found = only;
@@ -686,9 +695,11 @@ function provesJdkType(
   if (pkg !== 'java.lang' && !names.onDemand.has(pkg)) return false;
   for (const imported of names.onDemand) {
     if (imported === pkg) continue;
-    // The supported JDK callback names and Object are distinct across these
-    // platform packages. Any other wildcard can supply a classpath namesake.
-    if (!['java.lang', 'java.util', 'java.io', JDK_FUNCTION_PACKAGE].includes(imported))
+    const platformType = platformPackageHasType(imported, name);
+    if (
+      platformType === true ||
+      (platformType === undefined && !index.sourcePackages.has(imported))
+    )
       return false;
     if (
       scopes.qualifiedNames.get(name).some((id) => {
@@ -828,9 +839,8 @@ export function javaSamLambdaParameterType(
     : undefined;
 }
 
-/** A type argument written at the callee's parameter, as a binding read in
- * the callee's scope: only a plain class name, never a primitive, wildcard,
- * qualified, generic or type-variable spelling. */
+/** Read a simple or qualified class name from the callee's functional
+ * parameter, including the ground target type of a bounded wildcard. */
 function plainTypeArgument(
   written: string | undefined,
   callee: SymbolDefinition,
@@ -839,7 +849,9 @@ function plainTypeArgument(
   scopes: ScopeResolutionIndexes,
   index: SamIndex,
 ): TypeRef | undefined {
-  const chosen = written?.trim() ?? '';
+  // JLS 9.9 and 15.27.3 ground an implicitly typed lambda against the
+  // non-wildcard parameterization of its target functional interface.
+  const chosen = written?.trim().replace(/^\?\s*(?:super|extends)\s+/, '') ?? '';
   // A qualified class name (`app.Other`) is looked up as written, where it was
   // written: `populateJavaQualifiedTypeBindings` registers its key there.
   const qualified = chosen.replaceAll(/\s+/g, '');
@@ -896,6 +908,21 @@ function lambdaApplicable(
   if (fact.parameterTypes.length !== arities.length) return 'no';
   let verdict: 'yes' | 'unknown' = 'yes';
   for (let i = 0; i < arities.length; i++) {
+    const shape = TYPE_NAME.exec(fact.parameterTypes[i]!.trim());
+    const jdk =
+      shape &&
+      jdkFunctionalInterface(
+        compact(shape[1]!),
+        scope,
+        definition.filePath,
+        fact.range,
+        scopes,
+        index,
+      );
+    if (jdk) {
+      if (jdk.parameters.length !== arities[i]) return 'no';
+      continue;
+    }
     const target = functionalTarget(
       fact.parameterTypes[i]!,
       scope,
@@ -935,14 +962,9 @@ export function selectJavaLambdaOverload(
   const filePath = scopes.scopeTree.getScope(site.inScope)?.filePath;
   if (index === undefined || filePath === undefined) return decision;
   const arities = index.lambdaCalls.get(lambdaCallKey(filePath, site.atRange));
+  if (arities === undefined) return decision;
   const call = getJavaOverloadCall(filePath, site.atRange, site.name);
-  if (
-    arities === undefined ||
-    call === undefined ||
-    call.arguments.length !== arities.length ||
-    (call.receiverSpelling !== undefined && call.receiver?.kind !== 'typed')
-  )
-    return decision;
+  if (call?.arguments.length !== arities.length) return decision;
   const lambdas: number[] = [];
   for (const arity of arities) {
     if (arity === undefined) return decision;
@@ -956,11 +978,16 @@ export function selectJavaLambdaOverload(
     if (verdict === 'unknown' || selected !== undefined) return decision;
     selected = definition;
   }
+  if (selected === undefined)
+    return {
+      kind: 'inapplicable',
+      candidateIds: decision.candidateIds,
+      candidateSetComplete: true,
+    };
   if (
-    selected === undefined ||
-    (call.receiverSpelling === undefined &&
-      call.staticContext &&
-      methodFact(selected)?.modifiers.includes('static') !== true)
+    call.receiverSpelling === undefined &&
+    call.staticContext &&
+    methodFact(selected)?.modifiers.includes('static') !== true
   )
     return decision;
   return { kind: 'resolved', definition: selected };

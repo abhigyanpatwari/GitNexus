@@ -1,0 +1,1 @@
+package i7; @org.springframework.stereotype.Repository public class Store7 {}

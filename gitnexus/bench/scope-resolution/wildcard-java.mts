@@ -140,13 +140,12 @@ assert.equal(
 assert.equal(result.calls, importers, 'Each importer calls one method');
 if (values.check) {
   assert.equal(wildcardEdges, 0, 'A wildcard import was stored as one edge per package file');
-  // Reviewed with one edge per package file and with groups: the same graph,
-  // 2,800 nodes and 4,200 relationships (closure shape: 2,804 and 4,206).
+  // The importers' go methods, Trig.m and Color.t have package access.
   assert.equal(
     result.fingerprint,
     values.closure
-      ? 'b3d6983bdd1f19b6834cb699fe89b3154b7f91c95b0e9bab1aae4dfc08b0d6a4'
-      : 'aa89cadc417ee27912cf64f1c18110e327ffd545d81aa3f1857aa1f23ac2e3b0',
+      ? '0f9f400e2539353f685a9936e71178d9101b4759a3608adbfe2ddf3481c8568f'
+      : 'e8a3b2291a43a1202883455d46969972bbbdcf48011d79cdfbca1dc9fa3bbe1d',
     'Wildcard Java graph differs from the reviewed baseline',
   );
   // Measured 4.3 MiB with groups and 54.5 MiB with one edge per package file

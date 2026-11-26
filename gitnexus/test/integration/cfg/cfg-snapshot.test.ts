@@ -18,7 +18,7 @@ import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
 // (AC4 — flag-off byte-identical graph — is the existing
 // pipeline-graph-golden.test.ts, run with --pdg off.)
 
-const FIXTURES = path.join(__dirname, 'fixtures');
+const FIXTURES = path.join(__dirname, '../../fixtures/cfg');
 
 const visitor = ((): CfgVisitor<SyntaxNode> => {
   const v = getProvider(SupportedLanguages.TypeScript).cfgVisitor;

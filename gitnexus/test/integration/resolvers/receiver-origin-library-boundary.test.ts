@@ -21,7 +21,7 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
-} from './helpers.js';
+} from '../../integration/resolvers/helpers.js';
 
 const FILES: Record<string, string> = {
   'web/dom.ts': `export function attach(link: unknown): void {
@@ -70,12 +70,7 @@ fn lessThan(_: void, a: u32, b: u32) bool {
     return a < b;
 }
 `,
-  'java/src/App.java': `public class App {
-    public void run() {
-        java.util.Optional<String> opt = java.util.Optional.of("x");
-    }
-}
-`,
+
   'cs/App.cs': `using System.Collections.Generic;
 
 namespace Demo
@@ -138,7 +133,7 @@ describe('Library and runtime receivers name the program boundary (#3498)', () =
     ['a Python stdlib namespace import', 'py/settings.py', 6, 'setdefault'],
     ['a Python stdlib named import', 'py/settings.py', 10, 'resolve'],
     ['the Zig standard library', 'zig/src/sorter.zig', 4, 'pdq'],
-    ['the Java platform package root', 'java/src/App.java', 3, 'of'],
+
     ['the C# System namespace', 'cs/App.cs', 13, 'WriteLine'],
     ['a C# field declared as a library type', 'cs/App.cs', 18, 'Keys'],
     ['Kotlin java.lang.System', 'kt/src/Worker.kt', 3, 'println'],

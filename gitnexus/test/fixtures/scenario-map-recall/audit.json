@@ -3,12 +3,6 @@
   "method": "Independently generated callback candidates; source review of setup, helper targets, fixture paths, inputs and assertions. Hand-adjudicated subset, not an exhaustive semantic oracle.",
   "positives": [
     {
-      "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Java > detects User class with save and getName methods",
-      "b": "test/integration/resolvers/java.test.ts#Java cross-file binding propagation > detects User class with save and getName methods",
-      "category": "integration-same-fixture",
-      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
-    },
-    {
       "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: Kotlin > detects User class with save and getName methods",
       "b": "test/integration/resolvers/kotlin.test.ts#Kotlin cross-file binding propagation > detects User class with save and getName methods",
       "category": "integration-same-fixture",
@@ -117,18 +111,6 @@
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },
     {
-      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileByName() emits exactly one CALLS edge to find(String) in DbLookup",
-      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileByName() \u2192 find(String) \u2014 sequential path",
-      "category": "integration-same-fixture",
-      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
-    },
-    {
-      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > emits METHOD_IMPLEMENTS from DbLookup.find(int) \u2192 ILookup.find(int)",
-      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > METHOD_IMPLEMENTS edges match interface methods \u2014 sequential path",
-      "category": "integration-same-fixture",
-      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
-    },
-    {
       "a": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M1\u2192M2 stamp upgrade (#2082 M2, pure) > an identical resolved M2 config compares equal (steady state keeps incremental)",
       "b": "test/unit/pdg-mode-flip.test.ts#pdgModeMismatch \u2014 M2\u2192M3 stamp upgrade (#2083 M3 U5, pure) > an identical resolved M3 config compares equal (steady state keeps incremental)",
       "category": "import-initialization",
@@ -191,12 +173,6 @@
     {
       "a": "test/integration/cross-file-binding.test.ts#Phase 9 \u2014 Cross-File Call-Result Binding: C# > detects User class with Save and GetName methods",
       "b": "test/integration/resolvers/csharp.test.ts#C# cross-file binding propagation > detects User class with Save and GetName methods",
-      "category": "integration-same-fixture",
-      "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
-    },
-    {
-      "a": "test/integration/resolvers/java.test.ts#Java same-arity overload cross-file and chain resolution > crossFileById() emits exactly one CALLS edge to find(int) in DbLookup",
-      "b": "test/integration/resolvers/java.test.ts#Java same-arity overloads (worker path) > crossFileById() \u2192 find(int) \u2014 sequential path",
       "category": "integration-same-fixture",
       "basis": "Same fixture directory or shared PipelineResult, identical runPipelineFromRepo setup and matching assertions. CROSS_FILE_FIXTURES resolves to the same directory through both definitions."
     },

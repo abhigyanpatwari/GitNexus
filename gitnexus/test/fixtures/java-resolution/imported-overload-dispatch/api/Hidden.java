@@ -1,0 +1,1 @@
+package api; class Hidden { public static void hidden() {} }

@@ -1,0 +1,1 @@
+package h; class Outer { static class Inner { void save() {} } }

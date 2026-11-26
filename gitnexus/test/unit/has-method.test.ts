@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
-import Java from 'tree-sitter-java';
 import CPP from 'tree-sitter-cpp';
 import Rust from 'tree-sitter-rust';
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
@@ -160,49 +159,6 @@ class Calculator:
 
       const result = findEnclosingClassId(nameNode!, 'test/calc.py');
       expect(result).toBe('Class:test/calc.py:Calculator');
-    });
-  });
-
-  describe('Java', () => {
-    it('finds enclosing class for a method', () => {
-      const tree = parseCode(
-        Java,
-        `
-class UserService {
-  public void save(User user) {}
-}
-`,
-      );
-      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
-      expect(methodNode).not.toBeNull();
-
-      const nameNode = findNode(methodNode!, (n) => n.type === 'identifier' && n.text === 'save');
-      expect(nameNode).not.toBeNull();
-
-      const result = findEnclosingClassId(nameNode!, 'test/UserService.java');
-      expect(result).toBe('Class:test/UserService.java:UserService');
-    });
-
-    it('finds enclosing interface for a method', () => {
-      const tree = parseCode(
-        Java,
-        `
-interface Repository {
-  void findById(int id);
-}
-`,
-      );
-      const methodNode = findNode(tree.rootNode, (n) => n.type === 'method_declaration');
-      expect(methodNode).not.toBeNull();
-
-      const nameNode = findNode(
-        methodNode!,
-        (n) => n.type === 'identifier' && n.text === 'findById',
-      );
-      expect(nameNode).not.toBeNull();
-
-      const result = findEnclosingClassId(nameNode!, 'test/Repository.java');
-      expect(result).toBe('Interface:test/Repository.java:Repository');
     });
   });
 

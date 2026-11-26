@@ -1,0 +1,13 @@
+{
+  "diagnostics": {"compiler.err.not.def.access.class.intf.cant.access": 1, "compiler.err.ref.ambiguous": 1},
+  "calls": [
+    {"caller": "Method:f/Prod.java:Prod.callSamePackage#0", "member": "save", "source": ["f/Prod.java#10:2"]},
+    {"caller": "Method:f/Prod.java:Prod.callImported#0", "member": "save", "source": ["f/Prod.java#11:2"]},
+    {"caller": "Method:f/Prod.java:Prod.callFullyQualified#0", "member": "save", "source": ["f/Prod.java#12:2"]},
+    {"caller": "Method:f/Prod.java:Prod.callGrid#0", "member": "save", "source": ["f/Prod.java#13:2"]},
+    {"caller": "Method:f/Prod.java:Prod.callSimple#0", "member": "save", "source": ["f/Prod.java#14:2"]},
+    {"caller": "Method:h/Caller.java:Caller.callShared#0", "member": "save", "published": ["Method:f/Model.java:Inner.save#0"], "compilerTargets": [], "source": ["h/Caller.java#2:30"]},
+    {"caller": "Method:f/Single.java:Single.run#0", "member": "save", "source": ["f/Single.java#5:2"]},
+    {"caller": "Method:f/Ambiguous.java:Ambiguous.run#0", "member": "save", "source": ["f/Ambiguous.java#5:2"], "targets": 0}
+  ]
+}

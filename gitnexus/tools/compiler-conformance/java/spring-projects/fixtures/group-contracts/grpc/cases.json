@@ -1,0 +1,465 @@
+[
+  {
+    "name": "test_extract_java_grpc_service_annotation_returns_provider",
+    "project": "java-grpc-service-annotation-returns-provider",
+    "expected": [
+      {
+        "contractId": "grpc::AuthService/*",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AuthGrpcService.java",
+          "name": "AuthService"
+        },
+        "symbolName": "AuthService",
+        "confidence": 0.65,
+        "meta": {
+          "service": "AuthService",
+          "source": "java_grpc_service",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_extract_java_blocking_stub_returns_consumer",
+    "project": "java-blocking-stub-returns-consumer",
+    "expected": [
+      {
+        "contractId": "grpc::AuthService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AuthClient.java",
+          "name": "AuthServiceStub"
+        },
+        "symbolName": "AuthServiceStub",
+        "confidence": 0.55,
+        "meta": {
+          "service": "AuthService",
+          "source": "java_stub",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_consumer_with_import_emits_fqn_contract_id_without_local_proto",
+    "project": "consumer-with-import-emits-fqn-contract-id",
+    "expected": [
+      {
+        "contractId": "grpc::com.acme.auth.proto.AuthService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AuthClient.java",
+          "name": "AuthServiceStub"
+        },
+        "symbolName": "AuthServiceStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "AuthService",
+          "source": "java_stub",
+          "package": "com.acme.auth.proto",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_provider_with_import_emits_fqn_contract_id_without_local_proto",
+    "project": "provider-with-import-emits-fqn-contract-id",
+    "expected": [
+      {
+        "contractId": "grpc::com.acme.auth.proto.AuthService/*",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AuthServerImpl.java",
+          "name": "AuthService"
+        },
+        "symbolName": "AuthService",
+        "confidence": 0.8,
+        "meta": {
+          "service": "AuthService",
+          "source": "java_impl_base",
+          "package": "com.acme.auth.proto",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_same_short_name_different_packages_resolves_to_distinct_fqns",
+    "project": "same-short-name-different-packages-resolves",
+    "expected": [
+      {
+        "contractId": "grpc::cn.unipus.ucf.api.proto.client.service.ContentRpcService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/ApiContentClient.java",
+          "name": "ContentRpcServiceStub"
+        },
+        "symbolName": "ContentRpcServiceStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "ContentRpcService",
+          "source": "java_stub",
+          "package": "cn.unipus.ucf.api.proto.client.service",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      },
+      {
+        "contractId": "grpc::cn.unipus.ucf.admin.proto.client.service.ContentRpcService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AdminContentClient.java",
+          "name": "ContentRpcServiceStub"
+        },
+        "symbolName": "ContentRpcServiceStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "ContentRpcService",
+          "source": "java_stub",
+          "package": "cn.unipus.ucf.admin.proto.client.service",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_local_proto_overrides_unrelated_import_with_same_short_name",
+    "project": "local-proto-overrides-unrelated-import-with",
+    "expected": [
+      {
+        "contractId": "grpc::local.unrelated.AuthService/Ping",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "protos/local-other.proto",
+          "name": "AuthService.Ping"
+        },
+        "symbolName": "AuthService.Ping",
+        "confidence": 0.85,
+        "meta": {
+          "service": "AuthService",
+          "source": "proto",
+          "method": "Ping",
+          "extractionStrategy": "source_scan"
+        }
+      },
+      {
+        "contractId": "grpc::local.unrelated.AuthService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AuthClient.java",
+          "name": "AuthServiceStub"
+        },
+        "symbolName": "AuthServiceStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "AuthService",
+          "source": "java_stub",
+          "package": "local.unrelated",
+          "protoPackageSource": "proto-override",
+          "importPackage": "com.acme.auth.proto",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_consumer_without_import_falls_back_to_proto_map",
+    "project": "consumer-without-import-falls-back-to-proto-map",
+    "expected": []
+  },
+  {
+    "name": "test_short_import_consumer_with_local_proto_still_uses_proto_map",
+    "project": "short-import-consumer-with-local-proto-still",
+    "expected": [
+      {
+        "contractId": "grpc::com.acme.auth.proto.AuthService/Login",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "protos/auth.proto",
+          "name": "AuthService.Login"
+        },
+        "symbolName": "AuthService.Login",
+        "confidence": 0.85,
+        "meta": {
+          "service": "AuthService",
+          "source": "proto",
+          "method": "Login",
+          "extractionStrategy": "source_scan"
+        }
+      },
+      {
+        "contractId": "grpc::com.acme.auth.proto.AuthService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AuthClient.java",
+          "name": "AuthServiceStub"
+        },
+        "symbolName": "AuthServiceStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "AuthService",
+          "source": "java_stub",
+          "package": "com.acme.auth.proto",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_static_and_wildcard_imports_are_ignored",
+    "project": "static-and-wildcard-imports-are-ignored",
+    "expected": []
+  },
+  {
+    "name": "test_provider_in_client_jar_consumer_repo_emits_provider_too",
+    "project": "provider-in-client-jar-consumer-repo-emits",
+    "expected": [
+      {
+        "contractId": "grpc::com.acme.auth.proto.AuthService/*",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/AuthServer.java",
+          "name": "AuthService"
+        },
+        "symbolName": "AuthService",
+        "confidence": 0.8,
+        "meta": {
+          "service": "AuthService",
+          "source": "java_grpc_service",
+          "package": "com.acme.auth.proto",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_unipus_admin_and_api_consumers_in_one_repo_do_not_collide",
+    "project": "unipus-admin-and-api-consumers-in-one-repo",
+    "expected": [
+      {
+        "contractId": "grpc::cn.unipus.ucf.api.proto.client.service.ContentRpcService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/api/ApiContentClient.java",
+          "name": "ContentRpcServiceStub"
+        },
+        "symbolName": "ContentRpcServiceStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "ContentRpcService",
+          "source": "java_stub",
+          "package": "cn.unipus.ucf.api.proto.client.service",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      },
+      {
+        "contractId": "grpc::cn.unipus.ucf.admin.proto.client.service.ContentRpcService/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/admin/AdminContentClient.java",
+          "name": "ContentRpcServiceStub"
+        },
+        "symbolName": "ContentRpcServiceStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "ContentRpcService",
+          "source": "java_stub",
+          "package": "cn.unipus.ucf.admin.proto.client.service",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_consumer_with_java_package_translation_uses_proto_package",
+    "project": "consumer-with-java-package-translation-uses",
+    "expected": [
+      {
+        "contractId": "grpc::google.cloud.speech.v1.Speech/Recognize",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "proto/speech.proto",
+          "name": "Speech.Recognize"
+        },
+        "symbolName": "Speech.Recognize",
+        "confidence": 0.85,
+        "meta": {
+          "service": "Speech",
+          "source": "proto",
+          "method": "Recognize",
+          "extractionStrategy": "source_scan"
+        }
+      },
+      {
+        "contractId": "grpc::google.cloud.speech.v1.Speech/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/SpeechClient.java",
+          "name": "SpeechStub"
+        },
+        "symbolName": "SpeechStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "Speech",
+          "source": "java_stub",
+          "package": "google.cloud.speech.v1",
+          "protoPackageSource": "import-translated",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_consumer_without_local_proto_and_diverging_java_package_is_known_limitation",
+    "project": "consumer-without-local-proto-and-diverging",
+    "expected": [
+      {
+        "contractId": "grpc::com.google.cloud.speech.v1.Speech/*",
+        "type": "grpc",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/SpeechClient.java",
+          "name": "SpeechStub"
+        },
+        "symbolName": "SpeechStub",
+        "confidence": 0.75,
+        "meta": {
+          "service": "Speech",
+          "source": "java_stub",
+          "package": "com.google.cloud.speech.v1",
+          "protoPackageSource": "import",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_e2e_client_jar_consumer_FQN_creates_wildcard_cross_link",
+    "project": "e2e-client-jar-consumer-fqn-creates-wildcard",
+    "wildcard": "grpc::com.acme.auth.proto.AuthService/*",
+    "expected": [
+      [
+        {
+          "contractId": "grpc::com.acme.auth.proto.AuthService/Login",
+          "type": "grpc",
+          "role": "provider",
+          "symbolUid": "",
+          "symbolRef": {
+            "filePath": "proto/auth.proto",
+            "name": "AuthService.Login"
+          },
+          "symbolName": "AuthService.Login",
+          "confidence": 0.85,
+          "meta": {
+            "service": "AuthService",
+            "source": "proto",
+            "method": "Login",
+            "extractionStrategy": "source_scan"
+          }
+        }
+      ],
+      [
+        {
+          "contractId": "grpc::com.acme.auth.proto.AuthService/*",
+          "type": "grpc",
+          "role": "consumer",
+          "symbolUid": "",
+          "symbolRef": {
+            "filePath": "src/main/java/AuthClient.java",
+            "name": "AuthServiceStub"
+          },
+          "symbolName": "AuthServiceStub",
+          "confidence": 0.75,
+          "meta": {
+            "service": "AuthService",
+            "source": "java_stub",
+            "package": "com.acme.auth.proto",
+            "protoPackageSource": "import",
+            "extractionStrategy": "source_scan"
+          }
+        }
+      ]
+    ]
+  },
+  {
+    "name": "test_java_provider_with_proto_uses_canonical_service_id",
+    "project": "java-provider-with-proto-uses-canonical-service-id",
+    "expected": [
+      {
+        "contractId": "grpc::com.example.UserService/GetUser",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "proto/user.proto",
+          "name": "UserService.GetUser"
+        },
+        "symbolName": "UserService.GetUser",
+        "confidence": 0.85,
+        "meta": {
+          "service": "UserService",
+          "source": "proto",
+          "method": "GetUser",
+          "extractionStrategy": "source_scan"
+        }
+      },
+      {
+        "contractId": "grpc::com.example.UserService/*",
+        "type": "grpc",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/main/java/UserGrpcService.java",
+          "name": "UserService"
+        },
+        "symbolName": "UserService",
+        "confidence": 0.8,
+        "meta": {
+          "service": "UserService",
+          "source": "java_grpc_service",
+          "extractionStrategy": "source_scan"
+        }
+      }
+    ]
+  }
+]

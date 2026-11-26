@@ -1,0 +1,9 @@
+{
+  "diagnostics": {},
+  "onDemand": {
+    "status": "matches JLS 6.4.1",
+    "extraEdges": [
+      "CALLS Method:viaNew -> Class:src/app/T.java:T"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "diagnostics": {},
+  "calls": [
+    {"caller": "Method:app/Sub.java:Sub.lambda#0", "member": "save", "source": ["app/Sub.java#3:2"]},
+    {"caller": "Method:app/Sub.java:Sub.loop#0", "member": "save", "source": ["app/Sub.java#4:2"]},
+    {"caller": "Method:app/Sub.java:Sub.values#0", "member": "save", "source": ["app/Sub.java#5:2"]},
+    {"caller": "Method:app/Sub.java:Sub.mapForEach#0", "member": "save", "source": ["app/Sub.java#6:2"]},
+    {"caller": "Method:app/Sub.java:Sub.array#0", "member": "save", "source": ["app/Sub.java#7:2"]}
+  ]
+}
