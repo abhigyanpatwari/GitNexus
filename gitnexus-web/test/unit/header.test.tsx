@@ -412,6 +412,7 @@ describe('Header', () => {
       vi.mocked(getAnalyzeStatus)
         .mockRejectedValueOnce(new BackendError('Network down', 0, 'network'))
         .mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
       render(<Header availableRepos={repos()} />);
 
       fireEvent.click(screen.getByRole('button', { name: /reels/i }));
@@ -422,6 +423,21 @@ describe('Header', () => {
 
       expect(getAnalyzeStatus).toHaveBeenCalledTimes(2);
       expect(screen.getByTestId('repo-status-ready')).toBeInTheDocument();
+    });
+
+    it('does not poll while the tab is hidden', async () => {
+      vi.useFakeTimers();
+      const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(true);
+      try {
+        render(<Header availableRepos={repos()} />);
+
+        fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+        await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 3));
+
+        expect(fetchActiveAnalyzeJobs).not.toHaveBeenCalled();
+      } finally {
+        hidden.mockRestore();
+      }
     });
 
     it('names the running job when a re-analyze is rejected with 409', async () => {

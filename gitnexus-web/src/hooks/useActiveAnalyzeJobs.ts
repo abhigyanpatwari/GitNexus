@@ -6,7 +6,7 @@ import {
   type ActiveAnalyzeJob,
 } from '../services/backend-client';
 
-/** `GET /api/analyze` allows 60 requests/min per IP; 3s leaves room for other tabs. */
+/** `GET /api/analyze` allows 60 requests/min per IP; 3s is 20/min for the visible tab. */
 export const ACTIVE_ANALYZE_POLL_MS = 3_000;
 
 /**
@@ -30,7 +30,9 @@ export function useActiveAnalyzeJobs(enabled: boolean, onJobComplete?: () => voi
     let unconfirmed: ActiveAnalyzeJob[] = [];
 
     const poll = async () => {
-      if (inFlight) return;
+      // Background tabs skip polling so several open tabs stay under the route's
+      // per-IP limit; the visible tab catches up on its next tick.
+      if (inFlight || document.hidden) return;
       inFlight = true;
       try {
         const current = await fetchActiveAnalyzeJobs().catch(() => null);
