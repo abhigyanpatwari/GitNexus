@@ -406,6 +406,30 @@ describe('Header', () => {
       expect(onReposChanged).toHaveBeenCalledWith(repos());
     });
 
+    it('shows Ready on reopen for a job that finished while the switcher was closed', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      render(<Header availableRepos={repos()} />);
+      const trigger = screen.getByTestId('repo-switcher-trigger');
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
+
+      fireEvent.click(trigger); // close: polling stops while the job finishes
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 5));
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(trigger);
+      await act(() => vi.advanceTimersByTimeAsync(0));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith('job-running');
+      const ready = screen.getByTestId('repo-status-ready');
+      expect(ready.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+    });
+
     it('does not show Ready when the job that left the list failed', async () => {
       vi.useFakeTimers();
       vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);

@@ -1175,7 +1175,7 @@ export interface ActiveAnalyzeJob extends JobStatus {
   repoId?: string;
 }
 
-/** List analyze jobs that are still running (the server runs one at a time). */
+/** List analyze jobs holding the analyze slot (the server runs one at a time). */
 export const fetchActiveAnalyzeJobs = async (): Promise<ActiveAnalyzeJob[]> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/analyze`, {}, 5_000);
   await assertOk(response);
