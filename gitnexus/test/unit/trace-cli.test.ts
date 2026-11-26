@@ -129,12 +129,53 @@ describe('CLI trace command', () => {
     );
   });
 
+  it('accepts --from-uid and --to-uid without positional args (#4124)', async () => {
+    await traceCommand(undefined, undefined, {
+      fromUid: 'Function:src/a.ts:validateUser',
+      toUid: 'Function:src/b.ts:executeQuery',
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from_uid: 'Function:src/a.ts:validateUser',
+        to_uid: 'Function:src/b.ts:executeQuery',
+      }),
+    );
+  });
+
+  it('accepts positional from with --to-uid (#4124)', async () => {
+    await traceCommand('validateUser', undefined, {
+      toUid: 'Function:src/b.ts:executeQuery',
+    });
+
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(callTool).toHaveBeenCalledWith(
+      'trace',
+      expect.objectContaining({
+        from: 'validateUser',
+        to_uid: 'Function:src/b.ts:executeQuery',
+      }),
+    );
+  });
+
   it('exits with usage when from is missing and no from_uid', async () => {
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
       throw new Error('process.exit');
     });
     await expect(traceCommand(undefined, 'B', {})).rejects.toThrow('process.exit');
     expect(exitSpy).toHaveBeenCalledWith(1);
+    exitSpy.mockRestore();
+  });
+
+  it('exits with usage when neither positional nor UID given for either endpoint (#4124)', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+      throw new Error('process.exit');
+    });
+    await expect(traceCommand(undefined, undefined, {})).rejects.toThrow('process.exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(callTool).not.toHaveBeenCalled();
     exitSpy.mockRestore();
   });
 
