@@ -1,7 +1,10 @@
+import type { CaptureMatch } from 'gitnexus-shared';
 import type { LanguageProvider } from '../../language-provider.js';
-import type { SyntaxNode } from '../../utils/ast-helpers.js';
+import { syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { assertCloneable } from '../../workers/clone-safety.js';
 import { isCommonJsModule } from './cjs-export-assignment.js';
+import { canonicalTypeScriptName } from './identifiers.js';
+import { boundNames } from './local-loaders.js';
 
 type CaptureEmitter = NonNullable<LanguageProvider['emitScopeCaptures']>;
 
@@ -39,6 +42,7 @@ export function recordCommonJsModuleKind(
   root: SyntaxNode,
   filePath: string,
   sourceText?: string,
+  captures?: CaptureMatch[],
 ): void {
   const commonJs = isCommonJsModule(root, filePath);
   pending = { filePath, value: commonJs };
@@ -68,6 +72,35 @@ export function recordCommonJsModuleKind(
   if (!script && !externalModule) return;
   const globalNames: string[] = [];
   const scriptNames: string[] = [];
+  let importedBindings: Set<string> | undefined;
+  function recordBinding(name: SyntaxNode | null, names: string[], kind?: string) {
+    if (name?.type === 'identifier' || name?.type === 'type_identifier') {
+      names.push(`${name.startPosition.row + 1}:${name.startPosition.column}`);
+    } else if (kind && (name?.type === 'object_pattern' || name?.type === 'array_pattern')) {
+      // A destructured loader already binds its local name to the imported definition.
+      if (!importedBindings) {
+        importedBindings = new Set();
+        for (const match of captures ?? []) {
+          const range = match['@import.alias']?.range;
+          if (range) importedBindings.add(`${range.startLine}:${range.startCol}`);
+        }
+      }
+      for (const binding of boundNames(name)) {
+        const text = canonicalTypeScriptName(binding.text);
+        const position = `${binding.startPosition.row + 1}:${binding.startPosition.column}`;
+        names.push(position);
+        if (importedBindings.has(position)) continue;
+        captures?.push({
+          '@declaration.variable': syntheticCapture(
+            '@declaration.variable',
+            binding,
+            kind + ' ' + text,
+          ),
+          '@declaration.name': syntheticCapture('@declaration.name', binding, text),
+        });
+      }
+    }
+  }
   function recordDeclaration(node: SyntaxNode | null, names: string[]) {
     if (!node) return;
     if (
@@ -78,10 +111,11 @@ export function recordCommonJsModuleKind(
       for (const child of node.namedChildren) recordDeclaration(child, names);
       return;
     }
-    const name = node.childForFieldName('name');
-    if (name?.type === 'identifier' || name?.type === 'type_identifier') {
-      names.push(`${name.startPosition.row + 1}:${name.startPosition.column}`);
-    }
+    recordBinding(
+      node.childForFieldName('name'),
+      names,
+      node.type === 'variable_declarator' ? node.parent?.firstChild?.type : undefined,
+    );
   }
   // Only statements can hoist var into a script. Function, class and namespace
   // bodies have their own var scopes and must not contribute declarations.
@@ -99,9 +133,7 @@ export function recordCommonJsModuleKind(
       node.type === 'finally_clause'
     ) {
       if (node.type === 'for_in_statement' && node.childForFieldName('kind')?.type === 'var') {
-        const left = node.childForFieldName('left');
-        if (left?.type === 'identifier')
-          names.push(`${left.startPosition.row + 1}:${left.startPosition.column}`);
+        recordBinding(node.childForFieldName('left'), names, 'var');
       }
       for (const child of node.namedChildren) recordNestedVars(child, names);
     }
@@ -129,7 +161,11 @@ export function recordCommonJsModuleKind(
         recordDeclaration(declaration, globalNames);
     }
   }
-  if (script || globalNames.length || referencePaths.length) {
+  if (
+    (script && (declarationFile || scriptNames.length)) ||
+    globalNames.length ||
+    referencePaths.length
+  ) {
     pending.value = {
       kind: 'typescript-declarations',
       commonJs,

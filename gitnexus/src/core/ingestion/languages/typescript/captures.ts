@@ -47,6 +47,7 @@ import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
 import {
+  cjsExportedName,
   isShadowedCjsExportAssignment,
   isUnexportedMemberAssignmentValue,
   isUndeclarableThisMemberValue,
@@ -414,8 +415,7 @@ export function emitTsScopeCaptures(
     recordCacheHit();
   }
 
-  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText);
-
+  const out: CaptureMatch[] = [];
   const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
@@ -423,7 +423,6 @@ export function emitTsScopeCaptures(
     ? defaultFactoryResult(tree.rootNode)
     : undefined;
   const implicitNamespaceExports = new Map<number, boolean>();
-  const out: CaptureMatch[] = [];
   let awaitedCalls: Map<string, Capture> | undefined;
 
   for (const m of rawMatches) {
@@ -608,6 +607,18 @@ export function emitTsScopeCaptures(
       // in ESM top-level `this` is undefined and exports nothing.
       if (arrowNode !== null && isUndeclarableThisMemberValue(arrowNode, tree.rootNode)) {
         continue;
+      }
+      const name = groupedNodes['@declaration.name'];
+      if (
+        name?.type === 'property_identifier' &&
+        arrowNode?.parent?.type === 'assignment_expression' &&
+        cjsExportedName(arrowNode, tree.rootNode) === name.text
+      ) {
+        grouped['@declaration.is-exported'] = syntheticCapture(
+          '@declaration.is-exported',
+          name,
+          'true',
+        );
       }
     }
 
@@ -868,6 +879,7 @@ export function emitTsScopeCaptures(
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
   const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out);
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
   return out;

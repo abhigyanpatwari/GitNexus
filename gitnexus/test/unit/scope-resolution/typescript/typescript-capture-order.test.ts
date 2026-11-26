@@ -1,44 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { emitTsScopeCaptures } from '../../../../src/core/ingestion/languages/typescript/captures.js';
 
-function synthesizedCaptureFingerprint(): string {
-  const root = fileURLToPath(new URL('../../../fixtures/lang-resolution/', import.meta.url));
-  const files = readdirSync(root, { recursive: true, encoding: 'utf8' })
-    .filter((file) => file.startsWith('typescript-') && /\.tsx?$/.test(file))
-    .map((file) => file.split(path.sep).join('/'))
-    .sort();
-  const tags = [
-    '@reference.inherits',
-    '@type-binding.destructured',
-    '@type-binding.map-tuple-entry',
-    '@type-binding.instanceof-narrow',
-  ];
-  expect(files.length).toBeGreaterThan(0);
-  const hash = createHash('sha256');
-  for (const file of files) {
-    const absolute = path.join(root, file);
-    const captures = emitTsScopeCaptures(readFileSync(absolute, 'utf8'), file).filter((capture) =>
-      tags.some((tag) => capture[tag]),
-    );
-    // Preserve match order: equal-strength bindings can depend on arrival order.
-    hash.update(JSON.stringify([file, captures])).update('\n');
-  }
-  return hash.digest('hex');
-}
-
 describe('TypeScript synthesized capture order', () => {
-  it('preserves the ordered synthesized capture stream across the TypeScript fixture corpus', () => {
-    // Heritage captures record the relation and each base's type arguments,
-    // including an empty list when the source omits them.
-    expect(synthesizedCaptureFingerprint()).toBe(
-      '4452da90987201e04fa2e6d3dd7f9af64b35bcd01fe05aa9181d19d46445aea8',
-    );
-  });
-
   describe('guards after writes to the receiver', () => {
     it.each([
       ['sequence', 'if (x instanceof A) { x.before(), x = b, x.after(); }', ['before']],

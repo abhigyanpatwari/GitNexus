@@ -78,7 +78,7 @@ const atEnd = (node: SyntaxNode) => ({
 });
 
 /** Binding patterns, not arbitrary descendants: object keys and default RHSs do not bind. */
-function boundNames(node: SyntaxNode | null): SyntaxNode[] {
+export function boundNames(node: SyntaxNode | null): SyntaxNode[] {
   if (node === null) return [];
   switch (node.type) {
     case 'identifier':

@@ -1,10 +1,50 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
+
+export async function checkCommonJsForwarding() {
+  const project = fileURLToPath(
+    new URL('../../../test/fixtures/typescript-commonjs-forwarding/', import.meta.url),
+  );
+  const emitted = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-cjs-forwarding-'));
+  try {
+    const cli = fileURLToPath(new URL('bin/tsc', import.meta.resolve('typescript/package.json')));
+    execFileSync(process.execPath, [cli, '--project', project, '--outDir', emitted]);
+    const load = createRequire(path.join(emitted, 'consumer.js'));
+    const source = load('./source.js');
+    const forward = load('./forward.js');
+    const names = new Map(Object.entries(source).map(([key, value]) => [value, key]));
+    const { graph } = await runPipelineFromRepo(project, () => {});
+    const observed = [];
+    for (const edge of graph.iterRelationshipsByType('CALLS')) {
+      const node = graph.getNode(edge.sourceId);
+      if (node.label !== 'Function') continue;
+      const caller = node.properties;
+      if (caller.filePath !== 'consumer.ts' && caller.filePath !== 'direct.ts') continue;
+      const target = graph.getNode(edge.targetId).properties;
+      observed.push([caller.name, target.filePath, target.name]);
+    }
+    const expected = [];
+    for (const [caller, value] of [
+      ['callChanged', forward.changed],
+      ['callStable', forward.stable],
+      ['callRenamedChanged', forward.renamedChanged],
+      ['callRenamedStable', forward.renamedStable],
+      ['callArrow', source.arrow],
+      ['callHidden', source.privateHelper],
+    ]) {
+      if (names.has(value)) expected.push([caller, 'source.ts', names.get(value)]);
+    }
+    assert.deepEqual(observed.sort(), expected.sort());
+  } finally {
+    rmSync(emitted, { recursive: true, force: true });
+  }
+}
 
 // The checker returns recovery signatures for conflicting star exports and a
 // structural function type for the wrapped default. Node can observe the

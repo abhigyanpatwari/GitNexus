@@ -603,7 +603,8 @@ function reportProject(
           symbol && (symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol);
         const variable = symbolDeclaration(target, project);
         if (
-          variable?.kind === SyntaxKind.VariableDeclaration &&
+          (variable?.kind === SyntaxKind.VariableDeclaration ||
+            variable?.kind === SyntaxKind.BindingElement) &&
           files.has(variable.getSourceFile().fileName)
         ) {
           result.VARIABLE_READS.sites.push({

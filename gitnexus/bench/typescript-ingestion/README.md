@@ -23,6 +23,9 @@ fingerprints, and normalized growth within the reviewed budgets.
 
 The corpus exercises Map destructuring, `instanceof` guards, and TypeScript
 and JavaScript module ownership. Competing owners use the same member names.
+The compiler selects `Value.save` for the second element of an
+`Iterable<[Key, Value]>`. The small, wide and dense workloads include 16, 64
+and 256 copies of that call respectively.
 The module fixtures cover conflicting and agreeing export paths, explicit
 re-exports, nested namespaces, local, quoted, and default export aliases,
 private names, unbound star exports, and TypeScript type-only exports. Each

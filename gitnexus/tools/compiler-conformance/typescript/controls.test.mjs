@@ -4,17 +4,54 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import Parser from 'tree-sitter';
+import TypeScript from 'tree-sitter-typescript';
+import { typescriptProvider } from '../../../dist/core/ingestion/languages/typescript.js';
+import { extractParsedFile } from '../../../dist/core/ingestion/scope-extractor-bridge.js';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
-import { checkModuleValues } from './module-values.mjs';
+import { checkCommonJsForwarding, checkModuleValues } from './module-values.mjs';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
-import { comparePublishedCalls } from './check.mjs';
+import { compareProject, comparePublishedCalls } from './check.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 
 const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('CommonJS loader calls match the exports of the compiled modules', checkCommonJsForwarding);
+
+test('TypeScript module-kind evidence survives serialization and is consumed once', () => {
+  const parser = new Parser();
+  parser.setLanguage(TypeScript.typescript);
+  const assignment = 'module.exports.value = 1;';
+  for (const [suffix, prefix, commonJs] of [
+    ['ts', '', true],
+    ['ts', 'export {}; ', false],
+    ['ts', 'import "./dep"; ', false],
+    ['cts', 'export {}; ', true],
+    ['mts', '', false],
+  ]) {
+    const file = 'module.' + suffix;
+    const source = prefix + assignment;
+    const parsed = extractParsedFile(
+      typescriptProvider,
+      source,
+      file,
+      undefined,
+      parser.parse(source),
+    );
+    assert.ok(parsed);
+    const captureSideChannel = typescriptProvider.collectCaptureSideChannel(file);
+    assert.equal(captureSideChannel, commonJs);
+    assert.equal(
+      JSON.parse(JSON.stringify({ ...parsed, captureSideChannel })).captureSideChannel,
+      commonJs,
+    );
+    assert.equal(typescriptProvider.collectCaptureSideChannel(file), undefined);
+  }
+});
 
 test('published calls retain the compiler target at each stored call range', () => {
   const calls = [
@@ -336,6 +373,31 @@ test('a class property read and a same-named block local resolve to separate dec
     site === field ? { ...site, target: local.target } : site,
   );
   assert.throws(() => compareReports(fields, { ...fields, sites: wrong }), /Missing from actual/);
+});
+
+test('a rebound this receiver produces one call diagnostic at the compiler-rejected site', async () => {
+  const directory = path.resolve(root, '../../lang-resolution/ts-dynamic-this-no-seed');
+  const diagnostics = JSON.parse(
+    readFileSync(new URL('./diagnostics.json', import.meta.url), 'utf8'),
+  );
+  const expected = diagnostics['lang-resolution/ts-dynamic-this-no-seed'];
+  const reference = compilerReport(directory, expected);
+  assert.equal(reference.uncheckedMemberSites.length, 1);
+  const { pipeline } = await compareProject(directory, {}, expected);
+  const drops = pipeline.resolutionOutcomes.filter(
+    (outcome) =>
+      outcome.kind === 'suppressed' &&
+      outcome.reason === 'receiver-owned-but-unbound' &&
+      outcome.siteKind === 'call',
+  );
+  assert.deepEqual(
+    drops.map(({ filePath, range }) => [
+      filePath,
+      range.startLine + ':' + range.startCol,
+      range.endLine + ':' + range.endCol,
+    ]),
+    reference.uncheckedMemberSites.map(({ file, start, end }) => [file, start, end]),
+  );
 });
 
 test('module ownership exposes conflict candidates and marks erased file dependencies', async () => {

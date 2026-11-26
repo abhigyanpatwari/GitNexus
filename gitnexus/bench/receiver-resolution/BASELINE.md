@@ -1560,3 +1560,11 @@ no in-repository target. The fixture's three existing call edges are preserved.
 This increases the all-language count from 174 to 176 unresolved calls, with
 34 unresolved reads. The dynamic-import fixture still links `feature.activate()`
 to its imported `Feature.activate` method.
+
+### TypeScript private-field fixture migration
+
+The former `ts-private-members/store.ts` fixture contributed one unresolved
+call to `this.#items.push(item)` in `Store.add`. Removing that duplicate from
+the benchmark corpus reduced TypeScript call drops from 21 to 20 and total
+call drops from 177 to 176. Both resolver versions reported the same 20
+TypeScript sites when run on the updated corpus.

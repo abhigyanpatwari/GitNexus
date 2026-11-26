@@ -13,7 +13,11 @@ export const ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES: ReadonlySet<string> = 
 
 /** Keep written graph identities while exposing canonical ECMAScript export names. */
 export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string, SymbolDefinition> {
-  if (declarationScope(parsed.captureSideChannel)?.script) return new Map();
+  const scope = declarationScope(parsed.captureSideChannel);
+  if (scope?.script) {
+    if (!scope.commonJs) return new Map();
+    return publishedNames(parsed.localDefs.filter((def) => def.isExported === true));
+  }
   const erased = parsed.localDefs.filter(isErasedDeclaration);
   if (erased.length === 0) return publishedNames(parsed.localDefs);
   // A type and a value can share a spelling. Select the runtime declaration

@@ -42,7 +42,7 @@ const mapCases = [
   ['nested', 'for (const [{ pair: [a, b] }, value] of entries) value.save();', ['Value']],
   ['defaultKey', 'for (const [key = new Key(), value,] of entries) value.save();', ['Value']],
   ['asyncElision', 'for await (const [, value] of entries) value.save();', ['Value']],
-  ['otherIterable', 'for (const [, value] of entries) value.save();', []],
+  ['otherIterable', 'for (const [, value] of entries) value.save();', ['Value']],
 ];
 const guardCases = [
   ['guarded', 'if (repo instanceof Key) repo.save();', ['Key.save']],
