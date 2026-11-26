@@ -167,17 +167,35 @@ describe('local DirectML initialization', () => {
     expect(fallback.dispose).not.toHaveBeenCalled();
   });
 
-  it.each(['cpu', 'cuda', 'wasm'] as const)(
-    'does not add CPU reference work for %s',
-    async (device) => {
-      const selected = embedder();
-      pipeline.mockResolvedValueOnce(selected);
-      const local = await import('../../src/core/embeddings/embedding-local-init.js');
-      await expect(local.initLocalEmbedder(undefined, {}, device)).resolves.toBe(selected);
-      expect(local.getCurrentDevice()).toBe(device);
-      expect(pipeline).toHaveBeenCalledOnce();
-      expect(selected).not.toHaveBeenCalled();
-      expect(selected.dispose).not.toHaveBeenCalled();
-    },
-  );
+  it('falls back to the CPU reference when CUDA disagrees', async () => {
+    const gpu = embedder().mockResolvedValue(result([0, 0, 1, 0, 0, 1]));
+    const cpu = embedder();
+    pipeline.mockResolvedValueOnce(gpu).mockResolvedValueOnce(cpu);
+    const local = await import('../../src/core/embeddings/embedding-local-init.js');
+    await expect(local.initLocalEmbedder(undefined, {}, 'cuda')).resolves.toBe(cpu);
+    expect(local.getCurrentDevice()).toBe('cpu');
+    expect(gpu.dispose).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('CUDA embedding validation failed'));
+  });
+
+  it('keeps CUDA with a warning when the CPU reference is unavailable', async () => {
+    const gpu = embedder();
+    pipeline.mockResolvedValueOnce(gpu).mockRejectedValueOnce(new Error('CPU unavailable'));
+    const local = await import('../../src/core/embeddings/embedding-local-init.js');
+    await expect(local.initLocalEmbedder(undefined, {}, 'cuda')).resolves.toBe(gpu);
+    expect(local.getCurrentDevice()).toBe('cuda');
+    expect(gpu.dispose).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('keeping CUDA'));
+  });
+
+  it.each(['cpu', 'wasm'] as const)('does not add CPU reference work for %s', async (device) => {
+    const selected = embedder();
+    pipeline.mockResolvedValueOnce(selected);
+    const local = await import('../../src/core/embeddings/embedding-local-init.js');
+    await expect(local.initLocalEmbedder(undefined, {}, device)).resolves.toBe(selected);
+    expect(local.getCurrentDevice()).toBe(device);
+    expect(pipeline).toHaveBeenCalledOnce();
+    expect(selected).not.toHaveBeenCalled();
+    expect(selected.dispose).not.toHaveBeenCalled();
+  });
 });

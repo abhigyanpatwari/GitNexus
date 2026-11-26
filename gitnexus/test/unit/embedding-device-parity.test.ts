@@ -10,6 +10,14 @@ describe('embedding device parity', () => {
     ).not.toThrow();
   });
 
+  it('uses the device-specific tolerance for small differences', () => {
+    const slightlyDifferent = probe([1, 0.1, 0.1, 1]);
+    expect(() => assertEmbeddingDeviceParity(slightlyDifferent, probe(), 2, 'cuda')).not.toThrow();
+    expect(() => assertEmbeddingDeviceParity(slightlyDifferent, probe(), 2, 'dml')).toThrow(
+      'cosine',
+    );
+  });
+
   it('compares each row, rather than hiding one bad vector in a batch average', () => {
     expect(() => assertEmbeddingDeviceParity(probe([1, 0, 1, 0]), probe(), 2)).toThrow(
       'probe 2 cosine',

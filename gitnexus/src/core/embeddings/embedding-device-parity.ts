@@ -6,13 +6,15 @@ interface ProbeResult {
 }
 
 // Allow small fp32 backend differences while rejecting the ~0.37 cosine in #3685.
-const MIN_PROBE_COSINE = 0.999;
+const MIN_PROBE_COSINE = { dml: 0.999, cuda: 0.99 } as const;
 
 export const assertEmbeddingDeviceParity = (
   candidate: ProbeResult,
   reference: ProbeResult,
   batchSize: number,
+  device: 'dml' | 'cuda' = 'dml',
 ): void => {
+  const threshold = MIN_PROBE_COSINE[device];
   const dimensions = reference.dims?.[1];
   if (
     !Number.isSafeInteger(batchSize) ||
@@ -47,8 +49,8 @@ export const assertEmbeddingDeviceParity = (
       referenceNorm += b * b;
     }
     const cosine = dot / Math.sqrt(candidateNorm * referenceNorm);
-    if (!Number.isFinite(cosine) || cosine < MIN_PROBE_COSINE) {
-      throw new Error(`probe ${row + 1} cosine ${cosine.toFixed(6)} is below ${MIN_PROBE_COSINE}`);
+    if (!Number.isFinite(cosine) || cosine < threshold) {
+      throw new Error(`probe ${row + 1} cosine ${cosine.toFixed(6)} is below ${threshold}`);
     }
   }
 };

@@ -43,11 +43,12 @@ const DEVICE_PROBE_TEXTS = [
   'Read the configuration file and handle missing network credentials.',
 ];
 
-const verifyDirectML = async (
+const checkGpuParity = async (
+  device: 'dml' | 'cuda',
   candidate: FeatureExtractionPipeline,
   createCpu: () => Promise<FeatureExtractionPipeline>,
   warn: (reason: string) => void,
-): Promise<{ embedder: FeatureExtractionPipeline; device: 'dml' | 'cpu' }> => {
+): Promise<{ embedder: FeatureExtractionPipeline; device: 'dml' | 'cuda' | 'cpu' }> => {
   let cpu: FeatureExtractionPipeline | undefined;
   let selected: FeatureExtractionPipeline | undefined;
   try {
@@ -56,16 +57,21 @@ const verifyDirectML = async (
     const reference = await cpu(DEVICE_PROBE_TEXTS, options);
     try {
       const result = await candidate(DEVICE_PROBE_TEXTS, options);
-      assertEmbeddingDeviceParity(result, reference, DEVICE_PROBE_TEXTS.length);
+      assertEmbeddingDeviceParity(result, reference, DEVICE_PROBE_TEXTS.length, device);
     } catch (error) {
-      warn(error instanceof Error ? error.message : String(error));
+      warn((error instanceof Error ? error.message : String(error)) + '; falling back to CPU');
       selected = cpu;
       return { embedder: cpu, device: 'cpu' };
     }
     selected = candidate;
-    return { embedder: candidate, device: 'dml' };
+    return { embedder: candidate, device };
   } catch (error) {
-    warn('could not complete the CPU reference probe');
+    if (device === 'cuda') {
+      warn('could not complete the CPU reference probe; keeping CUDA');
+      selected = candidate;
+      return { embedder: candidate, device };
+    }
+    warn('could not complete the CPU reference probe; falling back to CPU');
     throw error;
   } finally {
     // Keep only the selected session; never expose the candidate before validation.
@@ -200,12 +206,14 @@ export const initLocalEmbedder = async (
             );
           const candidate = await createEmbedder(device);
           const selected =
-            device === 'dml'
-              ? await verifyDirectML(
+            device === 'dml' || device === 'cuda'
+              ? await checkGpuParity(
+                  device,
                   candidate,
                   () => createEmbedder('cpu'),
                   (reason) => {
-                    const message = `DirectML embedding validation failed (${reason}); falling back to CPU.`;
+                    const label = device === 'dml' ? 'DirectML' : 'CUDA';
+                    const message = `${label} embedding validation failed: ${reason}.`;
                     logger.warn(message);
                     onWarning?.(message);
                   },
