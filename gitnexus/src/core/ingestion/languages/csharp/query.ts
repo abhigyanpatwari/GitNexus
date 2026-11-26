@@ -171,12 +171,47 @@ const CSHARP_SCOPE_QUERY = `
   name: (identifier) @type-binding.name) @type-binding.parameter
 
 ;; Array parameters — \`void F(User[] repos)\`. The binding keeps the \`[]\`
-;; spelling; the index route of \`elementTypeOf\` peels it to \`User\` so
-;; \`repos[0].Save()\` resolves (#4098). Shapes the peel does not recognize
-;; (\`User[][]\`, \`User[,]\`, \`List<User>[]\`) stay unresolved.
-(parameter
-  type: (array_type) @type-binding.type
-  name: (identifier) @type-binding.name) @type-binding.parameter
+;; spelling and only serves index steps: \`elementTypeOf\` peels \`User[]\` to
+;; \`User\` so \`repos[0].Save()\` resolves (#4098), and a direct call on the
+;; array (\`repos.Save()\`) finds no \`User[]\` type. Two restrictions:
+;;
+;; - the element is an identifier or a predefined type. A generic element
+;;   (\`Box<User>[]\`, \`Cell<User>[,]\`) is not bound, because later spelling
+;;   reductions read the type argument or the generic owner as the receiver;
+;; - the owner is one of the scoped declarations above. Delegate, indexer,
+;;   anonymous-method and lambda parameters have no scope, so their binding
+;;   would land in the enclosing namespace and leak to same-named receivers.
+;;
+;; Not covered: \`params\` (a different node shape), qualified and nullable
+;; elements, primary-constructor parameters. Jagged and rank arrays bind but
+;; the peel does not recognize them, so they stay unresolved.
+[
+  (method_declaration
+    parameters: (parameter_list
+      (parameter
+        type: (array_type type: [(identifier) (predefined_type)]) @type-binding.type
+        name: (identifier) @type-binding.name) @type-binding.parameter))
+  (constructor_declaration
+    parameters: (parameter_list
+      (parameter
+        type: (array_type type: [(identifier) (predefined_type)]) @type-binding.type
+        name: (identifier) @type-binding.name) @type-binding.parameter))
+  (local_function_statement
+    parameters: (parameter_list
+      (parameter
+        type: (array_type type: [(identifier) (predefined_type)]) @type-binding.type
+        name: (identifier) @type-binding.name) @type-binding.parameter))
+  (operator_declaration
+    parameters: (parameter_list
+      (parameter
+        type: (array_type type: [(identifier) (predefined_type)]) @type-binding.type
+        name: (identifier) @type-binding.name) @type-binding.parameter))
+  (conversion_operator_declaration
+    parameters: (parameter_list
+      (parameter
+        type: (array_type type: [(identifier) (predefined_type)]) @type-binding.type
+        name: (identifier) @type-binding.name) @type-binding.parameter))
+]
 
 ;; Type bindings — local variable annotations: \`User u = new User();\`
 ;; Typed local with identifier type + \`new X()\` initializer — shape

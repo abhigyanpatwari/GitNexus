@@ -21,6 +21,17 @@ captures `(array_type)` parameter types, so `repos` binds `User[]`, and the
 existing `elementTypeOf` index route peels it to `User`. Every other shape
 state is unchanged, and the count arm is unchanged.
 
+The capture is limited to scoped owners (method, constructor, local function,
+operator, conversion operator) and to identifier or predefined-type elements.
+Generic elements (`Box<User>[]`, `Cell<User>[,]`) and unscoped owners
+(delegate, indexer, anonymous method, lambda) would otherwise produce
+wrong-owner edges; `csharp-array-parameter-binding.test.ts` pins them as
+no-target rows.
+
+The same change moves `bench/scope-capture`: the C# fingerprint goes from
+`3720a3d2` (2899 groups) to `38c6dc76` (2901 groups), the two `string[] args`
+parameters of `Main`. Both `measure.mjs --check` runs pass.
+
 ## Java receiver and generated dependency ownership (#3955)
 
 Java `indexElement` (`repos[0].save()` with a `User[] repos` parameter) moves
