@@ -1,0 +1,616 @@
+import { mock } from 'node:test';
+import { registerCases } from '../support/cases.mjs';
+
+import assert from 'node:assert/strict';
+import { existsSync } from 'fs';
+import fs from 'fs/promises';
+import path from 'path';
+
+import {
+  after as afterAll,
+  afterEach,
+  before as beforeAll,
+  beforeEach,
+  describe,
+  it,
+} from 'node:test';
+import { expect } from 'expect';
+
+import { MAX_INCREMENTAL_WRITES } from '../../../../src/core/incremental/compaction-policy.js';
+import type { EmbeddingCheckpoint } from '../../../../src/core/embedding-checkpoint.js';
+import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
+
+import {
+  ensurePrivateSharedGraph,
+  featureKeyOf,
+  publishSharedGraph,
+  seedSharedSlot,
+} from '../../../../src/core/shared-store-analyze.js';
+import {
+  getStoragePaths,
+  listRegisteredRepos,
+  loadMeta,
+  registerRepo,
+  saveMeta,
+} from '../../../../src/storage/repo-manager.js';
+import type { RepoMeta } from '../../../../src/storage/repo-meta.js';
+import { commitGraphDir, resolveGraphPath } from '../../../../src/storage/shared-store.js';
+import { createTempDir } from '../../../../test/helpers/test-db.js';
+
+// These suites exercise sharing; an inherited opt-out would silently disable it.
+const savedSharedStoreSwitch = process.env.GITNEXUS_SHARED_STORE;
+beforeAll(() => {
+  delete process.env.GITNEXUS_SHARED_STORE;
+});
+afterAll(() => {
+  if (savedSharedStoreSwitch === undefined) delete process.env.GITNEXUS_SHARED_STORE;
+  else process.env.GITNEXUS_SHARED_STORE = savedSharedStoreSwitch;
+});
+
+import {
+  git,
+  commitAll,
+  layoutOf,
+  listCommitDirs,
+} from '../../../../test/helpers/shared-store-checkout.js';
+describe('shared sibling store analyze (#3352)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedHome: string | undefined;
+  let main: string;
+  let wtA: string;
+  let wtB: string;
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-test-shared-home-');
+    tmpRepo = await createTempDir('gitnexus-test-shared-repo-');
+    savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+
+    const root = await fs.realpath(tmpRepo.dbPath);
+    main = path.join(root, 'main');
+    wtA = path.join(root, 'wt-a');
+    wtB = path.join(root, 'wt-b');
+    await fs.mkdir(main);
+    git(main, 'init', '-q', '-b', 'main');
+    await fs.writeFile(
+      path.join(main, 'a.ts'),
+      'export function a() { return b(); }\nexport function b() { return 1; }\n',
+    );
+    commitAll(main, 'init');
+    git(main, 'worktree', 'add', '-q', '-b', 'wt-a', wtA);
+    git(main, 'worktree', 'add', '-q', '-b', 'wt-b', wtB);
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedHome;
+    await tmpRepo.cleanup();
+    await tmpHome.cleanup();
+  });
+
+  it(
+    'Covers AE1: three clean worktrees at one commit share one commit graph',
+    { timeout: 180_000 },
+    async () => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      const results = [];
+      for (const checkout of [main, wtA, wtB]) {
+        results.push(await runFullAnalysis(checkout, {}, { onProgress: () => {} }));
+      }
+
+      const layout = layoutOf(main);
+      const commitDirs = await listCommitDirs(layout);
+      expect(commitDirs).toHaveLength(1);
+      const graph = path.join(layout.commitsDir, commitDirs[0], 'lbug');
+
+      for (const checkout of [main, wtA, wtB]) {
+        const slot = layoutOf(checkout).checkoutSlot;
+        expect(getStoragePaths(checkout, undefined, slot).lbugPath).toBe(graph);
+        expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
+        // The pre-existing repository-local index location is never written.
+        expect(existsSync(path.join(checkout, '.gitnexus', 'lbug'))).toBe(false);
+      }
+      // Siblings after the first reuse the published graph without a pipeline run.
+      expect(results.map((r) => r.alreadyUpToDate === true)).toEqual([false, true, true]);
+
+      const registered = await listRegisteredRepos();
+      for (const checkout of [main, wtA, wtB]) {
+        const entry = registered.find((e) => e.path === checkout);
+        expect(entry?.storagePath).toBe(layoutOf(checkout).checkoutSlot);
+      }
+    },
+  );
+
+  registerCases(
+    it,
+    ['expired', 'missing'] as const,
+    'keeps a healthy private graph after edit/revert when the shared receipt is %s',
+    async (kind) => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      const options = { skipAgentsMd: true, skipSkills: true };
+      const callbacks = { onProgress: () => {} };
+      await runFullAnalysis(main, options, callbacks);
+      await runFullAnalysis(wtA, options, callbacks); // A reader keeps the shared copy alive.
+      const slot = layoutOf(main).checkoutSlot;
+      const before = await loadMeta(slot);
+      assert(before?.graphCompaction);
+      const sharedGraph = resolveGraphPath(slot, before);
+      const sharedMeta = await loadMeta(path.dirname(sharedGraph));
+      assert(sharedMeta?.graphCompaction);
+      const due =
+        kind === 'missing'
+          ? undefined
+          : { ...sharedMeta.graphCompaction, incrementalWrites: MAX_INCREMENTAL_WRITES };
+      await saveMeta(path.dirname(sharedGraph), { ...sharedMeta, graphCompaction: due });
+      await saveMeta(slot, { ...before, graphCompaction: due });
+
+      const result = await runFullAnalysis(main, options, callbacks);
+      expect(result.incrementalStats?.writeMode).toBe('full');
+      const compacted = await loadMeta(slot);
+      assert(compacted);
+      const compactGraph = resolveGraphPath(slot, compacted);
+      expect(compactGraph).toBe(path.join(slot, 'lbug'));
+      expect(compacted.graphCompaction).toEqual({
+        version: 1,
+        compactBytes: (await fs.stat(compactGraph)).size,
+        incrementalWrites: 0,
+      });
+      expect((await loadMeta(path.dirname(sharedGraph)))?.graphCompaction).toEqual(due);
+      expect((await runFullAnalysis(main, options, callbacks)).alreadyUpToDate).toBe(true);
+      const reused = await loadMeta(slot);
+      assert(reused);
+      expect(resolveGraphPath(slot, reused)).toBe(compactGraph);
+      const source = await fs.readFile(path.join(main, 'a.ts'), 'utf8');
+      for (const text of [source + '\n// dirty edit\n', source]) {
+        await fs.writeFile(path.join(main, 'a.ts'), text);
+        const edited = await runFullAnalysis(main, options, callbacks);
+        expect(edited.incrementalStats?.writeMode).toBe('incremental');
+        const meta = await loadMeta(slot);
+        assert(meta);
+        expect(resolveGraphPath(slot, meta)).toBe(compactGraph);
+      }
+      expect((await loadMeta(slot))?.graphCompaction?.incrementalWrites).toBe(2);
+      expect((await runFullAnalysis(main, options, callbacks)).alreadyUpToDate).toBe(true);
+    },
+    120_000,
+  );
+
+  it(
+    'uses the shared physical file receipt when reusing an existing commit graph',
+    { timeout: 120_000 },
+    async () => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      const options = { skipAgentsMd: true, skipSkills: true };
+      await runFullAnalysis(main, options, { onProgress: () => {} });
+      const slot = layoutOf(main).checkoutSlot;
+      const before = await loadMeta(slot);
+      assert(before?.graphCompaction);
+      await saveMeta(slot, {
+        ...before,
+        graphCompaction: { ...before.graphCompaction, incrementalWrites: 7 },
+      });
+      expect((await runFullAnalysis(main, options, { onProgress: () => {} })).alreadyUpToDate).toBe(
+        true,
+      );
+      expect((await loadMeta(slot))?.graphCompaction).toEqual(before.graphCompaction);
+    },
+  );
+
+  it('reports a checkout that reads a commit graph as indexed', { timeout: 180_000 }, async () => {
+    const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+    await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+    await runFullAnalysis(wtB, {}, { onProgress: () => {} });
+    const slot = layoutOf(wtB).checkoutSlot;
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
+
+    const { inspectRegisteredStorage } =
+      await import('../../../../src/storage/storage-resolver.js');
+    const inspection = await inspectRegisteredStorage({ path: wtB, storagePath: slot });
+    expect(inspection).toMatchObject({ state: 'owned', hasCodeIndexDB: true });
+    const validated = await listRegisteredRepos({ validate: true });
+    expect(validated.map((e) => e.path)).toEqual(expect.arrayContaining([wtA, wtB]));
+  });
+
+  it(
+    'Covers AE1: MCP opens one database for three checkouts on one commit graph',
+    { timeout: 240_000 },
+    async () => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      for (const checkout of [main, wtA, wtB]) {
+        await runFullAnalysis(checkout, {}, { onProgress: () => {} });
+      }
+      const graphs = [main, wtA, wtB].map(
+        (c) => getStoragePaths(c, undefined, layoutOf(c).checkoutSlot).lbugPath,
+      );
+      expect(new Set(graphs).size).toBe(1);
+
+      const { initLbug, closeLbug } = await import('../../../../src/core/lbug/pool-adapter.js');
+      const savedTrace = process.env.GITNEXUS_POOL_RSS_TRACE;
+      process.env.GITNEXUS_POOL_RSS_TRACE = '1';
+      const traces: string[] = [];
+      const write = process.stderr.write.bind(process.stderr);
+      process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]) => {
+        if (String(chunk).startsWith('[pool-rss]')) traces.push(String(chunk));
+        return (write as (...a: unknown[]) => boolean)(chunk, ...rest);
+      }) as typeof process.stderr.write;
+      try {
+        for (const [i, graph] of graphs.entries()) await initLbug(`shared-${i}`, graph);
+      } finally {
+        process.stderr.write = write;
+        if (savedTrace === undefined) delete process.env.GITNEXUS_POOL_RSS_TRACE;
+        else process.env.GITNEXUS_POOL_RSS_TRACE = savedTrace;
+        await closeLbug();
+      }
+      const last = traces.filter((t) => t.includes(' init ')).pop();
+      expect(last).toMatch(/pool=3 dbCache=1 /);
+    },
+  );
+
+  it(
+    'serves a sibling the same relative file paths from the shared graph',
+    { timeout: 180_000 },
+    async () => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+      await runFullAnalysis(wtB, {}, { onProgress: () => {} });
+
+      const lbug = (await import('@ladybugdb/core')).default;
+      const graph = getStoragePaths(wtB, undefined, layoutOf(wtB).checkoutSlot).lbugPath;
+      const db = new lbug.Database(graph, 0, true, true);
+      const conn = new lbug.Connection(db);
+      let rows: { p: string }[];
+      try {
+        const result = await conn.query('MATCH (f:File) RETURN f.filePath AS p ORDER BY p');
+        if (Array.isArray(result)) throw new Error('Expected a single query result');
+        rows = (await result.getAll()) as { p: string }[];
+      } finally {
+        await conn.close();
+        await db.close();
+      }
+      expect(rows.map((r) => r.p)).toEqual(['a.ts']);
+    },
+  );
+
+  it(
+    'publishes a new commit graph when a clean worktree moves to a new commit',
+    { timeout: 180_000 },
+    async () => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+      await fs.writeFile(path.join(wtA, 'c.ts'), 'export const c = 3;\n');
+      commitAll(wtA, 'c');
+      await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+
+      const layout = layoutOf(wtA);
+      const head = git(wtA, 'rev-parse', 'HEAD');
+      const meta = await loadMeta(layout.checkoutSlot);
+      expect(meta?.lastCommit).toBe(head);
+      expect(meta?.graphPath).toBe(
+        path.join(commitGraphDir(layout, head, featureKeyOf(meta as RepoMeta)), 'lbug'),
+      );
+      // The previous commit's graph is no longer referenced and is reclaimed at once.
+      expect(await listCommitDirs(layout)).toEqual([
+        path.basename(path.dirname(meta?.graphPath as string)),
+      ]);
+    },
+  );
+
+  it(
+    'never publishes a graph that was built from uncommitted edits',
+    { timeout: 180_000 },
+    async () => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      await fs.writeFile(path.join(wtA, 'a.ts'), 'export function uncommitted() { return 9; }\n');
+      await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+
+      const layout = layoutOf(wtA);
+      expect(await listCommitDirs(layout)).toEqual([]);
+      expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(true);
+
+      git(wtA, 'checkout', '--', 'a.ts');
+      await runFullAnalysis(wtA, {}, { onProgress: () => {} });
+
+      const meta = await loadMeta(layout.checkoutSlot);
+      expect(meta?.indexCoverage?.dirtyPaths).toEqual([]);
+      expect(await listCommitDirs(layout)).toEqual([
+        path.basename(path.dirname(meta?.graphPath as string)),
+      ]);
+      expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(false);
+    },
+  );
+});
+
+describe('publishSharedGraph race (#3352)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedHome: string | undefined;
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-test-shared-race-home-');
+    tmpRepo = await createTempDir('gitnexus-test-shared-race-repo-');
+    savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedHome;
+    await tmpRepo.cleanup();
+    await tmpHome.cleanup();
+  });
+
+  const setup = async (): Promise<{ checkouts: string[]; head: string }> => {
+    const root = await fs.realpath(tmpRepo.dbPath);
+    const main = path.join(root, 'main');
+    await fs.mkdir(main);
+    git(main, 'init', '-q', '-b', 'main');
+    await fs.writeFile(path.join(main, 'a.ts'), 'export const a = 1;\n');
+    commitAll(main, 'init');
+    const wt = path.join(root, 'wt');
+    git(main, 'worktree', 'add', '-q', '-b', 'wt', wt);
+    const head = git(main, 'rev-parse', 'HEAD');
+    for (const checkout of [main, wt]) {
+      const slot = layoutOf(checkout).checkoutSlot;
+      await fs.mkdir(slot, { recursive: true });
+      await fs.writeFile(path.join(slot, 'lbug'), `graph from ${checkout}`);
+      await saveMeta(slot, {
+        repoPath: checkout,
+        storagePath: slot,
+        lastCommit: head,
+        indexedAt: new Date().toISOString(),
+        parseCacheIdentity: { base: (await runtimeParseIdentity()).base },
+      });
+    }
+    return { checkouts: [main, wt], head };
+  };
+
+  registerCases(
+    it,
+    ['main', 'custom-alias'],
+    'preserves explicit registry name %s after shared-store registration',
+    async (registryName) => {
+      const { checkouts, head } = await setup();
+      const [main] = checkouts;
+      const layout = layoutOf(main);
+      const meta = await loadMeta(layout.checkoutSlot);
+      if (!meta) throw new Error('Shared-store fixture is missing metadata');
+      git(main, 'remote', 'add', 'origin', 'https://example.com/team/remote-name.git');
+      await registerRepo(main, meta, { name: registryName, storagePath: layout.checkoutSlot });
+
+      await publishSharedGraph(layout, main, head, () => {}, { name: registryName });
+
+      const entry = (await listRegisteredRepos()).find((repo) => repo.path === main);
+      expect(entry?.name).toBe(registryName);
+      expect(entry?.storagePath).toBe(layout.checkoutSlot);
+    },
+  );
+
+  it('keeps an explicitly permitted duplicate name through shared publication', async () => {
+    const { checkouts, head } = await setup();
+    for (const checkout of checkouts) {
+      const slot = layoutOf(checkout).checkoutSlot;
+      const meta = await loadMeta(slot);
+      if (!meta) throw new Error('Shared-store fixture is missing metadata');
+      await registerRepo(checkout, meta, {
+        name: 'shared-alias',
+        allowDuplicateName: true,
+        storagePath: slot,
+      });
+    }
+
+    const checkout = checkouts[1];
+    await publishSharedGraph(layoutOf(checkout), checkout, head, () => {}, {
+      name: 'shared-alias',
+      allowDuplicateName: true,
+    });
+
+    const entry = (await listRegisteredRepos()).find((repo) => repo.path === checkout);
+    expect(entry?.name).toBe('shared-alias');
+  });
+
+  it('Covers AE6: two checkouts publishing one new commit produce exactly one graph', async () => {
+    const { checkouts } = await setup();
+    await Promise.all(
+      checkouts.map((c) =>
+        publishSharedGraph(layoutOf(c), c, git(c, 'rev-parse', 'HEAD'), () => {}),
+      ),
+    );
+    const layout = layoutOf(checkouts[0]);
+    expect(await listCommitDirs(layout)).toHaveLength(1);
+    const pointers = await Promise.all(
+      checkouts.map(async (c) => (await loadMeta(layoutOf(c).checkoutSlot))?.graphPath),
+    );
+    expect(new Set(pointers).size).toBe(1);
+    for (const c of checkouts) {
+      expect(existsSync(path.join(layoutOf(c).checkoutSlot, 'lbug'))).toBe(false);
+    }
+  });
+
+  it('keeps a private graph whose sidecars are not consolidated', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    const slot = layoutOf(main).checkoutSlot;
+    await fs.writeFile(path.join(slot, 'lbug.wal'), 'pending');
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    expect(await listCommitDirs(layoutOf(main))).toEqual([]);
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(true);
+    expect((await loadMeta(slot))?.graphPath).toBeUndefined();
+  });
+
+  it('keeps a dirty checkout private', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    await fs.writeFile(path.join(main, 'a.ts'), 'export const a = 2;\n');
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    expect(await listCommitDirs(layoutOf(main))).toEqual([]);
+    expect(existsSync(path.join(layoutOf(main).checkoutSlot, 'lbug'))).toBe(true);
+  });
+
+  // #3374: `git status` is clean in a sparse checkout, but the graph lacks the
+  // files the checkout leaves out.
+  it('keeps a checkout that hides committed files private', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    git(main, 'update-index', '--skip-worktree', '--', 'a.ts');
+    await fs.rm(path.join(main, 'a.ts'));
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    expect(await listCommitDirs(layoutOf(main))).toEqual([]);
+    expect(existsSync(path.join(layoutOf(main).checkoutSlot, 'lbug'))).toBe(true);
+  });
+
+  /** Fail every rename onto one of `blocked`; others run for real. */
+  const blockRenamesOnto = (blocked: ReadonlySet<string>) => {
+    const realRename = fs.rename.bind(fs);
+    return mock.method(fs, 'rename', (from, to) =>
+      blocked.has(String(to))
+        ? Promise.reject(Object.assign(new Error('rename blocked'), { code: 'EIO' }))
+        : realRename(from, to),
+    );
+  };
+
+  // #3374: the staging dir holds the checkout's only graph once putting it
+  // back fails; deleting it would leave metadata at HEAD with no graph.
+  it('keeps the staged graph when putting it back fails', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    const layout = layoutOf(main);
+    const slot = layout.checkoutSlot;
+    const meta = (await loadMeta(slot)) as RepoMeta;
+    const target = commitGraphDir(layout, head, featureKeyOf(meta));
+    const spy = blockRenamesOnto(new Set([target, path.join(slot, 'lbug')]));
+    try {
+      await publishSharedGraph(layout, main, head, () => {});
+    } finally {
+      spy.mock.restore();
+    }
+    const staging = (await fs.readdir(layout.commitsDir)).filter((n) => n.startsWith('.publish-'));
+    expect(staging).toHaveLength(1);
+    expect(await fs.readFile(path.join(layout.commitsDir, staging[0], 'lbug'), 'utf-8')).toBe(
+      `graph from ${main}`,
+    );
+    expect(await listCommitDirs(layout)).toEqual([]);
+    expect((await loadMeta(slot))?.graphPath).toBeUndefined();
+  });
+
+  it('drops the staging dir when the graph never left the slot', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    const layout = layoutOf(main);
+    const slot = layout.checkoutSlot;
+    const meta = (await loadMeta(slot)) as RepoMeta;
+    const target = commitGraphDir(layout, head, featureKeyOf(meta));
+    const spy = blockRenamesOnto(new Set([target]));
+    try {
+      await publishSharedGraph(layout, main, head, () => {});
+    } finally {
+      spy.mock.restore();
+    }
+    expect(await fs.readdir(layout.commitsDir)).toEqual([]);
+    expect(await fs.readFile(path.join(slot, 'lbug'), 'utf-8')).toBe(`graph from ${main}`);
+  });
+
+  const seedFreshSlot = async (checkout: string): Promise<RepoMeta | null> => {
+    const layout = layoutOf(checkout);
+    await fs.rm(layout.checkoutSlot, { recursive: true, force: true });
+    await seedSharedSlot(layout, checkout, () => {});
+    return loadMeta(layout.checkoutSlot);
+  };
+
+  it('seeds a pristine checkout at the graph commit as up to date', async () => {
+    const { checkouts, head } = await setup();
+    const [main, wt] = checkouts;
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    const seeded = await seedFreshSlot(wt);
+    expect(seeded?.graphPath).toBe((await loadMeta(layoutOf(main).checkoutSlot))?.graphPath);
+    expect(seeded?.lastCommit).toBe(head);
+  });
+
+  it('seeds a checkout that hides committed files without a commit, then re-points', async () => {
+    const { checkouts, head } = await setup();
+    const [main, wt] = checkouts;
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    const shared = (await loadMeta(layoutOf(main).checkoutSlot))?.graphPath;
+    git(wt, 'update-index', '--skip-worktree', '--', 'a.ts');
+    const seeded = await seedFreshSlot(wt);
+    expect(seeded?.graphPath).toBe(shared);
+    // An empty lastCommit sends the next analyze through the file-hash diff.
+    expect(seeded?.lastCommit).toBe('');
+
+    // That analyze copies the graph, finds nothing to change, and stamps HEAD;
+    // once the checkout shows every file again, publish drops the copy.
+    const slot = layoutOf(wt).checkoutSlot;
+    expect(await ensurePrivateSharedGraph(slot, () => {})).toBe(true);
+    const copied = await loadMeta(slot);
+    expect(copied).not.toBeNull();
+    await saveMeta(slot, { ...(copied as RepoMeta), lastCommit: head });
+    git(wt, 'update-index', '--no-skip-worktree', '--', 'a.ts');
+    await publishSharedGraph(layoutOf(wt), wt, head, () => {});
+    expect((await loadMeta(slot))?.graphPath).toBe(shared);
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
+  });
+
+  const checkpoint: EmbeddingCheckpoint = {
+    at: '2026-01-01T00:00:00.000Z',
+    nodesProcessed: 1,
+    totalNodes: 2,
+    chunksProcessed: 1,
+    model: 'm',
+    dimensions: 4,
+    provider: 'local',
+    kind: 'partial',
+    pendingNodeIds: ['n2'],
+  };
+
+  // #3374: a graph with embeddings still owed would become every checkout's
+  // graph, and its checkpoint-free copy would look complete forever.
+  it('keeps a graph with pending embeddings private', async () => {
+    const { checkouts, head } = await setup();
+    const [main] = checkouts;
+    const slot = layoutOf(main).checkoutSlot;
+    const meta = (await loadMeta(slot)) as RepoMeta;
+    await saveMeta(slot, { ...meta, embeddingCheckpoint: checkpoint });
+    await publishSharedGraph(layoutOf(main), main, head, () => {});
+    expect(await listCommitDirs(layoutOf(main))).toEqual([]);
+    expect(existsSync(path.join(slot, 'lbug'))).toBe(true);
+    expect((await loadMeta(slot))?.embeddingCheckpoint).toEqual(checkpoint);
+  });
+
+  // A commit graph published before that rule may still be the weaker one;
+  // the checkout keeps its own graph rather than trading down to it.
+  registerCases(
+    it,
+    [
+      ['records pending embeddings', { embeddingCheckpoint: checkpoint, stats: { embeddings: 5 } }],
+      ['has fewer embeddings', { stats: { embeddings: 2 } }],
+    ],
+    'keeps the private graph when the published one %s',
+    async (_label, targetDelta) => {
+      const { checkouts, head } = await setup();
+      const [main, wt] = checkouts;
+      const layout = layoutOf(main);
+      const slot = layout.checkoutSlot;
+      const own: RepoMeta = { ...((await loadMeta(slot)) as RepoMeta), stats: { embeddings: 5 } };
+      await saveMeta(slot, own);
+      const target = commitGraphDir(layout, head, featureKeyOf(own));
+      await fs.mkdir(target, { recursive: true });
+      await fs.writeFile(path.join(target, 'lbug'), 'older published graph');
+      const targetMeta: Partial<RepoMeta> = {
+        lastCommit: head,
+        indexedAt: own.indexedAt,
+        ...targetDelta,
+      };
+      await fs.writeFile(path.join(target, 'gitnexus.json'), JSON.stringify(targetMeta));
+      // Another checkout reads the published graph.
+      const wtSlot = layoutOf(wt).checkoutSlot;
+      await fs.rm(path.join(wtSlot, 'lbug'));
+      const wtMeta = (await loadMeta(wtSlot)) as RepoMeta;
+      await saveMeta(wtSlot, { ...wtMeta, graphPath: path.join(target, 'lbug') });
+      await publishSharedGraph(layout, main, head, () => {});
+      expect(await fs.readFile(path.join(slot, 'lbug'), 'utf-8')).toBe(`graph from ${main}`);
+      expect((await loadMeta(slot))?.graphPath).toBeUndefined();
+      // The published graph is immutable: other checkouts may point at it.
+      expect(await fs.readFile(path.join(target, 'lbug'), 'utf-8')).toBe('older published graph');
+    },
+  );
+});
