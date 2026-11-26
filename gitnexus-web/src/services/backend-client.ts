@@ -838,6 +838,13 @@ export const fetchRepoInfo = async (
   return { ...data, repoPath: data.repoPath ?? data.path };
 };
 
+/** A graph download that receives no data for this long fails as stalled. Every
+ * chunk restarts the clock, so a large graph that keeps streaming finishes. */
+const GRAPH_IDLE_TIMEOUT_MS = 120_000;
+/** Ceiling for the whole graph download. The idle limit is what catches a
+ * stalled server; this only stops one that trickles bytes indefinitely. */
+const GRAPH_DOWNLOAD_MAX_MS = 30 * 60_000;
+
 /** Fetch the graph (nodes + relationships). Content stripped by default.
  * `maxNodes`/`maxEdges` arm a streaming circuit breaker (#2178): if the streamed
  * count crosses either limit, the download aborts with a GraphTooLargeError
@@ -856,41 +863,86 @@ export const fetchGraph = async (
     .filter(Boolean)
     .join('&');
   const url = `${_backendUrl}/api/graph${params ? `?${params}` : ''}`;
-  // Large repos can take a while to serialize the graph — use an elevated timeout
-  const response = await fetchWithTimeout(url, { signal: opts?.signal }, 120_000);
-  await assertOk(response);
 
-  const contentType = response.headers.get('Content-Type') || '';
-  if (contentType.includes('application/x-ndjson')) {
-    return parseNdjsonGraphResponse(response, opts?.onProgress, opts?.maxNodes, opts?.maxEdges);
+  // fetchWithTimeout's timeout also covers the response body, so a fixed limit
+  // cut large downloads off while rows were still arriving (#705). An idle timer
+  // replaces it: it aborts with a TimeoutError, which resilientFetch treats as
+  // terminal, and every chunk restarts it.
+  const idle = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const restartIdleTimer = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(
+      () => idle.abort(new DOMException('Graph download stalled', 'TimeoutError')),
+      GRAPH_IDLE_TIMEOUT_MS,
+    );
+  };
+  const signal = opts?.signal ? AbortSignal.any([idle.signal, opts.signal]) : idle.signal;
+  const onProgress = (downloaded: number, total: number | null) => {
+    restartIdleTimer();
+    opts?.onProgress?.(downloaded, total);
+  };
+
+  restartIdleTimer();
+  try {
+    const response = await fetchWithTimeout(url, { signal }, GRAPH_DOWNLOAD_MAX_MS);
+    restartIdleTimer();
+    await assertOk(response);
+
+    const contentType = response.headers.get('Content-Type') || '';
+    if (contentType.includes('application/x-ndjson')) {
+      return await parseNdjsonGraphResponse(response, onProgress, opts?.maxNodes, opts?.maxEdges);
+    }
+
+    if (!opts?.onProgress || !response.body) {
+      return (await response.json()) as { nodes: GraphNode[]; relationships: GraphRelationship[] };
+    }
+
+    // Streaming download with progress
+    const contentLength = response.headers.get('Content-Length');
+    const total = contentLength ? parseInt(contentLength, 10) : null;
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let downloaded = 0;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      downloaded += value.length;
+      onProgress(downloaded, total);
+    }
+
+    const combined = new Uint8Array(downloaded);
+    let offset = 0;
+    for (const chunk of chunks) {
+      combined.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return JSON.parse(new TextDecoder().decode(combined));
+  } catch (error: unknown) {
+    // fetchWithTimeout maps a timeout before the response arrives; one during
+    // the body read reaches here as a raw DOMException. Report both the same way.
+    const timedOut =
+      (error instanceof DOMException && error.name === 'TimeoutError') ||
+      (error instanceof BackendError && error.code === 'timeout');
+    if (!timedOut) throw error;
+    if (idle.signal.aborted) {
+      throw new BackendError(
+        `Graph download from ${url} stalled: no data for ${GRAPH_IDLE_TIMEOUT_MS}ms`,
+        0,
+        'timeout',
+      );
+    }
+    if (error instanceof BackendError) throw error;
+    throw new BackendError(
+      `Request to ${url} timed out after ${GRAPH_DOWNLOAD_MAX_MS}ms`,
+      0,
+      'timeout',
+    );
+  } finally {
+    clearTimeout(idleTimer);
   }
-
-  if (!opts?.onProgress || !response.body) {
-    return response.json() as Promise<{ nodes: GraphNode[]; relationships: GraphRelationship[] }>;
-  }
-
-  // Streaming download with progress
-  const contentLength = response.headers.get('Content-Length');
-  const total = contentLength ? parseInt(contentLength, 10) : null;
-  const reader = response.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let downloaded = 0;
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    downloaded += value.length;
-    opts.onProgress(downloaded, total);
-  }
-
-  const combined = new Uint8Array(downloaded);
-  let offset = 0;
-  for (const chunk of chunks) {
-    combined.set(chunk, offset);
-    offset += chunk.length;
-  }
-  return JSON.parse(new TextDecoder().decode(combined));
 };
 
 const parseNdjsonGraphResponse = async (

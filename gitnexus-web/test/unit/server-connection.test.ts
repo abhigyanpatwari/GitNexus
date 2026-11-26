@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  BackendError,
   connectToServer,
   fetchGraph,
   getBackendUrl,
@@ -198,6 +199,102 @@ describe('fetchGraph', () => {
     await expect(fetchGraph('big-repo')).rejects.toMatchObject({
       message: 'stream failed',
     });
+  });
+});
+
+describe('fetchGraph download timeouts (#705)', () => {
+  beforeEach(() => {
+    setBackendUrl('http://localhost:4747');
+    vi.useFakeTimers();
+    // Fake timers don't drive AbortSignal.timeout, so route it through the
+    // faked setTimeout: any fixed request limit then runs on the test clock.
+    vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('signal timed out', 'TimeoutError')), ms);
+      return controller.signal;
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Sends one node row every `everyMs` until `rows` are out, then closes the
+   * body (or leaves it open when `stall`). Like real fetch, an abort errors the
+   * body with the signal's reason. */
+  const streamingFetch = (rows: number, everyMs: number, stall = false) =>
+    vi.fn((_url: string, init?: RequestInit) => {
+      const signal = init?.signal;
+      const encoder = new TextEncoder();
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          let sent = 0;
+          const timer = setInterval(() => {
+            if (sent < rows) {
+              controller.enqueue(encoder.encode(nodeLine(sent++)));
+              return;
+            }
+            clearInterval(timer);
+            if (!stall) controller.close();
+          }, everyMs);
+          signal?.addEventListener('abort', () => {
+            clearInterval(timer);
+            controller.error(signal.reason);
+          });
+        },
+      });
+      return Promise.resolve(
+        new Response(body, {
+          status: 200,
+          headers: { 'Content-Type': 'application/x-ndjson' },
+        }),
+      );
+    });
+
+  /** Settle without an unhandled rejection while the fake clock advances. */
+  const settle = <T>(promise: Promise<T>) => {
+    const state: { done: boolean; value?: T; error?: unknown } = { done: false };
+    promise.then(
+      (value) => Object.assign(state, { done: true, value }),
+      (error: unknown) => Object.assign(state, { done: true, error }),
+    );
+    return state;
+  };
+
+  it('finishes a download that keeps streaming rows past 120 s', async () => {
+    vi.stubGlobal('fetch', streamingFetch(30, 10_000));
+
+    const result = settle(fetchGraph('big-repo'));
+    await vi.advanceTimersByTimeAsync(310_000);
+
+    expect(result.error).toBeUndefined();
+    expect(result.value?.nodes).toHaveLength(30);
+  });
+
+  it('fails with a timeout BackendError when the stream stops sending data', async () => {
+    vi.stubGlobal('fetch', streamingFetch(3, 1_000, true));
+
+    const result = settle(fetchGraph('big-repo'));
+    // The last row arrives at 3 s; the idle limit runs from there.
+    await vi.advanceTimersByTimeAsync(3_000 + 119_000);
+    expect(result.done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1_001);
+
+    expect(result.error).toBeInstanceOf(BackendError);
+    expect(result.error).toMatchObject({ code: 'timeout' });
+  });
+
+  it('leaves caller cancellation as an AbortError', async () => {
+    vi.stubGlobal('fetch', streamingFetch(10, 1_000));
+    const controller = new AbortController();
+
+    const result = settle(fetchGraph('big-repo', { signal: controller.signal }));
+    await vi.advanceTimersByTimeAsync(2_500);
+    controller.abort();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(result.error).not.toBeInstanceOf(BackendError);
+    expect(result.error).toMatchObject({ name: 'AbortError' });
   });
 });
 
