@@ -4,13 +4,21 @@ const initMock = vi.fn();
 const callToolMock = vi.fn();
 const disconnectMock = vi.fn();
 const writeSyncMock = vi.fn();
+const selectToolRepositoryMock = vi.fn();
+const checkStalenessAsyncMock = vi.fn();
 
 vi.mock('../../src/mcp/local/local-backend.js', () => ({
   LocalBackend: class {
     init = initMock;
     callTool = callToolMock;
     disconnect = disconnectMock;
+    selectToolRepository = selectToolRepositoryMock;
   },
+}));
+
+// `--stale-policy error` runs this git check for results with no staleness field.
+vi.mock('../../src/core/git-staleness.js', () => ({
+  checkStalenessAsync: checkStalenessAsyncMock,
 }));
 
 // output() writes a byte buffer from an offset until every byte lands (#3947).
@@ -84,6 +92,8 @@ describe('direct CLI tool commands', () => {
     callToolMock.mockReset();
     disconnectMock.mockReset();
     writeSyncMock.mockReset();
+    selectToolRepositoryMock.mockReset();
+    checkStalenessAsyncMock.mockReset();
     process.exitCode = undefined;
     initMock.mockResolvedValue(true);
     disconnectMock.mockResolvedValue(undefined);
@@ -422,5 +432,226 @@ describe('direct CLI tool commands', () => {
     expect(output).toContain('已变更符号：');
     expect(output).toContain('受影响执行流程：');
     expect(output).toContain('Auth Flow (5 步) — 已变更：foo');
+  });
+
+  // #3127: --stale-policy, applied in the CLI layer right after callTool.
+  describe('--stale-policy', () => {
+    const staleResult = () => ({
+      definitions: [],
+      processes: [],
+      staleness: {
+        status: 'behind',
+        branch: 'main',
+        lastCommit: 'abc123',
+        indexedAt: '2026-11-01T00:00:00.000Z',
+        measuredAgainst: 'HEAD',
+        commitsBehind: 1,
+        hint: '⚠️ Index is 1 commit behind HEAD.',
+      },
+    });
+    let stderr: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    });
+    afterEach(() => stderr.mockRestore());
+
+    const stderrText = () => stderr.mock.calls.map((call) => String(call[0])).join('');
+
+    it('warn prints exactly what no flag prints', async () => {
+      callToolMock.mockResolvedValue(staleResult());
+      const { queryCommand } = await import('../../src/cli/tool.js');
+      await queryCommand('auth flow');
+      const withoutFlag = writeSyncMock.mock.calls[0][1];
+
+      writeSyncMock.mockReset();
+      callToolMock.mockResolvedValue(staleResult());
+      await queryCommand('auth flow', { stalePolicy: 'warn' });
+
+      expect(writeSyncMock.mock.calls[0][1]).toBe(withoutFlag);
+      expect(withoutFlag).toContain('"hint"');
+      expect(process.exitCode).toBeUndefined();
+      expect(stderrText()).toBe('');
+    });
+
+    it('ignore drops the hint but keeps status and the ref', async () => {
+      callToolMock.mockResolvedValue(staleResult());
+      const { queryCommand } = await import('../../src/cli/tool.js');
+
+      await queryCommand('auth flow', { stalePolicy: 'ignore' });
+
+      const printed = JSON.parse(writeSyncMock.mock.calls[0][1]);
+      expect(printed.staleness).toEqual({
+        status: 'behind',
+        branch: 'main',
+        lastCommit: 'abc123',
+        indexedAt: '2026-11-01T00:00:00.000Z',
+        measuredAgainst: 'HEAD',
+        commitsBehind: 1,
+      });
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('error prints the result, then fails with a one-line reason', async () => {
+      callToolMock.mockResolvedValue(staleResult());
+      const { queryCommand } = await import('../../src/cli/tool.js');
+
+      await queryCommand('auth flow', { stalePolicy: 'error' });
+
+      expect(JSON.parse(writeSyncMock.mock.calls[0][1])).toEqual(staleResult());
+      expect(stderrText()).toBe('Index is 1 commit(s) behind HEAD\n');
+      expect(process.exitCode).toBe(1);
+      expect(disconnectMock).toHaveBeenCalledOnce();
+    });
+
+    it('error passes a current index', async () => {
+      callToolMock.mockResolvedValue({
+        definitions: [],
+        staleness: { status: 'current', lastCommit: 'abc123', indexedAt: 'x' },
+      });
+      const { contextCommand } = await import('../../src/cli/tool.js');
+
+      await contextCommand('login', { stalePolicy: 'error' });
+
+      expect(process.exitCode).toBeUndefined();
+      expect(stderrText()).toBe('');
+    });
+
+    it('error stays fail-open on unknown freshness (e.g. --skip-git)', async () => {
+      callToolMock.mockResolvedValue({
+        markdown: '| n |\n| --- |\n| 1 |',
+        row_count: 1,
+        staleness: { status: 'unknown', lastCommit: 'abc123', indexedAt: 'x' },
+      });
+      const { cypherCommand } = await import('../../src/cli/tool.js');
+
+      await cypherCommand('MATCH (n) RETURN n', { stalePolicy: 'error' });
+
+      expect(process.exitCode).toBeUndefined();
+      expect(stderrText()).toBe('');
+    });
+
+    it('error fails impact on a diverged index', async () => {
+      callToolMock.mockResolvedValue({
+        byDepth: {},
+        risk: 'LOW',
+        staleness: { status: 'diverged', lastCommit: 'abc123', indexedAt: 'x', hint: 'h' },
+      });
+      const { impactCommand } = await import('../../src/cli/tool.js');
+
+      await impactCommand('auth', { stalePolicy: 'error' });
+
+      expect(stderrText()).toContain('Index is not at HEAD (diverged)\n');
+      expect(process.exitCode).toBe(1);
+    });
+
+    // The backend attaches no staleness field to check, detect_changes or trace,
+    // so `error` measures the index itself — and only under `error`.
+    const probeBehind = (commits: number) => {
+      selectToolRepositoryMock.mockResolvedValue({ repoPath: '/repo', lastCommit: 'abc123' });
+      checkStalenessAsyncMock.mockResolvedValue({
+        isStale: true,
+        commitsBehind: commits,
+        status: 'behind',
+        hint: 'h',
+      });
+    };
+
+    it('error covers check in prose mode, after the prose is printed', async () => {
+      probeBehind(2);
+      callToolMock.mockResolvedValue({ status: 'clean', cycleCount: 0, cycles: [] });
+      const { checkCommand } = await import('../../src/cli/tool.js');
+
+      await checkCommand({ cycles: true, repo: 'gitnexus', stalePolicy: 'error' });
+
+      expect(writeSyncMock).toHaveBeenCalledWith(1, 'No circular imports found.\n');
+      expect(selectToolRepositoryMock).toHaveBeenCalledWith('gitnexus', undefined, {
+        allowCwdDefault: true,
+      });
+      expect(checkStalenessAsyncMock).toHaveBeenCalledWith('/repo', 'abc123');
+      expect(stderrText()).toBe('Index is 2 commit(s) behind HEAD\n');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('error covers detect-changes and trace, which carry no staleness field', async () => {
+      probeBehind(4);
+      callToolMock.mockResolvedValue({
+        summary: { changed_files: 0, changed_count: 0, affected_count: 0, risk_level: 'LOW' },
+        changed_symbols: [],
+        affected_processes: [],
+      });
+      const { detectChangesCommand, traceCommand } = await import('../../src/cli/tool.js');
+      await detectChangesCommand({ stalePolicy: 'error' });
+      expect(process.exitCode).toBe(1);
+
+      process.exitCode = undefined;
+      callToolMock.mockResolvedValue({ status: 'found', path: [] });
+      await traceCommand('a', 'b', { stalePolicy: 'error' });
+      expect(process.exitCode).toBe(1);
+      expect(stderrText().match(/Index is 4 commit\(s\) behind HEAD/g)).toHaveLength(2);
+    });
+
+    it('error measures a raw-row cypher result too', async () => {
+      probeBehind(1);
+      callToolMock.mockResolvedValue([{ n: 1 }]);
+      const { cypherCommand } = await import('../../src/cli/tool.js');
+
+      await cypherCommand('MATCH (n) RETURN n', { stalePolicy: 'error' });
+
+      expect(writeSyncMock.mock.calls[0][1]).toBe('[{"n":1}]\n');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('warn and ignore never spawn the git check', async () => {
+      probeBehind(3);
+      callToolMock.mockResolvedValue({ status: 'clean', cycleCount: 0, cycles: [] });
+      const { checkCommand } = await import('../../src/cli/tool.js');
+
+      await checkCommand({ cycles: true });
+      await checkCommand({ cycles: true, stalePolicy: 'warn' });
+      await checkCommand({ cycles: true, stalePolicy: 'ignore' });
+
+      expect(selectToolRepositoryMock).not.toHaveBeenCalled();
+      expect(checkStalenessAsyncMock).not.toHaveBeenCalled();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('error does not measure a result that already states its freshness', async () => {
+      probeBehind(3);
+      callToolMock.mockResolvedValue({
+        definitions: [],
+        staleness: { status: 'current', lastCommit: 'abc123', indexedAt: 'x' },
+      });
+      const { queryCommand } = await import('../../src/cli/tool.js');
+
+      await queryCommand('auth', { stalePolicy: 'error' });
+
+      expect(checkStalenessAsyncMock).not.toHaveBeenCalled();
+      expect(process.exitCode).toBeUndefined();
+    });
+
+    it('error stays fail-open when the git check is unknown or cannot run', async () => {
+      callToolMock.mockResolvedValue({ status: 'clean', cycleCount: 0, cycles: [] });
+      const { checkCommand } = await import('../../src/cli/tool.js');
+
+      selectToolRepositoryMock.mockResolvedValue({ repoPath: '/repo', lastCommit: 'abc123' });
+      checkStalenessAsyncMock.mockResolvedValue({
+        isStale: false,
+        commitsBehind: 0,
+        status: 'unknown',
+      });
+      await checkCommand({ cycles: true, stalePolicy: 'error' });
+
+      // A --skip-git index records no commit: nothing to measure.
+      selectToolRepositoryMock.mockResolvedValue({ repoPath: '/plain', lastCommit: '' });
+      await checkCommand({ cycles: true, stalePolicy: 'error' });
+
+      selectToolRepositoryMock.mockRejectedValue(new Error('ambiguous repo'));
+      await checkCommand({ cycles: true, stalePolicy: 'error' });
+
+      expect(checkStalenessAsyncMock).toHaveBeenCalledOnce();
+      expect(process.exitCode).toBeUndefined();
+      expect(stderrText()).toBe('');
+    });
   });
 });

@@ -131,6 +131,8 @@ export const en = {
   'tool.usage.trace':
     'Usage: gitnexus trace <from> <to> [-f|--file <path>] [--from-file <path>] [--to-file <path>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
+  'tool.stalePolicy.behind': 'Index is {{commits}} commit(s) behind HEAD',
+  'tool.stalePolicy.diverged': 'Index is not at HEAD (diverged)',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
@@ -416,6 +418,8 @@ export const en = {
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
   'help.option.detectChanges.limit': 'Max changed symbols to return',
   'help.option.cypher.limit': 'Max result rows to return',
+  'help.option.stalePolicy':
+    'Stale index handling: warn keeps the staleness hint, ignore drops it, error exits 1',
   'help.option.check.cycles': 'Detect circular imports and fail when any are found',
   'help.option.evalServer.host':
     'Bind address or resolvable hostname (default: 127.0.0.1; non-loopback requires GITNEXUS_AUTH_TOKEN; hostnames resolve to IPv4)',

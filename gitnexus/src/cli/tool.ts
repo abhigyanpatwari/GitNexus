@@ -25,8 +25,24 @@ import {
   withImpactAgentDefaults,
 } from '../mcp/impact-agent-output.js';
 import { resolveMcpMaxTokens } from '../mcp/output-budget.js';
+import { applyStalePolicyProbed, reportStalePolicy } from './stale-policy.js';
+import type { StalePolicy } from './stale-policy-choices.js';
 
 let _backend: LocalBackend | null = null;
+
+/**
+ * `--stale-policy` (#3127) on a tool result, right after `callTool`. The repo is
+ * resolved exactly as `callTool` resolved it, for results that need a git check.
+ */
+function stalePolicy<T>(
+  backend: LocalBackend,
+  result: T,
+  options: { stalePolicy?: StalePolicy; repo?: string; branch?: string } | undefined,
+) {
+  return applyStalePolicyProbed(result, options?.stalePolicy, () =>
+    backend.selectToolRepository(options?.repo, options?.branch, { allowCwdDefault: true }),
+  );
+}
 
 /** `output()` sleeps on this while stdout is full; nothing notifies it. */
 const PIPE_FULL_SLEEP = new Int32Array(new SharedArrayBuffer(4));
@@ -160,6 +176,7 @@ export async function queryCommand(
     goal?: string;
     limit?: string;
     content?: boolean;
+    stalePolicy?: StalePolicy;
   },
 ): Promise<void> {
   const resolvedQuery = queryText?.trim() || options?.query?.trim();
@@ -170,17 +187,22 @@ export async function queryCommand(
 
   const backend = await getBackend();
   try {
-    const result = await backend.callTool('query', {
-      // #2175: canonical param is search_query; the backend still accepts legacy "query".
-      search_query: resolvedQuery,
-      task_context: options?.context,
-      goal: options?.goal,
-      limit: parseLimit(options?.limit),
-      include_content: options?.content ?? false,
-      repo: options?.repo,
-      branch: options?.branch,
-    });
-    output(result);
+    const staled = await stalePolicy(
+      backend,
+      await backend.callTool('query', {
+        // #2175: canonical param is search_query; the backend still accepts legacy "query".
+        search_query: resolvedQuery,
+        task_context: options?.context,
+        goal: options?.goal,
+        limit: parseLimit(options?.limit),
+        include_content: options?.content ?? false,
+        repo: options?.repo,
+        branch: options?.branch,
+      }),
+      options,
+    );
+    output(staled.result);
+    reportStalePolicy(staled);
   } finally {
     // A local embedding query may start the sidecar. Direct CLI commands are
     // one-shot, so leaving the backend connected keeps that child (and Node's
@@ -202,6 +224,7 @@ export async function contextCommand(
     uid?: string;
     limit?: string;
     content?: boolean;
+    stalePolicy?: StalePolicy;
   },
 ): Promise<void> {
   // Reject a `--`-prefixed uid swallowed from a following flag (see impactCommand).
@@ -216,14 +239,19 @@ export async function contextCommand(
 
   const limit = parseLimit(options?.limit);
   const backend = await getBackend();
-  const result = await backend.callTool('context', {
-    name: name || undefined,
-    uid: options?.uid,
-    file_path: options?.file,
-    include_content: options?.content ?? false,
-    repo: options?.repo,
-    branch: options?.branch,
-  });
+  const staled = await stalePolicy(
+    backend,
+    await backend.callTool('context', {
+      name: name || undefined,
+      uid: options?.uid,
+      file_path: options?.file,
+      include_content: options?.content ?? false,
+      repo: options?.repo,
+      branch: options?.branch,
+    }),
+    options,
+  );
+  const result = staled.result;
   if (limit !== undefined) {
     // Bound every array-valued category under incoming/outgoing (calls, accesses,
     // imports, extends, uses, …) — categorize() buckets by relType, so the prior
@@ -243,6 +271,7 @@ export async function contextCommand(
     if (Array.isArray(result.processes)) result.processes = result.processes.slice(0, limit);
   }
   output(result);
+  reportStalePolicy(staled);
 }
 
 export async function impactCommand(
@@ -262,6 +291,7 @@ export async function impactCommand(
     offset?: string;
     summaryOnly?: boolean;
     maxTokens?: string;
+    stalePolicy?: StalePolicy;
   },
 ): Promise<void> {
   // A `--`-prefixed uid means Commander swallowed a following flag as the uid
@@ -314,7 +344,12 @@ export async function impactCommand(
       offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
     });
-    const result = await backend.callTool('impact', impactArgs);
+    const staled = await stalePolicy(
+      backend,
+      await backend.callTool('impact', impactArgs),
+      options,
+    );
+    const result = staled.result;
     // Client-side cap of the affected-list payload to --limit (parity with the
     // other tool commands). The backend already paginates byDepth per level to
     // the same limit, so byDepth needs no client-side re-slice.
@@ -329,6 +364,7 @@ export async function impactCommand(
     const shaped = shapeImpactForAgent(result, maxTokens);
     // The budget is measured on compact JSON, even when stdout is a terminal.
     output(shaped, maxTokens === undefined ? undefined : (data) => JSON.stringify(data));
+    reportStalePolicy(staled);
   } catch (err: unknown) {
     if (err instanceof ImpactBudgetExceededError) {
       output(err.toJSONText());
@@ -354,6 +390,7 @@ export async function cypherCommand(
     repo?: string;
     branch?: string;
     limit?: string;
+    stalePolicy?: StalePolicy;
   },
 ): Promise<void> {
   if (!query?.trim()) {
@@ -363,12 +400,17 @@ export async function cypherCommand(
 
   const limit = parseLimit(options?.limit);
   const backend = await getBackend();
-  const result = await backend.callTool('cypher', {
-    // #2175: canonical param is statement; the backend still accepts legacy "query".
-    statement: query,
-    repo: options?.repo,
-    branch: options?.branch,
-  });
+  const staled = await stalePolicy(
+    backend,
+    await backend.callTool('cypher', {
+      // #2175: canonical param is statement; the backend still accepts legacy "query".
+      statement: query,
+      repo: options?.repo,
+      branch: options?.branch,
+    }),
+    options,
+  );
+  const result = staled.result;
   if (limit !== undefined) {
     if (Array.isArray(result)) {
       // Non-tabular result: a raw row array.
@@ -389,6 +431,7 @@ export async function cypherCommand(
     }
   }
   output(result);
+  reportStalePolicy(staled);
 }
 
 export async function detectChangesCommand(options?: {
@@ -397,15 +440,21 @@ export async function detectChangesCommand(options?: {
   repo?: string;
   branch?: string;
   limit?: string;
+  stalePolicy?: StalePolicy;
 }): Promise<void> {
   const limit = parseLimit(options?.limit);
   const backend = await getBackend();
-  const result = await backend.callTool('detect_changes', {
-    scope: options?.scope || 'unstaged',
-    base_ref: options?.baseRef,
-    repo: options?.repo,
-    branch: options?.branch,
-  });
+  const staled = await stalePolicy(
+    backend,
+    await backend.callTool('detect_changes', {
+      scope: options?.scope || 'unstaged',
+      base_ref: options?.baseRef,
+      repo: options?.repo,
+      branch: options?.branch,
+    }),
+    options,
+  );
+  const result = staled.result;
   if (limit !== undefined) {
     if (Array.isArray(result.changed_symbols))
       result.changed_symbols = result.changed_symbols.slice(0, limit);
@@ -415,6 +464,7 @@ export async function detectChangesCommand(options?: {
   // Hand over the structured result plus its formatter, not the formatted text:
   // `output()` reads `error` / `partial` off the payload to set the exit code.
   output(result, formatDetectChangesResult);
+  reportStalePolicy(staled);
 }
 
 export async function checkCommand(options?: {
@@ -422,6 +472,7 @@ export async function checkCommand(options?: {
   json?: boolean;
   repo?: string;
   branch?: string;
+  stalePolicy?: StalePolicy;
 }): Promise<void> {
   if (!options?.cycles) {
     process.stderr.write('Usage: gitnexus check --cycles [--json]\n');
@@ -431,11 +482,16 @@ export async function checkCommand(options?: {
 
   try {
     const backend = await getBackend();
-    const result = await backend.callTool('check', {
-      cycles: true,
-      repo: options.repo,
-      branch: options.branch,
-    });
+    const staled = await stalePolicy(
+      backend,
+      await backend.callTool('check', {
+        cycles: true,
+        repo: options.repo,
+        branch: options.branch,
+      }),
+      options,
+    );
+    const result = staled.result;
     // A rendering guard, not an exit-code decision — `output()` owns that. An
     // error payload carries no `cycles` array, so the prose branch below would
     // throw on it; print the structured payload and stop.
@@ -474,6 +530,9 @@ export async function checkCommand(options?: {
     // exit 0 on precisely the repositories with the most cycles. `status`
     // answers "were any found" in both enumeration modes.
     if (result.status === 'cycles_found') process.exitCode = 1;
+    // After the prose or JSON is printed, so `error` reports a stale index in
+    // both modes without changing what either prints.
+    reportStalePolicy(staled);
   } catch (error) {
     output({ error: error instanceof Error ? error.message : String(error) });
     process.exitCode = 1;
@@ -493,6 +552,7 @@ export async function traceCommand(
     repo?: string;
     branch?: string;
     includeTests?: boolean;
+    stalePolicy?: StalePolicy;
   },
 ): Promise<void> {
   if (options?.fromUid?.startsWith('--') || options?.toUid?.startsWith('--')) {
@@ -524,19 +584,24 @@ export async function traceCommand(
   try {
     const backend = await getBackend();
     const fromFile = options?.fromFile ?? options?.file;
-    const result = await backend.callTool('trace', {
-      from: from || undefined,
-      from_uid: options?.fromUid,
-      from_file: fromFile,
-      to: to || undefined,
-      to_uid: options?.toUid,
-      to_file: options?.toFile,
-      maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
-      includeTests: options?.includeTests ?? false,
-      repo: options?.repo,
-      branch: options?.branch,
-    });
-    output(result);
+    const staled = await stalePolicy(
+      backend,
+      await backend.callTool('trace', {
+        from: from || undefined,
+        from_uid: options?.fromUid,
+        from_file: fromFile,
+        to: to || undefined,
+        to_uid: options?.toUid,
+        to_file: options?.toFile,
+        maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
+        includeTests: options?.includeTests ?? false,
+        repo: options?.repo,
+        branch: options?.branch,
+      }),
+      options,
+    );
+    output(staled.result);
+    reportStalePolicy(staled);
   } catch (err: unknown) {
     output({
       status: 'error',
