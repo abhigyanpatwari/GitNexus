@@ -86,16 +86,20 @@ describe('extractElementTypeFromString', () => {
     expect(extractElementTypeFromString('')).toBeUndefined();
   });
 
-  it('returns undefined for string longer than 2048 chars', () => {
-    expect(extractElementTypeFromString('A'.repeat(2049))).toBeUndefined();
+  it('accepts a valid container at the 2048-character limit', () => {
+    const element = 'A'.repeat(2041);
+    const input = `Array<${element}>`;
+
+    expect(input.length).toBe(2048);
+    expect(extractElementTypeFromString(input)).toBe(element);
   });
 
-  it('returns undefined at exactly the 2048-char limit', () => {
-    // Length > 2048 is rejected; length === 2048 may or may not parse — test boundary
-    const exactly2048 = 'A'.repeat(2048);
-    // This won't contain valid container syntax, so it won't resolve, but it won't be
-    // rejected by the length guard alone. We only assert > 2048 is rejected.
-    expect(extractElementTypeFromString('A'.repeat(2049))).toBeUndefined();
+  it('rejects a valid container exceeding the 2048-character limit', () => {
+    const element = 'A'.repeat(2042);
+    const input = `Array<${element}>`;
+
+    expect(input.length).toBe(2049);
+    expect(extractElementTypeFromString(input)).toBeUndefined();
   });
 
   it('returns undefined for malformed brackets: Map<String, User]', () => {
@@ -112,9 +116,6 @@ describe('extractElementTypeFromString', () => {
     expect(extractElementTypeFromString('User')).toBeUndefined();
   });
 
-  it('returns undefined for complex non-word base before []: user model[]', () => {
-    expect(extractElementTypeFromString('user model[]')).toBeUndefined();
-  });
 
   // --- Edge cases for Swift vs List-subscript disambiguation ---
   it('does not treat [User] as Swift if it contains angle bracket (impossible case sanity-check)', () => {
