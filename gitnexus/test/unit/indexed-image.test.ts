@@ -76,6 +76,34 @@ describe('classifyIndexedImages', () => {
     expect(await classify(dir, 'unstaged', {})).toEqual({ pre: [], neither: [] });
   });
 
+  it('does not read an inherited object key as a recorded hash', async () => {
+    const dir = tempDirs.dir();
+    initGitRepo(dir);
+    writeFileSync(path.join(dir, 'constructor'), BEFORE);
+    commitAll(dir, 'init');
+    writeFileSync(path.join(dir, 'constructor'), AFTER);
+    // Parsed from JSON like real metadata, so `constructor` is inherited.
+    const fileHashes = JSON.parse(JSON.stringify({ 'f.ts': sha256(BEFORE) }));
+    expect(await classify(dir, 'unstaged', fileHashes)).toEqual({ pre: [], neither: [] });
+  });
+
+  it('hashes the old side under the pre-rename path', async () => {
+    const dir = tempDirs.dir();
+    initGitRepo(dir);
+    const lines = Array.from({ length: 12 }, (_, i) => `export const v${i} = ${i};`);
+    const before = lines.join('\n') + '\n';
+    writeFileSync(path.join(dir, 'old.ts'), before);
+    commitAll(dir, 'init');
+    execFileSync('git', ['mv', 'old.ts', 'new.ts'], { cwd: dir });
+    writeFileSync(path.join(dir, 'new.ts'), before.replace('v5 = 5', 'v5 = 55'));
+    execFileSync('git', ['add', 'new.ts'], { cwd: dir });
+    // The index was built before the rename: only the old path has a hash.
+    expect(await classify(dir, 'staged', { 'old.ts': sha256(before) })).toEqual({
+      pre: ['new.ts'],
+      neither: [],
+    });
+  });
+
   it('compares the staged blob, not the working tree, for staged scope', async () => {
     const dir = editedRepo();
     execFileSync('git', ['add', 'f.ts'], { cwd: dir });

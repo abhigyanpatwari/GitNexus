@@ -78,6 +78,12 @@ export async function classifyIndexedImages(
   files: readonly FileDiff[],
   preImages: ReadonlyMap<FileDiff, FileDiffPreImage>,
 ): Promise<IndexedImages> {
+  // `fileHashes` comes from JSON.parse: an inherited key such as `constructor`
+  // is not a recorded hash.
+  const recorded = (filePath: string): string | undefined =>
+    Object.hasOwn(fileHashes, filePath) && typeof fileHashes[filePath] === 'string'
+      ? fileHashes[filePath]
+      : undefined;
   const result: IndexedImages = { preImage: new Map(), neither: [] };
   const candidates: { file: FileDiff; hunks: DiffHunk[]; oldBlob: string; newBlob: string }[] = [];
   for (const file of files) {
@@ -85,14 +91,14 @@ export async function classifyIndexedImages(
     if (!hunks || !oldBlob || !newBlob || file.hunks.length === 0) continue;
     if (NULL_BLOB.test(oldBlob) || NULL_BLOB.test(newBlob)) continue;
     const oldPath = file.oldFilePath ?? file.filePath;
-    if (fileHashes[file.filePath] === undefined && fileHashes[oldPath] === undefined) continue;
+    if (recorded(file.filePath) === undefined && recorded(oldPath) === undefined) continue;
     candidates.push({ file, hunks, oldBlob, newBlob });
   }
 
   const sides = await mapConcurrent(
     candidates,
     async ({ file, oldBlob, newBlob }): Promise<'post' | 'pre' | 'neither'> => {
-      const indexedNew = fileHashes[file.filePath];
+      const indexedNew = recorded(file.filePath);
       if (indexedNew !== undefined) {
         const newHash =
           scope === 'staged'
@@ -101,7 +107,7 @@ export async function classifyIndexedImages(
         if (newHash === indexedNew) return 'post';
       }
       const oldPath = file.oldFilePath ?? file.filePath;
-      const indexedOld = fileHashes[oldPath];
+      const indexedOld = recorded(oldPath);
       if (
         indexedOld !== undefined &&
         (await hashCheckedOutBlob(cwd, oldBlob, oldPath)) === indexedOld
