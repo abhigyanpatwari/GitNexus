@@ -1784,6 +1784,16 @@ export interface ScopeResolver {
       }
     | undefined;
 
+  /** Select an owner when a declared receiver describes several possible types.
+   * Return null when the provider recognizes the type but cannot select a declaration. */
+  readonly selectReceiverTypeOwner?: (
+    receiver: TypeRef,
+    site: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+    isStaticOnly: (method: SymbolDefinition) => boolean,
+  ) => SymbolDefinition | null | undefined;
+
   /**
    * Optional language-specific member-lattice lookup. Runs for a resolved
    * simple receiver type before the generic flattened-MRO walk. Languages

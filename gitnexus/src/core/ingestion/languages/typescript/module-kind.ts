@@ -5,6 +5,7 @@ import { assertCloneable } from '../../workers/clone-safety.js';
 import { isCommonJsModule } from './cjs-export-assignment.js';
 import { canonicalTypeScriptName } from './identifiers.js';
 import { boundNames } from './local-loaders.js';
+import type { CallEvidence } from './argument-evidence.js';
 
 type CaptureEmitter = NonNullable<LanguageProvider['emitScopeCaptures']>;
 
@@ -16,6 +17,7 @@ type DeclarationScope = {
   scriptNames?: string[];
   containsJsx?: boolean;
   referencePaths?: string[];
+  callArguments?: CallEvidence;
 };
 
 export function declarationScope(channel: unknown): DeclarationScope | undefined {
@@ -43,9 +45,15 @@ export function recordCommonJsModuleKind(
   filePath: string,
   sourceText?: string,
   captures?: CaptureMatch[],
+  callArguments?: CallEvidence,
 ): void {
   const commonJs = isCommonJsModule(root, filePath);
-  pending = { filePath, value: commonJs };
+  pending = {
+    filePath,
+    value: callArguments
+      ? { kind: 'typescript-declarations', commonJs, script: false, globalNames: [], callArguments }
+      : commonJs,
+  };
   const declarationFile = /\.d\.[cm]?ts$/.test(filePath);
   const ordinarySource = /\.[cm]?tsx?$/.test(filePath);
   if (!ordinarySource && !sourceText?.includes('global')) return;
@@ -171,6 +179,7 @@ export function recordCommonJsModuleKind(
       commonJs,
       script,
       globalNames,
+      ...(callArguments && { callArguments }),
       ...(referencePaths.length ? { referencePaths } : {}),
       ...(script && !declarationFile ? { scriptNames } : {}),
       ...(script &&

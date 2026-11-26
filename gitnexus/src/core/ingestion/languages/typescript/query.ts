@@ -570,18 +570,20 @@ ${unboundCallableQuery('declaration.function')}
 ;; bodies. The @scope.class for class expressions (see (class) above)
 ;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
-  name: [(property_identifier) (private_property_identifier)] @declaration.name
+  name: [(property_identifier) (private_property_identifier) (string) (number)
+    (computed_property_name [(string) (number)])] @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Abstract method signatures in abstract classes.
 (abstract_method_signature
-  name: (property_identifier) @declaration.name
-  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.method
+  name: [(property_identifier) (string) (number) (computed_property_name [(string) (number)])] @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters
+  return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Interface method signatures.
 (method_signature
-  name: (property_identifier) @declaration.name @declaration.overload-signature
+  name: [(property_identifier) (string) (number) (computed_property_name [(string) (number)])] @declaration.name @declaration.overload-signature
   type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
@@ -1268,6 +1270,11 @@ ${unboundCallableQuery('declaration.function')}
       property: (property_identifier) @reference.name))) @reference.call.member
 
 ;; Private member call: \`this.#m()\`, and \`await this.#m<T>()\`.
+(call_expression
+  function: (subscript_expression
+    object: (_) @reference.receiver
+    index: [(string) (number)] @reference.name)) @reference.call.member
+
 (call_expression
   function: (member_expression
     object: (_) @reference.receiver

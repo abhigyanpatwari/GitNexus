@@ -281,8 +281,23 @@ export function emitFreeCallFallback(
       };
       const nameClaim = lookupNameClaim(site.inScope, site.name, scopes, lookupOptions);
       const strictClaim = hasExplicitNameClaim(nameClaim, site.name);
+      const qualifier =
+        site.callForm === 'constructor' ? site.rawQualifiedName?.split(/[.:]/, 1)[0] : undefined;
+      const qualifierClaim =
+        qualifier && qualifier !== site.rawQualifiedName
+          ? qualifier === site.name
+            ? nameClaim
+            : lookupNameClaim(site.inScope, qualifier, scopes, lookupOptions)
+          : undefined;
+      // The first Widget in Widget.Widget is a namespace. Resolve its member
+      // from that import even when the simple-name lookup also found the namespace.
+      const namespaceConstructor =
+        qualifierClaim?.status === 'resolved' &&
+        qualifierClaim.imports.some((edge) => edge.kind === 'namespace') &&
+        (qualifierClaim.scope?.kind !== 'Module' || qualifier === site.name);
       const blocksCall =
         strictClaim &&
+        !namespaceConstructor &&
         (nameClaim.status === 'blocked' ||
           (nameClaim.status === 'resolved' &&
             !nameClaim.bindings.some(
@@ -358,17 +373,9 @@ export function emitFreeCallFallback(
         // was imported is precise — C++ `#include "user.h"` and Rust
         // `use`/`pub use` often mint no lexical class binding. An
         // imported sibling file of a different name is not evidence.
-        const qualifier = site.rawQualifiedName?.split(/[.:]/, 1)[0];
-        const qualifierClaim =
-          qualifier && qualifier !== site.name
-            ? lookupNameClaim(site.inScope, qualifier, scopes, lookupOptions)
-            : undefined;
-        const localNamespace =
-          qualifierClaim?.scope?.kind !== 'Module' &&
-          qualifierClaim?.imports.some((edge) => edge.kind === 'namespace');
         // A local namespace import shadows a module import with the same name.
         let classDef =
-          localNamespace && site.rawQualifiedName
+          namespaceConstructor && site.rawQualifiedName
             ? findClassBindingInScope(
                 site.inScope,
                 site.rawQualifiedName,
@@ -387,7 +394,7 @@ export function emitFreeCallFallback(
                   uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined,
                 },
               );
-        if (classDef === undefined && !localNamespace) {
+        if (classDef === undefined && !namespaceConstructor) {
           classDef =
             findClassBindingInScope(site.inScope, site.name, scopes, undefined, {
               ...classLookupOptions,

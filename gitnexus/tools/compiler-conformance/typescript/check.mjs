@@ -18,6 +18,7 @@ function graphReport(
   propertyAccess,
   parameterCalls,
   classes,
+  methodReturns,
   constructedTargets,
 ) {
   // Class nodes carry a line. The real graph bridge joins their IDs to the
@@ -68,7 +69,7 @@ function graphReport(
     const owner = owners.get(node.id);
     if (node.label === 'Method' && owner?.label === 'Interface') return graphDeclaration(node);
     return node.label === 'Method' && owner
-      ? graphIdentity(owner) + '.' + node.properties.name
+      ? graphIdentity(owner) + (node.properties.isStatic ? '.static.' : '.') + node.properties.name
       : graphIdentity(node);
   }
   result.PARAMETER_CALLS.sites = publishedParameterCalls(graph, parameterCalls);
@@ -103,7 +104,12 @@ function graphReport(
       const { isAbstract, isStatic, parameterTypes } = node.properties;
       result.METHOD_FACTS.edges.push({
         from: callableIdentity(node),
-        to: JSON.stringify([isAbstract, isStatic, parameterTypes ?? []]),
+        to: JSON.stringify([
+          isAbstract,
+          isStatic,
+          parameterTypes ?? [],
+          ...(isAbstract ? [methodReturns.get(graphDeclaration(node)) ?? null] : []),
+        ]),
       });
     }
   }
@@ -346,6 +352,7 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   const boundCalls = [];
   const parameterCalls = [];
   const classes = [];
+  const methodReturns = new Map();
   const typeParameters = [];
   const reads = [];
   const unbound = [];
@@ -354,8 +361,15 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     // Keep local declarations observable when a property read could bind to a same-named variable.
     ...(propertyAccess ? { keepLocalValueSymbols: true } : {}),
     onScopeResolved(observation) {
-      for (const file of observation.parsedFiles)
-        for (const def of file.localDefs) if (def.type === 'Class') classes.push(def);
+      for (const file of observation.parsedFiles) {
+        for (const def of file.localDefs) {
+          if (def.type === 'Class') classes.push(def);
+          if (methodFacts && def.type === 'Method' && def.declarationRange) {
+            const { startLine, startCol } = def.declarationRange;
+            methodReturns.set(file.filePath + '#' + startLine + ':' + startCol, def.returnType);
+          }
+        }
+      }
       recordBindings(observation, boundCalls, typeParameters, reads, unbound, parameterCalls);
     },
   });
@@ -367,6 +381,7 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     propertyAccess,
     parameterCalls,
     classes,
+    methodReturns,
     new Map(
       reference.uncheckedMemberSites
         .filter((site) => site.constructedTarget)

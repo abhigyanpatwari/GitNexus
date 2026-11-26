@@ -10,6 +10,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { isBuiltin } from 'node:module';
 import type Parser from 'tree-sitter';
 import { unboundCallableName } from './typescript/unbound-callables.js';
+import { literalMethodName } from './typescript/identifiers.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
@@ -190,6 +191,14 @@ const tsExtractFunctionName = (
   node: SyntaxNode,
   filePath?: string,
 ): { funcName: string | null; label: NodeLabel; identityName?: string | null } | null => {
+  if (
+    node.type === 'method_definition' ||
+    node.type === 'method_signature' ||
+    node.type === 'abstract_method_signature'
+  ) {
+    const funcName = literalMethodName(node.childForFieldName('name'));
+    return funcName === undefined ? null : { funcName, label: 'Method' };
+  }
   if (node.type !== 'arrow_function' && node.type !== 'function_expression') return null;
 
   const unboundName = unboundCallableName(node);
@@ -516,6 +525,7 @@ export const typescriptProvider = defineLanguage({
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   mroStrategy: 'depth-first',
+  separateStaticAndInstanceMethods: true,
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
@@ -524,6 +534,9 @@ export const typescriptProvider = defineLanguage({
   methodExtractor: withMergedInterfaceMethodIds(
     createMethodExtractor({
       ...typescriptMethodConfig,
+      extractName: (node) =>
+        literalMethodName(node.childForFieldName('name')) ??
+        typescriptMethodConfig.extractName(node),
       extractFunctionName: tsExtractFunctionName,
     }),
   ),

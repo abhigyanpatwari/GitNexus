@@ -24,7 +24,7 @@ export function synthesizeTsJsClassIdentity(
     nodes['@declaration.method'] ??
     nodes['@declaration.constructor'] ??
     nodes['@declaration.property'];
-  const name = nodes['@declaration.name'];
+  const name = captures['@declaration.name'];
   if (member === undefined || name === undefined) return;
   for (let parent = member.parent; parent !== null; parent = parent.parent) {
     // Object members and executable-body locals belong to their own scope.

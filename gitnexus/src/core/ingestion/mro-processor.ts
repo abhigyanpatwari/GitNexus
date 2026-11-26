@@ -377,7 +377,8 @@ export function computeMRO(
     const language = classNode?.properties.language as SupportedLanguages | undefined;
     if (!language) continue;
     // Language-aware gate, reusing the MRO model we already maintain (not a new flag).
-    if (getProvider(language).mroStrategy === 'qualified-syntax') continue;
+    const provider = getProvider(language);
+    if (provider.mroStrategy === 'qualified-syntax') continue;
 
     const ownMethods = methodMap.get(classId) ?? [];
     const extendsParents = extendsParentsOf(classId);
@@ -410,10 +411,14 @@ export function computeMRO(
           const mn = graph.getNode(mid);
           if (!mn || mn.label === 'Property' || typeof mn.properties.name !== 'string') continue;
           const parameterTypes = (mn.properties.parameterTypes as string[] | undefined) ?? [];
+          const paramTypes = specialize
+            ? specialize(ancestorId, mid, parameterTypes)
+            : parameterTypes;
+          if (paramTypes === null) continue;
           const entry: AncestorMethod = {
             methodId: mid,
             isStatic: mn.properties.isStatic,
-            paramTypes: specialize?.(ancestorId, mid, parameterTypes) ?? parameterTypes,
+            paramTypes,
             paramCount: mn.properties.parameterCount as number | undefined,
           };
           const bucket = methodsByName.get(mn.properties.name);
@@ -442,7 +447,11 @@ export function computeMRO(
         if (!sameName) continue;
         const matches = sameName.filter(
           (m) =>
-            compatibleMethodReceivers(methodNode.properties.isStatic, m.isStatic) &&
+            compatibleMethodReceivers(
+              provider.separateStaticAndInstanceMethods,
+              methodNode.properties.isStatic,
+              m.isStatic,
+            ) &&
             parameterTypesMatch(ownParamTypes, m.paramTypes, ownParamCount, m.paramCount).match,
         );
         if (matches.length === 0) continue; // name present but no signature match — look deeper
@@ -504,11 +513,12 @@ export function computeMRO(
  * - No match → `{ match: false, confident: false }`
  */
 function parameterTypesMatch(
-  a: string[],
+  a: string[] | null,
   b: string[],
   aParamCount?: number,
   bParamCount?: number,
 ): { match: boolean; confident: boolean } {
+  if (a === null) return { match: false, confident: false };
   // If one side is variadic and the other isn't, types may match superficially
   // but the methods aren't guaranteed to be interchangeable
   if ((aParamCount === undefined) !== (bParamCount === undefined)) {
@@ -528,8 +538,12 @@ function parameterTypesMatch(
 }
 
 // A missing flag means the provider did not classify the receiver.
-function compatibleMethodReceivers(left: boolean | undefined, right: boolean | undefined): boolean {
-  return left === undefined || right === undefined || left === right;
+function compatibleMethodReceivers(
+  separate: boolean | undefined,
+  left: boolean | undefined,
+  right: boolean | undefined,
+): boolean {
+  return !separate || left === undefined || right === undefined || left === right;
 }
 
 /**
@@ -560,6 +574,8 @@ function emitMethodImplementsEdges(
 
     // Interfaces and traits declare contracts — they don't implement them
     if (classNode.label === 'Interface' || classNode.label === 'Trait') continue;
+    const language = classNode.properties.language as SupportedLanguages | undefined;
+    const separate = language && getProvider(language).separateStaticAndInstanceMethods;
 
     // Get this class's own methods
     const ownMethodIds = methodMap.get(classId) ?? [];
@@ -623,8 +639,10 @@ function emitMethodImplementsEdges(
         const ancestorName = ancestorMethodNode.properties.name as string;
         const declaredTypes =
           (ancestorMethodNode.properties.parameterTypes as string[] | undefined) ?? [];
-        const ancestorParamTypes =
-          specialize?.(ancestorId, ancestorMethodId, declaredTypes) ?? declaredTypes;
+        const ancestorParamTypes = specialize
+          ? specialize(ancestorId, ancestorMethodId, declaredTypes)
+          : declaredTypes;
+        if (ancestorParamTypes === null) continue;
         const ancestorParamCount = ancestorMethodNode.properties.parameterCount as
           | number
           | undefined;
@@ -633,7 +651,11 @@ function emitMethodImplementsEdges(
         const candidates = ownMethodsByName
           .get(ancestorName)
           ?.filter((candidate) =>
-            compatibleMethodReceivers(candidate.isStatic, ancestorMethodNode.properties.isStatic),
+            compatibleMethodReceivers(
+              separate,
+              candidate.isStatic,
+              ancestorMethodNode.properties.isStatic,
+            ),
           );
 
         // Unit 3: If no own method matches, walk the EXTENDS chain to find inherited concrete method
@@ -649,6 +671,7 @@ function emitMethodImplementsEdges(
             parentEdgeType,
             ancestorMethodId,
             specialize,
+            separate,
           );
           if (inherited) {
             const edgeKey = `${inherited.methodId}->${ancestorMethodId}`;
@@ -733,6 +756,7 @@ function findInheritedMethod(
    *  method being matched lives on an IMPLEMENTS parent). */
   excludeMethodId: string,
   specialize?: ReturnType<HeritageSubstitutions['forClass']>,
+  separate?: boolean,
 ): { methodId: string; parameterTypes: string[]; confident: boolean } | null {
   const targetStatic = graph.getNode(excludeMethodId)?.properties.isStatic;
   const visited = new Set<string>();
@@ -777,14 +801,14 @@ function findInheritedMethod(
         if (mNode.properties.isAbstract === true) continue;
         if (
           mNode.properties.name !== methodName ||
-          !compatibleMethodReceivers(mNode.properties.isStatic, targetStatic)
+          !compatibleMethodReceivers(separate, mNode.properties.isStatic, targetStatic)
         )
           continue;
 
         const mParamTypes = (mNode.properties.parameterTypes as string[] | undefined) ?? [];
         const mParamCount = mNode.properties.parameterCount as number | undefined;
         const ptResult = parameterTypesMatch(
-          specialize?.(ancestorId, mid, mParamTypes) ?? mParamTypes,
+          specialize ? specialize(ancestorId, mid, mParamTypes) : mParamTypes,
           targetParamTypes,
           mParamCount,
           targetParamCount,
@@ -857,14 +881,14 @@ function findInheritedMethod(
       if (mNode.properties.isAbstract === true) continue;
       if (
         mNode.properties.name !== methodName ||
-        !compatibleMethodReceivers(mNode.properties.isStatic, targetStatic)
+        !compatibleMethodReceivers(separate, mNode.properties.isStatic, targetStatic)
       )
         continue;
 
       const mParamTypes = (mNode.properties.parameterTypes as string[] | undefined) ?? [];
       const mParamCount = mNode.properties.parameterCount as number | undefined;
       const ptResult = parameterTypesMatch(
-        specialize?.(ifaceId, mid, mParamTypes) ?? mParamTypes,
+        specialize ? specialize(ifaceId, mid, mParamTypes) : mParamTypes,
         targetParamTypes,
         mParamCount,
         targetParamCount,

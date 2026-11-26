@@ -18,9 +18,17 @@ import {
 } from '../../scope-resolution/scope/walkers.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { receiverTypeIsOutOfScope } from './global-declarations.js';
+import {
+  acceptsArgumentEvidence,
+  callRangeKey,
+  isLiteralParameter,
+  type ArgumentEvidence,
+} from './argument-evidence.js';
+import { declarationScope } from './module-kind.js';
 
 type Argument = Extract<CallableFlowSite, { kind: 'argument' }>;
 const argumentsByCall = new WeakMap<ReferenceSite, Argument[]>();
+const evidenceByCall = new WeakMap<ReferenceSite, (ArgumentEvidence | null)[]>();
 const receiverCalls = new WeakMap<ReferenceSite, ReferenceSite>();
 type OverloadUse = { argument: Argument; call: ReferenceSite; owners: ReadonlySet<string> };
 type AssignmentUse = {
@@ -108,7 +116,13 @@ export function indexTsCallArguments(
   }
   if (!overloads.size && !names.size) return;
   for (const file of files) {
-    if (!file.callableFlowSites?.length && !file.callResultAssignmentSites?.length) continue;
+    const argumentFacts = declarationScope(file.captureSideChannel)?.callArguments;
+    if (
+      !file.callableFlowSites?.length &&
+      !file.callResultAssignmentSites?.length &&
+      !argumentFacts
+    )
+      continue;
     const calls = new Map<string, ReferenceSite>();
     const hasOverload = file.referenceSites.some(
       (site) =>
@@ -117,7 +131,12 @@ export function indexTsCallArguments(
     );
     for (const site of file.referenceSites) {
       if (site.kind !== 'call') continue;
-      if (hasOverload) calls.set(rangeKey(site.atRange), site);
+      if (hasOverload) {
+        const key = callRangeKey(site.atRange);
+        calls.set(key, site);
+        const evidence = argumentFacts?.[key];
+        if (evidence) evidenceByCall.set(site, evidence);
+      }
       argumentsByCall.delete(site);
       receiverCalls.delete(site);
     }
@@ -304,6 +323,7 @@ function acceptsPrimitiveArguments(
   signature: SymbolDefinition,
   types: string[],
   indexes: ScopeResolutionIndexes,
+  evidence?: readonly (ArgumentEvidence | null)[],
 ): boolean | undefined {
   if (signature.parameterCount === undefined || !signature.declarationRange) return undefined;
   if (
@@ -322,11 +342,24 @@ function acceptsPrimitiveArguments(
   const params = [...scope.typeBindings.values()].filter(
     (binding) => binding.source === 'parameter-annotation' && binding.bindingRange,
   );
-  if (params.length !== signature.parameterCount) return undefined;
-  params.sort((a, b) => byPosition(a.bindingRange!, b.bindingRange!));
+  let annotations: readonly string[];
+  if (params.length === signature.parameterCount) {
+    params.sort((a, b) => byPosition(a.bindingRange!, b.bindingRange!));
+    annotations = params.map((p) => p.declaredSpelling ?? p.rawName);
+  } else if (
+    signature.parameterTypes?.length === signature.parameterCount &&
+    signature.parameterTypes.every(
+      (p) => isLiteralParameter(p) || p.startsWith('{') || p.includes('=>'),
+    )
+  ) {
+    annotations = signature.parameterTypes;
+  } else return undefined;
   let unknown = false;
   for (const [i, type] of types.entries()) {
-    const annotation = params[i].declaredSpelling ?? params[i].rawName;
+    const annotation = annotations[i];
+    const checked = acceptsArgumentEvidence(annotation, type, evidence?.[i]);
+    if (checked === false) return false;
+    if (checked === true) continue;
     const alternatives = annotation.split('|').map((part) => part.trim());
     if (
       !alternatives.every(
@@ -431,16 +464,20 @@ export function selectTsPrimitiveOverload(
     const type = binding?.declaredSpelling ?? binding?.rawName;
     if (type && primitiveTypes.has(type)) types[parameterIndex] = type;
   }
-  if (!types.every((type) => primitiveTypes.has(type))) return undefined;
+  const evidence = evidenceByCall.get(site);
+  if (!types.every((type, i) => primitiveTypes.has(type) || evidence?.[i] != null))
+    return undefined;
   if (!signatures.every((sig) => sig.filePath === signatures[0].filePath && sig.declarationRange))
     return undefined;
   signatures.sort(
     (a, b) =>
+      Number(b.parameterTypes?.some(isLiteralParameter) ?? false) -
+        Number(a.parameterTypes?.some(isLiteralParameter) ?? false) ||
       (declarations?.get(a.ownerId ?? '') ?? 0) - (declarations?.get(b.ownerId ?? '') ?? 0) ||
       byPosition(a.declarationRange!, b.declarationRange!),
   );
   for (const signature of signatures) {
-    const applicable = acceptsPrimitiveArguments(signature, types, indexes);
+    const applicable = acceptsPrimitiveArguments(signature, types, indexes, evidence);
     if (applicable === undefined) return undefined;
     if (applicable) return signature;
   }

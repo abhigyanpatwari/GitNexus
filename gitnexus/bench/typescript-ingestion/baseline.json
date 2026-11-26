@@ -9,15 +9,15 @@
         "moduleCases": 512,
         "cases": 688,
         "sourceBytes": 79219,
-        "expectedEdges": 464,
-        "fingerprint": "f40cf5c1f74ee845ed1d13e5b20c6616c68f8ca0739d37ad4d73b8e2d5bcbcf1"
+        "expectedEdges": 512,
+        "fingerprint": "b16aeacfc796b7e3d09e32c15fc322fcf156ede80a5f20d0e9ae67f6b65ded4f"
       },
       "tupleBindings": 112,
-      "narrowingBindings": 48,
-      "captureFingerprint": "046167d9d9010f4f145cbe6b2bf43502eea5c7ef21508ebd1108755bed9b046d",
-      "graphFingerprint": "319fb4a365ada73e92849d697a66010032b14c508028d52298074e490eb079d3",
-      "targetFingerprint": "7297000a5bbc1a55366a4b0bd5535b74c5f6732f2da081af4c14117e06c9965e",
-      "resolvedEdges": 464
+      "narrowingBindings": 80,
+      "captureFingerprint": "c3aa7937b68681b03a9c66e4a58f8fe1b2ec617390736721756accf8750de339",
+      "graphFingerprint": "fbcec1dee34004a73bbe7f7b27081fc13cedb78ad82a219efda70b557d4e3242",
+      "targetFingerprint": "c9795ae91439a1a38494a43557e9a594dfa37e2b0649d71f9f695f94c48c7100",
+      "resolvedEdges": 512
     },
     "wide": {
       "workload": {
@@ -27,15 +27,15 @@
         "moduleCases": 2048,
         "cases": 2752,
         "sourceBytes": 317837,
-        "expectedEdges": 1856,
-        "fingerprint": "d33d64d15888d1173126a3e92b78e33e4d2e0d04d84ab59c9110105cfe44e40e"
+        "expectedEdges": 2048,
+        "fingerprint": "476819fc5357bd3ca5eefc64a4736f6bdb21b57353b45243f83903b81b473d08"
       },
       "tupleBindings": 448,
-      "narrowingBindings": 192,
-      "captureFingerprint": "77b5c213a2dd9d8fcc6bdd185e1d36fdf6b82f503ea8ea5072ba48f0746cc42a",
-      "graphFingerprint": "103dbb1f7a750da5bf631b8ae0fc1da3b5682fac0dadfc2e4b367893a4aa42d6",
-      "targetFingerprint": "a6ce3f9fa4ea873ca152be3c211255c20d94b819c500658967130afdc23769ab",
-      "resolvedEdges": 1856
+      "narrowingBindings": 320,
+      "captureFingerprint": "f6e05385062404912f55084e82adb25392a86af619d35cbfcaf6b1382c47dfd4",
+      "graphFingerprint": "41266491fd29cd7bf2d80e8ef2232671687594f1a3b9ae43e89bdde590c07899",
+      "targetFingerprint": "17300ea23d2c5c66e3a9f002538603e4387b3a8565382294f4bcadac16ccd549",
+      "resolvedEdges": 2048
     },
     "dense": {
       "workload": {
@@ -45,15 +45,15 @@
         "moduleCases": 8192,
         "cases": 11008,
         "sourceBytes": 1172969,
-        "expectedEdges": 7424,
-        "fingerprint": "9873fb125ac2e5f1af5756457e0162c6694ac2eb403e36e1cf20ae25f97c12a4"
+        "expectedEdges": 8192,
+        "fingerprint": "c0cea0ebb1da8ac0ba368ad9440cc21a2ee67d8ccaa5c4dc88d45c3207da0b0a"
       },
       "tupleBindings": 1792,
-      "narrowingBindings": 768,
-      "captureFingerprint": "864ccab4bd2484b35a4b18e73a46c06af955be7d8701dce4ffbb48c94fbc3685",
-      "graphFingerprint": "0f9e4c5c9d30f672dc2e032e5b7f8fc7a85b2187cb1d9985e3bbce4dabb4c759",
-      "targetFingerprint": "9a0363e1aeb580d0c4dbe64891c2b5cb5f0d71bc20c82feb485c93d11ed227f2",
-      "resolvedEdges": 7424
+      "narrowingBindings": 1280,
+      "captureFingerprint": "b7b0f36246365a1751ccb8c42f9a16a5d2c9fa8dc4c4f928e2af0b3b24eabccf",
+      "graphFingerprint": "e72a2f9697fc97d2f33fa70ca5a87246b80e59fcfa81c67e6b4db244b571a63e",
+      "targetFingerprint": "63d991fa7f411c86ece76ccd501bd86ebbec558a38909025d52e8cfa3fbd2b48",
+      "resolvedEdges": 8192
     }
   },
   "budgets": {

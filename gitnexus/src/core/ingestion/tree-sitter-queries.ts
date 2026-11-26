@@ -90,6 +90,12 @@ ${unboundCallableQuery('definition.function')}
 (method_definition
   name: (private_property_identifier) @name) @definition.method
 
+; Literal class and interface keys take their name from the provider so that
+; escaped strings and different numeric spellings resolve to the same key.
+[(method_definition name: [(string) (number) (computed_property_name [(string) (number)])] @name @name.literal)
+ (method_signature name: [(string) (number) (computed_property_name [(string) (number)])] @name @name.literal)
+ (abstract_method_signature name: [(string) (number) (computed_property_name [(string) (number)])] @name @name.literal)] @definition.method
+
 ; Abstract method signatures in abstract classes
 (abstract_method_signature
   name: (property_identifier) @name) @definition.method

@@ -131,12 +131,9 @@
   "lang-resolution/typescript-member-access-for-loop": ["src/app.ts:27:32 TS2339"],
   "lang-resolution/typescript-namespace-const": ["config.ts:19:2 TS1235"],
   "lang-resolution/typescript-pnpm-workspace-imports": [
-    "apps/web/src/alias.ts:1:23 TS2307",
-    "apps/web/src/baseurl.ts:1:23 TS2307",
     "apps/web/src/guess.ts:1:21 TS2307",
     "apps/web/src/main.ts:1:21 TS2307",
-    "apps/web/src/outside.ts:1:30 TS2307",
-    "apps/web/src/use.ts:1:24 TS2307"
+    "apps/web/src/outside.ts:1:30 TS2307"
   ],
   "lang-resolution/typescript-reexport-type": ["src/app.ts:4:19 TS1361", "src/app.ts:7:19 TS1361"],
   "lang-resolution/typescript-side-effect-imports": [

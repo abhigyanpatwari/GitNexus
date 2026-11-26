@@ -10,12 +10,18 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { load as parseYaml } from 'js-yaml';
 
-/** Reproduce npm's local workspace links for the compiler without touching the checkout. */
+/** Populate local workspace links for the compiler in a disposable checkout. */
 export function withWorkspacePackages(root, run) {
   const manifest = path.join(root, 'package.json');
   const workspaces = existsSync(manifest) && JSON.parse(readFileSync(manifest, 'utf8')).workspaces;
-  const patterns = Array.isArray(workspaces) ? workspaces : workspaces?.packages;
+  const pnpm = path.join(root, 'pnpm-workspace.yaml');
+  const patterns = existsSync(pnpm)
+    ? parseYaml(readFileSync(pnpm, 'utf8'))?.packages
+    : Array.isArray(workspaces)
+      ? workspaces
+      : workspaces?.packages;
   if (!patterns?.length) return run(root);
   const scratch = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-workspace-'));
   const cleanup = () => rmSync(scratch, { recursive: true, force: true });
@@ -26,8 +32,15 @@ export function withWorkspacePackages(root, run) {
       filter: (source) => path.basename(source) !== 'node_modules',
     });
     const packages = globSync(
-      patterns.map((pattern) => pattern + '/package.json'),
-      { cwd: scratch },
+      patterns
+        .filter((pattern) => !pattern.startsWith('!'))
+        .map((pattern) => pattern + '/package.json'),
+      {
+        cwd: scratch,
+        exclude: patterns
+          .filter((pattern) => pattern.startsWith('!'))
+          .map((pattern) => pattern.slice(1) + '/package.json'),
+      },
     );
     for (const entry of packages) {
       const directory = path.dirname(path.join(scratch, entry));

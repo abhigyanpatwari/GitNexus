@@ -2289,11 +2289,13 @@ const processFileGroupFiles = (
       const cjsDefaultExportName = isCjsDefaultExport
         ? (cjsDefaultExportOwnName ?? deriveDefaultExportHocName(file.path))
         : null;
+      const literalMethod = nodeLabel === 'Method' && captureMap['name.literal'] !== undefined;
       const inferredFunction =
-        !nameNode && nodeLabel === 'Function' && definitionNode
+        ((!nameNode && nodeLabel === 'Function') || literalMethod) && definitionNode
           ? provider.methodExtractor?.extractFunctionName?.(definitionNode, file.path)
           : undefined;
       const inferredFunctionName = inferredFunction?.funcName;
+      if (literalMethod && inferredFunctionName == null) continue;
 
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
       if (

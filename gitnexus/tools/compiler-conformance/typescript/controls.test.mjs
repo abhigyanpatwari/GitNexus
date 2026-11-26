@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
@@ -9,6 +9,7 @@ import TypeScript from 'tree-sitter-typescript';
 import { typescriptProvider } from '../../../dist/core/ingestion/languages/typescript.js';
 import { extractParsedFile } from '../../../dist/core/ingestion/scope-extractor-bridge.js';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
+import { HeritageSubstitutions } from '../../../dist/core/ingestion/heritage-substitutions.js';
 import { checkCommonJsForwarding, checkModuleValues } from './module-values.mjs';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
@@ -21,6 +22,21 @@ const root = fileURLToPath(
 const facts = compilerReport(root);
 
 test('CommonJS loader calls match the exports of the compiled modules', checkCommonJsForwarding);
+
+test('an oversized inherited type leaves other signatures resolvable', () => {
+  const substitutions = new HeritageSubstitutions();
+  substitutions.registerBase(
+    'Child',
+    'Base',
+    {
+      typeParameters: [{ name: 'T' }, { name: 'U' }],
+    },
+    ['X'.repeat(32769), 'string'],
+  );
+  const specialize = substitutions.forClass('Child', new Map([['Child', ['Base']]]));
+  assert.equal(specialize('Base', 'first', ['Array<T>']), null);
+  assert.deepEqual(specialize('Base', 'second', ['Array<U>']), ['Array<string>']);
+});
 
 test('TypeScript module-kind evidence survives serialization and is consumed once', () => {
   const parser = new Parser();
@@ -98,7 +114,7 @@ test('dropping an arrow from a class type parameter default changes its compiler
   );
 });
 
-test('quoted, escaped and numeric methods use the same property key across declarations', (t) => {
+test('quoted, escaped and numeric methods use the same property key across declarations', async (t) => {
   const project = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-method-keys-'));
   t.after(() => rmSync(project, { recursive: true, force: true }));
   writeFileSync(
@@ -118,6 +134,7 @@ function invoke(value: Derived) { value['read-value'](); value[100](); }
     'keys.ts#2:0.100',
     'keys.ts#2:0.read-value',
   ]);
+  await compareProject(project);
 });
 
 test('constructors with the same class name resolve in their own namespaces', () => {
@@ -129,6 +146,28 @@ test('constructors with the same class name resolve in their own namespaces', ()
   assert.equal(qualifiedB.target, localB.target);
   const sites = [localA, localB, qualifiedA, { ...qualifiedB, target: qualifiedA.target }];
   assert.throws(() => compareReports(calls, { ...calls, sites }), /Missing from/);
+});
+
+test('distinct qualified local classes keep their graph IDs when preceding lines move', async (t) => {
+  const project = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-local-classes-'));
+  t.after(() => rmSync(project, { recursive: true, force: true }));
+  const source = ['A', 'B']
+    .map(
+      (owner) =>
+        `export class ${owner} { build() { class Helper { run() {} } return new Helper(); } }`,
+    )
+    .join('\n');
+  async function classIds(prefix) {
+    writeFileSync(path.join(project, 'classes.ts'), prefix + source);
+    const { pipeline } = await compareProject(project);
+    return pipeline.graph.nodes
+      .filter((node) => node.label === 'Class' && node.properties.name === 'Helper')
+      .map((node) => node.id)
+      .sort();
+  }
+  const ids = await classIds('');
+  assert.equal(new Set(ids).size, 2);
+  assert.deepEqual(await classIds('\n\n'), ids);
 });
 
 test('the compiler distinguishes unique symbol keys in overrides and interface contracts', (t) => {
@@ -188,6 +227,28 @@ test('workspace package links survive asynchronous readers and are cleaned up on
   );
   assert.notEqual(scratch, project);
   assert.equal(existsSync(scratch), false);
+});
+
+test('legacy baseUrl resolves the same imports as the compiler’s paths migration', async (t) => {
+  const key = 'lang-resolution/typescript-pnpm-workspace-imports';
+  const project = path.resolve(root, '../..', key);
+  const diagnostics = JSON.parse(readFileSync(new URL('./diagnostics.json', import.meta.url)));
+  const reference = compilerReport(project, diagnostics[key]).IMPORTS;
+  const legacy = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-legacy-baseurl-'));
+  t.after(() => rmSync(legacy, { recursive: true, force: true }));
+  cpSync(project, legacy, { recursive: true });
+  writeFileSync(
+    path.join(legacy, 'apps/web/tsconfig.json'),
+    JSON.stringify({
+      compilerOptions: { baseUrl: 'src', paths: { '@ui/*': ['components/*'] } },
+    }),
+  );
+  const { graph } = await runPipelineFromRepo(legacy, () => {});
+  const edges = Array.from(graph.iterRelationshipsByType('IMPORTS'), ({ sourceId, targetId }) => ({
+    from: graph.getNode(sourceId).properties.filePath,
+    to: graph.getNode(targetId).properties.filePath,
+  }));
+  compareReports(reference, { edges, sites: [] });
 });
 
 test('invoked parameters with the same name retain their own declarations and types', () => {

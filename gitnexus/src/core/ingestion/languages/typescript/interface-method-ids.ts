@@ -5,6 +5,7 @@ import { arityForIdFromInfo } from '../../utils/method-props.js';
 
 type Collisions = ReadonlyMap<number, ReadonlySet<string>>;
 const collisionsByTree = new WeakMap<SyntaxNode['tree'], Collisions>();
+const classCollisionsByTree = new WeakMap<SyntaxNode['tree'], Map<number, ReadonlySet<string>>>();
 
 function signatureKey(method: MethodInfo): string {
   return (arityForIdFromInfo(method) ?? 'rest') + ':' + method.name;
@@ -51,6 +52,36 @@ function distinguishDeclaration(method: MethodInfo, collisions?: ReadonlySet<str
   }
 }
 
+function methodCollisions(
+  owner: SyntaxNode,
+  context: MethodExtractorContext,
+  extractor: MethodExtractor,
+  methods?: readonly MethodInfo[],
+) {
+  if (owner.type === 'interface_declaration')
+    return mergedMethodCollisions(owner, context, extractor);
+  if (!['class', 'class_declaration', 'abstract_class_declaration'].includes(owner.type)) return;
+  let owners = classCollisionsByTree.get(owner.tree);
+  if (!owners) {
+    owners = new Map();
+    classCollisionsByTree.set(owner.tree, owners);
+  }
+  const previous = owners.get(owner.id);
+  if (previous) return previous;
+  const members = methods ?? extractor.extract(owner, context)?.methods ?? [];
+  const statics = new Set(members.filter((method) => method.isStatic).map(signatureKey));
+  const collisions = new Set<string>();
+  if (statics.size) {
+    for (const method of members) {
+      if (method.isStatic) continue;
+      const key = signatureKey(method);
+      if (statics.has(key)) collisions.add(key);
+    }
+  }
+  owners.set(owner.id, collisions);
+  return collisions;
+}
+
 /** Methods in separate declarations of the same interface share one graph owner. */
 export function withMergedInterfaceMethodIds(extractor: MethodExtractor): MethodExtractor {
   return {
@@ -58,18 +89,20 @@ export function withMergedInterfaceMethodIds(extractor: MethodExtractor): Method
     extract(node, context) {
       const result = extractor.extract(node, context);
       if (result?.methods.length) {
-        const collisions = mergedMethodCollisions(node, context, extractor);
-        if (collisions)
+        const collisions = methodCollisions(node, context, extractor, result.methods);
+        if (collisions?.size)
           for (const method of result.methods) distinguishDeclaration(method, collisions);
       }
       return result;
     },
     extractFromNode(node, context) {
       const result = extractor.extractFromNode?.(node, context) ?? null;
-      if (result && node.type === 'method_signature') {
+      if (
+        result &&
+        ['method_signature', 'method_definition', 'abstract_method_signature'].includes(node.type)
+      ) {
         const owner = node.parent?.parent;
-        if (owner)
-          distinguishDeclaration(result, mergedMethodCollisions(owner, context, extractor));
+        if (owner) distinguishDeclaration(result, methodCollisions(owner, context, extractor));
       }
       return result;
     },

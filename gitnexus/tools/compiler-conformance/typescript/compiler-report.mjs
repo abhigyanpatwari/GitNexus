@@ -119,7 +119,10 @@ function graphIdentity(root, node, project) {
       node.parent.parent.kind === SyntaxKind.TypeAliasDeclaration
         ? node.parent.parent
         : node.parent;
-    return identity(root, owner) + '.' + declarationName(node);
+    const separator = node.modifiers?.some((modifier) => modifier.kind === SyntaxKind.StaticKeyword)
+      ? '.static.'
+      : '.';
+    return identity(root, owner) + separator + declarationName(node);
   }
   if (node.kind === SyntaxKind.FunctionDeclaration && node.name) {
     const signatures = project.checker.getSymbolAtLocation(node.name)?.declarations;
@@ -577,6 +580,9 @@ function reportProject(
             Array.from(node.parameters ?? [], (parameter) =>
               checker.typeToString(checker.getTypeAtLocation(parameter)),
             ),
+            ...(hasModifier(node, SyntaxKind.AbstractKeyword)
+              ? [node.type?.getText() ?? null]
+              : []),
           ]),
         });
       }

@@ -27,6 +27,7 @@
  */
 
 import { recordCommonJsModuleKind } from './module-kind.js';
+import { argumentEvidence, callRangeKey, type CallEvidence } from './argument-evidence.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { isAnonymousDefaultClass } from '../../class-extractors/configs/typescript-javascript.js';
 import { synthesizeTsJsClassIdentity } from './class-identity.js';
@@ -41,7 +42,7 @@ import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
-import { canonicalTypeScriptName } from './identifiers.js';
+import { canonicalTypeScriptName, literalMethodName } from './identifiers.js';
 import { defaultFactoryResult } from './default-factory.js';
 import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
@@ -425,6 +426,8 @@ export function emitTsScopeCaptures(
   let defaultDeclaration: Record<string, Capture> | undefined;
   const implicitNamespaceExports = new Map<number, boolean>();
   let awaitedCalls: Map<string, Capture> | undefined;
+  let bracketReceivers: Map<string, string> | undefined;
+  let callArguments: CallEvidence | undefined;
 
   for (const m of rawMatches) {
     // Group captures by their tag name. Tree-sitter strips the leading
@@ -438,6 +441,24 @@ export function emitTsScopeCaptures(
       groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    const methodKey = grouped['@declaration.method']
+      ? '@declaration.name'
+      : grouped['@reference.call.member']
+        ? '@reference.name'
+        : undefined;
+    if (methodKey && groupedNodes[methodKey]) {
+      const key = literalMethodName(groupedNodes[methodKey]);
+      if (key !== undefined) {
+        grouped[methodKey] = { ...grouped[methodKey], text: key };
+        if (methodKey === '@reference.name') {
+          bracketReceivers ??= new Map();
+          bracketReceivers.set(
+            callRangeKey(grouped['@reference.call.member'].range),
+            callRangeKey(grouped['@reference.receiver'].range),
+          );
+        }
+      }
+    }
     synthesizeTsJsClassIdentity(grouped, groupedNodes);
     const qualified = grouped['@reference.qualified-name'];
     if (qualified?.text.includes('\\'))
@@ -762,6 +783,13 @@ export function emitTsScopeCaptures(
         );
 
         const argTypes = args.map((arg) => inferArgType(arg));
+        if (args.length && callNode.type === 'call_expression') {
+          const evidence = args.map((arg) => argumentEvidence(arg, inferArgType));
+          if (evidence.some((value) => value !== null)) {
+            callArguments ??= {};
+            callArguments[callRangeKey(grouped[callAnchor.name].range)] = evidence;
+          }
+        }
         grouped['@reference.parameter-types'] = syntheticCapture(
           '@reference.parameter-types',
           callNode,
@@ -848,11 +876,21 @@ export function emitTsScopeCaptures(
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
   const callableFlows = synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS);
-  if (awaitedCalls) {
+  if (awaitedCalls || bracketReceivers) {
     // Argument and invocation facts join the reference by its entire call range.
     for (const match of callableFlows) {
+      const invoke = match['@callable-flow.invoke'];
+      const callee = match['@callable-flow.callee'];
+      // value[key]() invokes the property, never the binding used as its receiver.
+      if (
+        bracketReceivers &&
+        invoke &&
+        callee &&
+        bracketReceivers.get(callRangeKey(invoke.range)) === callRangeKey(callee.range)
+      )
+        continue;
       const site = match['@callable-flow.argument'] ?? match['@callable-flow.invoke'];
-      const call = site && awaitedCalls.get(JSON.stringify(site.range));
+      const call = site && awaitedCalls?.get(JSON.stringify(site.range));
       out.push(call ? { ...match, [site.name]: { ...call, name: site.name } } : match);
     }
   } else {
@@ -867,7 +905,7 @@ export function emitTsScopeCaptures(
     tree.rootNode,
     filePath,
     out,
-    returnedDefault && defaultDeclaration
+    returnedDefault?.checkPriorWrites && defaultDeclaration
       ? (written) => {
           if (written === returnedDefault.name) defaultDeclaration = undefined;
         }
@@ -891,7 +929,7 @@ export function emitTsScopeCaptures(
       '[]',
     );
   }
-  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out);
+  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out, callArguments);
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 
   return out;

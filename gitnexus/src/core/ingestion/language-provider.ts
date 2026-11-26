@@ -614,6 +614,8 @@ interface LanguageProviderConfig {
   /** MRO strategy for multiple inheritance resolution.
    *  Default: 'first-wins'. */
   readonly mroStrategy?: MroStrategy;
+  /** Static and instance methods have separate override and implementation contracts. */
+  readonly separateStaticAndInstanceMethods?: boolean;
 
   // ── Language-specific extraction hooks ────────────────────────────
   /** Call extractor for extracting call site information (calledName, callForm,

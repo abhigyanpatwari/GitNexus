@@ -8,7 +8,7 @@ import { createClassExtractor } from '../generic.js';
 import { positionQualifiedCallableName } from '../../workers/callable-id.js';
 
 const classDeclarations = ['class_declaration', 'abstract_class_declaration'];
-const repeatedClassNames = new WeakMap<SyntaxNode['tree'], ReadonlySet<string>>();
+const repeatedClasses = new WeakMap<SyntaxNode['tree'], ReadonlySet<number>>();
 
 function needsPosition(node: SyntaxNode): boolean {
   if (node.type === 'class') return true;
@@ -22,21 +22,24 @@ function needsPosition(node: SyntaxNode): boolean {
   if (!parent || ['internal_module', 'module'].includes(parent.parent?.type ?? '')) return false;
   const tree = node.tree;
   if (!tree) return false;
-  let repeated = repeatedClassNames.get(tree);
+  let repeated = repeatedClasses.get(tree);
   if (!repeated) {
-    const seen = new Set<string>();
-    const duplicates = new Set<string>();
+    const first = new Map<string, number>();
+    const duplicates = new Set<number>();
     for (const declaration of tree.rootNode.descendantsOfType(classDeclarations)) {
       const name = declaration.childForFieldName('name')?.text;
       if (!name) continue;
-      if (seen.has(name)) duplicates.add(name);
-      seen.add(name);
+      const qualified = positionlessClassExtractor.qualifyScopeName!(declaration, name);
+      const prior = first.get(qualified ?? name);
+      if (prior !== undefined) {
+        duplicates.add(prior);
+        duplicates.add(declaration.id);
+      } else first.set(qualified ?? name, declaration.id);
     }
-    repeatedClassNames.set(tree, duplicates);
+    repeatedClasses.set(tree, duplicates);
     repeated = duplicates;
   }
-  const name = node.childForFieldName('name');
-  return name !== null && repeated.has(name.text);
+  return repeated.has(node.id);
 }
 
 const shared: Omit<ClassExtractionConfig, 'language'> = {
@@ -86,6 +89,13 @@ export const javascriptClassConfig: ClassExtractionConfig = {
   ...shared,
   language: SupportedLanguages.JavaScript,
 };
+
+// Use the same enclosing namespace and class segments as the published ID,
+// before any local position suffix is added.
+const positionlessClassExtractor = createClassExtractor({
+  ...typescriptClassConfig,
+  extractScopeSegments: undefined,
+});
 
 export const vueClassConfig: ClassExtractionConfig = {
   ...shared,

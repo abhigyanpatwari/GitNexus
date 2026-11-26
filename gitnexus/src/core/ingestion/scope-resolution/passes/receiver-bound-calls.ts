@@ -234,6 +234,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'namespaceBindingIdentity'
   | 'namespaceSkipsEnclosingClasses'
   | 'createReceiverNamespaceResolver'
+  | 'selectReceiverTypeOwner'
   | 'resolveReceiverMember'
   | 'receiverMemberLookupCoversAllCalls'
   | 'receiverCallSite'
@@ -258,7 +259,8 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveQualifiedCallee'
   | 'resolveQualifiedTypeSpellings'
   | 'splitQualifiedCallee'
->;
+> &
+  Partial<Pick<ScopeResolver, 'languageProvider'>>;
 
 /** A bare, undecorated identifier and nothing else — see {@link isBareTypeName}. */
 const BARE_TYPE_NAME_RE = /^[A-Za-z_$][\w$]*$/;
@@ -1260,6 +1262,11 @@ function emitReceiverBoundCallsInPass(
     if (graphId === undefined) return false;
     return graph.getNode(graphId)?.properties.isStatic === true;
   };
+  const separateReceiverKinds = provider.languageProvider?.separateStaticAndInstanceMethods;
+  const excludeFromInstance = separateReceiverKinds
+    ? isUnreachableByInstanceDispatch
+    : provider.isStaticOnly;
+  const excludeFromClass = (method: SymbolDefinition) => !isUnreachableByInstanceDispatch(method);
 
   const missingReceiverSubtypeDecision = (
     typeRef: TypeRef,
@@ -2736,8 +2743,18 @@ function emitReceiverBoundCallsInPass(
         for (const ownerId of memberDef ? [] : chain) {
           const picked =
             site.kind === 'call'
-              ? pickOverload(ownerId, memberName, site, model, provider)
+              ? separateReceiverKinds
+                ? pickFirstNonStaticOnly(
+                    ownerId,
+                    memberName,
+                    site,
+                    model,
+                    provider,
+                    excludeFromClass,
+                  )
+                : pickOverload(ownerId, memberName, site, model, provider)
               : findOwnedMember(ownerId, memberName, model);
+          if (picked === STATIC_ONLY_FILTERED) continue;
           if (picked === OVERLOAD_AMBIGUOUS) {
             ambiguousOwnerId = ownerId;
             break;
@@ -3187,13 +3204,23 @@ function emitReceiverBoundCallsInPass(
           onNameFallback,
           qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
         };
-        const qualifiedOwner = classOfQualifiedTypeSpelling(
+        const selectedOwner = provider.selectReceiverTypeOwner?.(
           typeRef,
+          site,
           scopes,
-          provider.qualifiedTypeLookupSpelling,
-          typeLookup,
-          namespaceMemberVisible,
+          model,
+          isUnreachableByInstanceDispatch,
         );
+        const qualifiedOwner =
+          selectedOwner === undefined
+            ? classOfQualifiedTypeSpelling(
+                typeRef,
+                scopes,
+                provider.qualifiedTypeLookupSpelling,
+                typeLookup,
+                namespaceMemberVisible,
+              )
+            : selectedOwner;
         let ownerDef =
           qualifiedOwner === undefined
             ? classBindingOfSimpleType(typeRef, typeApplication ?? typeRef.rawName, typeLookup)
@@ -3313,7 +3340,14 @@ function emitReceiverBoundCallsInPass(
           // companion members are not legal instance-dispatch
           // candidates.
           for (const ownerId of memberDef === undefined ? chain : []) {
-            const picked = pickFirstNonStaticOnly(ownerId, memberName, site, model, provider);
+            const picked = pickFirstNonStaticOnly(
+              ownerId,
+              memberName,
+              site,
+              model,
+              provider,
+              excludeFromInstance,
+            );
             if (picked === OVERLOAD_AMBIGUOUS) {
               ambiguous = true;
               ambiguousOwnerId = ownerId;
@@ -4248,6 +4282,7 @@ function pickFirstNonStaticOnly(
   site: ParsedFile['referenceSites'][number],
   model: SemanticModel,
   provider: ReceiverBoundProviderSubset,
+  excludeMethod = provider.isStaticOnly,
 ): SymbolDefinition | typeof OVERLOAD_AMBIGUOUS | typeof STATIC_ONLY_FILTERED | undefined {
   const rawOverloads = model.methods.lookupAllByOwner(ownerId, memberName);
   if (rawOverloads.length === 0) {
@@ -4256,13 +4291,12 @@ function pickFirstNonStaticOnly(
     // apply to fields, so delegate straight to `lookupFieldByOwner`.
     return model.fields.lookupFieldByOwner(ownerId, memberName);
   }
-  const isStaticOnly = provider.isStaticOnly;
   let overloads: readonly SymbolDefinition[] = rawOverloads;
   let filteredAny = false;
-  if (isStaticOnly !== undefined) {
+  if (excludeMethod !== undefined) {
     const survivors: SymbolDefinition[] = [];
     for (const candidate of rawOverloads) {
-      if (isStaticOnly(candidate) === true) {
+      if (excludeMethod(candidate) === true) {
         filteredAny = true;
         continue;
       }

@@ -10,6 +10,7 @@
     "lang-resolution/ts-write-access"
   ],
   "projects": [
+    "lang-resolution/typescript-pnpm-workspace-imports",
     "cross-file-binding/ts-circular",
     "cross-file-binding/ts-consumer-before-provider",
     "cross-file-binding/ts-deep-alias-chain",

@@ -31,6 +31,7 @@ import {
   tsReceiverCallSite,
 } from './call-arguments.js';
 import { resolveTsFunctionOverload } from './function-overloads.js';
+import { representativeUnionOwner } from './union-receiver.js';
 import { populateTsRangeBindings } from './range-bindings.js';
 import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
 import { tsQualifiedTypeLookupSpelling } from './interpret.js';
@@ -117,6 +118,7 @@ const typescriptScopeResolver: ScopeResolver = {
     indexTsCallArguments(files, indexes);
   },
   isGlobalNameFallbackPlausible: projectNameFallback,
+  selectReceiverTypeOwner: representativeUnionOwner,
   resolveReceiverMember: resolveTsMemberArguments,
   receiverMemberLookupCoversAllCalls: true,
   receiverCallSite: tsReceiverCallSite,
