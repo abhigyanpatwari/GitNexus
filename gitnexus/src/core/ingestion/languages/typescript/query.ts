@@ -570,13 +570,9 @@ ${unboundCallableQuery('declaration.function')}
 ;; bodies. The @scope.class for class expressions (see (class) above)
 ;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
-  name: (property_identifier) @declaration.name
+  name: [(property_identifier) (private_property_identifier)] @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
-
-(method_definition
-  name: (private_property_identifier) @declaration.name
-  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.method
 
 ;; Abstract method signatures in abstract classes.
 (abstract_method_signature
@@ -1120,29 +1116,10 @@ ${unboundCallableQuery('declaration.function')}
     (union_type) @type-binding.type)) @type-binding.return
 
 (method_definition
-  name: (property_identifier) @type-binding.name
+  name: [(property_identifier) (private_property_identifier)] @type-binding.name
   return_type: (type_annotation
-    [(type_identifier) (nested_type_identifier)] @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (generic_type) @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (array_type) @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (readonly_type) @type-binding.type)) @type-binding.return
-
-(method_definition
-  name: (property_identifier) @type-binding.name
-  return_type: (type_annotation
-    (union_type) @type-binding.type)) @type-binding.return
+    [(type_identifier) (nested_type_identifier) (generic_type)
+     (array_type) (readonly_type) (union_type)] @type-binding.type)) @type-binding.return
 
 (method_signature
   name: (property_identifier) @type-binding.name

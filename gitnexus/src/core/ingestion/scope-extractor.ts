@@ -175,21 +175,7 @@ export function extract(
   for (let i = 0; i < scopeDrafts.length; i++) {
     const d = scopeDrafts[i];
     if (d.parent === null && d.kind !== 'Module') {
-      // `ownsReceivers` must be carried across: it is decided from the scope's
-      // own capture in pass 1 and re-parenting does not change what the scope
-      // binds. Dropping it here would silently un-mark every function scope in
-      // a file whose root parsed as ERROR (the only way a scope is orphaned).
-      scopeDrafts[i] = makeDraft(
-        d.id,
-        moduleScope.id,
-        d.kind,
-        d.range,
-        d.filePath,
-        d.ownsReceivers,
-        d.lexicalNames,
-        d.nameClaims,
-        d.lookupPolicy,
-      );
+      scopeDrafts[i] = { ...d, parent: moduleScope.id };
     }
   }
   const scopes = scopeDrafts.map(draftToScope);

@@ -151,32 +151,52 @@ function projectMembers(
   files: readonly ParsedFile[],
   config: Projects | undefined,
   indexes: ScopeResolutionIndexes,
+  projectOf: (file: ParsedFile) => TsconfigScope | string,
 ) {
-  if (!config?.tsconfigs?.scopes.some((scope) => scope.files || scope.include || scope.exclude))
+  const scopes = config?.tsconfigs?.scopes;
+  if (
+    !scopes?.length ||
+    (scopes.length === 1 && !scopes[0].files && !scopes[0].include && !scopes[0].exclude)
+  )
     return;
   const byPath = new Map(files.map((file) => [file.filePath, file]));
-  const included = new Set<ParsedFile>();
+  const roots = new Map<TsconfigScope | string, Set<ParsedFile>>();
   const selections = new Map<TsconfigScope, ReturnType<typeof fileSelection>>();
   for (const file of files) {
-    const scope = tsconfigFor(config.tsconfigs, file.filePath);
-    if (!scope) {
-      included.add(file);
-      continue;
+    const project = projectOf(file);
+    if (typeof project !== 'string') {
+      let selected = selections.get(project);
+      if (!selected) {
+        selected = fileSelection(project);
+        selections.set(project, selected);
+      }
+      if (!selected(file.filePath)) continue;
     }
-    let selected = selections.get(scope);
-    if (!selected) {
-      selected = fileSelection(scope);
-      selections.set(scope, selected);
+    let members = roots.get(project);
+    if (!members) {
+      members = new Set();
+      roots.set(project, members);
     }
-    if (selected(file.filePath)) included.add(file);
+    members.add(file);
   }
-  for (const file of included) {
-    indexes.imports.forEachTarget(file.moduleScope, (target) => {
-      const dependency = byPath.get(target);
-      if (dependency) included.add(dependency);
-    });
+  const membership = new Map<ParsedFile, Set<TsconfigScope | string>>();
+  for (const [project, members] of roots) {
+    for (const file of members) {
+      let projects = membership.get(file);
+      if (!projects) {
+        projects = new Set();
+        membership.set(file, projects);
+      }
+      projects.add(project);
+      if (members.size < files.length) {
+        indexes.imports.forEachTarget(file.moduleScope, (target) => {
+          const dependency = byPath.get(target);
+          if (dependency) members.add(dependency);
+        });
+      }
+    }
   }
-  return included;
+  return membership;
 }
 
 /** Publish globals at the module scope so lexical declarations retain precedence. */
@@ -186,12 +206,12 @@ export function bindGlobalDeclarations(
 ) {
   if (!projectsByFiles.has(files)) return;
   const config = projectsByFiles.get(files);
-  const members = projectMembers(files, config, indexes);
   const projectOf = (file: ParsedFile) =>
-    tsconfigFor(config?.tsconfigs ?? null, file.filePath)?.dir ??
+    tsconfigFor(config?.tsconfigs ?? null, file.filePath) ??
     owningPackage(file.filePath, config?.nodeWorkspacePackages)?.dir ??
     '';
-  const globals = new Map<string, Map<string, BindingRef[]>>();
+  const membership = projectMembers(files, config, indexes, projectOf);
+  const globals = new Map<TsconfigScope | string, Map<string, BindingRef[]>>();
   for (const file of files) {
     const scope = declarationScope(file.captureSideChannel);
     if (!scope) continue;
@@ -202,55 +222,81 @@ export function bindGlobalDeclarations(
           scriptDeclarations.add(def);
       }
     }
-    if (members && !members.has(file)) continue;
-    const names =
-      scope.scriptNames &&
-      !isProjectModule(
-        file.filePath,
-        scope.containsJsx === true,
-        tsconfigFor(config?.tsconfigs ?? null, file.filePath),
-        config?.nodeWorkspacePackages,
-      )
-        ? scope.scriptNames
-        : scope.globalNames;
-    if (!names.length) continue;
-    const positions = new Set(names);
-    const project = projectOf(file);
-    let symbols = globals.get(project);
-    if (!symbols) {
-      symbols = new Map();
-      globals.set(project, symbols);
-    }
-    for (const def of file.localDefs) {
-      if (
-        !def.nameRange ||
-        !def.qualifiedName ||
-        !positions.has(`${def.nameRange.startLine}:${def.nameRange.startCol}`)
-      )
-        continue;
-      const name = def.qualifiedName;
-      const refs = symbols.get(name) ?? [];
-      refs.push({ def, origin: 'namespace' });
-      symbols.set(name, refs);
+    const projects = membership ? membership.get(file) : [projectOf(file)];
+    for (const project of projects ?? []) {
+      const names =
+        scope.scriptNames &&
+        !isProjectModule(
+          file.filePath,
+          scope.containsJsx === true,
+          typeof project === 'string' ? null : project,
+          config?.nodeWorkspacePackages,
+        )
+          ? scope.scriptNames
+          : scope.globalNames;
+      if (!names.length) continue;
+      const positions = new Set(names);
+      let symbols = globals.get(project);
+      if (!symbols) {
+        symbols = new Map();
+        globals.set(project, symbols);
+      }
+      for (const def of file.localDefs) {
+        if (
+          !def.nameRange ||
+          !def.qualifiedName ||
+          !positions.has(`${def.nameRange.startLine}:${def.nameRange.startCol}`)
+        )
+          continue;
+        const name = def.qualifiedName;
+        const refs = symbols.get(name) ?? [];
+        refs.push({ def, origin: 'namespace' });
+        symbols.set(name, refs);
+      }
     }
   }
   const namespaces = indexes.namespaceFqnBindings as Map<string, ReadonlyMap<string, BindingRef[]>>;
   const accessible = indexes.accessibleNamespacesByScope as Map<ScopeId, readonly string[]>;
   for (const file of files) {
-    const project = projectOf(file);
-    const symbols = globals.get(project);
     visibleGlobals.delete(file);
+    const owner = projectOf(file);
+    const projects = membership?.get(file);
+    if (membership && !projects) continue;
+    const visibleProjects = projects && !projects.has(owner) ? [...projects] : [owner];
+    const symbols = globals.get(visibleProjects[0]);
     if (!symbols?.size) continue;
     // An explicit import owns its local spelling even when its target is not a module.
     const shadowed = new Set<string>();
     for (const entry of file.parsedImports) {
       if ('localName' in entry && symbols.has(entry.localName)) shadowed.add(entry.localName);
     }
-    const namespace = JSON.stringify(['typescript-global', project, [...shadowed].sort()]);
+    const namespace = JSON.stringify([
+      'typescript-global',
+      visibleProjects
+        .map((project) => (typeof project === 'string' ? project : project.dir))
+        .sort(),
+      [...shadowed].sort(),
+    ]);
     if (!namespaces.has(namespace)) {
+      let shared = symbols;
+      if (visibleProjects.length > 1) {
+        // A shared dependency without its own project only has a unique binding
+        // when its including programs agree on the declarations.
+        shared = new Map(
+          [...symbols].filter(([name, refs]) =>
+            visibleProjects.slice(1).every((project) => {
+              const other = globals.get(project)?.get(name);
+              return (
+                other?.length === refs.length &&
+                refs.every((ref) => other.some((candidate) => candidate.def === ref.def))
+              );
+            }),
+          ),
+        );
+      }
       namespaces.set(
         namespace,
-        shadowed.size ? new Map([...symbols].filter(([name]) => !shadowed.has(name))) : symbols,
+        shadowed.size ? new Map([...shared].filter(([name]) => !shadowed.has(name))) : shared,
       );
     }
     accessible.set(file.moduleScope, [...(accessible.get(file.moduleScope) ?? []), namespace]);

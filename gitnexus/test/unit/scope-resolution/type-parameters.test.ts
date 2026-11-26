@@ -49,9 +49,9 @@ describe('parseTypeParameterList', () => {
     ['<in T>', [{ name: 'T' }]],
     ['<reified T : Repo>', [{ name: 'T', bound: 'Repo' }]],
     ['<class... Ts>', [{ name: 'Ts' }]],
-    // A default is neither name nor bound.
-    ['<class T = int>', [{ name: 'T' }]],
-    ['<T extends Repo = DefaultRepo>', [{ name: 'T', bound: 'Repo' }]],
+    // Keep the default separately from the parameter name and its bound.
+    ['<class T = int>', [{ name: 'T', defaultType: 'int' }]],
+    ['<T extends Repo = DefaultRepo>', [{ name: 'T', bound: 'Repo', defaultType: 'DefaultRepo' }]],
     // Commas inside a bound are not entry separators.
     ['<T extends Map<K, V>, K>', [{ name: 'T', bound: 'Map<K, V>' }, { name: 'K' }]],
     // An intersection bound is kept VERBATIM — splitting it is the consumer's
