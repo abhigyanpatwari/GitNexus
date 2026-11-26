@@ -1,12 +1,20 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  collectResolutionGroupFiles,
-  hasResolutionGroups,
-} from '../../src/core/incremental/resolution-groups.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+type ResolutionGroups = typeof import('../../src/core/incremental/resolution-groups.js');
+let collectResolutionGroupFiles: ResolutionGroups['collectResolutionGroupFiles'];
+let hasResolutionGroups: ResolutionGroups['hasResolutionGroups'];
 
 afterEach(() => vi.unstubAllEnvs());
 
 describe('incremental resolution groups', () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.stubEnv('GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY', undefined);
+    const resolutionGroups = await import('../../src/core/incremental/resolution-groups.js');
+    collectResolutionGroupFiles = resolutionGroups.collectResolutionGroupFiles;
+    hasResolutionGroups = resolutionGroups.hasResolutionGroups;
+  });
+
   it('refreshes Java across directories when an unmentioned package type changes or is deleted', () => {
     const javaFiles = ['models/Foo.java', 'generated/Mid.java', 'app/A.java'];
     const mixed = [...javaFiles, 'models/Other.kt', 'models/Other.ts'];
