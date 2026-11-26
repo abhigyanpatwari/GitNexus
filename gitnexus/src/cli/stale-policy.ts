@@ -62,6 +62,21 @@ export function applyStalePolicy<T>(
   policy: StalePolicy = DEFAULT_STALE_POLICY,
 ): StalePolicyOutcome<T> {
   if (policy === 'warn') return { result };
+  if (
+    result &&
+    typeof result === 'object' &&
+    'per_repo' in result &&
+    Array.isArray(result.per_repo)
+  ) {
+    const { per_repo: members, ...envelope } = result;
+    const top = applyStalePolicy(envelope, policy);
+    const outcomes = members.map((member: unknown) => applyStalePolicy(member, policy));
+    if (policy === 'error') {
+      const failure = top.failure ?? outcomes.find((entry) => entry.failure)?.failure;
+      return failure ? { result, failure } : { result };
+    }
+    return { result: { ...top.result, per_repo: outcomes.map((entry) => entry.result) } as T };
+  }
   const staleness = stalenessOf(result);
   if (!staleness || !isStale(staleness)) return { result };
 
@@ -89,10 +104,20 @@ export interface IndexedRepo {
 function needsProbe(result: unknown): boolean {
   if (result === null || typeof result !== 'object') return false;
   if (Array.isArray(result)) return true;
-  const fields = result as { staleness?: unknown; error?: unknown };
+  const fields = result as {
+    staleness?: unknown;
+    error?: unknown;
+    partial?: unknown;
+    per_repo?: unknown;
+  };
   // An error payload already fails the command; a payload that states its
   // freshness was judged by `applyStalePolicy`.
-  return fields.staleness === undefined && fields.error === undefined;
+  return (
+    !Array.isArray(fields.per_repo) &&
+    fields.staleness === undefined &&
+    fields.error === undefined &&
+    fields.partial !== true
+  );
 }
 
 /**

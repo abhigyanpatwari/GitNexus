@@ -21,6 +21,18 @@ gitnexus wiki [path]             # Generate repository wiki from knowledge graph
 gitnexus uninstall               # Preview removal of GitNexus MCP/skills/hooks (--force to apply)
 ```
 
+### Stale indexes
+
+The `query`, `context`, `impact`, `trace`, `cypher`, `detect-changes`, and `check` commands accept `--stale-policy warn|ignore|error`.
+
+| Policy | Behavior |
+| --- | --- |
+| `warn` (default) | Print the usual result and freshness warning. |
+| `ignore` | Suppress the warning hint and retain the indexed ref and status in structured output. |
+| `error` | Print the result and exit with status 1 if the index is behind or diverged. Unknown freshness continues normally. |
+
+For results with per-repository freshness, each member is checked. A stale member makes `error` fail. These options do not re-index the repository.
+
 ### Multi-client setups: use `--http`, not stdio
 
 MCP-over-stdio is **one server process per client** by protocol design — every client

@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyStalePolicy, reportStalePolicy } from '../../src/cli/stale-policy.js';
+import {
+  applyStalePolicy,
+  applyStalePolicyProbed,
+  reportStalePolicy,
+} from '../../src/cli/stale-policy.js';
 import {
   DEFAULT_STALE_POLICY,
   STALE_POLICIES,
@@ -91,6 +95,39 @@ describe('applyStalePolicy', () => {
       }
     },
   );
+});
+
+describe('multi-repository results', () => {
+  const group = { per_repo: [unknown, behind, diverged] };
+
+  it('fails on a confirmed stale member and preserves the complete result', async () => {
+    const locate = vi.fn();
+    const outcome = await applyStalePolicyProbed(group, 'error', locate);
+    expect(outcome.result).toBe(group);
+    expect(outcome.failure).toEqual({ commitsBehind: 1 });
+    expect(locate).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing partial-result failure without issuing another repository probe', async () => {
+    const result = { partial: true, warnings: ['Only part of the result was available'] };
+    const locate = vi.fn();
+    expect(await applyStalePolicyProbed(result, 'error', locate)).toEqual({ result });
+    expect(locate).not.toHaveBeenCalled();
+  });
+
+  it('keeps unknown or missing member freshness non-blocking', async () => {
+    const locate = vi.fn();
+    const result = { per_repo: [unknown, noField, current] };
+    expect(await applyStalePolicyProbed(result, 'error', locate)).toEqual({ result });
+    expect(locate).not.toHaveBeenCalled();
+  });
+
+  it('suppresses member warnings while retaining the repository and index metadata', () => {
+    const outcome = applyStalePolicy(group, 'ignore');
+    expect(outcome.result.per_repo[1].staleness).not.toHaveProperty('hint');
+    expect(outcome.result.per_repo[1].staleness).toMatchObject({ status: 'behind', ...ref });
+    expect(behind.staleness.hint).toBeTruthy();
+  });
 });
 
 describe('reportStalePolicy', () => {
