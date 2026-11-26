@@ -381,6 +381,105 @@ describe('@declaration.is-default-export (#3956)', () => {
     }
   });
 
+  it('marks the local component a wrapper call exports as the default (#323)', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      const wrapped = (expr: string) =>
+        defaultExports(
+          emit,
+          `function Foo() {}\nfunction other() {}\nexport default ${expr};`,
+          file,
+        );
+      expect(wrapped('memo(Foo)')).toEqual(['Foo']);
+      expect(wrapped('React.memo(Foo, other)')).toEqual(['Foo']);
+      expect(wrapped('memo(forwardRef(Foo))')).toEqual(['Foo']);
+      expect(wrapped('connect(other)(Foo)')).toEqual(['Foo']);
+      expect(defaultExports(emit, 'class C {}\nexport default withRouter(C);', file)).toEqual([
+        'C',
+      ]);
+      expect(defaultExports(emit, 'const A = () => 1;\nexport default memo(A);', file)).toEqual([
+        'A',
+      ]);
+      expect(
+        defaultExports(emit, 'const F = forwardRef((p, r) => 1);\nexport default memo(F);', file),
+      ).toEqual(['F']);
+      expect(wrapped('memo(/* pure */ Foo)')).toEqual(['Foo']);
+    }
+  });
+
+  it('unwraps TypeScript assertions and parentheses around the wrapped default', () => {
+    const src = (expr: string) => `function Foo() {}\nexport default ${expr};`;
+    for (const expr of [
+      'memo(Foo) as typeof Foo',
+      'memo(Foo) satisfies object',
+      '(memo(Foo))',
+      'memo(Foo as any)',
+      'memo(Foo!)',
+    ])
+      expect(defaultExports(emitTsScopeCaptures, src(expr), 'x.ts')).toEqual(['Foo']);
+  });
+
+  it('keeps the wrapped component, not its inline comparator, as the default', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'Widget.jsx'],
+      [emitTsScopeCaptures, 'Widget.tsx'],
+    ] as const) {
+      const src = 'function Card() {}\nexport default React.memo(Card, (a, b) => a === b);';
+      expect(defaultExports(emit, src, file)).toEqual(['Card']);
+      expect(
+        emit(src, file).some((m) => m['@declaration.name']?.text === 'Widget'),
+        'the comparator must not be declared as the file-named default',
+      ).toBe(false);
+    }
+  });
+
+  it('exports only the runtime value when a type shares the wrapped name', () => {
+    const kinds = emitTsScopeCaptures(
+      'interface Card { a: number }\nfunction Card() {}\nexport default memo(Card);\n',
+      'x.ts',
+    )
+      .filter((m) => m['@declaration.name']?.text === 'Card')
+      .map((m) => [
+        m['@declaration.interface'] !== undefined ? 'interface' : 'value',
+        m['@declaration.is-exported']?.text,
+      ]);
+    expect(kinds).toContainEqual(['interface', 'false']);
+    expect(kinds).toContainEqual(['value', 'true']);
+  });
+
+  it('marks no wrapped default unless the argument is a local callable', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(
+        defaultExports(emit, 'const cfg = { a: 1 };\nexport default make(cfg);', file),
+      ).toEqual([]);
+      expect(
+        defaultExports(emit, "import Foo from './Foo';\nexport default memo(Foo);", file),
+      ).toEqual([]);
+      expect(defaultExports(emit, 'function f() {}\nexport default setTimeout(f);', file)).toEqual(
+        [],
+      );
+      expect(defaultExports(emit, 'function f() {}\nexport default make(1, f);', file)).toEqual([]);
+      expect(defaultExports(emit, 'function f() {}\nexport default f.bind(null);', file)).toEqual(
+        [],
+      );
+      expect(defaultExports(emit, 'function f() {}\nexport default xs.map(f);', file)).toEqual([]);
+      expect(defaultExports(emit, 'function f() {}\nexport default p.then(f);', file)).toEqual([]);
+      expect(
+        defaultExports(emit, 'const t = setTimeout(() => 1);\nexport default memo(t);', file),
+      ).toEqual([]);
+    }
+  });
+
+  it('leaves an inline wrapped function as the default when the named argument is not local', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'Widget.jsx'],
+      [emitTsScopeCaptures, 'Widget.tsx'],
+    ] as const) {
+      expect(
+        defaultExports(emit, "import opts from './o';\nexport default hoc(opts, () => 1);", file),
+      ).toEqual(['Widget']);
+    }
+  });
+
   it('lands on SymbolDefinition.isDefaultExport only for the top-level default', () => {
     const parsed = extract(
       emitTsScopeCaptures(

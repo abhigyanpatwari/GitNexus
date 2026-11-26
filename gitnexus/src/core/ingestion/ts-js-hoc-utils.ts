@@ -1,6 +1,7 @@
 import path from 'node:path';
 
 import type { SyntaxNode } from './utils/ast-helpers.js';
+import { decodeIdentifierEscapes } from './utils/ecmascript-literals.js';
 
 // Member-expression callees that should never classify a callback-wrapped
 // binding as a top-level Function. This covers callback-taking Array methods
@@ -131,7 +132,118 @@ export function isBlockedDefaultExportHoc(node: SyntaxNode): boolean {
   if (callExpr === null || callExpr?.type !== 'call_expression') return false;
 
   const callee = callExpr.childForFieldName?.('function');
-  return callee?.type === 'identifier' && DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text);
+  if (callee?.type === 'identifier' && DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text))
+    return true;
+  // `memo(Card, (a, b) => …)`: the wrapper publishes the local `Card`; the
+  // inline function is a helper argument (a comparator), not the export.
+  let root: SyntaxNode = callExpr;
+  while (root.parent !== null) root = root.parent;
+  return wrappedDefaultLocal(callExpr, root) !== undefined;
+}
+
+/** Expression wrappers that leave the exported value unchanged. */
+const TRANSPARENT_EXPRESSIONS: ReadonlySet<string> = new Set([
+  'parenthesized_expression',
+  'as_expression',
+  'satisfies_expression',
+  'non_null_expression',
+]);
+
+/** `(x)`, `x as T`, `x satisfies T`, `x!` → `x`. */
+export function unwrapTransparentExpression(node: SyntaxNode): SyntaxNode {
+  let current = node;
+  while (TRANSPARENT_EXPRESSIONS.has(current.type) && current.namedChildren[0] !== undefined)
+    current = current.namedChildren[0];
+  return current;
+}
+
+function isInlineFunction(node: SyntaxNode): boolean {
+  return node.type === 'arrow_function' || node.type === 'function_expression';
+}
+
+/** Timer and array/promise-method callees register or map a callback; they never wrap it. */
+function isBlockedWrapperCallee(callee: SyntaxNode | null): boolean {
+  if (callee?.type === 'identifier')
+    return DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(decodeIdentifierEscapes(callee.text));
+  const property =
+    callee?.type === 'member_expression' ? callee.childForFieldName('property') : null;
+  return (
+    property?.type === 'property_identifier' && ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+  );
+}
+
+function callArguments(call: SyntaxNode): SyntaxNode[] | undefined {
+  const args = call.childForFieldName('arguments');
+  if (args?.type !== 'arguments') return undefined;
+  return args.namedChildren.filter((arg) => arg.type !== 'comment');
+}
+
+/**
+ * `const X = hoc(() => …)` — the HOC-wrapped variable the queries declare as a
+ * Function (`forwardRef`, `memo`, `observer`, …).
+ */
+function isHocWrappedFunction(value: SyntaxNode | null): boolean {
+  if (value?.type !== 'call_expression') return false;
+  if (isBlockedWrapperCallee(value.childForFieldName('function'))) return false;
+  return callArguments(value)?.some(isInlineFunction) ?? false;
+}
+
+const CALLABLE_DECLARATIONS: ReadonlySet<string> = new Set([
+  'function_declaration',
+  'generator_function_declaration',
+  'class_declaration',
+  'abstract_class_declaration',
+]);
+const CALLABLE_VALUES: ReadonlySet<string> = new Set([
+  'arrow_function',
+  'function_expression',
+  'class',
+]);
+
+/**
+ * Is `name` a top-level function or class: declared directly, or bound to a
+ * function, class or HOC-wrapped function? A wrapper around anything else
+ * (`make(config)`) returns a value the graph cannot attribute to the argument.
+ */
+function declaresTopLevelCallable(root: SyntaxNode, name: string): boolean {
+  return root.namedChildren.some((stmt) => {
+    const declaration =
+      stmt.type === 'export_statement' ? stmt.childForFieldName('declaration') : stmt;
+    if (declaration === null) return false;
+    if (CALLABLE_DECLARATIONS.has(declaration.type))
+      return decodeIdentifierEscapes(declaration.childForFieldName('name')?.text ?? '') === name;
+    if (declaration.type !== 'lexical_declaration' && declaration.type !== 'variable_declaration')
+      return false;
+    return declaration.namedChildren.some((declarator) => {
+      const binding = declarator.childForFieldName('name');
+      const value = declarator.childForFieldName('value');
+      return (
+        binding?.type === 'identifier' &&
+        decodeIdentifierEscapes(binding.text) === name &&
+        (CALLABLE_VALUES.has(value?.type ?? '') || isHocWrappedFunction(value))
+      );
+    });
+  });
+}
+
+/**
+ * The top-level function or class a wrapper call exports: `memo(Card)`,
+ * `React.memo(Card, areEqual)`, `memo(forwardRef(Card))` and
+ * `connect(mapState)(Card)` all name `Card`, the first argument unwrapped
+ * through nested wrapper calls. An inline first argument is not a name: the
+ * synthesized HOC default above owns it.
+ */
+export function wrappedDefaultLocal(call: SyntaxNode, root: SyntaxNode): string | undefined {
+  let current = call;
+  while (current.type === 'call_expression') {
+    if (isBlockedWrapperCallee(current.childForFieldName('function'))) return undefined;
+    const [first] = callArguments(current) ?? [];
+    if (first === undefined) return undefined;
+    current = unwrapTransparentExpression(first);
+  }
+  if (current.type !== 'identifier') return undefined;
+  const name = decodeIdentifierEscapes(current.text);
+  return declaresTopLevelCallable(root, name) ? name : undefined;
 }
 
 // Core check on a call expression: does it register a callback with a built-in

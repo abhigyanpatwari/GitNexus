@@ -1006,6 +1006,22 @@ describe('JavaScript default imports (#3956)', () => {
   });
 });
 
+// #323: `export default memo(Card)` publishes `Card` as the default export.
+describe('JavaScript default imports of wrapped components (#323)', () => {
+  const result = useFixture('js-wrapped-default-import', {
+    'Card.jsx':
+      "import { memo } from 'react';\nfunction Card() { return <div />; }\nexport default memo(Card);\n",
+    'App.jsx': "import Tile from './Card';\nexport function App() { return <Tile />; }\n",
+  });
+
+  it('links a JSX render of a default import to the wrapped component', () => {
+    const targets = getRelationships(result(), 'CALLS')
+      .filter((c) => c.source === 'App' && c.targetFilePath === 'Card.jsx')
+      .map((c) => c.target);
+    expect(targets).toEqual(['Card']);
+  });
+});
+
 // #1646: member references matched only `property_identifier`, so a call, read
 // or write through `this.#name` (a `private_property_identifier`) linked
 // nothing, and JavaScript did not declare private methods and fields at all.

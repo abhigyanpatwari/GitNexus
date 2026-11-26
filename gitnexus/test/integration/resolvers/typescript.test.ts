@@ -3885,3 +3885,43 @@ export function Other() {
     expect(callsFrom('useRoute', 'src/route.ts').length).toBeGreaterThan(0);
   });
 });
+
+// #323: a component published through a wrapper call (`export default
+// memo(Card)`) is that module's default export, so its JSX consumers link.
+describe('TypeScript default imports of wrapped components (#323)', () => {
+  const result = useFixture('ts-wrapped-default-import', {
+    'src/c/Card.tsx': `import { memo } from 'react';
+function Card({ a }: { a: number }) { return <div>{a}</div>; }
+export default memo(Card);
+`,
+    'src/c/Field.tsx': `import { forwardRef, memo } from 'react';
+const Field = forwardRef((props: { a: number }, ref) => <input />);
+export default memo(Field) as typeof Field;
+`,
+    'src/c/Row.tsx': `import React from 'react';
+function Row({ a }: { a: number }) { return <tr>{a}</tr>; }
+export default React.memo(Row, (prev, next) => prev.a === next.a);
+`,
+    'src/Screen.tsx': `import Card from './c/Card';
+import Input from './c/Field';
+import Line from './c/Row';
+export function Screen() { return <div><Card a={1} /><Input a={2} /><Line a={3} /></div>; }
+`,
+    'src/Named.tsx':
+      "import { Card } from './c/Card';\nexport function Named() { return <Card a={4} />; }\n",
+  });
+  const callsFrom = (source: string, targetFilePath: string) =>
+    getRelationships(result(), 'CALLS')
+      .filter((c) => c.source === source && c.targetFilePath === targetFilePath)
+      .map((c) => c.target);
+
+  it('links JSX renders of default imports to the wrapped components', () => {
+    expect(callsFrom('Screen', 'src/c/Card.tsx')).toEqual(['Card']);
+    expect(callsFrom('Screen', 'src/c/Field.tsx')).toEqual(['Field']);
+    expect(callsFrom('Screen', 'src/c/Row.tsx')).toEqual(['Row']);
+  });
+
+  it('publishes the wrapped component only as the default, not under its own name', () => {
+    expect(callsFrom('Named', 'src/c/Card.tsx')).toEqual([]);
+  });
+});
