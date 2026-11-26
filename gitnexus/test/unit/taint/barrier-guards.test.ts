@@ -196,6 +196,17 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not suppress when an earlier call precedes a pre-sink member overwrite', () => {
+    // audit() must not be used as the sink anchor for assign-vs-call ordering.
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        (audit(), (req.body = req.query), exec(req.body));
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('still suppresses when the member write is after the sink', () => {
     const { flows } = analyze(`
       function f(req: any) {

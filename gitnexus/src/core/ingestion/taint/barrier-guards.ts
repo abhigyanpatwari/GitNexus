@@ -381,29 +381,69 @@ export function subjectBindingAssignedOnValidatedPath(
   return false;
 }
 
-/** Index of the sink call expression in `block.text`, or -1. */
-function sinkCallTextIndex(block: FunctionCfg['blocks'][number], sinkPoint: ProgramPoint): number {
+/**
+ * Index of the *sink* call in `block.text` (not merely the first call).
+ * Prefers `call.at` when present; otherwise the nth same-callee occurrence
+ * matching `sinkSiteIndex` among this statement's call sites.
+ */
+function sinkCallTextIndex(
+  block: FunctionCfg['blocks'][number],
+  sinkPoint: ProgramPoint,
+  sinkSiteIndex: number,
+): number {
   const stmt = block.statements?.[sinkPoint.stmtIndex];
-  const call = stmt?.sites?.find((s) => s.kind === 'call' && s.callee);
-  if (!call?.callee) return -1;
+  const sites = stmt?.sites ?? [];
+  const call = sites[sinkSiteIndex];
+  if (!call || call.kind !== 'call' || !call.callee) return -1;
+
+  // Harvester `at` is the call-expression start — most precise when present.
+  if (call.at) {
+    const [line, col] = call.at;
+    const lines = block.text.split('\n');
+    let offset = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = block.startLine + i;
+      if (lineNo === line) return offset + Math.min(col, lines[i].length);
+      offset += lines[i].length + 1;
+    }
+  }
+
   const leaf = call.callee.includes('.')
     ? (call.callee.split('.').pop() ?? call.callee)
     : call.callee;
   const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return block.text.search(new RegExp(`\\b${escaped}\\s*\\(`));
+  const re = new RegExp(`\\b${escaped}\\s*\\(`, 'g');
+  // How many same-leaf calls appear at or before this site in the statement?
+  let ordinal = 0;
+  for (let i = 0; i < sinkSiteIndex; i++) {
+    const prev = sites[i];
+    if (prev?.kind !== 'call' || !prev.callee) continue;
+    const prevLeaf = prev.callee.includes('.')
+      ? (prev.callee.split('.').pop() ?? prev.callee)
+      : prev.callee;
+    if (prevLeaf === leaf) ordinal++;
+  }
+  let match: RegExpExecArray | null;
+  let seen = 0;
+  while ((match = re.exec(block.text)) !== null) {
+    if (seen === ordinal) return match.index;
+    seen++;
+  }
+  return -1;
 }
 
 /**
  * True when a validated member property is assigned on the controller's
  * validated branch *before* the sink (`req.body = …` then `exec(req.body)`).
- * In the sink block, compares assign vs sink-call positions in `block.text`
- * so post-sink writes (and multiline pre-sink writes) are ordered correctly.
+ * In the sink block, compares assign vs *this* sink-call position in
+ * `block.text` (not the first call in the statement).
  */
 export function memberPropertyAssignedOnValidatedPath(
   cfg: FunctionCfg,
   index: BarrierGuardIndex,
   controller: BarrierController,
   sinkPoint: ProgramPoint,
+  sinkSiteIndex: number,
 ): boolean {
   const prop = controller.subjectProperty;
   if (!prop) return false;
@@ -417,7 +457,7 @@ export function memberPropertyAssignedOnValidatedPath(
     if (block.index === sinkPoint.blockIndex) {
       const assignIdx = block.text.search(assignRe);
       if (assignIdx < 0) continue;
-      const sinkIdx = sinkCallTextIndex(block, sinkPoint);
+      const sinkIdx = sinkCallTextIndex(block, sinkPoint, sinkSiteIndex);
       // Assign before sink call in source text (same-line / multiline safe).
       if (sinkIdx < 0 || assignIdx < sinkIdx) return true;
       continue;

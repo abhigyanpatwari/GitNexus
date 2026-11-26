@@ -581,6 +581,7 @@ export function computeTaintFlows(
     sinkPoint: ProgramPoint,
     taintDefPoint?: ProgramPoint,
     sinkProperty?: string,
+    sinkSiteIndex?: number,
   ): boolean => {
     const controller = isBarrierGuarded(
       barrierIndex,
@@ -592,7 +593,10 @@ export function computeTaintFlows(
     if (!controller) return false;
     // Member writes (`req.body = …`) and object rebinding (`req = other`)
     // before the sink invalidate the barrier (not always visible as taintDefPoint).
-    if (memberPropertyAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint))
+    if (
+      sinkSiteIndex !== undefined &&
+      memberPropertyAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint, sinkSiteIndex)
+    )
       return false;
     if (subjectBindingAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint))
       return false;
@@ -864,7 +868,7 @@ export function computeTaintFlows(
             // the value reaches the sink through a nested call (transformed).
             if (
               !sofar.viaCall &&
-              suppressedByBarrier(localBinding, ctx.point, undefined, srcSite.property)
+              suppressedByBarrier(localBinding, ctx.point, undefined, srcSite.property, siteIndex)
             )
               continue;
             recordFinding(
@@ -977,7 +981,7 @@ export function computeTaintFlows(
               // argument (direct + wrap(host) must not let the direct win).
               const sinkProps = memberPropertiesAtArg(ctx.sites, siteIndex, argPos);
               if (!paths.some((path) => path.viaCall) && sinkProps.length <= 1) {
-                if (suppressedByBarrier(b, ctx.point, t.point, sinkProps[0])) continue;
+                if (suppressedByBarrier(b, ctx.point, t.point, sinkProps[0], siteIndex)) continue;
               }
               const chain = chainHops(key);
               chain.hops.push({
