@@ -148,20 +148,50 @@ function outermostMember(node: Node): Node {
   return current;
 }
 
-/** The member/subscript target an assignment, update or `delete` writes, if any. */
-function writtenMember(node: Node): Node | null {
-  let target: Node | null = null;
-  if (node.type === 'assignment_expression' || node.type === 'augmented_assignment_expression')
-    target = node.childForFieldName('left');
-  else if (node.type === 'update_expression') target = node.childForFieldName('argument');
-  else if (
-    node.type === 'unary_expression' &&
-    node.children.some((child) => child.type === 'delete')
-  )
-    target = node.childForFieldName('argument');
-  return target?.type === 'member_expression' || target?.type === 'subscript_expression'
-    ? target
-    : null;
+/** Whether `child` is `parent`'s field `field`. */
+const isField = (parent: Node, field: string, child: Node): boolean =>
+  parent.childForFieldName(field)?.id === child.id;
+
+/**
+ * Whether a member read is actually a write target. The read is first lifted
+ * out of whatever can hold an assignment target without changing which
+ * location it names (parentheses and TS wrappers, destructuring patterns, a
+ * pattern default's left side, a rest element). Then the enclosing node
+ * decides: the left side of `=`, `+=` and similar, or of `for (… in/of …)`;
+ * the operand of `++`/`--`; or the operand of `delete`. That covers
+ * `T.A = x`, `[T.A] = xs`, `({ k: T.A } = o)`, `for (T.A of xs)`,
+ * `for ([T.A] of xs)` and `delete T.A`, while `for (x of [T.A])` stays a read.
+ */
+function isWriteTarget(read: Node): boolean {
+  let target = read;
+  for (let parent = target.parent; parent; parent = target.parent) {
+    const lift =
+      TRANSPARENT_EXPRESSION_TYPES.has(parent.type) ||
+      parent.type === 'array_pattern' ||
+      parent.type === 'object_pattern' ||
+      parent.type === 'rest_pattern' ||
+      (parent.type === 'pair_pattern' && isField(parent, 'value', target)) ||
+      (parent.type === 'assignment_pattern' && isField(parent, 'left', target));
+    if (!lift) break;
+    target = parent;
+  }
+  const parent = target.parent;
+  if (!parent) return false;
+  switch (parent.type) {
+    case 'assignment_expression':
+    case 'augmented_assignment_expression':
+    case 'for_in_statement':
+      return isField(parent, 'left', target);
+    case 'update_expression':
+      return isField(parent, 'argument', target);
+    case 'unary_expression':
+      return (
+        parent.children.some((child) => child.type === 'delete') &&
+        isField(parent, 'argument', target)
+      );
+    default:
+      return false;
+  }
 }
 
 /**
@@ -242,8 +272,7 @@ function createConstantPaths(
       // `typeof T` in a type position reads nothing at runtime.
       if (read.parent?.type === 'type_query') continue;
       const dotted = read.id === node.id ? null : dottedNameOf(read);
-      const written = read.parent ? writtenMember(read.parent)?.id === read.id : false;
-      if (dotted === null || !leaves.has(dotted) || written) untrusted.add(id);
+      if (dotted === null || !leaves.has(dotted) || isWriteTarget(read)) untrusted.add(id);
     }
     folding = { untrusted, facts };
     return folding;

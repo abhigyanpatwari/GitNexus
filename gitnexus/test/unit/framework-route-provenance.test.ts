@@ -208,6 +208,20 @@ function handler() {} function other() {}`);
     expect(emitted).toEqual(folds ? [`GET ${runtime}`] : []);
   });
 
+  it('keeps a table whose leaves are only read, including inside loops and patterns', () => {
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const T = { A: '/a', B: '/b' };
+      for (const x of [T.A]) {}
+      for (const k in { [T.B]: 1 }) {}
+      const { x = T.A } = {};
+      const [y = T.B] = [];
+      f({ a: T.A }, [T.B]);
+      app.get(T.A, handler);
+      app.post(T.B, handler);`).sort(),
+    ).toEqual(['GET /a', 'POST /b']);
+  });
+
   it('keeps a string constant that contains ${…} exactly as its literal would', () => {
     const literal = urls(`import express from 'express'; const app = express();
       app.get('/files/\${name}', handler);`);
@@ -296,6 +310,29 @@ function handler() {} function other() {}`);
     ['a computed key', `const T = { A: '/stale', ['A']: '/actual' }; app.get(T.A, h);`],
     ['a repeated key', `const T = { A: '/first', 'A': '/second' }; app.get(T.A, h);`],
     ['a __proto__ entry', `const T = { __proto__: BASE, A: '/a' }; app.get(T.A, h);`],
+    ['a for-of target', `const T = { A: '/a' }; for (T.A of ['/b']) {} app.get(T.A, h);`],
+    ['a for-in target', `const T = { A: '/a' }; for (T.A in { '/b': 1 }) {} app.get(T.A, h);`],
+    ['an array destructuring target', `const T = { A: '/a' }; [T.A] = ['/b']; app.get(T.A, h);`],
+    [
+      'an object destructuring target',
+      `const T = { A: '/a' }; ({ x: T.A } = { x: '/b' }); app.get(T.A, h);`,
+    ],
+    [
+      'a nested destructuring target',
+      `const T = { A: '/a' }; ({ o: [T.A] } = { o: ['/b'] }); app.get(T.A, h);`,
+    ],
+    [
+      'a destructuring default target',
+      `const T = { A: '/a' }; [T.A = '/d'] = []; app.get(T.A, h);`,
+    ],
+    ['a rest target', `const T = { A: '/a' }; [...T.A] = ['/b']; app.get(T.A, h);`],
+    [
+      'a destructuring for-of target',
+      `const T = { A: '/a' }; for ([T.A] of [['/b']]) {} app.get(T.A, h);`,
+    ],
+    ['a parenthesized target', `const T = { A: '/a' }; (T.A) = '/b'; app.get(T.A, h);`],
+    ['a TS-wrapped target', `const T = { A: '/a' }; (T.A as string) = '/b'; app.get(T.A, h);`],
+    ['a compound assignment', `const T = { A: '/a' }; T.A += '/b'; app.get(T.A, h);`],
     ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
     ['a call', `const P = '/p'; app.get(build(P), h);`],
     ['a call in a template', `const P = '/p'; app.get(\`\${P}/\${id()}\`, h);`],
