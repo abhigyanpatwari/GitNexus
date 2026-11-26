@@ -1883,6 +1883,92 @@ describe('git-clone', () => {
     });
   });
 
+  describe('runGit clone checkout', () => {
+    const url = 'https://github.com/owner/repo.git';
+    const target = 'target with spaces';
+
+    function mockGit(platform: NodeJS.Platform) {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, 'platform', { value: platform });
+      const child = Object.assign(new EventEmitter(), { stderr: new EventEmitter() });
+      const spawnGit = vi.fn(() => child);
+      return {
+        child,
+        spawnGit,
+        options: { spawnForTest: spawnGit as unknown as typeof spawn },
+        restore: () => Object.defineProperty(process, 'platform', { value: originalPlatform }),
+      };
+    }
+
+    it.each([
+      { name: 'default', platform: 'win32', args: buildCloneArgs(url, target), longPaths: true },
+      {
+        name: 'branch-pinned',
+        platform: 'win32',
+        args: buildBranchCloneArgs(url, target, 'develop'),
+        longPaths: true,
+      },
+      {
+        name: 'non-Windows',
+        platform: 'linux',
+        args: buildCloneArgs(url, target),
+        longPaths: false,
+      },
+      { name: 'pull', platform: 'win32', args: ['pull', '--ff-only'], longPaths: false },
+    ] as const)('scopes the argv override for $name', async ({ platform, args, longPaths }) => {
+      const { child, spawnGit, options, restore } = mockGit(platform);
+      try {
+        const result = runGitForTest([...args], undefined, {
+          ...options,
+          url,
+          token: 'test-token',
+        });
+        child.emit('close', 0);
+        await result;
+        expect(spawnGit).toHaveBeenCalledExactlyOnceWith(
+          'git',
+          longPaths ? ['-c', 'core.longpaths=true', ...args] : args,
+          expect.not.objectContaining({ shell: true }),
+        );
+      } finally {
+        restore();
+      }
+    });
+
+    it.each([
+      { platform: 'win32', command: 'clone', prefix: 'error: unable to create file', hint: true },
+      {
+        platform: 'win32',
+        command: 'clone',
+        prefix: 'fatal: cannot create directory at',
+        hint: true,
+      },
+      { platform: 'win32', command: 'clone', prefix: 'remote: unable to create file', hint: false },
+      { platform: 'linux', command: 'clone', prefix: 'error: unable to create file', hint: false },
+      { platform: 'win32', command: 'pull', prefix: 'error: unable to create file', hint: false },
+    ] as const)('reports a safe error for $platform $command with $prefix', async (test) => {
+      const { child, options, restore } = mockGit(test.platform);
+      try {
+        const result = runGitForTest([test.command], undefined, options);
+        child.stderr.emit(
+          'data',
+          Buffer.from(`${test.prefix} private/fixture.java: Filename too long\r\n`),
+        );
+        child.stderr.emit('data', Buffer.from('fatal: https://user:secret@example.com/repo\r\n'));
+        child.emit('close', 128);
+        const generic = `git ${test.command} failed (exit code 128)`;
+        await expect(result).rejects.toHaveProperty(
+          'message',
+          test.hint
+            ? `${generic}: Filename too long. Set GITNEXUS_HOME to a shorter path and restart the server.`
+            : generic,
+        );
+      } finally {
+        restore();
+      }
+    });
+  });
+
   describe('runGit timeout', () => {
     it('rejects after SIGKILL even when the child never closes', async () => {
       vi.useFakeTimers();
