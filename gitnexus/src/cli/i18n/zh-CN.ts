@@ -256,6 +256,9 @@ export const zhCN = {
   'help.command.group.impact.description': '分析仓库组中某个成员仓库符号的跨仓库影响',
   'help.command.group.query.description': '跨仓库组所有仓库搜索执行流程',
   'help.command.group.contracts.description': '查看 Contract Registry',
+  'help.command.registry.description': '在全局 GitNexus 注册表锁保护下执行注册表变更',
+  'help.command.registry.pruneBranches.description':
+    '清理已删除分支的过期分支索引槽位；registry.json 更新会获取全局注册表锁',
   'help.option.setup.codingAgent': '仅配置这些编码代理（逗号分隔或重复传入）',
   'help.option.analyze.force': '强制重建图和 FTS；未更改的解析器输出可能被复用',
   'help.option.analyze.noParseCache': '重新解析每个源文件，不重放缓存的解析器输出',
@@ -401,6 +404,8 @@ export const zhCN = {
   'help.option.group.query.limit': '最大合并结果数',
   'help.option.group.contracts.type': '按契约类型过滤',
   'help.option.group.contracts.repo': '按仓库过滤',
+  'help.option.registry.pruneBranches.repo': 'Git 仓库路径',
+  'help.option.registry.pruneBranches.dryRun': '仅报告过期分支，不删除槽位或修改 registry.json',
   'help.option.group.contracts.unmatched': '仅显示未匹配契约',
   'help.identityCache.environment':
     '\n分析器身份缓存：\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir\n    由操作员明确信任的持久缓存，用于跨进程快速查询状态。目录必须预先存在、位于 GitNexus 包/构建根目录之外，且路径中不得包含符号链接或 junction。缺少 POSIX 所有权 API 的平台默认保持故障关闭。',

@@ -280,6 +280,9 @@ export const en = {
     'Cross-repo impact for a symbol in one member repo of a group',
   'help.command.group.query.description': 'Search execution flows across all repos in a group',
   'help.command.group.contracts.description': 'Inspect Contract Registry',
+  'help.command.registry.description': 'Perform locked mutations on the global GitNexus registry',
+  'help.command.registry.pruneBranches.description':
+    'Prune stale per-branch index slots; registry.json updates take the global registry lock',
   'help.option.setup.codingAgent':
     'Configure only these coding agents (comma-separated or repeatable)',
   'help.option.analyze.force': 'Force graph and FTS rebuild; unchanged parser output may be reused',
@@ -443,6 +446,9 @@ export const en = {
   'help.option.group.query.limit': 'Max merged results',
   'help.option.group.contracts.type': 'Filter by contract type',
   'help.option.group.contracts.repo': 'Filter by repo',
+  'help.option.registry.pruneBranches.repo': 'Path to the git repository',
+  'help.option.registry.pruneBranches.dryRun':
+    'Report stale branches without deleting slots or modifying registry.json',
   'help.option.group.contracts.unmatched': 'Show only unmatched contracts',
   'help.identityCache.environment':
     '\nAnalyzer identity cache:\n  GITNEXUS_ANALYZER_IDENTITY_CACHE_DIR=/absolute/protected/dir\n    Operator-trusted persistent cache for warm cross-process status. The directory must pre-exist, be outside the GitNexus package/build roots, and contain no symlink or junction components. Defaults remain fail-closed on platforms without POSIX ownership APIs.',

@@ -48,6 +48,8 @@ const COMMAND_DESCRIPTION_KEYS = {
   'group impact': 'help.command.group.impact.description',
   'group query': 'help.command.group.query.description',
   'group contracts': 'help.command.group.contracts.description',
+  registry: 'help.command.registry.description',
+  'registry prune-branches': 'help.command.registry.pruneBranches.description',
 } satisfies Record<string, CliMessageKey>;
 
 const OPTION_DESCRIPTION_KEYS = {
@@ -196,6 +198,9 @@ const OPTION_DESCRIPTION_KEYS = {
   'group contracts|--repo <repo>': 'help.option.group.contracts.repo',
   'group contracts|--unmatched': 'help.option.group.contracts.unmatched',
   'group contracts|--json': 'help.option.json',
+  'registry prune-branches|-r, --repo <path>': 'help.option.registry.pruneBranches.repo',
+  'registry prune-branches|--dry-run': 'help.option.registry.pruneBranches.dryRun',
+  'registry prune-branches|--json': 'help.option.json',
 } satisfies Record<string, CliMessageKey>;
 
 function localizeTitle(title: string): string {

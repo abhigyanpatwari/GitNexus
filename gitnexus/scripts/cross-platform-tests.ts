@@ -333,6 +333,7 @@ const SPAWN_CLI = [
   'test/unit/tree-sitter/native-tree-release.test.ts',
   'test/integration/cli-e2e.test.ts',
   'test/integration/cli-limit-e2e.test.ts',
+  'test/integration/registry-prune-branches.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
   // Spawns the real CLI across hermetic HOME/USERPROFILE homes to exercise the
