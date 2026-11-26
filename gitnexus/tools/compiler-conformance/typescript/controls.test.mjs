@@ -67,11 +67,11 @@ test('invoked parameters with the same name retain their own declarations and ty
 test('the compiler identifies an anonymous default class in its heritage and overrides', () => {
   const project = path.resolve(root, '../../typescript-class-declarations/anonymous-default');
   const report = compilerReport(project, [], true);
-  assert.deepEqual(report.EXTENDS.edges, [{ from: 'main.ts#5:default', to: 'main.ts#1:Base' }]);
+  assert.deepEqual(report.EXTENDS.edges, [{ from: 'main.ts#5:15', to: 'main.ts#1:7' }]);
   assert.deepEqual(report.METHOD_OVERRIDES.edges, [
-    { from: 'main.ts#5:default', to: 'main.ts#1:Base.run' },
+    { from: 'main.ts#5:15', to: 'main.ts#1:7.run' },
   ]);
-  assert.ok(report.DECLARATIONS.edges.some(({ to }) => to === 'Class:default@main.ts#5:default'));
+  assert.ok(report.DECLARATIONS.edges.some(({ to }) => to === 'Class:default@main.ts#5:15'));
 });
 
 test('a same-named callback in another module fails the concrete target comparison', () => {
@@ -208,5 +208,24 @@ test('property writes retain their declaration and complete assignment span', ()
       () => compareReports(writes, { ...writes, sites: [changed, second] }),
       /Missing from actual/,
     );
+  }
+});
+
+test('same-line local classes retain distinct construction and method targets', () => {
+  const calls = compilerReport(path.resolve(root, '../typescript-local-classes')).CALLS;
+  const left = 'index.ts#2:25';
+  const right = 'index.ts#2:97';
+  for (const suffix of ['', '.act']) {
+    const leftEdge = calls.edges.find(({ to }) => to === left + suffix);
+    const rightEdge = calls.edges.find(({ to }) => to === right + suffix);
+    assert.ok(leftEdge && rightEdge);
+    const swapped = calls.edges.map((edge) =>
+      edge === leftEdge
+        ? { ...edge, to: rightEdge.to }
+        : edge === rightEdge
+          ? { ...edge, to: leftEdge.to }
+          : edge,
+    );
+    assert.throws(() => compareReports(calls, { ...calls, edges: swapped }), /Missing from actual/);
   }
 });

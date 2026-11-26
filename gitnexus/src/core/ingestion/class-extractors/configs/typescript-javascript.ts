@@ -2,9 +2,40 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ClassExtractionConfig } from '../../class-types.js';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { LanguageProvider } from '../../language-provider.js';
 import { createClassExtractor } from '../generic.js';
 import { positionQualifiedCallableName } from '../../workers/callable-id.js';
+
+const classDeclarations = ['class_declaration', 'abstract_class_declaration'];
+const repeatedClassNames = new WeakMap<SyntaxNode['tree'], ReadonlySet<string>>();
+
+function needsPosition(node: SyntaxNode): boolean {
+  if (node.type === 'class') return true;
+  if (!classDeclarations.includes(node.type)) return false;
+  // Only block-local declarations can hide an ordinary class of the same name.
+  // Keep the public graph IDs of module declarations and unique local classes.
+  let parent = node.parent;
+  while (parent && parent.type !== 'statement_block') parent = parent.parent;
+  if (!parent || ['internal_module', 'module'].includes(parent.parent?.type ?? '')) return false;
+  const tree = node.tree;
+  if (!tree) return false;
+  let repeated = repeatedClassNames.get(tree);
+  if (!repeated) {
+    const seen = new Set<string>();
+    const duplicates = new Set<string>();
+    for (const declaration of tree.rootNode.descendantsOfType(classDeclarations)) {
+      const name = declaration.childForFieldName('name')?.text;
+      if (!name) continue;
+      if (seen.has(name)) duplicates.add(name);
+      seen.add(name);
+    }
+    repeatedClassNames.set(tree, duplicates);
+    repeated = duplicates;
+  }
+  const name = node.childForFieldName('name');
+  return name !== null && repeated.has(name.text);
+}
 
 const shared: Omit<ClassExtractionConfig, 'language'> = {
   // Nested class expressions and their member-owner edges must use the same
@@ -26,7 +57,7 @@ const shared: Omit<ClassExtractionConfig, 'language'> = {
   ],
   extractScopeSegments(node) {
     const name = node.childForFieldName('name');
-    return node.type === 'class' && name !== null
+    return name !== null && needsPosition(node)
       ? [positionQualifiedCallableName(name.text, node.startPosition)]
       : undefined;
   },
@@ -52,7 +83,7 @@ export const createTsJsClassExtractor = (config: ClassExtractionConfig) => {
   const extractor = createClassExtractor(config);
   const extract: typeof extractor.extract = (node, fallback) => {
     const owner = extractor.extract(node, fallback);
-    return owner !== null && node.type === 'class'
+    return owner !== null && needsPosition(node)
       ? {
           ...owner,
           qualifiedName: positionQualifiedCallableName(owner.qualifiedName, node.startPosition),

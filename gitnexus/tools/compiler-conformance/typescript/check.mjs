@@ -4,20 +4,47 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
 import { lookupNameClaim } from '../../../dist/core/ingestion/scope-resolution/scope/walkers.js';
+import { resolveDefGraphId } from '../../../dist/core/ingestion/scope-resolution/graph-bridge/ids.js';
+import { buildGraphNodeLookup } from '../../../dist/core/ingestion/scope-resolution/graph-bridge/node-lookup.js';
 import { compareReports } from '../compare.mjs';
 import { graphDeclaration } from '../gitnexus-report.mjs';
 import { compilerReport, emptyReport, graphRelations, relations } from './compiler-report.mjs';
 import { runtimeCalls } from './runtime-calls.mjs';
 
-function graphIdentity(node) {
-  if (['Class', 'Interface', 'TypeAlias', 'Enum'].includes(node.label)) {
-    const { filePath, startLine, name } = node.properties;
-    return filePath + '#' + (startLine + 1) + ':' + name;
+function graphReport(
+  graph,
+  boundCalls,
+  inventory,
+  methodFacts,
+  propertyAccess,
+  parameterCalls,
+  classes,
+) {
+  // Class nodes carry a line. The real graph bridge joins their IDs to the
+  // exact scope declarations, including two local classes on that same line.
+  const classPositions = new Map();
+  const lookup = buildGraphNodeLookup(graph);
+  for (const def of classes) {
+    const id = resolveDefGraphId(def.filePath, def, lookup);
+    if (!id || !def.declarationRange) continue;
+    const { startLine, startCol } = def.declarationRange;
+    const position = def.filePath + '#' + startLine + ':' + startCol;
+    const previous = classPositions.get(id);
+    assert.ok(!previous || previous === position, id + ' merges ' + previous + ' and ' + position);
+    classPositions.set(id, position);
   }
-  return graphDeclaration(node);
-}
-
-function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess, parameterCalls) {
+  function graphIdentity(node) {
+    if (node.label === 'Class') {
+      const position = classPositions.get(node.id);
+      assert.ok(position, 'No scope declaration for published class ' + node.id);
+      return position;
+    }
+    if (['Interface', 'TypeAlias', 'Enum'].includes(node.label)) {
+      const { filePath, startLine, name } = node.properties;
+      return filePath + '#' + (startLine + 1) + ':' + name;
+    }
+    return graphDeclaration(node);
+  }
   const owners = new Map();
   for (const edge of graph.iterRelationshipsByType('HAS_METHOD')) {
     const owner = graph.getNode(edge.sourceId);
@@ -244,12 +271,7 @@ function recordBindings(observation, calls, typeParameters, reads, unbound, para
           start: range.startLine + ':' + range.startCol,
           end: range.endLine + ':' + range.endCol,
           status: 'resolved',
-          target:
-            def.filePath +
-            '#' +
-            startLine +
-            ':' +
-            (def.type === 'Class' ? def.nodeId.slice(def.nodeId.lastIndexOf(':') + 1) : startCol),
+          target: def.filePath + '#' + startLine + ':' + startCol,
         });
       }
     }
@@ -277,12 +299,15 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   );
   const boundCalls = [];
   const parameterCalls = [];
+  const classes = [];
   const typeParameters = [];
   const reads = [];
   const unbound = [];
   const pipeline = await runPipelineFromRepo(root, () => {}, {
     ...options,
     onScopeResolved(observation) {
+      for (const file of observation.parsedFiles)
+        for (const def of file.localDefs) if (def.type === 'Class') classes.push(def);
       recordBindings(observation, boundCalls, typeParameters, reads, unbound, parameterCalls);
     },
   });
@@ -293,6 +318,7 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     methodFacts,
     propertyAccess,
     parameterCalls,
+    classes,
   );
   observed.TYPE_PARAMETER_USES.sites = typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.

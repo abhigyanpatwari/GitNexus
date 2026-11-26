@@ -76,7 +76,6 @@ function identity(root, node) {
   const fileLine = relative(root, source) + '#' + (pos.line + 1);
   if (
     [
-      SyntaxKind.ClassDeclaration,
       SyntaxKind.InterfaceDeclaration,
       SyntaxKind.TypeAliasDeclaration,
       SyntaxKind.EnumDeclaration,

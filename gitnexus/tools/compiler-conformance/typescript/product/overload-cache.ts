@@ -16,11 +16,12 @@ import {
 } from '../../../../src/storage/parsedfile-store.js';
 import { compareProject } from '../check.mjs';
 
-for (const [project, calls] of Object.entries({
-  'typescript-overload-scopes': 3,
-  'typescript-overload-return-bindings': 12,
-})) {
-  test(`the persisted parse cache retains the selected overload for each call in ${project}`, async (t) => {
+for (const project of [
+  'typescript-overload-scopes',
+  'typescript-overload-return-bindings',
+  'typescript-local-classes',
+]) {
+  test(`the persisted parse cache retains the compiler-selected targets in ${project}`, async (t) => {
     const root = path.resolve(
       import.meta.dirname,
       '../../../../test/fixtures/compiler-conformance',
@@ -39,7 +40,7 @@ for (const [project, calls] of Object.entries({
     };
     const cold = await compareProject(root, { parseCache: cache, workerPoolSize: 1 });
     assert.equal(cold.pipeline.usedWorkerPool, true);
-    assert.equal(cold.counts.CALLS, calls);
+    assert.ok(cold.counts.CALLS > 0);
     pruneCache(cache, cache.usedKeys);
     const keys = await saveParseCache(storage, cache);
     await pruneAndSaveDurableParsedFileStore(
@@ -51,6 +52,6 @@ for (const [project, calls] of Object.entries({
     assert.ok(restored);
     const warm = await compareProject(root, { parseCache: restored, workerPoolSize: 1 });
     assert.equal(warm.pipeline.usedWorkerPool, false);
-    assert.equal(warm.counts.CALLS, calls);
+    assert.deepEqual(warm.counts, cold.counts);
   });
 }

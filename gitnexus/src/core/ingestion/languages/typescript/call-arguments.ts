@@ -123,33 +123,66 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
           endCol: (lines.length === 1 ? startCol : 0) + lines.at(-1)!.length,
         }),
       );
-      // A constructor supplies the instance itself even when it has no
-      // annotated return type. The construction resolver owns that receiver.
-      if (inner && inner !== outer && inner.callForm !== 'constructor') {
+      if (inner && inner !== outer) {
         entry.chainedReceiver = { outer, inner };
       }
     }
   }
 }
 
+/** Resolve a factory’s return annotation in the scope that declared it. */
+function chainedReceiverOwner(inner: ReferenceSite, indexes: ScopeResolutionIndexes) {
+  if (inner.callForm === 'constructor' && !inner.explicitReceiver) {
+    return findClassBindingInScope(inner.inScope, inner.name, indexes, undefined, {
+      purpose: 'value',
+      position: inner.atRange,
+      uniqueQualifiedNameFallback: false,
+    });
+  }
+  if (inner.callForm !== 'free') return undefined;
+  const definitions = findAllCallableBindingsInScope(inner.inScope, inner.name, indexes, {
+    purpose: 'value',
+    position: inner.atRange,
+    callee: true,
+  });
+  if (definitions.length !== 1) return undefined;
+  const [factory] = definitions;
+  if (factory.type !== 'Function' || !factory.returnType || !factory.declarationRange)
+    return undefined;
+  const scope = makeScopeId({
+    filePath: factory.filePath,
+    range: factory.declarationRange,
+    kind: 'Function',
+  });
+  return findClassBindingInScope(scope, factory.returnType, indexes, undefined, {
+    purpose: 'type',
+    position: factory.declarationRange,
+    uniqueQualifiedNameFallback: false,
+  });
+}
+
 function matchesOverloadOwner(
   call: ReferenceSite,
   owners: ReadonlySet<string>,
   indexes: ScopeResolutionIndexes,
+  inner?: ReferenceSite,
 ): boolean {
   const receiver = call.explicitReceiver?.name;
   if (!receiver) return false;
-  const type = findReceiverTypeBinding(call.inScope, receiver, indexes, {
-    purpose: 'value',
-    position: call.atRange,
-  });
-  const owner =
-    type &&
-    findClassBindingInScope(type.declaredAtScope, type.rawName, indexes, undefined, {
-      purpose: type.lookupPurpose ?? 'type',
-      position: type.lookupPosition,
-      uniqueQualifiedNameFallback: false,
+  const type =
+    !inner &&
+    findReceiverTypeBinding(call.inScope, receiver, indexes, {
+      purpose: 'value',
+      position: call.atRange,
     });
+  const owner = inner
+    ? chainedReceiverOwner(inner, indexes)
+    : type &&
+      findClassBindingInScope(type.declaredAtScope, type.rawName, indexes, undefined, {
+        purpose: type.lookupPurpose ?? 'type',
+        position: type.lookupPosition,
+        uniqueQualifiedNameFallback: false,
+      });
   return (
     !!owner &&
     [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)].some((id) => owners.has(id))
@@ -171,7 +204,12 @@ export const tsCallResultAssignmentApplies: ScopeResolver['callResultAssignmentA
           position: producer.call.atRange,
           callee: true,
         }).some((def) => producer.candidates.has(def.nodeId))
-      : matchesOverloadOwner(producer.call, producer.candidates, indexes));
+      : matchesOverloadOwner(
+          producer.call,
+          producer.candidates,
+          indexes,
+          entry.chainedReceiver?.inner,
+        ));
   const applies =
     overloadedReturn ||
     entry.consumers.some(({ argument: { source }, call, owners }) => {
@@ -189,7 +227,7 @@ export const tsCallResultAssignmentApplies: ScopeResolver['callResultAssignmentA
       }
       return false;
     });
-  if (applies && entry.chainedReceiver) {
+  if (applies && entry.chainedReceiver && entry.chainedReceiver.inner.callForm !== 'constructor') {
     const { outer, inner } = entry.chainedReceiver;
     receiverCalls.set(outer, inner);
   }
