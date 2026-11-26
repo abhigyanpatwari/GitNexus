@@ -422,6 +422,7 @@ export function emitTsScopeCaptures(
   const returnedDefault = sourceText.includes('default')
     ? defaultFactoryResult(tree.rootNode)
     : undefined;
+  let defaultDeclaration: Record<string, Capture> | undefined;
   const implicitNamespaceExports = new Map<number, boolean>();
   let awaitedCalls: Map<string, Capture> | undefined;
 
@@ -778,23 +779,7 @@ export function emitTsScopeCaptures(
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
     addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
-    if (returnedDefault && unbound?.id === returnedDefault.id) {
-      grouped['@declaration.is-exported'] = syntheticCapture(
-        '@declaration.is-exported',
-        unbound,
-        'true',
-      );
-      grouped['@declaration.is-default-export'] = syntheticCapture(
-        '@declaration.is-default-export',
-        unbound,
-        'true',
-      );
-      grouped['@declaration.named-exports'] = syntheticCapture(
-        '@declaration.named-exports',
-        unbound,
-        '[]',
-      );
-    }
+    if (returnedDefault && unbound?.id === returnedDefault.value.id) defaultDeclaration = grouped;
     const declaredName = groupedNodes['@declaration.name'];
     const declarator = declaredName?.parent;
     const declaration = declarator?.type === 'variable_declarator' ? declarator.parent : declarator;
@@ -878,7 +863,34 @@ export function emitTsScopeCaptures(
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and
   // without this the default-export NODE was emitted with nothing declaring it
   // — the "found, zero callers" state this work exists to remove (#2729 F7).
-  const validRequireCalls = synthesizeTsLocalImports(tree.rootNode, filePath, out);
+  const validRequireCalls = synthesizeTsLocalImports(
+    tree.rootNode,
+    filePath,
+    out,
+    returnedDefault && defaultDeclaration
+      ? (written) => {
+          if (written === returnedDefault.name) defaultDeclaration = undefined;
+        }
+      : undefined,
+  );
+  if (returnedDefault && defaultDeclaration) {
+    const { value } = returnedDefault;
+    defaultDeclaration['@declaration.is-exported'] = syntheticCapture(
+      '@declaration.is-exported',
+      value,
+      'true',
+    );
+    defaultDeclaration['@declaration.is-default-export'] = syntheticCapture(
+      '@declaration.is-default-export',
+      value,
+      'true',
+    );
+    defaultDeclaration['@declaration.named-exports'] = syntheticCapture(
+      '@declaration.named-exports',
+      value,
+      '[]',
+    );
+  }
   recordCommonJsModuleKind(tree.rootNode, filePath, sourceText, out);
   synthesizeCjsModuleExports(tree.rootNode, filePath, out, validRequireCalls);
 

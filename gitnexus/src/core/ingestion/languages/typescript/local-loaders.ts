@@ -442,6 +442,7 @@ export function synthesizeTsLocalImports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
+  onModuleBindingWrite?: (name: string) => void,
 ): ReadonlyMap<number, ReadonlySet<string>> {
   const scopes = new Map<string, LexicalScope>();
   const scopesAt = new Map<string, LexicalScope>();
@@ -656,9 +657,15 @@ export function synthesizeTsLocalImports(
   // An assignment to an actual local shadow does not mutate the ambient loader.
   // A write to the ambient loader makes its identity unknown for this file.
   let ambientLoaderWritten = false;
+  const escaped =
+    onModuleBindingWrite && writes.length ? indexEscapedNames(scopes.values()) : undefined;
   for (const { node, scope, names } of writes) {
     for (const name of names) {
       const owner = bindingOwner(scope, name.text);
+      if (onModuleBindingWrite) {
+        const canonical = canonicalTypeScriptName(name.text);
+        if (bindingOwner(scope, canonical, escaped) === module) onModuleBindingWrite(canonical);
+      }
       if (name.text === 'require' && !owner) ambientLoaderWritten = true;
       if (owner) bindingWrites.push({ node, scope: owner, name: name.text });
     }

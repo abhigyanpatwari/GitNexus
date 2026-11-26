@@ -2,7 +2,9 @@ import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { canonicalTypeScriptName } from './identifiers.js';
 
 /** A direct return supplies the identity of the value exported by a local factory call. */
-export function defaultFactoryResult(root: SyntaxNode): SyntaxNode | undefined {
+export function defaultFactoryResult(
+  root: SyntaxNode,
+): { name: string; value: SyntaxNode } | undefined {
   const statements = root.namedChildren;
   const expression = statements
     .find(
@@ -37,22 +39,5 @@ export function defaultFactoryResult(root: SyntaxNode): SyntaxNode | undefined {
     body?.length === 1 && body[0].type === 'return_statement' ? body[0].lastNamedChild : undefined;
   if (returned?.type !== 'arrow_function' && returned?.type !== 'function_expression')
     return undefined;
-  const writes = root.descendantsOfType([
-    'assignment_expression',
-    'augmented_assignment_expression',
-    'update_expression',
-    'for_in_statement',
-  ]);
-  for (const write of writes) {
-    const target = write.childForFieldName('left') ?? write.childForFieldName('argument');
-    if (
-      target &&
-      [
-        target,
-        ...target.descendantsOfType(['identifier', 'shorthand_property_identifier_pattern']),
-      ].some((part) => canonicalTypeScriptName(part.text) === name)
-    )
-      return undefined;
-  }
-  return returned;
+  return { name, value: returned };
 }
