@@ -24,7 +24,7 @@ const MECH: SourceSinkSanitizerSpec = {
   sources: [
     {
       kind: 'remote-input',
-      objects: ['req'],
+      objects: ['req', '$req'],
       properties: ['body', 'query', 'params', 'headers'],
     },
   ],
@@ -183,6 +183,18 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
         if (!isValidHostName(req.body)) return;
         req.body = req.query;
         exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress after a $-prefixed receiver member is overwritten', () => {
+    // `\b` does not match before `$`; identifier lookbehind must.
+    const { flows } = analyze(`
+      function f($req: any) {
+        if (!isValidHostName($req.body)) return;
+        $req.body = $req.query;
+        exec($req.body);
       }
     `);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);

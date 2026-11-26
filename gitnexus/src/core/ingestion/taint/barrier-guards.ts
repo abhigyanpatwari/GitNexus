@@ -458,10 +458,10 @@ export function memberPropertyAssignedOnValidatedPath(
   if (!receiver) return false;
   const escapedProp = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const escapedRecv = receiver.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // Require the validated object name — `other.body =` must not invalidate
-  // a barrier over `req.body`.
+  // Identifier start boundary — not `\b`, which fails before `$`-prefixed
+  // names (`$req.body =` has no word boundary before `$`).
   const assignRe = new RegExp(
-    `\\b${escapedRecv}\\s*(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])\\s*=`,
+    `(?<![A-Za-z0-9_$])${escapedRecv}\\s*(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])\\s*=`,
   );
   for (const edge of index.cdg) {
     if (edge.controllerBlock !== controller.controllerBlock) continue;
