@@ -1505,6 +1505,11 @@ function indexFormalsByGraphId(
           continue;
         }
         indexFormal(target.id, target.def);
+        if (site.isConstructorImplementation && target.def.ownerId) {
+          const owner = scopes.defs.get(target.def.ownerId);
+          const graphId = owner && resolveDefGraphId(owner.filePath, owner, nodeLookup);
+          if (graphId) indexFormal(graphId, target.def);
+        }
         for (const aliasId of aliasesByTargetId.get(target.id) ?? []) {
           indexFormal(aliasId, target.def);
         }

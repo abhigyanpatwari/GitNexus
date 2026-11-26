@@ -312,8 +312,9 @@ function reportProject(
         parameter?.kind === SyntaxKind.Parameter &&
         selected?.kind === SyntaxKind.FunctionType &&
         selected.getSourceFile().fileName === parameter.getSourceFile().fileName &&
-        selected.getStart() === parameter.type?.getStart() &&
-        selected.end === parameter.type.end;
+        parameter.type !== undefined &&
+        selected.getStart() >= parameter.type.getStart() &&
+        selected.end <= parameter.type.end;
       if (!parameterSignature) edge('CALLS', caller, selected, node);
       if (callee.kind === SyntaxKind.PropertyAccessExpression) {
         const member = symbolDeclaration(checker.getSymbolAtLocation(callee.name), project);

@@ -74,6 +74,14 @@ export function callbackTargets(project, calls, assignments, invocations, declar
       }
       if (
         expression.kind === SyntaxKind.BinaryExpression &&
+        expression.operatorToken.kind === SyntaxKind.AmpersandAmpersandToken
+      ) {
+        // Functions are truthy, so a callable result must come from the right operand.
+        pending.push(expression.right);
+        continue;
+      }
+      if (
+        expression.kind === SyntaxKind.BinaryExpression &&
         [SyntaxKind.QuestionQuestionToken, SyntaxKind.BarBarToken].includes(
           expression.operatorToken.kind,
         )
