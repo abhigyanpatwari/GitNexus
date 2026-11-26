@@ -649,6 +649,65 @@ describe('POST /api/embed published-phase outcomes', () => {
   });
 });
 
+describe('/api/search search-lane degradation', () => {
+  beforeEach(() => {
+    mocks.loadMeta.mockResolvedValue({});
+    mocks.isEmbedderReady.mockReturnValue(true);
+  });
+
+  it.each([true, false])(
+    'preserves semantic results and reports missing FTS (enrich: %s)',
+    async (enrich) => {
+      mocks.search.mockResolvedValue({ results: [], ftsAvailable: false });
+      const { body } = await invoke('/api/search', {}, { mode: 'hybrid', enrich });
+      expect(body.results).toEqual([
+        expect.objectContaining({ name: 'alpha', sources: ['semantic'] }),
+      ]);
+      expect(body.warning).toMatch(/keyword search degraded/i);
+    },
+  );
+
+  it('reports query failure without exposing the error string or misleading repair advice', async () => {
+    mocks.search.mockRejectedValue(new Error('connection failed at /tmp/private-space/repo'));
+    const { body } = await invoke('/api/search', {}, { mode: 'hybrid' });
+    expect(body.results).toHaveLength(1);
+    expect(body.warning).toMatch(/keyword search failed/i);
+    expect(body.warning).not.toMatch(/private-space|repair-fts/);
+  });
+
+  it('reports non-benign FTS errors returned as metadata', async () => {
+    mocks.search.mockResolvedValue({
+      results: [],
+      ftsAvailable: false,
+      nonBenignErrors: ['connection reset'],
+    });
+    const { body } = await invoke('/api/search', {}, { mode: 'hybrid' });
+    expect(body.results).toHaveLength(1);
+    expect(body.warning).toMatch(/keyword search failed/i);
+  });
+
+  it('distinguishes an unready embedder from a healthy empty semantic query', async () => {
+    mocks.isEmbedderReady.mockReturnValue(false);
+    const unavailable = await invoke('/api/search', {}, { mode: 'semantic' });
+    expect(unavailable.body).toEqual({
+      results: [],
+      warning: expect.stringMatching(/embedder is not ready/i),
+    });
+    expect(mocks.semanticSearch).not.toHaveBeenCalled();
+
+    mocks.isEmbedderReady.mockReturnValue(true);
+    mocks.semanticSearch.mockResolvedValueOnce([]);
+    const healthy = await invoke('/api/search', {}, { mode: 'semantic' });
+    expect(healthy.body).toEqual({ results: [] });
+  });
+
+  it('does not warn on healthy hybrid search when keyword search has no matches', async () => {
+    const { body } = await invoke('/api/search', {}, { mode: 'hybrid' });
+    expect(body.results).toHaveLength(1);
+    expect(body).not.toHaveProperty('warning');
+  });
+});
+
 describe('GET /api/search FTS warning redaction', () => {
   afterEach(() => {
     resetExtensionState();

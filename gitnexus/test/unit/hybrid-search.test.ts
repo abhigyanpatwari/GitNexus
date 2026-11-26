@@ -235,7 +235,7 @@ describe('hybridSearch — FTS failure fallback (#1489)', () => {
       .fn()
       .mockResolvedValue([makeSemantic('src/semantic-hit.ts', 0.15)]);
 
-    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    const { results } = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
     expect(results).toHaveLength(1);
     expect(results[0].filePath).toBe('src/semantic-hit.ts');
     expect(results[0].sources).toEqual(['semantic']);
@@ -248,7 +248,7 @@ describe('hybridSearch — FTS failure fallback (#1489)', () => {
     const mockExecuteQuery = vi.fn().mockResolvedValue([]);
     const mockSemanticSearch = vi.fn().mockResolvedValue([]);
 
-    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    const { results } = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
     expect(results).toHaveLength(0);
   });
 
@@ -262,7 +262,7 @@ describe('hybridSearch — FTS failure fallback (#1489)', () => {
     const mockExecuteQuery = vi.fn().mockResolvedValue([]);
     const mockSemanticSearch = vi.fn().mockResolvedValue([]);
 
-    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    const { results } = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
     expect(results).toHaveLength(1);
     expect(results[0].filePath).toBe('src/fts-hit.ts');
     expect(results[0].sources).toEqual(['bm25']);
@@ -278,7 +278,7 @@ describe('hybridSearch — FTS failure fallback (#1489)', () => {
     const mockExecuteQuery = vi.fn().mockResolvedValue([]);
     const mockSemanticSearch = vi.fn().mockRejectedValue(new Error('sidecar aborted'));
 
-    const results = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
+    const { results } = await hybridSearch('test query', 10, mockExecuteQuery, mockSemanticSearch);
     expect(results).toHaveLength(1);
     expect(results[0].filePath).toBe('src/fts-hit.ts');
     expect(results[0].sources).toEqual(['bm25']);
