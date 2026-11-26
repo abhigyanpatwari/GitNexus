@@ -15,8 +15,15 @@
  *   would land in the enclosing namespace and leak to same-named receivers in
  *   other files.
  *
- * Every class declares the same member names, so a wrong owner shows up as a
- * wrong target instead of a silent miss.
+ * `params T[]` is not bound either: tree-sitter-c-sharp puts its `type` and
+ * `name` fields directly on `parameter_list`, with no `parameter` node, so the
+ * pattern cannot match it. Its receiver stays unbound, which is what lets the
+ * `UseParams` row observe a leak from the delegate.
+ *
+ * Classes that could be confused for each other share member names (User,
+ * Repo and Box declare Save and Clone; Cell declares Save; Order and Invoice
+ * declare Ship), so a wrong owner shows up as a wrong target instead of a
+ * silent miss.
  */
 import { describe, it, expect } from 'vitest';
 import { getRelationships, useFixture } from './helpers.js';
@@ -135,7 +142,9 @@ const ROWS: readonly Row[] = [
   { source: 'GenericRankElement', member: 'Save', targets: [] },
   { source: 'GenericArrayDirect', member: 'Clone', targets: [] },
   { source: 'GenericArrayElement', member: 'Save', targets: [] },
-  // The delegate's `Order[] filerows` must not leak into another file.
+  // The delegate's `Order[] filerows` must not leak into another file. Both
+  // receivers are unbound here (`params` has no `parameter` node; lambda
+  // parameters are unscoped), so any edge would come from the leak.
   { source: 'UseParams', member: 'Ship', targets: [] },
   { source: 'UseLambda', member: 'Ship', targets: [] },
 ];
