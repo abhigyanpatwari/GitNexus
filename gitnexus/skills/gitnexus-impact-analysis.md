@@ -83,6 +83,9 @@ a lower bound when the result is `partial` or truncated, or when callers go
 through dynamic dispatch, dependency injection or cross-language calls, so an
 absent caller is not evidence that nothing breaks.
 
+The table describes an upstream walk. With `direction: "downstream"` the same
+depths list what the target depends on: d=1 holds its direct callees/imports.
+
 ## Risk Assessment
 
 Upstream risk counts direct dependants. The tool reports indirect reach, processes and modules separately.
