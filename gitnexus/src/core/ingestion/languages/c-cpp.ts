@@ -13,6 +13,7 @@ import { cRenameProvider } from './c/rename.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { cClassConfig, cppClassConfig } from '../class-extractors/configs/c-cpp.js';
+import { resolveCppDetachedOwnerName } from './cpp/member-owner.js';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as cCppConfig } from '../type-extractors/c-cpp.js';
@@ -498,6 +499,9 @@ export const cppProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(cppVariableConfig),
   classExtractor: cppClassExtractor,
+  // Out-of-line members (`void N::Box::save() {}`) are not lexically inside the
+  // class. The declarator's qualifier is the owner, matched to the in-class id.
+  resolveDetachedOwnerName: (node) => resolveCppDetachedOwnerName(node, cppClassExtractor),
   // ── Doxygen doc comment → description (issue #2270) ──
   descriptionExtractor: createLeadingDocDescriptionExtractor(),
   labelOverride: cppLabelOverride,

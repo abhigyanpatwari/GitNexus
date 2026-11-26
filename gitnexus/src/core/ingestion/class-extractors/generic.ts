@@ -183,6 +183,7 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
   return {
     language: config.language,
     qualifiedNodeId: config.qualifiedNodeId ?? false,
+    qualifyMemberOwner: config.qualifyMemberOwner ?? false,
 
     isTypeDeclaration(node: SyntaxNode): boolean {
       return typeDeclarationSet.has(node.type);

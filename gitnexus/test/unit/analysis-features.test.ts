@@ -6,7 +6,9 @@ import {
   type AnalysisFeatureDescriptor,
 } from '../../src/core/analysis-features.js';
 import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
+import { CPP_MEMBER_SCOPE_IDENTITY_FEATURE } from '../../src/core/ingestion/languages/cpp/analysis-features.js';
 import { OBJECTIVE_C_PROVIDER_FEATURE } from '../../src/core/ingestion/languages/objective-c/analysis-features.js';
+import { RUBY_MEMBER_SCOPE_IDENTITY_FEATURE } from '../../src/core/ingestion/languages/ruby/analysis-features.js';
 import {
   OBJECTIVE_C_GRAMMAR_PACKAGE,
   OBJECTIVE_C_GRAMMAR_VERSION,
@@ -112,6 +114,27 @@ describe('analysis feature versions', () => {
     expect(
       resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['include/plain.hpp']),
     ).not.toHaveProperty(OBJECTIVE_C_PROVIDER_FEATURE.id);
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['include/plain.hpp'])).toMatchObject({
+      [CPP_MEMBER_SCOPE_IDENTITY_FEATURE.id]: CPP_MEMBER_SCOPE_IDENTITY_FEATURE.version,
+    });
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/box.cpp'])).toMatchObject({
+      [CPP_MEMBER_SCOPE_IDENTITY_FEATURE.id]: 1,
+    });
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/main.c'])).not.toHaveProperty(
+      CPP_MEMBER_SCOPE_IDENTITY_FEATURE.id,
+    );
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['lib/box.rb'])).toMatchObject({
+      [RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id]: 1,
+    });
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['Rakefile'])).toMatchObject({
+      [RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id]: 1,
+    });
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['Gemfile'])).toMatchObject({
+      [RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id]: 1,
+    });
+    expect(resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/app.ts'])).not.toHaveProperty(
+      RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id,
+    );
     expect(
       findAnalysisFeatureMismatches(
         { [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version - 1 },

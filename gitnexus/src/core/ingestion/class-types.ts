@@ -37,6 +37,14 @@ export interface ClassExtractor {
    * Surfaced from `ClassExtractionConfig.qualifiedNodeId`.
    */
   readonly qualifiedNodeId: boolean;
+  /**
+   * When true, member node ids use the enclosing type's qualified path
+   * (`N.Box.save`) instead of the immediate type name (`Box.save`). Set only
+   * where the class node is already qualified but members still key off the
+   * tail. Languages that already put the qualified path in the owner name
+   * leave this unset.
+   */
+  readonly qualifyMemberOwner?: boolean;
   isTypeDeclaration(node: SyntaxNode): boolean;
   extract(
     node: SyntaxNode,
@@ -75,6 +83,8 @@ export interface ClassExtractionConfig {
    * the scope chain.
    */
   qualifiedNodeId?: boolean;
+  /** See {@link ClassExtractor.qualifyMemberOwner}. Default false. */
+  qualifyMemberOwner?: boolean;
   scopeNameNodeTypes?: string[];
   /** `filePath` is supplied when known (definition-phase extraction) — a
    *  language whose file IS a type names it from the path. */

@@ -1236,14 +1236,29 @@ const cachedFindEnclosingClassInfo = (
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
 
+  // Callers that omit the qualifier (caller-attribution) must still see the
+  // same owner the definition phase computed, or the two phases mint different
+  // ids and the CALLS edge lands on nothing. Only providers that qualify
+  // member ids opt in; everyone else keeps the previous cache shape.
+  const classExtractor = provider.classExtractor;
+  const qualifyMemberOwner = classExtractor?.qualifyMemberOwner === true;
+  const qualifiedOwnerName =
+    getQualifiedOwnerName ??
+    (qualifyMemberOwner && classExtractor
+      ? (ownerNode: SyntaxNode, simpleName: string): string | null =>
+          classExtractor.extractQualifiedName(ownerNode, simpleName) ??
+          classExtractor.qualifyScopeName?.(ownerNode, simpleName) ??
+          null
+      : undefined);
   const result = findEnclosingClassInfo(
     node,
     filePath,
     provider.resolveEnclosingOwner,
-    getQualifiedOwnerName,
+    qualifiedOwnerName,
     provider.resolveFileTypeOwner,
     provider.resolveContainerTypeOwner,
     provider.resolveDetachedOwnerName,
+    qualifyMemberOwner,
   );
   classIdCache.set(node, result);
   return result;

@@ -50,6 +50,9 @@ export const rubyClassConfig: ClassExtractionConfig = {
   // #1978: key nested-type nodes by their fully-qualified path (Outer.Inner) so
   // same-tail classes nested under different modules stay distinct.
   qualifiedNodeId: true,
+  // Member ids follow that path. A method under `module N; class Box` is
+  // `N.Box.save`, and `class A::B` (no lexical `module A`) normalizes to `A.B`.
+  qualifyMemberOwner: true,
   extractScopeSegments: (node) => {
     const factoryName = rubyFactoryBindingName(node);
     return factoryName ? [factoryName] : undefined;

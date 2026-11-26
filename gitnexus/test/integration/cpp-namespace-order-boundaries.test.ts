@@ -36,10 +36,10 @@ struct RelativeHolder { lib::RelativeProduct field; void relative_field() { fiel
     if (root) await fs.rm(root, { recursive: true, force: true });
   });
   it.each([
-    ['relative_brace', 'Method:main.cpp:RelativeProduct.m#0'],
-    ['relative_field', 'Method:main.cpp:RelativeProduct.m#0'],
-    ['first_use', 'Method:z_provider.h:FirstProduct.m#0'],
-    ['second_use', 'Method:a_provider.h:SecondProduct.m#0'],
+    ['relative_brace', 'Method:main.cpp:outer.lib.v1.RelativeProduct.m#0'],
+    ['relative_field', 'Method:main.cpp:outer.lib.v1.RelativeProduct.m#0'],
+    ['first_use', 'Method:z_provider.h:one.FirstProduct.m#0'],
+    ['second_use', 'Method:a_provider.h:two.SecondProduct.m#0'],
   ])('%s resolves its own namespace', (caller, target) => {
     expect(
       [...result.graph.iterRelationships()]

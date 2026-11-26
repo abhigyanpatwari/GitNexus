@@ -664,6 +664,31 @@ export function getLabelFromCaptures(
   return 'CodeElement';
 }
 
+/**
+ * Owner name a member id should use.
+ *
+ * `qualifiedOwnerName` is the enclosing type's dot path (`N.Box`, `A.B`).
+ * The raw declaration name keeps template arguments (`Box<bool>`) when the
+ * qualified path was built from the stripped type name. A raw path that still
+ * uses `::` (`A::B`) is replaced by the normalized qualified path.
+ */
+export function memberOwnerName(
+  rawName: string,
+  qualifiedOwnerName: string | null | undefined,
+): string {
+  if (qualifiedOwnerName == null || qualifiedOwnerName.length === 0) return rawName;
+  if (qualifiedOwnerName === rawName) return rawName;
+  const stripped = stripTemplateArguments(rawName);
+  if (
+    stripped.length > 0 &&
+    stripped !== rawName &&
+    (qualifiedOwnerName === stripped || qualifiedOwnerName.endsWith(`.${stripped}`))
+  ) {
+    return qualifiedOwnerName.slice(0, qualifiedOwnerName.length - stripped.length) + rawName;
+  }
+  return qualifiedOwnerName;
+}
+
 /** Enclosing owner name, and its graph id when the declaration is local. */
 export interface EnclosingClassInfo {
   classId?: string; // e.g. "Class:animal.dart:Animal"; absent for a detached owner
@@ -1000,7 +1025,18 @@ export const findEnclosingClassInfo = (
     filePath: string,
   ) => { readonly name: string; readonly label: NodeLabel } | null,
   resolveDetachedOwnerName?: LanguageProvider['resolveDetachedOwnerName'],
+  /**
+   * Use the qualified owner path as `className` when the provider's members
+   * are still keyed by the tail type name. Off by default so languages that
+   * already qualify the owner name stay byte-identical.
+   */
+  qualifyMemberOwner = false,
 ): EnclosingClassInfo | null => {
+  // The caller phase starts ON the callable, whose qualified declarator is a
+  // child rather than an ancestor. The definition phase starts on the name,
+  // whose qualifier is an ancestor. Consult both.
+  const ownDetachedOwner = resolveDetachedOwnerName?.(node);
+  if (ownDetachedOwner !== undefined) return { className: ownDetachedOwner };
   let current = node.parent;
   let iterations = 0;
   // Tracks container nodes already visited via the hook so a misbehaving hook
@@ -1269,7 +1305,9 @@ export const findEnclosingClassInfo = (
             : undefined;
         return {
           classId: generateId(label, `${filePath}:${classIdName}`),
-          className: nameNode.text,
+          className: qualifyMemberOwner
+            ? memberOwnerName(nameNode.text, qualifiedOwnerName)
+            : nameNode.text,
           ...(qualifiedClassId !== undefined ? { qualifiedClassId } : {}),
         };
       }
