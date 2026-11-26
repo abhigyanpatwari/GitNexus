@@ -1,13 +1,16 @@
+import { createTestEnvironment } from '../support/environment.js';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import type { TestSpecification, Vitest } from 'vitest/node';
-import PerfSequencer from '../helpers/perf-sequencer.js';
+import PerfSequencer from '../../../../test/helpers/perf-sequencer.js';
 
+const environment = createTestEnvironment();
 const roots: string[] = [];
 afterEach(() => {
-  vi.unstubAllEnvs();
+  environment.restore();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -60,11 +63,11 @@ describe('timing-based CI sharding', () => {
     const { specs, history, split } = fixture();
     history('windows-latest', [10000, 10, 9000, 10]);
     history('macos-latest', [9000, 10000, 10, 10]);
-    vi.stubEnv('GITNEXUS_SHARD_PROFILE', 'windows-latest');
+    environment.set('GITNEXUS_SHARD_PROFILE', 'windows-latest');
     const windows = await split();
     expect(await split()).toEqual(windows);
     expect(windows.some((bin) => bin.includes(specs[0]) && bin.includes(specs[2]))).toBe(false);
-    vi.stubEnv('GITNEXUS_SHARD_PROFILE', 'macos-latest');
+    environment.set('GITNEXUS_SHARD_PROFILE', 'macos-latest');
     const mac = await split();
     expect(mac.some((bin) => bin.includes(specs[0]) && bin.includes(specs[1]))).toBe(false);
     expect(mac).not.toEqual(windows);

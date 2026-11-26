@@ -1,3 +1,4 @@
+import { registerCases } from '../support/cases.mjs';
 /**
  * Locks the value-flow trace run (U11, R9, KTD11 "Trace", design §5.3a step 4) without spawning
  * Vitest: the documented wrap list and the mapping of U10's opaque-sink callees (storage reads
@@ -15,23 +16,24 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, describe, expect, it } from 'vitest';
-import { TraceFixtureRoots } from '../../../tools/scenario-map/value-flow/trace-fixtures.js';
-import type { PrepareOptions, PrepareReport } from '../../../tools/mutation/prepare/prepare.js';
-import type { OutcomeClass } from '../../../tools/mutation/runner/classify-outcome.js';
-import { scriptPath } from '../../../tools/scenario-map/path-coverage/records.js';
-import { buildRunManifest } from '../../../tools/scenario-map/mutation/run-group.js';
+import { afterEach, describe, it } from 'node:test';
+import { expect } from 'expect';
+import { TraceFixtureRoots } from '../../../scenario-map/value-flow/trace-fixtures.js';
+import type { PrepareOptions, PrepareReport } from '../../../mutation/prepare/prepare.js';
+import type { OutcomeClass } from '../../../mutation/runner/classify-outcome.js';
+import { scriptPath } from '../../../scenario-map/path-coverage/records.js';
+import { buildRunManifest } from '../../../scenario-map/mutation/run-group.js';
 import type {
   VitestRunOptions,
   VitestRunResult,
-} from '../../../tools/scenario-map/mutation/vitest-run.js';
+} from '../../../scenario-map/mutation/vitest-run.js';
 import {
   BASE_WRAP_LIST,
   isStorageRead,
   wrapListOf,
   wrapTargetOfCallee,
   type WrapEntry,
-} from '../../../tools/scenario-map/value-flow/builtins.js';
+} from '../../../scenario-map/value-flow/builtins.js';
 import {
   LONG_STRING,
   RAW_TRACE_SCHEMA_VERSION,
@@ -50,7 +52,7 @@ import {
   type RawTraceRecord,
   type TraceContext,
   type TraceOverflow,
-} from '../../../tools/scenario-map/value-flow/trace-records.js';
+} from '../../../scenario-map/value-flow/trace-records.js';
 import {
   TRACE_SETUP_FILE,
   compareTracePair,
@@ -60,7 +62,7 @@ import {
   tracesOf,
   type TestTrace,
   type TraceRunDeps,
-} from '../../../tools/scenario-map/value-flow/trace.js';
+} from '../../../scenario-map/value-flow/trace.js';
 
 const SITE = 'gitnexus/src/x.ts:12:10';
 const OTHER_SITE = 'gitnexus/src/x.ts:20:5';
@@ -125,33 +127,43 @@ describe('wrap list', () => {
     ]);
   });
 
-  it.each([
-    ['String.trim', 'String.prototype.trim'],
-    ['ReadonlyArray.join', 'Array.prototype.join'],
-    ['NumberConstructor.isFinite', 'Number.isFinite'],
-    ['DateConstructor.UTC', 'Date.UTC'],
-    ['Math.max', 'Math.max'],
-    ['__global.URL', 'URL'],
-    ['parseInt', 'parseInt'],
-    ['NumberFormat.format', 'Intl.NumberFormat.prototype.format'],
-  ])('maps the opaque-sink callee %s to %s', (callee, api) => {
-    expect(wrapTargetOfCallee(callee)).toMatchObject({
-      kind: 'target',
-      entry: { api, group: 'opaque-sink' },
-    });
-  });
+  registerCases(
+    it,
+    [
+      ['String.trim', 'String.prototype.trim'],
+      ['ReadonlyArray.join', 'Array.prototype.join'],
+      ['NumberConstructor.isFinite', 'Number.isFinite'],
+      ['DateConstructor.UTC', 'Date.UTC'],
+      ['Math.max', 'Math.max'],
+      ['__global.URL', 'URL'],
+      ['parseInt', 'parseInt'],
+      ['NumberFormat.format', 'Intl.NumberFormat.prototype.format'],
+    ],
+    'maps the opaque-sink callee %s to %s',
+    (callee, api) => {
+      expect(wrapTargetOfCallee(callee)).toMatchObject({
+        kind: 'target',
+        entry: { api, group: 'opaque-sink' },
+      });
+    },
+  );
 
-  it.each([
-    ['Map.set', 'storage read'],
-    ['ReadonlySet.has', 'storage read'],
-    ['WeakMap.get', 'storage read'],
-    ['Array.push', 'storage read'],
-    ['ReadonlyArray.unshift', 'storage read'],
-    ['BaseLogger.warn', 'not a global built-in'],
-    ['load', 'not a global built-in'],
-  ])('skips the opaque-sink callee %s (%s)', (callee, reason) => {
-    expect(wrapTargetOfCallee(callee)).toEqual({ kind: 'skip', callee, reason });
-  });
+  registerCases(
+    it,
+    [
+      ['Map.set', 'storage read'],
+      ['ReadonlySet.has', 'storage read'],
+      ['WeakMap.get', 'storage read'],
+      ['Array.push', 'storage read'],
+      ['ReadonlyArray.unshift', 'storage read'],
+      ['BaseLogger.warn', 'not a global built-in'],
+      ['load', 'not a global built-in'],
+    ],
+    'skips the opaque-sink callee %s (%s)',
+    (callee, reason) => {
+      expect(wrapTargetOfCallee(callee)).toEqual({ kind: 'skip', callee, reason });
+    },
+  );
 
   it('adds new opaque sinks once, after the base list, and lists the skipped ones', () => {
     const list = wrapListOf(['Array.join', 'String.trim', 'Array.join', 'Map.set', 'URL']);
@@ -182,28 +194,33 @@ const throwingGetter = (): object =>
   });
 
 describe('serializeValue', () => {
-  it.each([
-    ['a number', 2.4, '2.4'],
-    ['negative zero', -0, '-0'],
-    ['NaN', Number.NaN, 'NaN'],
-    ['a bigint', 10n, '10n'],
-    ['a string', 'José', '"José"'],
-    ['undefined', undefined, 'undefined'],
-    ['null', null, 'null'],
-    ['an argument list', [24, 'x', true], '[24,"x",true]'],
-    ['a sparse array', [1, , 3], '[1,<hole>,3]'],
-    ['a plain object', { a: 1, b: [2] }, '{"a":1,"b":[2]}'],
-    ['a class instance', new Box(3), 'Box{"value":3}'],
-    ['a date', new Date(0), 'Date(0)'],
-    ['a regex with its lastIndex', /a|b/gi, '/a|b/gi@0'],
-    ['a map', new Map([['k', 1]]), 'Map{"k"=>1}'],
-    ['a set', new Set([1, 2]), 'Set{1,2}'],
-    ['a function', function named(): void {}, '[Function named]'],
-    ['a cycle', cyclic(), '{"name":"n","self":[Circular]}'],
-    ['an accessor, without running it', throwingGetter(), '{"plain":1,"trap":<accessor>}'],
-  ])('serialises %s completely', (_title, value, text) => {
-    expect(serializeValue(value)).toEqual({ text, complete: true });
-  });
+  registerCases(
+    it,
+    [
+      ['a number', 2.4, '2.4'],
+      ['negative zero', -0, '-0'],
+      ['NaN', Number.NaN, 'NaN'],
+      ['a bigint', 10n, '10n'],
+      ['a string', 'José', '"José"'],
+      ['undefined', undefined, 'undefined'],
+      ['null', null, 'null'],
+      ['an argument list', [24, 'x', true], '[24,"x",true]'],
+      ['a sparse array', [1, , 3], '[1,<hole>,3]'],
+      ['a plain object', { a: 1, b: [2] }, '{"a":1,"b":[2]}'],
+      ['a class instance', new Box(3), 'Box{"value":3}'],
+      ['a date', new Date(0), 'Date(0)'],
+      ['a regex with its lastIndex', /a|b/gi, '/a|b/gi@0'],
+      ['a map', new Map([['k', 1]]), 'Map{"k"=>1}'],
+      ['a set', new Set([1, 2]), 'Set{1,2}'],
+      ['a function', function named(): void {}, '[Function named]'],
+      ['a cycle', cyclic(), '{"name":"n","self":[Circular]}'],
+      ['an accessor, without running it', throwingGetter(), '{"plain":1,"trap":<accessor>}'],
+    ],
+    'serialises %s completely',
+    (_title, value, text) => {
+      expect(serializeValue(value)).toEqual({ text, complete: true });
+    },
+  );
 
   it('names known objects by token', () => {
     expect(serializeValue([Math], new Map<object, string>([[Math, 'Math']])).text).toBe('[[Math]]');
@@ -268,13 +285,18 @@ describe('serializeValue', () => {
     expect(serializeValue(a).text).not.toBe(serializeValue(c).text);
   });
 
-  it.each([
-    ['an array over the node budget', Array.from({ length: VALUE_NODE_BUDGET + 1 }, () => 0)],
-    ['a proxy', new Proxy({}, {})],
-    ['a nesting deeper than the limit', JSON.parse(`${'['.repeat(40)}${']'.repeat(40)}`)],
-  ])('marks %s incomplete', (_title, value) => {
-    expect(serializeValue(value).complete).toBe(false);
-  });
+  registerCases(
+    it,
+    [
+      ['an array over the node budget', Array.from({ length: VALUE_NODE_BUDGET + 1 }, () => 0)],
+      ['a proxy', new Proxy({}, {})],
+      ['a nesting deeper than the limit', JSON.parse(`${'['.repeat(40)}${']'.repeat(40)}`)],
+    ],
+    'marks %s incomplete',
+    (_title, value) => {
+      expect(serializeValue(value).complete).toBe(false);
+    },
+  );
 
   it('stores a long text as a digest plus a preview', () => {
     const text = `"${'z'.repeat(SHORT_VALUE)}"`;
@@ -290,56 +312,69 @@ const resolve = productionResolver(PREPARED, []);
 const frame = (file: string | null): { file: string | null } => ({ file });
 
 describe('call sites', () => {
-  it.each([
-    ['a production frame', [frame(`${PREPARED}/gitnexus/src/x.ts`)], false, 'gitnexus/src/x.ts'],
+  registerCases(
+    it,
     [
-      'an engine frame, then production',
-      [frame(null), frame(`${PREPARED}/gitnexus/src/x.ts`)],
-      false,
-      'gitnexus/src/x.ts',
+      ['a production frame', [frame(`${PREPARED}/gitnexus/src/x.ts`)], false, 'gitnexus/src/x.ts'],
+      [
+        'an engine frame, then production',
+        [frame(null), frame(`${PREPARED}/gitnexus/src/x.ts`)],
+        false,
+        'gitnexus/src/x.ts',
+      ],
+      [
+        'an engine frame inside a wrapped built-in',
+        [frame(null), frame(`${PREPARED}/gitnexus/src/x.ts`)],
+        true,
+        null,
+      ],
+      [
+        'a callback frame inside a wrapped built-in',
+        [frame(`${PREPARED}/gitnexus/src/x.ts`), frame(null)],
+        true,
+        'gitnexus/src/x.ts',
+      ],
+      [
+        'a node_modules frame only',
+        [frame('file:///repo/gitnexus/node_modules/lib/index.js')],
+        false,
+        null,
+      ],
+      [
+        'a node_modules frame above a production frame',
+        [
+          frame(`${PREPARED}/gitnexus/node_modules/lib/a.js`),
+          frame(`${PREPARED}/gitnexus/src/x.ts`),
+        ],
+        false,
+        null,
+      ],
+      ['a test frame', [frame(`${PREPARED}/gitnexus/test/unit/a.test.ts`)], false, null],
+      ['no frame', [], false, null],
     ],
-    [
-      'an engine frame inside a wrapped built-in',
-      [frame(null), frame(`${PREPARED}/gitnexus/src/x.ts`)],
-      true,
-      null,
-    ],
-    [
-      'a callback frame inside a wrapped built-in',
-      [frame(`${PREPARED}/gitnexus/src/x.ts`), frame(null)],
-      true,
-      'gitnexus/src/x.ts',
-    ],
-    [
-      'a node_modules frame only',
-      [frame('file:///repo/gitnexus/node_modules/lib/index.js')],
-      false,
-      null,
-    ],
-    [
-      'a node_modules frame above a production frame',
-      [frame(`${PREPARED}/gitnexus/node_modules/lib/a.js`), frame(`${PREPARED}/gitnexus/src/x.ts`)],
-      false,
-      null,
-    ],
-    ['a test frame', [frame(`${PREPARED}/gitnexus/test/unit/a.test.ts`)], false, null],
-    ['no frame', [], false, null],
-  ])('%s', (_title, frames, inside, repoPath) => {
-    expect(callSiteOf(frames, inside, resolve)?.repoPath ?? null).toBe(repoPath);
-  });
+    '%s',
+    (_title, frames, inside, repoPath) => {
+      expect(callSiteOf(frames, inside, resolve)?.repoPath ?? null).toBe(repoPath);
+    },
+  );
 
-  it.each([
-    [`${PREPARED}/gitnexus/src/core/a.ts`, 'gitnexus/src/core/a.ts'],
-    [`file://${PREPARED}/gitnexus/src/core/a.ts`, 'gitnexus/src/core/a.ts'],
-    [`${PREPARED}/gitnexus/relocated/gitnexus-shared/src/b.ts`, 'gitnexus-shared/src/b.ts'],
-    [`${PREPARED}/gitnexus/src/core/a.test.ts`, null],
-    [`${PREPARED}/gitnexus/tools/scenario-map/types.ts`, null],
-    [`${PREPARED}/gitnexus/src/core/types.d.ts`, null],
-    ['/elsewhere/gitnexus/src/a.ts', null],
-    ['node:internal/x', null],
-  ])('resolves the script %s to %s', (script, repoPath) => {
-    expect(resolve(script)).toBe(repoPath);
-  });
+  registerCases(
+    it,
+    [
+      [`${PREPARED}/gitnexus/src/core/a.ts`, 'gitnexus/src/core/a.ts'],
+      [`file://${PREPARED}/gitnexus/src/core/a.ts`, 'gitnexus/src/core/a.ts'],
+      [`${PREPARED}/gitnexus/relocated/gitnexus-shared/src/b.ts`, 'gitnexus-shared/src/b.ts'],
+      [`${PREPARED}/gitnexus/src/core/a.test.ts`, null],
+      [`${PREPARED}/gitnexus/tools/scenario-map/types.ts`, null],
+      [`${PREPARED}/gitnexus/src/core/types.d.ts`, null],
+      ['/elsewhere/gitnexus/src/a.ts', null],
+      ['node:internal/x', null],
+    ],
+    'resolves the script %s to %s',
+    (script, repoPath) => {
+      expect(resolve(script)).toBe(repoPath);
+    },
+  );
 
   it('accepts the src/ subtree of an extra root (controls mode)', () => {
     const fixture = 'gitnexus/test/fixtures/mutation-scenario-map';
@@ -590,26 +625,31 @@ describe('TraceRecorder', () => {
     ]);
   });
 
-  it.each([
-    ['Math.round', (s: Sandbox) => s.Math.round(2.5), () => Math.round(2.5)],
-    ['toFixed', (s: Sandbox) => s.Number.prototype.toFixed.call(24, 1), () => (24).toFixed(1)],
+  registerCases(
+    it,
     [
-      'trimStart',
-      (s: Sandbox) => s.String.prototype.trimStart.call('  x'),
-      () => '  x'.trimStart(),
+      ['Math.round', (s: Sandbox) => s.Math.round(2.5), () => Math.round(2.5)],
+      ['toFixed', (s: Sandbox) => s.Number.prototype.toFixed.call(24, 1), () => (24).toFixed(1)],
+      [
+        'trimStart',
+        (s: Sandbox) => s.String.prototype.trimStart.call('  x'),
+        () => '  x'.trimStart(),
+      ],
+      ['parseInt', (s: Sandbox) => s.parseInt('17', 8), () => parseInt('17', 8)],
+      [
+        'JSON.stringify',
+        (s: Sandbox) => s.JSON.stringify({ a: [1] }),
+        () => JSON.stringify({ a: [1] }),
+      ],
+      ['new on a constructor', (s: Sandbox) => new s.Box(4).value, () => new Box(4).value],
     ],
-    ['parseInt', (s: Sandbox) => s.parseInt('17', 8), () => parseInt('17', 8)],
-    [
-      'JSON.stringify',
-      (s: Sandbox) => s.JSON.stringify({ a: [1] }),
-      () => JSON.stringify({ a: [1] }),
-    ],
-    ['new on a constructor', (s: Sandbox) => new s.Box(4).value, () => new Box(4).value],
-  ])('passes %s through unchanged', (_title, wrapped, original) => {
-    const { sandbox, use } = installed();
-    use('a');
-    expect(wrapped(sandbox)).toEqual(original());
-  });
+    'passes %s through unchanged',
+    (_title, wrapped, original) => {
+      const { sandbox, use } = installed();
+      use('a');
+      expect(wrapped(sandbox)).toEqual(original());
+    },
+  );
 
   it('keeps errors, instanceof, name, length and the native source text', () => {
     const { sandbox, use } = installed();
@@ -663,108 +703,115 @@ const FIXED = (receiver: string, site = OTHER_SITE): RawTraceCall =>
   call('Number.prototype.toFixed', site, receiver, '[1]');
 
 describe('compareTracePair', () => {
-  it.each([
+  registerCases(
+    it,
     [
-      'Math.round reached with 2.4 and 2.5',
-      [ROUND('[2.4]')],
-      [ROUND('[2.5]')],
-      {},
-      'veto',
-      ['args-differ'],
-    ],
-    ['the same site with equal arguments', [ROUND('[2.4]')], [ROUND('[2.4]')], {}, 'clean', []],
-    [
-      'toFixed reached with receivers 24 and 25',
-      [FIXED('24')],
-      [FIXED('25')],
-      {},
-      'veto',
-      ['receiver-differs'],
-    ],
-    [
-      'identical traces over several sites',
-      [ROUND('[2]'), FIXED('20')],
-      [ROUND('[2]'), FIXED('20')],
-      {},
-      'clean',
-      [],
-    ],
-    [
-      'toFixed at a site test B never reaches',
-      [ROUND('[2]'), FIXED('20')],
-      [ROUND('[2]')],
-      {},
-      'veto',
-      ['asymmetric-sites'],
-    ],
-    [
-      'a site A calls twice and B once',
-      [ROUND('[2]', 2)],
-      [ROUND('[2]')],
-      {},
-      'veto',
-      ['asymmetric-counts'],
-    ],
-    [
-      'the same values used a different number of times',
-      [ROUND('[1]', 2), ROUND('[2]')],
-      [ROUND('[1]'), ROUND('[2]', 2)],
-      {},
-      'veto',
-      ['asymmetric-counts'],
-    ],
-    [
-      'the same receivers and arguments paired differently',
-      [FIXED('1', SITE), call('Number.prototype.toFixed', SITE, '2', '[2]')],
       [
-        call('Number.prototype.toFixed', SITE, '1', '[2]'),
-        call('Number.prototype.toFixed', SITE, '2', '[1]'),
+        'Math.round reached with 2.4 and 2.5',
+        [ROUND('[2.4]')],
+        [ROUND('[2.5]')],
+        {},
+        'veto',
+        ['args-differ'],
       ],
-      {},
-      'veto',
-      ['args-differ'],
-    ],
-    [
-      'a test that passes at baseline and fails under tracing',
-      [ROUND('[2]')],
-      [ROUND('[2]')],
-      { traced: 'killed-by-test:assertion' },
-      'inconclusive',
-      ['trace-changed-outcome'],
-    ],
-    ['a test without a record', [], [], { recorded: false }, 'inconclusive', ['trace-missing']],
-    [
-      'a test that did not run',
-      [],
-      [],
-      { baseline: null, traced: null },
-      'inconclusive',
-      ['trace-missing'],
-    ],
-    ['a concurrent test', [], [], { concurrent: true }, 'inconclusive', ['trace-unattributable']],
-    ['an incomplete trace', [], [], { overflow: ['calls'] }, 'inconclusive', ['trace-overflow']],
-    [
-      'differing arguments and a changed outcome',
-      [ROUND('[2.4]')],
-      [ROUND('[2.5]')],
-      { traced: 'killed-by-test:runtime' },
-      'inconclusive',
-      ['args-differ', 'trace-changed-outcome'],
-    ],
-  ] as const)('%s', (_title, callsA, callsB, extraB, status, reasons) => {
-    const pair = compareTracePair(trace(A, [...callsA]), trace(B, [...callsB], extraB));
-    expect([pair.status, pair.reasons]).toEqual([status, reasons]);
-  });
+      ['the same site with equal arguments', [ROUND('[2.4]')], [ROUND('[2.4]')], {}, 'clean', []],
+      [
+        'toFixed reached with receivers 24 and 25',
+        [FIXED('24')],
+        [FIXED('25')],
+        {},
+        'veto',
+        ['receiver-differs'],
+      ],
+      [
+        'identical traces over several sites',
+        [ROUND('[2]'), FIXED('20')],
+        [ROUND('[2]'), FIXED('20')],
+        {},
+        'clean',
+        [],
+      ],
+      [
+        'toFixed at a site test B never reaches',
+        [ROUND('[2]'), FIXED('20')],
+        [ROUND('[2]')],
+        {},
+        'veto',
+        ['asymmetric-sites'],
+      ],
+      [
+        'a site A calls twice and B once',
+        [ROUND('[2]', 2)],
+        [ROUND('[2]')],
+        {},
+        'veto',
+        ['asymmetric-counts'],
+      ],
+      [
+        'the same values used a different number of times',
+        [ROUND('[1]', 2), ROUND('[2]')],
+        [ROUND('[1]'), ROUND('[2]', 2)],
+        {},
+        'veto',
+        ['asymmetric-counts'],
+      ],
+      [
+        'the same receivers and arguments paired differently',
+        [FIXED('1', SITE), call('Number.prototype.toFixed', SITE, '2', '[2]')],
+        [
+          call('Number.prototype.toFixed', SITE, '1', '[2]'),
+          call('Number.prototype.toFixed', SITE, '2', '[1]'),
+        ],
+        {},
+        'veto',
+        ['args-differ'],
+      ],
+      [
+        'a test that passes at baseline and fails under tracing',
+        [ROUND('[2]')],
+        [ROUND('[2]')],
+        { traced: 'killed-by-test:assertion' },
+        'inconclusive',
+        ['trace-changed-outcome'],
+      ],
+      ['a test without a record', [], [], { recorded: false }, 'inconclusive', ['trace-missing']],
+      [
+        'a test that did not run',
+        [],
+        [],
+        { baseline: null, traced: null },
+        'inconclusive',
+        ['trace-missing'],
+      ],
+      ['a concurrent test', [], [], { concurrent: true }, 'inconclusive', ['trace-unattributable']],
+      ['an incomplete trace', [], [], { overflow: ['calls'] }, 'inconclusive', ['trace-overflow']],
+      [
+        'differing arguments and a changed outcome',
+        [ROUND('[2.4]')],
+        [ROUND('[2.5]')],
+        { traced: 'killed-by-test:runtime' },
+        'inconclusive',
+        ['args-differ', 'trace-changed-outcome'],
+      ],
+    ] as const,
+    '%s',
+    (_title, callsA, callsB, extraB, status, reasons) => {
+      const pair = compareTracePair(trace(A, [...callsA]), trace(B, [...callsB], extraB));
+      expect([pair.status, pair.reasons]).toEqual([status, reasons]);
+    },
+  );
 
-  it.each([
-    ['a clean pair', [ROUND('[2]')], [ROUND('[2]')], ['trace-run-invalid']],
+  registerCases(
+    it,
     [
-      'a vetoed pair, its veto reasons kept',
-      [ROUND('[2.4]')],
-      [ROUND('[2.5]')],
-      ['args-differ', 'trace-run-invalid'],
-    ],
-  ] as const)(
+      ['a clean pair', [ROUND('[2]')], [ROUND('[2]')], ['trace-run-invalid']],
+      [
+        'a vetoed pair, its veto reasons kept',
+        [ROUND('[2.4]')],
+        [ROUND('[2.5]')],
+        ['args-differ', 'trace-run-invalid'],
+      ],
+    ] as const,
     'makes %s inconclusive when the run is invalid',
     (_title, callsA, callsB, reasons) => {
       const pair = compareTracePair(trace(A, [...callsA]), trace(B, [...callsB]), [
@@ -1122,66 +1169,68 @@ describe('runTrace', () => {
     ]);
   });
 
-  it.each([
+  registerCases(
+    it,
     [
-      'a traced run with an unhandled error (infrastructure)',
-      {
-        traced: {
-          status: 'error',
-          outcome: 'infrastructure',
-          reason: 'unhandled error during the run: Error: boom',
-          unhandledErrors: ['Error: boom'],
-        },
-      },
       [
-        'traced run error/infrastructure: unhandled error during the run: Error: boom',
-        'traced run: unhandled error: Error: boom',
+        'a traced run with an unhandled error (infrastructure)',
+        {
+          traced: {
+            status: 'error',
+            outcome: 'infrastructure',
+            reason: 'unhandled error during the run: Error: boom',
+            unhandledErrors: ['Error: boom'],
+          },
+        },
+        [
+          'traced run error/infrastructure: unhandled error during the run: Error: boom',
+          'traced run: unhandled error: Error: boom',
+        ],
       ],
-    ],
-    [
-      'a traced run whose selected tests use retry (inconclusive)',
-      {
-        traced: {
-          status: 'error',
-          outcome: 'inconclusive',
-          reason: 'selected tests use retry: d > a',
-        },
-      },
-      ['traced run error/inconclusive: selected tests use retry: d > a'],
-    ],
-    [
-      'a baseline with a failure outside any test',
-      {
-        baseline: {
-          status: 'killed',
-          outcome: 'killed-outside-test:hook',
-          outsideTest: [
-            {
-              file: PACKAGE_FILE,
-              suiteTaskId: undefined,
-              outcome: 'killed-outside-test:hook',
-              attributedTo: [],
-              message: 'afterAll failed',
-            },
-          ],
-        },
-      },
       [
-        'baseline run killed/killed-outside-test:hook',
-        `baseline run: killed-outside-test:hook outside a test in ${PACKAGE_FILE}`,
+        'a traced run whose selected tests use retry (inconclusive)',
+        {
+          traced: {
+            status: 'error',
+            outcome: 'inconclusive',
+            reason: 'selected tests use retry: d > a',
+          },
+        },
+        ['traced run error/inconclusive: selected tests use retry: d > a'],
       ],
-    ],
-    [
-      'a wrap-list entry a worker could not wrap',
-      { record: { unavailable: [{ api: 'Intl.DisplayNames', reason: 'missing' }] } },
-      ['not wrapped: Intl.DisplayNames (missing)'],
-    ],
-    [
-      'a recorder error outside any test',
-      { record: { errors: ['TypeError: no stack'] } },
-      ['trace error: TypeError: no stack'],
-    ],
-  ] as const satisfies readonly (readonly [string, FakeRunOptions, readonly string[]])[])(
+      [
+        'a baseline with a failure outside any test',
+        {
+          baseline: {
+            status: 'killed',
+            outcome: 'killed-outside-test:hook',
+            outsideTest: [
+              {
+                file: PACKAGE_FILE,
+                suiteTaskId: undefined,
+                outcome: 'killed-outside-test:hook',
+                attributedTo: [],
+                message: 'afterAll failed',
+              },
+            ],
+          },
+        },
+        [
+          'baseline run killed/killed-outside-test:hook',
+          `baseline run: killed-outside-test:hook outside a test in ${PACKAGE_FILE}`,
+        ],
+      ],
+      [
+        'a wrap-list entry a worker could not wrap',
+        { record: { unavailable: [{ api: 'Intl.DisplayNames', reason: 'missing' }] } },
+        ['not wrapped: Intl.DisplayNames (missing)'],
+      ],
+      [
+        'a recorder error outside any test',
+        { record: { errors: ['TypeError: no stack'] } },
+        ['trace error: TypeError: no stack'],
+      ],
+    ] as const satisfies readonly (readonly [string, FakeRunOptions, readonly string[]])[],
     'makes every pair inconclusive after %s',
     async (_title, world, issues) => {
       const { result } = await runWith(fakeRun([ROUND('[2]')], [ROUND('[2]')], world));

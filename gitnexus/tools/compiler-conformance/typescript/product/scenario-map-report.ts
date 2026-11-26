@@ -1,3 +1,4 @@
+import { registerCases } from '../support/cases.mjs';
 /**
  * Locks the scenario map report (U13, R12, KTD13, KTD15, design §5.5, §7, §8): mutant fingerprints
  * (span-free, operator, replacement, enclosing statement, fallbacks), KTD13 universe ids, evidence
@@ -9,14 +10,15 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
-import { contentHash } from '../../../tools/mutation/prepare/mutant-identity.js';
+import { after as afterAll, describe, it } from 'node:test';
+import { expect } from 'expect';
+import { contentHash } from '../../../mutation/prepare/mutant-identity.js';
 import {
   fingerprintMutants,
   universeIdOf,
   type FingerprintFallback,
-} from '../../../tools/scenario-map/report/anchors.js';
-import { mdCode, renderMarkdown } from '../../../tools/scenario-map/report/markdown.js';
+} from '../../../scenario-map/report/anchors.js';
+import { mdCode, renderMarkdown } from '../../../scenario-map/report/markdown.js';
 import {
   PRECISION_NOT_MEASURED,
   REDACTED,
@@ -24,11 +26,21 @@ import {
   collectProvenance,
   spotAudit,
   type SpotAuditPick,
-} from '../../../tools/scenario-map/report/report.js';
-import { SCENARIO_MAP_SCHEMA_VERSION } from '../../../tools/scenario-map/types.js';
-import { computeFingerprints } from '../../../tools/scenario-map/verdict/fingerprint.js';
-import { VERDICT_ENGINE_VERSION } from '../../../tools/scenario-map/verdict/verdict.js';
-import { A, B, C, FILE, M1, M2, M3, fingerprints, reportInput } from './report-fixtures.js';
+} from '../../../scenario-map/report/report.js';
+import { SCENARIO_MAP_SCHEMA_VERSION } from '../../../scenario-map/types.js';
+import { computeFingerprints } from '../../../scenario-map/verdict/fingerprint.js';
+import { VERDICT_ENGINE_VERSION } from '../../../scenario-map/verdict/verdict.js';
+import {
+  A,
+  B,
+  C,
+  FILE,
+  M1,
+  M2,
+  M3,
+  fingerprints,
+  reportInput,
+} from '../../../../test/unit/scenario-map/report-fixtures.js';
 
 const sha256 = (text: string): string => createHash('sha256').update(text).digest('hex');
 const SRC = 'gitnexus/src/math.ts';
@@ -50,17 +62,22 @@ describe('mutant fingerprint', () => {
     expect(fingerprintMutants([ADD_ID], () => ADD).get(ADD_ID)?.fallback).toBeNull();
   });
 
-  it.each([
-    ['operator', ADD, idOf(ADD, '2:10-2:15', 'StringLiteral', 'a - b')],
-    ['replacement', ADD, idOf(ADD, '2:10-2:15', 'ArithmeticOperator', 'a * b')],
+  registerCases(
+    it,
     [
-      'enclosing statement',
-      ADD.replace('a + b;', 'a + b + 0;'),
-      idOf(ADD.replace('a + b;', 'a + b + 0;'), '2:10-2:15', 'ArithmeticOperator', 'a - b'),
+      ['operator', ADD, idOf(ADD, '2:10-2:15', 'StringLiteral', 'a - b')],
+      ['replacement', ADD, idOf(ADD, '2:10-2:15', 'ArithmeticOperator', 'a * b')],
+      [
+        'enclosing statement',
+        ADD.replace('a + b;', 'a + b + 0;'),
+        idOf(ADD.replace('a + b;', 'a + b + 0;'), '2:10-2:15', 'ArithmeticOperator', 'a - b'),
+      ],
     ],
-  ])('changes with the %s', (_part, source, id) => {
-    expect(fingerprintIn(source, id)).not.toBe(fingerprintIn(ADD, ADD_ID));
-  });
+    'changes with the %s',
+    (_part, source, id) => {
+      expect(fingerprintIn(source, id)).not.toBe(fingerprintIn(ADD, ADD_ID));
+    },
+  );
 
   it('tells apart equal mutants of one statement by occurrence', () => {
     const source = "export const k = f('a') + f('a');\n";
@@ -79,20 +96,25 @@ describe('mutant fingerprint', () => {
     );
   });
 
-  it.each<[FingerprintFallback, string, string | null]>([
-    ['malformed-id', 'not-a-global-id', ADD],
-    ['unreadable', ADD_ID, null],
-    ['content-changed', ADD_ID, ADD.replace('a + b', 'b + a')],
+  registerCases(
+    it,
     [
-      'unparsable',
-      idOf('export const = ;\n', '1:1-1:2', 'StringLiteral', ''),
-      'export const = ;\n',
-    ],
-    ['span-outside', idOf(ADD, '9:1-9:2', 'ArithmeticOperator', 'a - b'), ADD],
-    ['no-statement', idOf('a;\nb;\n', '1:1-2:3', 'BlockStatement', '{}'), 'a;\nb;\n'],
-  ])('falls back to the global id when %s', (fallback, id, source) => {
-    expect(fingerprintMutants([id], () => source).get(id)?.fallback).toBe(fallback);
-  });
+      ['malformed-id', 'not-a-global-id', ADD],
+      ['unreadable', ADD_ID, null],
+      ['content-changed', ADD_ID, ADD.replace('a + b', 'b + a')],
+      [
+        'unparsable',
+        idOf('export const = ;\n', '1:1-1:2', 'StringLiteral', ''),
+        'export const = ;\n',
+      ],
+      ['span-outside', idOf(ADD, '9:1-9:2', 'ArithmeticOperator', 'a - b'), ADD],
+      ['no-statement', idOf('a;\nb;\n', '1:1-2:3', 'BlockStatement', '{}'), 'a;\nb;\n'],
+    ] satisfies [FingerprintFallback, string, string | null][],
+    'falls back to the global id when %s',
+    (fallback, id, source) => {
+      expect(fingerprintMutants([id], () => source).get(id)?.fallback).toBe(fallback);
+    },
+  );
 });
 
 describe('universeIdOf', () => {
@@ -227,21 +249,28 @@ describe('buildReport', () => {
     expect(report.summary.evaluated).toBe('3 of 4 eligible tests evaluated');
   });
 
-  it.each([
+  registerCases(
+    it,
     [
-      'an incomplete shard',
-      { planned: 2, complete: 1, incomplete: [{ shard: '1', reason: 'timeout' }] },
-      false,
+      [
+        'an incomplete shard',
+        { planned: 2, complete: 1, incomplete: [{ shard: '1', reason: 'timeout' }] },
+        false,
+      ],
+      ['every shard complete', { planned: 2, complete: 2, incomplete: [] }, true],
     ],
-    ['every shard complete', { planned: 2, complete: 2, incomplete: [] }, true],
-  ])('records completeness with %s', (_title, shards, complete) => {
-    const report = buildReport(reportInput({ degraded: ['no-pdg-layer'], overrides: { shards } }));
-    expect(report.completeness).toMatchObject({
-      complete,
-      partial: !complete,
-      degraded: ['no-pdg-layer'],
-    });
-  });
+    'records completeness with %s',
+    (_title, shards, complete) => {
+      const report = buildReport(
+        reportInput({ degraded: ['no-pdg-layer'], overrides: { shards } }),
+      );
+      expect(report.completeness).toMatchObject({
+        complete,
+        partial: !complete,
+        degraded: ['no-pdg-layer'],
+      });
+    },
+  );
 
   it('keeps the Layer 0 findings of eligible files only', () => {
     const finding = (file: string) => ({
@@ -345,45 +374,50 @@ describe('collectProvenance', () => {
 describe('renderMarkdown', () => {
   const markdown = renderMarkdown(buildReport(reportInput()));
 
-  it.each([
-    {
-      scope: 'a whole-suite run that ran every file',
-      overrides: {},
-      lines: [],
+  registerCases(
+    it,
+    [
+      {
+        scope: 'a whole-suite run that ran every file',
+        overrides: {},
+        lines: [],
+      },
+      {
+        scope: 'a whole-suite run that skipped files',
+        overrides: { layer1Files: 0 },
+        lines: ['Layer 1 ran 0 of them; the other 1 file was not compared.'],
+      },
+      {
+        scope: 'a diff-scoped run',
+        overrides: { layer1Files: 0, changedFiles: ['test/unit/add.test.ts'] },
+        lines: [
+          'Diff scope: only pairs with a test in the 1 changed test file were looked for: ' +
+            '`test/unit/add.test.ts`.',
+          'Layer 1 ran 0 of them: the changed files whose tests can pair with another test',
+        ],
+      },
+      {
+        scope: 'a run with a file that wrote no record',
+        overrides: { unrecordedFiles: 2 },
+        lines: ['2 test files wrote no Layer 1 record'],
+      },
+      {
+        scope: 'a run with tests that did not run',
+        overrides: { notRun: { skipped: 3, unfinished: 1 } },
+        lines: ['No fingerprint for 3 tests skipped at run time'],
+      },
+    ],
+    'says which files Layer 1 ran in $scope',
+    ({ overrides, lines }) => {
+      const text = renderMarkdown(buildReport(reportInput({ overrides })));
+      const found = text
+        .split('\n')
+        .filter((line) =>
+          /^(Diff scope|Layer 1 ran|No fingerprint for|\d+ test files? wrote no)/.test(line),
+        );
+      expect(found).toEqual(lines.map((prefix) => expect.stringContaining(prefix)));
     },
-    {
-      scope: 'a whole-suite run that skipped files',
-      overrides: { layer1Files: 0 },
-      lines: ['Layer 1 ran 0 of them; the other 1 file was not compared.'],
-    },
-    {
-      scope: 'a diff-scoped run',
-      overrides: { layer1Files: 0, changedFiles: ['test/unit/add.test.ts'] },
-      lines: [
-        'Diff scope: only pairs with a test in the 1 changed test file were looked for: ' +
-          '`test/unit/add.test.ts`.',
-        'Layer 1 ran 0 of them: the changed files whose tests can pair with another test',
-      ],
-    },
-    {
-      scope: 'a run with a file that wrote no record',
-      overrides: { unrecordedFiles: 2 },
-      lines: ['2 test files wrote no Layer 1 record'],
-    },
-    {
-      scope: 'a run with tests that did not run',
-      overrides: { notRun: { skipped: 3, unfinished: 1 } },
-      lines: ['No fingerprint for 3 tests skipped at run time'],
-    },
-  ])('says which files Layer 1 ran in $scope', ({ overrides, lines }) => {
-    const text = renderMarkdown(buildReport(reportInput({ overrides })));
-    const found = text
-      .split('\n')
-      .filter((line) =>
-        /^(Diff scope|Layer 1 ran|No fingerprint for|\d+ test files? wrote no)/.test(line),
-      );
-    expect(found).toEqual(lines.map((prefix) => expect.stringContaining(prefix)));
-  });
+  );
 
   it('leads with the scenario fingerprint and leaves the mutation sections out of a fingerprint-only run', () => {
     const fingerprintOnly = renderMarkdown(buildReport({ ...reportInput(), mutation: 'none' }));
@@ -395,26 +429,36 @@ describe('renderMarkdown', () => {
     ]).toEqual([true, true, true, false]);
   });
 
-  it.each([
-    ['the title', '# Test scenario map'],
-    ['N of M', '**3 of 3 eligible tests evaluated.**'],
-    ['the precision statement', PRECISION_NOT_MEASURED],
-    ['the baseline banner', 'first run, no baseline'],
-    ['the strong repeats', '## Strong repeat candidates (1)'],
-    ['the spot audit seed', '## Spot audit (seed `s1`'],
-    ['the weak tests', '## Weak tests (1)'],
-    ['the gap file', `| ${mdCode(FILE)} |`],
-    ['a strong pair member', mdCode(A)],
-  ])('shows %s', (_title, text) => {
-    expect(markdown).toContain(text);
-  });
+  registerCases(
+    it,
+    [
+      ['the title', '# Test scenario map'],
+      ['N of M', '**3 of 3 eligible tests evaluated.**'],
+      ['the precision statement', PRECISION_NOT_MEASURED],
+      ['the baseline banner', 'first run, no baseline'],
+      ['the strong repeats', '## Strong repeat candidates (1)'],
+      ['the spot audit seed', '## Spot audit (seed `s1`'],
+      ['the weak tests', '## Weak tests (1)'],
+      ['the gap file', `| ${mdCode(FILE)} |`],
+      ['a strong pair member', mdCode(A)],
+    ],
+    'shows %s',
+    (_title, text) => {
+      expect(markdown).toContain(text);
+    },
+  );
 
-  it.each([
-    ['plain text', 'a > b', '`a > b`'],
-    ['a pipe', 'a | b', '`a \\| b`'],
-    ['a backtick', 'a `b`', '`` a `b` ``'],
-    ['a newline', 'a\nb', '`a b`'],
-  ])('renders %s as an inline code cell', (_title, text, expected) => {
-    expect(mdCode(text)).toBe(expected);
-  });
+  registerCases(
+    it,
+    [
+      ['plain text', 'a > b', '`a > b`'],
+      ['a pipe', 'a | b', '`a \\| b`'],
+      ['a backtick', 'a `b`', '`` a `b` ``'],
+      ['a newline', 'a\nb', '`a b`'],
+    ],
+    'renders %s as an inline code cell',
+    (_title, text, expected) => {
+      expect(mdCode(text)).toBe(expected);
+    },
+  );
 });

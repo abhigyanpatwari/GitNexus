@@ -175,10 +175,6 @@ const PLATFORM_LOGIC = [
   // #3073: cwd-based repository selection canonicalizes real paths, compares
   // platform separators/case, and rejects nested Git-boundary fallthrough.
   'test/unit/calltool-dispatch.test.ts',
-  // Preview capabilities use real file symlinks, canonical temp paths, atomic
-  // replacements and physical-target drift checks on each host filesystem.
-  'test/unit/rename-preview-plans.test.ts',
-  'test/unit/rename-plan.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.

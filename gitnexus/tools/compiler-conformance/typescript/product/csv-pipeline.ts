@@ -1,30 +1,45 @@
+import { createTestEnvironment } from '../support/environment.js';
+import assert from 'node:assert/strict';
 /**
  * P1 Integration Tests: CSV Pipeline
  *
  * Tests: streamAllCSVsToDisk with real graph data.
  * Covers hardening fixes: LRU cache (#24), BufferedCSVWriter flush
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import {
+  describe,
+  it,
+  before as beforeAll,
+  beforeEach,
+  after as afterAll,
+  afterEach,
+} from 'node:test';
+import { expect } from 'expect';
 import fs from 'fs/promises';
 import { readdirSync } from 'node:fs';
 import { finished } from 'stream/promises';
 import path from 'path';
 import { constants as bufferConstants } from 'node:buffer';
-import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
-import { buildTestGraph, type TestNodeInput, type TestRelInput } from '../helpers/test-graph.js';
+import { createTempDir, type TestDBHandle } from '../../../../test/helpers/test-db.js';
+import {
+  buildTestGraph,
+  type TestNodeInput,
+  type TestRelInput,
+} from '../../../../test/helpers/test-graph.js';
 import {
   streamAllCSVsToDisk,
   buildRelRow,
   REL_CSV_HEADER,
   shouldFlushCSVBuffer,
   FLUSH_BYTES,
-} from '../../src/core/lbug/csv-generator.js';
-import { splitRelCsvByLabelPair } from '../../src/core/lbug/lbug-adapter.js';
-import { getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
-import { NODE_TABLES } from '../../src/core/lbug/schema.js';
-import { TREE_SITTER_MAX_BUFFER } from '../../src/core/ingestion/constants.js';
-import { CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR } from '../../src/core/search/cjk-segmentation.js';
+} from '../../../../src/core/lbug/csv-generator.js';
+import { splitRelCsvByLabelPair } from '../../../../src/core/lbug/lbug-adapter.js';
+import { getNodeLabel } from '../../../../src/core/lbug/rel-pair-routing.js';
+import { NODE_TABLES } from '../../../../src/core/lbug/schema.js';
+import { TREE_SITTER_MAX_BUFFER } from '../../../../src/core/ingestion/constants.js';
+import { CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR } from '../../../../src/core/search/cjk-segmentation.js';
 
+const environment = createTestEnvironment();
 let tmpHandle: TestDBHandle;
 let csvDir: string;
 let repoDir: string;
@@ -371,7 +386,7 @@ describe('streamAllCSVsToDisk', () => {
 
   describe('GITNEXUS_FTS_CJK_SEGMENTATION (#2331)', () => {
     afterEach(() => {
-      vi.unstubAllEnvs();
+      environment.restore();
     });
 
     // The description phrase is deliberately different from anything in the
@@ -409,7 +424,7 @@ describe('streamAllCSVsToDisk', () => {
     });
 
     it('bigram-segments both File content and Function description when enabled', async () => {
-      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      environment.set('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
       const cjkContent = `// ${FILE_CJK_PHRASE}\nexport function approve() {\n  return true;\n}\n`;
       await fs.writeFile(path.join(repoDir, 'src', 'cjk-bigram.ts'), cjkContent);
       const graph = buildTestGraph([
@@ -524,11 +539,11 @@ describe('streamAllCSVsToDisk', () => {
 
       for (const label of BRANCHES) {
         const csv = await fs.readFile(result.nodeFiles.get(label)!.csvPath, 'utf-8');
-        expect(csv, label).not.toContain('MethCw');
-        expect(csv, label).not.toContain('\uFFFD');
+        assert.doesNotThrow(() => expect(csv).not.toContain('MethCw'), label);
+        assert.doesNotThrow(() => expect(csv).not.toContain('\uFFFD'), label);
         // A clean description on the same branch is untouched, so the gate
         // cannot pass by emptying the column for everyone.
-        expect(csv, label).toContain(CLEAN_DESCRIPTION);
+        assert.doesNotThrow(() => expect(csv).toContain(CLEAN_DESCRIPTION), label);
       }
       // The symbols themselves still ship — only their descriptions were dropped.
       const functionCsv = await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf-8');
@@ -846,7 +861,7 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
     for (const key of direct.relsByPair.keys()) {
       const directContent = await fs.readFile(direct.relsByPair.get(key)!.csvPath, 'utf-8');
       const oracleContent = await fs.readFile(split.relsByPairMeta.get(key)!.csvPath, 'utf-8');
-      expect(directContent, `pair ${key}`).toBe(oracleContent);
+      assert.doesNotThrow(() => expect(directContent).toBe(oracleContent), `pair ${key}`);
     }
   });
 
@@ -955,7 +970,10 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
       for (const key of direct.relsByPair.keys()) {
         const directContent = await fs.readFile(direct.relsByPair.get(key)!.csvPath, 'utf-8');
         const oracleContent = await fs.readFile(split.relsByPairMeta.get(key)!.csvPath, 'utf-8');
-        expect(directContent, `pair ${key} (sorted)`).toBe(oracleContent);
+        assert.doesNotThrow(
+          () => expect(directContent).toBe(oracleContent),
+          `pair ${key} (sorted)`,
+        );
       }
     } finally {
       delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;

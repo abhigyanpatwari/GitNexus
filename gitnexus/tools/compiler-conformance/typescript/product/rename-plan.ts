@@ -1,10 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mock } from 'node:test';
+import { registerCases } from '../support/cases.mjs';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { executeRenamePlan, type RenamePlan } from '../../src/mcp/local/rename/rename-plan.js';
-import { renameResolutionVersion } from '../../src/mcp/local/rename/resolution-version.js';
+import {
+  executeRenamePlan,
+  type RenamePlan,
+} from '../../../../src/mcp/local/rename/rename-plan.js';
+import { renameResolutionVersion } from '../../../../src/mcp/local/rename/resolution-version.js';
 
 describe('exact rename plan application', () => {
   let root: string;
@@ -12,7 +18,7 @@ describe('exact rename plan application', () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'rename-plan-'));
   });
   afterEach(async () => {
-    vi.restoreAllMocks();
+    mock.restoreAll();
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -93,7 +99,9 @@ describe('exact rename plan application', () => {
     );
   });
 
-  it.each(['overlap', 'unexpected text', 'stale snapshot'] as const)(
+  registerCases(
+    it,
+    ['overlap', 'unexpected text', 'stale snapshot'] as const,
     'blocks all writes on %s',
     async (failure) => {
       const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
@@ -123,7 +131,9 @@ describe('exact rename plan application', () => {
     });
     expect(await fs.readFile(path.join(root, 'a.ts'), 'utf8')).toBe('close()');
   });
-  it.each([0, 1])(
+  registerCases(
+    it,
+    [0, 1],
     'rechecks hash-only semantic evidence while staging file %i',
     async (changeAt) => {
       const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()', 'c.ts': '// evidence only' });
@@ -141,7 +151,7 @@ describe('exact rename plan application', () => {
       p.snapshots.delete(file);
       const original = fs.writeFile.bind(fs);
       let writes = 0;
-      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+      mock.method(fs, 'writeFile', async (...args) => {
         await original(...args);
         if (writes++ === changeAt) await original(file, '// changed evidence');
       });
@@ -160,7 +170,9 @@ describe('exact rename plan application', () => {
     },
   );
 
-  it.each([{ start: -1 }, { start: 0.5 }, { length: 0 }, { length: 9 }, { old_text: 'wrong' }])(
+  registerCases(
+    it,
+    [{ start: -1 }, { start: 0.5 }, { length: 0 }, { length: 9 }, { old_text: 'wrong' }],
     'refuses invalid edit spans before any write: %j',
     async (invalid) => {
       const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
@@ -219,7 +231,9 @@ describe('exact rename plan application', () => {
     expect(await fs.readFile(path.join(root, 'b.ts'), 'utf8')).toBe('finish()');
     expect((await fs.readdir(root)).sort()).toEqual(['a.ts', 'b.ts']);
   });
-  it.each(['changed', 'failed'] as const)(
+  registerCases(
+    it,
+    ['changed', 'failed'] as const,
     'rechecks provider configuration after staging and reports zero writes when %s',
     async (failure) => {
       const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
@@ -229,7 +243,7 @@ describe('exact rename plan application', () => {
         return { entry: staged ? 'other.ts' : 'a.ts' };
       });
       const originalWrite = fs.writeFile.bind(fs);
-      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+      mock.method(fs, 'writeFile', async (...args) => {
         await originalWrite(...args);
         staged = true;
       });
@@ -248,14 +262,16 @@ describe('exact rename plan application', () => {
     },
   );
 
-  it.each([0, 1])(
+  registerCases(
+    it,
+    [0, 1],
     'blocks installation when an unedited snapshot changes while staging file %i',
     async (changeAt) => {
       const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()', 'c.ts': '// no references' });
       p.edits.pop();
       const original = fs.writeFile.bind(fs);
       let calls = 0;
-      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+      mock.method(fs, 'writeFile', async (...args) => {
         await original(...args);
         if (calls++ === changeAt) await original(path.join(root, 'c.ts'), 'close();');
       });
@@ -311,13 +327,15 @@ describe('exact rename plan application', () => {
     { failAt: 2, landed: ['a.ts', 'b.ts'], failed: ['c.ts'], unattempted: [] },
   ];
 
-  it.each(writeFailures)(
+  registerCases(
+    it,
+    writeFailures,
     'separates landed, failed and never-attempted files when writing file $failAt fails',
     async ({ failAt, landed, failed, unattempted }) => {
       const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()', 'c.ts': 'close()' });
       const original = fs.writeFile.bind(fs);
       let calls = 0;
-      vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+      mock.method(fs, 'writeFile', async (...args) => {
         if (calls++ === failAt) {
           await original(args[0], String(args[1]).slice(0, 3), args[2]);
           throw new Error('disk full');
@@ -346,12 +364,14 @@ describe('exact rename plan application', () => {
     },
   );
 
-  it.each(['a.ts', 'b.ts'])(
+  registerCases(
+    it,
+    ['a.ts', 'b.ts'],
     'reports a race in %s after an earlier write as partial',
     async (changedFile) => {
       const p = await plan({ 'a.ts': 'close()', 'b.ts': 'close()' });
       const original = fs.rename.bind(fs);
-      vi.spyOn(fs, 'rename').mockImplementation(async (...args) => {
+      mock.method(fs, 'rename', async (...args) => {
         await original(...args);
         if (String(args[1]).endsWith('a.ts'))
           await fs.writeFile(path.join(root, changedFile), 'user edit');
@@ -375,7 +395,7 @@ describe('exact rename plan application', () => {
   it('blocks a destination changed while staging its replacement', async () => {
     const p = await plan({ 'a.ts': 'close()' });
     const original = fs.writeFile.bind(fs);
-    vi.spyOn(fs, 'writeFile').mockImplementation(async (...args) => {
+    mock.method(fs, 'writeFile', async (...args) => {
       await original(...args);
       await original(path.join(root, 'a.ts'), 'user edit');
     });
@@ -395,7 +415,7 @@ describe('exact rename plan application', () => {
     const destination = path.join(root, 'a.ts');
     const original = fs.readFile.bind(fs);
     let evidenceReads = 0;
-    vi.spyOn(fs, 'readFile').mockImplementation(async (...args) => {
+    mock.method(fs, 'readFile', async (...args) => {
       const contents = await original(...args);
       if (args[0] === path.join(root, 'z.ts') && ++evidenceReads === 2)
         await fs.writeFile(destination, 'user edit');

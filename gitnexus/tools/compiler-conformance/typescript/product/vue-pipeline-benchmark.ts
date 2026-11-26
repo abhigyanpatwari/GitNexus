@@ -6,7 +6,7 @@
  * SFC script extraction, scope-based resolution, template-edge emission,
  * and graph build.
  *
- * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/vue-pipeline-benchmark.test.ts
+ * Run: node --import tsx --test tools/compiler-conformance/typescript/product/vue-pipeline-benchmark.ts
  *
  * Each synthetic repo contains:
  *   - A shared `utils.ts` exporting one utility function per component
@@ -18,13 +18,12 @@
  * The node-ratio assertion below guards against accidental O(n²) patterns
  * (e.g. every component importing from every other component).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-
-const BENCH_ENABLED = process.env.GITNEXUS_BENCH === '1';
+import { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
 
 interface BenchResult {
   fileCount: number;
@@ -108,6 +107,7 @@ function generateVueFixture(componentCount: number): string {
 async function runBenchmark(componentCount: number, budgetMs: number): Promise<BenchResult> {
   const dir = generateVueFixture(componentCount);
 
+  let deadline: NodeJS.Timeout | undefined;
   let peakHeapMB = 0;
   const heapSampler = setInterval(() => {
     const heap = process.memoryUsage().heapUsed / 1024 / 1024;
@@ -118,13 +118,13 @@ async function runBenchmark(componentCount: number, budgetMs: number): Promise<B
     const start = Date.now();
     const result = await Promise.race([
       runPipelineFromRepo(dir, () => {}, { skipGraphPhases: true }),
-      new Promise<never>((_, reject) =>
-        setTimeout(
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(
           () =>
             reject(new Error(`Pipeline exceeded ${budgetMs}ms at ${componentCount} components`)),
           budgetMs,
-        ),
-      ),
+        );
+      }),
     ]);
     const elapsedMs = Date.now() - start;
 
@@ -137,6 +137,7 @@ async function runBenchmark(componentCount: number, budgetMs: number): Promise<B
       edgeCount: result.graph.relationshipCount,
     };
   } finally {
+    clearTimeout(deadline);
     clearInterval(heapSampler);
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -167,8 +168,8 @@ function printResults(results: BenchResult[]) {
   }
 }
 
-describe.skipIf(!BENCH_ENABLED)('Vue pipeline benchmark', () => {
-  it('scales with component count', async () => {
+describe('Vue pipeline benchmark', () => {
+  it('scales with component count', { timeout: 600_000 }, async () => {
     const scales = [10, 25, 50, 100];
     const results: BenchResult[] = [];
 
@@ -195,5 +196,5 @@ describe.skipIf(!BENCH_ENABLED)('Vue pipeline benchmark', () => {
       const nodeRatio = results[i].nodeCount / results[i - 1].nodeCount;
       expect(nodeRatio / compRatio).toBeLessThan(1.5);
     }
-  }, 600_000);
+  });
 });

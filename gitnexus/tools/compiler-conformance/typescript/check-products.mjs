@@ -34,6 +34,8 @@ const selected = platform
       'product/pipeline-graph-golden.ts',
       'product/query-symbol-integrity.ts',
       'product/rename.ts',
+      'product/rename-plan.ts',
+      'product/rename-preview-plans.ts',
       'product/shard-timings-roundtrip.ts',
       'product/shared-store-embedding-reuse.ts',
       'product/skills-e2e.ts',

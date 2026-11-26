@@ -1,3 +1,4 @@
+import { registerCases } from '../support/cases.mjs';
 /**
  * Locks Layer 3 group and shard runs (U7, R7, KTD8, KTD14, KTD17) without spawning Vitest or
  * Stryker: every runner is a fake. The run manifest's prepared-copy hashes and their check, the
@@ -10,21 +11,16 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
-import type {
-  NormalisedMutant,
-  RunResults,
-} from '../../../tools/mutation/driver/normalise-results.js';
-import type { RunScopeOptions } from '../../../tools/mutation/driver/run-scope.js';
+import { afterEach, describe, it } from 'node:test';
+import { expect } from 'expect';
+import type { NormalisedMutant, RunResults } from '../../../mutation/driver/normalise-results.js';
+import type { RunScopeOptions } from '../../../mutation/driver/run-scope.js';
 import {
   DEFAULT_IGNORED_DIRS,
   buildStrykerConfig,
-} from '../../../tools/mutation/driver/stryker-config.js';
-import type { RunManifest } from '../../../tools/mutation/runner/run-manifest.js';
-import {
-  type GroupScope,
-  type ShardPlan,
-} from '../../../tools/scenario-map/mutation/plan-shards.js';
+} from '../../../mutation/driver/stryker-config.js';
+import type { RunManifest } from '../../../mutation/runner/run-manifest.js';
+import { type GroupScope, type ShardPlan } from '../../../scenario-map/mutation/plan-shards.js';
 import {
   assertMutationConfig,
   buildRunManifest,
@@ -38,11 +34,11 @@ import {
   type GroupRunDeps,
   type ScenarioRunManifest,
   type ShardRunDeps,
-} from '../../../tools/scenario-map/mutation/run-group.js';
+} from '../../../scenario-map/mutation/run-group.js';
 import type {
   VitestRunOptions,
   VitestRunResult,
-} from '../../../tools/scenario-map/mutation/vitest-run.js';
+} from '../../../scenario-map/mutation/vitest-run.js';
 
 const T1 = 'test/unit/a.test.ts#A > one';
 const T2 = 'test/unit/a.test.ts#A > two';
@@ -308,13 +304,18 @@ describe('assertMutationConfig', () => {
     expect(() => assertMutationConfig(generated())).not.toThrow();
   });
 
-  it.each([
-    ['disableBail', { disableBail: false }, /disableBail/],
-    ['perTest coverage', { coverageAnalysis: 'off' }, /perTest/],
-    ['static mutants', { ignoreStatic: true }, /static/],
-  ])('rejects a config without %s', (_name, change, message) => {
-    expect(() => assertMutationConfig({ ...generated(), ...change })).toThrow(message);
-  });
+  registerCases(
+    it,
+    [
+      ['disableBail', { disableBail: false }, /disableBail/],
+      ['perTest coverage', { coverageAnalysis: 'off' }, /perTest/],
+      ['static mutants', { ignoreStatic: true }, /static/],
+    ],
+    'rejects a config without %s',
+    (_name, change, message) => {
+      expect(() => assertMutationConfig({ ...generated(), ...change })).toThrow(message);
+    },
+  );
 
   it('rejects a value that is not a config object', () => {
     expect(() => assertMutationConfig(null)).toThrow(/object/);

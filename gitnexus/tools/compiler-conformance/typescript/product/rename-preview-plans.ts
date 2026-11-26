@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mock } from 'node:test';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,11 +8,11 @@ import type { GraphNode, RenamePlan } from 'gitnexus-shared';
 import {
   RenamePreviewPlans,
   renameSourceInventory,
-} from '../../src/mcp/local/rename/preview-plans.js';
+} from '../../../../src/mcp/local/rename/preview-plans.js';
 import {
   renameResolutionVersion,
   validateRenameResolution,
-} from '../../src/mcp/local/rename/resolution-version.js';
+} from '../../../../src/mcp/local/rename/resolution-version.js';
 
 describe('immutable rename preview capabilities', () => {
   let root: string;
@@ -44,7 +46,7 @@ describe('immutable rename preview capabilities', () => {
     };
   });
   afterEach(async () => {
-    vi.restoreAllMocks();
+    mock.restoreAll();
     await fs.rm(root, { recursive: true, force: true });
   });
   const save = () => store.remember(root, plan, nodes, [], ['a.ts']);
@@ -167,7 +169,7 @@ describe('immutable rename preview capabilities', () => {
       new RenamePreviewPlans().take(token, root, plan.symbol, plan.new_name, nodes, []),
     ).rejects.toMatchObject({ code: 'invalid_plan' });
     const now = Date.now();
-    vi.spyOn(Date, 'now').mockReturnValue(now + 16 * 60_000);
+    mock.method(Date, 'now', () => now + 16 * 60_000);
     await expect(take(token)).rejects.toMatchObject({ code: 'invalid_plan' });
   });
   it('bounds retained plans and evicts the oldest capability', async () => {
