@@ -11,6 +11,7 @@
 import { searchFTSFromLbug, type BM25SearchResult, type FTSSearchResponse } from './bm25-index.js';
 import type { SemanticSearchResult } from '../embeddings/types.js';
 import type { FtsDisabledReason } from './fts-policy.js';
+import { redactPaths } from './fts-indexes.js';
 import { rethrowSymbolIdentityError } from '../lbug/query-result-integrity.js';
 
 /**
@@ -194,7 +195,12 @@ export const hybridSearch = async (
         return {
           results: [],
           ftsAvailable: false,
-          nonBenignErrors: ['FTS search raised an unexpected error'],
+          // Only the server log consumes these diagnostics. Do not keep a
+          // stack, nested cause, or arbitrary non-Error rejection value.
+          nonBenignErrors: [
+            (error instanceof Error ? redactPaths(error.message).slice(0, 300) : '') ||
+              'FTS search raised an unexpected error',
+          ],
         };
       }
     })(),
