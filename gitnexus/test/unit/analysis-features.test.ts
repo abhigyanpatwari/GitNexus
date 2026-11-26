@@ -7,6 +7,8 @@ import {
 } from '../../src/core/analysis-features.js';
 import { ANALYSIS_FEATURES } from '../../src/core/analysis-feature-registry.js';
 import { OBJECTIVE_C_PROVIDER_FEATURE } from '../../src/core/ingestion/languages/objective-c/analysis-features.js';
+import { CPP_MEMBER_SCOPE_IDENTITY_FEATURE } from '../../src/core/ingestion/languages/cpp/analysis-features.js';
+import { RUBY_MEMBER_SCOPE_IDENTITY_FEATURE } from '../../src/core/ingestion/languages/ruby/analysis-features.js';
 import {
   OBJECTIVE_C_GRAMMAR_PACKAGE,
   OBJECTIVE_C_GRAMMAR_VERSION,
@@ -118,6 +120,20 @@ describe('analysis feature versions', () => {
         { [OBJECTIVE_C_PROVIDER_FEATURE.id]: OBJECTIVE_C_PROVIDER_FEATURE.version },
       ),
     ).toEqual([`version:${OBJECTIVE_C_PROVIDER_FEATURE.id}`]);
+  });
+
+  it('tracks C++ and Ruby member scope identity features independently (#2874)', () => {
+    const cppFeatures = resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['src/box.cpp']);
+    expect(cppFeatures).toMatchObject({
+      [CPP_MEMBER_SCOPE_IDENTITY_FEATURE.id]: CPP_MEMBER_SCOPE_IDENTITY_FEATURE.version,
+    });
+    expect(cppFeatures).not.toHaveProperty(RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id);
+
+    const rubyFeatures = resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, ['lib/box.rb']);
+    expect(rubyFeatures).toMatchObject({
+      [RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.id]: RUBY_MEMBER_SCOPE_IDENTITY_FEATURE.version,
+    });
+    expect(rubyFeatures).not.toHaveProperty(CPP_MEMBER_SCOPE_IDENTITY_FEATURE.id);
   });
 
   it('rejects invalid or duplicate descriptors', () => {

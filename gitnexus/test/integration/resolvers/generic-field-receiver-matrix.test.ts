@@ -133,9 +133,9 @@
  *     declaration order (`cpp-partial-spec-*`).
  *   - `std::unique_ptr<Payload>` types to `unique_ptr`, NOT to the pointee.
  *     Smart-pointer transparency is not applied on this path.
- *   - A C++ node id drops the namespace, so two same-named specializations in
- *     ONE file collapse to one node. `cpp-spec-lexical-shadowing` puts its two
- *     `Box<bool>` declarations in two FILES for exactly that reason.
+ *   - Qualified C++ member IDs now carry their enclosing namespace path (#2874);
+ *     `cpp-spec-lexical-shadowing` keeps its two `Box<bool>` declarations in
+ *     two files (`global.cpp` and `ns.cpp`) matching its cross-file setup.
  *
  * ── THE NEGATIVE CONTROLS ─────────────────────────────────────────────────────
  *
@@ -862,8 +862,8 @@ struct InnerSvc {
       },
       {
         caller: 'runInner',
-        targets: ['Method:ns.cpp:Box<bool>.save#0'],
-        note: 'LEXICAL SHADOWING: the namespace-local `N::Box<bool>` wins for a field inside `N`. The two specializations are separated into two FILES because a same-named specialization in the same file collapses to one node id, which would make this row unable to tell the two apart. Before the fix the workspace-wide index was consulted first: it offered two `Box<bool>` matches, declined, and fell through to the base-name walk — landing on a PRIMARY template for both services.',
+        targets: ['Method:ns.cpp:N.Box<bool>.save#0'],
+        note: 'LEXICAL SHADOWING: the namespace-local `N::Box<bool>` wins for a field inside `N`. Before the #2833 fix the workspace-wide index was consulted first: it offered two `Box<bool>` matches, declined, and fell through to the base-name walk — landing on a PRIMARY template for both services.',
       },
     ],
     unpaired:
@@ -1046,39 +1046,39 @@ struct Svc {
       },
       {
         caller: 'runQualStd',
-        targets: ['Method:a.cpp:vector.push_back#1~c:16619u1'],
+        targets: ['Method:a.cpp:std.vector.push_back#1~c:16619u1'],
         note: 'depth-1 qualifier, `std::vector<Item>` — the commonest real spelling of a generic member and the one the qualified rules exist for',
       },
       {
         caller: 'runQualNs',
-        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        targets: ['Method:a.cpp:ns.Repo.save#1~c:16619u1'],
         note: 'depth-1 qualifier, user namespace `ns::Repo<User>`',
         pairsWith: 'runQualControl',
       },
       {
         caller: 'runQualPtr',
-        targets: ['Method:a.cpp:vector.push_back#1~c:16619u1'],
+        targets: ['Method:a.cpp:std.vector.push_back#1~c:16619u1'],
         note: 'depth-1 qualifier, pointer form',
       },
       {
         caller: 'runQualRef',
-        targets: ['Method:a.cpp:Repo.save#1~c:16619u1'],
+        targets: ['Method:a.cpp:ns.Repo.save#1~c:16619u1'],
         note: 'depth-1 qualifier, reference form',
       },
       {
         caller: 'runQualDeep',
-        targets: ['Method:a.cpp:Deep.go#1~c:16619u1'],
+        targets: ['Method:a.cpp:a.b.Deep.go#1~c:16619u1'],
         note: 'depth-2 qualifier, `a::b::Deep<User>`',
         pairsWith: 'runQualControl',
       },
       {
         caller: 'runQualUnique',
-        targets: ['Method:a.cpp:unique_ptr.reset#0~c:16619u1'],
+        targets: ['Method:a.cpp:std.unique_ptr.reset#0~c:16619u1'],
         note: 'DELIBERATE LIMIT, measured: `std::unique_ptr<Payload>` types to `unique_ptr`, NOT deref-stripped to `Payload` — `Payload` also declares `reset()` and does not receive the edge. The qualifier is dropped and the template head kept, so smart-pointer transparency is not applied on this path. Flipping this row means implementing that transparency, which is a semantics expansion.',
       },
       {
         caller: 'runQualDepth3',
-        targets: ['Method:a.cpp:Deeper.go3#1~c:16619u1'],
+        targets: ['Method:a.cpp:a.b.c.Deeper.go3#1~c:16619u1'],
         note: 'depth 3 (`a::b::c::Deeper<User>`) was the DOCUMENTED BOUNDARY this file used to pin at empty, because the rules enumerated the INNER node and each level cost three more patterns. The rules now match the outer `qualified_identifier` instead, which is one node type whatever the depth, so the boundary is gone rather than moved.',
         // Was a PINNED NON-MATCH while qualifier depth 3 was uncaptured. The
         // depth-agnostic rules removed the boundary, so it is an ordinary pair.
@@ -1086,7 +1086,7 @@ struct Svc {
       },
       {
         caller: 'runQualDepth4',
-        targets: ['Method:a.cpp:Deepest.go4#1~c:16619u1'],
+        targets: ['Method:a.cpp:a.b.c.d.Deepest.go4#1~c:16619u1'],
         note: 'depth 4, and the row that says the boundary was REMOVED and not merely raised by one: if depth were still enumerated per level, closing depth 3 would have left this one empty. Nothing in the query mentions a depth, so there is no next boundary to find.',
         pairsWith: 'runQualControl',
       },
@@ -1867,12 +1867,12 @@ struct Svc {
       },
       {
         caller: 'runQualStdString',
-        targets: ['Method:a.cpp:string.size#0'],
+        targets: ['Method:a.cpp:std.string.size#0'],
         note: 'INTENDED, and the same accepted policy as `container-name-collision`, stated in C++: the qualifier is dropped and the tail `string` names a class this workspace really declares, so it binds. The annotation names `string`, so naming `string` is the right answer — a resolver that refused it would have to know which names are "someone else\'s", and this pipeline deliberately does not. Where the workspace does NOT declare the tail, the binding is simply absent (`runQualAbsent`), so the policy closes misses without minting edges.',
       },
       {
         caller: 'runQualNsStruct',
-        targets: ['Method:a.cpp:Address.city#0'],
+        targets: ['Method:a.cpp:ns.Address.city#0'],
         note: 'a plain `ns::Address addr;` — no template arguments anywhere. This member had no type binding at all before the qualified rules, which is why the fix is not describable as a generics fix.',
         // The one pair on a different axis: QUALIFIED against UNQUALIFIED rather
         // than generic against plain. It belongs in this sweep because the rules
@@ -1882,7 +1882,7 @@ struct Svc {
       },
       {
         caller: 'runQualNsPtr',
-        targets: ['Method:a.cpp:Address.city#0'],
+        targets: ['Method:a.cpp:ns.Address.city#0'],
         note: 'the `pointer_declarator` shape of the same thing, reached through `->`',
       },
       {

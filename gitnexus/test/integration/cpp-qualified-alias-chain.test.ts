@@ -50,6 +50,6 @@ int consumer_shadow() { using second = Decoy; return make().m(); }
             result.graph.getNode(edge.targetId)?.properties.name === 'm',
         )
         .map((edge) => edge.targetId),
-    ).toEqual(['Method:main.cpp:C.m#0']);
+    ).toEqual(['Method:main.cpp:impl.C.m#0']);
   });
 });

@@ -64,10 +64,10 @@ int concrete() { return rp::produce().m(); }
       .sort();
   }
   it('lets a nearer namespace hide an outer alias', () => {
-    expect(targets('nearer')).toEqual(['Method:inner.h:C.m#0']);
+    expect(targets('nearer')).toEqual(['Method:inner.h:inner.alias.C.m#0']);
   });
   it('does not borrow a free prototype for a qualified method return', () => {
-    expect(targets('qualified_method')).toEqual(['Method:main.cpp:Product.m#0']);
+    expect(targets('qualified_method')).toEqual(['Method:main.cpp:actual.Product.m#0']);
   });
   it.each(['function_template', 'member_template', 'pointer_template'])(
     '%s retains dependent lookup',

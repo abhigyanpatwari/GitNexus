@@ -677,6 +677,12 @@ export interface EnclosingClassInfo {
    * node id. When absent, `classId` (the simple-tail key) is unchanged.
    */
   qualifiedClassId?: string;
+  /**
+   * The enclosing type's qualified name (e.g. "N.Box<bool>" or "N.Box")
+   * when `qualifiedNodeId` is enabled and the qualified name adds scope or
+   * normalization beyond `className`. Used to qualify member node IDs.
+   */
+  qualifiedClassName?: string;
 }
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its ID and name.
@@ -1256,6 +1262,17 @@ export const findEnclosingClassInfo = (
         // unchanged. (Go receiver / Rust impl branches return earlier and are
         // intentionally untouched here.)
         const qualifiedOwnerName = getQualifiedOwnerName?.(current, nameNode.text);
+        const templateSuffixStart = nameNode.text.indexOf('<');
+        const qualifiedMemberOwnerName =
+          qualifiedOwnerName != null
+            ? templateSuffixStart !== -1 && !qualifiedOwnerName.includes('<')
+              ? `${qualifiedOwnerName}${nameNode.text.slice(templateSuffixStart)}`
+              : qualifiedOwnerName
+            : undefined;
+        const qualifiedClassName =
+          qualifiedMemberOwnerName !== undefined && qualifiedMemberOwnerName !== nameNode.text
+            ? qualifiedMemberOwnerName
+            : undefined;
         const qualifiedClassId =
           qualifiedOwnerName != null && qualifiedOwnerName !== nameNode.text
             ? generateId(
@@ -1271,6 +1288,7 @@ export const findEnclosingClassInfo = (
           classId: generateId(label, `${filePath}:${classIdName}`),
           className: nameNode.text,
           ...(qualifiedClassId !== undefined ? { qualifiedClassId } : {}),
+          ...(qualifiedClassName !== undefined ? { qualifiedClassName } : {}),
         };
       }
     }

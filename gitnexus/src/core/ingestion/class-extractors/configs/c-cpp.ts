@@ -1,11 +1,57 @@
 // gitnexus/src/core/ingestion/class-extractors/configs/c-cpp.ts
 
 import { SupportedLanguages } from 'gitnexus-shared';
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { ClassExtractionConfig } from '../../class-types.js';
 import {
   extractTemplateArguments,
   stripTemplateArguments,
 } from '../../utils/template-arguments.js';
+
+const anonNsOrdinalByTree = new WeakMap<object, Map<number, number>>();
+
+/**
+ * Deterministic per-parent ordinal (`@anon1`, `@anon2`, ...) for unnamed
+ * `namespace_definition` blocks. Disambiguates sibling anonymous namespaces
+ * in one file without encoding shifting byte offsets into node IDs.
+ */
+export const cppAnonymousNamespaceSegment = (node: SyntaxNode): string => {
+  const treeKey = node.tree as object | undefined;
+  const cachedByTree = treeKey ? anonNsOrdinalByTree.get(treeKey) : undefined;
+  const cachedOrdinal = cachedByTree?.get(node.startIndex);
+  if (cachedOrdinal !== undefined) return `@anon${cachedOrdinal}`;
+
+  const parent = node.parent;
+  let ordinal = 1;
+  if (parent) {
+    let treeMap = cachedByTree;
+    if (treeKey && !treeMap) {
+      treeMap = new Map<number, number>();
+      anonNsOrdinalByTree.set(treeKey, treeMap);
+    }
+    let seen = 0;
+    const count = parent.namedChildCount;
+    if (typeof count === 'number' && typeof parent.namedChild === 'function') {
+      for (let i = 0; i < count; i++) {
+        const sibling = parent.namedChild(i);
+        if (sibling?.type === 'namespace_definition' && !sibling.childForFieldName?.('name')) {
+          seen += 1;
+          treeMap?.set(sibling.startIndex, seen);
+          if (sibling.startIndex === node.startIndex) ordinal = seen;
+        }
+      }
+    } else if (parent.namedChildren) {
+      for (const sibling of parent.namedChildren) {
+        if (sibling?.type === 'namespace_definition' && !sibling.childForFieldName?.('name')) {
+          seen += 1;
+          treeMap?.set(sibling.startIndex, seen);
+          if (sibling.startIndex === node.startIndex) ordinal = seen;
+        }
+      }
+    }
+  }
+  return `@anon${ordinal}`;
+};
 
 function shouldSkipCppTemplateDuplicateCapture(
   captureMap: Record<string, { text: string } | undefined>,
@@ -70,7 +116,7 @@ export const cppClassConfig: ClassExtractionConfig = {
   // here (members inject into the enclosing scope), so they keep yielding [].
   extractScopeSegments: (node) =>
     node.type === 'namespace_definition' && !node.childForFieldName?.('name')
-      ? [`@anon${node.startIndex}`]
+      ? [cppAnonymousNamespaceSegment(node)]
       : undefined,
   extractName: (node) => {
     const nameNode = node.childForFieldName?.('name');
