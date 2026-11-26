@@ -23,7 +23,7 @@
  */
 
 import type { NodeLabel } from '../graph/types.js';
-import type { SymbolDefinition } from './symbol-definition.js';
+import type { SymbolDefinition, TypeParameter } from './symbol-definition.js';
 // Type-only, so the `reference-site.ts` → `types.ts` import cycle is erased
 // at compile time.
 import type { CallForm } from './reference-site.js';
@@ -761,6 +761,8 @@ export interface NameLookupOptions {
  * — deterministic, stable across reparses of the same source, interned.
  */
 export interface Scope {
+  /** Type parameters declared by a signature with no named declaration. */
+  readonly typeParameters?: readonly TypeParameter[];
   readonly nameClaims?: readonly NameClaim[];
   readonly lookupPolicy?: ScopeLookupPolicy;
   readonly id: ScopeId;

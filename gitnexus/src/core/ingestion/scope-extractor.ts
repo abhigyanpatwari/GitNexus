@@ -384,6 +384,7 @@ function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
  * of each pass's writes.
  */
 interface ScopeDraft {
+  readonly typeParameters?: Scope['typeParameters'];
   readonly id: ScopeId;
   readonly parent: ScopeId | null;
   readonly kind: ScopeKind;
@@ -444,6 +445,7 @@ function draftToScope(draft: ScopeDraft): Scope {
     frozenBindings.set(name, Object.freeze(refs.slice()));
   }
   return {
+    ...(draft.typeParameters && { typeParameters: draft.typeParameters }),
     id: draft.id,
     parent: draft.parent,
     kind: draft.kind,
@@ -536,6 +538,7 @@ function pass1BuildScopes(
         parseScopeLexicalNames(cand.match),
         parseJsonCapture(cand.match['@scope.name-claims']) as ScopeDraft['nameClaims'],
         parseJsonCapture(cand.match['@scope.lookup-policy']) as ScopeDraft['lookupPolicy'],
+        cand.match['@scope.type-parameters']?.text,
       ),
     );
     stack.push(cand);
@@ -585,6 +588,7 @@ function makeDraft(
   lexicalNames?: ReadonlySet<string>,
   nameClaims?: ScopeDraft['nameClaims'],
   lookupPolicy?: ScopeDraft['lookupPolicy'],
+  typeParameterList?: string,
 ): ScopeDraft {
   return {
     id,
@@ -592,6 +596,7 @@ function makeDraft(
     kind,
     range,
     filePath,
+    typeParameters: (typeParameterList && parseTypeParameterList(typeParameterList)) || undefined,
     bindings: new Map(),
     ownedDefs: [],
     imports: [],
@@ -1972,6 +1977,7 @@ function rangesEqual(a: Range, b: Range): boolean {
  */
 const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@scope.lexical-names',
+  '@scope.type-parameters',
   '@declaration.name',
   '@declaration.qualified_name',
   '@declaration.graph-position',

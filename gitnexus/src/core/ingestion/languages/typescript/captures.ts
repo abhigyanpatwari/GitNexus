@@ -130,7 +130,8 @@ const CALL_TAGS = [
 
 const TS_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set<string>(FUNCTION_NODE_TYPES),
-  callNodeTypes: new Set(['call_expression', 'new_expression']),
+  callNodeTypes: new Set(['call_expression']),
+  constructorCallNodeTypes: new Set(['new_expression']),
   extractCallCallee: (node: SyntaxNode) =>
     node.type === 'new_expression'
       ? (node.childForFieldName('constructor') ?? undefined)

@@ -870,6 +870,10 @@ function typeParameterNamesInScope(
     const id = chain[i]!;
     const scope = scopes.scopeTree.getScope(id);
     let own: Set<string> | undefined;
+    if (scope?.typeParameters?.length) {
+      own = new Set(inherited);
+      for (const parameter of scope.typeParameters) own.add(parameter.name);
+    }
     for (const def of scope?.ownedDefs ?? []) {
       if (def.typeParameters === undefined) continue;
       if (scope === undefined || !declarationOpenedScope(def, scope)) continue;
@@ -937,6 +941,8 @@ function typeParameterAt(
   while (cursor !== null && !seen.has(cursor)) {
     seen.add(cursor);
     const scope = scopes.scopeTree.getScope(cursor);
+    const local = scope?.typeParameters?.find((parameter) => parameter.name === name);
+    if (local) return local;
     for (const def of scope?.ownedDefs ?? []) {
       const hit = def.typeParameters?.find((parameter) => parameter.name === name);
       if (hit !== undefined) return hit;

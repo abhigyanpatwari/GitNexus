@@ -143,11 +143,15 @@ ${unboundCallableQuery('declaration.function')}
 (method_definition) @scope.function @receiver-owner.this
 (method_signature) @scope.function @receiver-owner.this
 (abstract_method_signature) @scope.function @receiver-owner.this
-(arrow_function) @scope.function
-(function_expression) @scope.function @receiver-owner.this
+(function_type type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(constructor_type type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(call_signature type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(construct_signature type_parameters: (type_parameters) @scope.type-parameters) @scope.function
+(arrow_function type_parameters: (type_parameters)? @scope.type-parameters) @scope.function
+(function_expression type_parameters: (type_parameters)? @scope.type-parameters) @scope.function @receiver-owner.this
 ;; \`function*(){}\` as an EXPRESSION. Absent from this list before #2701, so it
 ;; was not a scope at all and \`this\` inside one read as the enclosing method's.
-(generator_function) @scope.function @receiver-owner.this
+(generator_function type_parameters: (type_parameters)? @scope.type-parameters) @scope.function @receiver-owner.this
 
 ;; Object literals (the { ... } value expression, NOT object_type or
 ;; object_pattern) get their own scope boundary. Without it, a
@@ -1407,6 +1411,10 @@ ${unboundCallableQuery('declaration.function')}
 ;; would also match the identifier in \`type X = …\` and \`interface X\`, making
 ;; every declaration a consumer of itself.
 ${typeReferencePatterns}
+(function_type return_type: ${namedTypeReference})
+(constructor_type type: ${namedTypeReference})
+(function_type return_type: (generic_type name: ${namedTypeReference}))
+(constructor_type type: (generic_type name: ${namedTypeReference}))
 (type_alias_declaration value: ${namedTypeReference})
 (type_alias_declaration value: (generic_type name: ${namedTypeReference}))
 `;

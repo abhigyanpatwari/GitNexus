@@ -73,6 +73,8 @@ export interface CallableCaptureSignature {
 
 export interface CallableFlowCaptureOptions {
   readonly functionNodeTypes: ReadonlySet<string>;
+  /** Construction passes arguments but does not invoke the operand as a function. */
+  readonly constructorCallNodeTypes?: ReadonlySet<string>;
   readonly callNodeTypes: ReadonlySet<string>;
   readonly parameterListNodeTypes: ReadonlySet<string>;
   readonly parameterNodeTypes: ReadonlySet<string>;
@@ -294,7 +296,7 @@ export function synthesizeCallableFlowCaptures(
   for (const fn of functions) emitFormalFacts(fn, options, out);
   for (const node of nodes) {
     if (
-      options.callNodeTypes.has(node.type) &&
+      (options.callNodeTypes.has(node.type) || options.constructorCallNodeTypes?.has(node.type)) &&
       (options.isCallNode === undefined || options.isCallNode(node))
     ) {
       emitCallFacts(node, knownCallableNames, valueBindings, options, out);
@@ -1187,6 +1189,8 @@ function emitCallFacts(
       emitArgument(argument, index);
     }
   }
+
+  if (options.constructorCallNodeTypes?.has(call.type)) return;
 
   if (member !== undefined) {
     if (

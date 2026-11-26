@@ -676,7 +676,7 @@ function reportProject(
           name && (name.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(name) : name);
         const decl = symbolDeclaration(target, project);
         if (decl?.kind === SyntaxKind.TypeParameter) {
-          const owner = decl.parent.name;
+          const owner = decl.parent.name ?? decl.parent;
           if (owner) {
             const source = node.getSourceFile();
             const position = (offset) => {

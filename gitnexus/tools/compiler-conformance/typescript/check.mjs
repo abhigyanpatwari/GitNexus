@@ -246,15 +246,18 @@ function recordBindings(observation, calls, typeParameters, reads, unbound, para
               def.declarationRange?.startCol === scope.range.startCol &&
               def.typeParameters?.some((p) => p.name === site.name),
           );
-          if (owner?.nameRange) {
-            const name = owner.nameRange;
+          const name =
+            owner?.nameRange ??
+            (scope.typeParameters?.some((parameter) => parameter.name === site.name) &&
+              scope.range);
+          if (name) {
             const range = site.atRange;
             typeParameters.push({
               file: file.filePath,
               start: range.startLine + ':' + range.startCol,
               end: range.endLine + ':' + range.endCol,
               status: 'type-parameter',
-              target: owner.filePath + '#' + name.startLine + ':' + name.startCol + '/' + site.name,
+              target: scope.filePath + '#' + name.startLine + ':' + name.startCol + '/' + site.name,
             });
             break;
           }
