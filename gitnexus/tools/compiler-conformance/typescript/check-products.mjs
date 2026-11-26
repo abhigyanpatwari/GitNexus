@@ -11,6 +11,7 @@ const selected = platform
       'product/analysis-embedding-flow.ts',
       'product/analysis-generation-routing.ts',
       'product/analysis-publication-flow.ts',
+      'product/analyze-atomic-swap.ts',
       'product/analyze-dirty-snapshot.ts',
       'product/analyze-wal-checkpoint-failure.ts',
       'product/class-expression-owners.ts',
@@ -36,7 +37,11 @@ const selected = platform
       'provider/rename-typescript-member-keys.ts',
     ]
   : globSync(['product/*.ts', 'provider/*.ts'], { cwd: directory });
-const files = selected.sort().map((file) => path.join(directory, file));
+// The atomic-rename publication path runs on POSIX. Windows publishes in place.
+const files = selected
+  .filter((file) => process.platform !== 'win32' || file !== 'product/analyze-atomic-swap.ts')
+  .sort()
+  .map((file) => path.join(directory, file));
 assert.ok(files.length, 'No TypeScript product checks found');
 execFileSync(
   process.execPath,
