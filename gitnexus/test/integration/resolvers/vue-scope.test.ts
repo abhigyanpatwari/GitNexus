@@ -11,16 +11,14 @@
  *     component app with cross-file CALLS chains.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
-import fs from 'node:fs';
-import os from 'node:os';
 import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
   runPipelineFromRepo,
-  writeFixtureRepo,
+  useFixture,
   type PipelineResult,
 } from './helpers.js';
 
@@ -517,13 +515,8 @@ describe('F92 — JS-lang script block', () => {
 // ---------------------------------------------------------------------------
 
 describe('Vue array indexed element resolution (VUE-01)', () => {
-  let result: PipelineResult;
-  let fixtureDir: string;
-
-  beforeAll(async () => {
-    fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-vue-array-'));
-    writeFixtureRepo(fixtureDir, {
-      'models.ts': `export class User {
+  const getResult = useFixture('vue-array-index', {
+    'models.ts': `export class User {
     save(): void {}
 }
 
@@ -535,7 +528,7 @@ export class Decoy {
     static save(): void {}
 }
 `,
-      'App.vue': `<script setup lang="ts">
+    'App.vue': `<script setup lang="ts">
 import { User, Address, Decoy } from './models';
 
 function processUsers(repos: User[]) {
@@ -551,17 +544,10 @@ function processUntyped(repos: any[]) {
   <div>App</div>
 </template>
 `,
-    });
-
-    result = await runPipelineFromRepo(fixtureDir, () => {});
-  }, 60000);
-
-  afterAll(() => {
-    fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   it('resolves repos[0].save() to User.save with no decoy edges', () => {
-    const calls = getRelationships(result, 'CALLS').filter((e) => e.source === 'processUsers');
+    const calls = getRelationships(getResult(), 'CALLS').filter((e) => e.source === 'processUsers');
     expect(calls).toHaveLength(1);
     expect(calls[0].target).toBe('save');
     expect(calls[0].targetFilePath).toBe('models.ts');
@@ -569,7 +555,7 @@ function processUntyped(repos: any[]) {
   });
 
   it('does not emit spurious edges to Address.save or Decoy.save from array callers', () => {
-    const calls = getRelationships(result, 'CALLS').filter((e) => e.source === 'processUsers');
+    const calls = getRelationships(getResult(), 'CALLS').filter((e) => e.source === 'processUsers');
     for (const call of calls) {
       expect(call.rel.targetId).not.toContain('Address.save');
       expect(call.rel.targetId).not.toContain('Decoy.save');
@@ -577,7 +563,7 @@ function processUntyped(repos: any[]) {
   });
 
   it('leaves untyped array receiver with no call edge to User.save', () => {
-    const calls = getRelationships(result, 'CALLS').filter((e) => e.source === 'processUntyped');
+    const calls = getRelationships(getResult(), 'CALLS').filter((e) => e.source === 'processUntyped');
     expect(calls).toHaveLength(0);
   });
 });
