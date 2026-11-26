@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // #3524: LocalBackend's refresh_index around a stubbed analyze worker. The real
-// worker, registry, and git are covered by test/integration/mcp-refresh-index-e2e.
+// worker, registry, and git are covered by the TypeScript conformance mcp-refresh-index-e2e suite.
 
 const mocks = vi.hoisted(() => ({
   listRegisteredRepos: vi.fn(),

@@ -239,8 +239,6 @@ const LBUG_NATIVE = [
   'test/integration/lbug-core-adapter.test.ts',
   // Native COPY, cached vectors and cold shared-store readers vary by platform.
   'test/integration/embedding-identity-integrity.test.ts',
-  // Real endpoint retries include native index writes and cold database reads.
-  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',
@@ -255,10 +253,7 @@ const LBUG_NATIVE = [
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
   'test/integration/go-incremental-method-owners.test.ts',
-  'test/integration/query-symbol-integrity.test.ts',
   'test/integration/mcp-index-generation.test.ts',
-  // A real refresh worker must preserve active readers or report native contention.
-  'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
   'test/integration/fts-empty-tables.test.ts',
   'test/integration/persisted-mutation-rows.test.ts',

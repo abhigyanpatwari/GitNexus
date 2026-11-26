@@ -1,18 +1,22 @@
+import { createTestEnvironment } from '../support/environment.js';
+import { registerCases } from '../support/cases.mjs';
 /** Injected corruption proves the query boundary, not the cause of #3527/#3564. */
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import * as adapter from '../../src/core/lbug/lbug-adapter.js';
-import { runFullAnalysis } from '../../src/core/run-analyze.js';
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { SYMBOL_IDENTITY_RECOVERY_SUGGESTION } from '../../src/mcp/local/query-result-integrity.js';
-import { createMCPServer } from '../../src/mcp/server.js';
-import { getStoragePaths } from '../../src/storage/repo-manager.js';
-import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
-import { createTempDir } from '../helpers/test-db.js';
+import { after as afterAll, before as beforeAll, describe, it } from 'node:test';
+import { expect } from 'expect';
+import * as adapter from '../../../../src/core/lbug/lbug-adapter.js';
+import { runFullAnalysis } from '../../../../src/core/run-analyze.js';
+import { LocalBackend } from '../../../../src/mcp/local/local-backend.js';
+import { SYMBOL_IDENTITY_RECOVERY_SUGGESTION } from '../../../../src/mcp/local/query-result-integrity.js';
+import { createMCPServer } from '../../../../src/mcp/server.js';
+import { getStoragePaths } from '../../../../src/storage/repo-manager.js';
+import { commitAll, initGitRepo } from '../../../../test/helpers/temp-git-repo.js';
+import { createTempDir } from '../../../../test/helpers/test-db.js';
+const environment = createTestEnvironment();
 
 const SOURCE = [
   'export function integrityNeedle() {',
@@ -34,64 +38,65 @@ describe('query identity boundary through the real MCP server', () => {
   let repo: string;
   let lbugPath: string;
   let snapshot: string;
-  let ftsLoaded = false;
 
-  beforeAll(async () => {
-    temp = await createTempDir();
-    const root = await fs.realpath(temp.dbPath);
-    const userHome = path.join(root, 'user-home');
-    await fs.mkdir(userHome);
-    vi.stubEnv('HOME', userHome);
-    vi.stubEnv('USERPROFILE', userHome);
-    vi.stubEnv('GITNEXUS_HOME', path.join(root, 'home'));
-    vi.stubEnv('GITNEXUS_STORAGE_PATH', undefined);
-    vi.stubEnv('GITNEXUS_STORAGE_ROOT', undefined);
-    vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
-    vi.stubEnv('GITNEXUS_CONTENT_RETENTION', 'full');
-    vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
-    vi.stubEnv('GITNEXUS_WAL_MANUAL_CHECKPOINT', '1');
-    await adapter.initLbug(path.join(root, 'fts-probe'));
-    ftsLoaded = await adapter.loadFTSExtension(undefined, { policy: 'load-only' });
-    await adapter.closeLbug();
-    if (!ftsLoaded) {
-      if (process.env.GITNEXUS_REQUIRE_FTS === '1')
-        throw new Error('FTS is required for this test');
-      return;
-    }
-    repo = path.join(root, 'repo');
-    await fs.mkdir(path.join(repo, 'src'), { recursive: true });
-    await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
-    await fs.writeFile(path.join(repo, 'src/fixture.ts'), SOURCE);
-    await fs.writeFile(
-      path.join(repo, 'src/fixture.py'),
-      'class Fixture:\n    def integrityNeedle(self):\n        return 42\n',
-    );
-    await fs.writeFile(
-      path.join(repo, 'src/fixture.swift'),
-      'struct IntegrityNeedle {\n    let value = 42\n}\n',
-    );
-    initGitRepo(repo);
-    execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo });
-    commitAll(repo, 'source-derived query fixture');
-    await runFullAnalysis(repo, { skipAgentsMd: true, skipSkills: true }, { onProgress: () => {} });
-    lbugPath = getStoragePaths(repo).lbugPath;
-    snapshot = path.join(root, 'healthy.lbug');
-    await fs.copyFile(lbugPath, snapshot);
-    const groupDir = path.join(root, 'home', 'groups', 'integrity');
-    await fs.mkdir(groupDir, { recursive: true });
-    await fs.writeFile(
-      path.join(groupDir, 'group.yaml'),
-      JSON.stringify({ version: 1, name: 'integrity', repos: { service: 'repo' } }),
-    );
-  }, 120_000);
-
-  beforeEach(({ skip }) => {
-    if (!ftsLoaded) skip('FTS extension unavailable under the load-only policy');
-  });
+  beforeAll(
+    async () => {
+      temp = await createTempDir();
+      const root = await fs.realpath(temp.dbPath);
+      const userHome = path.join(root, 'user-home');
+      await fs.mkdir(userHome);
+      environment.set('HOME', userHome);
+      environment.set('USERPROFILE', userHome);
+      environment.set('GITNEXUS_HOME', path.join(root, 'home'));
+      environment.set('GITNEXUS_STORAGE_PATH', undefined);
+      environment.set('GITNEXUS_STORAGE_ROOT', undefined);
+      environment.set('GITNEXUS_SHARED_STORE', 'off');
+      environment.set('GITNEXUS_CONTENT_RETENTION', 'full');
+      environment.set('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+      environment.set('GITNEXUS_WAL_MANUAL_CHECKPOINT', '1');
+      await adapter.initLbug(path.join(root, 'fts-probe'));
+      const ftsLoaded = await adapter.loadFTSExtension(undefined, { policy: 'load-only' });
+      await adapter.closeLbug();
+      if (!ftsLoaded)
+        throw new Error(
+          'FTS is required for query integrity. Run node --import tsx scripts/ensure-fts.ts from gitnexus.',
+        );
+      repo = path.join(root, 'repo');
+      await fs.mkdir(path.join(repo, 'src'), { recursive: true });
+      await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
+      await fs.writeFile(path.join(repo, 'src/fixture.ts'), SOURCE);
+      await fs.writeFile(
+        path.join(repo, 'src/fixture.py'),
+        'class Fixture:\n    def integrityNeedle(self):\n        return 42\n',
+      );
+      await fs.writeFile(
+        path.join(repo, 'src/fixture.swift'),
+        'struct IntegrityNeedle {\n    let value = 42\n}\n',
+      );
+      initGitRepo(repo);
+      execFileSync('git', ['config', 'commit.gpgsign', 'false'], { cwd: repo });
+      commitAll(repo, 'source-derived query fixture');
+      await runFullAnalysis(
+        repo,
+        { skipAgentsMd: true, skipSkills: true },
+        { onProgress: () => {} },
+      );
+      lbugPath = getStoragePaths(repo).lbugPath;
+      snapshot = path.join(root, 'healthy.lbug');
+      await fs.copyFile(lbugPath, snapshot);
+      const groupDir = path.join(root, 'home', 'groups', 'integrity');
+      await fs.mkdir(groupDir, { recursive: true });
+      await fs.writeFile(
+        path.join(groupDir, 'group.yaml'),
+        JSON.stringify({ version: 1, name: 'integrity', repos: { service: 'repo' } }),
+      );
+    },
+    { timeout: 120_000 },
+  );
 
   afterAll(async () => {
     await adapter.closeLbug();
-    vi.unstubAllEnvs();
+    environment.restore();
     await temp?.cleanup();
   });
 
@@ -152,7 +157,9 @@ describe('query identity boundary through the real MCP server', () => {
     expect(result.processes.length).toBeGreaterThan(0);
   });
 
-  it.each(['x'.repeat(538_895), '"\\\n😀'.repeat(30_000)])(
+  registerCases(
+    it,
+    ['x'.repeat(538_895), '"\\\n😀'.repeat(30_000)],
     'bounds source previews in native queries without losing matches (%#)',
     async (source) => {
       const setSource = async () => {
@@ -195,17 +202,23 @@ describe('query identity boundary through the real MCP server', () => {
     },
   );
 
-  it.each([
+  registerCases(
+    it,
     [
-      'path inconsistent with the symbol UID',
-      'MATCH (n:Function {id: $uid}) SET n.filePath = $value',
-      'Sources/Unrelated.swift',
+      [
+        'path inconsistent with the symbol UID',
+        'MATCH (n:Function {id: $uid}) SET n.filePath = $value',
+        'Sources/Unrelated.swift',
+      ],
+      ['NUL symbol name', 'MATCH (n:Function {id: $uid}) SET n.name = $value', 'invalid\0name'],
+      ['NUL symbol path', 'MATCH (n:Function {id: $uid}) SET n.filePath = $value', 'invalid\0path'],
+      ['NUL process label', 'MATCH (p:Process) SET p.label = $value', 'invalid\0process'],
+      [
+        'NUL cluster label',
+        'MATCH (c:Community) SET c.heuristicLabel = $value',
+        'invalid\0cluster',
+      ],
     ],
-    ['NUL symbol name', 'MATCH (n:Function {id: $uid}) SET n.name = $value', 'invalid\0name'],
-    ['NUL symbol path', 'MATCH (n:Function {id: $uid}) SET n.filePath = $value', 'invalid\0path'],
-    ['NUL process label', 'MATCH (p:Process) SET p.label = $value', 'invalid\0process'],
-    ['NUL cluster label', 'MATCH (c:Community) SET c.heuristicLabel = $value', 'invalid\0cluster'],
-  ])(
     'rejects injected %s instead of returning success or a fallback',
     async (_name, statement, value) => {
       const result = await query(async () => {
@@ -231,34 +244,39 @@ describe('query identity boundary through the real MCP server', () => {
     expect(result).not.toHaveProperty('definitions');
   });
 
-  it.each([
-    {
-      table: 'Method',
-      uid: 'Method:src/fixture.py:Fixture.integrityNeedle#0',
-      field: 'filePath',
-      value: 'src/fixture.swift',
-    },
-    {
-      table: 'Struct',
-      uid: 'Struct:src/fixture.swift:IntegrityNeedle',
-      field: 'name',
-      value: '\0\0\0\0',
-    },
-  ])('rejects the injected #3527 $table/$field shape', async ({ table, uid, field, value }) => {
-    const result = await query(async () => {
-      // Prove the source-derived fixture contains the target before injecting the fault.
-      expect(
-        await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) RETURN n.id AS id`, { uid }),
-      ).toEqual([{ id: uid }]);
-      await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) SET n.${field} = $value`, {
-        uid,
-        value,
+  registerCases(
+    it,
+    [
+      {
+        table: 'Method',
+        uid: 'Method:src/fixture.py:Fixture.integrityNeedle#0',
+        field: 'filePath',
+        value: 'src/fixture.swift',
+      },
+      {
+        table: 'Struct',
+        uid: 'Struct:src/fixture.swift:IntegrityNeedle',
+        field: 'name',
+        value: '\0\0\0\0',
+      },
+    ],
+    'rejects the injected #3527 $table/$field shape',
+    async ({ table, uid, field, value }) => {
+      const result = await query(async () => {
+        // Prove the source-derived fixture contains the target before injecting the fault.
+        expect(
+          await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) RETURN n.id AS id`, { uid }),
+        ).toEqual([{ id: uid }]);
+        await adapter.executePrepared(`MATCH (n:${table} {id: $uid}) SET n.${field} = $value`, {
+          uid,
+          value,
+        });
       });
-    });
-    expect(result.error).toContain('invalid symbol identity');
-    expect(result.recoverySuggestion).toBe(SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
-    expect(result).not.toHaveProperty('definitions');
-  });
+      expect(result.error).toContain('invalid symbol identity');
+      expect(result.recoverySuggestion).toBe(SYMBOL_IDENTITY_RECOVERY_SUGGESTION);
+      expect(result).not.toHaveProperty('definitions');
+    },
+  );
 
   it('accepts legacy missing process entry points and empty optional labels', async () => {
     const result = await query(async () => {

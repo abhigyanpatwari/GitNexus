@@ -29,6 +29,7 @@ it(
     git('add', 'a.ts');
     git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-qm', 'fixture');
     let fail = true;
+    let requestHeld = false;
     let releaseOutage!: () => void;
     const outage = new Promise<void>((resolve) => {
       releaseOutage = resolve;
@@ -39,6 +40,7 @@ it(
       for await (const chunk of request) body += chunk;
       const input: string[] = JSON.parse(body).input;
       if (fail && accepted.length >= 64) {
+        requestHeld = true;
         await outage;
         response.writeHead(503).end('outage');
         return;
@@ -107,11 +109,12 @@ it(
       const started = await request('/api/analyze', { path: repo, embeddings: true });
       const poll = () => request(`/api/analyze/${started.jobId}`);
       await until(async () => (await poll()).status === 'analyzing');
-      const graphQuery = request('/api/query?repo=repo', {
+      await until(async () => requestHeld);
+      expect(accepted).toHaveLength(64);
+      const graphQuery = await request('/api/query?repo=repo', {
         cypher: 'MATCH (n:Function) RETURN count(n) AS count',
       });
-      await until(async () => accepted.length === 64);
-      expect((await graphQuery).error).toBeUndefined();
+      expect(graphQuery.error).toBeUndefined();
       expect((await poll()).status).toBe('analyzing');
       expect((await loadMeta(slot))?.graphGeneration).toBeDefined();
       const keyword = await request('/api/search?repo=repo', {
