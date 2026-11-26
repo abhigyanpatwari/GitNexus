@@ -52,6 +52,12 @@ const COMPONENT_TAG_RE = /<x-([a-z0-9][\w.-]*)/gi;
 const BUILT_IN_COMPONENT_TAGS = new Set(['slot', 'dynamic-component']);
 /** `{{-- … --}}` comments are never rendered, so references inside them are not dependencies. */
 const BLADE_COMMENT_RE = /\{\{--[\s\S]*?--\}\}/g;
+/**
+ * `@verbatim … @endverbatim` is output as literal text, so directives and
+ * component tags inside it are not dependencies. Blade stores these blocks
+ * before it strips comments, and they are removed here in the same order.
+ */
+const BLADE_VERBATIM_RE = /(?<!@)@verbatim\b[\s\S]*?@endverbatim\b/g;
 /** Letters, digits, `_`, `-`, `.` and `/` only: rejects `$var`, `{$x}` and `namespace::name`. */
 const STATIC_VIEW_NAME_RE = /^[\w\-./]+$/;
 
@@ -104,7 +110,7 @@ export const splitDirectiveArguments = (text: string, start: number): string[] |
 export const extractBladeViewReferences = (
   content: string,
 ): { views: string[]; components: string[] } => {
-  const text = content.replace(BLADE_COMMENT_RE, '');
+  const text = content.replace(BLADE_VERBATIM_RE, '').replace(BLADE_COMMENT_RE, '');
   const views: string[] = [];
   const components: string[] = [];
 

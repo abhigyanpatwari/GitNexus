@@ -43,6 +43,18 @@ describe('extractBladeViewReferences', () => {
     expect(views).toEqual(['partials.item', 'partials.plain', 'partials.card']);
   });
 
+  it('ignores directives and component tags inside @verbatim blocks', () => {
+    const result = extractBladeViewReferences(`
+@verbatim
+  <p>Write @include('partials.help') to embed the help box.</p>
+  <x-alert />
+@endverbatim
+@include('partials.nav')
+<x-badge />
+`);
+    expect(result).toEqual({ views: ['partials.nav'], components: ['badge'] });
+  });
+
   it('reads anonymous component tags and ignores Blade built-in tags', () => {
     const { components } = extractBladeViewReferences(
       `<x-alert type="error"><x-slot name="title">Hi</x-slot></x-alert>
