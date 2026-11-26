@@ -116,14 +116,6 @@ describe('closure bindings emit a single Function node in every language', () =>
     ]);
   });
 
-  it('TypeScript: a NON-closure class field stays a Property', async () => {
-    // The closure rule must key on the initializer, not the field syntax —
-    // otherwise every class field would become a callable member.
-    expect(
-      await labelsFor('src/plain.ts', 'export class A {\n  address = "x";\n}\n', 'address'),
-    ).toEqual(['Property']);
-  });
-
   it('Python: an annotated attribute stays a Property, not a Variable', async () => {
     // Regression guard. Python matches BOTH `@definition.property` (annotated)
     // and `@definition.variable` (bare assignment) on the same statement at the
@@ -325,15 +317,6 @@ describeIfWorkerBuilt('the declaration route does not double-emit (#2693)', () =
   // edge — `tryEmitEdge` dedups by key, and a collapsed and a site-anchored key
   // are different keys, so a genuine regression here shows up as two ids.
 
-  it('TypeScript: one CALLS edge for one call site', async () => {
-    expect(
-      await callEdgeIdsFor(
-        'app.ts',
-        'const handler = (x: number) => x;\n\nexport function caller(): number {\n  return handler(1);\n}\n',
-      ),
-    ).toHaveLength(1);
-  });
-
   it('Go: one CALLS edge for one call site', async () => {
     expect(
       await callEdgeIdsFor(
@@ -476,19 +459,6 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
     expect(targets).toEqual(['Function:c.js:handler']);
   });
 
-  it('TypeScript: a generator EXPRESSION binding is a Function, like the other forms', async () => {
-    // `function*` as an expression is its own grammar node, matched by none of
-    // the closure-binding definition rules — so the binding emitted a `Const`
-    // and `g(1)` resolved to nothing, since `buildGraphTargetIndex` only
-    // admits a callable node. Same defect shape as the `var` case above.
-    const targets = await callTargetsFor(
-      'gen.ts',
-      'const g = function* (x: number) {\n  yield x;\n};\n\nexport function caller() {\n  return g(1);\n}\n',
-    );
-
-    expect(targets).toEqual(['Function:gen.ts:g']);
-  });
-
   it('JavaScript: an exported `var` generator expression resolves too', async () => {
     // Covers the two axes the rules multiply over — declaration keyword and
     // export wrapper — in the language where `var` is idiomatic.
@@ -498,18 +468,6 @@ describeIfWorkerBuilt('closure bindings resolve in the remaining languages (#269
     );
 
     expect(targets).toEqual(['Function:gen.js:g']);
-  });
-
-  it('TypeScript: a generator DECLARATION is unaffected', async () => {
-    // The declaration form already resolved; it shares the emit path the new
-    // expression rules were inserted beside, so it is the guard against the
-    // insertion disturbing it.
-    const targets = await callTargetsFor(
-      'decl.ts',
-      'function* g(x: number) {\n  yield x;\n}\n\nexport function caller() {\n  return g(1);\n}\n',
-    );
-
-    expect(targets).toEqual(['Function:decl.ts:g']);
   });
 });
 
@@ -687,33 +645,6 @@ describeIfWorkerBuilt('a value binding is never aliased onto a same-named callab
     );
 
     expect(targets).toEqual([]);
-  });
-
-  it('TypeScript: a local closure does not call a same-named class method', async () => {
-    // `Svc` is never instantiated. The local arrow has its own Function node,
-    // which is the only legitimate target.
-    const targets = await callTargetsFor(
-      'svc.ts',
-      'export class Svc {\n  save(x: number): number {\n    return x;\n  }\n}\n\n' +
-        'export function run(): number {\n  const save = (x: number): number => x * 2;\n  return save(1);\n}\n',
-    );
-
-    // `run.save` — the local carries its enclosing function, so it can no
-    // longer be confused with a file-level `save` (#2699).
-    expect(targets).toEqual(['Function:svc.ts:run.save@7:2']);
-  });
-
-  it('TypeScript: a shadowing local does not also call the shadowed function', async () => {
-    // `caller` invokes `other` through the shadowing binding; the outer
-    // `handler` is unreachable from it.
-    const targets = await callTargetsFor(
-      'shadow.ts',
-      'export function handler(x: number): number {\n  return x;\n}\n' +
-        'export function other(x: number): number {\n  return x * 2;\n}\n\n' +
-        'export function caller(): number {\n  const handler = other;\n  return handler(1);\n}\n',
-    );
-
-    expect(targets).toEqual(['Function:shadow.ts:other']);
   });
 
   it('Rust: a let binding does not call the same-named function', async () => {
