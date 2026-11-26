@@ -262,6 +262,40 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not suppress when a direct and transformed path share the sink arg', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const host = req.body;
+        if (!isValidHostName(host)) return;
+        exec(host + wrap(host));
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not treat isValid(command + command) as validating command', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const command = req.body;
+        if (!isValidHostName(command + command)) return;
+        exec(command);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress after a multiline member overwrite before the sink', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        req
+          .body = req.query;
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('still finds the unguarded flow', () => {
     const { flows } = analyze(`
       function f(req: any) {

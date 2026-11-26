@@ -973,10 +973,10 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
-              // Under-kill: multi-property args, or values that reached the
-              // sink through a nested call (e.g. host.replaceAll(...)).
+              // Under-kill: multi-property args, or any via-call path in this
+              // argument (direct + wrap(host) must not let the direct win).
               const sinkProps = memberPropertiesAtArg(ctx.sites, siteIndex, argPos);
-              if (!justify.viaCall && sinkProps.length <= 1) {
+              if (!paths.some((path) => path.viaCall) && sinkProps.length <= 1) {
                 if (suppressedByBarrier(b, ctx.point, t.point, sinkProps[0])) continue;
               }
               const chain = chainHops(key);

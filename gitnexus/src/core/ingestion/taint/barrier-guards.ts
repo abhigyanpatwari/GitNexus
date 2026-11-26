@@ -175,6 +175,11 @@ const QUALIFIED_PREFIX = '(?:[A-Za-z_$][\\w$]*\\.)*';
  * optional `qual.` chain). Rejects compounds like `isValid(x) || debugMode`
  * that can take the true branch without the validator accepting.
  */
+/** True when the call argument is a bare ident or member path (not `a+b`). */
+function isSimpleValidatorArg(arg: string): boolean {
+  return /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(arg);
+}
+
 export function isSimpleValidatorCondition(blockText: string, callee: string): boolean {
   const leaf = calleeLeaf(callee);
   if (!leaf || !blockText.includes(leaf)) return false;
@@ -183,8 +188,10 @@ export function isSimpleValidatorCondition(blockText: string, callee: string): b
   let s = blockText.replace(/\s+/g, '');
   while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
   const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // [!][qual.]*leaf(...) — supports `!validators.isValidHostName(x)`.
-  return new RegExp(`^!*${QUALIFIED_PREFIX}${escaped}\\([^)]*\\)$`).test(s);
+  // [!][qual.]*leaf(simpleArg) — supports `!validators.isValidHostName(x)`.
+  const m = s.match(new RegExp(`^!*${QUALIFIED_PREFIX}${escaped}\\(([^)]*)\\)$`));
+  if (!m) return false;
+  return isSimpleValidatorArg(m[1]);
 }
 
 /**
@@ -238,15 +245,17 @@ function primaryArgSubjects(
   }
   // Compound args do not vouch for any operand individually.
   if (memberSubjects.length > 1) return [];
-  const plain = [...new Set(argPositionBindings(callSite, 0))];
+  // Count occurrences (not unique names) so `isValid(command + command)`
+  // is not mistaken for a plain single-binding validator.
+  const plainOccs = argPositionBindings(callSite, 0);
   if (memberSubjects.length === 1) {
     // `isValid(req.body + suffix)` lists object + other bindings in arg 0.
-    if (plain.length > 1) return [];
+    if (plainOccs.length > 1) return [];
     return memberSubjects;
   }
-  // Plain bindings: require exactly one unique binding (`isValid(x)`).
-  if (plain.length !== 1) return [];
-  return [{ binding: plain[0] }];
+  // Plain bindings: require exactly one occurrence (`isValid(x)`).
+  if (plainOccs.length !== 1) return [];
+  return [{ binding: plainOccs[0] }];
 }
 
 /**
@@ -394,12 +403,12 @@ export function memberPropertyAssignedOnValidatedPath(
     if (edge.label !== controller.validatedLabel) continue;
     const block = cfg.blocks[edge.dependentBlock];
     if (!block?.text) continue;
-    const lines = block.text.split('\n');
     if (block.index === sinkPoint.blockIndex) {
-      // Statement order within the sink block (handles same source line).
-      for (let i = 0; i < sinkPoint.stmtIndex && i < lines.length; i++) {
-        if (assignRe.test(lines[i])) return true;
-      }
+      // stmtIndex is a statements[] index, not a physical-line index. If any
+      // earlier statement exists in this block, under-kill on any property
+      // assign in the block text (multiline writes evade line-prefix scans).
+      // Sink-then-write keeps stmtIndex 0 so post-sink writes do not match.
+      if (sinkPoint.stmtIndex > 0 && assignRe.test(block.text)) return true;
       continue;
     }
     if (block.endLine < sinkPoint.line) {
