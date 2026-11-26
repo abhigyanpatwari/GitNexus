@@ -188,7 +188,6 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
-  'test/integration/embedding-job-controller.test.ts',
   'test/integration/embedding-job-restart.test.ts',
   'test/integration/embedding-native-release.test.ts',
   'test/integration/legacy-embedding-controller.test.ts',

@@ -1,13 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
-import { collectFunctionCfgs } from '../../../src/core/ingestion/cfg/collect.js';
-import { computeReachingDefs } from '../../../src/core/ingestion/cfg/reaching-defs.js';
-import { getProvider } from '../../../src/core/ingestion/languages/index.js';
-import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
+import { readFileSync } from 'node:fs';
+import { cfgsOfFile } from '../support/cfg-fixture.js';
+import { computeReachingDefs } from '../../../../src/core/ingestion/cfg/reaching-defs.js';
+import type { FunctionCfg } from '../../../../src/core/ingestion/cfg/types.js';
 
 // #2082 M2 R5 acceptance: a committed snapshot of the REACHING_DEF facts on
 // the M1 fixture (extended in U5 with the early-exit-finally + shadowing
@@ -15,16 +11,9 @@ import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 // by program points + binding identity — so any solver/harvest behavior
 // change shows as a reviewable snapshot diff, never silent drift.
 
-const FIXTURES = path.join(__dirname, '../../fixtures/cfg');
-
-function cfgsOfFile(file: string): readonly FunctionCfg[] {
-  const visitor = getProvider(SupportedLanguages.TypeScript).cfgVisitor;
-  if (!visitor) throw new Error('no cfgVisitor');
-  const source = fs.readFileSync(path.join(FIXTURES, file), 'utf8');
-  const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
-  return collectFunctionCfgs(parser.parse(source).rootNode, visitor, file).cfgs;
-}
+const expected = JSON.parse(
+  readFileSync(new URL('../snapshots/reaching-defs.json', import.meta.url), 'utf8'),
+);
 
 /** Deterministic rendering: defBlock:stmt->useBlock:stmt:bindingKey */
 function serialize(cfg: FunctionCfg): Record<string, unknown> {
@@ -49,7 +38,7 @@ describe('R5 — REACHING_DEF facts snapshot on the M1 fixture', () => {
   it('matches the committed fact set for every fixture function', () => {
     const cfgs = cfgsOfFile('ten-functions.ts');
     expect(cfgs).toHaveLength(12);
-    expect(cfgs.map(serialize)).toMatchSnapshot();
+    expect(cfgs.map(serialize)).toEqual(expected);
   });
 
   it('every fixture function computes (no truncation at default limits, no no-facts)', () => {

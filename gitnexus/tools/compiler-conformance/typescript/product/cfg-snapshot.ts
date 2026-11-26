@@ -1,15 +1,11 @@
-import { describe, it, expect } from 'vitest';
-import fs from 'fs';
-import path from 'path';
-import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
-import { collectFunctionCfgs } from '../../../src/core/ingestion/cfg/collect.js';
-import { emitFileCfgs } from '../../../src/core/ingestion/cfg/emit.js';
-import { getProvider } from '../../../src/core/ingestion/languages/index.js';
-import { SupportedLanguages } from '../../../src/config/supported-languages.js';
-import type { CfgVisitor, FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
-import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
-import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { expect } from 'expect';
+import { readFileSync } from 'node:fs';
+import { cfgsOfFile } from '../support/cfg-fixture.js';
+import { emitFileCfgs } from '../../../../src/core/ingestion/cfg/emit.js';
+import type { FunctionCfg } from '../../../../src/core/ingestion/cfg/types.js';
+import type { KnowledgeGraph } from '../../../../src/core/graph/types.js';
 
 // U7 — acceptance fixtures for the CFG layer (#2081 M1).
 //   AC1: the 10-function fixture's CFG node/edge set matches a committed snapshot.
@@ -18,20 +14,9 @@ import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
 // (AC4 — flag-off byte-identical graph — is the existing
 // pipeline-graph-golden.test.ts, run with --pdg off.)
 
-const FIXTURES = path.join(__dirname, '../../fixtures/cfg');
-
-const visitor = ((): CfgVisitor<SyntaxNode> => {
-  const v = getProvider(SupportedLanguages.TypeScript).cfgVisitor;
-  if (!v) throw new Error('no cfgVisitor');
-  return v;
-})();
-
-function cfgsOfFile(file: string): readonly FunctionCfg[] {
-  const source = fs.readFileSync(path.join(FIXTURES, file), 'utf8');
-  const parser = new Parser();
-  parser.setLanguage(TypeScript.typescript);
-  return collectFunctionCfgs(parser.parse(source).rootNode, visitor, file).cfgs;
-}
+const expected = JSON.parse(
+  readFileSync(new URL('../snapshots/cfg.json', import.meta.url), 'utf8'),
+);
 
 /** Deterministic, line-anchored serialization of a function's CFG. */
 function serialize(cfg: FunctionCfg): Record<string, unknown> {
@@ -74,7 +59,7 @@ describe('U7 — AC1: ten-functions fixture CFG snapshot', () => {
     const cfgs = cfgsOfFile('ten-functions.ts');
     // 10 M1 functions + 2 M2 additions (early-exit finally, shadowing — #2082 U5)
     expect(cfgs).toHaveLength(12);
-    expect(cfgs.map(serialize)).toMatchSnapshot();
+    expect(cfgs.map(serialize)).toEqual(expected);
   });
 });
 
@@ -92,7 +77,7 @@ describe('U7 — AC2: every BasicBlock reachable from its function ENTRY', () =>
       const prefix = `BasicBlock:ten-functions.ts:${cfg.functionStartLine}:${cfg.functionStartColumn}:`;
       const entryId = `${prefix}${cfg.entryIndex}`;
       for (const id of nodeIds.filter((i) => i.startsWith(prefix))) {
-        expect(reaches(adj, entryId, id), `${id} unreachable from ENTRY`).toBe(true);
+        assert.ok(reaches(adj, entryId, id), `${id} unreachable from ENTRY`);
       }
     }
   });

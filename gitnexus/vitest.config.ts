@@ -6,7 +6,6 @@ const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
   'test/integration/embedding-vector-store.test.ts',
   'test/integration/legacy-vector-reuse-index.test.ts',
   'test/integration/legacy-vector-export.test.ts',
-  'test/integration/embedding-job-controller.test.ts',
   'test/integration/embedding-job-restart.test.ts',
   'test/integration/embedding-native-release.test.ts',
   'test/integration/legacy-embedding-controller.test.ts',
