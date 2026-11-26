@@ -363,24 +363,27 @@ describe('FTS opt-out analysis lifecycle (#3091)', () => {
           child.stderr.on('data', (data) => {
             output += String(data);
           });
-          const childExited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
-          const healthy = t.waitFor(
-            async () => {
-              const health = await fetch(`http://127.0.0.1:${port}/api/health`, {
-                signal: AbortSignal.timeout(2_000),
-              });
-              expect(health.status).toBe(200);
-            },
-            { timeout: 60_000, interval: 250 },
-          );
-          // Race readiness against the child dying so a lost port does not burn the
-          // whole health-wait timeout before retrying.
-          const outcome = await Promise.race([
-            healthy.then(() => 'ready' as const),
-            childExited.then(() => 'exited' as const),
-          ]);
-          if (outcome === 'ready') return { child, port, exited: childExited };
-          healthy.catch(() => {});
+          const childExited = new Promise<void>((resolve) => child.once('close', () => resolve()));
+          const running = () => child.exitCode === null && child.signalCode === null;
+          try {
+            await t.waitFor(
+              async () => {
+                if (!running()) return;
+                expect(output).toContain(`GitNexus server running on http://127.0.0.1:${port}`);
+                const health = await fetch(`http://127.0.0.1:${port}/api/health`, {
+                  signal: AbortSignal.timeout(2_000),
+                });
+                expect(health.status).toBe(200);
+              },
+              { timeout: 60_000, interval: 250 },
+            );
+          } catch (error) {
+            child.kill();
+            await childExited;
+            throw error;
+          }
+          if (running()) return { child, port, exited: childExited };
+          await childExited;
           if (attempt === 3 || !/EADDRINUSE/i.test(output)) {
             throw new Error(`Server exited: ${output}`);
           }

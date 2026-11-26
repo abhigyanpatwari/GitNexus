@@ -1,4 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import assert from 'node:assert/strict';
+import { afterEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
@@ -314,8 +316,9 @@ describe('source hygiene', () => {
   it('has no raw NUL byte in any tracked source file', async () => {
     const offenders = await scanTargets(TRACKED_SOURCE_FILES, findNulByte);
 
-    expect(
+    assert.deepEqual(
       offenders.map(describeOffender),
+      [],
       failureMessage(
         [
           'A raw NUL makes git classify the whole file as binary: it shows as `Bin`',
@@ -325,14 +328,15 @@ describe('source hygiene', () => {
         ],
         offenders,
       ),
-    ).toEqual([]);
+    );
   });
 
   it('has no other raw control byte under gitnexus/src', async () => {
     const offenders = await scanTargets(STRICT_SOURCE_FILES, findControlByte);
 
-    expect(
+    assert.deepEqual(
       offenders.map(describeOffender),
+      [],
       failureMessage(
         [
           'Raw control bytes make a source file test as binary to `file(1)`, `less`',
@@ -343,7 +347,7 @@ describe('source hygiene', () => {
         ],
         offenders,
       ),
-    ).toEqual([]);
+    );
   });
 
   it('scans past gitnexus/src and past .ts, where both recurrences landed', () => {

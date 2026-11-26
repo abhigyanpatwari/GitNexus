@@ -8,34 +8,33 @@
  * projection is computed from PARSEABLE files, not total scanned files (the
  * miscalibration fixed on this branch).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
+import v8 from 'node:v8';
+import { createTestEnvironment } from '../support/environment.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const getHeapStatisticsMock = vi.hoisted(() => vi.fn());
-vi.mock('node:v8', async () => {
-  const actual = await vi.importActual<typeof import('node:v8')>('node:v8');
-  const mocked = { ...actual, getHeapStatistics: getHeapStatisticsMock };
-  return { ...mocked, default: mocked };
-});
-
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { createKnowledgeGraph } from '../../../../src/core/graph/graph.js';
 import {
   projectParseHeapNeedBytes,
   runChunkedParseAndResolve,
-} from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
-import { _captureLogger } from '../../src/core/logger.js';
+} from '../../../../src/core/ingestion/pipeline-phases/parse-impl.js';
+import { _captureLogger } from '../../../../src/core/logger.js';
 
 const MB = 1024 * 1024;
 
 let repoDir: string;
 let workerStubPath: string;
-let memoryUsageSpy: ReturnType<typeof vi.spyOn> | undefined;
+const environment = createTestEnvironment();
+const realHeapStatistics = v8.getHeapStatistics.bind(v8);
+let limit: number;
 
 beforeEach(() => {
-  delete process.env.GITNEXUS_MEMORY;
+  environment.set('GITNEXUS_MEMORY', undefined);
+  mock.method(v8, 'getHeapStatistics', () => ({ ...realHeapStatistics(), heap_size_limit: limit }));
   repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-heap-guard-pipeline-'));
   fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
   // The pool validates the worker script's existence up front; the abort test
@@ -45,9 +44,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  memoryUsageSpy?.mockRestore();
-  memoryUsageSpy = undefined;
-  delete process.env.GITNEXUS_MEMORY;
+  mock.restoreAll();
+  environment.restore();
   fs.rmSync(repoDir, { recursive: true, force: true });
 });
 
@@ -61,14 +59,14 @@ describe('#2649 heap guardrails wired into runChunkedParseAndResolve', () => {
   it('mid-loop guard rejects the parse with the actionable remedy message', async () => {
     const file = writeFixture('src/a.ts', 'export function a() { return 1; }\n');
     // 1GB limit with 95% "in use": above the 92% abort threshold.
-    getHeapStatisticsMock.mockReturnValue({ heap_size_limit: 1024 * MB });
-    memoryUsageSpy = vi.spyOn(process, 'memoryUsage').mockReturnValue({
+    limit = 1024 * MB;
+    mock.method(process, 'memoryUsage', () => ({
       rss: 0,
       heapTotal: 1024 * MB,
       heapUsed: 973 * MB,
       external: 0,
       arrayBuffers: 0,
-    });
+    }));
 
     const graph = createKnowledgeGraph();
     await expect(
@@ -87,10 +85,8 @@ describe('#2649 heap guardrails wired into runChunkedParseAndResolve', () => {
     // projection to 0.80 of the limit and the warn silently stopped firing.
     // Deriving the limit keeps the ratio at 0.90 — above the 0.85 threshold —
     // whatever the constant becomes.
-    process.env.GITNEXUS_MEMORY = 'off';
-    getHeapStatisticsMock.mockReturnValue({
-      heap_size_limit: Math.floor(projectParseHeapNeedBytes(1) / 0.9),
-    });
+    environment.set('GITNEXUS_MEMORY', 'off');
+    limit = Math.floor(projectParseHeapNeedBytes(1) / 0.9);
 
     const parseable = writeFixture('src/b.ts', 'export function b() { return 2; }\n');
     const unparseable = writeFixture('src/data.zzz9', 'not source code\n');
@@ -107,17 +103,9 @@ describe('#2649 heap guardrails wired into runChunkedParseAndResolve', () => {
         Date.now(),
         () => {},
         {
-          workerUrlForTest: pathToFileURL(
-            path.resolve(
-              __dirname,
-              '..',
-              '..',
-              'dist',
-              'core',
-              'ingestion',
-              'workers',
-              'parse-worker.js',
-            ),
+          workerUrlForTest: new URL(
+            '../../../../dist/core/ingestion/workers/parse-worker.js',
+            import.meta.url,
           ),
           workerPoolSize: 1,
         },

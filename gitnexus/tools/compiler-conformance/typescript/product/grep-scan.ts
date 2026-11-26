@@ -1,8 +1,9 @@
-import { afterEach, describe, it, expect } from 'vitest';
+import { afterEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { runGrepScanInWorker, scanGrepFiles } from '../../src/server/grep-scan.js';
+import { runGrepScanInWorker, scanGrepFiles } from '../../../../dist/server/grep-scan.js';
 
 const tempDirs: string[] = [];
 const tempFiles: string[] = [];
@@ -57,32 +58,36 @@ describe('scanGrepFiles', () => {
 });
 
 describe('runGrepScanInWorker', () => {
-  it('terminates a catastrophic regex before it blocks the parent', async () => {
-    const dir = await mkTempDir('grep-redos-');
-    // `(a+)+b` against a long run of `a` backtracks; V8 finishes `(a+)+$` instantly.
-    await fs.writeFile(path.join(dir, 'bait.ts'), `${'a'.repeat(28)}\n`, 'utf-8');
-    let ticks = 0;
-    const pulse = setInterval(() => {
-      ticks += 1;
-    }, 20);
-    const started = Date.now();
-    try {
-      const out = await runGrepScanInWorker({
-        repoRoot: dir,
-        filePaths: ['bait.ts'],
-        pattern: '(a+)+b',
-        flags: '',
-        limit: 10,
-        deadlineMs: Date.now() + 250,
-      });
-      const elapsed = Date.now() - started;
-      expect(out.timedOut).toBe(true);
-      expect(elapsed).toBeLessThan(4_000);
-      expect(ticks).toBeGreaterThan(3);
-    } finally {
-      clearInterval(pulse);
-    }
-  }, 8_000);
+  it(
+    'terminates a catastrophic regex before it blocks the parent',
+    { timeout: 8_000 },
+    async () => {
+      const dir = await mkTempDir('grep-redos-');
+      // `(a+)+b` against a long run of `a` backtracks; V8 finishes `(a+)+$` instantly.
+      await fs.writeFile(path.join(dir, 'bait.ts'), `${'a'.repeat(28)}\n`, 'utf-8');
+      let ticks = 0;
+      const pulse = setInterval(() => {
+        ticks += 1;
+      }, 20);
+      const started = Date.now();
+      try {
+        const out = await runGrepScanInWorker({
+          repoRoot: dir,
+          filePaths: ['bait.ts'],
+          pattern: '(a+)+b',
+          flags: '',
+          limit: 10,
+          deadlineMs: Date.now() + 250,
+        });
+        const elapsed = Date.now() - started;
+        expect(out.timedOut).toBe(true);
+        expect(elapsed).toBeLessThan(4_000);
+        expect(ticks).toBeGreaterThan(3);
+      } finally {
+        clearInterval(pulse);
+      }
+    },
+  );
 
   it('returns ordinary matches from the worker', async () => {
     const dir = await mkTempDir('grep-ok-');

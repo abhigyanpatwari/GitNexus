@@ -28,14 +28,6 @@ vi.mock('../../src/core/lbug/extension-loader.js', async (original) => ({
   },
 }));
 
-const writerAllocations = [
-  { totalMb: undefined, pdg: true, workers: 1, threads: 4 },
-  { totalMb: 3072, pdg: false, workers: 1, threads: 4 },
-  { totalMb: 6144, pdg: true, workers: 1, threads: 1 },
-  { totalMb: 6145, pdg: true, workers: 1, threads: 4 },
-  { totalMb: 3072, pdg: true, workers: 2, threads: 4 },
-];
-
 describe('analysis database resource allocations', () => {
   let root: string;
   let adapter: typeof import('../../src/core/lbug/lbug-adapter.js');
@@ -77,47 +69,6 @@ describe('analysis database resource allocations', () => {
       threads: 2,
     });
   });
-
-  it.each(writerAllocations)(
-    'opens the graph with $threads threads (budget=$totalMb, pdg=$pdg, workers=$workers)',
-    async function checkWriterAllocation({ totalMb, pdg, workers, threads }) {
-      const config = await import('../../src/core/lbug/lbug-config.js');
-      const sizedPool = vi
-        .spyOn(config, 'getEffectiveBufferPoolSize')
-        .mockReturnValue(2048 * 1024 ** 2);
-      const { resolveAnalysisResourceBudget } =
-        await import('../../src/core/analysis-resource-budget.js');
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      const resources = resolveAnalysisResourceBudget({
-        effectiveMemoryBytes: 8192 * 1024 ** 2,
-        availableCpus: 4,
-        modelMemoryMb: 0,
-        totalMb,
-        workers,
-      });
-      const stopped = new Error('native opener reached');
-      native.open.mockRejectedValue(stopped);
-      await fs.writeFile(path.join(root, 'a.ts'), 'export function a() { return 1; }');
-      try {
-        await expect(
-          runFullAnalysis(
-            root,
-            { pdg, resources, skipGit: true, skipFts: true, skipAgentsMd: true, skipSkills: true },
-            { onProgress: () => {} },
-          ),
-        ).rejects.toThrow(stopped.message);
-        expect(native.open).toHaveBeenCalled();
-        for (const call of native.open.mock.calls) {
-          expect(call[2]).toMatchObject({
-            bufferPoolBytes: resources.parse.graphPoolBytes,
-            threads,
-          });
-        }
-      } finally {
-        sizedPool.mockRestore();
-      }
-    },
-  );
 
   it('rejects invalid allocations before creating the database directory or opening native code', async () => {
     const parent = path.join(root, 'not-created');

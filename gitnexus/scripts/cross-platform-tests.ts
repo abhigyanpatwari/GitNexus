@@ -269,7 +269,6 @@ const LBUG_NATIVE = [
   'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   // Publication, cold readers and sidecar handling depend on native filesystem behavior.
-  'test/unit/incremental-write-integrity.test.ts',
   'test/unit/lbug-publication.test.ts',
   'test/integration/fts-stemmer-sweep.test.ts',
   'test/integration/lbug-multiwriter-deadlock.test.ts',
@@ -287,13 +286,11 @@ const SPAWN_CLI = [
   // Spawns Node on the tree releaser's source (type stripping, file URLs) to
   // check its real V8 nudge and the zero-fill flag spellings.
   'test/unit/tree-sitter/native-tree-release.test.ts',
-  'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
   'test/integration/fts-vendored-root-seam.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
-  'test/integration/analyze-heap-oom-e2e.test.ts',
   'test/integration/group/group-cli.test.ts',
   'test/integration/cli/tool-no-index-stderr.test.ts',
   // Real CLI spawn + directory symlinks for the update-notice parent/child path.
@@ -361,7 +358,6 @@ const WORKER_THREADS = [
   'test/integration/cfg/adonis-taint.test.ts',
   'test/integration/function-local-identity.test.ts',
   'test/unit/community-processor.test.ts',
-  'test/integration/worker-pool.test.ts',
   'test/integration/worker-pool-admission.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical
@@ -426,7 +422,6 @@ const FILESYSTEM = [
   // whose NUL it exists to catch. Budget: the heaviest single case is one
   // 4893-file pass — 2.3 s on a slow virtualised filesystem, 0.34 s on a local
   // disk — against a 30 s testTimeout.
-  'test/unit/source-control-bytes.test.ts',
   // Auto-sync reads a cloned `.gitnexusrc` through the symlink/hard-link guard,
   // and clone recovery uses real `git` plus temp dirs. Ubuntu coverage alone
   // would never create the Windows file symlink (`type: 'file'`) or run the

@@ -238,52 +238,6 @@ describe(
     );
 
     it(
-      'does not escalate — or touch the extension machinery — when the DB never carried FTS indexes',
-      { timeout: 300_000 },
-      async () => {
-        const { runFullAnalysis } = await import('../../../../dist/core/run-analyze.js');
-
-        const repo = await setupMiniRepo('gitnexus-2841-fts-never-built-');
-        const previousPolicy = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
-        try {
-          // Both runs are FTS-less, so no index is ever created. The catalog-first
-          // check must settle this without gating the surgical plan — otherwise
-          // every incremental analyze on an FTS-less machine would become a full
-          // rebuild.
-          await blockExtensionLoads();
-          await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-          const { lbugPath } = getStoragePaths(repo.dbPath);
-          expect((await readFtsIndexRows(lbugPath)).length).toBe(0);
-
-          await touchAndCommit(repo.dbPath, '#2841 never-built touch');
-
-          const logs: string[] = [];
-          await expect(
-            runFullAnalysis(
-              repo.dbPath,
-              { skipAgentsMd: true },
-              { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
-            ),
-          ).resolves.toBeDefined();
-          expect(logs.some((m) => m.includes('full DB write'))).toBe(false);
-
-          // Test gap 7: "no escalation log" alone would also pass if the surgical
-          // write silently did nothing. Prove the write actually landed — the same
-          // File.content check the blocked-path case makes. REVERSION: make
-          // `ensureFtsRowDmlSafe` fall OPEN on an index row whose type cannot be
-          // read (`indexType === undefined || indexType === 'FTS'` → `=== 'FTS'`,
-          // review §6.A) and this file still has no FTS index, so the no-escalation
-          // half keeps passing while a genuinely blocked DML would reach the engine.
-          const contents = contentsByPath(await readGraphFileRows(lbugPath));
-          expect(contents.get('src/handler.ts')).toContain('#2841 never-built touch');
-        } finally {
-          await restoreExtensionPolicy(previousPolicy);
-          await repo.cleanup();
-        }
-      },
-    );
-
-    it(
       'names every blocked extension when both FTS and VECTOR gate the write',
       { timeout: 300_000, skip: !vectorAvailable && 'VECTOR unavailable' },
       async () => {
@@ -546,5 +500,51 @@ describe(
         }
       },
     );
+  },
+);
+
+it(
+  'does not escalate — or touch the extension machinery — when the DB never carried FTS indexes',
+  { timeout: 300_000 },
+  async () => {
+    const { runFullAnalysis } = await import('../../../../dist/core/run-analyze.js');
+
+    const repo = await setupMiniRepo('gitnexus-2841-fts-never-built-');
+    const previousPolicy = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    try {
+      // Both runs are FTS-less, so no index is ever created. The catalog-first
+      // check must settle this without gating the surgical plan — otherwise
+      // every incremental analyze on an FTS-less machine would become a full
+      // rebuild.
+      await blockExtensionLoads();
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { lbugPath } = getStoragePaths(repo.dbPath);
+      expect((await readFtsIndexRows(lbugPath)).length).toBe(0);
+
+      await touchAndCommit(repo.dbPath, '#2841 never-built touch');
+
+      const logs: string[] = [];
+      await expect(
+        runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true },
+          { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
+        ),
+      ).resolves.toBeDefined();
+      expect(logs.some((m) => m.includes('full DB write'))).toBe(false);
+
+      // Test gap 7: "no escalation log" alone would also pass if the surgical
+      // write silently did nothing. Prove the write actually landed — the same
+      // File.content check the blocked-path case makes. REVERSION: make
+      // `ensureFtsRowDmlSafe` fall OPEN on an index row whose type cannot be
+      // read (`indexType === undefined || indexType === 'FTS'` → `=== 'FTS'`,
+      // review §6.A) and this file still has no FTS index, so the no-escalation
+      // half keeps passing while a genuinely blocked DML would reach the engine.
+      const contents = contentsByPath(await readGraphFileRows(lbugPath));
+      expect(contents.get('src/handler.ts')).toContain('#2841 never-built touch');
+    } finally {
+      await restoreExtensionPolicy(previousPolicy);
+      await repo.cleanup();
+    }
   },
 );

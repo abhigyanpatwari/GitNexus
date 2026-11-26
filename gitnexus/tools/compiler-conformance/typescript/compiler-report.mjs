@@ -100,8 +100,12 @@ function identity(root, node) {
 function graphIdentity(root, node, project) {
   if (node.kind === SyntaxKind.Constructor) return identity(root, node.parent) + '.constructor';
   if (node.kind === SyntaxKind.MethodDeclaration || node.kind === SyntaxKind.MethodSignature) {
-    // An interface can merge several declarations with the same method name.
-    if (node.parent.kind === SyntaxKind.InterfaceDeclaration) return identity(root, node);
+    // A merged interface or an object literal identifies a method by its declaration.
+    if (
+      node.parent.kind === SyntaxKind.InterfaceDeclaration ||
+      node.parent.kind === SyntaxKind.ObjectLiteralExpression
+    )
+      return identity(root, node);
     const owner =
       node.parent.kind === SyntaxKind.TypeLiteral &&
       node.parent.parent.kind === SyntaxKind.TypeAliasDeclaration

@@ -10,10 +10,19 @@ import { findGitRootByDotGit } from '../../../../src/storage/git.js';
 it('finds the Git root from a source file without starting a subprocess', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-fileinput-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  const exec = t.mock.method(childProcess, 'execSync');
+  const methods = [
+    'exec',
+    'execSync',
+    'execFile',
+    'execFileSync',
+    'spawn',
+    'spawnSync',
+    'fork',
+  ] as const;
+  const calls = methods.map((name) => t.mock.method(childProcess, name));
   syncBuiltinESMExports();
   t.after(() => {
-    exec.mock.restore();
+    for (const call of calls) call.mock.restore();
     syncBuiltinESMExports();
   });
 
@@ -22,5 +31,6 @@ it('finds the Git root from a source file without starting a subprocess', (t) =>
   const source = path.join(root, 'pkg', 'index.ts');
   fs.writeFileSync(source, 'export {};\n');
   assert.equal(findGitRootByDotGit(source), path.resolve(root));
-  assert.equal(exec.mock.callCount(), 0);
+  for (const [index, call] of calls.entries())
+    assert.equal(call.mock.callCount(), 0, methods[index]);
 });

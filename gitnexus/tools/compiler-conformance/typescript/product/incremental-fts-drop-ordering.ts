@@ -33,7 +33,7 @@ describe(
         const lbugAdapter = await import('../../../../dist/core/lbug/lbug-adapter.js');
         const { runFullAnalysis } = await import('../../../../dist/core/run-analyze.js');
 
-        const repo = await setupMiniRepo('gitnexus-2589-fts-order-');
+        const repo = await setupMiniRepo('gitnexus-test-2589-fts-order-');
         try {
           // First run: full rebuild, builds FTS indexes for populated tables.
           await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });

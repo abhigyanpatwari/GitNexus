@@ -1,30 +1,22 @@
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { after, before, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
+import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { registerCases } from '../support/cases.mjs';
 import { mkdir, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
+import { createTempDir, type TestDBHandle } from '../../../../test/helpers/test-db.js';
 
-const captured = vi.hoisted(() => ({ script: '' }));
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  return {
-    ...actual,
-    spawnSync: (...args: Parameters<typeof actual.spawnSync>) => {
-      const argv = args[1];
-      if (Array.isArray(argv) && argv.includes('--input-type=commonjs')) {
-        captured.script = argv[argv.indexOf('-e') + 1];
-        // Let identity resolution fall back to the real direct validator.
-        return { status: 1, stdout: '', stderr: '' };
-      }
-      return actual.spawnSync(...args);
-    },
-  };
-});
-
+import { createTestEnvironment } from '../support/environment.js';
+const environment = createTestEnvironment();
+const spawnSync = childProcess.spawnSync;
+let script = '';
 import {
   _clearAnalyzerIdentityProcessCacheForTests,
   resolveAnalyzerRunnerIdentity,
-} from '../../src/core/analyzer-identity.js';
+} from '../../../../src/core/analyzer-identity.js';
 
 type Request = { absolutePath: string; mode: 'link' | 'readable-file' | 'directory-inventory' };
 type Result = {
@@ -37,8 +29,6 @@ type Result = {
 // Exercise the actual subprocess script captured through the public resolver.
 // A deterministic clock chooses the I/O route without timing-sensitive tests.
 async function runProbe(requests: Request[], slow: boolean, mutateDirectory?: string) {
-  const { spawnSync } =
-    await vi.importActual<typeof import('node:child_process')>('node:child_process');
   const instrumentation = `
     const probeFs = require('node:fs');
     let ticks = 0;
@@ -74,7 +64,7 @@ async function runProbe(requests: Request[], slow: boolean, mutateDirectory?: st
   `;
   const child = spawnSync(
     process.execPath,
-    ['--input-type=commonjs', '-e', instrumentation + captured.script],
+    ['--input-type=commonjs', '-e', instrumentation + script],
     {
       input: JSON.stringify(requests),
       encoding: 'utf8',
@@ -82,7 +72,7 @@ async function runProbe(requests: Request[], slow: boolean, mutateDirectory?: st
     },
   );
   expect(child.error).toBeUndefined();
-  expect(child.status, child.stderr).toBe(0);
+  assert.equal(child.status, 0, child.stderr);
   return {
     results: JSON.parse(child.stdout) as Result[],
     counts: JSON.parse(child.stderr) as { sync: number; async: number },
@@ -94,7 +84,24 @@ describe('identity guard subprocess I/O', () => {
   let file: string;
   let directory: string;
 
-  beforeAll(async () => {
+  before(async () => {
+    const intercepted = mock.method(
+      childProcess,
+      'spawnSync',
+      (...args: Parameters<typeof spawnSync>) => {
+        const argv = args[1];
+        if (Array.isArray(argv) && argv.includes('--input-type=commonjs')) {
+          script = argv[argv.indexOf('-e') + 1];
+          return { status: 1, stdout: '', stderr: '' };
+        }
+        return spawnSync(...args);
+      },
+    );
+    syncBuiltinESMExports();
+    after(() => {
+      intercepted.mock.restore();
+      syncBuiltinESMExports();
+    });
     fixture = await createTempDir();
     directory = path.join(fixture.dbPath, 'src');
     await mkdir(directory);
@@ -106,16 +113,16 @@ describe('identity guard subprocess I/O', () => {
       await writeFile(path.join(directory, `file-${index}.ts`), `export const value = ${index};`);
     }
     file = path.join(directory, 'file-0.ts');
-    vi.stubEnv('GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS', '0');
+    environment.set('GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS', '0');
     _clearAnalyzerIdentityProcessCacheForTests();
     resolveAnalyzerRunnerIdentity(pathToFileURL(file).href, {
       cacheDirectory: path.join(fixture.dbPath, 'cache'),
     });
-    expect(captured.script).not.toBe('');
+    expect(script).not.toBe('');
   });
 
-  afterAll(async () => {
-    vi.unstubAllEnvs();
+  after(async () => {
+    environment.restore();
     _clearAnalyzerIdentityProcessCacheForTests();
     await fixture?.cleanup();
   });
@@ -150,23 +157,29 @@ describe('identity guard subprocess I/O', () => {
     expect(fast.results[1]?.entriesDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
-  it.each([false, true])('rejects an inventory changed during a probe (slow=%s)', async (slow) => {
-    const changing = path.join(fixture.dbPath, `changing-${slow}`);
-    await mkdir(changing);
-    const requests: Request[] = Array.from({ length: 529 }, () => ({
-      absolutePath: file,
-      mode: 'link',
-    }));
-    // Index 1 is outside the distributed sample, exercising the selected route.
-    requests[1] = { absolutePath: changing, mode: 'directory-inventory' };
-    const result = await runProbe(requests, slow, changing);
-    expect(result.results[1]).toBeNull();
-    expect(result.results[0]?.type).toBe('file');
-    expect(result.results[528]?.type).toBe('file');
-  });
+  registerCases(
+    it,
+    [false, true],
+    'rejects an inventory changed during a probe (slow=%s)',
+    async (slow) => {
+      const changing = path.join(fixture.dbPath, `changing-${slow}`);
+      await mkdir(changing);
+      const requests: Request[] = Array.from({ length: 529 }, () => ({
+        absolutePath: file,
+        mode: 'link',
+      }));
+      // Index 1 is outside the distributed sample, exercising the selected route.
+      requests[1] = { absolutePath: changing, mode: 'directory-inventory' };
+      const result = await runProbe(requests, slow, changing);
+      expect(result.results[1]).toBeNull();
+      expect(result.results[0]?.type).toBe('file');
+      expect(result.results[528]?.type).toBe('file');
+    },
+  );
 
-  it.skipIf(process.platform === 'win32')(
+  it(
     'preserves symlink targets and dangling-link failures on both routes',
+    { skip: process.platform === 'win32' },
     async () => {
       const link = path.join(fixture.dbPath, 'linked.ts');
       const dangling = path.join(fixture.dbPath, 'dangling.ts');

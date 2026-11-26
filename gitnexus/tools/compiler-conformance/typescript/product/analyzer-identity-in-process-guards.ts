@@ -4,60 +4,43 @@
  * buildRoot fail `W_OK` with EACCES/EROFS. Persist/cache write failure is not
  * that signal. Mutation still fail-closes on both paths.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { after, beforeEach, afterEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { registerCases } from '../support/cases.mjs';
+import fs from 'node:fs';
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { writeFileSync } from 'node:fs';
 
-const spawnCtx = vi.hoisted(() => ({
-  spawnSync: vi.fn(),
-}));
-
-vi.mock('node:child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:child_process')>();
-  spawnCtx.spawnSync.mockImplementation(((...args: Parameters<typeof actual.spawnSync>) =>
-    actual.spawnSync(...args)) as typeof actual.spawnSync);
-  return {
-    ...actual,
-    spawnSync: ((...args: Parameters<typeof actual.spawnSync>) =>
-      spawnCtx.spawnSync(...args)) as typeof actual.spawnSync,
-  };
-});
-
-const fsCtx = vi.hoisted(() => ({
-  accessSync: vi.fn(),
-  unwritableExact: new Set<string>(),
-  wOkProbes: [] as string[],
-}));
-
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-  fsCtx.accessSync.mockImplementation(((
-    p: Parameters<typeof actual.accessSync>[0],
-    mode?: number,
-  ) => {
-    const pathStr = String(p);
-    if (mode === actual.constants.W_OK) fsCtx.wOkProbes.push(pathStr);
-    if (mode === actual.constants.W_OK && fsCtx.unwritableExact.has(pathStr)) {
-      const err = new Error('EACCES') as NodeJS.ErrnoException;
-      err.code = 'EACCES';
-      throw err;
+const spawn = mock.method(childProcess, 'spawnSync');
+const unwritable = new Set<string>();
+const probes: string[] = [];
+const realAccess = fs.accessSync;
+const access = mock.method(
+  fs,
+  'accessSync',
+  (p: Parameters<typeof realAccess>[0], mode?: number) => {
+    if (mode === fs.constants.W_OK) {
+      probes.push(String(p));
+      if (unwritable.has(String(p))) throw Object.assign(new Error('EACCES'), { code: 'EACCES' });
     }
-    return actual.accessSync(p, mode);
-  }) as typeof actual.accessSync);
-  return {
-    ...actual,
-    accessSync: ((...args: Parameters<typeof actual.accessSync>) =>
-      fsCtx.accessSync(...args)) as typeof actual.accessSync,
-  };
+    return realAccess(p, mode);
+  },
+);
+syncBuiltinESMExports();
+after(() => {
+  access.mock.restore();
+  spawn.mock.restore();
+  syncBuiltinESMExports();
 });
-
 import {
   _clearAnalyzerIdentityProcessCacheForTests,
   resolveAnalyzerRunnerIdentity,
-} from '../../src/core/analyzer-identity.js';
-import { createTempDir } from '../helpers/test-db.js';
+} from '../../../../src/core/analyzer-identity.js';
+import { createTempDir } from '../../../../test/helpers/test-db.js';
 
 const ENV_KEY = 'GITNEXUS_ANALYZER_IDENTITY_IN_PROCESS_GUARDS';
 
@@ -67,7 +50,7 @@ const isCacheGuardSpawn = (call: unknown[]): boolean => {
 };
 
 const cacheGuardSpawnCount = (): number =>
-  spawnCtx.spawnSync.mock.calls.filter((call) => isCacheGuardSpawn(call as unknown[])).length;
+  spawn.mock.calls.filter((call) => isCacheGuardSpawn(call.arguments)).length;
 
 async function seedWideBuildTree(root: string): Promise<{
   modulePath: string;
@@ -101,16 +84,16 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
   beforeEach(() => {
     previousEnv = process.env[ENV_KEY];
     delete process.env[ENV_KEY];
-    spawnCtx.spawnSync.mockClear();
-    fsCtx.unwritableExact.clear();
-    fsCtx.wOkProbes.length = 0;
+    spawn.mock.resetCalls();
+    unwritable.clear();
+    probes.length = 0;
     _clearAnalyzerIdentityProcessCacheForTests();
   });
 
   afterEach(() => {
     if (previousEnv === undefined) delete process.env[ENV_KEY];
     else process.env[ENV_KEY] = previousEnv;
-    fsCtx.unwritableExact.clear();
+    unwritable.clear();
     _clearAnalyzerIdentityProcessCacheForTests();
   });
 
@@ -127,7 +110,7 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
         },
       });
       expect(guardCount).toBeGreaterThanOrEqual(128);
-      spawnCtx.spawnSync.mockClear();
+      spawn.mock.resetCalls();
       _clearAnalyzerIdentityProcessCacheForTests();
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
       expect(cacheGuardSpawnCount()).toBeGreaterThan(0);
@@ -136,14 +119,14 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
     }
   });
 
-  it.each(['1', 'true', 'yes'])('skips spawn when env is %j', async (value) => {
+  registerCases(it, ['1', 'true', 'yes'], 'skips spawn when env is %j', async (value) => {
     const fixture = await createTempDir();
     try {
       process.env[ENV_KEY] = value;
       const tree = await seedWideBuildTree(fixture.dbPath);
       const cacheDirectory = path.join(fixture.dbPath, 'identity-cache');
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
-      spawnCtx.spawnSync.mockClear();
+      spawn.mock.resetCalls();
       _clearAnalyzerIdentityProcessCacheForTests();
       const warm = resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, {
         cacheDirectory,
@@ -155,14 +138,14 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
     }
   });
 
-  it.each(['0', 'false', 'off', ''])('still spawns when env is %j', async (value) => {
+  registerCases(it, ['0', 'false', 'off', ''], 'still spawns when env is %j', async (value) => {
     const fixture = await createTempDir();
     try {
       process.env[ENV_KEY] = value;
       const tree = await seedWideBuildTree(fixture.dbPath);
       const cacheDirectory = path.join(fixture.dbPath, 'identity-cache');
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
-      spawnCtx.spawnSync.mockClear();
+      spawn.mock.resetCalls();
       _clearAnalyzerIdentityProcessCacheForTests();
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
       expect(cacheGuardSpawnCount()).toBeGreaterThan(0);
@@ -177,8 +160,8 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
       const tree = await seedWideBuildTree(fixture.dbPath);
       const cacheDirectory = path.join(fixture.dbPath, 'identity-cache');
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
-      fsCtx.unwritableExact.add(await realpath(tree.packageRoot));
-      spawnCtx.spawnSync.mockClear();
+      unwritable.add(await realpath(tree.packageRoot));
+      spawn.mock.resetCalls();
       _clearAnalyzerIdentityProcessCacheForTests();
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
       expect(cacheGuardSpawnCount()).toBe(0);
@@ -193,15 +176,15 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
       const tree = await seedWideBuildTree(fixture.dbPath);
       const cacheDirectory = path.join(fixture.dbPath, 'identity-cache');
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
-      fsCtx.unwritableExact.add(cacheDirectory);
-      spawnCtx.spawnSync.mockClear();
-      fsCtx.wOkProbes.length = 0;
+      unwritable.add(cacheDirectory);
+      spawn.mock.resetCalls();
+      probes.length = 0;
       _clearAnalyzerIdentityProcessCacheForTests();
       resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, { cacheDirectory });
-      expect(fsCtx.wOkProbes).toEqual(
+      expect(probes).toEqual(
         expect.arrayContaining([await realpath(tree.packageRoot), await realpath(tree.sourceRoot)]),
       );
-      expect(fsCtx.wOkProbes).not.toContain(cacheDirectory);
+      expect(probes).not.toContain(cacheDirectory);
       expect(cacheGuardSpawnCount()).toBeGreaterThan(0);
     } finally {
       await fixture.cleanup();
@@ -216,7 +199,7 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
       const first = resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, {
         cacheDirectory,
       });
-      spawnCtx.spawnSync.mockClear();
+      spawn.mock.resetCalls();
       _clearAnalyzerIdentityProcessCacheForTests();
       let mutated = false;
       const second = resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, {
@@ -244,7 +227,7 @@ describe('analyzer identity in-process cache guards (#3092)', () => {
       const first = resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, {
         cacheDirectory,
       });
-      spawnCtx.spawnSync.mockClear();
+      spawn.mock.resetCalls();
       _clearAnalyzerIdentityProcessCacheForTests();
       let mutated = false;
       const second = resolveAnalyzerRunnerIdentity(pathToFileURL(tree.modulePath).href, {

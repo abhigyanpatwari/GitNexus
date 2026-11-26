@@ -1,64 +1,35 @@
-/** Backend regressions for #3486; retain preview/apply fidelity from #2605. */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { after, afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import fsPromises from 'node:fs/promises';
 import { promises as fs } from 'node:fs';
-import fsPromises from 'fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-
-vi.mock('../../src/core/search/bm25-index.js', () => ({
-  searchFTSFromLbug: vi.fn().mockResolvedValue({ results: [], ftsAvailable: true }),
-}));
-vi.mock('../../src/mcp/core/embedder.js', () => ({
-  embedQuery: vi.fn().mockResolvedValue([]),
-  getEmbeddingDims: vi.fn().mockReturnValue(384),
-}));
-
-// No text discovery is permitted, even when rg is installed on the host.
-const { execFileSyncMock } = vi.hoisted(() => ({
-  execFileSyncMock: vi.fn(() => {
-    throw new Error('rg unavailable');
-  }),
-}));
-vi.mock('child_process', async (importActual) => ({
-  ...(await importActual<typeof import('child_process')>()),
-  execFileSync: execFileSyncMock,
-}));
-
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-
-const { graphRows } = vi.hoisted(() => ({ graphRows: [] as Record<string, unknown>[] }));
-vi.mock('../../src/core/lbug/pool-adapter.js', async (importActual) => ({
-  ...(await importActual<typeof import('../../src/core/lbug/pool-adapter.js')>()),
-  executeQuery: vi.fn(async () => graphRows),
-  executeParameterized: vi.fn(async () => [{ filePath: 'src/caller.ts' }]),
-}));
-
-const SOURCE = `export class Writer {
-  close() {}
-}
-export class Other {
-  close() {}
-}
-export function run() {
-  const writer = new Writer();
-  const other = new Other();
-  const hooks: Other = { close() { writer.close(); } }; writer.close(); other.close();
-  // close should remain in this comment.
-  const title = 'close';
-  return { hooks, title };
-}
-`;
-const CALLER = `import { Writer } from './writer.js';
-export function caller() {
-  const writer = new Writer();
-  writer.close();
-}
-`;
-
+import * as pool from '../../../../dist/core/lbug/pool-adapter.js';
+const graphRows: Record<string, unknown>[] = [];
+const poolMock = mock.module(
+  new URL('../../../../dist/core/lbug/pool-adapter.js', import.meta.url).href,
+  {
+    namedExports: {
+      ...pool,
+      executeQuery: async () => graphRows,
+      executeParameterized: async () => [{ filePath: 'src/caller.ts' }],
+    },
+  },
+);
+after(() => poolMock.restore());
+const { LocalBackend } = await import('../../../../dist/mcp/local/local-backend.js');
+const fixture = new URL(
+  '../../../../test/fixtures/compiler-conformance/typescript-rename-reports/',
+  import.meta.url,
+);
+const SOURCE = await fs.readFile(new URL('writer.ts', fixture), 'utf8');
+const CALLER = await fs.readFile(new URL('caller.ts', fixture), 'utf8');
 function stubbedBackend(symbol: Record<string, unknown> = {}) {
   const backend = new LocalBackend();
-  vi.spyOn(backend as any, 'ensureInitialized').mockResolvedValue(undefined);
-  vi.spyOn(backend as any, 'context').mockResolvedValue({
+  mock.method(backend as any, 'ensureInitialized', async () => {});
+  mock.method(backend as any, 'context', async () => ({
     status: 'found',
     symbol: {
       uid: 'Method:src/writer.ts:Writer.close#0',
@@ -70,11 +41,11 @@ function stubbedBackend(symbol: Record<string, unknown> = {}) {
       ...symbol,
     },
     incoming: { calls: [], imports: [], extends: [], implements: [] },
-  });
+  }));
   return backend;
 }
 
-const callRename = (backend: LocalBackend, repoPath: string, params = {}) =>
+const callRename = (backend: InstanceType<typeof LocalBackend>, repoPath: string, params = {}) =>
   (backend as any).rename(
     { repoPath, lbugPath: path.join(repoPath, '.gitnexus', 'lbug') },
     {
@@ -86,9 +57,15 @@ const callRename = (backend: LocalBackend, repoPath: string, params = {}) =>
 
 describe('semantic rename reports exact applied occurrences (#3486, #2605)', () => {
   let tmpDir: string;
+  let execs = 0;
 
   beforeEach(async () => {
-    execFileSyncMock.mockClear();
+    execs = 0;
+    mock.method(childProcess, 'execFileSync', () => {
+      execs++;
+      throw new Error('rg unavailable');
+    });
+    syncBuiltinESMExports();
     graphRows.splice(
       0,
       graphRows.length,
@@ -152,13 +129,14 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
   });
 
   afterEach(async () => {
-    vi.restoreAllMocks();
+    mock.restoreAll();
+    syncBuiltinESMExports();
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
 
   it('previews bound occurrences, including callers absent from graph incoming files', async () => {
     const result = await callRename(stubbedBackend(), tmpDir);
-    expect(result, JSON.stringify(result)).toMatchObject({
+    expect(result).toMatchObject({
       status: 'success',
       applied: false,
       result_version: 2,
@@ -176,7 +154,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
     expect(
       result.changes.find((change: any) => change.file_path === 'src/writer.ts').edits,
     ).toHaveLength(3);
-    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(execs).toBe(0);
     expect(await fs.readFile(path.join(tmpDir, 'src/writer.ts'), 'utf8')).toBe(SOURCE);
   });
 
@@ -187,7 +165,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
       dry_run: false,
       plan_token: preview.plan_token,
     });
-    expect(result, JSON.stringify(result)).toMatchObject({
+    expect(result).toMatchObject({
       status: 'success',
       applied: true,
       total_edits: 4,
@@ -215,7 +193,7 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
       endLine: 1,
     });
     const result = await callRename(backend, tmpDir, { dry_run: false });
-    expect(result, JSON.stringify(result)).toMatchObject({ applied: false, status: 'error' });
+    expect(result).toMatchObject({ applied: false, status: 'error' });
     expect(await fs.readFile(path.join(tmpDir, 'src/lib.rs'), 'utf8')).toBe(rust);
   });
 
@@ -230,15 +208,22 @@ describe('semantic rename reports exact applied occurrences (#3486, #2605)', () 
     const backend = stubbedBackend();
     const preview = await callRename(backend, tmpDir);
     const originalRename = fsPromises.rename.bind(fsPromises);
-    vi.spyOn(fsPromises, 'rename').mockImplementation(async (source, destination) => {
-      if (String(destination).endsWith(`${path.sep}writer.ts`)) throw new Error('EACCES');
-      return originalRename(source, destination);
-    });
+    mock.method(
+      fsPromises,
+      'rename',
+      async (
+        source: Parameters<typeof fsPromises.rename>[0],
+        destination: Parameters<typeof fsPromises.rename>[1],
+      ) => {
+        if (String(destination).endsWith(`${path.sep}writer.ts`)) throw new Error('EACCES');
+        return originalRename(source, destination);
+      },
+    );
     const result = await callRename(backend, tmpDir, {
       dry_run: false,
       plan_token: preview.plan_token,
     });
-    expect(result, JSON.stringify(result)).toMatchObject({
+    expect(result).toMatchObject({
       status: 'partial',
       applied: true,
       total_edits: 1,

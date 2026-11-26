@@ -16,18 +16,20 @@
  *
  * @see src/cli/tool.ts — limit application logic
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import assert from 'node:assert/strict';
+import { describe, it, before, after, type TestContext } from 'node:test';
+import { expect } from 'expect';
+import { registerCases } from '../support/cases.mjs';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 
-import { cleanupTempDirSync } from '../helpers/test-db.js';
-import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { cleanupTempDirSync } from '../../../../test/helpers/test-db.js';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../../../../test/helpers/cli-entry.js';
 
-const testDir = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
+const FIXTURE_SRC = fileURLToPath(new URL('../../../../test/fixtures/mini-repo', import.meta.url));
 
 let MINI_REPO: string;
 let tmpParent: string;
@@ -99,16 +101,16 @@ type QueryResult = { processes?: unknown[] };
 /** Run a JSON tool command, asserting it exited 0 and produced parseable JSON. */
 function runJson<T>(args: string[]): T {
   const r = runCliRaw(args, MINI_REPO);
-  expect(r.status, `exit nonzero — stderr: ${r.stderr}`).toBe(0);
+  assert.equal(r.status, 0, `exit nonzero — stderr: ${r.stderr}`);
   const data = parseStdout(r);
-  expect(data, `stdout not JSON: ${r.stdout.slice(0, 200)}`).toBeTruthy();
+  assert.ok(data, `stdout not JSON: ${r.stdout.slice(0, 200)}`);
   return data as T;
 }
 
 /** Run a text-output tool command, asserting it exited 0. */
 function runText(args: string[]): string {
   const r = runCliRaw(args, MINI_REPO);
-  expect(r.status, `exit nonzero — stderr: ${r.stderr}`).toBe(0);
+  assert.equal(r.status, 0, `exit nonzero — stderr: ${r.stderr}`);
   return r.stdout;
 }
 
@@ -121,16 +123,17 @@ const len = (a?: unknown[]): number => (Array.isArray(a) ? a.length : 0);
 
 // ─── Setup ───────────────────────────────────────────────────────────────────
 
-beforeAll(() => {
-  tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-limit-'));
-  suiteGitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-limit-home-'));
-  MINI_REPO = path.join(tmpParent, 'mini-repo');
-  fs.cpSync(FIXTURE_SRC, MINI_REPO, { recursive: true });
-  // A separate handler serves two routes so the route cap cannot pass vacuously.
-  // Keep it independent of logMessage's existing caller/process baselines.
-  fs.writeFileSync(
-    path.join(MINI_REPO, 'routes.go'),
-    `package routes
+before(
+  () => {
+    tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-limit-'));
+    suiteGitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-limit-home-'));
+    MINI_REPO = path.join(tmpParent, 'mini-repo');
+    fs.cpSync(FIXTURE_SRC, MINI_REPO, { recursive: true });
+    // A separate handler serves two routes so the route cap cannot pass vacuously.
+    // Keep it independent of logMessage's existing caller/process baselines.
+    fs.writeFileSync(
+      path.join(MINI_REPO, 'routes.go'),
+      `package routes
 
 import "github.com/gin-gonic/gin"
 
@@ -143,58 +146,60 @@ func Health(c *gin.Context) {
   c.String(200, "ok")
 }
 `,
-  );
-
-  // Initialize as git repo
-  spawnSync('git', ['init'], { cwd: MINI_REPO, stdio: 'pipe' });
-  spawnSync('git', ['add', '-A'], { cwd: MINI_REPO, stdio: 'pipe' });
-  spawnSync('git', ['commit', '-m', 'initial commit'], {
-    cwd: MINI_REPO,
-    stdio: 'pipe',
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: 'test',
-      GIT_AUTHOR_EMAIL: 'test@test',
-      GIT_COMMITTER_NAME: 'test',
-      GIT_COMMITTER_EMAIL: 'test@test',
-    },
-  });
-
-  // Index once so every --limit command has a registered repo. Match cli-e2e:
-  // a tiny fixture analyzes in seconds on a quiet machine, but spawnSync
-  // status null is SIGTERM from the timeout under load (not an analyze
-  // exit). Retry timeouts; alreadyUpToDate makes a repeat cheap.
-  //
-  // CREATE_FTS_INDEX can SIGSEGV the analyze process on some WSL/native
-  // hosts (status null, signal SIGSEGV) even when `doctor` reports FTS
-  // LOAD-able. Do not retry that path — rebuild with --skip-fts so graph
-  // tools still run. query --limit needs BM25 and is skipped in that case.
-  let analyzeResult: ReturnType<typeof runCliRaw> | undefined;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    analyzeResult = runCliRaw(['analyze', '--force'], MINI_REPO, 90_000);
-    if (analyzeResult.status === 0) {
-      ftsIndexed = true;
-      break;
-    }
-    if (isFatalAnalyzeHarness(analyzeResult) || isNativeAbort(analyzeResult)) break;
-  }
-  if (
-    analyzeResult &&
-    !ftsIndexed &&
-    isNativeAbort(analyzeResult) &&
-    !isFatalAnalyzeHarness(analyzeResult)
-  ) {
-    analyzeResult = runCliRaw(['analyze', '--force', '--skip-fts'], MINI_REPO, 90_000);
-  }
-  if (!analyzeResult || analyzeResult.status !== 0) {
-    const err = analyzeResult?.error;
-    throw new Error(
-      `Analyze failed (status ${analyzeResult?.status}, signal ${analyzeResult?.signal}, error ${err?.message ?? 'none'}):\nstdout: ${analyzeResult?.stdout}\nstderr: ${analyzeResult?.stderr}`,
     );
-  }
-}, 300_000);
 
-afterAll(() => {
+    // Initialize as git repo
+    spawnSync('git', ['init'], { cwd: MINI_REPO, stdio: 'pipe' });
+    spawnSync('git', ['add', '-A'], { cwd: MINI_REPO, stdio: 'pipe' });
+    spawnSync('git', ['commit', '-m', 'initial commit'], {
+      cwd: MINI_REPO,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'test',
+        GIT_AUTHOR_EMAIL: 'test@test',
+        GIT_COMMITTER_NAME: 'test',
+        GIT_COMMITTER_EMAIL: 'test@test',
+      },
+    });
+
+    // Index once so every --limit command has a registered repo. Match cli-e2e:
+    // a tiny fixture analyzes in seconds on a quiet machine, but spawnSync
+    // status null is SIGTERM from the timeout under load (not an analyze
+    // exit). Retry timeouts; alreadyUpToDate makes a repeat cheap.
+    //
+    // CREATE_FTS_INDEX can SIGSEGV the analyze process on some WSL/native
+    // hosts (status null, signal SIGSEGV) even when `doctor` reports FTS
+    // LOAD-able. Do not retry that path — rebuild with --skip-fts so graph
+    // tools still run. query --limit needs BM25 and is skipped in that case.
+    let analyzeResult: ReturnType<typeof runCliRaw> | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      analyzeResult = runCliRaw(['analyze', '--force'], MINI_REPO, 90_000);
+      if (analyzeResult.status === 0) {
+        ftsIndexed = true;
+        break;
+      }
+      if (isFatalAnalyzeHarness(analyzeResult) || isNativeAbort(analyzeResult)) break;
+    }
+    if (
+      analyzeResult &&
+      !ftsIndexed &&
+      isNativeAbort(analyzeResult) &&
+      !isFatalAnalyzeHarness(analyzeResult)
+    ) {
+      analyzeResult = runCliRaw(['analyze', '--force', '--skip-fts'], MINI_REPO, 90_000);
+    }
+    if (!analyzeResult || analyzeResult.status !== 0) {
+      const err = analyzeResult?.error;
+      throw new Error(
+        `Analyze failed (status ${analyzeResult?.status}, signal ${analyzeResult?.signal}, error ${err?.message ?? 'none'}):\nstdout: ${analyzeResult?.stdout}\nstderr: ${analyzeResult?.stderr}`,
+      );
+    }
+  },
+  { timeout: 300_000 },
+);
+
+after(() => {
   if (tmpParent) cleanupTempDirSync(tmpParent);
   if (suiteGitnexusHome) cleanupTempDirSync(suiteGitnexusHome);
 });
@@ -344,7 +349,9 @@ describe('CLI --limit flag E2E', () => {
   // ─── cypher ───────────────────────────────────────────────────────────────
 
   describe('cypher --limit', () => {
-    it.each([{ options: [] }, { options: ['--limit', '2'] }])(
+    registerCases(
+      it,
+      [{ options: [] }, { options: ['--limit', '2'] }],
       'keeps the zero-row result object with options $options (#3952)',
       ({ options }) => {
         const result = runJson<CypherTabular>([
@@ -419,8 +426,9 @@ describe('CLI --limit flag E2E', () => {
         { cwd: MINI_REPO, encoding: 'utf8', env: cliEnv(), timeout: 60_000 },
       );
 
-    it.skipIf(process.platform === 'win32')(
+    it(
       'delivers the same >256 KiB result through a pipe as to a file',
+      { skip: process.platform === 'win32' },
       () => {
         const outFile = path.join(tmpParent, 'cypher-3947.json');
         const fd = fs.openSync(outFile, 'w');
@@ -433,13 +441,11 @@ describe('CLI --limit flag E2E', () => {
         fs.closeSync(fd);
         const piped = pipeTo('cat');
 
-        expect(toFile.status, `stderr: ${toFile.stderr}`).toBe(0);
+        assert.equal(toFile.status, 0, toFile.stderr?.toString());
         expect(piped.stderr).toContain('cli-exit=0');
         const fileText = fs.readFileSync(outFile, 'utf8');
         expect(Buffer.byteLength(fileText)).toBeGreaterThan(256 * 1024);
-        expect(Buffer.byteLength(piped.stdout), `stderr: ${piped.stderr}`).toBeGreaterThan(
-          256 * 1024,
-        );
+        assert.ok(Buffer.byteLength(piped.stdout) > 256 * 1024, piped.stderr);
         // Compare the result, not raw bytes: each run probes its own staleness
         // envelope, so those fields may legitimately differ between the runs.
         const fromFile = JSON.parse(fileText) as CypherTabular;
@@ -450,8 +456,9 @@ describe('CLI --limit flag E2E', () => {
       },
     );
 
-    it.skipIf(process.platform === 'win32')(
+    it(
       'exits 0 without a stderr copy when the reader closes early (EPIPE)',
+      { skip: process.platform === 'win32' },
       () => {
         // The result is far larger than the pipe buffer, so the CLI is still
         // writing when `head` exits: the next write fails with EPIPE.
@@ -523,8 +530,8 @@ describe('CLI --limit flag E2E', () => {
   // ─── query ──────────────────────────────────────────────────────────────
 
   describe('query --limit', () => {
-    beforeEach((ctx) => {
-      if (ftsIndexed) return;
+    function hasSearchIndex(ctx: TestContext) {
+      if (ftsIndexed) return true;
       if (process.env.GITNEXUS_REQUIRE_FTS === '1') {
         throw new Error(
           'GITNEXUS_REQUIRE_FTS=1 but setup analyze native-aborted during CREATE_FTS_INDEX; ' +
@@ -534,8 +541,10 @@ describe('CLI --limit flag E2E', () => {
       ctx.skip(
         'query --limit needs BM25; CREATE_FTS_INDEX native-aborted and analyze fell back to --skip-fts',
       );
-    });
-    it('truncates processes to --limit 1', () => {
+      return false;
+    }
+    it('truncates processes to --limit 1', (ctx) => {
+      if (!hasSearchIndex(ctx)) return;
       // "message" matches logMessage / createLogEntry / formatLogEntry → 4 processes
       const limited = runJson<QueryResult>([
         'query',
@@ -548,7 +557,8 @@ describe('CLI --limit flag E2E', () => {
       expect(len(limited.processes)).toBe(1);
     });
 
-    it('returns more processes without --limit (baseline exceeds the limit)', () => {
+    it('returns more processes without --limit (baseline exceeds the limit)', (ctx) => {
+      if (!hasSearchIndex(ctx)) return;
       const base = runJson<QueryResult>(['query', 'message', '--repo', 'mini-repo']);
       expect(len(base.processes)).toBeGreaterThan(1);
     });

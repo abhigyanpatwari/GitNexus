@@ -1,41 +1,51 @@
-/** Exercise rename dispatch and source policy with real metadata and semantic plans. */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { after, afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { registerCases } from '../support/cases.mjs';
+import * as pool from '../../../../dist/core/lbug/pool-adapter.js';
+import * as mcpAdapter from '../../../../dist/mcp/core/lbug-adapter.js';
+import * as storageManager from '../../../../dist/storage/repo-manager.js';
+import * as staleness from '../../../../dist/core/git-staleness.js';
 
-const { lbugMocks } = vi.hoisted(() => ({
-  lbugMocks: {
-    initLbug: vi.fn().mockResolvedValue(undefined),
-    executeQuery: vi.fn().mockResolvedValue([]),
-    executeParameterized: vi.fn().mockResolvedValue([]),
-    ensureVectorExtension: vi.fn().mockResolvedValue(true),
-    closeLbug: vi.fn().mockResolvedValue(undefined),
-    isLbugReady: vi.fn().mockReturnValue(true),
-  },
-}));
-
-vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/core/lbug/pool-adapter.js')>()),
-  ...lbugMocks,
-}));
-vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/mcp/core/lbug-adapter.js')>()),
-  ...lbugMocks,
-}));
-vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../src/storage/repo-manager.js')>()),
-  listRegisteredRepos: vi.fn().mockResolvedValue([]),
-}));
-vi.mock('../../src/core/git-staleness.js', () => ({
-  checkStaleness: vi.fn().mockReturnValue({ isStale: false, commitsBehind: 0 }),
-  checkStalenessAsync: vi.fn().mockResolvedValue({ isStale: false, commitsBehind: 0 }),
-  checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
-}));
-
-import { LocalBackend } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
-
+let registrations: Awaited<ReturnType<typeof storageManager.listRegisteredRepos>> = [];
+let candidates: (typeof symbol)[];
+const rows = mock.fn(async () => [{ id: `File:${FILE}`, name: FILE, filePath: FILE }, symbol]);
+const graph = {
+  initLbug: async () => {},
+  executeQuery: rows,
+  executeParameterized: async (_db: string, query: string) =>
+    query.includes('MATCH (n {id: $uid})') || query.includes('WHERE n.name = $symName')
+      ? candidates
+      : [],
+  ensureVectorExtension: async () => true,
+  closeLbug: async () => {},
+  isLbugReady: () => true,
+};
+const handles = [
+  mock.module(new URL('../../../../dist/core/lbug/pool-adapter.js', import.meta.url).href, {
+    namedExports: { ...pool, ...graph },
+  }),
+  mock.module(new URL('../../../../dist/mcp/core/lbug-adapter.js', import.meta.url).href, {
+    namedExports: { ...mcpAdapter, ...graph },
+  }),
+  mock.module(new URL('../../../../dist/storage/repo-manager.js', import.meta.url).href, {
+    namedExports: { ...storageManager, listRegisteredRepos: async () => registrations },
+  }),
+  mock.module(new URL('../../../../dist/core/git-staleness.js', import.meta.url).href, {
+    namedExports: {
+      ...staleness,
+      checkStaleness: () => ({ isStale: false, commitsBehind: 0 }),
+      checkStalenessAsync: async () => ({ isStale: false, commitsBehind: 0 }),
+      checkCwdMatch: async () => ({ match: 'none' }),
+    },
+  }),
+];
+after(() => {
+  for (const handle of handles) handle.restore();
+});
+const { LocalBackend } = await import('../../../../dist/mcp/local/local-backend.js');
 const NAME = 'rename-source-policy';
 const INDEXED_AT = '2024-06-01T12:00:00Z';
 const FILE = 'target.ts';
@@ -60,7 +70,7 @@ describe('rename checkout source policy', () => {
   let root: string;
   let checkout: string;
   let storage: string;
-  let backend: LocalBackend;
+  let backend: InstanceType<typeof LocalBackend>;
 
   const writeMeta = async (contentRetention?: string) => {
     await fs.writeFile(
@@ -70,7 +80,8 @@ describe('rename checkout source policy', () => {
   };
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    candidates = [symbol];
+    rows.mock.resetCalls();
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'gnx-rename-retention-'));
     checkout = path.join(root, 'checkout');
     storage = path.join(root, 'index');
@@ -78,25 +89,15 @@ describe('rename checkout source policy', () => {
     await fs.mkdir(path.join(storage, 'lbug'), { recursive: true });
     await writeMeta('full');
     await fs.writeFile(path.join(checkout, FILE), SOURCE);
-    vi.mocked(listRegisteredRepos).mockResolvedValue([
+    registrations = [
       {
         name: NAME,
         path: checkout,
         storagePath: storage,
         indexedAt: INDEXED_AT,
         lastCommit: 'abc123',
-      } as Awaited<ReturnType<typeof listRegisteredRepos>>[number],
-    ]);
-    lbugMocks.executeQuery.mockResolvedValue([
-      { id: `File:${FILE}`, name: FILE, filePath: FILE },
-      symbol,
-    ]);
-    // Context, policy, parser, plan and apply run normally against the graph rows.
-    lbugMocks.executeParameterized.mockImplementation(async (_db, query) =>
-      query.includes('MATCH (n {id: $uid})') || query.includes('WHERE n.name = $symName')
-        ? [symbol]
-        : [],
-    );
+      } as Awaited<ReturnType<typeof storageManager.listRegisteredRepos>>[number],
+    ];
     backend = new LocalBackend();
   });
 
@@ -121,11 +122,13 @@ describe('rename checkout source policy', () => {
     expect(Object.keys(result).sort()).toEqual(['code', 'error', 'reason']);
     expect(result.changes).toBeUndefined();
     expect(JSON.stringify(result)).not.toContain('retention-private-body');
-    expect(lbugMocks.executeQuery).not.toHaveBeenCalled();
+    expect(rows.mock.callCount()).toBe(0);
   };
 
   for (const retention of ['none', 'symbol', 'corrupt']) {
-    it.each(routes)(
+    registerCases(
+      it,
+      routes,
       `refuses $route source disclosure and writes with ${retention} retention`,
       async (route) => {
         await writeMeta(retention);
@@ -136,25 +139,35 @@ describe('rename checkout source policy', () => {
     );
   }
 
-  it.each(routes)('permits $route under full retention with a live checkout', async (route) => {
-    const preview = route.applies ? await rename(routes[1]) : undefined;
-    if (preview) expect(preview.status).toBe('success');
-    const result = await rename(route, preview?.plan_token);
-    expect(result.status).toBe('success');
-    expect(result.total_edits).toBe(2);
-    expect(result.changes[0].edits[0].before).toContain('retention-private-body');
-    expect(result.applied).toBe(route.applies);
-    expect(await fs.readFile(path.join(checkout, FILE), 'utf8')).toBe(
-      route.applies
-        ? 'function renamed() { return "retention-private-body"; }\nrenamed();\n'
-        : SOURCE,
-    );
-  });
+  registerCases(
+    it,
+    routes,
+    'permits $route under full retention with a live checkout',
+    async (route) => {
+      const preview = route.applies ? await rename(routes[1]) : undefined;
+      if (preview) expect(preview.status).toBe('success');
+      const result = await rename(route, preview?.plan_token);
+      expect(result.status).toBe('success');
+      expect(result.total_edits).toBe(2);
+      expect(result.changes[0].edits[0].before).toContain('retention-private-body');
+      expect(result.applied).toBe(route.applies);
+      expect(await fs.readFile(path.join(checkout, FILE), 'utf8')).toBe(
+        route.applies
+          ? 'function renamed() { return "retention-private-body"; }\nrenamed();\n'
+          : SOURCE,
+      );
+    },
+  );
 
-  it.each(routes)('refuses $route when the full-retention checkout is missing', async (route) => {
-    await fs.rm(checkout, { recursive: true });
-    expectUnavailable(await rename(route), 'checkout-missing');
-  });
+  registerCases(
+    it,
+    routes,
+    'refuses $route when the full-retention checkout is missing',
+    async (route) => {
+      await fs.rm(checkout, { recursive: true });
+      expectUnavailable(await rename(route), 'checkout-missing');
+    },
+  );
 
   it('preserves missing-symbol argument validation under non-full retention', async () => {
     await writeMeta('none');
@@ -165,10 +178,7 @@ describe('rename checkout source policy', () => {
 
   it('preserves symbol ambiguity without exposing source under non-full retention', async () => {
     await writeMeta('none');
-    lbugMocks.executeParameterized.mockResolvedValue([
-      symbol,
-      { ...symbol, id: 'Function:other.ts:target', filePath: 'other.ts' },
-    ]);
+    candidates = [symbol, { ...symbol, id: 'Function:other.ts:target', filePath: 'other.ts' }];
     const result = await backend.callTool('rename', {
       repo: NAME,
       symbol_name: 'target',

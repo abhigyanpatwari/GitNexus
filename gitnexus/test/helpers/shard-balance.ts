@@ -28,7 +28,6 @@ const SEQUENTIAL_COVERAGE_SECONDS: Readonly<Record<string, number>> = {
   'test/integration/shared-store-clean.test.ts': 41,
   'test/integration/skills-e2e.test.ts': 71,
   'test/unit/incremental-orchestration.test.ts': 488,
-  'test/unit/incremental-write-integrity.test.ts': 114,
 };
 
 /**

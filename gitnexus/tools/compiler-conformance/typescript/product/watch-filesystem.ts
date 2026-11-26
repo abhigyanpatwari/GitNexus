@@ -7,7 +7,11 @@ import { startWatchFileLoop } from '../../../../src/cli/analyze-watch.js';
 import { createWatchFixture, waitFor } from '../../../../test/helpers/watch-filesystem-fixture.js';
 
 const { tempDirs, loops, makeRepo, cleanup } = createWatchFixture();
-afterEach(cleanup);
+const unexpectedErrors: unknown[] = [];
+afterEach(async () => {
+  await cleanup();
+  expect(unexpectedErrors.splice(0)).toEqual([]);
+});
 
 describe('watch filesystem integration', () => {
   it('coalesces indexed add/change/rename/delete events and stops cleanly', async () => {
@@ -20,7 +24,7 @@ describe('watch filesystem integration', () => {
         batches.push([...paths]);
       },
       (error) => {
-        throw error;
+        unexpectedErrors.push(error);
       },
     );
     loops.push(loop);
@@ -107,7 +111,7 @@ describe('watch filesystem integration', () => {
         batches.push([...paths]);
       },
       (error) => {
-        throw error;
+        unexpectedErrors.push(error);
       },
     );
     loops.push(loop);
@@ -144,7 +148,7 @@ describe('watch filesystem integration', () => {
         }
       },
       (error) => {
-        throw error;
+        unexpectedErrors.push(error);
       },
     );
     loops.push(loop);
