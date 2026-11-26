@@ -1,41 +1,30 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { WikiGenerator, type WikiOptions } from '../../src/core/wiki/generator.js';
+import { registerCases } from '../support/cases.mjs';
+import { mockWikiGraph, streamedWikiResponse } from '../support/wiki-graph.js';
+import type { WikiOptions } from '../../../../src/core/wiki/generator.js';
 
-vi.mock('../../src/core/wiki/graph-queries.js', () => ({
-  initWikiDb: vi.fn().mockResolvedValue(undefined),
-  closeWikiDb: vi.fn().mockResolvedValue(undefined),
-  touchWikiDb: vi.fn(),
-  pinWikiDb: vi.fn(() => vi.fn()),
-  getFilesWithExports: vi.fn().mockResolvedValue([]),
-  getAllFiles: vi.fn().mockResolvedValue(['billing.ts', 'shipping.ts']),
-  getIntraModuleCallEdges: vi.fn().mockResolvedValue([]),
-  getInterModuleCallEdges: vi.fn().mockResolvedValue({ incoming: [], outgoing: [] }),
-  getProcessesForFiles: vi.fn().mockResolvedValue([]),
-  getAllProcesses: vi.fn().mockResolvedValue([]),
-  getInterModuleEdgesForOverview: vi.fn().mockResolvedValue([]),
-}));
-
-function response(content: string, finishReason = 'stop'): Response {
-  const chunk = { choices: [{ delta: { content }, finish_reason: finishReason }] };
-  return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
-}
+mockWikiGraph({ getAllFiles: async () => ['billing.ts', 'shipping.ts'] });
+const { WikiGenerator } = await import('../../../../dist/core/wiki/generator.js');
 
 /** The grouping answer a forced run asks for first, before any page. */
 function sameGrouping(): Response {
-  return response(JSON.stringify({ Billing: ['billing.ts'], Shipping: ['shipping.ts'] }));
+  return streamedWikiResponse(
+    JSON.stringify({ Billing: ['billing.ts'], Shipping: ['shipping.ts'] }),
+  );
 }
 
 describe('wiki generation after a completion-token limit', () => {
   let repoPath: string;
   let storagePath: string;
   let wikiPath: string;
-  let fetchMock: ReturnType<typeof vi.fn>;
+  let responses: Response[];
+  let requests: RequestInit[];
+  let defaultResponse: () => Response;
 
   function git(...args: string[]): string {
     return execFileSync('git', args, { cwd: repoPath, encoding: 'utf8' }).trim();
@@ -55,7 +44,7 @@ describe('wiki generation after a completion-token limit', () => {
     return git('rev-parse', 'HEAD');
   }
 
-  function generator(options: WikiOptions = {}): WikiGenerator {
+  function generator(options: WikiOptions = {}) {
     return new WikiGenerator(
       repoPath,
       storagePath,
@@ -92,17 +81,22 @@ describe('wiki generation after a completion-token limit', () => {
         { name: 'Shipping', slug: 'shipping', files: ['shipping.ts'] },
       ]),
     );
-    fetchMock = vi.fn().mockImplementation(async () => response('Complete documentation.'));
-    vi.stubGlobal('fetch', fetchMock);
+    responses = [];
+    requests = [];
+    defaultResponse = () => streamedWikiResponse('Complete documentation.');
+    mock.method(globalThis, 'fetch', async (_url, init: RequestInit = {}) => {
+      requests.push(init);
+      return responses.shift() ?? defaultResponse();
+    });
   });
 
   afterEach(async () => {
-    vi.unstubAllGlobals();
+    mock.restoreAll();
     await fs.rm(repoPath, { recursive: true, force: true });
   });
 
   it('does not save a truncated page and retries it at the same commit', async () => {
-    fetchMock.mockResolvedValueOnce(response('Incomplete table | --- | -', 'length'));
+    responses.push(streamedWikiResponse('Incomplete table | --- | -', 'length'));
 
     expect(await generator().run()).toEqual({
       pagesGenerated: 2,
@@ -114,16 +108,16 @@ describe('wiki generation after a completion-token limit', () => {
     });
     expect((await metadata()).failedModules).toEqual(['Billing']);
     const shippingBefore = await fs.readFile(path.join(wikiPath, 'shipping.md'), 'utf8');
-    fetchMock.mockClear();
+    requests.length = 0;
 
     expect(await generator().run()).toEqual({
       pagesGenerated: 2,
       mode: 'incremental',
       failedModules: [],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    for (const [, init] of fetchMock.mock.calls) {
-      expect(JSON.parse(init.body).max_completion_tokens).toBe(65_536);
+    expect(requests).toHaveLength(2);
+    for (const init of requests) {
+      expect(JSON.parse(String(init.body)).max_completion_tokens).toBe(65_536);
     }
     expect(await fs.readFile(path.join(wikiPath, 'billing.md'), 'utf8')).toContain(
       'Complete documentation.',
@@ -135,12 +129,14 @@ describe('wiki generation after a completion-token limit', () => {
       mode: 'up-to-date',
       failedModules: [],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requests).toHaveLength(2);
   });
 
-  it.each(['interrupted', 'context-window'] as const)(
+  registerCases(
+    it,
+    ['interrupted', 'context-window'] as const,
     'retries an incomplete Anthropic page after %s without saving partial output',
-    async (failure) => {
+    async (failure: string) => {
       const anthropicResponse = (content: string, stopReason: string | null): Response => {
         const events: unknown[] = [
           { type: 'content_block_delta', delta: { type: 'text_delta', text: content } },
@@ -170,10 +166,8 @@ describe('wiki generation after a completion-token limit', () => {
           },
           { concurrency: 1 },
         );
-      fetchMock.mockImplementation(async () =>
-        anthropicResponse('Complete documentation.', 'end_turn'),
-      );
-      fetchMock.mockResolvedValueOnce(
+      defaultResponse = () => anthropicResponse('Complete documentation.', 'end_turn');
+      responses.push(
         anthropicResponse(
           'Incomplete page',
           failure === 'interrupted' ? null : 'model_context_window_exceeded',
@@ -190,14 +184,14 @@ describe('wiki generation after a completion-token limit', () => {
       });
       expect((await metadata()).failedModules).toEqual(['Billing']);
       const shippingBefore = await fs.readFile(path.join(wikiPath, 'shipping.md'), 'utf8');
-      fetchMock.mockClear();
+      requests.length = 0;
 
       expect(await anthropicGenerator().run()).toEqual({
         pagesGenerated: 2,
         mode: 'incremental',
         failedModules: [],
       });
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(requests).toHaveLength(2);
       expect(await fs.readFile(path.join(wikiPath, 'billing.md'), 'utf8')).toContain(
         'Complete documentation.',
       );
@@ -210,8 +204,8 @@ describe('wiki generation after a completion-token limit', () => {
     await generator().run();
     await fs.writeFile(path.join(repoPath, 'billing.ts'), 'export const bill = 2;\n');
     const currentCommit = commit();
-    fetchMock.mockClear();
-    fetchMock.mockResolvedValueOnce(response('', 'length'));
+    requests.length = 0;
+    responses.push(streamedWikiResponse('', 'length'));
 
     expect(await generator().run()).toEqual({
       pagesGenerated: 0,
@@ -227,15 +221,13 @@ describe('wiki generation after a completion-token limit', () => {
       mode: 'incremental',
       failedModules: [],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(requests).toHaveLength(3);
   });
 
   it('retries failed forced generation even when an older wiki covers the same commit', async () => {
     await generator().run();
-    fetchMock.mockClear();
-    fetchMock
-      .mockResolvedValueOnce(sameGrouping())
-      .mockResolvedValueOnce(response('cut off', 'length'));
+    requests.length = 0;
+    responses.push(sameGrouping(), streamedWikiResponse('cut off', 'length'));
 
     expect((await generator({ force: true }).run()).failedModules).toEqual(['Billing']);
     expect((await generator().run()).mode).toBe('incremental');
@@ -260,21 +252,21 @@ describe('wiki generation after a completion-token limit', () => {
         },
       ]),
     );
-    fetchMock.mockResolvedValueOnce(response('cut off', 'length'));
+    responses.push(streamedWikiResponse('cut off', 'length'));
 
     expect((await generator().run()).failedModules).toEqual(['Billing', 'Commerce']);
     await expect(fs.readFile(path.join(wikiPath, 'commerce.md'))).rejects.toMatchObject({
       code: 'ENOENT',
     });
-    fetchMock.mockClear();
+    requests.length = 0;
 
     expect(await generator({ concurrency: 3 }).run()).toEqual({
       pagesGenerated: 3,
       mode: 'incremental',
       failedModules: [],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    const parentPrompt = JSON.parse(fetchMock.mock.calls[1][1].body).messages[1].content;
+    expect(requests).toHaveLength(3);
+    const parentPrompt = JSON.parse(String(requests[1].body)).messages[1].content;
     expect(parentPrompt).toContain('Complete documentation.');
     expect(parentPrompt).not.toContain('Documentation pending');
     expect((await metadata()).failedModules).toEqual([]);
@@ -282,12 +274,13 @@ describe('wiki generation after a completion-token limit', () => {
 
   it('does not retain a completion receipt when the forced overview is truncated', async () => {
     await generator().run();
-    fetchMock.mockClear();
-    fetchMock
-      .mockResolvedValueOnce(sameGrouping())
-      .mockResolvedValueOnce(response('Billing complete'))
-      .mockResolvedValueOnce(response('Shipping complete'))
-      .mockResolvedValueOnce(response('overview cut off', 'length'));
+    requests.length = 0;
+    responses.push(
+      sameGrouping(),
+      streamedWikiResponse('Billing complete'),
+      streamedWikiResponse('Shipping complete'),
+      streamedWikiResponse('overview cut off', 'length'),
+    );
 
     await expect(generator({ force: true }).run()).rejects.toThrow('completion token limit');
     await expect(fs.readFile(path.join(wikiPath, 'meta.json'))).rejects.toMatchObject({
@@ -298,7 +291,7 @@ describe('wiki generation after a completion-token limit', () => {
       mode: 'full',
       failedModules: [],
     });
-    expect(fetchMock).toHaveBeenCalledTimes(5);
+    expect(requests).toHaveLength(5);
     expect(await fs.readFile(path.join(wikiPath, 'billing.md'), 'utf8')).toContain(
       'Billing complete',
     );

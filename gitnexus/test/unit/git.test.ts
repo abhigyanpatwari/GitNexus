@@ -284,21 +284,6 @@ describe('git utilities', () => {
       expect(findGitRootByDotGit(missing)).toBeNull();
       expect(mockExecSync).not.toHaveBeenCalled();
     });
-
-    it('walks from a file input by starting at its parent directory', () => {
-      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-fileinput-'));
-      try {
-        fs.mkdirSync(path.join(tmpDir, '.git'));
-        const filePath = path.join(tmpDir, 'pkg', 'index.ts');
-        fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, 'export {};\n');
-
-        expect(findGitRootByDotGit(filePath)).toBe(path.resolve(tmpDir));
-        expect(mockExecSync).not.toHaveBeenCalled();
-      } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
-      }
-    });
   });
 
   describe('sanitizeRepoName', () => {

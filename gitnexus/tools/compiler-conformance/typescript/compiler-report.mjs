@@ -64,7 +64,15 @@ function startOfDeclaration(node) {
 }
 
 function declarationName(node) {
-  if (node.name) return node.name.getText();
+  if (node.name) {
+    const name = node.name;
+    if (name.kind === SyntaxKind.ComputedPropertyName) {
+      const key = name.expression;
+      if (key.kind === SyntaxKind.StringLiteral || key.kind === SyntaxKind.NumericLiteral)
+        return key.text;
+    }
+    return name.text ?? name.getText();
+  }
   if (node.modifiers?.some((modifier) => modifier.kind === SyntaxKind.DefaultKeyword))
     return 'default';
 }
@@ -96,7 +104,7 @@ function graphIdentity(root, node, project) {
       node.parent.parent.kind === SyntaxKind.TypeAliasDeclaration
         ? node.parent.parent
         : node.parent;
-    return identity(root, owner) + '.' + node.name.getText();
+    return identity(root, owner) + '.' + declarationName(node);
   }
   if (node.kind === SyntaxKind.FunctionDeclaration && node.name) {
     const signatures = project.checker.getSymbolAtLocation(node.name)?.declarations;
@@ -406,7 +414,7 @@ function reportProject(
             const receiver = hasModifier(method, SyntaxKind.StaticKeyword)
               ? checker.getTypeAtLocation(base.expression)
               : type;
-            const member = receiver && checker.getPropertyOfType(receiver, method.name.getText());
+            const member = receiver && checker.getPropertyOfType(receiver, declarationName(method));
             const target = symbolDeclaration(member, project);
             if (isMethod(target)) edge('METHOD_OVERRIDES', node, target);
           }
@@ -527,7 +535,7 @@ function reportProject(
         runtime.methods.push({
           file: relative(root, node.getSourceFile()),
           owner: node.parent.name.getText(),
-          name: node.name.getText(),
+          name: declarationName(node),
           target: identity(root, node),
           edgeTarget: graphIdentity(root, node, project),
         });
@@ -541,7 +549,7 @@ function reportProject(
           node.kind === SyntaxKind.Constructor
             ? 'constructor'
             : declarationName(variableFunction ? node.parent : node);
-        if (label && name) {
+        if (label && name !== undefined) {
           const target = graphIdentity(root, node, project);
           result.DECLARATIONS.edges.push({
             from: relative(root, node.getSourceFile()),

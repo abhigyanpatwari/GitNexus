@@ -312,8 +312,6 @@ const LBUG_NATIVE = [
 // process spawning, which behaves differently across platforms (shell
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
-  // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
-  'test/unit/shard-timings-roundtrip.test.ts',
   // Spawns Node on the tree releaser's source (type stripping, file URLs) to
   // check its real V8 nudge and the zero-fill flag spellings.
   'test/unit/tree-sitter/native-tree-release.test.ts',

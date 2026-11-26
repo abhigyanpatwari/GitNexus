@@ -13,8 +13,7 @@ describe('ServiceBoundaryDetector', () => {
   let tmpDir: string;
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `gitnexus-sbd-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sbd-'));
   });
 
   afterEach(() => {

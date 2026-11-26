@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +13,28 @@ const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('quoted, escaped and numeric methods use the same property key across declarations', (t) => {
+  const project = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-method-keys-'));
+  t.after(() => rmSync(project, { recursive: true, force: true }));
+  writeFileSync(
+    path.join(project, 'keys.ts'),
+    String.raw`class Base { 'read-value'() {} 100() {} }
+class Derived extends Base { ["read\u002dvalue"]() {} 1e2() {} }
+function invoke(value: Derived) { value['read-value'](); value[100](); }
+`,
+  );
+  const report = compilerReport(project, [], true);
+  const targets = (relation) => report[relation].edges.map(({ to }) => to).sort();
+  assert.deepEqual(targets('METHOD_OVERRIDES'), ['keys.ts#1:0.100', 'keys.ts#1:0.read-value']);
+  assert.deepEqual(targets('CALLS'), ['keys.ts#2:0.100', 'keys.ts#2:0.read-value']);
+  assert.deepEqual(targets('HAS_METHOD'), [
+    'keys.ts#1:0.100',
+    'keys.ts#1:0.read-value',
+    'keys.ts#2:0.100',
+    'keys.ts#2:0.read-value',
+  ]);
+});
 
 test('constructors with the same class name resolve in their own namespaces', () => {
   const calls = compilerReport(path.resolve(root, '../typescript-namespace-constructors')).CALLS;

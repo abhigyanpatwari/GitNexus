@@ -1,28 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { getAllFiles } from '../../src/core/wiki/graph-queries.js';
-import {
-  WikiGenerator,
-  type ModuleTreeNode,
-  type WikiOptions,
-} from '../../src/core/wiki/generator.js';
+import { mockWikiGraph, streamedWikiResponse } from '../support/wiki-graph.js';
+import type { ModuleTreeNode, WikiOptions } from '../../../../src/core/wiki/generator.js';
 
-vi.mock('../../src/core/wiki/graph-queries.js', () => ({
-  initWikiDb: vi.fn().mockResolvedValue(undefined),
-  closeWikiDb: vi.fn().mockResolvedValue(undefined),
-  touchWikiDb: vi.fn(),
-  pinWikiDb: vi.fn(() => vi.fn()),
-  getFilesWithExports: vi.fn().mockResolvedValue([]),
-  getAllFiles: vi.fn(),
-  getIntraModuleCallEdges: vi.fn().mockResolvedValue([]),
-  getInterModuleCallEdges: vi.fn().mockResolvedValue({ incoming: [], outgoing: [] }),
-  getProcessesForFiles: vi.fn().mockResolvedValue([]),
-  getAllProcesses: vi.fn().mockResolvedValue([]),
-  getInterModuleEdgesForOverview: vi.fn().mockResolvedValue([]),
-}));
+let files: string[];
+mockWikiGraph({ getAllFiles: async () => files });
+const { WikiGenerator } = await import('../../../../dist/core/wiki/generator.js');
 
 const API = ['api/orders.ts', 'api/users.ts'];
 const CORE = ['core/cache.ts', 'core/db.ts'];
@@ -30,18 +17,9 @@ const JOBS = Array.from({ length: 6 }, (_, i) => `jobs/job${i + 1}.ts`);
 /** The committer of the fixture's commits, whatever the global git config says. */
 const AUTHOR = ['-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test'];
 
-// dupe-ok: the same streamed answer as wiki-truncation-recovery.test.ts, which this PR leaves alone
-function streamed(content: string, finishReason = 'stop'): Response {
-  const chunk = { choices: [{ delta: { content }, finish_reason: finishReason }] };
-  return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
-}
-
 describe('wiki runs that group the files again', () => {
   let repoPath: string;
   let wikiPath: string;
-  let files: string[];
   /** The stand-in model's answer to the grouping prompt. */
   let grouping: Record<string, string[]>;
   /** One entry per request: 'grouping', 'overview', or the module of the page. */
@@ -72,7 +50,6 @@ describe('wiki runs that group the files again', () => {
   async function commit(...paths: string[]): Promise<void> {
     await commitUnindexed(...paths);
     files = [...new Set([...files, ...paths])].sort();
-    vi.mocked(getAllFiles).mockResolvedValue(files);
   }
 
   function run(options: WikiOptions = {}) {
@@ -124,27 +101,24 @@ describe('wiki runs that group the files again', () => {
     revision = 1;
     cutOffOverview = false;
     cutOffGrouping = false;
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_url: string, init: RequestInit) => {
-        const { messages } = JSON.parse(String(init.body));
-        const prompt: string = messages.at(-1).content;
-        if (prompt.startsWith('Group these source files')) {
-          requests.push('grouping');
-          prompts.set('grouping', prompt);
-          return streamed(JSON.stringify(grouping), cutOffGrouping ? 'length' : 'stop');
-        }
-        const module = prompt.match(/^Write documentation for the \*\*(.+?)\*\* module/)?.[1];
-        requests.push(module ?? 'overview');
-        prompts.set(module ?? 'overview', prompt);
-        if (!module && cutOffOverview) return streamed('cut off', 'length');
-        return streamed(`${module ?? 'Overview'} page, revision ${revision}.`);
-      }),
-    );
+    mock.method(globalThis, 'fetch', async (_url, init: RequestInit = {}) => {
+      const { messages } = JSON.parse(String(init.body));
+      const prompt: string = messages.at(-1).content;
+      if (prompt.startsWith('Group these source files')) {
+        requests.push('grouping');
+        prompts.set('grouping', prompt);
+        return streamedWikiResponse(JSON.stringify(grouping), cutOffGrouping ? 'length' : 'stop');
+      }
+      const module = prompt.match(/^Write documentation for the \*\*(.+?)\*\* module/)?.[1];
+      requests.push(module ?? 'overview');
+      prompts.set(module ?? 'overview', prompt);
+      if (!module && cutOffOverview) return streamedWikiResponse('cut off', 'length');
+      return streamedWikiResponse(`${module ?? 'Overview'} page, revision ${revision}.`);
+    });
   });
 
   afterEach(async () => {
-    vi.unstubAllGlobals();
+    mock.restoreAll();
     await fs.rm(repoPath, { recursive: true, force: true });
   });
 
@@ -318,14 +292,14 @@ describe('wiki runs that group the files again', () => {
       await commit(...JOBS);
       grouping = { Api: [...API, ...JOBS], Core: CORE };
       const rm = fs.rm.bind(fs);
-      const spy = vi.spyOn(fs, 'rm').mockImplementation(async (target, options) => {
+      const spy = mock.method(fs, 'rm', async (target, options) => {
         if (String(target).endsWith('api.md')) throw new Error('disk unplugged');
         return rm(target, options);
       });
       try {
         await expect(run()).rejects.toThrow('disk unplugged');
       } finally {
-        spy.mockRestore();
+        spy.mock.restore();
       }
       requests = [];
       revision = 3;
@@ -454,7 +428,7 @@ describe('wiki runs that group the files again', () => {
       git(...AUTHOR, 'commit', '-qm', 'move');
       const tasks = JOBS.map((job) => job.replace('jobs/', 'tasks/'));
       files = [...API, ...CORE, ...tasks].sort();
-      vi.mocked(getAllFiles).mockResolvedValue(files);
+
       grouping = { Api: API, Core: CORE, Tasks: tasks };
 
       await run();

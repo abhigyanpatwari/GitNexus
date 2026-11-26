@@ -11,8 +11,7 @@ describe('TopicExtractor', () => {
   let extractor: TopicExtractor;
 
   beforeEach(() => {
-    tmpDir = path.join(os.tmpdir(), `gitnexus-topic-${Date.now()}`);
-    fs.mkdirSync(tmpDir, { recursive: true });
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-topic-'));
     extractor = new TopicExtractor();
   });
 

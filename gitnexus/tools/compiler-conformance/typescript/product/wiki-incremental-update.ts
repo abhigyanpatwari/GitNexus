@@ -1,41 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { getAllFiles } from '../../src/core/wiki/graph-queries.js';
-import {
-  WikiGenerator,
-  type ModuleTreeNode,
-  type WikiOptions,
-} from '../../src/core/wiki/generator.js';
+import { createTestEnvironment } from '../support/environment.js';
+import { mockWikiGraph, streamedWikiResponse } from '../support/wiki-graph.js';
+import type { ModuleTreeNode, WikiOptions } from '../../../../src/core/wiki/generator.js';
 
-vi.mock('../../src/core/wiki/graph-queries.js', () => ({
-  initWikiDb: vi.fn().mockResolvedValue(undefined),
-  closeWikiDb: vi.fn().mockResolvedValue(undefined),
-  touchWikiDb: vi.fn(),
-  pinWikiDb: vi.fn(() => vi.fn()),
-  getFilesWithExports: vi.fn().mockResolvedValue([]),
-  getAllFiles: vi.fn(),
-  getIntraModuleCallEdges: vi.fn().mockResolvedValue([]),
-  getInterModuleCallEdges: vi.fn().mockResolvedValue({ incoming: [], outgoing: [] }),
-  getProcessesForFiles: vi.fn().mockResolvedValue([]),
-  getAllProcesses: vi.fn().mockResolvedValue([]),
-  getInterModuleEdgesForOverview: vi.fn().mockResolvedValue([]),
-}));
+const environment = createTestEnvironment();
+let indexedFiles: string[] = [];
+mockWikiGraph({ getAllFiles: async () => indexedFiles });
+const { WikiGenerator } = await import('../../../../dist/core/wiki/generator.js');
 
 /** One request the fake provider received: the page it was asked for and its prompt. */
 interface PageRequest {
   page: string;
   prompt: string;
-}
-
-// dupe-ok: the same streamed answer as wiki-truncation-recovery.test.ts, which this PR leaves alone
-function streamed(content: string, finishReason = 'stop'): Response {
-  const chunk = { choices: [{ delta: { content }, finish_reason: finishReason }] };
-  return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
-    headers: { 'Content-Type': 'text/event-stream' },
-  });
 }
 
 describe('incremental wiki update of a module with sub-modules', () => {
@@ -88,7 +69,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
     git('init', '-q');
     git('config', 'commit.gpgsign', 'false');
     git('add', 'billing.ts', 'shipping.ts', 'notes.ts');
-    vi.mocked(getAllFiles).mockResolvedValue(['billing.ts', 'shipping.ts', 'notes.ts']);
+    indexedFiles = ['billing.ts', 'shipping.ts', 'notes.ts'];
     git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'init');
     // A large module split into sub-modules, next to a module without any.
     await fs.writeFile(
@@ -110,17 +91,14 @@ describe('incremental wiki update of a module with sub-modules', () => {
     requests = [];
     revision = 1;
     cutOff = new Set();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (_url: string, init: RequestInit) => {
-        const { messages } = JSON.parse(String(init.body));
-        const prompt: string = messages.at(-1).content;
-        const page = prompt.match(/^Write documentation for the \*\*(.+?)\*\* module/)?.[1];
-        requests.push({ page: page ?? 'overview', prompt });
-        if (page && cutOff.has(page)) return streamed('cut off', 'length');
-        return streamed(`${page ?? 'Overview'} page, revision ${revision}.`);
-      }),
-    );
+    mock.method(globalThis, 'fetch', async (_url, init: RequestInit = {}) => {
+      const { messages } = JSON.parse(String(init.body));
+      const prompt: string = messages.at(-1).content;
+      const page = prompt.match(/^Write documentation for the \*\*(.+?)\*\* module/)?.[1];
+      requests.push({ page: page ?? 'overview', prompt });
+      if (page && cutOff.has(page)) return streamedWikiResponse('cut off', 'length');
+      return streamedWikiResponse(`${page ?? 'Overview'} page, revision ${revision}.`);
+    });
 
     expect((await run()).mode).toBe('full');
     expect(requests.map((r) => r.page)).toEqual([
@@ -135,13 +113,13 @@ describe('incremental wiki update of a module with sub-modules', () => {
   });
 
   afterEach(async () => {
-    vi.unstubAllGlobals();
-    vi.unstubAllEnvs();
+    mock.restoreAll();
+    environment.restore();
     await fs.rm(repoPath, { recursive: true, force: true });
   });
 
   it('rejects a relative custom Git path', () => {
-    vi.stubEnv('GITNEXUS_WIKI_GIT_PATH', 'git');
+    environment.set('GITNEXUS_WIKI_GIT_PATH', 'git');
     expect(() => run()).toThrow(/GITNEXUS_WIKI_GIT_PATH must be the absolute path/);
   });
 
@@ -156,7 +134,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
   it('regenerates the sub-module page of a changed file before its parent page', async () => {
     await commitChange('billing.ts');
     // Git discovery during wiki generation must be independent of the checkout and PATH.
-    vi.stubEnv('PATH', repoPath);
+    environment.set('PATH', repoPath);
 
     expect(await run()).toEqual({ pagesGenerated: 3, mode: 'incremental', failedModules: [] });
 
@@ -279,7 +257,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
       await fs.writeFile(path.join(repoPath, file), `export const ${file.slice(0, -3)} = 1;\n`);
     }
     // The graph indexes the new files, as it does once analyze has run.
-    vi.mocked(getAllFiles).mockResolvedValue(['billing.ts', 'shipping.ts', 'notes.ts', ...added]);
+    indexedFiles = ['billing.ts', 'shipping.ts', 'notes.ts', ...added];
     git('add', ...added);
     git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'add');
 
@@ -360,7 +338,7 @@ describe('incremental wiki update of a module with sub-modules', () => {
       tree[1] = { name: 'Misc', slug: 'other', files: ['notes.ts'] };
     });
     await fs.writeFile(path.join(repoPath, 'todo.ts'), 'export const todo = 1;\n');
-    vi.mocked(getAllFiles).mockResolvedValue(['billing.ts', 'shipping.ts', 'notes.ts', 'todo.ts']);
+    indexedFiles = ['billing.ts', 'shipping.ts', 'notes.ts', 'todo.ts'];
     git('add', 'todo.ts');
     git('-c', 'user.name=Wiki Test', '-c', 'user.email=wiki@example.test', 'commit', '-qm', 'add');
 
