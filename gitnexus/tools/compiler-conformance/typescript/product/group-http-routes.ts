@@ -135,8 +135,7 @@ export default router;
         (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/x',
       );
       expect(provider).toBeDefined();
-      // The anonymous arrow (line ~4) is NOT inside `handler`'s span [3,3], so it
-      // must not borrow that uid — name resolution is skipped for anonymous.
+      // The arrow on line 4 falls outside the named handler's zero-based span [2,2].
       expect(provider?.symbolUid).not.toBe('uid-unrelated-handler');
     });
 

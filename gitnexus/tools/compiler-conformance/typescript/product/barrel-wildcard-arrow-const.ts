@@ -73,10 +73,7 @@ describe('C2 probe 2', () => {
     'B1: a class METHOD sharing a top-level const name never wins the wildcard fan-out',
     { timeout: 60000 },
     async () => {
-      // `export *` can only publish module-level declarations. `Foo.render` is
-      // callable and outranked the value shadow in the callable-preferred index,
-      // binding `import { render }` to a symbol it can never reach. The safe
-      // outcome is the pre-existing one: a value shadow yields NO CALLS edge.
+      // The barrel exports the number `beta`. Calling it must not link to `Foo.beta`.
       expect(
         await run('b1', {
           'packages/ui/src/components/Impl/Impl.ts': `export const alpha = (s: string) => { return s; };\nexport const beta = 42;\nexport class Foo { beta() { return 1; } }\n`,

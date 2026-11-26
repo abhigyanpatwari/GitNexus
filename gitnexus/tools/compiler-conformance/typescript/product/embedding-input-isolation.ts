@@ -14,7 +14,7 @@ const environment = createTestEnvironment();
 afterEach(() => environment.restore());
 
 async function fixture(reject: (text: string) => boolean) {
-  const tmp = await createTempDir('gn-embedding-input-');
+  const tmp = await createTempDir();
   const repo = path.join(tmp.dbPath, 'repo');
   await fs.mkdir(repo);
   const requests: string[][] = [];
@@ -94,11 +94,10 @@ it(
             (_, i) => `export function healthy${i}() { return ${i}; }`,
           ).join('\n'),
       );
-      const result = await f.analyze(true).catch((error: unknown) => error);
+      await f.analyze(true);
       const submitted = f.requests.flat();
       expect(submitted.length).toBeGreaterThan(0);
       expect(Math.max(...submitted.map((text) => text.length))).toBeLessThanOrEqual(4096);
-      expect(result).not.toBeInstanceOf(Error);
       const rows = await f.rows();
       for (let i = 0; i < 4; i++)
         expect(rows.some((row) => row.nodeId === `Function:payload.ts:healthy${i}`)).toBe(true);

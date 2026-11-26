@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync, execSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { access, cp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { access, cp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { expect } from 'expect';
@@ -20,7 +20,25 @@ describe('automatic parser identity in the installed distribution', () => {
         // The integration gate builds first. Pack that output with npm's actual
         // files/bundled-dependencies rules; do not rerun a build in a parallel suite.
         const packSource = path.join(artifacts.dbPath, 'pack-source');
-        await cp(PACKAGE_ROOT, packSource, { recursive: true, dereference: true });
+        const installedModules = path.join(PACKAGE_ROOT, 'node_modules');
+        const lock: { packages: Record<string, { inBundle?: boolean }> } = JSON.parse(
+          await readFile(path.join(PACKAGE_ROOT, 'package-lock.json'), 'utf8'),
+        );
+        const bundled = Object.entries(lock.packages)
+          .filter(([, entry]) => entry.inBundle)
+          .map(([name]) => path.resolve(PACKAGE_ROOT, name));
+        await cp(PACKAGE_ROOT, packSource, {
+          recursive: true,
+          dereference: true,
+          filter: (source) =>
+            !source.startsWith(installedModules + path.sep) ||
+            bundled.some(
+              (directory) =>
+                source === directory ||
+                source.startsWith(directory + path.sep) ||
+                directory.startsWith(source + path.sep),
+            ),
+        });
         const originalManifest = await readFile(path.join(PACKAGE_ROOT, 'package.json'), 'utf8');
         const packManifest = JSON.parse(originalManifest);
         // npm 10 runs prepare even with --ignore-scripts. Remove it only from
@@ -37,6 +55,7 @@ describe('automatic parser identity in the installed distribution', () => {
             maxBuffer: 8 * 1024 * 1024,
           }),
         ) as Array<{ filename: string }>;
+        await rm(packSource, { recursive: true, force: true });
         execFileSync('tar', [
           '-xzf',
           path.join(artifacts.dbPath, packed[0].filename),
@@ -57,6 +76,10 @@ describe('automatic parser identity in the installed distribution', () => {
             )
           )
             continue;
+          assert.ok(
+            !manifest.bundleDependencies.includes(name),
+            `Missing bundled dependency ${name}`,
+          );
           await mkdir(path.dirname(target), { recursive: true });
           await symlink(path.join(PACKAGE_ROOT, 'node_modules', name), target, 'junction');
         }
