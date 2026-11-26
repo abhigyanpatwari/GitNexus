@@ -591,6 +591,7 @@ export function computeTaintFlows(
   const suppressedByBarrier = (
     bindingIdx: number,
     sinkPoint: ProgramPoint,
+    kind: SinkKind,
     taintDefPoint?: ProgramPoint,
     sinkProperty?: string,
     sinkSiteIndex?: number,
@@ -612,7 +613,9 @@ export function computeTaintFlows(
       return false;
     if (subjectBindingAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint))
       return false;
-    recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
+    // Record only the suppressed sink kind — not KIND_ORDER (validators are
+    // not kind-blind sanitizers of every sink class).
+    recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, [kind]);
     return true;
   };
 
@@ -881,7 +884,14 @@ export function computeTaintFlows(
             // a kind-partial sanitizer (escape ≠ command-safe).
             if (
               !pathMayTransform(sofar) &&
-              suppressedByBarrier(localBinding, ctx.point, undefined, srcSite.property, siteIndex)
+              suppressedByBarrier(
+                localBinding,
+                ctx.point,
+                kind,
+                undefined,
+                srcSite.property,
+                siteIndex,
+              )
             )
               continue;
             recordFinding(
@@ -995,7 +1005,8 @@ export function computeTaintFlows(
               // wrap(host) / escape(host) must not let the direct win).
               const sinkProps = memberPropertiesAtArg(ctx.sites, siteIndex, argPos);
               if (!paths.some(pathMayTransform) && sinkProps.length <= 1) {
-                if (suppressedByBarrier(b, ctx.point, t.point, sinkProps[0], siteIndex)) continue;
+                if (suppressedByBarrier(b, ctx.point, kind, t.point, sinkProps[0], siteIndex))
+                  continue;
               }
               const chain = chainHops(key);
               chain.hops.push({

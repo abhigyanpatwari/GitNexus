@@ -22,6 +22,7 @@ import {
 } from '../cfg/control-dependence.js';
 import type { FunctionCfg, SiteRecord } from '../cfg/types.js';
 import type { ProgramPoint } from '../cfg/reaching-defs.js';
+import type { ParsedImport } from 'gitnexus-shared';
 
 export interface BarrierController {
   readonly controllerBlock: number;
@@ -171,6 +172,67 @@ export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): Readonl
     if (functionContainsProtoGuard(cfg)) out.add(cfg.functionName);
   }
   return out;
+}
+
+/**
+ * Expand proto-guard exclusions with local import aliases.
+ * Declared CFG names (`isValidKey`) must also exclude `import { isValidKey as
+ * isValidHostName }` call-site spellings, or the name heuristic still barriers.
+ */
+export function expandBarrierExclusionsForImports(
+  declared: ReadonlySet<string>,
+  imports: readonly ParsedImport[],
+): ReadonlySet<string> {
+  if (declared.size === 0 || imports.length === 0) return declared;
+  const out = new Set(declared);
+  for (const imp of imports) {
+    if (imp.kind !== 'named' && imp.kind !== 'alias') continue;
+    if (imp.typeOnly === true) continue;
+    const imported = imp.importedName;
+    if (!imported || !declared.has(imported)) continue;
+    if (imp.localName) out.add(imp.localName);
+  }
+  return out;
+}
+
+/** True when `block` may execute before `sinkPoint` (line, then block index). */
+function blockMayPrecedeSink(
+  block: { index: number; endLine: number },
+  sinkPoint: ProgramPoint,
+): boolean {
+  if (block.endLine < sinkPoint.line) return true;
+  // Same-line distinct CFG blocks (e.g. `if (r) req.body = q; exec(req.body)`):
+  // endLine alone is not ordered — use block index.
+  return block.endLine === sinkPoint.line && block.index < sinkPoint.blockIndex;
+}
+
+/**
+ * Blocks on the controller's validated branch, including nested conditions
+ * (transitive CDG). A write under `if (rewrite)` after the validator is not
+ * a *direct* dependent of the validator — only of `rewrite` — but still
+ * executes on the validated path before the sink.
+ */
+function validatedRegionBlocks(
+  index: BarrierGuardIndex,
+  controller: BarrierController,
+): ReadonlySet<number> {
+  const region = new Set<number>();
+  for (const e of index.cdg) {
+    if (e.controllerBlock === controller.controllerBlock && e.label === controller.validatedLabel) {
+      region.add(e.dependentBlock);
+    }
+  }
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const e of index.cdg) {
+      if (region.has(e.controllerBlock) && !region.has(e.dependentBlock)) {
+        region.add(e.dependentBlock);
+        changed = true;
+      }
+    }
+  }
+  return region;
 }
 
 /** Optional `qual.qual.` prefix before a callee leaf. */
@@ -366,10 +428,8 @@ export function subjectBindingAssignedOnValidatedPath(
   sinkPoint: ProgramPoint,
 ): boolean {
   const b = controller.subjectBinding;
-  for (const edge of index.cdg) {
-    if (edge.controllerBlock !== controller.controllerBlock) continue;
-    if (edge.label !== controller.validatedLabel) continue;
-    const block = cfg.blocks[edge.dependentBlock];
+  for (const blockIndex of validatedRegionBlocks(index, controller)) {
+    const block = cfg.blocks[blockIndex];
     const stmts = block?.statements;
     if (!stmts) continue;
     if (block.index === sinkPoint.blockIndex) {
@@ -378,7 +438,7 @@ export function subjectBindingAssignedOnValidatedPath(
       }
       continue;
     }
-    if (block.endLine < sinkPoint.line) {
+    if (blockMayPrecedeSink(block, sinkPoint)) {
       for (const stmt of stmts) {
         if (statementDefines(stmt, b)) return true;
       }
@@ -461,25 +521,33 @@ export function memberPropertyAssignedOnValidatedPath(
   // Identifier start boundary — not `\b`, which fails before `$`-prefixed
   // names (`$req.body =` has no word boundary before `$`). Include compound
   // assignments (`+=`, `||=`, …): `req.body += req.query` reintroduces taint.
+  const memberAccess = `(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])`;
   const assignOp = '(?:\\+|-|\\*|\\/|%|\\*\\*|<<|>>>|>>|&|\\||\\^|&&|\\|\\||\\?\\?)?=(?!=)';
-  const assignRe = new RegExp(
-    `(?<![A-Za-z0-9_$])${escapedRecv}\\s*(\\.${escapedProp}|\\[['"]${escapedProp}['"]\\])\\s*${assignOp}`,
-  );
-  for (const edge of index.cdg) {
-    if (edge.controllerBlock !== controller.controllerBlock) continue;
-    if (edge.label !== controller.validatedLabel) continue;
-    const block = cfg.blocks[edge.dependentBlock];
+  const assignRe = new RegExp(`(?<![A-Za-z0-9_$])${escapedRecv}\\s*${memberAccess}\\s*${assignOp}`);
+  // Destructuring target: `({body: req.body} = …)` writes `req.body` but the
+  // member is followed by `}` / `,`, not `=`.
+  const destructureRe = new RegExp(`\\{[^}]*:\\s*${escapedRecv}\\s*${memberAccess}[^}]*\\}\\s*=`);
+  const writeIdx = (text: string): number => {
+    const a = text.search(assignRe);
+    const d = text.search(destructureRe);
+    if (a < 0) return d;
+    if (d < 0) return a;
+    return Math.min(a, d);
+  };
+  const hasWrite = (text: string): boolean => writeIdx(text) >= 0;
+  for (const blockIndex of validatedRegionBlocks(index, controller)) {
+    const block = cfg.blocks[blockIndex];
     if (!block?.text) continue;
     if (block.index === sinkPoint.blockIndex) {
-      const assignIdx = block.text.search(assignRe);
+      const assignIdx = writeIdx(block.text);
       if (assignIdx < 0) continue;
       const sinkIdx = sinkCallTextIndex(block, sinkPoint, sinkSiteIndex);
       // Assign before sink call in source text (same-line / multiline safe).
       if (sinkIdx < 0 || assignIdx < sinkIdx) return true;
       continue;
     }
-    if (block.endLine < sinkPoint.line) {
-      if (assignRe.test(block.text)) return true;
+    if (blockMayPrecedeSink(block, sinkPoint)) {
+      if (hasWrite(block.text)) return true;
     }
   }
   return false;

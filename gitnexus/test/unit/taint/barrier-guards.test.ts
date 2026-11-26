@@ -14,6 +14,7 @@ import { computeTaintFlows } from '../../../src/core/ingestion/taint/propagate.j
 import {
   buildBarrierGuardIndex,
   discoverProtoGuardCallees,
+  expandBarrierExclusionsForImports,
   functionContainsProtoGuard,
   isBarrierCalleeName,
   isBarrierGuarded,
@@ -42,9 +43,10 @@ function analyze(
   expect(hasTaintSafeSites(cfg)).toBe(true);
   const defUse = computeReachingDefs(cfg);
   const matches = matchFunctionSites(cfg, MECH, buildTaintImportIndex(importsFor(code)));
-  const excludeBarrierCallees =
+  const declared =
     opts?.excludeBarrierCallees ??
     discoverProtoGuardCallees(opts?.extraCfgs ? [...opts.extraCfgs, ...cfgs] : cfgs);
+  const excludeBarrierCallees = expandBarrierExclusionsForImports(declared, importsFor(code));
   return {
     cfg,
     flows: computeTaintFlows(
@@ -205,6 +207,54 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     `);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
     expect(flows.kills).toHaveLength(0);
+  });
+
+  it('does not suppress after a destructuring write to the validated property', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        ({ body: req.body } = req.query);
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
+  it('does not suppress after a same-line conditional member write before the sink', () => {
+    // Distinct CFG blocks can share endLine; write must still invalidate.
+    const { flows } = analyze(`
+      function f(req: any, rewrite: boolean) {
+        if (!isValidHostName(req.body)) return;
+        if (rewrite) req.body = req.query; exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress after a same-line conditional object rebinding before the sink', () => {
+    const { flows } = analyze(`
+      function f(req: any, other: any, rebind: boolean) {
+        if (!isValidHostName(req.body)) return;
+        if (rebind) req = other; exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('barrier kill records only the suppressed sink kind', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const hostname = req.body;
+        if (!isValidHostName(hostname)) return;
+        exec(hostname);
+      }
+    `);
+    expect(flows.findings).toHaveLength(0);
+    expect(flows.kills.length).toBeGreaterThan(0);
+    for (const kill of flows.kills) {
+      expect([...kill.neutralized]).toEqual(['command-injection']);
+    }
   });
 
   it('does not suppress after a $-prefixed receiver member is overwritten', () => {
@@ -566,6 +616,32 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect([...discoverProtoGuardCallees(cfgsOf(caller))]).not.toContain('isValidKey');
     expect([...discoverProtoGuardCallees([...helperCfgs, ...cfgsOf(caller)])]).toContain(
       'isValidKey',
+    );
+    const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    expect(flows.kills).toHaveLength(0);
+  });
+
+  it('does not kind-blind suppress aliased import of a proto-only helper', () => {
+    // Exclusion set has declared CFG name isValidKey; call site is isValidHostName.
+    const helper = `
+      export function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+    `;
+    const caller = `
+      import { isValidKey as isValidHostName } from './helpers';
+      function write(req: any) {
+        if (!isValidHostName(req.body)) return;
+        exec(req.body);
+      }
+    `;
+    const helperCfgs = cfgsOf(helper);
+    const declared = discoverProtoGuardCallees([...helperCfgs, ...cfgsOf(caller)]);
+    expect([...declared]).toContain('isValidKey');
+    expect([...declared]).not.toContain('isValidHostName');
+    expect([...expandBarrierExclusionsForImports(declared, importsFor(caller))]).toContain(
+      'isValidHostName',
     );
     const { flows } = analyze(caller, 0, { extraCfgs: helperCfgs });
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);

@@ -2088,11 +2088,21 @@ export function runScopeResolution(
     // Cross-file proto-reject helpers (even named isValid*): discover once
     // over every emit-safe CFG so an import of a proto-only helper cannot
     // kind-blind suppress command-injection in the caller file.
+    // Per-element try mirrors the in-loop isEmitSafeCfg filter — a throwing
+    // getter must skip that CFG, not abort runScopeResolution.
     const repoExcludeBarrierCallees = discoverProtoGuardCallees(
       emitParsedFiles.flatMap((pf) => {
         const side = pf.cfgSideChannel;
         if (!Array.isArray(side)) return [];
-        return (side as readonly (FunctionCfg | undefined | null)[]).filter(isEmitSafeCfg);
+        const out: FunctionCfg[] = [];
+        for (const c of side as readonly (FunctionCfg | undefined | null)[]) {
+          try {
+            if (isEmitSafeCfg(c)) out.push(c);
+          } catch {
+            // Malformed / hostile CFG element — skip (same isolation as below).
+          }
+        }
+        return out;
       }),
     );
     for (const pf of emitParsedFiles) {
