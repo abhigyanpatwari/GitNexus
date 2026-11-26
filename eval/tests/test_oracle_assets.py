@@ -807,6 +807,26 @@ def test_in_flight_retry_oracle_rejects_startup_only_repairs(
     assert "stops after two retries" in output
 
 
+@pytest.mark.skipif(os.name == "nt", reason="oracle controls use POSIX dependency symlinks and shell commands")
+def test_list_repos_oracle_rejects_a_filter_on_the_repository_path(
+    tmp_path: Path,
+    scenario_control_base: tuple[Path, dict[str, dict[str, object]]],
+) -> None:
+    # The task asks for a match on the repo name. Every other fixture path contains
+    # its repo's name, so without a path-only match the oracle could not tell them apart.
+    base, tasks = scenario_control_base
+    candidate = _oracle_control_candidate(base, tmp_path / "candidate")
+    patches = Path(__file__).resolve().parents[1] / "workflow_bench/oracles/reference"
+    subprocess.run(
+        ["git", "apply", str(patches / "inv-feature-list-repos-filter-path.patch")], cwd=candidate, check=True
+    )
+
+    _assert_behavioral_rejection(
+        _verify_shipped_oracle(candidate, tasks["inv-feature-list-repos-filter"]),
+        "filters case-insensitively before pagination",
+    )
+
+
 def test_weakened_authored_tests_cannot_produce_a_promotion_decision() -> None:
     incumbent = runner.aggregate([{"class": "demo", "resolved": True, **_metrics()} for _ in range(3)])
     candidate = runner.aggregate(

@@ -11,6 +11,8 @@ const repositories = [
   { name: 'Alpha', path: '/repos/z-alpha' },
   { name: 'alphabet', path: '/repos/a-alphabet' },
   { name: 'Beta', path: '/repos/beta' },
+  // The filter is on the name: this path matches every query below, the name none.
+  { name: 'Gamma', path: '/repos/alpha-missing-tools' },
 ];
 
 async function withMcpClient(check: (client: Client) => Promise<void>): Promise<void> {
@@ -80,8 +82,9 @@ describe('hidden oracle: list_repos name_contains', () => {
         'Alpha',
         'alphabet',
         'Beta',
+        'Gamma',
       ]);
-      expect(unfiltered.pagination).toMatchObject({ total: 3, returned: 3, hasMore: false });
+      expect(unfiltered.pagination).toMatchObject({ total: 4, returned: 4, hasMore: false });
     }));
 
   it('advertises the optional filter on the MCP tool schema', async () =>
