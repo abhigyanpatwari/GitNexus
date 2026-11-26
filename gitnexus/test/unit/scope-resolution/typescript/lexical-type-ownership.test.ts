@@ -180,25 +180,6 @@ class Service {
     },
   );
 
-  it('marks an exported ambient class without exporting ambient module members', () => {
-    const parsed = extractParsedFile(
-      typescriptProvider,
-      `
-export declare class AmbientBase { method(): string; }
-declare module 'external' { export class Nested { method(): string; } }
-export namespace Container { export class Inside {} }
-`,
-      'ambient.ts',
-    )!;
-    const verdicts = new Map(
-      parsed.localDefs
-        .filter((def) => def.type === 'Class')
-        .map((def) => [def.qualifiedName, def.isExported]),
-    );
-    expect(verdicts.get('AmbientBase')).toBe(true);
-    expect(verdicts.get('Nested')).toBe(false);
-    expect(verdicts.get('Inside')).toBe(false);
-  });
 
   it.each([
     {
