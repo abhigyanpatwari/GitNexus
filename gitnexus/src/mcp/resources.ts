@@ -590,10 +590,12 @@ example_queries:
     RETURN s.name, r.step
     ORDER BY r.step
 
-  guard_clauses (--pdg only; prefer pdg_query mode:'controls'): |
+  guard_clauses (--pdg only; prefer pdg_query mode:'controls'; replace the file path with yours): |
     MATCH (pred:BasicBlock)-[r:CodeRelation {type: 'CDG'}]->(dep:BasicBlock)
-    WHERE dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw'
+    WHERE dep.id STARTS WITH 'BasicBlock:src/auth/login.ts:'
+      AND (dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw')
     RETURN pred.startLine, r.reason AS branch, dep.startLine, dep.text
+    LIMIT 50
 `;
 }
 
