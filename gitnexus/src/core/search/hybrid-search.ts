@@ -162,6 +162,7 @@ export const formatHybridResults = (results: HybridSearchResult[]): string => {
  * explicitly disabled for this index (`disabledReason`, #3091), falls back to
  * semantic-only results instead of crashing (#1489). In the disabled case no
  * BM25 query is issued at all.
+ * Returns merged results along with keyword-lane availability and diagnostics.
  */
 export const hybridSearch = async (
   query: string,
@@ -176,7 +177,7 @@ export const hybridSearch = async (
 ): Promise<{
   results: HybridSearchResult[];
   ftsAvailable: boolean;
-  ftsQueryFailed: boolean;
+  ftsQueryErrors: readonly string[];
 }> => {
   // Use LadybugDB FTS for fresh BM25 results — skipped entirely when this
   // index recorded an explicit FTS opt-out (`disabledReason`, #3091).
@@ -185,12 +186,16 @@ export const hybridSearch = async (
   // Both lanes share the caller's database session. Drain the sibling before
   // propagating corruption so it cannot query after that session is released.
   const [keyword, semantic] = await Promise.allSettled([
-    (async (): Promise<FTSSearchResponse & { queryThrew?: boolean }> => {
+    (async (): Promise<FTSSearchResponse> => {
       try {
         return await searchFTSFromLbug(query, limit, undefined, disabledReason);
       } catch (error) {
         rethrowSymbolIdentityError(error);
-        return { results: [], ftsAvailable: false, queryThrew: true };
+        return {
+          results: [],
+          ftsAvailable: false,
+          nonBenignErrors: ['FTS search raised an unexpected error'],
+        };
       }
     })(),
     semanticSearch(executeQuery, query, limit).catch((error) => {
@@ -204,6 +209,6 @@ export const hybridSearch = async (
   return {
     results: mergeWithRRF(fts.results, semantic.value, limit),
     ftsAvailable: fts.ftsAvailable,
-    ftsQueryFailed: !!fts.queryThrew || !!fts.nonBenignErrors?.length,
+    ftsQueryErrors: fts.nonBenignErrors ?? [],
   };
 };
