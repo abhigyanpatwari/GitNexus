@@ -145,7 +145,12 @@ export const pruneBranchesCommand = async (
 
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));
-  } else if (pruned.length === 0 && failed.length === 0 && probeFailed.length === 0) {
+  } else if (
+    pruned.length === 0 &&
+    skippedLive.length === 0 &&
+    failed.length === 0 &&
+    probeFailed.length === 0
+  ) {
     console.log('No stale branch indexes found.');
   } else if (dryRun) {
     if (pruned.length > 0) {
