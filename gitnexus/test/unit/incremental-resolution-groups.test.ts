@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   collectResolutionGroupFiles,
   hasResolutionGroups,
 } from '../../src/core/incremental/resolution-groups.js';
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe('incremental resolution groups', () => {
   it('refreshes Java across directories when an unmentioned package type changes or is deleted', () => {
@@ -60,4 +62,24 @@ describe('incremental resolution groups', () => {
   ])('reports whether a repository with %s has a resolution group', (_label, paths, expected) => {
     expect(hasResolutionGroups(paths)).toBe(expected);
   });
+});
+
+describe('property-dispatch budget invalidation', () => {
+  it.each(['added.ts', 'removed.js', 'pkg/deleted.go', 'views/deleted.vue'])(
+    'checks current source rows after a change to %s when the budget is enabled',
+    async (changed) => {
+      vi.resetModules();
+      vi.stubEnv('GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY', '5');
+      const { collectResolutionGroupFiles, hasResolutionGroups } =
+        await import('../../src/core/incremental/resolution-groups.js');
+      const sources = ['left.ts', 'right.js', 'view.vue', 'pkg/model.go', 'Model.java'];
+      expect(collectResolutionGroupFiles([changed], [...sources, 'README.md'])).toEqual(
+        new Set(sources),
+      );
+      expect(collectResolutionGroupFiles([], sources)).toEqual(new Set());
+      expect(collectResolutionGroupFiles(['README.md'], sources)).toEqual(new Set());
+      expect(hasResolutionGroups(['left.ts'])).toBe(true);
+      expect(hasResolutionGroups(['README.md'])).toBe(false);
+    },
+  );
 });

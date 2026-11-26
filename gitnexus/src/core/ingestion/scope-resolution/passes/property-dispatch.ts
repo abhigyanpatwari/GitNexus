@@ -65,6 +65,7 @@ import {
 import { VALUE_REF_EDGE_REASON } from '../value-ref-edges.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import { CALL_TARGET_TYPES } from '../../model/symbol-table.js';
+import { MAX_PROPERTY_DISPATCH_EDGES_PER_KEY } from '../property-dispatch-budget.js';
 import {
   sourceBindingForDefinition,
   type SourceBindingRecorder,
@@ -431,6 +432,7 @@ export function emitPropertyDispatchCalls(
   callsEmitted: number;
   skippedKeys: number;
   skippedKeyNames: readonly string[];
+  skippedEdgePairs: number;
 } {
   const seen = new Set<string>();
   let usesEmitted = 0;
@@ -465,15 +467,29 @@ export function emitPropertyDispatchCalls(
     }
   }
 
+  // Count before emitting CALLS: dropping part-way makes coverage depend on
+  // traversal order and feeds partial targets into callback propagation.
+  const callSitesByKey = new Map<string, number>();
+  for (const parsed of parsedFiles) {
+    for (const site of parsed.referenceSites) {
+      if (site.kind !== 'call' || site.callForm !== 'member' || !registrations.has(site.name))
+        continue;
+      callSitesByKey.set(site.name, (callSitesByKey.get(site.name) ?? 0) + 1);
+    }
+  }
+
   // Keep the dropped key NAMES (bounded) — an over-cap key means no CALLS
   // are synthesized through it, and a count alone leaves the operator unable
   // to tell WHICH hook table lost coverage (#2522 review).
   let skippedKeys = 0;
+  let skippedEdgePairs = 0;
   const skippedKeyNames: string[] = [];
   for (const [key, defs] of registrations) {
-    if (defs.size > MAX_PROPERTY_DISPATCH_FANOUT) {
+    const pairs = (callSitesByKey.get(key) ?? 0) * defs.size;
+    if (defs.size > MAX_PROPERTY_DISPATCH_FANOUT || pairs > MAX_PROPERTY_DISPATCH_EDGES_PER_KEY) {
       registrations.delete(key);
       skippedKeys++;
+      skippedEdgePairs += pairs;
       if (skippedKeyNames.length < 20) skippedKeyNames.push(key);
     }
   }
@@ -506,5 +522,5 @@ export function emitPropertyDispatchCalls(
       }
     }
   }
-  return { usesEmitted, callsEmitted, skippedKeys, skippedKeyNames };
+  return { usesEmitted, callsEmitted, skippedKeys, skippedKeyNames, skippedEdgePairs };
 }

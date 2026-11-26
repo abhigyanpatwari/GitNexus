@@ -93,6 +93,7 @@ import {
   emitPropertyDispatchCalls,
   MAX_PROPERTY_DISPATCH_FANOUT,
 } from '../passes/property-dispatch.js';
+import { MAX_PROPERTY_DISPATCH_EDGES_PER_KEY } from '../property-dispatch-budget.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import {
   buildPropertyNameIndex,
@@ -787,11 +788,13 @@ interface RunScopeResolutionStats {
   readonly referenceEdgesEmitted: number;
   readonly referenceSkipped: number;
   /**
-   * Property-dispatch keys dropped for exceeding the fan-out cap. Non-zero
+   * Property-dispatch keys dropped for exceeding either cap. Non-zero
    * means member calls through those keys got NO synthesized CALLS — the
    * #2437 false-safe gap for exactly those keys (names are in the warn log).
    */
   readonly propertyDispatchSkippedKeys: number;
+  /** Candidate CALLS pairs omitted by whole-key property-dispatch drops. */
+  readonly propertyDispatchSkippedEdgePairs: number;
   /** Cross-file value references resolved through finalized import bindings. */
   readonly importedValueRefEdges: number;
   /**
@@ -1021,6 +1024,7 @@ export function runScopeResolution(
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
       propertyDispatchSkippedKeys: 0,
+      propertyDispatchSkippedEdgePairs: 0,
       importedValueRefEdges: 0,
       uniqueNamePropertyEdges: 0,
       uniqueNamePropertyAmbiguous: 0,
@@ -1059,6 +1063,7 @@ export function runScopeResolution(
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
       propertyDispatchSkippedKeys: 0,
+      propertyDispatchSkippedEdgePairs: 0,
       importedValueRefEdges: 0,
       uniqueNamePropertyEdges: 0,
       uniqueNamePropertyAmbiguous: 0,
@@ -1887,6 +1892,7 @@ export function runScopeResolution(
         callsEmitted: 0,
         skippedKeys: 0,
         skippedKeyNames: [] as readonly string[],
+        skippedEdgePairs: 0,
       }
     : emitPropertyDispatchCalls(
         graph,
@@ -1908,17 +1914,21 @@ export function runScopeResolution(
         recordSourceBinding,
       );
   if (propertyDispatch.skippedKeys > 0) {
-    // Never drop dispatch coverage silently: a hook table larger than the
-    // fan-out cap means member calls through those keys get no synthesized
+    // Never drop dispatch coverage silently: a key exceeding either cap
+    // means member calls through that key get no synthesized
     // CALLS — the #2437 false-safe gap reappears for exactly those keys.
     logger.warn(
       {
         lang: provider.language,
         skippedKeys: propertyDispatch.skippedKeys,
         skippedKeyNames: propertyDispatch.skippedKeyNames,
+        skippedEdgePairs: propertyDispatch.skippedEdgePairs,
         fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
+        edgeBudget: Number.isFinite(MAX_PROPERTY_DISPATCH_EDGES_PER_KEY)
+          ? MAX_PROPERTY_DISPATCH_EDGES_PER_KEY
+          : undefined,
       },
-      'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
+      'property-dispatch: keys over a dispatch cap were dropped (no CALLS synthesized for them)',
     );
   }
   probeEmit('property-dispatch-end');
@@ -2445,6 +2455,7 @@ export function runScopeResolution(
       propertyDispatch.callsEmitted,
     referenceSkipped: skipped,
     propertyDispatchSkippedKeys: propertyDispatch.skippedKeys,
+    propertyDispatchSkippedEdgePairs: propertyDispatch.skippedEdgePairs,
     importedValueRefEdges: importedValueRefs.emitted,
     uniqueNamePropertyEdges: uniqueNameProperties.emitted,
     uniqueNamePropertyAmbiguous: uniqueNameProperties.ambiguous,
