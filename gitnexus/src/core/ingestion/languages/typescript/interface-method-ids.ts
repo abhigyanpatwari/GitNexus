@@ -65,9 +65,11 @@ export function withMergedInterfaceMethodIds(extractor: MethodExtractor): Method
     },
     extractFromNode(node, context) {
       const result = extractor.extractFromNode?.(node, context) ?? null;
-      const owner = node.parent?.parent;
-      if (result && owner)
-        distinguishDeclaration(result, mergedMethodCollisions(owner, context, extractor));
+      if (result && node.type === 'method_signature') {
+        const owner = node.parent?.parent;
+        if (owner)
+          distinguishDeclaration(result, mergedMethodCollisions(owner, context, extractor));
+      }
       return result;
     },
   };

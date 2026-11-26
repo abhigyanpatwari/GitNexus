@@ -1184,6 +1184,19 @@ function emitCallFacts(
   }
   for (const [index, argument] of args.entries()) {
     if (options.argumentAlternativeNodeTypes?.has(argument.type)) {
+      // A computed result such as `value - 1` cannot forward a callback operand.
+      // Providers with custom selection rules classify the expression themselves.
+      const inner = unwrapParentheses(argument);
+      const operator = options.argumentAlternativeNodeTypes.has(inner.type)
+        ? inner.childForFieldName('operator')?.type
+        : undefined;
+      if (
+        !options.valueAlternatives &&
+        operator &&
+        !VALUE_SELECTING_OPERATORS.has(operator) &&
+        !RIGHT_SELECTING_OPERATORS.has(operator)
+      )
+        continue;
       for (const source of valueAlternatives(argument, options)) emitArgument(source, index);
     } else {
       emitArgument(argument, index);
