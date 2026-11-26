@@ -102,9 +102,35 @@ export function recordCommonJsModuleKind(
       names.push(`${name.startPosition.row + 1}:${name.startPosition.column}`);
     }
   }
+  // Only statements can hoist var into a script. Function, class and namespace
+  // bodies have their own var scopes and must not contribute declarations.
+  function recordNestedVars(node: SyntaxNode, names: string[]) {
+    if (node.type === 'variable_declaration') {
+      recordDeclaration(node, names);
+    } else if (
+      node.type === 'statement_block' ||
+      node.type.endsWith('_statement') ||
+      node.type === 'switch_body' ||
+      node.type === 'switch_case' ||
+      node.type === 'switch_default' ||
+      node.type === 'else_clause' ||
+      node.type === 'catch_clause' ||
+      node.type === 'finally_clause'
+    ) {
+      if (node.type === 'for_in_statement' && node.childForFieldName('kind')?.type === 'var') {
+        const left = node.childForFieldName('left');
+        if (left?.type === 'identifier')
+          names.push(`${left.startPosition.row + 1}:${left.startPosition.column}`);
+      }
+      for (const child of node.namedChildren) recordNestedVars(child, names);
+    }
+  }
+  const hasScriptVars = script && !declarationFile && (!sourceText || /\bvar\b/.test(sourceText));
   for (const statement of statements) {
     if (!statement) continue;
     if (script) recordDeclaration(statement, declarationFile ? globalNames : scriptNames);
+    if (hasScriptVars && statement.type !== 'variable_declaration')
+      recordNestedVars(statement, scriptNames);
     if (
       (!script || !declarationFile) &&
       statement.type === 'ambient_declaration' &&

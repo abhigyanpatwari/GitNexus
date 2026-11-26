@@ -236,9 +236,13 @@ function isLifetimePair(text: string, start: number, end: number): boolean {
     !isIdentifierChar(text[end + 1] ?? '')
   )
     return false;
-  let prior = start - 1;
-  while (prior >= 0 && /\s/.test(text.charAt(prior))) prior--;
-  return prior < 0 || '<,:&+'.includes(text.charAt(prior));
+  // Each lifetime starts at a token boundary. The closing quote in a C++
+  // character literal such as 'x'_tag follows its value, not a delimiter.
+  return [start, end].every((index) => {
+    let prior = index - 1;
+    while (prior >= 0 && /\s/.test(text.charAt(prior))) prior--;
+    return prior < 0 || '<,:&+'.includes(text.charAt(prior));
+  });
 }
 
 function isIdentifierChar(ch: string): boolean {

@@ -1,12 +1,13 @@
 import type { MethodExtractor, MethodExtractorContext, MethodInfo } from '../../method-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { resolveTsJsContainerTypeOwner } from '../../class-extractors/configs/typescript-javascript.js';
+import { arityForIdFromInfo } from '../../utils/method-props.js';
 
 type Collisions = ReadonlyMap<number, ReadonlySet<string>>;
 const collisionsByTree = new WeakMap<SyntaxNode['tree'], Collisions>();
 
 function signatureKey(method: MethodInfo): string {
-  return method.parameters.length + ':' + method.name;
+  return (arityForIdFromInfo(method) ?? 'rest') + ':' + method.name;
 }
 
 function mergedMethodCollisions(

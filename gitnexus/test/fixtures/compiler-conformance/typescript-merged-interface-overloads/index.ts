@@ -7,6 +7,10 @@ export function use(s: Sink, n: number) { return s.put(n); }
 export function first(s: Sink, b: boolean) { return s.put(b); }
 export function flush(s: Sink) { s.flush(); }
 
+interface Sink { append(...values: string[]): void; }
+interface Sink { append(count: number, ...values: string[]): void; }
+export function append(s: Sink) { s.append('a'); s.append(1, 'a'); }
+
 interface Account { open(): void; }
 interface Account { close(): void; }
 class CloudAccount implements Account {

@@ -53,6 +53,7 @@ export const PARSE_CACHE_PACKAGE_INPUTS = [
   'js-yaml',
   'smol-toml',
   'glob',
+  'minimatch',
   'ignore',
 ] as const;
 
