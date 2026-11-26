@@ -7877,19 +7877,23 @@ export class LocalBackend {
       };
     }
 
+    const depthLimited = frontier.length > 0 && reachedDepth === maxDepth;
     return {
       status: 'no_path',
       from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
       to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
       furthest: lastReached ? { ...lastReached, depth: reachedDepth } : null,
-      ...(truncated ? { truncated: true } : {}),
+      ...(truncated || depthLimited ? { truncated: true } : {}),
       suggestion: truncated
         ? 'Search was truncated at a traversal cap before exhausting the graph — a path ' +
           'may still exist. Narrow the search (a lower --depth, or trace from a more ' +
           'specific symbol), or use gitnexus context <symbol> to inspect connections.'
-        : 'No directed path found. The call chain likely breaks at dynamic dispatch, ' +
-          'reflection, or an external API boundary. Try gitnexus context <symbol> to see ' +
-          "both symbols' connections, or check if an interface/abstraction bridges them.",
+        : depthLimited
+          ? `No path found within the depth limit of ${maxDepth}. Longer paths were not searched. ` +
+            'Use gitnexus context on the furthest symbol to inspect its connections.'
+          : 'No directed path found. The call chain likely breaks at dynamic dispatch, ' +
+            'reflection, or an external API boundary. Try gitnexus context <symbol> to see ' +
+            "both symbols' connections, or check if an interface/abstraction bridges them.",
     };
   }
 
