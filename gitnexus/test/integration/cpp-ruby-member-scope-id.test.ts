@@ -78,6 +78,37 @@ struct Box<bool> {
     );
   }, 60000);
 
+  it('preserves trailing template arguments when an enclosing C++ scope is also templated', async () => {
+    const repo = createTempRepo('cpp-nested-template-member-id', {
+      'main.cpp': `
+template <>
+struct Outer<int> {
+  template <class U>
+  struct Box {};
+
+  template <>
+  struct Box<bool> {
+    void save() {}
+  };
+
+  template <>
+  struct Box<double> {
+    void save() {}
+  };
+};
+`,
+    });
+
+    const result = await runPipelineFromRepo(repo, () => {}, { skipGraphPhases: true });
+    const methodIds = new Set<string>();
+    result.graph.forEachNode((node) => {
+      if (node.label === 'Method') methodIds.add(node.id);
+    });
+
+    expect(methodIds.has('Method:main.cpp:Outer<int>.Box<bool>.save#0')).toBe(true);
+    expect(methodIds.has('Method:main.cpp:Outer<int>.Box<double>.save#0')).toBe(true);
+  }, 60000);
+
   it('qualifies C++ out-of-line method definitions without dropping or doubling namespaces', async () => {
     const repo = createTempRepo('cpp-out-of-line-member-id', {
       'main.cpp': `

@@ -1263,9 +1263,15 @@ export const findEnclosingClassInfo = (
         // intentionally untouched here.)
         const qualifiedOwnerName = getQualifiedOwnerName?.(current, nameNode.text);
         const templateSuffixStart = nameNode.text.indexOf('<');
+        const trailingOwnerSegment =
+          qualifiedOwnerName != null
+            ? qualifiedOwnerName.slice(qualifiedOwnerName.lastIndexOf('.') + 1)
+            : undefined;
         const qualifiedMemberOwnerName =
           qualifiedOwnerName != null
-            ? templateSuffixStart !== -1 && !qualifiedOwnerName.includes('<')
+            ? templateSuffixStart !== -1 &&
+              trailingOwnerSegment !== undefined &&
+              !trailingOwnerSegment.includes('<')
               ? `${qualifiedOwnerName}${nameNode.text.slice(templateSuffixStart)}`
               : qualifiedOwnerName
             : undefined;
