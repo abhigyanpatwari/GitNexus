@@ -180,7 +180,6 @@ class Service {
     },
   );
 
-
   it.each([
     {
       provider: javascriptProvider,
