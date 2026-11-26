@@ -624,6 +624,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const agentRef = useRef<any>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatStateRef = useRef<'idle' | 'streaming' | 'aborting'>('idle');
+  const chatGenerationRef = useRef(0);
 
   // Mirror graphMode into a ref so initializeAgent's deferred callers (lazy chat
   // init, settings-driven re-init) can read the current mode without re-creating
@@ -753,6 +754,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       chatAbortRef.current?.abort();
       const chatAbortController = new AbortController();
       chatAbortRef.current = chatAbortController;
+      const turnGeneration = chatGenerationRef.current;
 
       const providerCapabilities = getProviderCapabilities(llmSettings.activeProvider);
       const agentConfig = getAgentConfig(llmSettings);
@@ -787,6 +789,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       // Helper to update the message with current steps
       const updateMessage = () => {
+        if (turnGeneration !== chatGenerationRef.current) return;
+
         // Build content from steps for backwards compatibility
         const contentParts = stepsForMessage
           .filter((s) => s.type === 'reasoning' || s.type === 'content')
@@ -828,6 +832,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       try {
         const onChunk = (chunk: AgentStreamChunk) => {
+          if (turnGeneration !== chatGenerationRef.current) return;
           switch (chunk.type) {
             case 'reasoning':
               // LLM's thinking/reasoning - accumulate contiguous reasoning
@@ -1197,7 +1202,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           onChunk(chunk);
         }
       } catch (error) {
-        if (!chatAbortController.signal.aborted) {
+        if (!chatAbortController.signal.aborted && turnGeneration === chatGenerationRef.current) {
           const message = error instanceof Error ? error.message : String(error);
           setAgentError(message);
         }
@@ -1206,29 +1211,31 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
           cancelAnimationFrame(rafHandle);
           rafHandle = null;
         }
-        if (pendingUpdate) {
-          pendingUpdate = false;
-          if (chatAbortController.signal.aborted) {
-            const stoppedLabel = i18n.t('chat:stopped');
-            const markStopped = (tc: ToolCallInfo): ToolCallInfo =>
-              tc.status === 'running' || tc.status === 'pending'
-                ? { ...tc, status: 'stopped', result: stoppedLabel }
-                : tc;
-            for (let i = 0; i < toolCallsForMessage.length; i++) {
-              toolCallsForMessage[i] = markStopped(toolCallsForMessage[i]);
-            }
-            for (let i = 0; i < stepsForMessage.length; i++) {
-              const step = stepsForMessage[i];
-              if (step.type === 'tool_call' && step.toolCall) {
-                stepsForMessage[i] = { ...step, toolCall: markStopped(step.toolCall) };
+        if (turnGeneration === chatGenerationRef.current) {
+          if (pendingUpdate) {
+            pendingUpdate = false;
+            if (chatAbortController.signal.aborted) {
+              const stoppedLabel = i18n.t('chat:stopped');
+              const markStopped = (tc: ToolCallInfo): ToolCallInfo =>
+                tc.status === 'running' || tc.status === 'pending'
+                  ? { ...tc, status: 'stopped', result: stoppedLabel }
+                  : tc;
+              for (let i = 0; i < toolCallsForMessage.length; i++) {
+                toolCallsForMessage[i] = markStopped(toolCallsForMessage[i]);
+              }
+              for (let i = 0; i < stepsForMessage.length; i++) {
+                const step = stepsForMessage[i];
+                if (step.type === 'tool_call' && step.toolCall) {
+                  stepsForMessage[i] = { ...step, toolCall: markStopped(step.toolCall) };
+                }
               }
             }
+            updateMessage();
           }
-          updateMessage();
+          chatStateRef.current = 'idle';
+          setIsChatLoading(false);
+          setCurrentToolCalls([]);
         }
-        chatStateRef.current = 'idle';
-        setIsChatLoading(false);
-        setCurrentToolCalls([]);
       }
     },
     [
@@ -1286,6 +1293,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const clearChat = useCallback(() => {
+    chatGenerationRef.current += 1;
     chatAbortRef.current?.abort();
     chatAbortRef.current = null;
     chatStateRef.current = 'idle';

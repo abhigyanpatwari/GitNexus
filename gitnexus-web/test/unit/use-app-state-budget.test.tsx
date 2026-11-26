@@ -157,4 +157,54 @@ describe('useAppState token budget visibility', () => {
       window.cancelAnimationFrame = originalCancelRaf;
     }
   });
+
+  it('does not recreate cleared assistant messages when clearChat runs before pending flush', async () => {
+    const originalRaf = window.requestAnimationFrame;
+    const originalCancelRaf = window.cancelAnimationFrame;
+    window.requestAnimationFrame = vi.fn(() => 43);
+    window.cancelAnimationFrame = vi.fn();
+
+    try {
+      saveSettings({
+        ...loadSettings(),
+        agent: { maxIterations: 8, tokenBudget: 0 },
+      });
+      const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+
+      act(() => {
+        result.current.refreshLLMSettings();
+      });
+
+      mockStream.mockImplementation(async () => {
+        return (async function* () {
+          yield [
+            'messages',
+            [
+              {
+                _getType: () => 'ai',
+                id: 'ai-cleared',
+                content: 'Will be cleared',
+                tool_calls: [],
+                usage_metadata: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+              },
+              {},
+            ],
+          ];
+          act(() => {
+            result.current.clearChat();
+          });
+          throw new DOMException('Aborted', 'AbortError');
+        })();
+      });
+
+      await act(async () => {
+        await result.current.sendChatMessage('clear mid-stream test');
+      });
+
+      expect(result.current.chatMessages).toEqual([]);
+    } finally {
+      window.requestAnimationFrame = originalRaf;
+      window.cancelAnimationFrame = originalCancelRaf;
+    }
+  });
 });
