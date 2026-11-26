@@ -36,3 +36,13 @@ function untyped(repos) {
 }
 
 module.exports = { paramArray, paramGeneric, typedConst, decoyArray, partialIndex, untyped };
+
+/** @param {Map<string, User>} byName */
+function mapIndex(byName) {
+  byName[0].save();
+}
+
+/** @param {Promise<User>} pending */
+function promiseIndex(pending) {
+  pending[0].save();
+}

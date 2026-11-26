@@ -37,7 +37,10 @@ import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
-import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
+import type {
+  ElementAccessRoute,
+  ScopeResolver,
+} from '../../scope-resolution/contract/scope-resolver.js';
 import { canonicalizeEcmaWorkspaceBindings } from '../typescript/canonicalize-bindings.js';
 import { javascriptProvider } from '../typescript.js';
 import { jsMergeBindings } from './merge-bindings.js';
@@ -51,7 +54,20 @@ import {
 import { isCommonJsExportAssignment } from '../typescript/cjs-export-receiver.js';
 import { loadNodeWorkspacePackages } from '../typescript/workspace-packages.js';
 import { isJsSelfBoundCallableFallbackPlausible } from './callable-visibility.js';
-import { indexOnlyElementType } from '../../type-extractors/shared.js';
+
+/**
+ * `elementTypeOf` for JavaScript: only an array spelling — JSDoc `{User[]}`,
+ * `{Array<User>}` or `{ReadonlyArray<User>}` — yields its element under a
+ * subscript. Any other generic (`Map<string, User>`, `Promise<User>`) is not
+ * an integer-indexed container and declines, as do the `await` and accessor
+ * routes.
+ */
+function jsArrayElementType(type: string, via: ElementAccessRoute): string | undefined {
+  if (via.kind !== 'index') return undefined;
+  const spelling = type.replace(/\s+/g, '');
+  if (spelling.endsWith('[]')) return spelling.slice(0, -2) || undefined;
+  return /^(?:Readonly)?Array<(.+)>$/.exec(spelling)?.[1];
+}
 
 async function loadResolutionConfig(repoPath: string, fresh = false) {
   return {
@@ -63,9 +79,8 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 const javascriptScopeResolver: ScopeResolver = {
   postExtractSourceTextPolicy: 'uncached-files',
   populateWorkspaceReferences: canonicalizeEcmaWorkspaceBindings,
-  // Same subscript rule as TypeScript: a JSDoc `{User[]}` / `{Array<User>}`
-  // element types `repos[0].save()`; the accessor route declines.
-  elementTypeOf: indexOnlyElementType,
+  // A JSDoc array spelling types `repos[0].save()`; see jsArrayElementType.
+  elementTypeOf: jsArrayElementType,
   // Construction is keyword-prefixed: `new Service(db).doWork()` (#2708).
   constructionSyntax: { keyword: 'new' },
   language: SupportedLanguages.JavaScript,

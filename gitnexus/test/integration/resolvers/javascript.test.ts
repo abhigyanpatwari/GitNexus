@@ -1184,4 +1184,11 @@ describe('JavaScript indexed element of a JSDoc-typed array', () => {
   it('leaves an untyped receiver unresolved', () => {
     expect(saveTargets('untyped')).toEqual([]);
   });
+
+  it.each(['mapIndex', 'promiseIndex'])(
+    'leaves %s unresolved: a non-array generic is not an indexed container',
+    (caller) => {
+      expect(saveTargets(caller)).toEqual([]);
+    },
+  );
 });
