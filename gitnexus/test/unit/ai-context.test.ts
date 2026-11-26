@@ -187,6 +187,23 @@ describe('generateAIContextFiles', () => {
       for (const file of ['AGENTS.md', 'CLAUDE.md']) {
         const content = await fs.readFile(path.join(dir, file), 'utf-8');
         expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
+
+        // Issue #3976: pre-edit impact guidance must be scoped to code changes.
+        expect(content).toContain(
+          'MUST run impact before code/config/test edits.',
+        );
+        expect(content).toContain(
+          'Docs-only exempt.',
+        );
+        expect(content).toContain(
+          'NEVER edit code/config/tests without MCP/CLI impact analysis.',
+        );
+
+        // The previous unconditional wording must not return.
+        expect(content).not.toContain('MUST run impact before editing.');
+        expect(content).not.toContain(
+          'NEVER edit a function, class, or method before MCP/CLI impact analysis.',
+        );
         expect(content).toContain(
           'node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .',
         );
