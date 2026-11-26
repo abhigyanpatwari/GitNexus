@@ -153,7 +153,7 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
   if (reconstructedMeta) {
     await saveMeta(storagePath, meta);
   }
-  await registerRepo(repoPath, meta, { storagePath });
+  await registerRepo(repoPath, meta, { storagePath, recoverBranches: true });
   await ensureGitNexusIgnored(repoPath, storagePath);
 
   const projectName = path.basename(repoPath);

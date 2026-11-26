@@ -174,7 +174,7 @@ describe('indexCommand', () => {
         repoPath: resolvedRepo,
         lastCommit: '',
       }),
-      { storagePath: `${resolvedRepo}/.gitnexus` },
+      { storagePath: `${resolvedRepo}/.gitnexus`, recoverBranches: true },
     );
     expect(process.exitCode).toBeUndefined();
   });
@@ -206,7 +206,7 @@ describe('indexCommand', () => {
         repoPath: resolvedRepo,
         storagePath: `${resolvedRepo}/.gitnexus`,
       }),
-      { storagePath: `${resolvedRepo}/.gitnexus` },
+      { storagePath: `${resolvedRepo}/.gitnexus`, recoverBranches: true },
     );
     expect(process.exitCode).toBeUndefined();
   });
@@ -233,7 +233,7 @@ describe('indexCommand', () => {
         repoPath: resolvedRepo,
         lastCommit: '',
       }),
-      { storagePath: `${resolvedRepo}/.gitnexus` },
+      { storagePath: `${resolvedRepo}/.gitnexus`, recoverBranches: true },
     );
     expect(process.exitCode).toBeUndefined();
   });
@@ -257,7 +257,7 @@ describe('indexCommand', () => {
     expect(mockRegisterRepo).toHaveBeenCalledWith(
       resolvedRepo,
       expect.objectContaining({ repoPath: resolvedRepo }),
-      { storagePath: `${resolvedRepo}/.gitnexus` },
+      { storagePath: `${resolvedRepo}/.gitnexus`, recoverBranches: true },
     );
     expect(mockEnsureGitNexusIgnored).toHaveBeenCalledTimes(1);
     expect(mockEnsureGitNexusIgnored).toHaveBeenCalledWith(
@@ -297,7 +297,7 @@ describe('indexCommand', () => {
     expect(mockRegisterRepo).toHaveBeenCalledWith(
       resolvedRepo,
       expect.objectContaining({ repoPath: resolvedRepo }),
-      { storagePath: `${resolvedRepo}/.gitnexus` },
+      { storagePath: `${resolvedRepo}/.gitnexus`, recoverBranches: true },
     );
     expect(mockEnsureGitNexusIgnored).toHaveBeenCalledWith(
       resolvedRepo,
