@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compareReports } from '../compare.mjs';
@@ -10,6 +11,46 @@ const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('invoked parameters with the same name retain their own declarations and types', () => {
+  const report = compilerReport(
+    path.resolve(root, '../typescript-parameter-calls'),
+  ).PARAMETER_CALLS;
+  assert.equal(report.sites.length, 2);
+  const [numbers, strings] = report.sites;
+  const [numberDeclaration, numberType] = JSON.parse(numbers.target);
+  const [stringDeclaration, stringType] = JSON.parse(strings.target);
+  assert.notEqual(numberDeclaration, stringDeclaration);
+  assert.notEqual(numberType, stringType);
+  for (const wrong of [
+    [stringDeclaration, numberType],
+    [numberDeclaration, stringType],
+  ]) {
+    const sites = [{ ...numbers, target: JSON.stringify(wrong) }, strings];
+    assert.throws(() => compareReports(report, { ...report, sites }), /Missing from actual/);
+  }
+});
+
+test('the compiler identifies an anonymous default class in its heritage and overrides', () => {
+  const project = path.resolve(root, '../../typescript-class-declarations/anonymous-default');
+  const report = compilerReport(project, [], true);
+  assert.deepEqual(report.EXTENDS.edges, [{ from: 'main.ts#5:default', to: 'main.ts#1:Base' }]);
+  assert.deepEqual(report.METHOD_OVERRIDES.edges, [
+    { from: 'main.ts#5:default', to: 'main.ts#1:Base.run' },
+  ]);
+  assert.ok(report.DECLARATIONS.edges.some(({ to }) => to === 'Class:default@main.ts#5:default'));
+});
+
+test('a same-named callback in another module fails the concrete target comparison', () => {
+  const project = path.resolve(root, '../../typescript-callable-flow/imported');
+  const report = compilerReport(project).CALLBACK_TARGETS;
+  assert.equal(report.sites.length, 1);
+  const [call] = report.sites;
+  assert.equal(call.file, 'wrapper.ts');
+  assert.equal(call.target, 'target.ts#1:7');
+  const sites = [{ ...call, target: 'decoy.ts#1:7' }];
+  assert.throws(() => compareReports(report, { ...report, sites }), /Missing from actual/);
+});
 
 test('a JSX member and the function it invokes have different declarations at the same site', () => {
   const fixture = 'lang-resolution/typescript-jsx-as-call';

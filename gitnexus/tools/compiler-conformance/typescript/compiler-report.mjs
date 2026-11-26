@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { compilerImportTrace } from './import-trace.mjs';
+import { callbackTargets } from './compiler-callbacks.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 import { existsSync, globSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,6 +25,8 @@ export const relations = [
   'PROPERTY_READS',
   'PROPERTY_WRITES',
   'TYPE_PARAMETER_USES',
+  'PARAMETER_CALLS',
+  'CALLBACK_TARGETS',
   'VARIABLE_READS',
   'DECLARATIONS',
   'HAS_METHOD',
@@ -58,6 +61,12 @@ function startOfDeclaration(node) {
   return node.getStart();
 }
 
+function declarationName(node) {
+  if (node.name) return node.name.getText();
+  if (node.modifiers?.some((modifier) => modifier.kind === SyntaxKind.DefaultKeyword))
+    return 'default';
+}
+
 function identity(root, node) {
   const source = node.getSourceFile();
   if (node.kind === SyntaxKind.SourceFile) return relative(root, source);
@@ -71,7 +80,7 @@ function identity(root, node) {
       SyntaxKind.EnumDeclaration,
     ].includes(node.kind)
   ) {
-    return fileLine + ':' + node.name.getText();
+    return fileLine + ':' + (declarationName(node) ?? pos.character);
   }
   return fileLine + ':' + pos.character;
 }
@@ -189,8 +198,14 @@ function reportProject(
       ...program.getSemanticDiagnostics(),
     ];
     const erasedValueUses = new Map();
+    const nonCallableExpressions = new Set();
     const diagnostics = compilerDiagnostics
       .map((diagnostic) => {
+        if (diagnostic.code === 2349) {
+          nonCallableExpressions.add(
+            JSON.stringify([diagnostic.fileName, diagnostic.pos, diagnostic.end]),
+          );
+        }
         if (diagnostic.code === 1361 || diagnostic.code === 1362) {
           const positions = erasedValueUses.get(diagnostic.fileName) ?? new Set();
           positions.add(diagnostic.pos);
@@ -239,10 +254,49 @@ function reportProject(
       }
     }
 
+    const callsWithArguments = [];
+    const invokedParameters = [];
     function call(node, callee) {
       const caller = enclosingCaller(node);
       const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
-      edge('CALLS', caller, selected, node);
+      if (
+        node.arguments?.length &&
+        selected?.parameters?.length &&
+        files.has(selected.getSourceFile().fileName)
+      ) {
+        callsWithArguments.push({
+          parameters: Array.from(selected.parameters).filter((p) => p.name?.getText() !== 'this'),
+          args: node.arguments,
+        });
+      }
+      const parameter =
+        callee.kind === SyntaxKind.Identifier
+          ? symbolDeclaration(checker.getSymbolAtLocation(callee), project)
+          : undefined;
+      if (parameter?.kind === SyntaxKind.Parameter && parameter.type) {
+        invokedParameters.push({ parameter, caller, site: node });
+        const source = node.getSourceFile();
+        const position = (offset) => {
+          const { line, character } = source.getLineAndCharacterOfPosition(offset);
+          return line + 1 + ':' + character;
+        };
+        result.PARAMETER_CALLS.sites.push({
+          file: relative(root, source),
+          start: position(node.getStart()),
+          end: position(node.end),
+          status: 'resolved',
+          target: JSON.stringify([identity(root, parameter.name), parameter.type.getText()]),
+        });
+      }
+      // A signature written on a parameter has no executable declaration.
+      // Its identity and spelling are checked at the invocation above.
+      const parameterSignature =
+        parameter?.kind === SyntaxKind.Parameter &&
+        selected?.kind === SyntaxKind.FunctionType &&
+        selected.getSourceFile().fileName === parameter.getSourceFile().fileName &&
+        selected.getStart() === parameter.type?.getStart() &&
+        selected.end === parameter.type.end;
+      if (!parameterSignature) edge('CALLS', caller, selected, node);
       if (callee.kind === SyntaxKind.PropertyAccessExpression) {
         const member = symbolDeclaration(checker.getSymbolAtLocation(callee.name), project);
         if (
@@ -310,8 +364,11 @@ function reportProject(
           }
         }
       }
-      if (node.kind !== SyntaxKind.ClassDeclaration || !node.name) return;
-      const classSymbol = checker.getSymbolAtLocation(node.name);
+      if (node.kind !== SyntaxKind.ClassDeclaration) return;
+      const classSymbol = node.name
+        ? checker.getSymbolAtLocation(node.name)
+        : checker.getTypeAtLocation(node)?.getSymbol();
+      if (!classSymbol) return;
       const instance = checker.getDeclaredTypeOfSymbol(classSymbol);
       for (const contract of interfaceContracts(node)) {
         for (const member of checker.getPropertiesOfType(contract)) {
@@ -416,7 +473,7 @@ function reportProject(
         const name =
           node.kind === SyntaxKind.Constructor
             ? 'constructor'
-            : (variableFunction ? node.parent.name : node.name)?.getText();
+            : declarationName(variableFunction ? node.parent : node);
         if (label && name) {
           const target = graphIdentity(root, node, project);
           result.DECLARATIONS.edges.push({
@@ -462,7 +519,17 @@ function reportProject(
       }
       const isCall =
         node.kind === SyntaxKind.NewExpression || node.kind === SyntaxKind.CallExpression;
-      const rejected = isCall && erasedValueUses.size > 0 && rejectedCall(node);
+      const rejected =
+        isCall &&
+        ((erasedValueUses.size > 0 && rejectedCall(node)) ||
+          (nonCallableExpressions.size > 0 &&
+            nonCallableExpressions.has(
+              JSON.stringify([
+                node.getSourceFile().fileName,
+                node.expression.getStart(),
+                node.expression.end,
+              ]),
+            )));
       if (rejected) {
         const source = node.getSourceFile();
         const start = source.getLineAndCharacterOfPosition(node.getStart());
@@ -538,6 +605,13 @@ function reportProject(
       assert.ok(source, 'Missing compiler source ' + file);
       visit(source);
     }
+    callbackTargets(
+      project,
+      callsWithArguments,
+      invokedParameters,
+      (decl) => identity(root, decl),
+      (caller, target, site) => edge('CALLBACK_TARGETS', caller, target, site),
+    );
     return result;
   } finally {
     api.close();

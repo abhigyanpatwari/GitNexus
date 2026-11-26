@@ -1,3 +1,4 @@
+import { callableCallSiteLines, callsFrom } from '../../helpers/callable-flow.js';
 import { runtimeParseIdentity } from '../../helpers/runtime-parse-identity.js';
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -39,7 +40,7 @@ const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.Kotlin]: 'matrix',
   [SupportedLanguages.Swift]: 'matrix',
   [SupportedLanguages.Dart]: 'matrix',
-  [SupportedLanguages.Vue]: 'matrix',
+  [SupportedLanguages.Vue]: 'dedicated',
   [SupportedLanguages.Cobol]: 'matrix',
   [SupportedLanguages.Zig]: 'matrix',
   // Objective-C message sends are resolved by its ScopeResolver. The provider
@@ -200,21 +201,7 @@ void main() {
 }
 `,
   },
-  {
-    language: SupportedLanguages.Vue,
-    extension: 'vue',
-    caller: 'invoke',
-    target: 'target',
-    source: `
-<script setup lang="ts">
-function target(): void {}
-function invoke(callback: () => void): void { callback(); }
-const first = target;
-const second = first;
-invoke(second);
-</script>
-`,
-  },
+
   {
     language: SupportedLanguages.Cobol,
     extension: 'cbl',
@@ -285,37 +272,6 @@ async function runSources(files: Record<string, string>, options: PipelineOption
   }
 }
 
-function callableCallSiteLines(
-  result: Awaited<ReturnType<typeof runSource>>,
-  source: string,
-  target: string,
-): number[] {
-  return getRelationships(result, 'CALLS')
-    .filter(
-      (edge) =>
-        edge.source === source &&
-        edge.target === target &&
-        edge.rel.reason === 'callable-value-flow',
-    )
-    .map((edge) =>
-      Number(
-        edge.rel.id
-          .slice(edge.rel.id.lastIndexOf(edge.rel.targetId) + edge.rel.targetId.length)
-          .match(/^:(\d+):\d+(?::\d+:\d+)?$/)?.[1],
-      ),
-    )
-    .sort((left, right) => left - right);
-}
-
-function callsFrom(
-  result: Awaited<ReturnType<typeof runSource>>,
-  source: string,
-): Array<{ target: string; reason: string }> {
-  return getRelationships(result, 'CALLS')
-    .filter((edge) => edge.source === source)
-    .map((edge) => ({ target: edge.target, reason: edge.rel.reason ?? '' }));
-}
-
 function callableTargetQualifiedNames(
   result: Awaited<ReturnType<typeof runSource>>,
   source: string,
@@ -369,16 +325,6 @@ describe('callable value flow', () => {
     },
     90_000,
   );
-
-  it('keeps template-first Vue source coordinates unverified', async () => {
-    const fixture = PROVIDER_FLOW_CASES.find(({ extension }) => extension === 'vue')!;
-    const result = await runSource(
-      'vue',
-      '<template><div>Example</div></template>\n' + fixture.source,
-    );
-    expect(result.relationshipIntegrity?.unverifiedEdges).toBeGreaterThan(0);
-    expect(result.relationshipIntegrity?.checkedSites).toBe(0);
-  }, 90_000);
 
   it('verifies complete Python call spans in original source coordinates', async () => {
     const result = await runSource(
@@ -779,109 +725,6 @@ int main() {
     expect(callbackEdges[0]!.targetFilePath).toBe('target.cpp');
   }, 60_000);
 
-  it('resolves TypeScript callable assignment, copy, and actual-to-formal invocation', async () => {
-    const result = await runSource(
-      'ts',
-      `
-function target(): void {}
-function invoke(callback: () => void): void { callback(); }
-function outer(cb: () => void): void { invoke(cb); }
-
-const first = target;
-const second = first;
-second();
-outer(second);
-`,
-    );
-
-    expect(callsFrom(result, 'main.ts')).toEqual(
-      expect.arrayContaining([
-        { target: 'target', reason: 'callable-value-flow' },
-        expect.objectContaining({ target: 'outer' }),
-      ]),
-    );
-    expect(callsFrom(result, 'invoke')).toContainEqual({
-      target: 'target',
-      reason: 'callable-value-flow',
-    });
-  }, 60_000);
-
-  it('propagates an imported callable through a cross-file wrapper without selecting a decoy', async () => {
-    const result = await runSources({
-      'target.ts': `export function target(): void {}`,
-      'decoy.ts': `export function target(): void {}`,
-      'wrapper.ts': `
-export function invoke(callback: () => void): void {
-  callback();
-}
-`,
-      'main.ts': `
-import { target } from './target';
-import { invoke } from './wrapper';
-const assigned = target;
-invoke(assigned);
-`,
-    });
-
-    const edge = getRelationships(result, 'CALLS').find(
-      (candidate) =>
-        candidate.source === 'invoke' &&
-        candidate.target === 'target' &&
-        candidate.rel.reason === 'callable-value-flow',
-    );
-    expect(edge).toBeDefined();
-    expect(edge!.sourceFilePath).toBe('wrapper.ts');
-    expect(edge!.targetFilePath).toBe('target.ts');
-    expect(
-      getRelationships(result, 'CALLS').some(
-        (candidate) => candidate.source === 'invoke' && candidate.targetFilePath === 'decoy.ts',
-      ),
-    ).toBe(false);
-  }, 60_000);
-
-  it('resolves a bound method assigned to a variable and passed into a wrapper', async () => {
-    const result = await runSource(
-      'ts',
-      `
-class Worker {
-  run(): void {}
-}
-class Decoy {
-  run(): void {}
-}
-function invoke(callback: () => void): void { callback(); }
-const worker = new Worker();
-const assigned = worker.run;
-invoke(assigned);
-`,
-    );
-
-    const edge = getRelationships(result, 'CALLS').find(
-      (candidate) =>
-        candidate.source === 'invoke' &&
-        candidate.target === 'run' &&
-        candidate.rel.reason === 'callable-value-flow',
-    );
-    expect(edge).toBeDefined();
-    expect(edge!.targetLabel).toBe('Method');
-    expect(edge!.rel.targetId).toContain('Worker.run');
-  }, 60_000);
-
-  it('does not reinterpret call results passed as arguments as callable designators', async () => {
-    const result = await runSource(
-      'ts',
-      `
-function target(): void {}
-function factory(): () => void { return target; }
-function invoke(callback: () => void): void { callback(); }
-invoke(factory());
-`,
-    );
-
-    expect(callableCallSiteLines(result, 'invoke', 'target')).toEqual([]);
-    expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
-  }, 60_000);
-
   it('resolves COBOL procedure pointers in sequence-numbered fixed format (#2522 review)', async () => {
     const result = await runSource(
       'cbl',
@@ -1132,30 +975,6 @@ int entry(void) {
     expect(callableCallSiteLines(result, 'entry', 'initial')).toEqual([9]);
   }, 60_000);
 
-  it('keeps a direct call outside a nested same-name callable binding on ordinary resolution', async () => {
-    const result = await runSource(
-      'ts',
-      `
-function target(): void {}
-function replacement(): void {}
-function entry(): void {
-  target();
-  {
-    const target = replacement;
-    target();
-  }
-}
-`,
-    );
-
-    expect(
-      getRelationships(result, 'CALLS').some(
-        (edge) => edge.source === 'entry' && edge.target === 'target',
-      ),
-    ).toBe(true);
-    expect(callableCallSiteLines(result, 'entry', 'replacement')).toEqual([8]);
-  }, 60_000);
-
   it('keeps the declaration as a target when a function is reassigned through its own name and the RHS is unresolvable (#2522 review)', async () => {
     const result = await runSource(
       'js',
@@ -1327,25 +1146,6 @@ int entry() {
     expect(sourceParameterCounts).toEqual([1]);
   }, 90_000);
 
-  it('terminates copy cycles and preserves the reachable callable target', async () => {
-    const result = await runSource(
-      'ts',
-      `
-function target(): void {}
-let first = target;
-let second = first;
-first = second;
-second = first;
-second();
-`,
-    );
-
-    expect(callsFrom(result, 'main.ts')).toContainEqual({
-      target: 'target',
-      reason: 'callable-value-flow',
-    });
-  }, 60_000);
-
   it('suppresses rather than partially emitting an over-cap candidate set', async () => {
     const targets = Array.from({ length: 33 }, (_, index) => `target${index}`);
     const result = await runSource(
@@ -1360,75 +1160,6 @@ second();
 
     expect(callableTargetIds(result, 'main.js')).toEqual([]);
   }, 60_000);
-
-  it('does not treat a callable invocation result as the callable itself', async () => {
-    const result = await runSource(
-      'ts',
-      `
-function target(): number { return 1; }
-const value = target();
-value();
-`,
-    );
-
-    expect(callsFrom(result, 'main.ts')).not.toContainEqual({
-      target: 'target',
-      reason: 'callable-value-flow',
-    });
-  }, 60_000);
-
-  it('replays identical callable-flow semantics from the durable warm parse cache', async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-callable-warm-repo-'));
-    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-callable-warm-store-'));
-    try {
-      fs.writeFileSync(
-        path.join(root, 'main.ts'),
-        `
-function target(): void {}
-function invoke(callback: () => void): void { callback(); }
-const assigned = target;
-invoke(assigned);
-`,
-        'utf8',
-      );
-      const coldCache: ParseCache = {
-        identity: parseIdentity,
-        entries: new Map(),
-        usedKeys: new Set(),
-        storagePath: storage,
-        writeStoragePath: storage,
-        onDiskKeys: new Set(),
-      };
-      const cold = await runPipelineFromRepo(root, () => {}, {
-        skipGraphPhases: true,
-        parseCache: coldCache,
-      });
-      const savedKeys = await saveParseCache(storage, coldCache);
-      await pruneAndSaveDurableParsedFileStore(
-        getDurableParsedFileDir(storage),
-        parseIdentity.base,
-        new Set(savedKeys),
-      );
-      const warmCache = await loadParseCache(storage, parseIdentity, storage);
-      const warm = await runPipelineFromRepo(root, () => {}, {
-        skipGraphPhases: true,
-        parseCache: warmCache,
-      });
-      const project = (result: Awaited<ReturnType<typeof runSource>>) =>
-        getRelationships(result, 'CALLS')
-          .filter((edge) => edge.rel.reason === 'callable-value-flow')
-          .map(
-            (edge) =>
-              `${edge.sourceFilePath}:${edge.source}->${edge.targetFilePath}:${edge.target}`,
-          )
-          .sort();
-      expect(project(warm)).toEqual(project(cold));
-      expect(project(warm)).toEqual(['main.ts:invoke->main.ts:target']);
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-      fs.rmSync(storage, { recursive: true, force: true });
-    }
-  }, 120_000);
 
   it('replays closure-binding resolution from the durable warm parse cache (#2693)', async () => {
     // The #2693 captures are provider-synthesized (Dart's fieldless
@@ -1490,42 +1221,6 @@ invoke(assigned);
       fs.rmSync(storage, { recursive: true, force: true });
     }
   }, 120_000);
-
-  it('keeps normal/PDG targets identical and stamps calleeIds at the indirect invocation', async () => {
-    const source = `
-function target(): void {}
-function invoke(callback: () => void): void { callback(); }
-const assigned = target;
-invoke(assigned);
-`;
-    const normal = await runSource('ts', source);
-    const pdg = await runSource('ts', source, { pdg: true });
-    const project = (result: Awaited<ReturnType<typeof runSource>>) =>
-      callsFrom(result, 'invoke')
-        .filter((edge) => edge.reason === 'callable-value-flow')
-        .map((edge) => edge.target)
-        .sort();
-    expect(project(pdg)).toEqual(project(normal));
-    expect(project(pdg)).toEqual(['target']);
-
-    const matchingBlocks: Array<Record<string, unknown>> = [];
-    pdg.graph.forEachNode((node) => {
-      if (
-        node.label === 'BasicBlock' &&
-        typeof node.properties.text === 'string' &&
-        node.properties.text.includes('callback()')
-      ) {
-        matchingBlocks.push(node.properties);
-      }
-    });
-    expect(matchingBlocks).not.toHaveLength(0);
-    expect(
-      matchingBlocks.some(
-        (properties) =>
-          typeof properties.calleeIds === 'string' && properties.calleeIds.includes('target'),
-      ),
-    ).toBe(true);
-  }, 90_000);
 
   it('does not read a Zig member call `x.f(arg)` as a direct call named `f` (Zig PR review, F2)', async () => {
     // tree-sitter-zig spells `field_expression` as `object:`/`member:`. Read as

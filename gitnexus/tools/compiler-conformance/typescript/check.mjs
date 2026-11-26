@@ -3,6 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
+import { lookupNameClaim } from '../../../dist/core/ingestion/scope-resolution/scope/walkers.js';
 import { compareReports } from '../compare.mjs';
 import { graphDeclaration } from '../gitnexus-report.mjs';
 import { compilerReport, emptyReport, graphRelations, relations } from './compiler-report.mjs';
@@ -16,7 +17,7 @@ function graphIdentity(node) {
   return graphDeclaration(node);
 }
 
-function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess) {
+function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess, parameterCalls) {
   const owners = new Map();
   for (const edge of graph.iterRelationshipsByType('HAS_METHOD')) {
     const owner = graph.getNode(edge.sourceId);
@@ -29,6 +30,8 @@ function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess) 
       : graphIdentity(node);
   }
   const result = emptyReport();
+  result.PARAMETER_CALLS.sites = parameterCalls;
+  const parameterRanges = new Set(parameterCalls.map(siteKey));
   if (propertyAccess) {
     for (const edge of graph.iterRelationshipsByType('ACCESSES')) {
       const caller = graph.getNode(edge.sourceId);
@@ -78,9 +81,7 @@ function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess) 
     }
   }
   result.CALLS.sites.push(...boundCalls);
-  const boundRanges = new Set(
-    boundCalls.map((site) => JSON.stringify([site.file, site.start, site.end])),
-  );
+  const boundRanges = new Set(boundCalls.map(siteKey));
   for (const relation of graphRelations) {
     for (const edge of graph.iterRelationshipsByType(relation)) {
       if (edge.reason === 'interface-dispatch') continue;
@@ -88,41 +89,79 @@ function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess) 
       const from = graph.getNode(edge.sourceId);
       const to = graph.getNode(edge.targetId);
       assert.ok(from && to, 'Unpublished endpoint: ' + edge.id);
-      const target = graphIdentity(to);
-      const kind =
-        relation === 'CALLS' && to.label === 'Property' ? 'CALLABLE_PROPERTIES' : relation;
+      const located = relation === 'CALLS' || relation === 'USES';
+      const prefix = 'rel:' + relation + ':' + edge.sourceId + '->' + edge.targetId + ':';
+      const span =
+        located &&
+        edge.id.startsWith(prefix) &&
+        /^(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
+      const site = span && { file: from.properties.filePath, start: span[1], end: span[2] };
+      let kind = relation;
+      if (relation === 'CALLS' && to.label === 'Property') kind = 'CALLABLE_PROPERTIES';
+      if (edge.reason === 'callable-value-flow' && site && parameterRanges.has(siteKey(site)))
+        kind = 'CALLBACK_TARGETS';
       result[kind].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
-      if (relation === 'CALLS' || relation === 'USES') {
-        const prefix = 'rel:' + relation + ':' + edge.sourceId + '->' + edge.targetId + ':';
-        const span =
-          edge.id.startsWith(prefix) && /^(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
-        if (
-          span &&
-          span[1] !== span[2] &&
-          !(
-            kind === 'CALLS' &&
-            boundRanges.has(JSON.stringify([from.properties.filePath, span[1], span[2]]))
-          )
-        ) {
-          result[kind].sites.push({
-            file: from.properties.filePath,
-            start: span[1],
-            end: span[2],
-            status: 'resolved',
-            target,
-          });
-        }
+      if (
+        site &&
+        site.start !== site.end &&
+        !(kind === 'CALLS' && boundRanges.has(siteKey(site)))
+      ) {
+        result[kind].sites.push({ ...site, status: 'resolved', target: graphIdentity(to) });
       }
     }
   }
   return result;
 }
 
-function recordBindings(observation, calls, typeParameters, reads, unbound) {
+function siteKey(site) {
+  return JSON.stringify([site.file, site.start, site.end]);
+}
+
+function parameterInvocations(file, indexes) {
+  const formals = new Map();
+  for (const site of file.callableFlowSites ?? []) {
+    if (site.kind !== 'formal') continue;
+    const scope = indexes.scopeTree.getScope(site.binding.inScope);
+    const owner = scope?.ownedDefs.find(
+      (def) =>
+        def.declarationRange?.startLine === site.ownerRange.startLine &&
+        def.declarationRange?.startCol === site.ownerRange.startCol,
+    );
+    const annotation = owner?.parameterTypes?.[site.parameterIndex];
+    if (!annotation) continue;
+    const name = site.binding.atRange;
+    formals.set(
+      JSON.stringify([scope.id, site.binding.name]),
+      JSON.stringify([file.filePath + '#' + name.startLine + ':' + name.startCol, annotation]),
+    );
+  }
+  const calls = [];
+  for (const site of file.callableFlowSites ?? []) {
+    if (site.kind !== 'invoke' || site.invocationKind !== 'indirect') continue;
+    const { scope } = lookupNameClaim(site.callee.inScope, site.callee.name, indexes, {
+      purpose: 'value',
+      position: site.callee.atRange,
+    });
+    const target = scope && formals.get(JSON.stringify([scope.id, site.callee.name]));
+    if (!target) continue;
+    const range = site.callSite;
+    calls.push({
+      file: file.filePath,
+      start: range.startLine + ':' + range.startCol,
+      end: range.endLine + ':' + range.endCol,
+      status: 'resolved',
+      target,
+    });
+  }
+  return calls;
+}
+
+function recordBindings(observation, calls, typeParameters, reads, unbound, parameterCalls) {
   const definitions = new Map(
     observation.parsedFiles.flatMap((file) => file.localDefs.map((def) => [def.nodeId, def])),
   );
   for (const file of observation.parsedFiles) {
+    parameterCalls.push(...parameterInvocations(file, observation.indexes));
     for (const site of file.referenceSites) {
       const binding = observation.referenceBindings.get(site);
       if (site.kind === 'read' && binding?.status === 'resolved') {
@@ -218,39 +257,46 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     root + ': TypeScript reported no project-local declarations at any reference',
   );
   const boundCalls = [];
+  const parameterCalls = [];
   const typeParameters = [];
   const reads = [];
   const unbound = [];
   const pipeline = await runPipelineFromRepo(root, () => {}, {
     ...options,
     onScopeResolved(observation) {
-      recordBindings(observation, boundCalls, typeParameters, reads, unbound);
+      recordBindings(observation, boundCalls, typeParameters, reads, unbound, parameterCalls);
     },
   });
-  const observed = graphReport(pipeline.graph, boundCalls, inventory, methodFacts, propertyAccess);
+  const observed = graphReport(
+    pipeline.graph,
+    boundCalls,
+    inventory,
+    methodFacts,
+    propertyAccess,
+    parameterCalls,
+  );
   observed.TYPE_PARAMETER_USES.sites = typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.
   // The observer also sees property reads, argument reads and other syntax.
-  const location = (site) => JSON.stringify([site.file, site.start, site.end]);
   let runtimeCount = 0;
   if (evidence) {
     const runtime = runtimeCalls(root, evidence);
-    const exercised = new Set(runtime.sites.map(location));
+    const exercised = new Set(runtime.sites.map(siteKey));
     compareReports(
       { producer: 'Node.js', sites: runtime.sites },
       {
         producer: 'GitNexus',
-        sites: observed.CALLS.sites.filter((site) => exercised.has(location(site))),
+        sites: observed.CALLS.sites.filter((site) => exercised.has(siteKey(site))),
       },
     );
-    observed.CALLS.sites = observed.CALLS.sites.filter((site) => !exercised.has(location(site)));
+    observed.CALLS.sites = observed.CALLS.sites.filter((site) => !exercised.has(siteKey(site)));
     reference.CALLS.edges.push(...runtime.edges);
     runtimeCount = runtime.sites.length;
   }
-  const rejectedLocations = new Set(reference.REJECTED_CALLS.sites.map(location));
-  observed.REJECTED_CALLS.sites = unbound.filter((site) => rejectedLocations.has(location(site)));
-  const checkedReads = new Set(reference.VARIABLE_READS.sites.map(location));
-  observed.VARIABLE_READS.sites = reads.filter((site) => checkedReads.has(location(site)));
+  const rejectedLocations = new Set(reference.REJECTED_CALLS.sites.map(siteKey));
+  observed.REJECTED_CALLS.sites = unbound.filter((site) => rejectedLocations.has(siteKey(site)));
+  const checkedReads = new Set(reference.VARIABLE_READS.sites.map(siteKey));
+  observed.VARIABLE_READS.sites = reads.filter((site) => checkedReads.has(siteKey(site)));
   for (const relation of relations) {
     if (!reference[relation].edges.length && !reference[relation].sites.length) {
       assert.deepEqual(

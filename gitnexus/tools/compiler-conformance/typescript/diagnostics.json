@@ -1,4 +1,5 @@
 {
+  "typescript-callable-flow/non-callable-result": ["main.ts:4:0 TS2349"],
   "compiler-conformance/typescript-shadowed-receiver": [
     "app.ts:10:17 TS7006",
     "app.ts:16:36 TS7006",

@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "lib": ["ES2022"],
+    "target": "ES2022",
+    "module": "NodeNext",
+    "strict": true,
+    "types": []
+  },
+  "files": ["main.ts"]
+}
