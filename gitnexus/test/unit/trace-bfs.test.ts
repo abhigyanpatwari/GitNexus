@@ -357,6 +357,7 @@ describe('trace: BFS core', () => {
     expect(result.furthest).toBeDefined();
     expect(result.furthest.name).toBe('C');
     expect(result.furthest.depth).toBe(1);
+    expect(result.truncated).toBeUndefined();
     expect(result.suggestion).toBeDefined();
   });
 
@@ -413,7 +414,7 @@ describe('trace: BFS core', () => {
     expect(result.status).toBe('no_path');
   }, 5000);
 
-  it('respects maxDepth limit', async () => {
+  it('reports when the depth limit leaves a frontier unexplored', async () => {
     const SYMBOL_E = {
       id: 'func:E',
       name: 'E',
@@ -478,6 +479,8 @@ describe('trace: BFS core', () => {
     const result = await backend.callTool('trace', { from: 'A', to: 'E', maxDepth: 2 });
 
     expect(result.status).toBe('no_path');
+    expect(result.truncated).toBe(true);
+    expect(result.suggestion).toMatch(/depth limit of 2/i);
   });
 
   it('treats maxDepth 0 / negative / NaN as the default rather than a false no_path', async () => {
