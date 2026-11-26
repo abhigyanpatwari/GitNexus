@@ -111,7 +111,6 @@ import { applyValueEffect, provesInertCommand, UNKNOWN_VALUE } from './value-ref
 import {
   barrierControllerPoint,
   buildBarrierGuardIndex,
-  isBarrierCalleeName,
   isBarrierGuarded,
   type BarrierGuardOptions,
 } from './barrier-guards.js';
@@ -333,7 +332,7 @@ export function computeTaintFlows(
   }
 
   const bindings = defUse.bindings;
-  // #3913 — CDG-aware validating-predicate barriers + filter(isValidKey) flow kills.
+  // #3913 — CDG-aware validating-predicate barriers (isValid*/validate*/validX).
   const barrierIndex = buildBarrierGuardIndex(cfg, barrierOptions);
   const guardProvesSink = (
     block: number,
@@ -571,9 +570,8 @@ export function computeTaintFlows(
    * `taintDefPoint` refuses suppression when the reaching value was assigned
    * after the check. Records a kill so SANITIZES evidence still surfaces.
    *
-   * Full `KIND_ORDER` neutralization applies only to name-heuristic validators
-   * (`isValid*` / `validate*` / `validX`). Proto-only callees (`safeKey`) vouch
-   * for key shape, not sink-kind safety — do not kind-blind suppress.
+   * Controllers are name-heuristic validators only (`isValid*` / `validate*` /
+   * `validX`); proto-only callees never enter the index.
    */
   const suppressedByBarrier = (
     bindingIdx: number,
@@ -587,7 +585,6 @@ export function computeTaintFlows(
       taintDefPoint,
     );
     if (!controller) return false;
-    if (!isBarrierCalleeName(controller.callee)) return false;
     recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
     return true;
   };

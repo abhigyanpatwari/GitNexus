@@ -6,11 +6,10 @@
  * exec(x)`). When the sink use of binding `b` is control-dependent on such a
  * predicate over `b` on the *validated* branch sense, suppress the finding.
  *
- * Proto-key helpers (`return key !== "__proto__"`) are discovered for
- * same-file writers, but only name-heuristic validators (`isValid*` /
- * `validate*` / `validX`) KIND_ORDER-suppress — rejecting `__proto__` alone
- * must not kind-blind kill command-injection. `.filter(pred)` is intentionally
- * not a neutralization path for the same reason.
+ * Controllers are name-heuristic only (`isValid*` / `validate*` / `validX`).
+ * `discoverProtoGuardCallees` remains a separate discovery helper for tests /
+ * tooling; proto-only names like `safeKey` do not enter the CDG barrier set
+ * (rejecting `__proto__` must not kind-blind kill command-injection).
  *
  * PURE AND DETERMINISTIC: no I/O, no logger. Under-kill only — unknown or
  * non-dominating predicates never kill.
@@ -38,16 +37,9 @@ export interface BarrierGuardIndex {
   readonly bySubject: ReadonlyMap<number, readonly BarrierController[]>;
   /** CDG edges for this function (empty when CDG is unavailable/empty). */
   readonly cdg: readonly ControlDepEdge[];
-  /**
-   * Callee leaf names treated as barriers for this file (name heuristic +
-   * `__proto__` guard functions discovered across sibling CFGs).
-   */
-  readonly barrierCalleeNames: ReadonlySet<string>;
 }
 
 export interface BarrierGuardOptions {
-  /** Extra barrier callee leaf names (e.g. proto-guard functions). */
-  readonly extraBarrierCallees?: ReadonlySet<string>;
   /** Precomputed CDG edges (tests); otherwise computed when needed. */
   readonly cdgEdges?: readonly ControlDepEdge[];
 }
@@ -212,16 +204,8 @@ function isFilterCallee(callee: string | undefined): boolean {
   return callee === 'filter' || callee.endsWith('.filter');
 }
 
-function isBarrierCallName(callee: string, barrierCalleeNames: ReadonlySet<string>): boolean {
-  if (isBarrierCalleeName(callee)) return true;
-  return barrierCalleeNames.has(calleeLeaf(callee));
-}
-
 /** Collect validating-predicate controllers from CFG call sites. */
-export function collectBarrierControllers(
-  cfg: FunctionCfg,
-  barrierCalleeNames: ReadonlySet<string> = new Set(),
-): BarrierController[] {
+export function collectBarrierControllers(cfg: FunctionCfg): BarrierController[] {
   const out: BarrierController[] = [];
   for (const block of cfg.blocks) {
     const statements = block.statements;
@@ -233,7 +217,8 @@ export function collectBarrierControllers(
       for (let siteIndex = 0; siteIndex < sites.length; siteIndex++) {
         const site = sites[siteIndex];
         if (site.kind !== 'call' || !site.callee) continue;
-        if (!isBarrierCallName(site.callee, barrierCalleeNames)) continue;
+        // Name-heuristic validators only — proto-only callees never suppress.
+        if (!isBarrierCalleeName(site.callee)) continue;
         // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
         if (isFilterCallee(site.callee)) continue;
         // Only the primary (first) argument is the validated subject — later
@@ -258,13 +243,12 @@ export function collectBarrierControllers(
   return out;
 }
 
-/** Build a per-function barrier index (CDG + controllers + name set). */
+/** Build a per-function barrier index (CDG + name-heuristic controllers). */
 export function buildBarrierGuardIndex(
   cfg: FunctionCfg,
   options?: BarrierGuardOptions,
 ): BarrierGuardIndex {
-  const barrierCalleeNames = new Set<string>(options?.extraBarrierCallees ?? []);
-  const controllers = collectBarrierControllers(cfg, barrierCalleeNames);
+  const controllers = collectBarrierControllers(cfg);
   const bySubject = new Map<number, BarrierController[]>();
   for (const c of controllers) {
     const list = bySubject.get(c.subjectBinding);
@@ -275,7 +259,7 @@ export function buildBarrierGuardIndex(
   const cdg =
     options?.cdgEdges ??
     (needsCdg ? computeControlDependence(cfg).edges : ([] as ControlDepEdge[]));
-  return { bySubject, cdg, barrierCalleeNames };
+  return { bySubject, cdg };
 }
 
 /**

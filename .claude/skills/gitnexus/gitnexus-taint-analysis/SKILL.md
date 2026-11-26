@@ -133,11 +133,12 @@ or equality + `return false`) are discovered as barrier callees, including
 `const safeKey = …` arrows via inferred `functionName`. Qualified calls like
 `!validators.isValidHostName(x)` keep bang polarity. Proto-key discovery requires
 an affirming reject (`return key !== "__proto__"`, not inverted acceptors).
-Name-heuristic validators may KIND_ORDER-suppress; proto-only names and
-`.filter(protoKey)` do **not** kind-blind kill command-injection. Validator
-controllers bind the first argument only. Direct sink uses like
-`exec(req.body)` after a validator are statement-local and still suppress.
-See `taint/barrier-guards.ts` and `bench/taint-barrier-guards/`.
+Only name-heuristic validators (`isValid*` / `validate*` / `validX`) enter the
+CDG barrier set and KIND_ORDER-suppress. Proto discovery is tooling-only;
+proto-only names and `.filter(protoKey)` do not suppress. Validator controllers
+bind the first argument only. Direct sink uses like `exec(req.body)` after a
+validator are statement-local and still suppress. See `taint/barrier-guards.ts`
+and `bench/taint-barrier-guards/`.
 
 ## GitNexus-specific gotchas
 

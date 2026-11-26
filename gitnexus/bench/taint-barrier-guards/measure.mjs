@@ -22,7 +22,6 @@ import { computeReachingDefs } from '../../src/core/ingestion/cfg/reaching-defs.
 import { hasTaintSafeSites } from '../../src/core/ingestion/taint/site-safety.ts';
 import { buildTaintImportIndex, matchFunctionSites } from '../../src/core/ingestion/taint/match.ts';
 import { computeTaintFlows } from '../../src/core/ingestion/taint/propagate.ts';
-import { discoverProtoGuardCallees } from '../../src/core/ingestion/taint/barrier-guards.ts';
 import { TS_JS_TAINT_MODEL } from '../../src/core/ingestion/taint/typescript-model.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,7 +41,7 @@ const SPEC = {
 function corpus(kind, n) {
   const parts = [
     `function isValidHostName(h: string) { return /^[a-z0-9.-]+$/i.test(h); }`,
-    `function safeKey(k: string) { return k !== "__proto__" && k !== "constructor"; }`,
+    `function isValidKey(key: string) { return key !== "__proto__" && key !== "constructor"; }`,
   ];
   for (let i = 0; i < n; i++) {
     if (kind === 'guarded') {
@@ -60,7 +59,6 @@ function set${i}(req: any) {
     exec(key);
   }
 }
-function isValidKey(key: string) { return key !== "__proto__" && key !== "constructor"; }
 function write${i}(req: any) {
   const key = req.body;
   if (!isValidKey(key)) return;
@@ -108,8 +106,6 @@ function buildCfgs(source) {
 }
 
 function analyzeAll(cfgs) {
-  const protoGuards = discoverProtoGuardCallees(cfgs);
-  const barrierOptions = protoGuards.size > 0 ? { extraBarrierCallees: protoGuards } : undefined;
   const importIndex = buildTaintImportIndex([]);
   let findings = 0;
   let kills = 0;
@@ -120,7 +116,7 @@ function analyzeAll(cfgs) {
     const matches = matchFunctionSites(cfg, SPEC, importIndex);
     if (!matches.hasSource || !matches.hasSink) continue;
     const defUse = computeReachingDefs(cfg);
-    const flows = computeTaintFlows(cfg, defUse, matches, undefined, undefined, barrierOptions);
+    const flows = computeTaintFlows(cfg, defUse, matches);
     if (flows.status !== 'computed') continue;
     analyzed++;
     findings += flows.findings.length;

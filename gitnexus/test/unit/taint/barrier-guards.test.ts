@@ -32,28 +32,15 @@ const MECH: SourceSinkSanitizerSpec = {
   sanitizers: [],
 };
 
-function analyze(code: string, fnIndex = 0, extraBarrierCallees?: ReadonlySet<string>) {
+function analyze(code: string, fnIndex = 0) {
   const cfg = cfgOf(code, fnIndex);
   expect(hasTaintSafeSites(cfg)).toBe(true);
   const defUse = computeReachingDefs(cfg);
   const matches = matchFunctionSites(cfg, MECH, buildTaintImportIndex(importsFor(code)));
   return {
     cfg,
-    flows: computeTaintFlows(
-      cfg,
-      defUse,
-      matches,
-      undefined,
-      undefined,
-      extraBarrierCallees ? { extraBarrierCallees } : undefined,
-    ),
+    flows: computeTaintFlows(cfg, defUse, matches),
   };
-}
-
-function analyzeWithFileProtoGuards(code: string, fnIndex: number) {
-  const cfgs = cfgsOf(code);
-  const protoGuards = discoverProtoGuardCallees(cfgs);
-  return analyze(code, fnIndex, protoGuards);
 }
 
 describe('barrier-guards name + polarity helpers', () => {
@@ -292,7 +279,7 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
         exec(key);
       }
     `;
-    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    const { flows } = analyze(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -307,7 +294,7 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
         exec(key);
       }
     `;
-    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    const { flows } = analyze(code, 1);
     expect(flows.findings).toHaveLength(0);
   });
 
@@ -324,7 +311,7 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(cfgs.some((c) => c.functionName === 'safeKey')).toBe(true);
     expect([...discoverProtoGuardCallees(cfgs)]).toContain('safeKey');
     // Discovery only — proto-only name must not kind-blind kill command-injection.
-    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    const { flows } = analyze(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -342,7 +329,7 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     `;
     const cfgs = cfgsOf(code);
     expect([...discoverProtoGuardCallees(cfgs)]).not.toContain('logProto');
-    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    const { flows } = analyze(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
@@ -392,7 +379,7 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
         }
       }
     `;
-    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    const { flows } = analyze(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
