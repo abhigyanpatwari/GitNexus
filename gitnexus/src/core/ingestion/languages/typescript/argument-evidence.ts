@@ -1,7 +1,11 @@
 import type { Range } from 'gitnexus-shared';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { decodeStringLiteral } from '../../utils/ecmascript-literals.js';
-import { canonicalTypeScriptName } from './identifiers.js';
+import {
+  canonicalTypeScriptName,
+  numericLiteralValue,
+  signedNumericLiteral,
+} from './identifiers.js';
 
 export type ArgumentEvidence = string | { fields: [string, string][] } | { parameters: number };
 export type CallEvidence = Record<string, (ArgumentEvidence | null)[]>;
@@ -16,6 +20,7 @@ export function argumentEvidence(
   typeOf: (node: SyntaxNode) => string,
 ): ArgumentEvidence | null {
   if (['string', 'number', 'true', 'false'].includes(arg.type)) return arg.text;
+  if (arg.type === 'unary_expression') return signedNumericLiteral(arg) ?? null;
   if (arg.type === 'object') {
     const fields: [string, string][] = [];
     for (const member of arg.namedChildren) {
@@ -54,15 +59,11 @@ export function argumentEvidence(
   return { parameters: parameters.length };
 }
 
-function literalValue(spelling: string): string | number | boolean | undefined {
+function literalValue(spelling: string): string | number | bigint | boolean | undefined {
   if (/^(?:"(?:[^"\\]|\\[\s\S])*"|'(?:[^'\\]|\\[\s\S])*')$/u.test(spelling))
     return decodeStringLiteral(spelling) ?? undefined;
   if (spelling === 'true' || spelling === 'false') return spelling === 'true';
-  if (/^-?(?:\d|\.\d)/u.test(spelling)) {
-    const value = Number(spelling.replaceAll('_', ''));
-    if (!Number.isNaN(value)) return value;
-  }
-  return undefined;
+  return numericLiteralValue(spelling);
 }
 
 export function isLiteralParameter(type: string): boolean {

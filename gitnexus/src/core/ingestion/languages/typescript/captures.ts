@@ -42,7 +42,7 @@ import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
-import { canonicalTypeScriptName, literalMethodName } from './identifiers.js';
+import { canonicalTypeScriptName, literalMethodName, signedNumericLiteral } from './identifiers.js';
 import { defaultFactoryResult } from './default-factory.js';
 import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
@@ -906,8 +906,13 @@ export function emitTsScopeCaptures(
     filePath,
     out,
     returnedDefault?.checkPriorWrites && defaultDeclaration
-      ? (written) => {
-          if (written === returnedDefault.name) defaultDeclaration = undefined;
+      ? (written, moduleOffset) => {
+          if (
+            written === returnedDefault.name &&
+            (moduleOffset === undefined || moduleOffset < returnedDefault.callOffset)
+          ) {
+            defaultDeclaration = undefined;
+          }
         }
       : undefined,
   );
@@ -1245,7 +1250,12 @@ export function synthesizeForOfMapTupleBindings(root: SyntaxNode, out: CaptureMa
 function inferArgType(argNode: SyntaxNode): string {
   switch (argNode.type) {
     case 'number':
-      return 'number';
+      return argNode.text.endsWith('n') ? 'bigint' : 'number';
+    case 'unary_expression': {
+      const number = signedNumericLiteral(argNode);
+      if (number === undefined) return '';
+      return number.endsWith('n') ? 'bigint' : 'number';
+    }
     case 'string':
     case 'template_string':
       return 'string';

@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
+import { SyntaxKind } from 'typescript/unstable/ast';
 import { typescriptProvider } from '../../../dist/core/ingestion/languages/typescript.js';
 import { extractParsedFile } from '../../../dist/core/ingestion/scope-extractor-bridge.js';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
@@ -19,6 +20,7 @@ import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
 import { compareProject, comparePublishedCalls } from './check.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
+import diagnostics from './diagnostics.json' with { type: 'json' };
 
 const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
@@ -26,6 +28,59 @@ const root = fileURLToPath(
 const facts = compilerReport(root);
 
 test('CommonJS loader calls match the exports of the compiled modules', checkCommonJsForwarding);
+test('the published graph retains the namespace constant read and prunes function-local reads', async () => {
+  const key = 'lang-resolution/typescript-namespace-const';
+  const project = path.resolve(root, '../..', key);
+  const expected = [];
+  const { sites } = compilerReport(project, diagnostics[key], false, {
+    onSourceFile(source, checker, compilerProject) {
+      function visit(node) {
+        if (
+          node.kind === SyntaxKind.ReturnStatement &&
+          node.expression?.kind === SyntaxKind.Identifier
+        ) {
+          const variable = checker
+            .getSymbolAtLocation(node.expression)
+            ?.valueDeclaration?.resolve(compilerProject);
+          assert.equal(variable?.kind, SyntaxKind.VariableDeclaration);
+          const owner = node.parent.parent;
+          assert.equal(owner.kind, SyntaxKind.FunctionDeclaration);
+          const targetFile = variable.getSourceFile();
+          expected.push([
+            owner.name.text,
+            path.relative(project, targetFile.fileName),
+            variable.name.text,
+            targetFile.getLineAndCharacterOfPosition(variable.name.getStart()).line,
+          ]);
+        }
+        node.forEachChild(visit);
+      }
+      visit(source);
+    },
+  }).VARIABLE_READS;
+  assert.equal(sites.length, 1);
+  const [read] = sites;
+  const { graph } = await runPipelineFromRepo(project, () => {});
+  const accesses = [...graph.iterRelationshipsByType('ACCESSES')];
+  assert.equal(accesses.length, 1);
+  const [edge] = accesses;
+  assert.ok(edge.id.endsWith(':read:' + read.start + ':' + read.end));
+  const reader = graph.getNode(edge.sourceId);
+  const variable = graph.getNode(edge.targetId);
+  assert.equal(reader.properties.filePath, read.file);
+  assert.equal(variable.label, 'Const');
+  assert.deepEqual(
+    [
+      [
+        reader.properties.name,
+        variable.properties.filePath,
+        variable.properties.name,
+        variable.properties.startLine,
+      ],
+    ],
+    expected,
+  );
+});
 test(
   'NodeNext package format determines whether an import-bearing file has a CommonJS default',
   checkNodeModuleFormat,
@@ -85,9 +140,17 @@ test('published calls retain the compiler target at each stored call range', () 
   ];
   comparePublishedCalls(calls, calls);
   assert.throws(() => comparePublishedCalls(calls, calls.slice(1)), /Missing published CALLS/);
+  assert.throws(
+    () => comparePublishedCalls(calls, [...calls, calls[0]]),
+    /Duplicate published CALLS/,
+  );
   const swapped = [calls[0], { ...calls[1], target: 'second' }, { ...calls[2], target: 'first' }];
   assert.throws(() => comparePublishedCalls(calls, swapped), /Unexpected published CALLS/);
   comparePublishedCalls(calls, [{ caller: 'main', target: 'first' }, calls[2]]);
+  assert.throws(
+    () => comparePublishedCalls(calls, [...calls, { caller: 'other', target: 'first' }]),
+    /Unexpected published CALLS/,
+  );
 });
 
 test('runtime module exports agree with the JavaScript emitted by TypeScript', checkModuleValues);

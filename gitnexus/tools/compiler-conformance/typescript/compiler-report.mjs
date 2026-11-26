@@ -186,7 +186,7 @@ function reportProject(
   root,
   localConfig,
   { configs, result, diagnostics },
-  { inventory, methodFacts, propertyAccess },
+  { inventory, methodFacts, propertyAccess, onSourceFile },
 ) {
   const scratch = existsSync(localConfig)
     ? undefined
@@ -731,6 +731,7 @@ function reportProject(
     for (const file of files) {
       const source = program.getSourceFile(file);
       assert.ok(source, 'Missing compiler source ' + file);
+      onSourceFile?.(source, checker, project);
       visit(source);
     }
   } finally {

@@ -604,7 +604,7 @@ export function synthesizeTsLocalImports(
   root: SyntaxNode,
   filePath: string,
   out: CaptureMatch[],
-  onModuleBindingWrite?: (name: string) => void,
+  onModuleBindingWrite?: (name: string, moduleOffset: number | undefined) => void,
 ): ReadonlyMap<number, ReadonlySet<string>> {
   const scopes = new Map<string, LexicalScope>();
   const scopesAt = new Map<string, LexicalScope>();
@@ -826,7 +826,14 @@ export function synthesizeTsLocalImports(
       const owner = bindingOwner(scope, name.text);
       if (onModuleBindingWrite) {
         const canonical = canonicalTypeScriptName(name.text);
-        if (bindingOwner(scope, canonical, escaped) === module) onModuleBindingWrite(canonical);
+        if (bindingOwner(scope, canonical, escaped) === module) {
+          // A callback can run before a lexically earlier statement. Only direct
+          // writes during module evaluation have a comparable source offset.
+          onModuleBindingWrite(
+            canonical,
+            functionOwner(scope) === module ? node.startIndex : undefined,
+          );
+        }
       }
       if (name.text === 'require' && !owner) ambientLoaderWritten = true;
       if (owner) bindingWrites.push({ node, scope: owner, name: name.text });

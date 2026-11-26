@@ -1094,7 +1094,7 @@ const enclosingFunctionIdAt = (
       // nested prefix exists it IS `ownerName`, so this branch and the
       // owner branch below cannot disagree about which prefix applies.
       const qualifiedName =
-        efnResult?.identityName === null
+        efnResult?.identityName !== undefined
           ? callableOwnQualifiedName(current, filePath, provider)
           : nestedPrefix !== undefined
             ? nestedCallableQualifiedName(nestedPrefix, current, funcName)
@@ -2290,11 +2290,14 @@ const processFileGroupFiles = (
         ? (cjsDefaultExportOwnName ?? deriveDefaultExportHocName(file.path))
         : null;
       const literalMethod = nodeLabel === 'Method' && captureMap['name.literal'] !== undefined;
+      const callableNode = captureMap['callable'] ?? definitionNode;
       const inferredFunction =
-        ((!nameNode && nodeLabel === 'Function') || literalMethod) && definitionNode
-          ? provider.methodExtractor?.extractFunctionName?.(definitionNode, file.path)
+        ((nodeLabel === 'Function' && (!nameNode || captureMap['callable'])) || literalMethod) &&
+        callableNode
+          ? provider.methodExtractor?.extractFunctionName?.(callableNode, file.path)
           : undefined;
-      const inferredFunctionName = inferredFunction?.funcName;
+      const inferredFunctionName =
+        !nameNode || literalMethod ? inferredFunction?.funcName : undefined;
       if (literalMethod && inferredFunctionName == null) continue;
 
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
@@ -2567,8 +2570,8 @@ const processFileGroupFiles = (
           : undefined;
 
       const qualifiedNameBeforeModScope =
-        inferredFunction?.identityName === null && definitionNode
-          ? callableOwnQualifiedName(definitionNode, file.path, provider)
+        inferredFunction?.identityName !== undefined && callableNode
+          ? callableOwnQualifiedName(callableNode, file.path, provider)
           : rustImplQualifiedName !== undefined
             ? rustImplQualifiedName
             : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified

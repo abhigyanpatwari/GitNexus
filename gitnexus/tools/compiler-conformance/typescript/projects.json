@@ -7,11 +7,13 @@
   "propertyAccess": [
     "compiler-conformance/typescript-block-shadowing",
     "compiler-conformance/typescript-property-access",
-    "lang-resolution/ts-write-access"
+    "lang-resolution/ts-write-access",
+    "lang-resolution/typescript-jsx-as-call"
   ],
   "projects": [
     "typescript-commonjs-forwarding/callers",
     "lang-resolution/typescript-pnpm-workspace-imports",
+    "lang-resolution/typescript-mcp-tools",
     "cross-file-binding/ts-circular",
     "cross-file-binding/ts-consumer-before-provider",
     "cross-file-binding/ts-deep-alias-chain",
@@ -92,6 +94,7 @@
     "lang-resolution/typescript-variadic-resolution"
   ],
   "declarationInventory": [
+    "compiler-conformance/typescript-async-generators",
     "cross-file-binding/ts-circular",
     "cross-file-binding/ts-consumer-before-provider",
     "cross-file-binding/ts-deep-alias-chain",

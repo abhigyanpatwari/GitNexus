@@ -189,16 +189,34 @@ function siteKey(site) {
 export function comparePublishedCalls(expected, published) {
   const pair = ({ caller, target }) => JSON.stringify([caller, target]);
   const row = (call) => JSON.stringify([siteKey(call), call.caller, call.target]);
-  const collapsed = new Set(published.filter((call) => !call.start).map(pair));
-  const located = new Set(published.filter((call) => call.start).map(row));
-  const compilerSites = new Set(expected.map(row));
-  for (const call of located)
-    assert.ok(compilerSites.has(call), 'Unexpected published CALLS ' + call);
+  const remaining = new Map();
   for (const call of expected) {
-    assert.ok(
-      located.has(row(call)) || collapsed.has(pair(call)),
-      'Missing published CALLS ' + row(call),
-    );
+    const endpoints = pair(call);
+    let sites = remaining.get(endpoints);
+    if (!sites) {
+      sites = new Set();
+      remaining.set(endpoints, sites);
+    }
+    sites.add(row(call));
+  }
+  const located = new Set();
+  const collapsed = new Set();
+  for (const call of published) {
+    const endpoints = pair(call);
+    if (call.start) {
+      const site = row(call);
+      assert.ok(!located.has(site), 'Duplicate published CALLS ' + site);
+      assert.ok(remaining.get(endpoints)?.delete(site), 'Unexpected published CALLS ' + site);
+      located.add(site);
+    } else {
+      assert.ok(remaining.has(endpoints), 'Unexpected published CALLS ' + endpoints);
+      assert.ok(!collapsed.has(endpoints), 'Duplicate published CALLS ' + endpoints);
+      collapsed.add(endpoints);
+    }
+  }
+  for (const [endpoints, sites] of remaining) {
+    if (sites.size) assert.ok(collapsed.has(endpoints), 'Missing published CALLS ' + [...sites][0]);
+    else assert.ok(!collapsed.has(endpoints), 'Duplicate published CALLS ' + endpoints);
   }
 }
 

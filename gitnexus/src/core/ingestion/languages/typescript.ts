@@ -9,7 +9,7 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isBuiltin } from 'node:module';
 import type Parser from 'tree-sitter';
-import { unboundCallableName } from './typescript/unbound-callables.js';
+import { blockCallableIdentity, unboundCallableName } from './typescript/unbound-callables.js';
 import { literalMethodName } from './typescript/identifiers.js';
 import type { CaptureMatch, NodeLabel, ParsedFile } from 'gitnexus-shared';
 import { defineLanguage } from '../language-provider.js';
@@ -223,7 +223,9 @@ const tsExtractFunctionName = (
         }
       }
     }
-    return { funcName: nameNode?.text ?? null, label: 'Function' };
+    const funcName = nameNode?.text ?? null;
+    const identityName = funcName ? blockCallableIdentity(node, funcName) : undefined;
+    return { funcName, label: 'Function', ...(identityName && { identityName }) };
   }
 
   // Object property pair: `{ addItem: (item) => ... }`.

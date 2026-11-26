@@ -51,6 +51,13 @@ describe('parseTypeParameterList', () => {
     ['<class... Ts>', [{ name: 'Ts' }]],
     // Keep the default separately from the parameter name and its bound.
     ['<class T = int>', [{ name: 'T', defaultType: 'int' }]],
+    [
+      '<int N = (2 >= 1), bool M = (N <= 3)>',
+      [
+        { name: 'N', defaultType: '(2 >= 1)' },
+        { name: 'M', defaultType: '(N <= 3)' },
+      ],
+    ],
     ['<T extends Repo = DefaultRepo>', [{ name: 'T', bound: 'Repo', defaultType: 'DefaultRepo' }]],
     // Commas inside a bound are not entry separators.
     ['<T extends Map<K, V>, K>', [{ name: 'T', bound: 'Map<K, V>' }, { name: 'K' }]],

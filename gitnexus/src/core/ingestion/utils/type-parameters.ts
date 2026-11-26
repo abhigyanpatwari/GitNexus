@@ -73,7 +73,7 @@ function innerListText(text: string): string | undefined {
   const start = text.indexOf('<');
   if (start === -1) return undefined;
   let depth = 0;
-  for (const i of syntaxOffsets(text, start)) {
+  for (const i of ungroupedOffsets(text, start)) {
     const ch = text[i];
     if (ch === '<') depth += 1;
     else if (ch === '>') {
@@ -100,10 +100,10 @@ function splitTopLevel(inner: string): string[] {
   const parts: string[] = [];
   let depth = 0;
   let start = 0;
-  for (const i of syntaxOffsets(inner)) {
+  for (const i of ungroupedOffsets(inner)) {
     const ch = inner[i];
-    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    if (ch === '<') depth += 1;
+    else if (ch === '>') depth -= 1;
     else if (ch === ',' && depth === 0) {
       parts.push(inner.slice(start, i));
       start = i + 1;
@@ -156,10 +156,10 @@ function parseEntry(entry: string): TypeParameter | undefined {
  *  bound. `=>` and `>=`/`<=` are not defaults; only a bare `=` at depth 0 is. */
 function beforeTopLevelDefault(entry: string): string {
   let depth = 0;
-  for (const i of syntaxOffsets(entry)) {
+  for (const i of ungroupedOffsets(entry)) {
     const ch = entry[i];
-    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    if (ch === '<') depth += 1;
+    else if (ch === '>') depth -= 1;
     else if (ch === '=' && depth === 0 && entry[i - 1] !== '=' && entry[i + 1] !== '=') {
       return entry.slice(0, i);
     }
@@ -183,10 +183,10 @@ function beforeTopLevelDefault(entry: string): string {
  */
 function findBoundIntroducer(head: string): { index: number; length: number } | undefined {
   let depth = 0;
-  for (const i of syntaxOffsets(head)) {
+  for (const i of ungroupedOffsets(head)) {
     const ch = head[i];
-    if (ch === '<' || ch === '(' || ch === '[' || ch === '{') depth += 1;
-    else if (ch === '>' || ch === ')' || ch === ']' || ch === '}') depth -= 1;
+    if (ch === '<') depth += 1;
+    else if (ch === '>') depth -= 1;
     else if (depth !== 0) continue;
     else if (ch === ':') return { index: i, length: 1 };
     else if (
@@ -204,6 +204,17 @@ function isWholeWord(text: string, index: number, length: number): boolean {
   const before = index === 0 ? '' : text[index - 1]!;
   const after = text[index + length] ?? '';
   return !isIdentifierChar(before) && !isIdentifierChar(after);
+}
+
+/** Operators in a grouped expression, e.g. `(N >= 1)`, cannot close the outer parameter list. */
+function* ungroupedOffsets(text: string, start = 0): Generator<number> {
+  let depth = 0;
+  for (const i of syntaxOffsets(text, start)) {
+    const ch = text[i];
+    if (ch === '(' || ch === '[' || ch === '{') depth++;
+    else if (ch === ')' || ch === ']' || ch === '}') depth--;
+    else if (depth === 0) yield i;
+  }
 }
 
 /** Source offsets outside quoted literals and two-character function arrows. */

@@ -4,7 +4,7 @@ import { canonicalTypeScriptName } from './identifiers.js';
 /** A direct return supplies the identity of the value exported by a local factory call. */
 export function defaultFactoryResult(
   root: SyntaxNode,
-): { name: string; value: SyntaxNode; checkPriorWrites: boolean } | undefined {
+): { name: string; value: SyntaxNode; callOffset: number; checkPriorWrites: boolean } | undefined {
   const statements = root.namedChildren;
   const exportIndex = statements.findIndex(
     (node) =>
@@ -64,5 +64,5 @@ export function defaultFactoryResult(
       ].includes(decl.type)
     );
   });
-  return { name, value: returned, checkPriorWrites };
+  return { name, value: returned, callOffset: expression.startIndex, checkPriorWrites };
 }

@@ -107,12 +107,12 @@ ${unboundCallableQuery('definition.function')}
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (arrow_function))) @definition.function
+    value: (arrow_function) @callable)) @definition.function
 
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (function_expression))) @definition.function
+    value: (function_expression) @callable)) @definition.function
 
 ; Generator EXPRESSIONS bound to a name (\`const g = function* () {}\`). Without
 ; these, the binding emitted a \`Const\` node rather than a \`Function\` one, so
@@ -124,25 +124,25 @@ ${unboundCallableQuery('definition.function')}
 (lexical_declaration
   (variable_declarator
     name: (identifier) @name
-    value: (generator_function))) @definition.function
+    value: (generator_function) @callable)) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
-      value: (arrow_function)))) @definition.function
+      value: (arrow_function) @callable))) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
-      value: (function_expression)))) @definition.function
+      value: (function_expression) @callable))) @definition.function
 
 (export_statement
   declaration: (lexical_declaration
     (variable_declarator
       name: (identifier) @name
-      value: (generator_function)))) @definition.function
+      value: (generator_function) @callable))) @definition.function
 
 ; \`var\` closure bindings (#2693). The lexical rules above cover const/let;
 ; \`var\` is a different grammar node, so \`var f = (x) => x\` kept a Variable
