@@ -22,7 +22,7 @@ import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js
 export const OPTIONAL_GRAMMAR_ENV: Readonly<Partial<Record<string, string>>> = {
   // Vendored tree-sitter-zig ships prebuilds for the CI matrix OS/arch
   // tuples (linux-arm64 is rebuilt by the GitNexus prebuild workflow;
-  // ubuntu/windows/macos latest in required jobs have a committed binary).
+  // ubuntu/windows/macos runners in required jobs have a committed binary).
   [SupportedLanguages.Zig]: 'GITNEXUS_REQUIRE_ZIG',
 } satisfies Partial<Record<SupportedLanguages, string>>;
 

@@ -286,7 +286,7 @@ describe('workflows that need the web UI install it themselves', () => {
     const job = ciJobs['packaged-install-smoke'];
     expect(job?.strategy?.matrix?.os).toEqual([
       'windows-latest',
-      'macos-latest',
+      'macos-26',
       'ubuntu-latest',
       'ubuntu-24.04-arm',
     ]);

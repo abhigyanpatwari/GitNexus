@@ -145,6 +145,7 @@ gitnexus/preflight.json
 gitnexus/test-results.json
 gitnexus/windows-latest-*.json
 gitnexus/macos-latest-*.json
+gitnexus/macos-26-*.json
 gitnexus-web/web-test-results.json
 
 # Machine-local skill-evolution evidence (consumed by eval/workflow_bench/evolve.py)

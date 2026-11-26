@@ -3,7 +3,7 @@ import path from 'node:path';
 /** Separate native costs from coverage and from the other operating system. */
 export function shardTimingsFile(): string {
   const profile = process.env.GITNEXUS_SHARD_PROFILE ?? 'coverage';
-  if (!['coverage', 'windows-latest', 'macos-latest'].includes(profile)) {
+  if (!['coverage', 'windows-latest', 'macos-26'].includes(profile)) {
     throw new Error(`Unknown shard timing profile: ${profile}`);
   }
   return `.vitest/timings/${profile}.json`;

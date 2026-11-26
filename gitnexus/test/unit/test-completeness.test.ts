@@ -161,8 +161,8 @@ describe('required test execution across CI jobs', () => {
       'preflight',
       'windows-latest-1',
       'windows-latest-2',
-      'macos-latest-1',
-      'macos-latest-2',
+      'macos-26-1',
+      'macos-26-2',
     ]) {
       writeFileSync(path.join(receipts, `${name}.json`), JSON.stringify(core));
     }

@@ -345,7 +345,7 @@ def test_platform_ci_preserves_required_check_names_with_complete_execution_gate
     }
     assert names == {
         f"tests / {platform} (platform-sensitive) {check}/3"
-        for platform in ("windows-latest", "macos-latest")
+        for platform in ("windows-latest", "macos-26")
         for check in (1, 2, 3)
     }
     plan = next(step["run"] for step in jobs["shard-plan"]["steps"] if step.get("id") == "gen")
