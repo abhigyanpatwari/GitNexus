@@ -2,12 +2,13 @@ import { makeScopeId } from 'gitnexus-shared';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { findAllCallableBindingsInScope } from '../../scope-resolution/scope/walkers.js';
-import { selectTsPrimitiveOverload } from './call-arguments.js';
+import { mayCallTsFunctionOverload, selectTsPrimitiveOverload } from './call-arguments.js';
 
 export const resolveTsFunctionOverload: ScopeResolver['resolveUnqualifiedCall'] = (
   site,
   scopes,
 ) => {
+  if (!mayCallTsFunctionOverload(site.name, scopes)) return undefined;
   // Resolve the lexical/imported name first. An overload in a different module
   // or an outer scope cannot contribute a signature to that declaration.
   const visible = findAllCallableBindingsInScope(site.inScope, site.name, scopes, {

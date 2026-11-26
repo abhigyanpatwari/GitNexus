@@ -31,6 +31,7 @@ import {
   tsReceiverCallSite,
 } from './call-arguments.js';
 import { resolveTsFunctionOverload } from './function-overloads.js';
+import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
 import { tsQualifiedTypeLookupSpelling } from './interpret.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -100,15 +101,20 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 }
 
 const typescriptScopeResolver: ScopeResolver = {
+  // Scope hooks, including Nuxt auto-imports, consume the extracted facts.
+  postExtractSourceTextPolicy: 'uncached-files',
   resolveUnqualifiedCall: resolveTsFunctionOverload,
   populateWorkspaceReferences(files, context) {
-    indexTsCallArguments(files);
+    canonicalizeEcmaWorkspaceBindings(files);
     rememberDeclarationProjects(
       files,
       context.resolutionConfig as TypescriptResolutionConfig | undefined,
     );
   },
-  populateImportNamespaces: bindGlobalDeclarations,
+  populateImportNamespaces(files, indexes) {
+    bindGlobalDeclarations(files, indexes);
+    indexTsCallArguments(files, indexes);
+  },
   isGlobalNameFallbackPlausible: projectNameFallback,
   resolveReceiverMember: resolveTsMemberArguments,
   receiverMemberLookupCoversAllCalls: true,

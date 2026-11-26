@@ -1,4 +1,8 @@
 import { find as lookup } from './service.js';
+import viaDefault, { renamed as viaBarrel } from './barrel.js';
+
+export function numericBarrel() { return viaBarrel(42); }
+export function textualDefault() { return viaDefault('alice'); }
 
 export function numeric() {
   return lookup(42);

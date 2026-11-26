@@ -1,5 +1,6 @@
 import {
   makeScopeId,
+  type BindingRef,
   type CallResultAssignmentSite,
   type CallableFlowSite,
   type ParsedFile,
@@ -15,7 +16,6 @@ import {
   findReceiverTypeBinding,
 } from '../../scope-resolution/scope/walkers.js';
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
-import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
 import { receiverTypeIsOutOfScope } from './global-declarations.js';
 
 type Argument = Extract<CallableFlowSite, { kind: 'argument' }>;
@@ -28,6 +28,11 @@ type AssignmentUse = {
   chainedReceiver?: { outer: ReferenceSite; inner: ReferenceSite };
 };
 const usesByAssignment = new WeakMap<CallResultAssignmentSite, AssignmentUse>();
+const freeOverloadNames = new WeakMap<ScopeResolutionIndexes['scopeTree'], ReadonlySet<string>>();
+
+export function mayCallTsFunctionOverload(name: string, indexes: ScopeResolutionIndexes): boolean {
+  return freeOverloadNames.get(indexes.scopeTree)?.has(name) ?? true;
+}
 const primitiveTypes = new Set([
   'string',
   'number',
@@ -42,12 +47,19 @@ function rangeKey(range: Range): string {
   return `${range.startLine}:${range.startCol}-${range.endLine}:${range.endCol}`;
 }
 
-/** Join worker facts after lexical names have been normalized. The weak keys
- * belong to this parse, including when two workspaces have the same path. */
-export function indexTsCallArguments(files: ParsedFile[]): void {
-  canonicalizeEcmaWorkspaceBindings(files);
+/** Join worker facts after imports and their local aliases have been bound. */
+export function indexTsCallArguments(
+  files: readonly ParsedFile[],
+  indexes: ScopeResolutionIndexes,
+): void {
   const overloads = new Map<string, Set<string>>();
   const overloadedFunctions = new Set<string>();
+  const names = new Set<string>();
+  const collectNames = (bindings: ReadonlyMap<string, readonly BindingRef[]>) => {
+    for (const [name, refs] of bindings) {
+      if (refs.some(({ def }) => overloadedFunctions.has(def.nodeId))) names.add(name);
+    }
+  };
   for (const file of files) {
     const firstOwner = new Map<string, string>();
     let hasFreeSignatures = false;
@@ -78,27 +90,44 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
           }
         }
       }
+      // Extraction can bind only declarations from this file. Cross-file
+      // names arrive through the finalized binding maps below.
+      for (const scope of file.scopes) collectNames(scope.bindings);
     }
   }
-  if (!overloads.size && !overloadedFunctions.size) return;
+  // A lookup can reach an overload only through a spelling bound to a member
+  // of its declaration family. Include the implementation since a default
+  // import or a re-export can expose just that member under a different name.
+  freeOverloadNames.set(indexes.scopeTree, names);
+  if (overloadedFunctions.size) {
+    for (const bindings of indexes.bindings.values()) collectNames(bindings);
+    for (const bindings of indexes.bindingAugmentations.values()) collectNames(bindings);
+    for (const bindings of indexes.namespaceFqnBindings.values()) collectNames(bindings);
+    collectNames(indexes.workspaceFqnBindings);
+  }
+  if (!overloads.size && !names.size) return;
   for (const file of files) {
     if (!file.callableFlowSites?.length && !file.callResultAssignmentSites?.length) continue;
     const calls = new Map<string, ReferenceSite>();
     const usesByName = new Map<string, OverloadUse[]>();
+    const hasOverload = file.referenceSites.some(
+      (site) =>
+        site.kind === 'call' &&
+        (overloads.has(site.name) || (site.callForm === 'free' && names.has(site.name))),
+    );
     for (const site of file.referenceSites) {
       if (site.kind !== 'call') continue;
-      calls.set(rangeKey(site.atRange), site);
+      if (hasOverload) calls.set(rangeKey(site.atRange), site);
       argumentsByCall.delete(site);
       receiverCalls.delete(site);
     }
+    if (!hasOverload) continue;
     for (const fact of file.callableFlowSites ?? []) {
       if (fact.kind !== 'argument' || fact.source.expressionKind !== 'binding') continue;
       const call = calls.get(rangeKey(fact.callSite));
       if (!call || call.argumentTypes?.[fact.parameterIndex] !== '') continue;
       const owners = overloads.get(call.name);
-      // Imports may rename a free overload. Its lexical declaration is
-      // checked during resolution, after the imports have been bound.
-      if (!owners && !(overloadedFunctions.size && call.callForm === 'free')) continue;
+      if (!owners && !(call.callForm === 'free' && names.has(call.name))) continue;
       const args = argumentsByCall.get(call);
       if (args) args.push(fact);
       else argumentsByCall.set(call, [fact]);
@@ -110,8 +139,10 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
     }
     for (const assignment of file.callResultAssignmentSites ?? []) {
       const outer = calls.get(rangeKey(assignment.callSite));
-      const candidates =
-        outer?.callForm === 'free' ? overloadedFunctions : outer && overloads.get(outer.name);
+      let candidates = outer && overloads.get(outer.name);
+      if (outer?.callForm === 'free') {
+        candidates = names.has(outer.name) ? overloadedFunctions : undefined;
+      }
       const uses = usesByName.get(assignment.lhs);
       if (!uses && !candidates?.size) {
         usesByAssignment.delete(assignment);
