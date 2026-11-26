@@ -1,33 +1,49 @@
-import { describe, expect, it, vi } from 'vitest';
+import { after, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
-import { distWorkerExists } from '../helpers/worker-parse.js';
-import { type ParseCache, loadParseCache, saveParseCache } from '../../src/storage/parse-cache.js';
-import * as integrityModule from '../../src/core/graph/relationship-integrity.js';
-import { _captureLogger } from '../../src/core/logger.js';
+import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
+import {
+  type ParseCache,
+  loadParseCache,
+  saveParseCache,
+} from '../../../../dist/storage/parse-cache.js';
+import * as integrityModule from '../../../../dist/core/graph/relationship-integrity.js';
+import { _captureLogger } from '../../../../dist/core/logger.js';
 import {
   getDurableParsedFileDir,
   pruneAndSaveDurableParsedFileStore,
-} from '../../src/storage/parsedfile-store.js';
+} from '../../../../dist/storage/parsedfile-store.js';
 
-const describeIfWorkerBuilt = distWorkerExists() ? describe : describe.skip;
+let injectCfgConflict = false;
+const createCollector: typeof integrityModule.createRelationshipIntegrityCollector = (...args) => {
+  const collector = integrityModule.createRelationshipIntegrityCollector(...args);
+  if (!injectCfgConflict) return collector;
+  return {
+    ...collector,
+    inspect: (rel, duplicate, conflict) =>
+      collector.inspect(rel, duplicate, conflict || rel.type === 'CFG'),
+  };
+};
+const integrityMock = mock.module(
+  new URL('../../../../dist/core/graph/relationship-integrity.js', import.meta.url).href,
+  { namedExports: { ...integrityModule, createRelationshipIntegrityCollector: createCollector } },
+);
+after(() => integrityMock.restore());
+const { runPipelineFromRepo } = await import('../../../../dist/core/ingestion/pipeline.js');
 const source =
   'export class Service { ping() { return 1; } }\nexport function caller(service: Service) { service.ping(); }\n';
 
-describeIfWorkerBuilt.each([
+for (const { streamGraphEmit, cached } of [
   { streamGraphEmit: false, cached: false },
   { streamGraphEmit: true, cached: false },
   { streamGraphEmit: false, cached: true },
   { streamGraphEmit: true, cached: true },
-])(
-  'concurrent source edits (streaming=$streamGraphEmit cached=$cached)',
-  ({ streamGraphEmit, cached }) => {
-    it.each(['truncate', 'lengthen', 'rename', 'delete'] as const)(
-      'keeps %s unverified on cold and cached parsing',
-      async (change) => {
+]) {
+  describe(`concurrent source edits (streaming=${streamGraphEmit} cached=${cached})`, () => {
+    for (const change of ['truncate', 'lengthen', 'rename', 'delete'] as const) {
+      it(`keeps ${change} unverified on cold and cached parsing`, { timeout: 90_000 }, async () => {
         const identity = await runtimeParseIdentity();
         const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-integrity-race-'));
         const file = path.join(root, 'sample.ts');
@@ -93,27 +109,16 @@ describeIfWorkerBuilt.each([
         } finally {
           fs.rmSync(root, { recursive: true, force: true });
         }
-      },
-      90_000,
-    );
-  },
-);
+      });
+    }
+  });
+}
 
-describeIfWorkerBuilt('latched integrity failures', () => {
-  it('aborts CFG emission without per-file warning floods', async () => {
+describe('latched integrity failures', () => {
+  it('aborts CFG emission without per-file warning floods', { timeout: 90_000 }, async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-integrity-cfg-'));
     const logs = _captureLogger('debug');
-    const createCollector = integrityModule.createRelationshipIntegrityCollector;
-    const injected = vi
-      .spyOn(integrityModule, 'createRelationshipIntegrityCollector')
-      .mockImplementation((...args) => {
-        const collector = createCollector(...args);
-        return {
-          ...collector,
-          inspect: (rel, duplicate, conflict) =>
-            collector.inspect(rel, duplicate, conflict || rel.type === 'CFG'),
-        };
-      });
+    injectCfgConflict = true;
     try {
       fs.writeFileSync(path.join(root, 'first.ts'), source);
       fs.writeFileSync(path.join(root, 'second.ts'), source);
@@ -131,9 +136,9 @@ describeIfWorkerBuilt('latched integrity failures', () => {
         logs.records().filter((record) => String(record.msg).includes('CFG emission failed')),
       ).toHaveLength(0);
     } finally {
-      injected.mockRestore();
+      injectCfgConflict = false;
       logs.restore();
       fs.rmSync(root, { recursive: true, force: true });
     }
-  }, 90_000);
+  });
 });
