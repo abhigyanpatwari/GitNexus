@@ -3921,6 +3921,13 @@ export default memo(Asserted);
 const Satisfied = forwardRef((props: { a: number }, ref) => <input />) satisfies object;
 export default memo(Satisfied);
 `,
+    'src/c/Aliased.tsx': `import { memo } from 'react';
+function Bar({ a }: { a: number }) { return <b>{a}</b>; }
+const Foo = memo(Bar);
+export default memo(Foo);
+`,
+    'src/UseAlias.tsx':
+      "import Shown from './c/Aliased';\nexport function UseAlias() { return <Shown a={5} />; }\n",
     'src/Form.tsx': `import Paren from './c/Paren';
 import Asserted from './c/Asserted';
 import Satisfied from './c/Satisfied';
@@ -3940,6 +3947,10 @@ export function Form() { return <div><Paren a={1} /><Asserted a={2} /><Satisfied
 
   it('publishes the wrapped component only as the default, not under its own name', () => {
     expect(callsFrom('Named', 'src/c/Card.tsx')).toEqual([]);
+  });
+
+  it('links a wrapped alias to the component it stands for', () => {
+    expect(callsFrom('UseAlias', 'src/c/Aliased.tsx')).toEqual(['Bar']);
   });
 
   it('links components whose initializer sits under parentheses, `as` or `satisfies`', () => {

@@ -192,17 +192,12 @@ export function isBlockedDefaultExportHoc(node: SyntaxNode): boolean {
   const callee = callExpr.childForFieldName?.('function');
   if (callee?.type === 'identifier' && DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text))
     return true;
-  // `memo((p) => …, (a, b) => …)`: only the first inline function is the
-  // wrapped component; a later one is a helper argument (a comparator).
-  const firstInline = callArguments(callExpr)?.find(
-    (arg) => arg.type === 'arrow_function' || arg.type === 'function_expression',
-  );
-  if (firstInline !== undefined && firstInline.id !== node.id) return true;
-  // `memo(Card, (a, b) => …)`: the wrapper publishes the local `Card`; the
-  // inline function is a helper argument (a comparator), not the export.
-  let root: SyntaxNode = callExpr;
-  while (root.parent !== null) root = root.parent;
-  return wrappedDefaultLocal(callExpr, root) !== undefined;
+  // A component wrapper's first argument is the component; an inline function
+  // after it is a helper (a comparator), not the export: `memo(Card, cmp)`,
+  // `memo((p) => …, cmp)`, `memo(forwardRef((p, r) => …), cmp)`. Other calls
+  // (`hoc(options, () => …)`) keep the inline function as the default.
+  const [first] = callArguments(callExpr) ?? [];
+  return first !== undefined && first.id !== node.id && isComponentWrapperCallee(callee);
 }
 
 /** Expression wrappers that leave the exported value unchanged. */
@@ -286,45 +281,59 @@ const CALLABLE_VALUES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Is `name` a top-level function or class: declared directly, or bound to a
- * function or class expression, bare or inside component wrappers
- * (`const Field = forwardRef((p, r) => …)`)? Any other initializer
- * (`createStore(() => …)`, `{ … }`) is a value, not the component.
+ * The top-level function or class `name` stands for: one declared directly,
+ * bound to a function or class expression (bare or inside component wrappers:
+ * `const Field = forwardRef((p, r) => …)`), or reached through a local alias
+ * (`const Card = memo(Bar)`, `const Card = Bar` → `Bar`). Any other
+ * initializer (`createStore(() => …)`, `{ … }`, an import) is not a local
+ * component; an alias cycle resolves to nothing.
  */
-function declaresTopLevelCallable(root: SyntaxNode, name: string): boolean {
-  return root.namedChildren.some((stmt) => {
+function resolveLocalComponent(
+  root: SyntaxNode,
+  name: string,
+  seen: Set<string> = new Set(),
+): string | undefined {
+  if (seen.has(name)) return undefined;
+  seen.add(name);
+  for (const stmt of root.namedChildren) {
     const declaration =
       stmt.type === 'export_statement' ? stmt.childForFieldName('declaration') : stmt;
-    if (declaration === null) return false;
-    if (CALLABLE_DECLARATIONS.has(declaration.type))
-      return decodeIdentifierEscapes(declaration.childForFieldName('name')?.text ?? '') === name;
+    if (declaration === null) continue;
+    if (CALLABLE_DECLARATIONS.has(declaration.type)) {
+      if (decodeIdentifierEscapes(declaration.childForFieldName('name')?.text ?? '') === name)
+        return name;
+      continue;
+    }
     if (declaration.type !== 'lexical_declaration' && declaration.type !== 'variable_declaration')
-      return false;
-    return declaration.namedChildren.some((declarator) => {
+      continue;
+    for (const declarator of declaration.namedChildren) {
       const binding = declarator.childForFieldName('name');
       const value = declarator.childForFieldName('value');
-      return (
-        binding?.type === 'identifier' &&
-        decodeIdentifierEscapes(binding.text) === name &&
-        value !== null &&
-        CALLABLE_VALUES.has(unwrapComponentWrappers(value)?.type ?? '')
-      );
-    });
-  });
+      if (binding?.type !== 'identifier' || decodeIdentifierEscapes(binding.text) !== name)
+        continue;
+      const target = value === null ? undefined : unwrapComponentWrappers(value);
+      if (CALLABLE_VALUES.has(target?.type ?? '')) return name;
+      if (target?.type === 'identifier')
+        return resolveLocalComponent(root, decodeIdentifierEscapes(target.text), seen);
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 /**
  * The top-level function or class a wrapper call exports: `memo(Card)`,
  * `React.memo(Card, areEqual)`, `memo(forwardRef(Card))` and
  * `connect(mapState)(Card)` all name `Card`, the first argument unwrapped
- * through nested component wrappers (`isComponentWrapperCallee`). An inline
- * first argument is not a name: the synthesized HOC default above owns it.
+ * through nested component wrappers (`isComponentWrapperCallee`) and local
+ * aliases. An inline first argument is not a name: the synthesized HOC
+ * default above owns it.
  */
 export function wrappedDefaultLocal(call: SyntaxNode, root: SyntaxNode): string | undefined {
   const wrapped = unwrapComponentWrappers(call);
-  if (wrapped?.type !== 'identifier') return undefined;
-  const name = decodeIdentifierEscapes(wrapped.text);
-  return declaresTopLevelCallable(root, name) ? name : undefined;
+  return wrapped?.type === 'identifier'
+    ? resolveLocalComponent(root, decodeIdentifierEscapes(wrapped.text))
+    : undefined;
 }
 
 // Core check on a call expression: does it register a callback with a built-in

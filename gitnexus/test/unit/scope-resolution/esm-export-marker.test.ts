@@ -539,6 +539,58 @@ describe('@declaration.is-default-export (#3956)', () => {
     }
   });
 
+  it('never declares a comparator after a wrapped or imported component as the default', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'Widget.jsx'],
+      [emitTsScopeCaptures, 'Widget.tsx'],
+    ] as const) {
+      for (const src of [
+        'export default memo(forwardRef((p, r) => 1), (a, b) => a === b);',
+        "import Card from './Card';\nexport default memo(Card, (a, b) => a === b);",
+        'function Bar() {}\nconst Card = memo(Bar);\nexport default memo(Card, (a, b) => a === b);',
+      ]) {
+        const captures = emit(src, file);
+        expect(
+          captures.some((m) => m['@declaration.name']?.text === 'Widget'),
+          src,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('follows a wrapped alias to the local component it stands for', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      expect(
+        defaultExports(
+          emit,
+          'function Bar() {}\nconst Foo = memo(Bar);\nexport default memo(Foo);',
+          file,
+        ),
+      ).toEqual(['Bar']);
+      expect(
+        defaultExports(
+          emit,
+          'class Bar {}\nconst Foo = Bar;\nexport default withRouter(Foo);',
+          file,
+        ),
+      ).toEqual(['Bar']);
+      expect(
+        defaultExports(
+          emit,
+          'const A = memo(B);\nconst B = memo(A);\nexport default memo(A);',
+          file,
+        ),
+      ).toEqual([]);
+      expect(
+        defaultExports(
+          emit,
+          "import Bar from './Bar';\nconst Foo = memo(Bar);\nexport default memo(Foo);",
+          file,
+        ),
+      ).toEqual([]);
+    }
+  });
+
   it('exports only the runtime value when a type shares the wrapped name', () => {
     const kinds = emitTsScopeCaptures(
       'interface Card { a: number }\nfunction Card() {}\nexport default memo(Card);\n',
