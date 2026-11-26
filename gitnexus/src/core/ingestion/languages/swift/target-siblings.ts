@@ -24,11 +24,36 @@
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
-import { groupSwiftFilesByModule } from './target-grouping.js';
+import { DEFAULT_SWIFT_MODULE, groupSwiftFilesByModule } from './target-grouping.js';
 
 /** Namespace-channel key of a Swift module. */
 export function swiftModuleNamespace(moduleKey: string): string {
   return `swift-module:${moduleKey}`;
+}
+
+/** Module and import visibility for owner-scoped lookups. Unknown membership
+ * leaves the decision to the ordinary resolver rules. */
+export function swiftCanAccessFile(
+  callerFile: string,
+  targetFile: string,
+  indexes: ScopeResolutionIndexes,
+): boolean {
+  if (callerFile === targetFile) return true;
+  const callerScope = indexes.moduleScopes.byFilePath.get(callerFile);
+  const targetScope = indexes.moduleScopes.byFilePath.get(targetFile);
+  if (callerScope === undefined || targetScope === undefined) return true;
+
+  const callerModules = indexes.accessibleNamespacesByScope.get(callerScope);
+  const targetModules = indexes.accessibleNamespacesByScope.get(targetScope);
+  const unknownModule = swiftModuleNamespace(DEFAULT_SWIFT_MODULE);
+  return (
+    callerModules === undefined ||
+    targetModules === undefined ||
+    callerModules.includes(unknownModule) ||
+    targetModules.includes(unknownModule) ||
+    targetModules.some((module) => callerModules.includes(module)) ||
+    indexes.imports.reaches(callerScope, targetFile)
+  );
 }
 
 /**

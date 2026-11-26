@@ -80,7 +80,7 @@ import {
 } from './index.js';
 import { stripSwiftTypePreservingDecoration } from './interpret.js';
 import { groupSwiftFilesByModule } from './target-grouping.js';
-import { lineStartsOf, swiftExtensionOwner } from './target-siblings.js';
+import { lineStartsOf, swiftCanAccessFile, swiftExtensionOwner } from './target-siblings.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
 
@@ -367,6 +367,7 @@ function resolveSwiftExtensionCall(
       const matchingReceiver: SymbolDefinition[] = [];
       for (const candidate of model.methods.lookupAllByOwner(member.ownerId, site.name)) {
         if (candidate.isExported === false && candidate.filePath !== scope.filePath) continue;
+        if (!swiftCanAccessFile(scope.filePath, candidate.filePath, indexes)) continue;
         const range = candidate.declarationRange;
         if (range === undefined) return undefined;
         const targetScope = scopeTree.getScope(
