@@ -84,12 +84,30 @@ export function createIndexedDbFixture(prefix: string, options?: WithTestLbugDBO
   const ftsMustBeAvailable = process.env.GITNEXUS_REQUIRE_FTS === '1';
   let ftsAvailable = true;
 
+  let release: (() => Promise<void>) | undefined;
   const setup = async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const pool = options?.poolAdapter
+      ? await import('../../src/core/lbug/pool-adapter.js')
+      : undefined;
     const tmpHandle = await createTempDir('gitnexus-lbug-');
     const dbPath = path.join(tmpHandle.dbPath, 'lbug');
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
-    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    async function releaseResources() {
+      try {
+        await pool?.closeLbug(repoId);
+      } finally {
+        try {
+          await adapter.closeLbug();
+        } finally {
+          await tmpHandle.cleanup();
+        }
+      }
+    }
+    let closing: Promise<void> | undefined;
+    const cleanup = () => (closing ??= releaseResources());
+    release = cleanup;
 
     // 1. Init core adapter (writable) — reuses existing connection if
     //    already open for this dbPath (no new native objects created).
@@ -168,21 +186,11 @@ export function createIndexedDbFixture(prefix: string, options?: WithTestLbugDBO
     //    NOTE: This injected DB is writable by design for test setup.
     //    Read-only enforcement tests must initialize a separate pool entry
     //    via initLbug(...) so Ladybug native read-only mode is exercised.
-    if (options?.poolAdapter) {
+    if (pool) {
       const coreDb = adapter.getDatabase();
       if (!coreDb) throw new Error('withTestLbugDB: core adapter has no open Database');
-      const { initLbugWithDb } = await import('../../src/core/lbug/pool-adapter.js');
-      await initLbugWithDb(repoId, coreDb, dbPath);
+      await pool.initLbugWithDb(repoId, coreDb, dbPath);
     }
-
-    const cleanup = async () => {
-      if (options?.poolAdapter) {
-        const poolAdapter = await import('../../src/core/lbug/pool-adapter.js');
-        await poolAdapter.closeLbug(repoId);
-      }
-      await adapter.closeLbug();
-      await tmpHandle.cleanup();
-    };
 
     // tmpHandle.dbPath → parent temp dir (not the lbug file) so tests
     // that create sibling directories (e.g. 'storage') still work.
@@ -204,9 +212,16 @@ export function createIndexedDbFixture(prefix: string, options?: WithTestLbugDBO
 
   return {
     handle: lazyHandle,
-    setup,
+    setup: async () => {
+      try {
+        await setup();
+      } catch (error) {
+        await release?.();
+        throw error;
+      }
+    },
     cleanup: async () => {
-      await ref.handle?.cleanup();
+      await release?.();
     },
     ftsUnavailable: () => ftsRequired && !ftsAvailable,
   };

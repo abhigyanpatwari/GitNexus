@@ -171,14 +171,4 @@ await consumer.subscribe({ topic: 'order.placed' });`,
       expect(consumers).toHaveLength(1);
     });
   });
-
-  // ─── #1185: topic extractor must honour .gitnexusignore ─────────────
-  //
-  // The source-scan glob used to use a hardcoded ignore array; it now
-  // consumes the shared `IgnoreService` (mirrors `filesystem-walker.ts`)
-  // so any `.gitnexusignore` pattern excludes those files from contract
-  // extraction. Special case for this extractor: the Go-specific
-  // `_test.go` filter is preserved via a small wrapper around the base
-  // filter (so glob-level pruning still applies); the second test below
-  // pins that behaviour against accidental regressions.
 });

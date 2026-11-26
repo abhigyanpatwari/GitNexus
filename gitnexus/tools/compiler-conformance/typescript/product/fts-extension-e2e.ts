@@ -210,9 +210,6 @@ describe('happy path — extension pre-installed, fully offline (load-only)', ()
   let repo: string;
 
   beforeAll(() => {
-    // The file-level beforeEach skip fires only per-test; this hook runs first,
-    // so guard makeHome() (which needs extensionRelPath) when there is no seed.
-    if (!seedExtensionFile) return;
     ({ home } = makeHome('valid'));
     repo = makeFixtureRepo('happy');
   });
@@ -260,9 +257,6 @@ describe('packaged vendor survives a broken or missing home copy', () => {
   let repo: string;
 
   beforeAll(() => {
-    // See the happy-path note: skip setup when no seed extension is available
-    // so the per-test beforeEach skip is reached instead of throwing here.
-    if (!seedExtensionFile) return;
     ({ home } = makeHome('broken'));
     repo = makeFixtureRepo('broken');
   });
