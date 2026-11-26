@@ -170,6 +170,22 @@ describe('GET /api/analyze', () => {
     });
   });
 
+  it('keeps a failed job listed while its worker still holds the slot', () => {
+    const jobs = analyzeJobs();
+    const job = jobs.createJob({ repoPath: '/tmp/list-exiting' });
+    jobs.updateJob(job.id, { status: 'analyzing', repoName: 'list-exiting' });
+    const child = { connected: false, exitCode: null, signalCode: null, on: () => child };
+    jobs.registerChild(job.id, child as any);
+    jobs.updateJob(job.id, { status: 'failed', error: 'worker crashed' });
+
+    // Same answer as createJob: the slot is still taken.
+    expect(() => jobs.createJob({ repoPath: '/tmp/list-other' })).toThrow(/already in progress/);
+    expect(invokeList().body.jobs.map((j: { id: string }) => j.id)).toEqual([job.id]);
+
+    jobs.releaseChild(job.id);
+    expect(invokeList().body).toEqual({ jobs: [] });
+  });
+
   it('never exposes the repo URL, path or branch', () => {
     const jobs = analyzeJobs();
     const url = 'https://user:secret-token@github.com/acme/private-repo.git';
