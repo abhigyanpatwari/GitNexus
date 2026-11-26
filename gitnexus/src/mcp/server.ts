@@ -103,7 +103,7 @@ export function getNextStepHint(
       return `\n\n---\n**Next:** If planning changes, use impact({target: "${args?.name || '<name>'}", direction: "upstream"${repoParam}}) to check blast radius. To see execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
     case 'impact':
-      return `\n\n---\n**Next:** Review d=1 items first (WILL BREAK). To check affected execution flows, READ gitnexus://repo/${repoPath}/processes.`;
+      return `\n\n---\n**Next:** Review d=1 items first (direct dependents, most likely to need changes). To check affected execution flows, READ gitnexus://repo/${repoPath}/processes.`;
 
     case 'detect_changes':
       return `\n\n---\n**Next:** Review affected processes. Use context() on high-risk changed symbols. READ gitnexus://repo/${repoPath}/process/{name} for full execution traces.`;

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { scoreImpactRisk, type ImpactRisk, type ImpactRiskInput } from 'gitnexus-shared';
+import { getNextStepHint } from '../../src/mcp/server.js';
+import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
 // Issue #2975: the impact skill's Risk Assessment table is the user-facing
 // statement of the edit gate. Every threshold it documents is checked against
@@ -161,5 +163,52 @@ describe('impact skill risk table matches scoreImpactRisk (#2975)', () => {
 
   it('does not present depth-1 dependents as certain breakage', () => {
     expect(skill).not.toContain('WILL BREAK');
+  });
+});
+
+// The acceptance test in #2975: incomplete evidence must never read as a
+// complete LOW (or MEDIUM). The table's UNKNOWN row says so; check the scorer
+// keeps that promise at each graded bound, and that it leaves HIGH/CRITICAL
+// standing, since a partial walk that already found that much is not safer.
+describe('impact skill UNKNOWN row matches scoreImpactRisk on incomplete evidence', () => {
+  it('documents incomplete evidence for LOW/MEDIUM as UNKNOWN', () => {
+    expect(row('UNKNOWN').upstream).toContain('incomplete evidence for a LOW/MEDIUM rating');
+    expect(row('UNKNOWN').downstream).toBe('Incomplete evidence for a LOW/MEDIUM rating');
+  });
+
+  const incompleteCases = [
+    ...upstreamCases.map(({ name, input, expected }) => ({
+      name: `upstream ${name}, incomplete walk`,
+      input: { ...input, incompleteWalk: true },
+      expected,
+    })),
+    ...downstreamCases.map(({ name, input, expected }) => ({
+      name: `downstream ${name}, truncated enrichment`,
+      input: {
+        ...input,
+        unusedAxes: [
+          { axis: 'processes', reason: 'enrichment-truncated' },
+          { axis: 'modules', reason: 'enrichment-truncated' },
+        ] as const,
+      },
+      expected,
+    })),
+  ].map(({ name, input, expected }) => ({
+    name,
+    input,
+    expected: expected === 'LOW' || expected === 'MEDIUM' ? ('UNKNOWN' as const) : expected,
+  }));
+
+  it.each(incompleteCases)('$name scores $expected', ({ input, expected }) => {
+    expect(scoreImpactRisk(input).risk).toBe(expected);
+  });
+});
+
+describe('impact tool runtime text matches the skill wording (#2975)', () => {
+  it('does not tell MCP clients that depth-1 dependents will break', () => {
+    const impact = GITNEXUS_TOOLS.find((tool) => tool.name === 'impact');
+    expect(impact?.description).toContain('DIRECT — REVIEW FIRST');
+    expect(impact?.description).not.toContain('WILL BREAK');
+    expect(getNextStepHint('impact', {})).not.toContain('WILL BREAK');
   });
 });
