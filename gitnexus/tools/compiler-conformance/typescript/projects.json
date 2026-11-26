@@ -145,6 +145,7 @@
     "lang-resolution/typescript-local-shadow",
     "lang-resolution/typescript-member-access-for-loop",
     "lang-resolution/typescript-member-calls",
+    "lang-resolution/typescript-method-enrichment",
     "lang-resolution/typescript-named-imports",
     "lang-resolution/typescript-overloaded-receiver",
     "lang-resolution/typescript-qualified-base",

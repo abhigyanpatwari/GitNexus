@@ -107,7 +107,7 @@ Each call comparison checks the source range and the selected declaration, inclu
 
 Fixtures that exercise compiler recovery declare their expected diagnostics in `typescript/diagnostics.json`. For example, TypeScript 7 reports two configuration errors in the legacy baseUrl fixture. Unlisted or missing diagnostics fail the job. For a type-only import used as a constructor, the runner checks that GitNexus leaves the call unbound. Annotated receivers still have compiler-selected methods.
 
-Two cast fixtures also exercise ECMAScript method dispatch. For a receiver typed as `any`, TypeScript can supply no declaration. The runner compiles the original sources in a temporary directory and runs the emitted JavaScript in a separate Node process. Debugger breakpoints identify the method invoked, and source maps identify the call. The report counts these observations under `RUNTIME_CALLS`. Compiler-selected calls in the same fixtures still require an exact declaration match.
+The compiler comparison checks the declaration selected at each typed call, including inherited overloads. A separate product test checks GitNexus inference at calls for which TypeScript supplies no declaration in the two cast fixtures and the virtual-dispatch fixture. It executes the emitted JavaScript in Node and compares the observed method and call location with the published GitNexus edge and binding. The compiler job can run all three fixtures without executing their code.
 
 The native product checks cover GitNexus behavior that has no compiler equivalent, including graph persistence, rename, and resuming an interrupted embedding run. Windows and macOS run the platform selection with `node tools/compiler-conformance/typescript/check-products.mjs --platform`.
 

@@ -9,7 +9,6 @@ import { buildGraphNodeLookup } from '../../../dist/core/ingestion/scope-resolut
 import { compareReports } from '../compare.mjs';
 import { graphDeclaration } from '../gitnexus-report.mjs';
 import { compilerReport, emptyReport, graphRelations, relations } from './compiler-report.mjs';
-import { runtimeCalls } from './runtime-calls.mjs';
 
 function graphReport(
   graph,
@@ -19,11 +18,13 @@ function graphReport(
   propertyAccess,
   parameterCalls,
   classes,
+  uncheckedRanges,
 ) {
   // Class nodes carry a line. The real graph bridge joins their IDs to the
   // exact scope declarations, including two local classes on that same line.
   const classPositions = new Map();
   const result = emptyReport();
+  result.INFERRED_CALLS = { bindings: [], sites: [], edges: [] };
   const lookup = buildGraphNodeLookup(graph);
   for (const def of classes) {
     const id = resolveDefGraphId(def.filePath, def, lookup);
@@ -120,8 +121,13 @@ function graphReport(
         result.HAS_METHOD.edges.push({ from: graphIdentity(owner), to: callableIdentity(method) });
     }
   }
-  result.CALLS.sites.push(...boundCalls);
-  const boundRanges = new Set(boundCalls.map(siteKey));
+  const boundRanges = new Set();
+  for (const site of boundCalls) {
+    const key = siteKey(site);
+    boundRanges.add(key);
+    if (uncheckedRanges.has(key)) result.INFERRED_CALLS.bindings.push(site);
+    else result.CALLS.sites.push(site);
+  }
   for (const relation of graphRelations) {
     for (const edge of graph.iterRelationshipsByType(relation)) {
       if (edge.reason === 'interface-dispatch') continue;
@@ -140,6 +146,7 @@ function graphReport(
       if (relation === 'CALLS' && to.label === 'Property') kind = 'CALLABLE_PROPERTIES';
       if (edge.reason === 'callable-value-flow' && site && parameterRanges.has(siteKey(site)))
         kind = 'CALLBACK_TARGETS';
+      if (kind === 'CALLS' && site && uncheckedRanges.has(siteKey(site))) kind = 'INFERRED_CALLS';
       result[kind].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
       if (
         site &&
@@ -300,8 +307,9 @@ const manifest = JSON.parse(readFileSync(new URL('./projects.json', import.meta.
 export async function compareProject(root, options = {}, expectedDiagnostics = []) {
   const key = path.relative(fixturesDirectory, root).split(path.sep).join('/');
   const inventory = manifest.declarationInventory.includes(key);
-  const entryPoint = Object.hasOwn(manifest.runtimeDispatch, key) && manifest.runtimeDispatch[key];
-  const evidence = entryPoint ? { methods: [], unchecked: [] } : undefined;
+  const evidence = Object.hasOwn(manifest.runtimeDispatch, key)
+    ? { methods: [], unchecked: [] }
+    : undefined;
   const methodFacts = manifest.methodFacts.includes(key);
   const propertyAccess = manifest.propertyAccess.includes(key);
   const reference = compilerReport(root, expectedDiagnostics, inventory, {
@@ -337,25 +345,15 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     propertyAccess,
     parameterCalls,
     classes,
+    new Set(
+      (evidence?.unchecked ?? []).map(({ file, start, end }) =>
+        siteKey({ file, start: start[0] + 1 + ':' + start[1], end: end[0] + 1 + ':' + end[1] }),
+      ),
+    ),
   );
   observed.TYPE_PARAMETER_USES.sites = typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.
   // The observer also sees property reads, argument reads and other syntax.
-  let runtimeCount = 0;
-  if (evidence) {
-    const runtime = runtimeCalls(root, evidence, entryPoint);
-    const exercised = new Set(runtime.sites.map(siteKey));
-    compareReports(
-      { producer: 'Node.js', sites: runtime.sites },
-      {
-        producer: 'GitNexus',
-        sites: observed.CALLS.sites.filter((site) => exercised.has(siteKey(site))),
-      },
-    );
-    observed.CALLS.sites = observed.CALLS.sites.filter((site) => !exercised.has(siteKey(site)));
-    reference.CALLS.edges.push(...runtime.edges);
-    runtimeCount = runtime.sites.length;
-  }
   const rejectedLocations = new Set(reference.REJECTED_CALLS.sites.map(siteKey));
   observed.REJECTED_CALLS.sites = unbound.filter((site) => rejectedLocations.has(siteKey(site)));
   const checkedReads = new Set(reference.VARIABLE_READS.sites.map(siteKey));
@@ -380,15 +378,10 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   }
   return {
     pipeline,
-    counts: {
-      ...Object.fromEntries(
-        relations.map((kind) => [
-          kind,
-          reference[kind].sites.length || reference[kind].edges.length,
-        ]),
-      ),
-      RUNTIME_CALLS: runtimeCount,
-    },
+    counts: Object.fromEntries(
+      relations.map((kind) => [kind, reference[kind].sites.length || reference[kind].edges.length]),
+    ),
+    runtime: evidence && { evidence, observed: observed.INFERRED_CALLS },
   };
 }
 

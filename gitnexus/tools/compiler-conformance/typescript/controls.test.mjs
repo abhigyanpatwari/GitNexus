@@ -6,7 +6,6 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
-import { runtimeCalls } from './runtime-calls.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 
 const root = fileURLToPath(
@@ -210,24 +209,22 @@ test('a JSX member and the function it invokes have different declarations at th
   );
 });
 
-test('swapping the two unchecked save calls disagrees with ECMAScript dispatch', () => {
-  const fixture = fileURLToPath(
-    new URL(
-      '../../../test/fixtures/lang-resolution/typescript-double-cast-inference/',
-      import.meta.url,
-    ),
+test('an unchecked call and a typed call to the same method keep distinct source locations', () => {
+  const project = path.resolve(root, '../../lang-resolution/ts-virtual-dispatch');
+  const evidence = { unchecked: [], methods: [] };
+  const report = compilerReport(project, ['src/app.ts:22:9 TS2339'], false, { runtime: evidence });
+  const method = evidence.methods.find(({ name }) => name === 'fetchBall');
+  assert.ok(method);
+  const calls = report.CALLS.sites.filter(({ target }) => target === method.target);
+  assert.equal(calls.length, 1);
+  assert.equal(evidence.unchecked.length, 1);
+  const [line, column] = evidence.unchecked[0].start;
+  const uncheckedStart = line + 1 + ':' + column;
+  assert.notEqual(calls[0].start, uncheckedStart);
+  assert.throws(
+    () => compareReports({ sites: calls }, { sites: [{ ...calls[0], start: uncheckedStart }] }),
+    /Missing from actual/,
   );
-  const runtime = { unchecked: [], methods: [] };
-  compilerReport(fixture, ['src/app.ts:9:7 TS2339'], false, { runtime });
-  const trace = runtimeCalls(fixture, runtime, 'process');
-  assert.equal(trace.sites.length, 2);
-  const [user, repo] = trace.sites;
-  assert.notEqual(user.target, repo.target);
-  const swapped = [
-    { ...user, target: repo.target },
-    { ...repo, target: user.target },
-  ];
-  assert.throws(() => compareReports(trace, { ...trace, sites: swapped }), /Missing from actual/);
 });
 
 test('the checker distinguishes derived, super and unrelated methods with the same spelling', () => {

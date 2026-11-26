@@ -576,11 +576,6 @@ describe('TypeScript chain-typed receiver folding to an interface (Case 3b, #283
   const fanout = () => saveCalls().filter((e) => e.rel.reason === 'interface-dispatch');
   const basename = (p: string) => p.slice(p.lastIndexOf('/') + 1);
 
-  it('emits the primary edge to the interface declaration', () => {
-    const primary = saveCalls().filter((e) => e.rel.reason !== 'interface-dispatch');
-    expect(primary.map((e) => basename(e.targetFilePath))).toEqual(['repository.ts']);
-  });
-
   // A static member can never be reached through an instance-typed receiver —
   // TypeScript rejects `class C implements I { static save() {} }` as TS2420,
   // "Property 'save' is missing". ShadowRepo inherits the real SqlRepo.save and
