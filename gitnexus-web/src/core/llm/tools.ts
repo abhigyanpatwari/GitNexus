@@ -26,6 +26,7 @@ import type {
   GrepOptions,
   GrepResponse,
 } from '../../services/backend-client';
+import { debugLog } from '../../lib/debug';
 
 /**
  * Tool names registered by createGraphRAGTools — kept in sync with each tool's `name`
@@ -984,11 +985,10 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
       const targetType = Array.isArray(targetNode) ? targetNode[1] : targetNode.nodeType;
       const targetFilePath = Array.isArray(targetNode) ? targetNode[2] : targetNode.filePath;
 
-      if (import.meta.env.DEV) {
-        console.log(
-          `🎯 Impact: Found target "${target}" → id=${targetId}, type=${targetType}, filePath=${targetFilePath}`,
-        );
-      }
+      debugLog(
+        'impact',
+        `found target "${target}" -> id=${targetId}, type=${targetType}, filePath=${targetFilePath}`,
+      );
 
       // No more multipleMatchWarning needed - we either disambiguated or returned early
       const multipleMatchWarning = '';
@@ -1084,9 +1084,7 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
               r.reason AS reason
             LIMIT ${depthRowLimits[0] + 1}
           `;
-      if (import.meta.env.DEV) {
-        console.log(`🔍 Impact d=1 query:\n${d1Query}`);
-      }
+      debugLog('impact', `d=1 query:\n${d1Query}`);
       depthQueries.push(executeQuery(d1Query));
 
       // Depth 2 query - 2 hops
