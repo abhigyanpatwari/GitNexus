@@ -30,8 +30,8 @@ the bound repository and index freshness alongside your explanation.
 
 ```
 1. Bind the repository once; use hot-tool staleness on subsequent calls
-2. If no symbol is known: query({search_query: "<concept>", limit: 3, max_symbols: 3})
-3. context({uid: "<returned id>"})                → Inspect the selected symbol
+2. If no symbol is known: query({search_query: "<concept>", repo: "my-app", limit: 3, max_symbols: 3})
+3. context({uid: "<returned id>", repo: "my-app"}) → Inspect the selected symbol
 4. Read a process resource only when its full trace answers an unresolved question
 ```
 

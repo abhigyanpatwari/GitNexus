@@ -46,9 +46,9 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 
 ```
 0. list_repos {}                                           → Bind repo (and worktree)
-1. impact({target: "X", direction: "upstream"}) or `node .gitnexus/run.cjs impact "X" --direction upstream --repo .`
+1. impact({target: "X", direction: "upstream", repo: "my-app"}) or `node .gitnexus/run.cjs impact "X" --direction upstream --repo .`
 2. READ gitnexus://repo/{name}/processes                   → Check affected execution flows
-3. detect_changes({scope: "all"}) or `node .gitnexus/run.cjs detect-changes --scope all --repo .`
+3. detect_changes({scope: "all", repo: "my-app"}) or `node .gitnexus/run.cjs detect-changes --scope all --repo .`
 4. Assess risk and report to user, echoing repo/worktree/index identity
 ```
 
@@ -60,11 +60,11 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 
 ```
 - [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
-- [ ] impact({target, direction: "upstream"}) or CLI fallback to find dependents
+- [ ] impact({target, direction: "upstream", repo: "my-app"}) or CLI fallback to find dependents
 - [ ] Review d=1 items first (these WILL BREAK)
 - [ ] Check high-confidence (>0.8) dependencies
 - [ ] READ processes to check affected execution flows
-- [ ] detect_changes({scope: "all"}) or CLI fallback for pre-commit check
+- [ ] detect_changes({scope: "all", repo: "my-app"}) or CLI fallback for pre-commit check
 - [ ] Confirm the checkout you edited is the checkout that was diffed
 - [ ] Assess risk level and report, stating repo/worktree/index identity
 ```
@@ -129,7 +129,7 @@ impact({
 **detect_changes** — git-diff based impact analysis. If MCP is unavailable, use `node .gitnexus/run.cjs detect-changes --scope all --repo .` instead:
 
 ```
-detect_changes({scope: "all"})
+detect_changes({scope: "all", repo: "my-app"})
 
 → Changed: 5 symbols in 3 files
 → Affected: LoginFlow, TokenRefresh, APIMiddlewarePipeline

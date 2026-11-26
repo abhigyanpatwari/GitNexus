@@ -35,13 +35,21 @@ written, so read them as a confirmation of identity.
 MCP server was not launched from; otherwise `git diff` runs in the wrong
 checkout and reports nothing changed, which reads as a verified refactor.
 
+Replace `my-app` with the confirmed repository on every call. For a linked
+checkout, use its absolute path as `worktree` on `detect_changes` calls. Before
+reporting a branch comparison, verify the checkout's HEAD and resolve the
+intended comparison base to a commit. Use `scope: "compare"` with that commit
+as `base_ref`. Report the repository, checkout, base, HEAD and index commit.
+If those identify a different checkout or comparison, stop and rebind before
+using the result.
+
 ## Workflow
 
 ```
 0. list_repos {}                                  → Bind repo (and worktree)
-1. impact({target: "X", direction: "upstream"})  → Map all dependents
-2. query({search_query: "X"})                            → Find execution flows involving X
-3. context({name: "X"})                           → See all incoming/outgoing refs
+1. impact({target: "X", direction: "upstream", repo: "my-app"}) → Map all dependents
+2. query({search_query: "X", repo: "my-app"})                  → Find execution flows involving X
+3. context({name: "X", repo: "my-app"})                        → See all incoming/outgoing refs
 4. Plan update order: interfaces → implementations → callers → tests
 ```
 
@@ -54,11 +62,11 @@ checkout and reports nothing changed, which reads as a verified refactor.
 
 ```
 - [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
-- [ ] rename({symbol_name: "oldName", new_name: "newName", dry_run: true}) — preview semantic edits (omitting dry_run also previews)
+- [ ] rename({symbol_name: "oldName", new_name: "newName", repo: "my-app", dry_run: true}) — preview semantic edits (omitting dry_run also previews)
 - [ ] Confirm the previewed file paths are in the bound repository/worktree
 - [ ] Review exact graph-backed semantic spans, coverage, and limitations
-- [ ] If satisfied: rename({..., dry_run: false, plan_token: "<token from preview>"}) — apply exactly the reviewed edits
-- [ ] detect_changes() — verify only expected files changed
+- [ ] If satisfied: rename({..., repo: "my-app", dry_run: false, plan_token: "<token from preview>"}) — apply exactly the reviewed edits
+- [ ] detect_changes({scope: "all", repo: "my-app"}) — verify only expected files changed
 - [ ] Run tests for affected processes
 ```
 
@@ -66,11 +74,11 @@ checkout and reports nothing changed, which reads as a verified refactor.
 
 ```
 - [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
-- [ ] context({name: target}) — see all incoming/outgoing refs
-- [ ] impact({target, direction: "upstream"}) — find all external callers
+- [ ] context({name: target, repo: "my-app"}) — see all incoming/outgoing refs
+- [ ] impact({target, direction: "upstream", repo: "my-app"}) — find all external callers
 - [ ] Define new module interface
 - [ ] Extract code, update imports
-- [ ] detect_changes() — verify affected scope
+- [ ] detect_changes({scope: "all", repo: "my-app"}) — verify affected scope
 - [ ] Run tests for affected processes
 ```
 
@@ -78,12 +86,12 @@ checkout and reports nothing changed, which reads as a verified refactor.
 
 ```
 - [ ] list_repos {} — bind repo; explicit repo when >1 indexed, ask if ambiguous
-- [ ] context({name: target}) — understand all callees
+- [ ] context({name: target, repo: "my-app"}) — understand all callees
 - [ ] Group callees by responsibility
-- [ ] impact({target, direction: "upstream"}) — map callers to update
+- [ ] impact({target, direction: "upstream", repo: "my-app"}) — map callers to update
 - [ ] Create new functions/services
 - [ ] Update callers
-- [ ] detect_changes() — verify affected scope
+- [ ] detect_changes({scope: "all", repo: "my-app"}) — verify affected scope
 - [ ] Run tests for affected processes
 ```
 
@@ -168,10 +176,16 @@ impact({target: "validateUser", repo: "my-app", direction: "upstream"})
 **detect_changes** — verify your changes after refactoring:
 
 ```
-detect_changes({scope: "all"})
+detect_changes({scope: "all", repo: "my-app"})
 → Changed: 8 files, 12 symbols
 → Affected processes: LoginFlow, TokenRefresh
 → Risk: MEDIUM
+```
+
+For a branch comparison in a linked checkout, use the verified base commit:
+
+```text
+detect_changes({scope: "compare", repo: "my-app", worktree: "/abs/path/to/worktree", base_ref: "<base commit>"})
 ```
 
 `partial: true` (a graph query failed) or `truncated: true` (the changed-symbol

@@ -114,6 +114,24 @@ describe.each(STANDARD_SKILL_NAMES)('standard skill distribution for %s', (name)
 });
 
 describe('intended standard-skill improvements stay in every applicable copy', () => {
+  it.each([
+    'gitnexus-exploring',
+    'gitnexus-debugging',
+    'gitnexus-impact-analysis',
+    'gitnexus-refactoring',
+  ] as const)('binds MCP call examples to the repository in %s', (name) => {
+    for (const file of standardSkillCopies(name)) {
+      const content = fs.readFileSync(file, 'utf-8');
+      const calls = content.match(
+        /\b(?:query|context|trace|cypher|impact|rename|detect_changes)\(\{[^}]*\}\)/g,
+      );
+      expect(calls?.length, file).toBeGreaterThan(0);
+      for (const call of calls ?? []) {
+        expect(call, file).toContain('repo: "my-app"');
+      }
+    }
+  });
+
   it('ships byte-identical refactoring guidance in every distribution', () => {
     const canonical = fs.readFileSync(
       path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus-refactoring', 'SKILL.md'),
@@ -154,7 +172,7 @@ describe('intended standard-skill improvements stay in every applicable copy', (
       'node .gitnexus/run.cjs impact <symbol> --direction upstream --repo .',
       'node .gitnexus/run.cjs detect-changes --scope all --repo .',
       'replace `node .gitnexus/run.cjs` with `npx gitnexus`',
-      'detect_changes({scope: "all"})',
+      'detect_changes({scope: "all", repo: "my-app"})',
     ];
     for (const file of standardSkillCopies('gitnexus-impact-analysis')) {
       const content = fs.readFileSync(file, 'utf-8');
@@ -368,10 +386,10 @@ describe('intended standard-skill improvements stay in every applicable copy', (
     for (const file of standardSkillCopies('gitnexus-refactoring')) {
       const content = fs.readFileSync(file, 'utf-8');
       expect(content).toContain(
-        'rename({symbol_name: "oldName", new_name: "newName", dry_run: true})',
+        'rename({symbol_name: "oldName", new_name: "newName", repo: "my-app", dry_run: true})',
       );
       expect(content).toContain(
-        'rename({..., dry_run: false, plan_token: "<token from preview>"})',
+        'rename({..., repo: "my-app", dry_run: false, plan_token: "<token from preview>"})',
       );
     }
   });
