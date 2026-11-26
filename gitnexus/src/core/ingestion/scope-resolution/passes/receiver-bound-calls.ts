@@ -1175,14 +1175,10 @@ function emitReceiverBoundCallsInPass(
   }
   // Direct subtypes of a type, keyed by the SUPERtype's def id.
   //
-  // Built from IMPLEMENTS **and** EXTENDS (#2829). IMPLEMENTS alone is not the
-  // set of implementations: `preEmitInheritanceEdges` classifies heritage by the
-  // TARGET's kind, so `interface B extends A` is stored as `B IMPLEMENTS A` and
-  // an INTERFACE lands in A's list; and a concrete class reaches its interface
-  // through `class C extends AbstractBase` (EXTENDS) + `AbstractBase implements
-  // I` (IMPLEMENTS), so it is two hops away and invisible to a depth-1 walk.
-  // Both shapes previously ended the fan-out on a bodiless declaration while the
-  // only executable target got no edge at all.
+  // Follow both IMPLEMENTS and EXTENDS (#2829). An interface can extend
+  // another interface, and a concrete class can inherit its implementation
+  // through an abstract base. In both cases dispatch must walk through the
+  // intermediate type to find the executable method.
   const subtypesBySupertypeDefId = new Map<string, SymbolDefinition[]>();
   const addSubtype = (superId: string, sub: SymbolDefinition): void => {
     let list = subtypesBySupertypeDefId.get(superId);
