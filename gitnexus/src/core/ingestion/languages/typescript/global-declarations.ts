@@ -192,7 +192,10 @@ function projectMembers(
   indexes: ScopeResolutionIndexes,
   projectOf: (file: ParsedFile) => TsconfigScope | string,
 ) {
-  const scopes = config?.tsconfigs?.programs ?? config?.tsconfigs?.scopes;
+  const index = config?.tsconfigs;
+  const scopes = index?.standalonePrograms?.length
+    ? [...(index.programs ?? []), ...index.standalonePrograms]
+    : (index?.programs ?? index?.scopes);
   if (
     !scopes?.length ||
     (scopes.length === 1 &&
@@ -283,6 +286,7 @@ export function bindGlobalDeclarations(
     owningPackage(file.filePath, config?.nodeWorkspacePackages)?.dir ??
     '';
   const membership = projectMembers(files, config, indexes, projectOf);
+  const standalone = new Set(config?.tsconfigs?.standalonePrograms);
   const programIds = new Map(config?.tsconfigs?.scopes.map((scope, index) => [scope, index]));
   const globals = new Map<TsconfigScope | string, Map<string, BindingRef[]>>();
   const declaredNamespaces = new Map<ParsedFile, Set<SymbolDefinition>>();
@@ -354,7 +358,16 @@ export function bindGlobalDeclarations(
     const owner = projectOf(file);
     const projects = membership?.get(file);
     if (membership && !projects) continue;
-    const visibleProjects = projects && !projects.has(owner) ? [...projects] : [owner];
+    let visibleProjects = projects ? [...projects] : [owner];
+    if (visibleProjects.length > 1) {
+      // An imported file belongs to its including programs, even outside every config directory.
+      const configured = visibleProjects.filter((p) => typeof p !== 'string');
+      if (configured.length) {
+        const primary = configured.filter((p) => !standalone.has(p));
+        visibleProjects = primary.length ? primary : configured;
+      }
+    }
+    if (visibleProjects.includes(owner)) visibleProjects = [owner];
     const symbols = globals.get(visibleProjects[0]);
     if (!symbols?.size) continue;
     // An explicit import owns its local spelling even when its target is not a module.

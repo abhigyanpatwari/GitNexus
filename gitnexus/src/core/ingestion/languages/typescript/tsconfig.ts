@@ -64,6 +64,8 @@ export interface TsconfigIndex {
   readonly scopes: readonly TsconfigScope[];
   /** Configured programs, including projects reached through solution references. */
   readonly programs?: readonly TsconfigScope[];
+  /** Named projects that can govern files outside a default project or solution. */
+  readonly standalonePrograms?: readonly TsconfigScope[];
 }
 
 const nearestByIndex = new WeakMap<TsconfigIndex, Map<string, TsconfigScope>>();
@@ -107,9 +109,10 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
 
   const ranked: { scope: TsconfigScope; rank: number; path: string }[] = [];
   const references = new Map<string, string[]>();
+  const extended = new Set<string>();
   const pathsToRead = new Set(files);
   for (const absPath of pathsToRead) {
-    const options = await readCompilerOptions(absPath, 0);
+    const options = await readCompilerOptions(absPath, 0, extended);
     if (options === null) continue;
     // `readCompilerOptions` resolves both to ABSOLUTE paths against whichever
     // config in the `extends` chain declared them, which is the only way the
@@ -168,11 +171,13 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
   for (const program of programs)
     for (const target of references.get(program) ?? []) programs.add(target);
   const scopes = ranked.map((entry) => entry.scope);
+  const standalone = ranked.filter(
+    (entry) => !programs.has(entry.path) && !extended.has(entry.path),
+  );
   return {
     scopes,
-    programs: programs.size
-      ? ranked.filter((entry) => programs.has(entry.path)).map((entry) => entry.scope)
-      : scopes,
+    programs: ranked.filter((entry) => programs.has(entry.path)).map((entry) => entry.scope),
+    standalonePrograms: standalone.map((entry) => entry.scope),
   };
 }
 
@@ -212,7 +217,7 @@ interface ResolvedOptions {
 async function readCompilerOptions(
   absPath: string,
   depth: number,
-  repoRootHint?: string,
+  extended: Set<string>,
 ): Promise<ResolvedOptions | null> {
   if (depth > MAX_EXTENDS_DEPTH) {
     logger.warn(`[typescript] tsconfig extends chain too deep at ${absPath}; ignoring the rest`);
@@ -231,7 +236,7 @@ async function readCompilerOptions(
   // EFFECTIVE `baseUrl`, which a config declaring `paths` alone inherits from
   // its base. Resolving them against this config's own directory instead would
   // load the right alias pattern and point every target at the wrong place.
-  const inherited = await readExtended(parsed.extends, dir, depth, repoRootHint);
+  const inherited = await readExtended(parsed.extends, dir, depth, extended);
 
   const own: ResolvedOptions = {};
   for (const key of ['files', 'include', 'exclude'] as const) {
@@ -297,7 +302,7 @@ async function readExtended(
   value: unknown,
   fromDir: string,
   depth: number,
-  repoRootHint?: string,
+  extended: Set<string>,
 ): Promise<ResolvedOptions | null> {
   const specs = typeof value === 'string' ? [value] : Array.isArray(value) ? value : [];
   let merged: ResolvedOptions | null = null;
@@ -305,7 +310,8 @@ async function readExtended(
     if (typeof spec !== 'string') continue;
     const resolved = await resolveExtendsTarget(spec, fromDir);
     if (resolved === null) continue;
-    const options = await readCompilerOptions(resolved, depth + 1, repoRootHint);
+    extended.add(resolved);
+    const options = await readCompilerOptions(resolved, depth + 1, extended);
     if (options === null) continue;
     // Later entries win over earlier ones, per tsc's array semantics.
     merged = { ...(merged ?? {}), ...options };

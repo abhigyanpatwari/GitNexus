@@ -337,6 +337,7 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   const reference = compilerReport(root, expectedDiagnostics, inventory, {
     methodFacts,
     propertyAccess,
+    projects: manifest.compilerProjects[key],
   });
   assert.ok(
     relations.some((kind) => reference[kind].edges.length || reference[kind].sites.length),

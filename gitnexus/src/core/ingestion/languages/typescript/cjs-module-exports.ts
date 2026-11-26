@@ -16,10 +16,10 @@
  * Pure given the input nodes. No I/O, no globals.
  */
 
-import type { CaptureMatch } from 'gitnexus-shared';
+import type { CaptureMatch, NameClaim } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { deriveDefaultExportHocName } from '../../ts-js-hoc-utils.js';
-import { defaultExportNameCollides } from './cjs-export-assignment.js';
+import { defaultExportNameCollides, isCommonJsModule } from './cjs-export-assignment.js';
 
 /**
  * Synthesize re-export markers for CJS forwarding assignments (#2723).
@@ -142,6 +142,25 @@ export function synthesizeCjsReExports(
   }
 }
 
+function usesCommonJsModuleBinding(root: SyntaxNode, filePath: string, captures: CaptureMatch[]) {
+  if (!isCommonJsModule(root, filePath)) return false;
+  const scope = captures.find((capture) => capture['@scope.module']);
+  const names = scope?.['@scope.name-claims']?.text;
+  if (!names) return true;
+  const claims: NameClaim[] = JSON.parse(names);
+  return !claims.some((claim) => {
+    if (claim.name !== 'module' || claim.purpose === 'type') return false;
+    // An ambient declaration describes Node's wrapper parameter without replacing it.
+    const pos = { row: claim.range.startLine - 1, column: claim.range.startCol };
+    let node: SyntaxNode | null = root.namedDescendantForPosition(pos);
+    while (node && node !== root) {
+      if (node.type === 'ambient_declaration') return false;
+      node = node.parent;
+    }
+    return true;
+  });
+}
+
 /**
  * Synthesize the scope declaration for `module.exports = <function>` (#2723).
  *
@@ -187,6 +206,7 @@ export function synthesizeCjsDefaultExport(
     // would bind a second callable under one name, merging two functions onto
     // one node and fabricating a self-recursive call edge (#2729 review F4).
     if (ownName === null && defaultExportNameCollides(assignment, root, name)) continue;
+    if (!usesCommonJsModuleBinding(root, filePath, out)) continue;
 
     // Anchored on the INNER function so the declaration range matches the
     // `@scope.function` range — the same anchor discipline as every other
@@ -194,6 +214,13 @@ export function synthesizeCjsDefaultExport(
     out.push({
       '@declaration.function': nodeToCapture('@declaration.function', value),
       '@declaration.name': syntheticCapture('@declaration.name', ownName ?? value, name),
+      '@declaration.is-exported': syntheticCapture('@declaration.is-exported', value, 'true'),
+      '@declaration.is-default-export': syntheticCapture(
+        '@declaration.is-default-export',
+        value,
+        'true',
+      ),
+      '@declaration.named-exports': syntheticCapture('@declaration.named-exports', value, '[]'),
     });
   }
 }

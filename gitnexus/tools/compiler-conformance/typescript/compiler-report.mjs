@@ -158,7 +158,13 @@ export function compilerReport(root, expectedDiagnostics = [], inventory = false
   return withWorkspacePackages(root, (projectRoot) => {
     const result = { ...emptyReport(), publishedCalls: [], uncheckedMemberSites: [] };
     const diagnostics = [];
-    const configs = new Set([path.join(projectRoot, 'tsconfig.json')]);
+    const configs = new Set(
+      (options.projects ?? ['tsconfig.json']).map((file) => path.join(projectRoot, file)),
+    );
+    if (options.projects) {
+      for (const config of configs)
+        assert.ok(existsSync(config), 'Missing compiler project ' + config);
+    }
     for (const config of configs) {
       reportProject(
         projectRoot,

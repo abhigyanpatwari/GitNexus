@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
+import { typescriptModuleExports } from '../../../dist/core/ingestion/languages/typescript/module-exports.js';
 
 export async function checkCommonJsForwarding() {
   const project = fileURLToPath(
@@ -19,7 +20,33 @@ export async function checkCommonJsForwarding() {
     const source = load('./source.js');
     const forward = load('./forward.js');
     const names = new Map(Object.entries(source).map(([key, value]) => [value, key]));
-    const { graph } = await runPipelineFromRepo(project, () => {});
+    const whole = load('./whole.js');
+    const shadow = load('./shadow.cjs');
+    const localModule = await import(pathToFileURL(path.join(emitted, 'local-module.mjs')).href);
+    const surfaces = new Map();
+    const { graph } = await runPipelineFromRepo(project, () => {}, {
+      onScopeResolved({ parsedFiles }) {
+        for (const file of parsedFiles) {
+          if (
+            file.filePath === 'whole.ts' ||
+            file.filePath === 'local-module.mts' ||
+            file.filePath === 'shadow.cts'
+          ) {
+            surfaces.set(
+              file.filePath,
+              [...typescriptModuleExports(file)].map(([key, definition]) => [
+                key,
+                definition.qualifiedName,
+              ]),
+            );
+          }
+        }
+      },
+    });
+    assert.equal(typeof whole, 'function');
+    assert.deepEqual(surfaces.get('whole.ts'), [['default', whole.name]]);
+    assert.deepEqual(surfaces.get('local-module.mts'), Object.entries(localModule));
+    assert.deepEqual(surfaces.get('shadow.cts'), Object.entries(shadow));
     const observed = [];
     for (const edge of graph.iterRelationshipsByType('CALLS')) {
       const node = graph.getNode(edge.sourceId);
