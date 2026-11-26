@@ -2091,11 +2091,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // still blocks new analyses.
   // Same redacted view as the poll below (no repo URL, path or branch).
   // `repoId` is set here before completion too: it is an opaque HMAC, and on a
-  // re-analyze it matches the existing `GET /api/repos` entry.
+  // re-analyze it matches the existing `GET /api/repos` entry. `stopping` marks
+  // a job that is ending (terminal, or cancel pending) but still holds the slot.
   app.get('/api/analyze', createRouteLimiter({ limit: 60 }), (_req, res) => {
     const jobs = jobManager.listSlotHolders().map((job) => ({
       ...serializeOpsJob(job, 'analyze'),
       repoId: job.repoPath ? publicRepoId(job.repoPath) : undefined,
+      stopping: isTerminalJobStatus(job.status) || jobManager.hasPendingCancel(job.id),
     }));
     res.json({ jobs });
   });

@@ -1173,6 +1173,8 @@ export const startAnalyze = async (request: {
 export interface ActiveAnalyzeJob extends JobStatus {
   /** Matches `BackendRepo.id` when the job re-analyzes an indexed repo. */
   repoId?: string;
+  /** Ending (failed, complete or cancel pending) but its worker still holds the slot. */
+  stopping: boolean;
 }
 
 /** List analyze jobs holding the analyze slot (the server runs one at a time). */

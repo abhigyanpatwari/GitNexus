@@ -167,6 +167,7 @@ describe('GET /api/analyze', () => {
       repoName: 'list-running',
       repoId: publicRepoId('/tmp/list-running'),
       progress: { phase: 'parsing', percent: 42, message: 'Parsing code' },
+      stopping: false,
     });
   });
 
@@ -180,10 +181,27 @@ describe('GET /api/analyze', () => {
 
     // Same answer as createJob: the slot is still taken.
     expect(() => jobs.createJob({ repoPath: '/tmp/list-other' })).toThrow(/already in progress/);
-    expect(invokeList().body.jobs.map((j: { id: string }) => j.id)).toEqual([job.id]);
+    expect(invokeList().body.jobs).toMatchObject([
+      { id: job.id, status: 'failed', stopping: true },
+    ]);
 
     jobs.releaseChild(job.id);
     expect(invokeList().body).toEqual({ jobs: [] });
+  });
+
+  it('marks a cancelled job as stopping while its worker shuts down', () => {
+    const jobs = analyzeJobs();
+    const job = jobs.createJob({ repoPath: '/tmp/list-cancelling' });
+    jobs.updateJob(job.id, { status: 'analyzing', repoName: 'list-cancelling' });
+    const child = { connected: false, exitCode: null, signalCode: null, on: () => child };
+    jobs.registerChild(job.id, child as any);
+
+    jobs.cancelJob(job.id, 'Cancelled by user');
+
+    // The job keeps its status until the worker exits; only `stopping` says it is ending.
+    expect(invokeList().body.jobs).toMatchObject([
+      { id: job.id, status: 'analyzing', stopping: true },
+    ]);
   });
 
   it('never exposes the repo URL, path or branch', () => {

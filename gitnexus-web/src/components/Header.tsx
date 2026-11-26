@@ -301,8 +301,7 @@ export const Header = ({
                                         className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] text-accent"
                                       >
                                         {/* A failed/cancelled job still holds the slot until its worker exits. */}
-                                        {runningJob.status === 'failed' ||
-                                        runningJob.status === 'complete'
+                                        {runningJob.stopping
                                           ? t('header:stopping')
                                           : t('header:analyzingPercent', {
                                               percent: Math.round(runningJob.progress.percent),

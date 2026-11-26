@@ -345,6 +345,7 @@ describe('Header', () => {
       repoId: 'id-1',
       progress: { phase: 'parsing', percent: 42.4, message: 'Parsing' },
       startedAt: 0,
+      stopping: false,
       ...overrides,
     });
     const repos = (): BackendRepo[] => [
@@ -372,8 +373,10 @@ describe('Header', () => {
       }
     });
 
-    it('shows Stopping, not progress, for a failed job that still holds the slot', async () => {
-      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([runningJob({ status: 'failed' })]);
+    it('shows Stopping, not progress, for a job that is ending but still holds the slot', async () => {
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([
+        runningJob({ status: 'analyzing', stopping: true }),
+      ]);
       render(<Header availableRepos={repos()} />);
 
       fireEvent.click(screen.getByRole('button', { name: /reels/i }));
