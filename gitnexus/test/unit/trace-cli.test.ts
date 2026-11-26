@@ -42,8 +42,11 @@ describe('CLI trace command', () => {
     writeSyncMock.mockReset();
   });
 
-  // These tests exercise the success path through output(), which sets the
-  // real process.exitCode; clear it so one test's failure doesn't leak.
+  // The --stale-policy tests below exercise the real process.exitCode:
+  // output() sets it to 1 on a nonempty `.error` string or `partial: true`,
+  // and applyStalePolicy's `error` branch sets it independently on a
+  // non-current (or missing) `.staleness`. Clear it so one test's result
+  // doesn't leak into the next.
   afterEach(() => {
     process.exitCode = undefined;
   });
@@ -273,6 +276,31 @@ describe('CLI trace command', () => {
       await traceCommand('A', 'B', { stalePolicy: 'error' });
 
       expect(process.exitCode).toBeUndefined();
+    });
+
+    // Missing-staleness repro: LocalBackend.attachToolStaleness attaches
+    // nothing when the freshness probe's promise rejects, so a carryable
+    // result can reach the CLI with no `.staleness` key at all. `warn`/
+    // `ignore` stay no-ops; `error` must still fail, same as `unknown`.
+    describe('missing .staleness entirely (freshness probe rejected)', () => {
+      it.each(['warn', 'ignore'] as const)(
+        '%s leaves a staleness-less result at exit code 0',
+        async (stalePolicy) => {
+          callTool.mockResolvedValue({ status: 'found', hops: [] });
+
+          await traceCommand('A', 'B', { stalePolicy });
+
+          expect(process.exitCode).toBeUndefined();
+        },
+      );
+
+      it('error fails the exit code on a staleness-less result', async () => {
+        callTool.mockResolvedValue({ status: 'found', hops: [] });
+
+        await traceCommand('A', 'B', { stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      });
     });
   });
 });

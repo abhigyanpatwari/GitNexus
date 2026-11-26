@@ -166,22 +166,51 @@ function resolveStalePolicy(raw: string | undefined): StalePolicy {
 }
 
 /**
- * Apply `--stale-policy` to a tool result already carrying `.staleness`
- * (attached by `LocalBackend.withToolStaleness`). `ignore` removes the
- * signal entirely; `error` fails the exit code on anything but a confirmed
- * `current` index — including `status: 'unknown'`, where the staleness
- * probe itself could not run (git missing, shallow clone, broken worktree).
- * Treating `unknown` as "fine" would silently pass on exactly the case an
- * explicit error policy is meant to catch (see issue #3127 discussion).
+ * Whether a result is the shape `LocalBackend.withToolStaleness` attaches
+ * `.staleness` to — mirrors its private `canCarryStaleness` (a plain object,
+ * not an array, with no `.error` key). Duplicated rather than imported: that
+ * predicate is module-private to local-backend.ts. Needed so `error` below
+ * can tell "this result shape never carries staleness by design" (a raw
+ * cypher row array) apart from "this result should have carried staleness
+ * but the probe failed" (a plain object missing the key).
+ */
+function isCarryableResultShape(result: unknown): result is Record<string, unknown> {
+  return (
+    result !== null && typeof result === 'object' && !Array.isArray(result) && !('error' in result)
+  );
+}
+
+/**
+ * Apply `--stale-policy` to a tool result. `ignore` removes `.staleness`
+ * when present (a no-op otherwise). `error` fails the exit code on anything
+ * but a confirmed `current` index — including `status: 'unknown'` AND a
+ * result with no `.staleness` key at all.
+ *
+ * The missing-key case is deliberate, not an oversight: `attachToolStaleness`
+ * attaches nothing when the freshness probe's promise rejects
+ * (`withToolStaleness`'s `.catch(() => undefined)`) — "a missing info still
+ * attaches nothing either way, which is what keeps a failed freshness probe
+ * non-fatal" for `warn`. That silent degrade is correct for `warn`, but
+ * `error` exists specifically to catch "I can't vouch for this index";
+ * silently passing on a rejected probe would reopen the same hole
+ * `status: 'unknown'` already closes, one layer further down.
+ *
+ * Excluded from that treatment — results that never carry staleness BY
+ * DESIGN, not by probe failure: raw-array cypher rows (`isCarryableResultShape`
+ * rejects arrays, matching the backend's own guard) and anything already
+ * carrying `.error` (same guard) or `partial: true` — `output()` already
+ * fails those for an unrelated, already-explained reason; `error` must not
+ * layer a second, misleading cause on top.
  */
 function applyStalePolicy(result: unknown, policy: StalePolicy): void {
-  if (!result || typeof result !== 'object' || !('staleness' in result)) return;
-  const record = result as { staleness?: { status?: string } };
+  if (!isCarryableResultShape(result)) return;
   if (policy === 'ignore') {
-    delete record.staleness;
+    delete result.staleness;
     return;
   }
-  if (policy === 'error' && record.staleness?.status !== 'current') {
+  if (policy !== 'error' || result.partial === true) return;
+  const staleness = result.staleness as { status?: string } | undefined;
+  if (!staleness || staleness.status !== 'current') {
     process.exitCode = 1;
   }
 }

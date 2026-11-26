@@ -659,5 +659,135 @@ describe('direct CLI tool commands', () => {
       );
       expect(process.exitCode).toBe(1);
     });
+
+    // Missing-staleness repro: LocalBackend.attachToolStaleness attaches
+    // nothing when the freshness probe's promise rejects (withToolStaleness's
+    // `.catch(() => undefined)`), so a carryable result can reach the CLI
+    // with no `.staleness` key at all — not `status: 'unknown'`, just absent.
+    // `warn`/`ignore` must stay no-ops there (matches the probe's own
+    // fail-open design); `error` must still fail, the same as `unknown`.
+    describe('missing .staleness entirely (freshness probe rejected)', () => {
+      it.each(['warn', 'ignore'] as const)(
+        'query: %s leaves a staleness-less result at exit code 0',
+        async (stalePolicy) => {
+          callToolMock.mockResolvedValue({ processes: [], definitions: [] });
+          const { queryCommand } = await import('../../src/cli/tool.js');
+
+          await queryCommand('auth flow', { stalePolicy });
+
+          expect(process.exitCode).toBeUndefined();
+        },
+      );
+
+      it('query: error fails the exit code on a staleness-less result', async () => {
+        callToolMock.mockResolvedValue({ processes: [], definitions: [] });
+        const { queryCommand } = await import('../../src/cli/tool.js');
+
+        await queryCommand('auth flow', { stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      });
+
+      it.each(['warn', 'ignore'] as const)(
+        'context: %s leaves a staleness-less result at exit code 0',
+        async (stalePolicy) => {
+          callToolMock.mockResolvedValue({ incoming: {}, outgoing: {} });
+          const { contextCommand } = await import('../../src/cli/tool.js');
+
+          await contextCommand('validateUser', { stalePolicy });
+
+          expect(process.exitCode).toBeUndefined();
+        },
+      );
+
+      it('context: error fails the exit code on a staleness-less result', async () => {
+        callToolMock.mockResolvedValue({ incoming: {}, outgoing: {} });
+        const { contextCommand } = await import('../../src/cli/tool.js');
+
+        await contextCommand('validateUser', { stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      });
+
+      it.each(['warn', 'ignore'] as const)(
+        'impact: %s leaves a staleness-less result at exit code 0',
+        async (stalePolicy) => {
+          callToolMock.mockResolvedValue({ impactedCount: 0, byDepth: {} });
+          const { impactCommand } = await import('../../src/cli/tool.js');
+
+          await impactCommand('someSymbol', { stalePolicy });
+
+          expect(process.exitCode).toBeUndefined();
+        },
+      );
+
+      it('impact: error fails the exit code on a staleness-less result', async () => {
+        callToolMock.mockResolvedValue({ impactedCount: 0, byDepth: {} });
+        const { impactCommand } = await import('../../src/cli/tool.js');
+
+        await impactCommand('someSymbol', { stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      });
+
+      it.each(['warn', 'ignore'] as const)(
+        'cypher: %s leaves a staleness-less result at exit code 0',
+        async (stalePolicy) => {
+          callToolMock.mockResolvedValue({ markdown: '| count |\n| --- |\n| 1 |', row_count: 1 });
+          const { cypherCommand } = await import('../../src/cli/tool.js');
+
+          await cypherCommand('MATCH (n) RETURN count(n) AS count', { stalePolicy });
+
+          expect(process.exitCode).toBeUndefined();
+        },
+      );
+
+      it('cypher: error fails the exit code on a staleness-less result', async () => {
+        callToolMock.mockResolvedValue({ markdown: '| count |\n| --- |\n| 1 |', row_count: 1 });
+        const { cypherCommand } = await import('../../src/cli/tool.js');
+
+        await cypherCommand('MATCH (n) RETURN count(n) AS count', { stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      });
+
+      it.each(['warn', 'ignore'] as const)(
+        'check: %s leaves a staleness-less result at exit code 0',
+        async (stalePolicy) => {
+          callToolMock.mockResolvedValue({ status: 'clean', cycleCount: 0, cycles: [] });
+          const { checkCommand } = await import('../../src/cli/tool.js');
+
+          await checkCommand({ cycles: true, json: true, stalePolicy });
+
+          expect(process.exitCode).toBeUndefined();
+        },
+      );
+
+      it('check: error fails the exit code on a staleness-less result', async () => {
+        callToolMock.mockResolvedValue({ status: 'clean', cycleCount: 0, cycles: [] });
+        const { checkCommand } = await import('../../src/cli/tool.js');
+
+        await checkCommand({ cycles: true, json: true, stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      });
+
+      // `partial: true` is an already-explained failure output() fails on
+      // independently; error must not layer a second, misleading cause on a
+      // result that also happens to be missing `.staleness`.
+      it('check: error does not override an unrelated partial failure (still exit 1, for the right reason)', async () => {
+        callToolMock.mockResolvedValue({
+          status: 'clean',
+          cycleCount: 0,
+          cycles: [],
+          partial: true,
+        });
+        const { checkCommand } = await import('../../src/cli/tool.js');
+
+        await checkCommand({ cycles: true, json: true, stalePolicy: 'error' });
+
+        expect(process.exitCode).toBe(1);
+      });
+    });
   });
 });

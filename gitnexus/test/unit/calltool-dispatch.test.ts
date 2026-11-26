@@ -6078,12 +6078,16 @@ describe('LocalBackend tool-staleness signal (#2655 review)', () => {
     });
   });
 
-  // F3: drift guard — exactly six read tools route through stalenessForTool
-  // (query/cypher/context/impact from #2655, check/trace added for #3127's
-  // --stale-policy so the CLI flag has a signal to act on); the adjacent
-  // read-ish tools must not, so a future tool added without staleness (or one
-  // dropped) is caught.
-  it('routes only query/cypher/context/impact/check/trace through the freshness check', async () => {
+  // F3: drift guard over this specific candidate set — query/cypher/context/
+  // impact (from #2655) plus check/trace (added for #3127's --stale-policy,
+  // so the CLI flag has a signal to act on) must route through
+  // stalenessForTool; explain/pdg_query/detect_changes, dispatched right
+  // alongside them, must not. Not a claim about the whole dispatch switch:
+  // read_file and grep also route through withToolStaleness (see their own
+  // case labels below) but aren't part of this comparison set and aren't
+  // asserted here. The point is catching a tool silently added to, or
+  // dropped from, this six-tool group.
+  it('routes exactly query/cypher/context/impact/check/trace through the freshness check among this candidate set', async () => {
     stubResolve();
     await stubStale();
     const spy = vi.spyOn(backend as any, 'stalenessForTool');
