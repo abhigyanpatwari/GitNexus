@@ -15,7 +15,14 @@ import { type GeneratedSkillInfo } from './generated-skill.js';
 import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { isEnoent } from './editor-targets.js';
 import { selectedInstructionFiles, type InstructionFile } from './analyze-options.js';
+import {
+  DEFAULT_POLICY_RUNNER_PATH,
+  regressionReviewGuidance,
+  renderToolUsagePolicy,
+} from '../mcp/tool-usage-policy.js';
 import { logger } from '../core/logger.js';
+
+export { markdownSafeBranch } from '../mcp/tool-usage-policy.js';
 
 // ESM equivalent of __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -120,25 +127,6 @@ async function findGroupsContainingRegistryName(registryName: string): Promise<s
   return hits;
 }
 
-/**
- * Strip backticks from a branch name before it is embedded in a Markdown
- * inline-code span (#1996 tri-review P1). validateBranchName already rejects
- * backticks for CLI/config/auto-detect inputs; this is the last-line defense at
- * the generation sink so the embedding is provably safe regardless of caller.
- */
-export function markdownSafeBranch(branch: string): string {
-  return branch.replace(/`/g, '');
-}
-
-function regressionReviewGuidance(defaultBranch: string, runner?: string): string {
-  const safeBranch = markdownSafeBranch(defaultBranch);
-  const target = JSON.stringify(safeBranch);
-  const cliFallback = runner
-    ? ` or \`${runner} detect-changes --scope compare --base-ref "<merge-base SHA>" --repo .\``
-    : '';
-  return `For regression review, fetch target branch ${target} from its remote; compute its merge base with the reviewed HEAD and pass that SHA to \`detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})\`${cliFallback}.`;
-}
-
 /** Options for {@link generateGitNexusContent} (collapsed from positional
  *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
 export interface GitNexusContentOptions {
@@ -157,13 +145,13 @@ export interface GitNexusContentOptions {
    *  This is a target hint only: compare scope must receive the exact merge-base
    *  SHA, never the moving branch tip. The value is embedded inside a
    *  Markdown inline-code span: validateBranchName rejects backticks upstream,
-   *  and `markdownSafeBranch` strips any remaining backtick here as defense in
-   *  depth, so JSON.stringify's quote/escape handling is sufficient and the
-   *  branch cannot break out of the span (#1996 tri-review P1). */
+   *  and `markdownSafeBranch` strips any remaining backtick in the shared policy
+   *  text as defense in depth, so JSON.stringify's quote/escape handling is
+   *  sufficient and the branch cannot break out of the span (#1996 tri-review P1). */
   defaultBranch?: string;
-  /** Whether the index was built with `--pdg` (#2086 M6). Gates the pdg_query
-   *  line below — false (default) omits it, so a non-pdg index doesn't advertise
-   *  a tool that only returns a "no PDG layer" note. */
+  /** Whether the index was built with `--pdg` (#2086 M6). Gates the `pdg_query`
+   *  line in the shared policy — false (default) omits it, so a non-pdg index
+   *  doesn't advertise a tool that only returns a "no PDG layer" note. */
   hasPdg?: boolean;
   /** Whether Route nodes may carry Spring Actuator runtime evidence. */
   hasSpringActuator?: boolean;
@@ -189,7 +177,7 @@ export function generateGitNexusContent(
     groupNames,
     noStats,
     skipSkills,
-    runnerPath = '.gitnexus/run.cjs',
+    runnerPath = DEFAULT_POLICY_RUNNER_PATH,
     defaultBranch = 'main',
     hasPdg = false,
     hasSpringActuator = false,
@@ -254,33 +242,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 > Index stale? Run \`${runner} analyze --index-only\`. ${bootstrapNote}
 > On query/context/impact/cypher object results, read staleness.status and branch/lastCommit. Re-analyze only for behind or diverged — current is clone HEAD, not main.
 
-## Always Do
-
-- **MUST run impact before editing.** Use \`impact({target: "symbolName", direction: "upstream"})\` or \`${runner} impact "symbolName" --direction upstream --repo .\`; report callers/processes/risk. Never substitute grep for graph analysis.${
-    hasPdg
-      ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer). CLI equivalent: \`${runner} impact "symbolName" --direction upstream --mode pdg --line <N> --repo .\`.`
-      : ''
-  }
-- **MUST analyze changes before commit.** Run \`detect_changes({scope: "all"})\` or \`${runner} detect-changes --scope all --repo .\`. \`partial: true\` or \`truncated: true\` is not a clean check — a zero means unseen, not unaffected; re-run it. ${regressionReviewGuidance(defaultBranch, runner)}
-- MUST warn on HIGH/CRITICAL \`risk\` pre-edit; never use \`riskSharedAxes\` to waive a HIGH/CRITICAL \`risk\` warning. Compare File/symbol: MCP File omits axes; Graph-RAG expands File.
-- **MUST treat \`risk: UNKNOWN\` as unresolved, not as low.** An empty caller set is not evidence the symbol is unused — it can also mean the callers are not resolvable by the index (plain-object property access, dynamic dispatch, cross-language calls). \`impact\` pairs \`UNKNOWN\` with a \`riskNote\` saying so. Confirm with a text search before treating the symbol as safe to change or delete; do not proceed on the strength of a zero.
-- **MUST use \`query({search_query: "concept"})\` for concepts/flows, \`context({name: "symbolName"})\` for a named symbol, or \`impact\` for blast radius, on read-only callers, dependencies, imports, or execution flow.** Graph first; text search only for empty/\`UNKNOWN\`/literals.${
-    hasSpringActuator
-      ? '\n- Spring Actuator runtime evidence is enabled. A Route is authoritative only when `runtimeConfirmed === true`; `runtimeSource` is provenance and may also describe conflicts. Snapshot values are never persisted.'
-      : ''
-  }
-- For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
-    hasPdg
-      ? `\n- For control/data dependence, \`pdg_query({mode: "controls", target: "fileOrSymbol"})\` answers "under what condition does X run?" (CDG, incl. guard clauses) and \`pdg_query({mode: "flows", target, variable})\` traces "where does variable Y flow?" (REACHING_DEF). \`--pdg\` layer.`
-      : ''
-  }
-
-## Never Do
-
-- NEVER edit a function, class, or method before MCP/CLI impact analysis.
-- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis, and never read \`UNKNOWN\` as an all-clear — it means the walk could not answer, which is the one verdict that requires confirming by other means.
-- NEVER rename symbols with find-and-replace — use \`rename\` with \`dry_run: true\`, review semantic spans and coverage, then apply with \`dry_run: false\` and its \`plan_token\`.
-- NEVER commit before MCP/CLI graph change analysis.
+${renderToolUsagePolicy({ runner, defaultBranch, hasPdg, hasSpringActuator })}
 
 ## Resources
 
