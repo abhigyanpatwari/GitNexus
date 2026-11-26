@@ -16,6 +16,7 @@ import type {
   SymbolDefinition,
   TypeRef,
 } from 'gitnexus-shared';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
@@ -800,7 +801,10 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     const targets = dynamicCallees.get(key);
     if (targets === undefined || targets.size === 0) continue;
     resolvedInvokes++;
-    const confidence = targets.size === 1 ? 0.8 : 0.7;
+    const confidence =
+      targets.size === 1
+        ? EdgeConfidence.singleCallableValueTarget
+        : EdgeConfidence.multipleCallableValueTargets;
     for (const target of targets.values()) {
       if (
         tryEmitEdgeWithExplicitTargetId(

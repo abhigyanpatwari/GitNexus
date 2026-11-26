@@ -17,6 +17,33 @@ function isNumericLiteral(node) {
   return node?.type === 'Literal' && typeof node.value === 'number';
 }
 
+function* inlineConfidenceLiterals(node) {
+  if (!node) return;
+  if (isNumericLiteral(node)) {
+    yield node;
+    return;
+  }
+
+  switch (node.type) {
+    case 'ConditionalExpression':
+      yield* inlineConfidenceLiterals(node.consequent);
+      yield* inlineConfidenceLiterals(node.alternate);
+      break;
+    case 'LogicalExpression':
+    case 'BinaryExpression':
+      if (node.type === 'LogicalExpression' || node.operator === '*') {
+        yield* inlineConfidenceLiterals(node.left);
+        yield* inlineConfidenceLiterals(node.right);
+      }
+      break;
+    case 'TSAsExpression':
+    case 'TSSatisfiesExpression':
+    case 'TSNonNullExpression':
+      yield* inlineConfidenceLiterals(node.expression);
+      break;
+  }
+}
+
 export default {
   meta: {
     type: 'problem',
@@ -30,8 +57,9 @@ export default {
   },
   create(context) {
     function check(name, value) {
-      if ((name === 'confidence' || name?.endsWith('CONFIDENCE')) && isNumericLiteral(value)) {
-        context.report({ node: value, messageId: 'useEdgeConfidence', data: { name } });
+      if (name !== 'confidence' && !name?.endsWith('CONFIDENCE')) return;
+      for (const node of inlineConfidenceLiterals(value)) {
+        context.report({ node, messageId: 'useEdgeConfidence', data: { name } });
       }
     }
 

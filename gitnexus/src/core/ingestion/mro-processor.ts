@@ -622,7 +622,9 @@ function emitMethodImplementsEdges(
                 sourceId: inherited.methodId,
                 targetId: ancestorMethodId,
                 type: 'METHOD_IMPLEMENTS',
-                confidence: inherited.confident ? 1.0 : 0.7,
+                confidence: inherited.confident
+                  ? EdgeConfidence.methodImplementationMatch
+                  : EdgeConfidence.methodImplementationLenientMatch,
                 reason: '',
               });
               edgeCount++;
@@ -665,7 +667,9 @@ function emitMethodImplementsEdges(
           sourceId: winner.methodId,
           targetId: ancestorMethodId,
           type: 'METHOD_IMPLEMENTS',
-          confidence: winner.confident ? 1.0 : 0.7,
+          confidence: winner.confident
+            ? EdgeConfidence.methodImplementationMatch
+            : EdgeConfidence.methodImplementationLenientMatch,
           reason: '',
         });
         edgeCount++;

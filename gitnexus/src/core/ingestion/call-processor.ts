@@ -349,7 +349,7 @@ export const processRoutesFromExtracted = async (
         sourceId,
         targetId: guessedId,
         type: 'CALLS',
-        confidence: confidence * 0.8,
+        confidence: confidence * EdgeConfidence.guessedRouteMethodMultiplier,
         reason: 'laravel-route',
       });
       continue;

@@ -18,6 +18,7 @@ tester.run('no-inline-confidence', rule, {
     'const CONFIDENCE_EPSILON = 0.001;',
     'const edge = { [confidence]: 0.85 };',
     'const edge = { [`${key}`]: 0.5 };',
+    'const confidence = a ? EdgeConfidence.x : EdgeConfidence.y;',
   ],
   invalid: [
     { code: 'const edge = { confidence: 0.85 };', errors: [error] },
@@ -29,5 +30,11 @@ tester.run('no-inline-confidence', rule, {
     { code: 'edge.confidence = 0.85;', errors: [error] },
     { code: 'obj[`confidence`] = 0.5;', errors: [error] },
     { code: 'confidence = -0.85;', errors: [error] },
+    { code: 'const confidence = a ? 1.0 : 0.85;', errors: [error, error] },
+    { code: 'const e = { confidence: ok ? 1.0 : 0.7 };', errors: [error, error] },
+    { code: 'const e = { confidence: c * 0.8 };', errors: [error] },
+    { code: 'const e = { confidence: x ?? 0.5 };', errors: [error] },
+    { code: 'const e = { confidence: 0.85 as number };', errors: [error] },
+    { code: 'const confidence = (0.85 satisfies number)!;', errors: [error] },
   ],
 });
