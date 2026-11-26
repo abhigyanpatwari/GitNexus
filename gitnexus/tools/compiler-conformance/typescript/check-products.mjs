@@ -6,6 +6,11 @@ import path from 'node:path';
 
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const platform = process.argv.includes('--platform');
+const shardFlag = process.argv.indexOf('--shard');
+const shard = shardFlag === -1 ? '1/1' : process.argv[shardFlag + 1];
+assert.match(shard ?? '', /^[1-9]\d*\/[1-9]\d*$/, 'Expected --shard INDEX/TOTAL');
+const [index, total] = shard.split('/').map(Number);
+assert.ok(index <= total, 'Shard index exceeds shard count');
 const selected = platform
   ? [
       'product/analysis-embedding-flow.ts',
@@ -55,6 +60,7 @@ const selected = platform
 const files = selected
   .filter((file) => process.platform !== 'win32' || file !== 'product/analyze-atomic-swap.ts')
   .sort()
+  .filter((_, offset) => offset % total === index - 1)
   .map((file) => path.join(directory, file));
 assert.ok(files.length, 'No TypeScript product checks found');
 execFileSync(

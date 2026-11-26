@@ -8,13 +8,25 @@ permissions:
 
 jobs:
   compiler-conformance:
-    name: ${{ matrix.language }} compiler conformance
+    name: ${{ matrix.label }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { language: Java, provider: java }
-          - { language: TypeScript, provider: typescript }
+          - { label: Java compiler conformance, provider: java, artifact: java }
+          - { label: TypeScript compiler conformance, provider: typescript, artifact: typescript }
+          - {
+              label: TypeScript product conformance (1/2),
+              provider: typescript,
+              artifact: typescript-product-1,
+              shard: 1/2,
+            }
+          - {
+              label: TypeScript product conformance (2/2),
+              provider: typescript,
+              artifact: typescript-product-2,
+              shard: 2/2,
+            }
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -47,7 +59,16 @@ jobs:
           NODE_V8_COVERAGE: ${{ runner.temp }}/conformance-v8
           GITNEXUS_BENCH: '1'
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-        run: npm run "test:conformance:$PROVIDER"
+          PRODUCT_SHARD: ${{ matrix.shard }}
+        run: |
+          if [[ -n "$PRODUCT_SHARD" ]]; then
+            node tools/compiler-conformance/typescript/check-products.mjs --shard "$PRODUCT_SHARD"
+          elif [[ "$PROVIDER" == typescript ]]; then
+            node --test tools/compiler-conformance/typescript/controls.test.mjs
+            node tools/compiler-conformance/typescript/check.mjs
+          else
+            npm run "test:conformance:$PROVIDER"
+          fi
       - name: Report conformance coverage against TypeScript sources
         working-directory: gitnexus
         run: |
@@ -60,7 +81,7 @@ jobs:
       - name: Upload compiler conformance LCOV
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: ${{ matrix.provider }}-conformance-coverage
+          name: ${{ matrix.artifact }}-conformance-coverage
           path: gitnexus/coverage/conformance/lcov.info
 
   compiler-platform-conformance:
@@ -569,17 +590,23 @@ jobs:
       - name: Download TypeScript conformance LCOV
         id: ts-lcov-download
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        uses: ./.github/actions/download-test-artifact
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: typescript-conformance-coverage
+          pattern: typescript*-conformance-coverage
           path: ${{ runner.temp }}/typescript-conformance-coverage
+          digest-mismatch: error
       - name: Add compiler conformance to the CLI SonarQube report
         id: conformance-lcov
         if: ${{ !cancelled() && steps.java-lcov-download.outcome == 'success' && steps.ts-lcov-download.outcome == 'success' }}
         working-directory: gitnexus
         run: |
           test -s coverage/lcov.info
-          cat "$RUNNER_TEMP"/{java,typescript}-conformance-coverage/lcov.info >> coverage/lcov.info
+          reports=("$RUNNER_TEMP/java-conformance-coverage/lcov.info")
+          for suite in typescript typescript-product-1 typescript-product-2; do
+            reports+=("$RUNNER_TEMP/typescript-conformance-coverage/$suite-conformance-coverage/lcov.info")
+          done
+          for report in "${reports[@]}"; do test -s "$report"; done
+          cat "${reports[@]}" >> coverage/lcov.info
       - name: Upload learned coverage timings
         uses: ./.github/actions/upload-test-artifact
         with:

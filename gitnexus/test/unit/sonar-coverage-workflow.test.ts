@@ -150,12 +150,16 @@ describe('SonarQube coverage handoff', () => {
       mkdirSync(coverage);
       mkdirSync(java);
       const typescript = path.join(temp, 'typescript-conformance-coverage');
-      mkdirSync(typescript);
       const source = 'SF:src/index.ts\nDA:1,0\nend_of_record\n';
       const javaSource = 'SF:src/ingestion.ts\nDA:2,1\nend_of_record\n';
       writeFileSync(path.join(java, 'lcov.info'), javaSource);
       const tsSource = 'SF:src/typescript.ts\nDA:3,1\nend_of_record\n';
-      writeFileSync(path.join(typescript, 'lcov.info'), tsSource);
+      const suites = ['typescript', 'typescript-product-1', 'typescript-product-2'];
+      const reports = suites.map((suite) => {
+        const directory = path.join(typescript, suite + '-conformance-coverage');
+        mkdirSync(directory, { recursive: true });
+        return path.join(directory, 'lcov.info');
+      });
       const script = namedStep(
         producer,
         'Add compiler conformance to the CLI SonarQube report',
@@ -167,9 +171,13 @@ describe('SonarQube coverage handoff', () => {
         });
       expect(combine().status).toBe(1);
       writeFileSync(path.join(coverage, 'lcov.info'), source);
+      for (const report of reports.slice(0, -1)) writeFileSync(report, tsSource);
+      expect(combine().status).toBe(1);
+      expect(readFileSync(path.join(coverage, 'lcov.info'), 'utf8')).toBe(source);
+      writeFileSync(reports[2]!, tsSource);
       expect(combine().status).toBe(0);
       expect(readFileSync(path.join(coverage, 'lcov.info'), 'utf8')).toBe(
-        source + javaSource + tsSource,
+        source + javaSource + tsSource.repeat(suites.length),
       );
     },
   );
