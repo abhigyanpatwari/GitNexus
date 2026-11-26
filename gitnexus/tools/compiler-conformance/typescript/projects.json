@@ -4,6 +4,10 @@
     "lang-resolution/typescript-cast-constructor-inference",
     "lang-resolution/typescript-double-cast-inference"
   ],
+  "propertyAccess": [
+    "compiler-conformance/typescript-property-access",
+    "lang-resolution/ts-write-access"
+  ],
   "projects": [
     "mini-repo",
     "cross-file-binding/ts-circular",
@@ -82,7 +86,10 @@
     "lang-resolution/typescript-tsx-jsx",
     "lang-resolution/typescript-type-parameters",
     "lang-resolution/typescript-typed-param-chain",
-    "lang-resolution/typescript-variadic-resolution"
+    "lang-resolution/typescript-variadic-resolution",
+    "skills-e2e/idempotency",
+    "skills-e2e/typescript",
+    "skills-e2e/typescript-python/packages/backend"
   ],
   "declarationInventory": [
     "compiler-conformance/typescript-exported-doc-comment",
@@ -140,6 +147,9 @@
     "lang-resolution/typescript-tsconfig-aliases",
     "lang-resolution/typescript-tsx-jsx",
     "lang-resolution/typescript-typed-param-chain",
-    "lang-resolution/typescript-variadic-resolution"
+    "lang-resolution/typescript-variadic-resolution",
+    "skills-e2e/idempotency",
+    "skills-e2e/typescript",
+    "skills-e2e/typescript-python/packages/backend"
   ]
 }

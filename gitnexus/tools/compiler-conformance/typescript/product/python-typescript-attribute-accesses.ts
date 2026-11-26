@@ -1,4 +1,6 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { registerCases } from '../support/cases.mjs';
+import { after as afterAll, before as beforeAll, describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,8 +9,8 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
-} from './helpers.js';
-import { cleanupTempDirSync } from '../../helpers/test-db.js';
+} from '../support/fixture.js';
+import { cleanupTempDirSync } from '../../../../test/helpers/test-db.js';
 
 // Issue #3794. Attribute reads and assignments are different operations:
 // https://docs.python.org/3/reference/expressions.html#attribute-references
@@ -17,11 +19,12 @@ describe('Python attribute access edges (#3794)', () => {
   let repoDir: string;
   let result: PipelineResult;
 
-  beforeAll(async () => {
-    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-python-attributes-'));
-    writeFixtureRepo(repoDir, {
-      'pkg/__init__.py': '',
-      'pkg/model.py': `from dataclasses import dataclass, field
+  beforeAll(
+    async () => {
+      repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-python-attributes-'));
+      writeFixtureRepo(repoDir, {
+        'pkg/__init__.py': '',
+        'pkg/model.py': `from dataclasses import dataclass, field
 
 @dataclass
 class Result:
@@ -57,7 +60,7 @@ class ReboundReceiver:
 def check() -> Result:
     return Result()
 `,
-      'pkg/use.py': `from pkg.model import Plain, Result, check
+        'pkg/use.py': `from pkg.model import Plain, Result, check
 
 def read_from_annotated_return() -> dict[str, str]:
     r = check()
@@ -79,18 +82,26 @@ def increment(p: Plain) -> None:
 def increment_fallback(p) -> None:
     p.loop += 1
 `,
-      'ts/box.ts': `export class Box { size = 1; }
-export function readBox(b: Box): number { return b.size; }
-`,
-    });
-    result = await runPipelineFromRepo(repoDir, () => {});
-  }, 60_000);
+        'ts/box.ts': fs.readFileSync(
+          new URL(
+            '../../../../test/fixtures/compiler-conformance/typescript-property-access/ts/box.ts',
+            import.meta.url,
+          ),
+          'utf8',
+        ),
+      });
+      result = await runPipelineFromRepo(repoDir, () => {});
+    },
+    { timeout: 60_000 },
+  );
 
   afterAll(() => {
     if (repoDir) cleanupTempDirSync(repoDir);
   });
 
-  it.each(['read_from_annotated_return', 'read_from_constructor'])(
+  registerCases(
+    it,
+    ['read_from_annotated_return', 'read_from_constructor'],
     'links %s to the dataclass field',
     (reader) => {
       const accesses = getRelationships(result, 'ACCESSES').filter(
@@ -139,21 +150,28 @@ export function readBox(b: Box): number { return b.size; }
     ]);
   });
 
-  it.each([
-    ['increment', 'value'],
-    ['increment_fallback', 'loop'],
-  ])('retains both access kinds for %s', (caller, field) => {
-    const accesses = getRelationships(result, 'ACCESSES').filter((edge) => edge.source === caller);
-    expect(accesses.map((edge) => edge.rel.targetId)).toEqual([
-      `Property:pkg/model.py:Plain.${field}`,
-      `Property:pkg/model.py:Plain.${field}`,
-    ]);
-    expect(accesses.map((edge) => edge.rel.reason?.split(': ').at(-1)).sort()).toEqual([
-      'read',
-      'write',
-    ]);
-    expect(new Set(accesses.map((edge) => edge.rel.id)).size).toBe(2);
-  });
+  registerCases(
+    it,
+    [
+      ['increment', 'value'],
+      ['increment_fallback', 'loop'],
+    ],
+    'retains both access kinds for %s',
+    (caller, field) => {
+      const accesses = getRelationships(result, 'ACCESSES').filter(
+        (edge) => edge.source === caller,
+      );
+      expect(accesses.map((edge) => edge.rel.targetId)).toEqual([
+        `Property:pkg/model.py:Plain.${field}`,
+        `Property:pkg/model.py:Plain.${field}`,
+      ]);
+      expect(accesses.map((edge) => edge.rel.reason?.split(': ').at(-1)).sort()).toEqual([
+        'read',
+        'write',
+      ]);
+      expect(new Set(accesses.map((edge) => edge.rel.id)).size).toBe(2);
+    },
+  );
 
   it('rejects replaced constructors and locally rebound receivers', () => {
     expect(result.graph.getNode('Property:pkg/model.py:AssignedConstructor.stale')).toBeUndefined();

@@ -109,3 +109,30 @@ test('a returned string selects the first applicable overload across files', () 
     assert.throws(() => compareReports(calls, { ...calls, sites: mutated }), /Missing from actual/);
   }
 });
+
+test('property writes retain their declaration and complete assignment span', () => {
+  const project = 'lang-resolution/ts-write-access';
+  const fixture = fileURLToPath(new URL('../../../test/fixtures/' + project, import.meta.url));
+  const diagnostics = JSON.parse(
+    readFileSync(new URL('./diagnostics.json', import.meta.url), 'utf8'),
+  );
+  const { PROPERTY_WRITES: writes, PROPERTY_READS: reads } = compilerReport(
+    fixture,
+    diagnostics[project],
+    false,
+    { propertyAccess: true },
+  );
+  assert.equal(reads.sites.length, 0);
+  assert.equal(writes.sites.length, 2);
+  const [first, second] = writes.sites;
+  assert.notEqual(first.target, second.target);
+  for (const changed of [
+    { ...first, target: second.target },
+    { ...first, end: '5:11' },
+  ]) {
+    assert.throws(
+      () => compareReports(writes, { ...writes, sites: [changed, second] }),
+      /Missing from actual/,
+    );
+  }
+});

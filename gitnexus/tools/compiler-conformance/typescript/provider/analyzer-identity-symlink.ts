@@ -20,12 +20,13 @@
 import { mkdir, symlink, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
 import {
   _clearAnalyzerIdentityProcessCacheForTests,
   resolveAnalyzerRunnerIdentity,
-} from '../../src/core/analyzer-identity.js';
-import { createTempDir } from '../helpers/test-db.js';
+} from '../../../../src/core/analyzer-identity.js';
+import { createTempDir } from '../../../../test/helpers/test-db.js';
 
 type Fixture = {
   root: string;

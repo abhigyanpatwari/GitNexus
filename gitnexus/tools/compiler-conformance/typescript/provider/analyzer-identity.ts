@@ -13,7 +13,8 @@ import {
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
 import {
   _clearAnalyzerIdentityProcessCacheForTests,
   _hashAnalyzerIdentityFramesForTests,
@@ -23,11 +24,11 @@ import {
   normalizeAnalyzerRootPath,
   normalizeAnalyzerRunnerIdentityForComparison,
   resolveAnalyzerRunnerIdentity,
-} from '../../src/core/analyzer-identity.js';
-import { getStoragePaths, loadMeta, saveMeta } from '../../src/storage/repo-manager.js';
-import type { RepoMeta } from '../../src/storage/repo-manager.js';
-import { setupMiniRepo } from '../helpers/mini-repo.js';
-import { createTempDir } from '../helpers/test-db.js';
+} from '../../../../src/core/analyzer-identity.js';
+import { getStoragePaths, loadMeta, saveMeta } from '../../../../src/storage/repo-manager.js';
+import type { RepoMeta } from '../../../../src/storage/repo-manager.js';
+import { setupMiniRepo } from '../../../../test/helpers/mini-repo.js';
+import { createTempDir } from '../../../../test/helpers/test-db.js';
 
 describe('analyzer runner identity', () => {
   it('ignores an unrelated root report created while computing identity', async () => {
@@ -1508,68 +1509,72 @@ describe('analyzer runner identity', () => {
     }
   });
 
-  it('persists the same receipt to both metadata mirrors on full and incremental runs', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true, skipSkills: true },
-        { onProgress: () => {} },
-      );
+  it(
+    'persists the same receipt to both metadata mirrors on full and incremental runs',
+    { timeout: 300_000 },
+    async () => {
+      const repo = await setupMiniRepo();
+      try {
+        const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+        await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {} },
+        );
 
-      const { storagePath } = getStoragePaths(repo.dbPath);
-      const first = await loadMeta(storagePath);
-      const expectedIdentity = resolveAnalyzerRunnerIdentity(
-        pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
-      );
-      expect(first?.runnerIdentity).toEqual(expectedIdentity);
-      expect(first?.runnerIdentity).toMatchObject({
-        schemaVersion: 4,
-        cliVersion: expect.any(String),
-        invokedArtifact: { digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) },
-        build: { digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) },
-        dependencyRuntime: { digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) },
-      });
-      if (!first?.runnerIdentity) throw new Error('analysis did not persist a runner identity');
+        const { storagePath } = getStoragePaths(repo.dbPath);
+        const first = await loadMeta(storagePath);
+        const expectedIdentity = resolveAnalyzerRunnerIdentity(
+          new URL('../../../../src/core/run-analyze.ts', import.meta.url).href,
+        );
+        expect(first?.runnerIdentity).toEqual(expectedIdentity);
+        expect(first?.runnerIdentity).toMatchObject({
+          schemaVersion: 4,
+          cliVersion: expect.any(String),
+          invokedArtifact: { digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) },
+          build: { digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) },
+          dependencyRuntime: { digest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) },
+        });
+        if (!first?.runnerIdentity) throw new Error('analysis did not persist a runner identity');
 
-      const legacyMeta = {
-        ...first,
-        runnerIdentity: { ...first.runnerIdentity, schemaVersion: 1 },
-      } as unknown as RepoMeta;
-      await saveMeta(storagePath, legacyMeta);
-      const upgraded = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true, skipSkills: true },
-        { onProgress: () => {} },
-      );
-      expect(upgraded.alreadyUpToDate).toBeUndefined();
-      expect((await loadMeta(storagePath))?.runnerIdentity).toEqual(first.runnerIdentity);
+        const legacyMeta = {
+          ...first,
+          runnerIdentity: { ...first.runnerIdentity, schemaVersion: 1 },
+        } as unknown as RepoMeta;
+        await saveMeta(storagePath, legacyMeta);
+        const upgraded = await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {} },
+        );
+        expect(upgraded.alreadyUpToDate).toBeUndefined();
+        expect((await loadMeta(storagePath))?.runnerIdentity).toEqual(first.runnerIdentity);
 
-      const changedPath = path.join(repo.dbPath, 'src', 'logger.ts');
-      const before = await readFile(changedPath, 'utf8');
-      await writeFile(changedPath, `${before}\n// force incremental identity restamp\n`, 'utf8');
-      const incremental = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true, skipSkills: true },
-        { onProgress: () => {} },
-      );
-      expect(incremental.alreadyUpToDate).toBeUndefined();
+        const changedPath = path.join(repo.dbPath, 'src', 'logger.ts');
+        const before = await readFile(changedPath, 'utf8');
+        await writeFile(changedPath, `${before}\n// force incremental identity restamp\n`, 'utf8');
+        const incremental = await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true, skipSkills: true },
+          { onProgress: () => {} },
+        );
+        expect(incremental.alreadyUpToDate).toBeUndefined();
 
-      const second = await loadMeta(storagePath);
-      expect(second?.runnerIdentity).toEqual(first?.runnerIdentity);
-      const primary = JSON.parse(
-        await readFile(path.join(storagePath, 'gitnexus.json'), 'utf8'),
-      ) as { runnerIdentity?: unknown };
-      const legacy = JSON.parse(await readFile(path.join(storagePath, 'meta.json'), 'utf8')) as {
-        runnerIdentity?: unknown;
-      };
-      expect(primary.runnerIdentity).toEqual(second?.runnerIdentity);
-      expect(legacy.runnerIdentity).toEqual(second?.runnerIdentity);
-    } finally {
-      await repo.cleanup();
-    }
-  }, 300_000);
+        const second = await loadMeta(storagePath);
+        expect(second?.runnerIdentity).toEqual(first?.runnerIdentity);
+        const primary = JSON.parse(
+          await readFile(path.join(storagePath, 'gitnexus.json'), 'utf8'),
+        ) as { runnerIdentity?: unknown };
+        const legacy = JSON.parse(await readFile(path.join(storagePath, 'meta.json'), 'utf8')) as {
+          runnerIdentity?: unknown;
+        };
+        expect(primary.runnerIdentity).toEqual(second?.runnerIdentity);
+        expect(legacy.runnerIdentity).toEqual(second?.runnerIdentity);
+      } finally {
+        await repo.cleanup();
+      }
+    },
+  );
 });
 
 // #2668 threading guard: the produced identity's path fields must already be

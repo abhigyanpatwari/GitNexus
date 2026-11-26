@@ -6,25 +6,26 @@
  * native bindings at top level, which was the root trigger for intermittent
  * `libc++abi ... Napi::Error` crashes in linked local builds.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { SupportedLanguages } from '../../src/config/supported-languages.js';
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
-import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
+import { SupportedLanguages } from '../../../../src/config/supported-languages.js';
+import { createKnowledgeGraph } from '../../../../src/core/graph/graph.js';
+import { runChunkedParseAndResolve } from '../../../../src/core/ingestion/pipeline-phases/parse-impl.js';
 import {
   computeChunkHash,
   fileContentHash,
   emptyParseCache,
   persistParseCacheFiles,
-} from '../../src/storage/parse-cache.js';
-import { encodeFileResultSection } from '../../src/storage/file-result-codec.js';
-import { writeFileResultWorker } from '../helpers/file-result-worker.js';
-import { TEST_PARSE_IDENTITY } from '../helpers/cache-identity.js';
-import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
+} from '../../../../src/storage/parse-cache.js';
+import { encodeFileResultSection } from '../../../../src/storage/file-result-codec.js';
+import { writeFileResultWorker } from '../../../../test/helpers/file-result-worker.js';
+import { TEST_PARSE_IDENTITY } from '../../../../test/helpers/cache-identity.js';
+import type { ParseWorkerResult } from '../../../../src/core/ingestion/workers/parse-worker.js';
 
 const emptyWorkerResult = (filePath: string, name: string): ParseWorkerResult => ({
   nodes: [

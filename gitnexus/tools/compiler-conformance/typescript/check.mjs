@@ -16,7 +16,7 @@ function graphIdentity(node) {
   return graphDeclaration(node);
 }
 
-function graphReport(graph, boundCalls, inventory, methodFacts) {
+function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess) {
   const owners = new Map();
   for (const edge of graph.iterRelationshipsByType('HAS_METHOD')) {
     const owner = graph.getNode(edge.sourceId);
@@ -29,6 +29,30 @@ function graphReport(graph, boundCalls, inventory, methodFacts) {
       : graphIdentity(node);
   }
   const result = emptyReport();
+  if (propertyAccess) {
+    for (const edge of graph.iterRelationshipsByType('ACCESSES')) {
+      const caller = graph.getNode(edge.sourceId);
+      const field = graph.getNode(edge.targetId);
+      assert.ok(caller && field, 'Unpublished property access: ' + edge.id);
+      const kind = edge.reason?.split(': ').at(-1);
+      assert.ok(kind === 'read' || kind === 'write', 'Unknown property access: ' + edge.id);
+      const report = result[kind === 'read' ? 'PROPERTY_READS' : 'PROPERTY_WRITES'];
+      const target = graphIdentity(field);
+      report.edges.push({ from: callableIdentity(caller), to: target });
+      const prefix = 'rel:ACCESSES:' + edge.sourceId + '->' + edge.targetId + ':';
+      const span =
+        edge.id.startsWith(prefix) &&
+        /^(?:read|write):(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
+      assert.ok(span, 'Missing property access span: ' + edge.id);
+      report.sites.push({
+        file: caller.properties.filePath,
+        start: span[1],
+        end: span[2],
+        status: 'resolved',
+        target,
+      });
+    }
+  }
   if (methodFacts) {
     for (const node of graph.nodes) {
       if (node.label !== 'Method') continue;
@@ -183,9 +207,11 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   const takesRuntimeEvidence = manifest.runtimeDispatch.includes(key);
   const evidence = takesRuntimeEvidence ? { methods: [], unchecked: [] } : undefined;
   const methodFacts = manifest.methodFacts.includes(key);
+  const propertyAccess = manifest.propertyAccess.includes(key);
   const reference = compilerReport(root, expectedDiagnostics, inventory, {
     runtime: evidence,
     methodFacts,
+    propertyAccess,
   });
   assert.ok(
     relations.some((kind) => reference[kind].edges.length || reference[kind].sites.length),
@@ -201,7 +227,7 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
       recordBindings(observation, boundCalls, typeParameters, reads, unbound);
     },
   });
-  const observed = graphReport(pipeline.graph, boundCalls, inventory, methodFacts);
+  const observed = graphReport(pipeline.graph, boundCalls, inventory, methodFacts, propertyAccess);
   observed.TYPE_PARAMETER_USES.sites = typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.
   // The observer also sees property reads, argument reads and other syntax.

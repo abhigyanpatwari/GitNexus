@@ -21,6 +21,8 @@ export const graphRelations = [
 export const relations = [
   ...graphRelations,
   'CALLABLE_PROPERTIES',
+  'PROPERTY_READS',
+  'PROPERTY_WRITES',
   'TYPE_PARAMETER_USES',
   'VARIABLE_READS',
   'DECLARATIONS',
@@ -128,7 +130,12 @@ export function compilerReport(root, expectedDiagnostics = [], inventory = false
   );
 }
 
-function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFacts }) {
+function reportProject(
+  root,
+  expectedDiagnostics,
+  inventory,
+  { runtime, methodFacts, propertyAccess },
+) {
   const localConfig = path.join(root, 'tsconfig.json');
   const scratch = existsSync(localConfig)
     ? undefined
@@ -356,7 +363,30 @@ function reportProject(root, expectedDiagnostics, inventory, { runtime, methodFa
       [SyntaxKind.MethodSignature, 'Method'],
       [SyntaxKind.Constructor, 'Method'],
     ]);
+    function propertyReference(node) {
+      const field = symbolDeclaration(checker.getSymbolAtLocation(node.name), project);
+      if (field?.kind !== SyntaxKind.PropertyDeclaration) return;
+      const parent = node.parent;
+      const assignment =
+        parent.kind === SyntaxKind.BinaryExpression &&
+        parent.left === node &&
+        parent.operatorToken.kind >= SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= SyntaxKind.LastAssignment;
+      const update =
+        (parent.kind === SyntaxKind.PostfixUnaryExpression ||
+          parent.kind === SyntaxKind.PrefixUnaryExpression) &&
+        (parent.operator === SyntaxKind.PlusPlusToken ||
+          parent.operator === SyntaxKind.MinusMinusToken);
+      const caller = enclosingCaller(node);
+      if (assignment || update) edge('PROPERTY_WRITES', caller, field, parent);
+      if (!assignment || parent.operatorToken.kind !== SyntaxKind.EqualsToken)
+        edge('PROPERTY_READS', caller, field, node);
+    }
+
     function visit(node) {
+      if (propertyAccess && node.kind === SyntaxKind.PropertyAccessExpression)
+        propertyReference(node);
+
       if (methodFacts && node.kind === SyntaxKind.MethodDeclaration) {
         result.METHOD_FACTS.edges.push({
           from: graphIdentity(root, node, project),

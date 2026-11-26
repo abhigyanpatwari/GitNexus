@@ -16,9 +16,11 @@ const selected = platform
       'product/fetch-wrapper-persistence.ts',
       'product/fts-extension-e2e.ts',
       'product/ignore-and-skip-e2e.ts',
+      'product/local-import-worker-parity.ts',
       'product/pipeline-graph-golden.ts',
       'product/rename.ts',
       'product/shared-store-embedding-reuse.ts',
+      'product/skills-e2e.ts',
       'provider/rename-typescript-member-keys.ts',
     ]
   : globSync(['product/*.ts', 'provider/*.ts'], { cwd: directory });
