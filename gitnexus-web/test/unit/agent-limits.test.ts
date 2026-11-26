@@ -315,4 +315,51 @@ describe('streamAgentResponse limits and token tracking', () => {
       },
     });
   });
+
+  it('completes without stopping and flags usageUnavailable when a budgeted stream emits text with no usage metadata', async () => {
+    const fakeAgent = {
+      stream: vi.fn(async () => {
+        return (async function* () {
+          yield [
+            'messages',
+            [
+              makeAiChunk({
+                id: 'ai-1',
+                content: 'Response without provider token metadata',
+              }),
+              {},
+            ],
+          ];
+          yield [
+            'values',
+            {
+              messages: [
+                { _getType: () => 'human', content: 'explain architecture' },
+                makeAiChunk({
+                  id: 'ai-1',
+                  content: 'Response without provider token metadata',
+                }),
+              ],
+            },
+          ];
+        })();
+      }),
+    } as unknown as MockAgent;
+
+    const userController = new AbortController();
+    const chunks: AgentStreamChunk[] = [];
+    for await (const chunk of streamAgentResponse(
+      fakeAgent,
+      [{ role: 'user', content: 'explain architecture' }],
+      { signal: userController.signal, tokenBudget: 50 },
+    )) {
+      chunks.push(chunk);
+    }
+
+    expect(userController.signal.aborted).toBe(false);
+    expect(chunks).toEqual([
+      { type: 'reasoning', reasoning: 'Response without provider token metadata' },
+      { type: 'done', historyMessages: undefined, usageUnavailable: true },
+    ]);
+  });
 });

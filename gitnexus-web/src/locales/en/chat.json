@@ -44,7 +44,8 @@
   },
   "budget": {
     "tokenLimitReached": "Stopped: token budget limit ({{limit}} tokens) exceeded.",
-    "iterationLimitReached": "Stopped: max iterations limit ({{limit}}) reached."
+    "iterationLimitReached": "Stopped: max iterations limit ({{limit}}) reached.",
+    "usageUnavailable": "Token budget ({{limit}} tokens) could not be enforced because the provider did not report token usage for this response."
   },
   "newBadge": "NEW"
 }

@@ -105,6 +105,7 @@ describe('SettingsPanel agent limits UI', () => {
 
     expect(maxIterInput.value).toBe('8');
     expect(tokenBudgetInput.value).toBe('0');
+    expect(screen.getByText('settings:agentLimits.tokenBudgetHint')).toBeTruthy();
 
     fireEvent.change(maxIterInput, { target: { value: '14' } });
     fireEvent.change(tokenBudgetInput, { target: { value: '12000' } });

@@ -408,7 +408,13 @@ export type AgentStreamChunk =
       usage: TokenUsage;
     }
   | { type: 'error'; error: string }
-  | { type: 'done'; historyMessages?: AgentHistoryMessage[]; usage?: TokenUsage }
+  | {
+      type: 'done';
+      historyMessages?: AgentHistoryMessage[];
+      usage?: TokenUsage;
+      /** Set when a nonzero tokenBudget was configured but the provider omitted token usage metadata. */
+      usageUnavailable?: boolean;
+    }
   | { type: 'cancelled' };
 
 /**

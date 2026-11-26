@@ -118,7 +118,7 @@
     "maxIterationsHint": "Maximum reasoning and tool-calling cycles per question (1–50, default 8).",
     "tokenBudgetLabel": "Token Budget per Question",
     "tokenBudgetPlaceholder": "0 (unlimited)",
-    "tokenBudgetHint": "Stop the agent cleanly if a response exceeds this token count. Set 0 for unlimited."
+    "tokenBudgetHint": "Stop the agent cleanly if a response exceeds this token count (requires provider-reported token usage; not enforced when a provider omits token counts). Set 0 for unlimited."
   },
   "privacyFull": "Your API keys are stored only in your browser's session storage and are cleared when the tab closes. They're sent directly to the LLM provider when you chat. Your code never leaves your machine."
 }

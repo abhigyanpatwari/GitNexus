@@ -873,6 +873,8 @@ export async function* streamAgentResponse(
       console.log('✅ Stream completed normally, yielding done');
     }
 
+    const usageUnavailable = tokenBudget > 0 && usageByMsgKey.size === 0;
+
     yield {
       type: 'done',
       historyMessages:
@@ -880,6 +882,7 @@ export async function* streamAgentResponse(
           ? serializeAgentHistoryMessages(lastStepMessages, formattedMessages.length)
           : undefined,
       ...(cumulativeUsage.totalTokens > 0 ? { usage: cumulativeUsage } : {}),
+      ...(usageUnavailable ? { usageUnavailable: true } : {}),
     };
   } catch (error) {
     if (isAbortError(error, options.signal)) {

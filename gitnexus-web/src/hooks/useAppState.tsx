@@ -1161,6 +1161,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
                   chunk.usage,
                 );
               }
+              if (chunk.usageUnavailable) {
+                stepsForMessage.push({
+                  id: `step-${++stepCounter}`,
+                  type: 'reasoning',
+                  content: `\n\n> ℹ️ ${i18n.t('chat:budget.usageUnavailable', {
+                    limit: agentConfig.tokenBudget,
+                  })}`,
+                });
+              }
               if (rafHandle != null) {
                 cancelAnimationFrame(rafHandle);
                 rafHandle = null;
