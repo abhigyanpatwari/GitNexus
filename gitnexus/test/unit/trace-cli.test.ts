@@ -187,4 +187,37 @@ describe('CLI trace command', () => {
       process.argv = originalArgv;
     }
   });
+
+  it('accepts --from-uid/--to-uid with no positional names through the real CLI dispatcher', async () => {
+    const originalArgv = process.argv;
+    process.argv = [
+      'node',
+      'gitnexus',
+      'trace',
+      '--from-uid',
+      'Function:route.ts:alpha',
+      '--to-uid',
+      'Function:route.ts:gamma',
+    ];
+    try {
+      vi.resetModules();
+      // Previously Commander rejected this before the action ran: `trace <from> <to>`
+      // required two positional names even when both endpoints were already
+      // disambiguated by UID.
+      await import('../../src/cli/index.js');
+      await vi.waitFor(() => {
+        expect(callTool).toHaveBeenCalledWith(
+          'trace',
+          expect.objectContaining({
+            from: undefined,
+            to: undefined,
+            from_uid: 'Function:route.ts:alpha',
+            to_uid: 'Function:route.ts:gamma',
+          }),
+        );
+      });
+    } finally {
+      process.argv = originalArgv;
+    }
+  });
 });
