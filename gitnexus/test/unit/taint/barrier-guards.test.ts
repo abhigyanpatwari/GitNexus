@@ -156,6 +156,16 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not suppress when a sink arg mixes validated and unvalidated members', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        exec(req.body + req.query);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('still finds the unguarded flow', () => {
     const { flows } = analyze(`
       function f(req: any) {

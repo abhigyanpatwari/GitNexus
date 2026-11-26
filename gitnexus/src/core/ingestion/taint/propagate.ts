@@ -112,7 +112,7 @@ import {
   barrierControllerPoint,
   buildBarrierGuardIndex,
   isBarrierGuarded,
-  memberPropertyAtArg,
+  memberPropertiesAtArg,
   type BarrierGuardOptions,
 } from './barrier-guards.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
@@ -962,8 +962,12 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
-              const sinkProp = memberPropertyAtArg(ctx.sites, siteIndex, argPos);
-              if (suppressedByBarrier(b, ctx.point, t.point, sinkProp)) continue;
+              // Multi-property args (exec(p.body + p.query)): under-kill —
+              // do not let one validated property suppress the whole binding.
+              const sinkProps = memberPropertiesAtArg(ctx.sites, siteIndex, argPos);
+              if (sinkProps.length <= 1) {
+                if (suppressedByBarrier(b, ctx.point, t.point, sinkProps[0])) continue;
+              }
               const chain = chainHops(key);
               chain.hops.push({
                 bindingIdx: b,

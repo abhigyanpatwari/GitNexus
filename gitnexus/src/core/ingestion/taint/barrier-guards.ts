@@ -232,17 +232,23 @@ function primaryArgSubjects(
   return argPositionBindings(callSite, 0).map((binding) => ({ binding }));
 }
 
-/** Property of a member-read feeding call `siteIndex` arg `argPos`, if any. */
-export function memberPropertyAtArg(
+/**
+ * Distinct member-read properties feeding call `siteIndex` arg `argPos`.
+ * Empty when the arg is a plain binding. Multiple properties (e.g.
+ * `exec(p.body + p.query)`) means barrier suppression must under-kill —
+ * a single validated property must not clear the whole argument.
+ */
+export function memberPropertiesAtArg(
   sites: readonly SiteRecord[],
   siteIndex: number,
   argPos: number,
-): string | undefined {
+): readonly string[] {
+  const props = new Set<string>();
   for (const s of sites) {
-    if (s.kind !== 'member-read') continue;
-    if (s.parent?.[0] === siteIndex && s.parent?.[1] === argPos) return s.property;
+    if (s.kind !== 'member-read' || s.property === undefined) continue;
+    if (s.parent?.[0] === siteIndex && s.parent?.[1] === argPos) props.add(s.property);
   }
-  return undefined;
+  return [...props];
 }
 
 /** Collect validating-predicate controllers from CFG call sites. */
