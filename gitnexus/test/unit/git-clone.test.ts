@@ -1949,7 +1949,11 @@ describe('git-clone', () => {
     ] as const)('reports a safe error for $platform $command with $prefix', async (test) => {
       const { child, options, restore } = mockGit(test.platform);
       try {
-        const result = runGitForTest([test.command], undefined, options);
+        const args =
+          test.command === 'clone'
+            ? buildBranchCloneArgs(url, 'configured-project-root/repo', 'develop')
+            : [test.command];
+        const result = runGitForTest(args, undefined, options);
         child.stderr.emit(
           'data',
           Buffer.from(`${test.prefix} private/fixture.java: Filename too long\r\n`),
@@ -1960,7 +1964,7 @@ describe('git-clone', () => {
         await expect(result).rejects.toHaveProperty(
           'message',
           test.hint
-            ? `${generic}: Filename too long. Set GITNEXUS_HOME to a shorter path and restart the server.`
+            ? `${generic}: Filename too long. For web imports, shorten GITNEXUS_HOME and restart the server. For auto-sync, shorten the project's localPath and retry.`
             : generic,
         );
       } finally {

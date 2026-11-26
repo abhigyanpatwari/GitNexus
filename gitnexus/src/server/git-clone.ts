@@ -1007,7 +1007,7 @@ export function runGit(args: string[], cwd?: string, options?: RunGitOptions): P
             stderr,
           );
         const message = longPathError
-          ? `${failure}: Filename too long. Set GITNEXUS_HOME to a shorter path and restart the server.`
+          ? `${failure}: Filename too long. For web imports, shorten GITNEXUS_HOME and restart the server. For auto-sync, shorten the project's localPath and retry.`
           : failure;
         finish(() => reject(new Error(message)));
       }
