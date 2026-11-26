@@ -254,6 +254,16 @@ describe('readResource', () => {
     expect(result).toContain('files: 10');
   });
 
+  it('schema resource guard_clauses example is anchored to one file and LIMIT-bounded (#2978)', async () => {
+    const backend = createMockBackend();
+    const result = await readResource('gitnexus://repo/any/schema', backend);
+    const start = result.indexOf('guard_clauses');
+    expect(start).toBeGreaterThan(-1);
+    const example = result.slice(start);
+    expect(example).toContain("dep.id STARTS WITH 'BasicBlock:");
+    expect(example).toMatch(/LIMIT \d+/);
+  });
+
   it('returns error when context has no codebase loaded', async () => {
     const backend = createMockBackend({ context: null });
     const result = await readResource('gitnexus://repo/test-project/context', backend);
