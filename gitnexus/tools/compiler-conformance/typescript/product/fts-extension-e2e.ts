@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
  *  - #2841:   HOME copy vanishes between runs — incremental stays incremental
  *  - auto:    same vendor survivorship under the install policy
  */
-import { describe, it, before as beforeAll, beforeEach, after as afterAll } from 'node:test';
+import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
 import { expect } from 'expect';
 import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../../../../test/helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
@@ -43,7 +43,6 @@ let extensionRelPath: string;
 /** Canonical valid extension bytes (path to a known-good file). */
 let seedExtensionFile: string | null = null;
 
-const REQUIRE_FTS = process.env.GITNEXUS_REQUIRE_FTS === '1';
 const tmpDirs: string[] = [];
 
 const makeTmpDir = (label: string): string => {
@@ -193,9 +192,9 @@ const runCli = (
 beforeAll(
   () => {
     resolveSeedExtension();
-    if (!seedExtensionFile && REQUIRE_FTS) {
+    if (!seedExtensionFile) {
       throw new Error(
-        'GITNEXUS_REQUIRE_FTS=1 but no FTS extension could be located or installed for the E2E suite.',
+        'TypeScript conformance requires FTS. Run node --import tsx scripts/ensure-fts.ts from gitnexus/ to install the extension.',
       );
     }
   },
@@ -204,12 +203,6 @@ beforeAll(
 
 afterAll(() => {
   for (const dir of tmpDirs) cleanupTempDirSync(dir);
-});
-
-// Skip everything (visibly) when no valid extension exists and the machine is
-// offline — mirrors the dynamic-skip convention in test/helpers/fts-availability.ts.
-beforeEach((ctx) => {
-  if (!seedExtensionFile && 'skip' in ctx) ctx.skip();
 });
 
 describe('happy path — extension pre-installed, fully offline (load-only)', () => {
@@ -321,7 +314,7 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
   it(
     'the incremental run keeps working search without a Binder exception or full-DB escalation',
     { timeout: 400_000 },
-    (ctx) => {
+    () => {
       const { home, extensionFile } = makeHome('valid');
       const repo = makeFixtureRepo('vanishing-extension');
 
@@ -329,19 +322,8 @@ describe('regression — the home copy disappears between analyze runs (#2841)',
       //    an FTS index on every populated searchable table.
       const first = runCli(['analyze'], repo, home, 'load-only');
       assert.doesNotThrow(() => expect(first.status).toBe(0), first.diagnostics);
-      // This case needs run 1 to actually BUILD the indexes — without them there
-      // is nothing for the gate to trip on and the assertions below would be
-      // vacuous. When the seeded extension cannot load on this host (the same
-      // environment gap the other cases in this file hit), skip VISIBLY rather
-      // than report a red that says nothing about the fix.
-      if (first.output.includes('FTS extension unavailable')) {
-        if (REQUIRE_FTS) {
-          throw new Error(
-            'GITNEXUS_REQUIRE_FTS=1 but the seeded FTS extension did not load — cannot verify the #2841 regression.',
-          );
-        }
-        return ctx.skip();
-      }
+      // The first analysis must build the search indexes that the second run exercises.
+      assert.ok(!first.output.includes('FTS extension unavailable'), first.diagnostics);
 
       // 2. The extension becomes unloadable — the reporter moved
       //    ~/.lbdb/extension away; a HOME change or a wiped cache does the same.

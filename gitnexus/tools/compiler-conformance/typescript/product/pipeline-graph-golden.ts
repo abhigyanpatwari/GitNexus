@@ -203,7 +203,7 @@ describe('pipeline graph golden', () => {
         ...diffs,
         '',
         'If this drift is intentional, regenerate the golden file with:',
-        '  UPDATE_GOLDEN=1 node --import tsx --test tools/compiler-conformance/typescript/product/pipeline-graph-golden.ts',
+        '  (cd gitnexus && UPDATE_GOLDEN=1 node --import tsx --test tools/compiler-conformance/typescript/product/pipeline-graph-golden.ts)',
       ].join('\n');
       throw new Error(msg);
     }

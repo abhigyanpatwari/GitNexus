@@ -18,7 +18,7 @@ import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-ide
  * caller. Asserting the edge directly avoids wiring an entire `withTestLbugDB`
  * fixture for what is effectively a graph-shape assertion.
  *
- * Test set (all through the production worker pool):
+ * Cold runs use the production worker pool. The warm run replays its durable cache.
  *   - Test A: pipeline produces both edges with the right `ownerId`
  *   - Test C: local-scoped object literal inside a function emits no false-
  *     positive HAS_METHOD (proves the boundary guard is load-bearing)
