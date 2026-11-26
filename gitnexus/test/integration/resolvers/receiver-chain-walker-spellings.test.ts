@@ -312,6 +312,30 @@ func indexElement(repos: [User]) {
 func fieldIndexElement(holder: Holder) {
     holder.users[0].save()
 }
+
+func genericIndexElement(repos: Array<User>) {
+    repos[0].save()
+}
+
+func optionalIndexElement(repos: [User]?) {
+    repos?[0].save()
+}
+
+func forcedIndexElement(repos: [User]!) {
+    repos![0].save()
+}
+
+func decoyIndexElement(addresses: [Address]) {
+    addresses[0].save()
+}
+
+func dictionaryValue(byName: [String: User]) {
+    byName["a"]?.save()
+}
+
+func partialIndexElement(grid: [[User]]) {
+    grid[0].save()
+}
 `,
     },
     rows: [
@@ -332,23 +356,69 @@ func fieldIndexElement(holder: Holder) {
         drops: [],
       },
       {
-        // KNOWN GAP. `repos[0]` now builds `2|repos|i`, so the miss is
-        // recorded, but Swift has no `elementTypeOf` hook to read `User` out
-        // of `[User]` yet.
+        // `repos[0]` builds `2|repos|i`; `swiftElementType` reads `User` out of `[User]`.
         language: 'swift',
         source: 'indexElement',
         member: 'save',
-        targets: [],
-        drops: ['main.swift:10'],
+        targets: ['Function:models.swift:User.save#0'],
+        drops: [],
       },
       {
-        // KNOWN GAP, same hook. The chain is `2|holder|fusers|i`; before this
-        // change the walk read `users` as a method call.
+        // KNOWN GAP. The chain is `2|holder|fusers|i`, but the field step hands
+        // the index step no written spelling, so `[User]` never reaches
+        // `elementTypeOf`.
         language: 'swift',
         source: 'fieldIndexElement',
         member: 'save',
         targets: [],
         drops: ['main.swift:14'],
+      },
+      {
+        // KNOWN GAP. Parameter capture keeps `Array<User>` only as `Array`, so
+        // there is no element for `elementTypeOf` to read.
+        language: 'swift',
+        source: 'genericIndexElement',
+        member: 'save',
+        targets: [],
+        drops: ['main.swift:18'],
+      },
+      {
+        // An optional container is indexed through `?[` / `![`.
+        language: 'swift',
+        source: 'optionalIndexElement',
+        member: 'save',
+        targets: ['Function:models.swift:User.save#0'],
+        drops: [],
+      },
+      {
+        language: 'swift',
+        source: 'forcedIndexElement',
+        member: 'save',
+        targets: ['Function:models.swift:User.save#0'],
+        drops: [],
+      },
+      {
+        language: 'swift',
+        source: 'decoyIndexElement',
+        member: 'save',
+        targets: ['Function:models.swift:Address.save#0'],
+        drops: [],
+      },
+      {
+        // A dictionary subscript is keyed and yields an optional: refused, not read as an array.
+        language: 'swift',
+        source: 'dictionaryValue',
+        member: 'save',
+        targets: [],
+        drops: ['main.swift:34'],
+      },
+      {
+        // One index into `[[User]]` is `[User]`, which declares no `save`.
+        language: 'swift',
+        source: 'partialIndexElement',
+        member: 'save',
+        targets: [],
+        drops: ['main.swift:38'],
       },
     ],
   },

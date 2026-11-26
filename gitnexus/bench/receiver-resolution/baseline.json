@@ -170,7 +170,7 @@
       "nonNullAssert": "RESOLVES",
       "awaitParen": "RESOLVES",
       "explicitTypeArgs": "N/A",
-      "indexElement": "VISIBLE-GAP",
+      "indexElement": "RESOLVES",
       "fieldReceiverCall": "RESOLVES",
       "decoratedReceiverBase": "N/A",
       "decoratedFieldType": "RESOLVES"

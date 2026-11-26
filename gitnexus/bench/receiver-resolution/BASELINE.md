@@ -1560,3 +1560,11 @@ no in-repository target. The fixture's three existing call edges are preserved.
 This increases the all-language count from 174 to 176 unresolved calls, with
 34 unresolved reads. The dynamic-import fixture still links `feature.activate()`
 to its imported `Feature.activate` method.
+
+### Swift indexed element (SWIFT-01)
+
+The Swift provider now answers `elementTypeOf` for array sugar: `[User]`, or
+`[User]?` / `[User]!` indexed through `?[` / `![`, yields `User`; a dictionary
+`[K: V]` and every other spelling decline. `indexElement`
+(`repos: [User]`, `repos[0].save()`) moves VISIBLE-GAP -> RESOLVES. No fixture
+under `lang-resolution` changed, and the count arm is identical.

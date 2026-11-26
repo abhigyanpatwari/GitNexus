@@ -12,6 +12,7 @@
  */
 
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
+import type { ElementAccessRoute } from '../../scope-resolution/contract/scope-resolver.js';
 
 // ─── interpretImport ──────────────────────────────────────────────────────
 
@@ -93,6 +94,21 @@ function stripArraySugar(text: string): string {
     return text.slice(1, -1).trim();
   }
   return text;
+}
+
+/**
+ * `elementTypeOf` for Swift: `repos[0]` on `[User]` (or `[User]?` / `[User]!`,
+ * indexed through `?[` / `![`) yields `User`. A dictionary (`[K: V]`) is keyed
+ * and yields `V?`, so it declines, as does any other spelling. `Array<User>`
+ * is not answered: parameter capture keeps only `Array`. The step carries no
+ * argument, so a range subscript (`repos[0..<2]`) also reads as the element; a
+ * member it names must still exist on `User` to resolve.
+ */
+export function swiftElementType(type: string, via: ElementAccessRoute): string | undefined {
+  if (via.kind !== 'index') return undefined;
+  const container = stripOptional(type.trim());
+  const element = stripArraySugar(container);
+  return element === container ? undefined : element;
 }
 
 /**
