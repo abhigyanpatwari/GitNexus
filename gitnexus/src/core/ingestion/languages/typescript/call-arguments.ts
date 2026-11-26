@@ -17,7 +17,6 @@ import {
 import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
 import { receiverTypeIsOutOfScope } from './global-declarations.js';
-import { immutableReceiverMethod, indexImmutableReceivers } from './immutable-receiver.js';
 
 type Argument = Extract<CallableFlowSite, { kind: 'argument' }>;
 const argumentsByCall = new WeakMap<ReferenceSite, Argument[]>();
@@ -50,7 +49,6 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
   const overloads = new Map<string, Set<string>>();
   const overloadedFunctions = new Set<string>();
   for (const file of files) {
-    indexImmutableReceivers(file);
     const firstOwner = new Map<string, string>();
     let hasFreeSignatures = false;
     for (const def of file.localDefs) {
@@ -354,8 +352,6 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
       };
     }
   }
-  const constructed = immutableReceiverMethod(owner, name, site, indexes, model);
-  if (constructed) return { kind: 'resolved', definition: constructed };
   if (!argumentsByCall.has(site) || !site.argumentTypes) return undefined;
   let methods = model.methods.lookupAllByOwner(owner.nodeId, name);
   if (!methods.length) {

@@ -1,6 +1,5 @@
 {
   "compiler-conformance/typescript-private-type-imports": ["ambient-use.ts:1:34 TS2306"],
-  "typescript-callable-flow/non-callable-result": ["main.ts:4:0 TS2349"],
   "compiler-conformance/typescript-shadowed-receiver": [
     "app.ts:10:17 TS7006",
     "app.ts:16:36 TS7006",
@@ -110,11 +109,6 @@
     "src/App.tsx:7:4 TS7026",
     "src/Button.tsx:4:30 TS7026",
     "src/Button.tsx:4:9 TS7026"
-  ],
-  "compiler-conformance/typescript-convex-endpoints": [
-    "endpoints.ts:1:64 TS2307",
-    "endpoints.ts:2:71 TS2307",
-    "endpoints.ts:3:33 TS2307"
   ],
   "compiler-conformance/typescript-script-force": [
     "use.ts:2:23 TS2304",

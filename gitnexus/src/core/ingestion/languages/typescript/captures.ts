@@ -26,7 +26,7 @@
  * immediate side-channel collection. Performs no I/O.
  */
 
-import { recordCommonJsModuleKind, recordImmutableConstruction } from './module-kind.js';
+import { recordCommonJsModuleKind } from './module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { isAnonymousDefaultClass } from '../../class-extractors/configs/typescript-javascript.js';
 import { synthesizeTsJsClassIdentity } from './class-identity.js';
@@ -131,21 +131,6 @@ const CALL_TAGS = [
 const TS_CALLABLE_CAPTURE_OPTIONS = {
   functionNodeTypes: new Set<string>(FUNCTION_NODE_TYPES),
   callNodeTypes: new Set(['call_expression']),
-  constructorCallNodeTypes: new Set(['new_expression']),
-  extractCallCallee: (node: SyntaxNode) =>
-    node.type === 'new_expression'
-      ? (node.childForFieldName('constructor') ?? undefined)
-      : undefined,
-  isConstructorImplementation: (node: SyntaxNode) =>
-    node.type === 'method_definition' &&
-    node.parent?.type === 'class_body' &&
-    node.childForFieldName('name')?.text === 'constructor' &&
-    !hasKeyword(node, 'static'),
-  argumentAlternativeNodeTypes: new Set([
-    'binary_expression',
-    'ternary_expression',
-    'parenthesized_expression',
-  ]),
   parameterListNodeTypes: new Set(['formal_parameters', 'arguments']),
   parameterNodeTypes: new Set([
     'required_parameter',
@@ -433,6 +418,7 @@ export function emitTsScopeCaptures(
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
   const out: CaptureMatch[] = [];
+  let awaitedCalls: Map<string, Capture> | undefined;
 
   for (const m of rawMatches) {
     // Group captures by their tag name. Tree-sitter strips the leading
@@ -446,8 +432,6 @@ export function emitTsScopeCaptures(
       groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
-    const construction = groupedNodes['@type-binding.constructor'];
-    if (construction) recordImmutableConstruction(construction, groupedNodes['@type-binding.type']);
     synthesizeTsJsClassIdentity(grouped, groupedNodes);
 
     // Decompose each `import_statement` / re-export `export_statement`
@@ -719,6 +703,30 @@ export function emitTsScopeCaptures(
         findNodeAtRange(tree.rootNode, callAnchor.range, 'call_expression') ??
         findNodeAtRange(tree.rootNode, callAnchor.range, 'new_expression');
       if (callNode !== null) {
+        // The TS grammar attaches await to the callee of an explicit generic call.
+        // The compiler's call expression starts at the operand, after await.
+        if (callAnchor.text.startsWith('await')) {
+          const callee = callNode.childForFieldName('function');
+          const operand =
+            callee?.type === 'await_expression'
+              ? callee.namedChildren.find((child) => child && child.type !== 'comment')
+              : undefined;
+          if (operand) {
+            grouped[callAnchor.name] = {
+              ...callAnchor,
+              text: sourceText.slice(operand.startIndex, callNode.endIndex),
+              range: {
+                ...callAnchor.range,
+                startLine: operand.startPosition.row + 1,
+                startCol: operand.startPosition.column,
+              },
+            };
+            (awaitedCalls ??= new Map()).set(
+              JSON.stringify(callAnchor.range),
+              grouped[callAnchor.name],
+            );
+          }
+        }
         const argList = callNode.childForFieldName('arguments');
         const args: SyntaxNode[] =
           argList === null
@@ -784,7 +792,17 @@ export function emitTsScopeCaptures(
   synthesizeDestructuringBindings(tree.rootNode, out);
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
-  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
+  const callableFlows = synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS);
+  if (awaitedCalls) {
+    // Argument and invocation facts join the reference by its entire call range.
+    for (const match of callableFlows) {
+      const site = match['@callable-flow.argument'] ?? match['@callable-flow.invoke'];
+      const call = site && awaitedCalls.get(JSON.stringify(site.range));
+      out.push(call ? { ...match, [site.name]: { ...call, name: site.name } } : match);
+    }
+  } else {
+    out.push(...callableFlows);
+  }
 
   // CommonJS module-export declarations (#2723). Shared with the JavaScript
   // emitter: a `.ts` file in a CommonJS package uses the same forms, and

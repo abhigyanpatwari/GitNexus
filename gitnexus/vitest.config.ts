@@ -1,11 +1,19 @@
 import { defineConfig } from 'vitest/config';
 import PerfSequencer from './test/helpers/perf-sequencer.js';
 
+// Keep the native suite's serial include and parallel exclude in sync.
+const multiRepoQueryTest = 'test/integration/mcp-multi-repo-query.test.ts';
+
 // Keep native tests in exactly one project (TESTING.md).
 const RESUMABLE_ANALYSIS_NATIVE_TESTS = [
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/embedding-vector-store.test.ts',
   'test/integration/legacy-vector-reuse-index.test.ts',
   'test/integration/legacy-vector-export.test.ts',
+  'test/integration/analysis-embedding-flow.test.ts',
+  'test/integration/analysis-generation-routing.test.ts',
+  'test/integration/analysis-publication-flow.test.ts',
+  'test/integration/embedding-job-controller.test.ts',
   'test/integration/embedding-job-restart.test.ts',
   'test/integration/embedding-native-release.test.ts',
   'test/integration/legacy-embedding-controller.test.ts',
@@ -96,12 +104,15 @@ export default defineConfig({
           name: 'lbug-db',
           include: [
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
-
+            'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
+            'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
+            'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-private-type-file-seed.test.ts',
+            'test/integration/impact-private-type-source.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
@@ -109,7 +120,10 @@ export default defineConfig({
             'test/integration/r-namespace-edit-incremental.test.ts',
             'test/integration/r-virtual-placeholder-incremental.test.ts',
             'test/integration/server-route-hook-config.test.ts',
+            'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
+            'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/fts-empty-tables.test.ts',
             'test/integration/persisted-mutation-rows.test.ts',
@@ -126,6 +140,7 @@ export default defineConfig({
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
             'test/integration/fts-fullfile-search.test.ts',
+            'test/integration/fts-cjk-segmentation-search.test.ts',
             'test/integration/augmentation.test.ts',
             'test/integration/staleness-and-stability.test.ts',
             'test/integration/lbug-lock-retry.test.ts',
@@ -143,13 +158,19 @@ export default defineConfig({
             // Shared sibling store (#3352): each file runs real analyses and opens
             // the resulting LadybugDB graphs.
             'test/integration/shared-store-analyze.test.ts',
+            'test/integration/parse-cache-identity-lifecycle.test.ts',
+            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',
+            'test/integration/shared-store-clone-optin.test.ts',
+            'test/integration/shared-store-adoption.test.ts',
+            'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
             'test/integration/lbug-load-overlap-errors.test.ts',
             'test/integration/load-cached-embeddings-spill.test.ts',
+            'test/integration/embedding-chunking-lifecycle.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
@@ -170,8 +191,24 @@ export default defineConfig({
             // the wiki's graph queries executed by a real engine rather than a
             // fake that answers on `query.includes(...)`.
             'test/integration/wiki-graph-queries-engine.test.ts',
+            'test/unit/incremental-dirty-recovery.test.ts',
             // Publication reconciliation uses real native COPY/checkpoints.
+            'test/unit/incremental-write-integrity.test.ts',
             'test/unit/incremental-orchestration.test.ts',
+            // #2841. Native @ladybugdb/core: it runs real analyses, reopens the
+            // DB under different extension-install policies, and reads
+            // SHOW_INDEXES on the writable connection — exactly the mmap
+            // file-lock exposure this project exists to serialize (TESTING.md
+            // § Vitest projects). Registering it here does NOT narrow where it
+            // runs: vitest applies `--shard` once to the combined cross-project
+            // spec list (PerfSequencer is a complete, disjoint
+            // partition), and run-cross-platform.ts hands vitest explicit file
+            // paths, which resolve against every project's include list. Its
+            // `incremental-vector-extension-ordering` /
+            // `incremental-fts-drop-ordering` siblings are equally native and
+            // still sit in `default` — pre-existing drift, deliberately left
+            // alone here.
+            'test/unit/incremental-index-extension-dml-gate.test.ts',
           ],
           fileParallelism: false,
           sequence: { groupOrder: 1 },
@@ -185,12 +222,15 @@ export default defineConfig({
           include: ['test/{unit,integration}/**/*.test.ts'],
           exclude: [
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
-
+            'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
+            'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
+            'test/integration/skip-fts.test.ts',
             'test/integration/impact-callable-value-references.test.ts',
             'test/integration/impact-private-type-file-seed.test.ts',
+            'test/integration/impact-private-type-source.test.ts',
             'test/integration/impact-context-integrity.test.ts',
             'test/integration/incremental-worktree-context.test.ts',
             'test/integration/incremental-method-integrity.test.ts',
@@ -198,7 +238,10 @@ export default defineConfig({
             'test/integration/r-namespace-edit-incremental.test.ts',
             'test/integration/r-virtual-placeholder-incremental.test.ts',
             'test/integration/server-route-hook-config.test.ts',
+            'test/integration/query-symbol-integrity.test.ts',
             'test/integration/mcp-index-generation.test.ts',
+            multiRepoQueryTest,
+            'test/integration/mcp-refresh-index-e2e.test.ts',
             'test/integration/fts-repair-warm-session.test.ts',
             'test/integration/fts-empty-tables.test.ts',
             'test/integration/persisted-mutation-rows.test.ts',
@@ -215,6 +258,7 @@ export default defineConfig({
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
             'test/integration/fts-fullfile-search.test.ts',
+            'test/integration/fts-cjk-segmentation-search.test.ts',
             'test/integration/augmentation.test.ts',
             'test/integration/staleness-and-stability.test.ts',
             'test/integration/lbug-lock-retry.test.ts',
@@ -229,16 +273,19 @@ export default defineConfig({
             'test/integration/lbug-rel-copy-page-padding.test.ts',
             'test/integration/lbug-incremental-search.test.ts',
             'test/integration/lbug-readonly-init.test.ts',
+            'test/integration/analyze-wal-checkpoint-failure.test.ts',
             'test/integration/lbug-non-ascii-path.test.ts',
             'test/integration/lbug-conn-serialization.test.ts',
             'test/integration/lbug-load-overlap-errors.test.ts',
             'test/integration/load-cached-embeddings-spill.test.ts',
+            'test/integration/embedding-chunking-lifecycle.test.ts',
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/manifest-synthetic-impact-lbug.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
             'test/integration/group/sync-extraction-lease.test.ts',
             'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/skills-e2e.test.ts',
+            'test/integration/fts-extension-e2e.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
             'test/integration/lbug-multiwriter-deadlock.test.ts',
             'test/integration/extension-binary-real.test.ts',
@@ -247,11 +294,20 @@ export default defineConfig({
             'test/integration/impact-ambiguous-blast-radius.test.ts',
             'test/integration/detect-changes-path-anchoring.test.ts',
             'test/integration/wiki-graph-queries-engine.test.ts',
+            'test/unit/incremental-dirty-recovery.test.ts',
+            'test/unit/incremental-write-integrity.test.ts',
             'test/unit/incremental-orchestration.test.ts',
+            // Excluded here because it is included by `lbug-db` above; a file
+            // in two projects would be collected (and run) twice.
+            'test/unit/incremental-index-extension-dml-gate.test.ts',
             'test/integration/shared-store-analyze.test.ts',
+            'test/integration/parse-cache-identity-lifecycle.test.ts',
+            'test/integration/parse-cache-identity-package.test.ts',
             'test/integration/shared-store-seed.test.ts',
             'test/integration/shared-store-cache.test.ts',
             'test/integration/shared-store-clean.test.ts',
+            'test/integration/shared-store-clone-optin.test.ts',
+            'test/integration/shared-store-adoption.test.ts',
           ],
         },
       },
@@ -259,7 +315,12 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'cli-e2e',
-          include: ['test/integration/skills-e2e.test.ts'],
+          include: [
+            'test/integration/skills-e2e.test.ts',
+            // Spawns the real CLI per test; runs sequentially (fileParallelism:
+            // false) so it doesn't aggravate the under-load timeout-flake class.
+            'test/integration/fts-extension-e2e.test.ts',
+          ],
           fileParallelism: false,
           sequence: { groupOrder: 2 },
         },

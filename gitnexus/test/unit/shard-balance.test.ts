@@ -44,9 +44,12 @@ describe('assignShards', () => {
     // before its remaining database tests and 149 parallel test files.
     const observedSeconds: Record<string, number> = {
       'test/unit/incremental-orchestration.test.ts': 487.202,
+      'test/unit/incremental-write-integrity.test.ts': 113.583,
+      'test/integration/shared-store-clone-optin.test.ts': 102.187,
       'test/integration/rename-provider-dart.test.ts': 97.973,
       'test/integration/rename-provider-objective-c.test.ts': 81.122,
       'test/integration/rename-provider-go.test.ts': 78.185,
+      'test/integration/parse-cache-identity-package.test.ts': 66.863,
     };
     for (const file of Object.keys(observedSeconds)) {
       expect(files).toContain(path.join(root, file));

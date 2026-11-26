@@ -1,0 +1,387 @@
+/**
+ * P1 Integration Tests: FTS extension lifecycle end-to-end (#2374)
+ *
+ * Everything real, nothing mocked: each test spawns the actual CLI entry as a
+ * child process, LadybugDB loads the actual extension shared library from
+ * disk. The packaged vendor artifact is the first LOAD path; HOME copies
+ * are no longer required for a green FTS run.
+ *
+ * Isolation: GITNEXUS_HOME isolates the registry (#829). LadybugDB still
+ * resolves `~/.lbdb` from HOME, and every scenario owns a hermetic fake home
+ * so the machine's real ~/.lbdb is never written. Analyze now path-LOADs the
+ * packaged vendor artifact first, so a broken or missing HOME copy is no
+ * longer an FTS outage when the packaged file is present. Vendor-broken
+ * coverage lives in `fts-vendored-root-seam.test.ts` (injected vendorRoot).
+ *
+ * Scenario matrix:
+ *  - happy:   valid HOME copy, offline (load-only) — vendor or HOME loads
+ *  - packaged vendor survives a broken or missing HOME copy
+ *  - #2841:   HOME copy vanishes between runs — incremental stays incremental
+ *  - auto:    same vendor survivorship under the install policy
+ */
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { cliAnalysisEnv, CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
+import { spawnSync } from 'child_process';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import { inspect } from 'node:util';
+
+import { getExtensionInstallChildProcessArgs } from '../../src/core/lbug/extension-loader.js';
+import {
+  defaultVendorRoot,
+  nodePlatformTuple,
+  resolveVendoredFtsPath,
+} from '../../src/core/lbug/vendored-extension-path.js';
+import { cleanupTempDirSync } from '../helpers/test-db.js';
+import { findInstalledFtsExtension } from '../helpers/fts-availability.js';
+
+/** `.lbdb/extension/<version>/<platform>/fts/libfts.lbug_extension`, discovered not hardcoded. */
+let extensionRelPath: string;
+/** Canonical valid extension bytes (path to a known-good file). */
+let seedExtensionFile: string | null = null;
+
+const REQUIRE_FTS = process.env.GITNEXUS_REQUIRE_FTS === '1';
+const tmpDirs: string[] = [];
+
+const makeTmpDir = (label: string): string => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `gn-fts-e2e-${label}-`));
+  tmpDirs.push(dir);
+  return dir;
+};
+
+/**
+ * Locate a known-good extension file for HOME-copy fixtures.
+ * Prefers the packaged vendor artifact (offline, no HOME/network), then a
+ * copy already installed under the machine's real home, then one real
+ * out-of-process install into a probe home.
+ */
+/** Ladybug HOME layout: `~/.lbdb/extension/<coreVersion>/<upstreamPlatform>/fts/<file>`. */
+const ladybugHomeExtensionRelPath = (filename: string): string | null => {
+  try {
+    const raw = JSON.parse(
+      fs.readFileSync(path.join(defaultVendorRoot(), 'lbug-fts', 'manifest.json'), 'utf8'),
+    ) as {
+      coreVersion?: string;
+      tuples?: Array<{ tuple: string; upstreamPlatform: string }>;
+    };
+    const upstream = raw.tuples?.find(
+      (entry) => entry.tuple === nodePlatformTuple(),
+    )?.upstreamPlatform;
+    if (!raw.coreVersion || !upstream) return null;
+    return path.join('.lbdb', 'extension', raw.coreVersion, upstream, 'fts', filename);
+  } catch {
+    return null;
+  }
+};
+
+const resolveSeedExtension = (): void => {
+  const packaged = resolveVendoredFtsPath();
+  if (packaged) {
+    extensionRelPath =
+      ladybugHomeExtensionRelPath(path.basename(packaged)) ??
+      path.join('.lbdb', 'extension', 'vendor-seed', 'fts', path.basename(packaged));
+    seedExtensionFile = packaged;
+    return;
+  }
+  const realExtensionRoot = path.join(os.homedir(), '.lbdb', 'extension');
+  const installed = findInstalledFtsExtension(realExtensionRoot);
+  if (installed) {
+    extensionRelPath = path.relative(os.homedir(), installed);
+    seedExtensionFile = installed;
+    return;
+  }
+  // No local copy — run the real installer against a hermetic probe home.
+  const probeHome = makeTmpDir('seed-home');
+  const install = spawnSync(process.execPath, getExtensionInstallChildProcessArgs('fts'), {
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, HOME: probeHome, USERPROFILE: probeHome },
+  });
+  const probeExtensionRoot = path.join(probeHome, '.lbdb', 'extension');
+  const probeInstalled = findInstalledFtsExtension(probeExtensionRoot);
+  if (install.status === 0 && probeInstalled) {
+    extensionRelPath = path.relative(probeHome, probeInstalled);
+    seedExtensionFile = probeInstalled;
+    return;
+  }
+};
+
+type ExtensionState = 'valid' | 'broken' | 'missing';
+
+/** Create a hermetic fake home whose `.lbdb` holds the requested extension state. */
+const makeHome = (state: ExtensionState): { home: string; extensionFile: string } => {
+  const home = makeTmpDir(`home-${state}`);
+  const extensionFile = path.join(home, extensionRelPath);
+  fs.mkdirSync(path.dirname(extensionFile), { recursive: true });
+  if (state === 'valid' && seedExtensionFile) fs.copyFileSync(seedExtensionFile, extensionFile);
+  if (state === 'broken') fs.writeFileSync(extensionFile, 'not a shared library');
+  return { home, extensionFile };
+};
+
+/** Fresh git-initialised throwaway repo with a uniquely named symbol to search for. */
+const makeFixtureRepo = (label: string): string => {
+  const repo = path.join(makeTmpDir(`repo-${label}`), `fts-e2e-${label}`);
+  fs.mkdirSync(path.join(repo, 'src'), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, 'src', 'greeter.ts'),
+    'export function greetE2eSymbol(name: string): string {\n' +
+      '  return `Hello, ${name}`;\n' +
+      '}\n' +
+      "greetE2eSymbol('world');\n",
+  );
+  const gitEnv = {
+    ...process.env,
+    GIT_AUTHOR_NAME: 'test',
+    GIT_AUTHOR_EMAIL: 'test@test',
+    GIT_COMMITTER_NAME: 'test',
+    GIT_COMMITTER_EMAIL: 'test@test',
+  };
+  spawnSync('git', ['init'], { cwd: repo, stdio: 'pipe' });
+  spawnSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' });
+  spawnSync('git', ['commit', '-m', 'initial'], { cwd: repo, stdio: 'pipe', env: gitEnv });
+  return repo;
+};
+
+interface CliResult {
+  status: number | null;
+  /** Keep native termination and spawn failures visible in assertion messages. */
+  diagnostics: string;
+  /** stdout + stderr combined — warn lines and progress renderer interleave streams. */
+  output: string;
+}
+
+const runCli = (
+  args: string[],
+  cwd: string,
+  home: string,
+  policy: 'load-only' | 'auto',
+  timeoutMs = 180_000,
+): CliResult => {
+  const result = spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
+    cwd,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: cliAnalysisEnv({
+      HOME: home,
+      USERPROFILE: home,
+      GITNEXUS_HOME: path.join(home, '.gitnexus'),
+      GITNEXUS_LANG: 'en',
+      GITNEXUS_LBUG_EXTENSION_INSTALL: policy,
+      GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS: '60000',
+    }),
+  });
+  return {
+    status: result.status,
+    diagnostics: inspect(
+      {
+        status: result.status,
+        signal: result.signal,
+        error: result.error,
+        stdout: result.stdout,
+        stderr: result.stderr,
+      },
+      { depth: null, maxStringLength: null },
+    ),
+    output: `${result.stdout ?? ''}\n${result.stderr ?? ''}`,
+  };
+};
+
+beforeAll(() => {
+  resolveSeedExtension();
+  if (!seedExtensionFile && REQUIRE_FTS) {
+    throw new Error(
+      'GITNEXUS_REQUIRE_FTS=1 but no FTS extension could be located or installed for the E2E suite.',
+    );
+  }
+}, 180_000);
+
+afterAll(() => {
+  for (const dir of tmpDirs) cleanupTempDirSync(dir);
+});
+
+// Skip everything (visibly) when no valid extension exists and the machine is
+// offline — mirrors the dynamic-skip convention in test/helpers/fts-availability.ts.
+beforeEach((ctx) => {
+  if (!seedExtensionFile) ctx.skip();
+});
+
+describe('happy path — extension pre-installed, fully offline (load-only)', () => {
+  let home: string;
+  let repo: string;
+
+  beforeAll(() => {
+    // The file-level beforeEach skip fires only per-test; this hook runs first,
+    // so guard makeHome() (which needs extensionRelPath) when there is no seed.
+    if (!seedExtensionFile) return;
+    ({ home } = makeHome('valid'));
+    repo = makeFixtureRepo('happy');
+  });
+
+  it('analyze builds the index with FTS and emits no degradation warning', () => {
+    const result = runCli(['analyze'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('indexed successfully');
+    expect(result.output).not.toContain('FTS extension unavailable');
+    expect(result.output).not.toContain('search is disabled');
+  }, 180_000);
+
+  it('query finds the symbol via BM25 with no degradation warning', () => {
+    const result = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('greetE2eSymbol');
+    expect(result.output).not.toContain('keyword search degraded');
+  }, 60_000);
+
+  it('doctor reports a live-probed available FTS and a resolved LadybugDB version', () => {
+    const result = runCli(['doctor'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('Full-text search: available');
+    // #2374: version used to print as "unknown" on every platform.
+    expect(result.output).toMatch(/LadybugDB:\s*\d+\.\d+\.\d+/);
+  }, 60_000);
+
+  it('analyze --repair-fts rebuilds the search indexes offline', () => {
+    const result = runCli(['analyze', '--repair-fts'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('FTS indexes repaired successfully');
+  }, 180_000);
+});
+
+describe('packaged vendor survives a broken or missing home copy', () => {
+  let home: string;
+  let repo: string;
+
+  beforeAll(() => {
+    // See the happy-path note: skip setup when no seed extension is available
+    // so the per-test beforeEach skip is reached instead of throwing here.
+    if (!seedExtensionFile) return;
+    ({ home } = makeHome('broken'));
+    repo = makeFixtureRepo('broken');
+  });
+
+  it('analyze stays FTS-available when ~/.lbdb is broken', () => {
+    const result = runCli(['analyze'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('indexed successfully');
+    expect(result.output).not.toContain('FTS extension unavailable');
+    expect(result.output).not.toContain('search is disabled');
+  }, 180_000);
+
+  it('analyze --repair-fts succeeds from the packaged artifact', () => {
+    const result = runCli(['analyze', '--repair-fts'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('FTS indexes repaired successfully');
+  }, 180_000);
+
+  it('query finds the symbol with no HOME-copy degradation warning', () => {
+    const result = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('greetE2eSymbol');
+    expect(result.output).not.toContain('keyword search degraded');
+    expect(result.output).not.toContain('FTS extension failed to load');
+  }, 60_000);
+
+  it('doctor reports a live-probed available FTS despite a broken HOME copy', () => {
+    const result = runCli(['doctor'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('Full-text search: available');
+  }, 60_000);
+
+  it('analyze stays FTS-available when ~/.lbdb is missing entirely', () => {
+    const missing = makeHome('missing');
+    const missingRepo = makeFixtureRepo('missing');
+    const result = runCli(['analyze'], missingRepo, missing.home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('indexed successfully');
+    expect(result.output).not.toContain('FTS extension unavailable');
+    expect(result.output).not.toContain('has not been installed');
+  }, 180_000);
+});
+
+describe('regression — the home copy disappears between analyze runs (#2841)', () => {
+  it('the incremental run keeps working search without a Binder exception or full-DB escalation', (ctx) => {
+    const { home, extensionFile } = makeHome('valid');
+    const repo = makeFixtureRepo('vanishing-extension');
+
+    // 1. First analyze with the extension in place: the index ends up carrying
+    //    an FTS index on every populated searchable table.
+    const first = runCli(['analyze'], repo, home, 'load-only');
+    expect(first.status, first.diagnostics).toBe(0);
+    // This case needs run 1 to actually BUILD the indexes — without them there
+    // is nothing for the gate to trip on and the assertions below would be
+    // vacuous. When the seeded extension cannot load on this host (the same
+    // environment gap the other cases in this file hit), skip VISIBLY rather
+    // than report a red that says nothing about the fix.
+    if (first.output.includes('FTS extension unavailable')) {
+      if (REQUIRE_FTS) {
+        throw new Error(
+          'GITNEXUS_REQUIRE_FTS=1 but the seeded FTS extension did not load — cannot verify the #2841 regression.',
+        );
+      }
+      ctx.skip();
+    }
+
+    // 2. The extension becomes unloadable — the reporter moved
+    //    ~/.lbdb/extension away; a HOME change or a wiped cache does the same.
+    fs.rmSync(extensionFile);
+
+    // 3. A content change makes the next run incremental, so it must rewrite
+    //    rows of tables that still carry the indexes from step 1.
+    fs.appendFileSync(path.join(repo, 'src', 'greeter.ts'), '\n// #2841 incremental touch\n');
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'test',
+      GIT_AUTHOR_EMAIL: 'test@test',
+      GIT_COMMITTER_NAME: 'test',
+      GIT_COMMITTER_EMAIL: 'test@test',
+    };
+    spawnSync('git', ['add', '-A'], { cwd: repo, stdio: 'pipe' });
+    spawnSync('git', ['commit', '-m', '#2841 touch'], { cwd: repo, stdio: 'pipe', env: gitEnv });
+
+    const second = runCli(['analyze'], repo, home, 'load-only');
+    // Pre-fix: exit 1 with "Binder exception: Trying to delete from an index on
+    // table File but its extension is not loaded" and no mention of FTS at all.
+    // Packaged vendor still loads after HOME vanishes, so incremental stays
+    // incremental (no Binder, no full-DB escalation).
+    expect(second.status, second.diagnostics).toBe(0);
+    expect(second.output).not.toContain('its extension is not loaded');
+    expect(second.output).not.toContain('full DB write');
+    expect(second.output).not.toContain('forcing full rebuild');
+    expect(second.output).toMatch(/Incremental:|indexed successfully/);
+    const searched = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
+    expect(searched.status, searched.diagnostics).toBe(0);
+    expect(searched.output).toContain('greetE2eSymbol');
+    expect(searched.output).not.toContain('keyword search degraded');
+  }, 400_000);
+});
+
+describe('auto policy — packaged vendor does not need a HOME reinstall', () => {
+  it('analyze --repair-fts with auto succeeds from the packaged artifact when HOME is broken', () => {
+    const { home } = makeHome('broken');
+    const repo = makeFixtureRepo('heal');
+
+    const first = runCli(['analyze'], repo, home, 'load-only');
+    expect(first.status, first.diagnostics).toBe(0);
+    expect(first.output).not.toContain('FTS extension unavailable');
+
+    const repair = runCli(['analyze', '--repair-fts'], repo, home, 'auto');
+    expect(repair.status, repair.diagnostics).toBe(0);
+    expect(repair.output).toContain('FTS indexes repaired successfully');
+
+    const query = runCli(['query', 'greetE2eSymbol'], repo, home, 'load-only');
+    expect(query.status, query.diagnostics).toBe(0);
+    expect(query.output).toContain('greetE2eSymbol');
+    expect(query.output).not.toContain('keyword search degraded');
+  }, 600_000);
+
+  it('a fresh machine with no HOME copy still gets full FTS under load-only', () => {
+    const { home } = makeHome('missing');
+    const repo = makeFixtureRepo('fresh');
+    const result = runCli(['analyze'], repo, home, 'load-only');
+    expect(result.status, result.diagnostics).toBe(0);
+    expect(result.output).toContain('indexed successfully');
+    expect(result.output).not.toContain('FTS extension unavailable');
+  }, 600_000);
+});

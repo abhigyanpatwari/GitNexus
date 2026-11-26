@@ -15,8 +15,9 @@
  * `receiver-type-unresolved` with `declineDetail: 'untyped-binder'` and the
  * binder's scope id, so the decline is auditable rather than a silent miss.
  *
- * Python name claims stop the walk. The TypeScript counterpart runs in the
- * compiler-conformance suite. Ruby now publishes parameter names (RUBY-03), so its block
+ * The TypeScript and Python shapes are already correct on this tree (their
+ * name claims stop the walk); they are pinned so the shared change cannot
+ * regress them. Ruby now publishes parameter names (RUBY-03), so its block
  * parameter stops the walk too. PHP emits no lexical binder names: its pins
  * characterize today's edges, including known wrong ones, until it opts in.
  */
@@ -451,6 +452,54 @@ class Box4 {
   it('field variants keep the shadowed-field mask outcome, which runs first', () => {
     expect(declinesAt(run(), 'app.dart', 15, 7, 'save')).toEqual(['receiver-owned-but-unbound']);
     expect(declinesAt(run(), 'app.dart', 22, 7, 'save')).toEqual(['receiver-owned-but-unbound']);
+  });
+});
+
+// ── TypeScript and Python: already stopped by name claims; pinned ──────────
+describe('TypeScript — untyped parameters and arrow parameters (already stopped by name claims)', () => {
+  const run = useFixture('dart11-ts', {
+    'models.ts': `export class Address {
+  saveTs() {}
+}
+
+export class Other {
+  saveTs() {}
+}
+`,
+    'app.ts': `import { Address } from './models';
+
+export const cs: Address = new Address();
+
+export function gTs(cs) {
+  cs.saveTs();
+}
+
+export function fTs(cs: Address) {
+  const inner = (cs) => {
+    cs.saveTs();
+  };
+  cs.saveTs();
+}
+
+export function fPlain(cs: Address, items) {
+  {
+    const cs = items[0];
+    cs.saveTs();
+  }
+}
+`,
+  });
+
+  it('only the typed outer parameter site resolves', () => {
+    expect(memberCalls(run(), 'saveTs')).toEqual([
+      'Function:app.ts:fTs -> Method:models.ts:Address.saveTs#0 @13:2',
+    ]);
+  });
+
+  it('records no lexical-binder decline: TypeScript stops through name claims, not lexical names', () => {
+    expect(declinesAt(run(), 'app.ts', 6, 2, 'saveTs')).toEqual([]);
+    expect(declinesAt(run(), 'app.ts', 11, 4, 'saveTs')).toEqual([]);
+    expect(declinesAt(run(), 'app.ts', 19, 4, 'saveTs')).toEqual([]);
   });
 });
 

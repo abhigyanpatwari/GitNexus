@@ -14,18 +14,70 @@ const HELPER = path.resolve(__dirname, '..', '..', 'hooks', 'claude', 'git-mutat
 
 type Shell = 'bash' | 'powershell' | 'either';
 
-const { gitMutationDirectories, readHead, onlyMarkdownChanged } = createRequire(import.meta.url)(
-  HELPER,
-) as {
-  onlyMarkdownChanged: (directory: string, cwd: string, base: string, head: string) => boolean;
-  gitMutationDirectories: (command: unknown, cwd: string, shell: Shell) => string[];
-  readHead: (directory: string, cwd: string) => { head: string; checkout: string | null };
-};
+const { gitMutationDirectories, readHead, onlyMarkdownChanged, canSkipMarkdownReindex } =
+  createRequire(import.meta.url)(HELPER) as {
+    onlyMarkdownChanged: (directory: string, cwd: string, base: string, head: string) => boolean;
+    canSkipMarkdownReindex: (
+      directory: string,
+      cwd: string,
+      base: string,
+      head: string,
+      cli: () => string,
+    ) => boolean;
+    gitMutationDirectories: (command: unknown, cwd: string, shell: Shell) => string[];
+    readHead: (directory: string, cwd: string) => { head: string; checkout: string | null };
+  };
 
 // Absolute on every platform, and not required to exist.
 const CWD = path.join(os.tmpdir(), 'gn-mutation', 'repo');
 const under = (...segments: string[]) => path.resolve(CWD, ...segments);
 const inBash = (command: unknown) => gitMutationDirectories(command, CWD, 'bash');
+
+it('suppresses a docs-only gap but still warns for an earlier unindexed code change', () => {
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hook-gap-'));
+  try {
+    initGitRepo(repo);
+    fs.writeFileSync(path.join(repo, 'app.py'), 'v = 1\n');
+    commitAll(repo, 'indexed base');
+    const base = readHead(repo, repo).head;
+    fs.writeFileSync(path.join(repo, 'README.md'), 'notes\n');
+    fs.writeFileSync(path.join(repo, 'guide.MDX'), '# Usage\n');
+    commitAll(repo, 'docs');
+    expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(true);
+    vi.stubEnv('GIT_LITERAL_PATHSPECS', '1');
+    expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(true);
+    const head = readHead(repo, repo).head;
+    const cli = path.join(repo, '.git', 'status.cjs');
+    for (const [identity, reasons, expected] of [
+      ['current', [], true],
+      ['current', ['incremental-in-progress'], false],
+      ['stale-or-unknown', [], false],
+    ] as const) {
+      const status = {
+        current: { commit: head },
+        index: { commit: base, runnerIdentityStatus: identity, incompleteReasons: reasons },
+      };
+      fs.writeFileSync(cli, 'console.log(' + JSON.stringify(JSON.stringify(status)) + ')');
+      expect(canSkipMarkdownReindex(repo, repo, base, head, () => cli)).toBe(expected);
+    }
+    fs.writeFileSync(path.join(repo, 'new.ts'), 'untracked');
+    expect(onlyMarkdownChanged(repo, repo, base, head)).toBe(false);
+    expect(spawnSync('git', ['add', 'new.ts'], { cwd: repo }).status).toBe(0);
+    expect(onlyMarkdownChanged(repo, repo, base, head)).toBe(false);
+    fs.writeFileSync(path.join(repo, 'app.py'), 'v = 2\n');
+    commitAll(repo, 'change code');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'more notes\n');
+    commitAll(repo, 'more docs');
+    expect(onlyMarkdownChanged(repo, repo, base, readHead(repo, repo).head)).toBe(false);
+    const docs = path.join(repo, 'docs');
+    fs.mkdirSync(docs);
+    expect(spawnSync('git', ['config', 'diff.relative', 'true'], { cwd: repo }).status).toBe(0);
+    expect(onlyMarkdownChanged(docs, docs, base, readHead(docs, docs).head)).toBe(false);
+  } finally {
+    vi.unstubAllEnvs();
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
 
 it('keeps a stale hint when git is configured to hide submodule changes', () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-hook-gitlink-'));

@@ -1,22 +1,192 @@
 /**
  * E2E Integration Tests: --skills Flag
  *
- * Tests `gitnexus analyze --skills` across the language fixtures owned by Vitest. Each language fixture creates
+ * Tests `gitnexus analyze --skills` across the non-Java language fixtures plus
+ * mixed-language and idempotency scenarios. Each language fixture creates
  * a self-contained git repo with 2 clusters of files containing cross-file
  * function calls, then runs the full CLI pipeline and verifies SKILL.md
  * generation and context file updates.
  *
  * Uses process.execPath (never 'node' string), no shell: true.
  */
-import { describe, it, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
+import path from 'path';
+import fs from 'fs';
 
 import {
   assertContextFiles,
   assertSkillFiles,
+  assertSkillsCliSucceeded,
   createFixtureRepo,
   runSkillsCli,
 } from '../helpers/skills-e2e.js';
+
+// ============================================================================
+// DESCRIBE 1: TypeScript
+// ============================================================================
+
+describe('TypeScript', () => {
+  let tmpDir: string;
+  let result: ReturnType<typeof runSkillsCli>;
+
+  beforeAll(() => {
+    tmpDir = createFixtureRepo('typescript', {
+      'src/api/router.ts': `
+import { validateRequest } from '../utils/validator';
+import { logRequest } from '../utils/logger';
+
+export function createRouter() {
+  validateRequest('route');
+  logRequest('router init');
+  return { routes: [] };
+}
+
+export function registerRoute(path: string) {
+  validateRequest(path);
+  logRequest('register ' + path);
+  return true;
+}
+`,
+      'src/api/controller.ts': `
+import { runQuery } from '../data/query';
+import { formatResponse } from '../data/format';
+
+export function handleGet(id: string) {
+  const data = runQuery('SELECT * FROM items WHERE id = ' + id);
+  return formatResponse(data);
+}
+
+export function handlePost(body: any) {
+  const result = runQuery('INSERT INTO items VALUES ' + JSON.stringify(body));
+  return formatResponse(result);
+}
+`,
+      'src/api/middleware.ts': `
+import { validateToken } from '../utils/validator';
+import { logRequest } from '../utils/logger';
+
+export function authMiddleware(req: any) {
+  validateToken(req.headers.auth);
+  logRequest('auth check');
+  return true;
+}
+
+export function corsMiddleware(req: any) {
+  logRequest('cors check');
+  return { allowed: true };
+}
+`,
+      'src/data/query.ts': `
+import { formatResult } from './format';
+import { getCached } from './cache';
+
+export function runQuery(sql: string) {
+  const cached = getCached(sql);
+  if (cached) return cached;
+  return formatResult({ sql, rows: [] });
+}
+
+export function buildQuery(table: string, conditions: any) {
+  return 'SELECT * FROM ' + table;
+}
+`,
+      'src/data/format.ts': `
+export function formatResult(data: any) {
+  return { ...data, formatted: true };
+}
+
+export function formatResponse(data: any) {
+  return { status: 200, body: formatResult(data) };
+}
+
+export function serializeResult(data: any) {
+  return JSON.stringify(data);
+}
+`,
+      'src/data/cache.ts': `
+import { runQuery } from './query';
+
+const cache = new Map<string, any>();
+
+export function getCached(key: string) {
+  return cache.get(key) || null;
+}
+
+export function warmCache(keys: string[]) {
+  for (const key of keys) {
+    cache.set(key, runQuery(key));
+  }
+}
+`,
+      'src/utils/logger.ts': `
+export function logRequest(msg: string) {
+  console.log('[REQ]', msg);
+}
+
+export function logError(msg: string) {
+  console.error('[ERR]', msg);
+}
+
+export function createLogEntry(level: string, msg: string) {
+  return { level, msg, ts: Date.now() };
+}
+`,
+      'src/utils/validator.ts': `
+export function validateRequest(input: string) {
+  if (!input || input.length === 0) throw new Error('Invalid');
+  return true;
+}
+
+export function validateToken(token: string) {
+  if (!token || token.length < 10) throw new Error('Invalid token');
+  return true;
+}
+
+export function sanitize(input: string) {
+  return input.replace(/[<>]/g, '');
+}
+`,
+      'src/utils/config.ts': `
+export function getConfig(key: string) {
+  return process.env[key] || '';
+}
+
+export function loadEnv() {
+  return { ...process.env };
+}
+
+export function parseArgs(args: string[]) {
+  return args.reduce((acc: any, arg) => {
+    const [k, v] = arg.split('=');
+    acc[k] = v;
+    return acc;
+  }, {});
+}
+`,
+    });
+    result = runSkillsCli(tmpDir);
+  }, 120000);
+
+  afterAll(() => {
+    cleanupTempDirSync(tmpDir);
+  });
+
+  /**
+   * Verify analyze --skills generates valid SKILL.md files for a
+   * TypeScript repo with 3 clusters of cross-calling functions.
+   */
+  it('generates skill files', () => {
+    assertSkillFiles(result, tmpDir);
+  }, 50000);
+
+  /**
+   * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
+   */
+  it('context files updated', () => {
+    assertContextFiles(result, tmpDir);
+  }, 50000);
+});
 
 // ============================================================================
 // DESCRIBE 2: JavaScript
@@ -1685,4 +1855,285 @@ fun dbClose() {
   it('context files updated', () => {
     assertContextFiles(result, tmpDir);
   }, 50000);
+});
+
+// ============================================================================
+// DESCRIBE 12: Mixed TypeScript + Python
+// ============================================================================
+
+describe('Mixed TypeScript + Python', () => {
+  let tmpDir: string;
+  let result: ReturnType<typeof runSkillsCli>;
+
+  beforeAll(() => {
+    tmpDir = createFixtureRepo('mixed', {
+      'packages/backend/src/api/router.ts': `
+import { validateRequest } from '../utils/validator';
+import { logRequest } from '../utils/logger';
+
+export function createRouter() {
+  validateRequest('route');
+  logRequest('router init');
+  return { routes: [] };
+}
+
+export function registerRoute(path: string) {
+  validateRequest(path);
+  logRequest('register ' + path);
+  return true;
+}
+`,
+      'packages/backend/src/api/controller.ts': `
+import { runQuery } from '../data/query';
+
+export function handleGet(id: string) {
+  return runQuery('SELECT * FROM items WHERE id = ' + id);
+}
+
+export function handlePost(body: any) {
+  return runQuery('INSERT INTO items VALUES ' + JSON.stringify(body));
+}
+`,
+      'packages/backend/src/data/query.ts': `
+export function runQuery(sql: string) {
+  return { sql, rows: [] };
+}
+
+export function buildQuery(table: string) {
+  return 'SELECT * FROM ' + table;
+}
+`,
+      'packages/backend/src/utils/validator.ts': `
+export function validateRequest(input: string) {
+  if (!input) throw new Error('Invalid');
+  return true;
+}
+
+export function sanitize(input: string) {
+  return input.replace(/[<>]/g, '');
+}
+`,
+      'packages/backend/src/utils/logger.ts': `
+export function logRequest(msg: string) {
+  console.log('[REQ]', msg);
+}
+
+export function logError(msg: string) {
+  console.error('[ERR]', msg);
+}
+`,
+      'packages/ml/src/pipeline/__init__.py': '',
+      'packages/ml/src/pipeline/train.py': `
+from packages.ml.src.data.loader import load_data, preprocess
+
+def train(config):
+    data = load_data("train.csv")
+    processed = preprocess(data)
+    return {"model": "trained", "data": processed}
+
+def evaluate(model, test_data):
+    data = load_data("test.csv")
+    return {"accuracy": 0.95}
+`,
+      'packages/ml/src/pipeline/predict.py': `
+from packages.ml.src.models.model import load_model
+
+def predict(input_data):
+    model = load_model("latest")
+    return {"prediction": "result"}
+
+def batch_predict(inputs):
+    model = load_model("latest")
+    return [{"prediction": "result"} for _ in inputs]
+`,
+      'packages/ml/src/data/__init__.py': '',
+      'packages/ml/src/data/loader.py': `
+def load_data(path):
+    return {"path": path, "rows": []}
+
+def preprocess(data):
+    return {**data, "preprocessed": True}
+
+def split_data(data, ratio=0.8):
+    return data, data
+`,
+      'packages/ml/src/models/__init__.py': '',
+      'packages/ml/src/models/model.py': `
+def load_model(name):
+    return {"name": name, "loaded": True}
+
+def save_model(model, path):
+    return True
+
+def compile_model(config):
+    return {"compiled": True}
+`,
+    });
+    result = runSkillsCli(tmpDir);
+  }, 120000);
+
+  afterAll(() => {
+    cleanupTempDirSync(tmpDir);
+  });
+
+  /**
+   * Verify analyze --skills generates at least 1 SKILL.md for a
+   * mixed TypeScript + Python monorepo. Relaxed assertion since Leiden
+   * may or may not form communities spanning both languages.
+   */
+  it('generates skill files', () => {
+    assertSkillFiles(result, tmpDir, 1);
+  }, 50000);
+
+  /**
+   * Verify CLAUDE.md and AGENTS.md are created and reference generated skills.
+   */
+  it('context files updated', () => {
+    assertContextFiles(result, tmpDir);
+  }, 50000);
+});
+
+// ============================================================================
+// DESCRIBE 13: Idempotency
+// ============================================================================
+
+describe('Idempotency', () => {
+  let tmpDir: string;
+  let result1: ReturnType<typeof runSkillsCli>;
+  let result2: ReturnType<typeof runSkillsCli>;
+
+  beforeAll(() => {
+    tmpDir = createFixtureRepo('idempotency', {
+      'src/core/parser.ts': `
+import { readFile } from '../io/reader';
+import { log } from '../io/logger';
+
+export function parse(input: string) {
+  const data = readFile(input);
+  log('parsing');
+  return tokenize(data);
+}
+
+export function tokenize(data: string) {
+  log('tokenizing');
+  return data.split(' ');
+}
+`,
+      'src/core/transformer.ts': `
+import { parse } from './parser';
+import { validate } from './validator';
+
+export function transform(input: string) {
+  validate(input);
+  const tokens = parse(input);
+  return tokens.map(t => t.toUpperCase());
+}
+
+export function optimize(input: string) {
+  const tokens = parse(input);
+  return tokens.filter(t => t.length > 0);
+}
+`,
+      'src/core/validator.ts': `
+export function validate(input: string) {
+  if (!input) throw new Error('Invalid');
+  return true;
+}
+
+export function checkSchema(schema: any) {
+  return schema && typeof schema === 'object';
+}
+
+export function sanitize(input: string) {
+  return input.replace(/[<>]/g, '');
+}
+`,
+      'src/io/reader.ts': `
+export function readFile(path: string) {
+  return 'file contents from ' + path;
+}
+
+export function readStream(path: string) {
+  return { path, stream: true };
+}
+
+export function close(handle: any) {
+  return true;
+}
+`,
+      'src/io/writer.ts': `
+import { log } from './logger';
+
+export function writeFile(path: string, data: string) {
+  log('writing ' + path);
+  return true;
+}
+
+export function flush() {
+  log('flushing');
+  return true;
+}
+`,
+      'src/io/logger.ts': `
+export function log(msg: string) {
+  console.log('[LOG]', msg);
+}
+
+export function logError(msg: string) {
+  console.error('[ERR]', msg);
+}
+
+export function createEntry(level: string, msg: string) {
+  return { level, msg, ts: Date.now() };
+}
+`,
+    });
+    result1 = runSkillsCli(tmpDir);
+    result2 = runSkillsCli(tmpDir);
+    // 120s to match the other describe hooks in this file. This hook runs
+    // runSkillsCli TWICE, each capped at 45s, so a 90s budget has no headroom
+    // over two worst-case analyzes plus fixture setup and git init.
+  }, 120000);
+
+  afterAll(() => {
+    cleanupTempDirSync(tmpDir);
+  });
+
+  /**
+   * Running analyze --skills twice should produce stable output:
+   * same number of skill directories, all SKILL.md files valid,
+   * and CLAUDE.md still references generated skills.
+   */
+  it('second analyze --skills produces stable output', () => {
+    assertSkillsCliSucceeded(result1);
+    assertSkillsCliSucceeded(result2);
+
+    const skillsRoot = path.join(tmpDir, '.claude', 'skills');
+    expect(fs.existsSync(skillsRoot)).toBe(true);
+
+    const skillDirs = fs
+      .readdirSync(skillsRoot)
+      .filter(
+        (d) =>
+          d.startsWith('gitnexus-area-') && fs.statSync(path.join(skillsRoot, d)).isDirectory(),
+      );
+    expect(skillDirs.length).toBeGreaterThanOrEqual(1);
+
+    /* All SKILL.md files should still have valid frontmatter */
+    for (const dir of skillDirs) {
+      const skillPath = path.join(skillsRoot, dir, 'SKILL.md');
+      expect(fs.existsSync(skillPath)).toBe(true);
+      const content = fs.readFileSync(skillPath, 'utf-8');
+      expect(content.startsWith('---')).toBe(true);
+      expect(content).toContain('name:');
+      expect(content).toContain('description:');
+      expect(content.length).toBeGreaterThan(200);
+    }
+
+    /* CLAUDE.md should still reference generated skills */
+    const claudePath = path.join(tmpDir, 'CLAUDE.md');
+    expect(fs.existsSync(claudePath)).toBe(true);
+    const claudeContent = fs.readFileSync(claudePath, 'utf-8');
+    expect(claudeContent).toContain('.claude/skills/gitnexus-area-');
+  }, 90000);
 });

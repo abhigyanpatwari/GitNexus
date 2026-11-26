@@ -480,6 +480,30 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
       }
     });
 
+    it.skipIf(process.platform === 'win32')(
+      'rejects a FIFO promptly instead of blocking on open',
+      async () => {
+        const fifo = path.join(outside, 'rc.fifo');
+        execFileSync('mkfifo', [fifo]);
+        const script = path.join(outside, 'load.mts');
+        const configModule = path.resolve(__dirname, '../../src/cli/analyze-config.ts');
+        await fs.writeFile(
+          script,
+          `import { loadAnalyzeConfig } from ${JSON.stringify(configModule)};\n` +
+            `try { loadAnalyzeConfig(${JSON.stringify(dir)}); console.log('loaded'); }\n` +
+            `catch (error) { console.log(String((error as Error).message)); }\n`,
+        );
+        const tsx = path.resolve(__dirname, '../../node_modules/.bin/tsx');
+        const output = execFileSync(tsx, [script], {
+          env: { ...process.env, GITNEXUS_RC: fifo },
+          encoding: 'utf-8',
+          timeout: 20_000,
+        });
+        expect(output).toMatch(/not a regular file/);
+      },
+      30_000,
+    );
+
     it('is ignored when unset or blank', async () => {
       process.env.GITNEXUS_RC = '  ';
       expect(loadAnalyzeConfig(dir)).toBeUndefined();

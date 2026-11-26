@@ -25,7 +25,7 @@
     }
   },
   "4db60ff34b782fb7818221a9f8d4e6837e1a504a:9c78863c80c71f87db2d303f7342fca24e50db0e": {
-    "_note": "#4084: The compiler confirms 12,545 property declaration columns, 3,920 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The alias and generic-constraint comparison verified both ends of 379 USES edges, including all 334 reattributions from their enclosing file or function. The compiler also verifies the owners, ranges and target declarations of 32 references in callable type signatures.",
+    "_note": "#4084: The compiler confirms 12,545 property declaration columns, 3,920 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The alias and generic-constraint comparison verified both ends of 379 USES edges, including all 334 reattributions from their enclosing file or function. The compiler also verifies the owners, ranges and target declarations of 32 references in callable type signatures. TypeScript locates three call edges at the operand of await on two explicit generic calls.",
     "declarationPositions": {
       "baseline": {
         "count": 27089,
@@ -37,12 +37,12 @@
       }
     },
     "additions": {
-      "count": 4053,
-      "sha256": "9dd5f663814cb7b4e67bcab5b024c3900f00483defa53a32035c768ec0be18b1"
+      "count": 4056,
+      "sha256": "592794bbf7c7cc59ae80f527d55d838c1407601ca3e0309a8280097fb979cfe0"
     },
     "removals": {
-      "count": 214,
-      "sha256": "0f7e816f17103fd0af91990b0627a78afacb3463ed99b8e911a2c4eba471507b"
+      "count": 217,
+      "sha256": "7f7fec50ebe2d2f96fc3751200354cbf5fb8032cd5242ac805eb9547984aabbc"
     },
     "typeOnlyImports": {
       "count": 0,

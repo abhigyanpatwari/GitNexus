@@ -1,0 +1,93 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`AC1 — CDG snapshot on the M1 fixture > matches the committed control-dependence set for every fixture function 1`] = `
+[
+  {
+    "cdg": [],
+    "startLine": 9,
+  },
+  {
+    "cdg": [
+      "2->3:T",
+      "2->4:F",
+    ],
+    "startLine": 14,
+  },
+  {
+    "cdg": [
+      "2->3:T",
+      "2->4:F",
+      "4->5:T",
+      "4->6:F",
+    ],
+    "startLine": 23,
+  },
+  {
+    "cdg": [
+      "2->2:T",
+      "2->4:T",
+    ],
+    "startLine": 34,
+  },
+  {
+    "cdg": [
+      "2->2:T",
+      "2->4:T",
+      "2->5:T",
+    ],
+    "startLine": 41,
+  },
+  {
+    "cdg": [
+      "2->2:T",
+      "2->4:T",
+    ],
+    "startLine": 48,
+  },
+  {
+    "cdg": [
+      "2->4:T",
+      "2->5:T",
+      "2->6:T",
+      "2->7:T",
+      "2->8:T",
+    ],
+    "startLine": 55,
+  },
+  {
+    "cdg": [
+      "5->3:F",
+      "5->4:F",
+    ],
+    "startLine": 69,
+  },
+  {
+    "cdg": [
+      "2->3:T",
+      "2->4:F",
+    ],
+    "startLine": 80,
+  },
+  {
+    "cdg": [
+      "2->2:T",
+      "2->4:T",
+      "4->5:T",
+      "4->6:F",
+    ],
+    "startLine": 87,
+  },
+  {
+    "cdg": [
+      "3->7:F",
+      "4->5:T",
+      "4->6:F",
+    ],
+    "startLine": 102,
+  },
+  {
+    "cdg": [],
+    "startLine": 115,
+  },
+]
+`;

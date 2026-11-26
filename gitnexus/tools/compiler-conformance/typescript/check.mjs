@@ -24,7 +24,6 @@ function graphReport(
   // exact scope declarations, including two local classes on that same line.
   const classPositions = new Map();
   const result = emptyReport();
-  result.INFERRED_CALLS = { bindings: [], sites: [], edges: [] };
   const lookup = buildGraphNodeLookup(graph);
   for (const def of classes) {
     const id = resolveDefGraphId(def.filePath, def, lookup);
@@ -125,8 +124,7 @@ function graphReport(
   for (const site of boundCalls) {
     const key = siteKey(site);
     boundRanges.add(key);
-    if (uncheckedRanges.has(key)) result.INFERRED_CALLS.bindings.push(site);
-    else result.CALLS.sites.push(site);
+    if (!uncheckedRanges.has(key)) result.CALLS.sites.push(site);
   }
   for (const relation of graphRelations) {
     for (const edge of graph.iterRelationshipsByType(relation)) {
@@ -145,8 +143,8 @@ function graphReport(
       let kind = relation;
       if (relation === 'CALLS' && to.label === 'Property') kind = 'CALLABLE_PROPERTIES';
       if (edge.reason === 'callable-value-flow' && site && parameterRanges.has(siteKey(site)))
-        kind = 'CALLBACK_TARGETS';
-      if (kind === 'CALLS' && site && uncheckedRanges.has(siteKey(site))) kind = 'INFERRED_CALLS';
+        continue; // The checker binds this invocation to its parameter signature.
+      if (kind === 'CALLS' && site && uncheckedRanges.has(siteKey(site))) continue;
       result[kind].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
       if (
         site &&
@@ -307,13 +305,9 @@ const manifest = JSON.parse(readFileSync(new URL('./projects.json', import.meta.
 export async function compareProject(root, options = {}, expectedDiagnostics = []) {
   const key = path.relative(fixturesDirectory, root).split(path.sep).join('/');
   const inventory = manifest.declarationInventory.includes(key);
-  const evidence = Object.hasOwn(manifest.runtimeDispatch, key)
-    ? { methods: [], unchecked: [] }
-    : undefined;
   const methodFacts = manifest.methodFacts.includes(key);
   const propertyAccess = manifest.propertyAccess.includes(key);
   const reference = compilerReport(root, expectedDiagnostics, inventory, {
-    runtime: evidence,
     methodFacts,
     propertyAccess,
   });
@@ -345,11 +339,7 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     propertyAccess,
     parameterCalls,
     classes,
-    new Set(
-      (evidence?.unchecked ?? []).map(({ file, start, end }) =>
-        siteKey({ file, start: start[0] + 1 + ':' + start[1], end: end[0] + 1 + ':' + end[1] }),
-      ),
-    ),
+    new Set(reference.uncheckedMemberSites.map(siteKey)),
   );
   observed.TYPE_PARAMETER_USES.sites = typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.
@@ -381,7 +371,6 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     counts: Object.fromEntries(
       relations.map((kind) => [kind, reference[kind].sites.length || reference[kind].edges.length]),
     ),
-    runtime: evidence && { evidence, observed: observed.INFERRED_CALLS },
   };
 }
 

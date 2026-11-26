@@ -28,7 +28,7 @@ test('native conformance fails on skipped cases, todos, and empty suites or file
     process.execPath,
     [
       '--test',
-      '--test-reporter=' + new URL('../native-reporter.mjs', import.meta.url).href,
+      '--test-reporter=' + new URL('./native-reporter.mjs', import.meta.url).href,
       cases,
       empty,
     ],

@@ -301,14 +301,6 @@ describe('heritageTypeArgumentsKey', () => {
 });
 
 describe('typeApplicationArguments', () => {
-  it('preserves suffixed C++ character literals and separate Rust lifetimes', () => {
-    expect(typeApplicationArguments("Base<'x'_tag, ','_tag, T>")).toEqual([
-      "'x'_tag",
-      "','_tag",
-      'T',
-    ]);
-    expect(typeApplicationArguments("Base<'a, T, 'b>")).toEqual(["'a", 'T', "'b"]);
-  });
   it('keeps tuple and nested tuple commas inside one type argument', () => {
     expect(typeApplicationArguments('Base<(int, string)>')).toEqual(['(int, string)']);
     expect(typeApplicationArguments('Base<(int, (string, bool)), byte>')).toEqual([

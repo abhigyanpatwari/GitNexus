@@ -50,8 +50,8 @@ describe('parseTypeParameterList', () => {
     ['<reified T : Repo>', [{ name: 'T', bound: 'Repo' }]],
     ['<class... Ts>', [{ name: 'Ts' }]],
     // A default is neither name nor bound.
-    ['<class T = int>', [{ name: 'T', defaultType: 'int' }]],
-    ['<T extends Repo = DefaultRepo>', [{ name: 'T', bound: 'Repo', defaultType: 'DefaultRepo' }]],
+    ['<class T = int>', [{ name: 'T' }]],
+    ['<T extends Repo = DefaultRepo>', [{ name: 'T', bound: 'Repo' }]],
     // Commas inside a bound are not entry separators.
     ['<T extends Map<K, V>, K>', [{ name: 'T', bound: 'Map<K, V>' }, { name: 'K' }]],
     // An intersection bound is kept VERBATIM — splitting it is the consumer's
@@ -78,10 +78,6 @@ describe('parseTypeParameterList', () => {
     // `'a` declares nothing a member lookup can be performed on. The sibling
     // type parameter in the same list still parses.
     expect(parseTypeParameterList("<'a, T: Repo>")).toEqual([{ name: 'T', bound: 'Repo' }]);
-    expect(parseTypeParameterList("<'a, T: Repo, 'b, U>")).toEqual([
-      { name: 'T', bound: 'Repo' },
-      { name: 'U' },
-    ]);
   });
 });
 

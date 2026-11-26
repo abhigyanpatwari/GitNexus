@@ -26,15 +26,15 @@ import {
 
 const PACKAGE_DIR = fileURLToPath(new URL('../../../', import.meta.url));
 
-// Sequential files with measured CI seconds in test/helpers/shard-balance.ts: 488, 91 and 46.
+// Sequential files with measured CI seconds in test/helpers/shard-balance.ts: 488, 173 and 147.
 const ORCHESTRATION = 'test/unit/incremental-orchestration.test.ts';
-const RENAME_PYTHON = 'test/integration/rename-provider-python.test.ts';
-const LIFECYCLE = 'test/integration/mcp-index-generation.test.ts';
-const SEQUENTIAL = new Set([ORCHESTRATION, RENAME_PYTHON, LIFECYCLE]);
+const RENAME_TS = 'test/integration/rename-provider-typescript.test.ts';
+const LIFECYCLE = 'test/integration/parse-cache-identity-lifecycle.test.ts';
+const SEQUENTIAL = new Set([ORCHESTRATION, RENAME_TS, LIFECYCLE]);
 const FILES = [
   'test/unit/scenario-map/slices.test.ts',
   ORCHESTRATION,
-  RENAME_PYTHON,
+  RENAME_TS,
   'test/unit/scenario-map/partitions.test.ts',
   LIFECYCLE,
 ];
@@ -53,7 +53,7 @@ describe('coverageSlices', () => {
     expect([
       slices[slowest].filter((file) => SEQUENTIAL.has(file)),
       slices[1 - slowest].filter((file) => SEQUENTIAL.has(file)),
-    ]).toEqual([[ORCHESTRATION], [LIFECYCLE, RENAME_PYTHON]]);
+    ]).toEqual([[ORCHESTRATION], [LIFECYCLE, RENAME_TS]]);
   });
 
   it('splits the same way every time', () => {

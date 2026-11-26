@@ -1,0 +1,214 @@
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import fs from 'fs/promises';
+import path from 'path';
+import os from 'os';
+import {
+  walkRepositoryPaths,
+  readFileContents,
+} from '../../src/core/ingestion/filesystem-walker.js';
+import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
+import { isLanguageAvailable } from '../../src/core/tree-sitter/parser-loader.js';
+import { SupportedLanguages } from '../../src/config/supported-languages.js';
+
+// ============================================================================
+// E2E: .gitignore + .gitnexusignore + unsupported language skip
+// ============================================================================
+
+describe('ignore + language-skip E2E', () => {
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-e2e-ignore-skip-'));
+
+    // Create directory structure
+    await fs.mkdir(path.join(tmpDir, 'src'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, 'data'), { recursive: true });
+    await fs.mkdir(path.join(tmpDir, 'vendor'), { recursive: true });
+
+    // .gitignore — excludes data/ and *.log
+    await fs.writeFile(path.join(tmpDir, '.gitignore'), 'data/\n*.log\n');
+
+    // .gitnexusignore — excludes vendor/
+    await fs.writeFile(path.join(tmpDir, '.gitnexusignore'), 'vendor/\n');
+
+    // Source files (should be indexed)
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'index.ts'),
+      "import { greet } from './greet';\n\nexport function main(): string {\n  return greet();\n}\n",
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'greet.ts'),
+      "export function greet(): string {\n  return 'hello';\n}\n",
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'service.ts'),
+      'export class UserService { load(): string { return "loaded"; } }\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'service.d.ts'),
+      'export declare class UserService { load(): string; }\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'vite-env.d.ts'),
+      'declare const APP_ENV: string;\n',
+    );
+    await fs.writeFile(path.join(tmpDir, 'src', 'esm-service.mts'), 'export class EsmService {}\n');
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'esm-service.d.mts'),
+      'export declare class EsmService {}\n',
+    );
+    await fs.writeFile(path.join(tmpDir, 'src', 'cjs-service.cts'), 'export class CjsService {}\n');
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'cjs-service.d.cts'),
+      'export declare class CjsService {}\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'ambient.d.mts'),
+      'export declare class AmbientEsmService {}\n',
+    );
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'ambient.d.cts'),
+      'export declare class AmbientCjsService {}\n',
+    );
+
+    // Swift file — triggers language skip when grammar unavailable
+    await fs.writeFile(
+      path.join(tmpDir, 'src', 'App.swift'),
+      'class App {\n    func run() {\n        print("running")\n    }\n}\n',
+    );
+
+    // Files that should be excluded
+    await fs.writeFile(path.join(tmpDir, 'data', 'seed.json'), '{}');
+    await fs.writeFile(path.join(tmpDir, 'vendor', 'lib.js'), 'var x = 1;\n');
+    await fs.writeFile(path.join(tmpDir, 'debug.log'), 'debug log entry\n');
+  });
+
+  afterAll(async () => {
+    try {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort */
+    }
+  });
+
+  // ── File Discovery ──────────────────────────────────────────────────
+
+  describe('file discovery (walkRepositoryPaths)', () => {
+    it('includes source files from src/', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+
+      expect(paths).toContain('src/index.ts');
+      expect(paths).toContain('src/greet.ts');
+      expect(paths).toContain('src/service.ts');
+      expect(paths).not.toContain('src/service.d.ts');
+      expect(paths).toContain('src/vite-env.d.ts');
+      expect(paths).toContain('src/esm-service.mts');
+      expect(paths).not.toContain('src/esm-service.d.mts');
+      expect(paths).toContain('src/cjs-service.cts');
+      expect(paths).not.toContain('src/cjs-service.d.cts');
+      expect(paths).toContain('src/ambient.d.mts');
+      expect(paths).toContain('src/ambient.d.cts');
+    });
+
+    it('includes .swift files (discovery does not filter by language)', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+
+      // Swift file should be discovered — language skip happens at parse time
+      expect(paths).toContain('src/App.swift');
+    });
+
+    it('excludes gitignored directories (data/)', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+
+      expect(paths.every((p) => !p.includes('data/'))).toBe(true);
+    });
+
+    it('excludes gitignored file patterns (*.log)', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+
+      expect(paths.every((p) => !p.endsWith('.log'))).toBe(true);
+    });
+
+    it('excludes gitnexusignored directories (vendor/)', async () => {
+      const files = await walkRepositoryPaths(tmpDir);
+      const paths = files.map((f) => f.path.replace(/\\/g, '/'));
+
+      expect(paths.every((p) => !p.includes('vendor/'))).toBe(true);
+    });
+  });
+
+  // ── Parsing ─────────────────────────────────────────────────────────
+
+  describe('parsing (processParsing)', () => {
+    it('parses TypeScript files into graph nodes and skips Swift gracefully', async () => {
+      // Phase 1: discover files
+      const scannedFiles = await walkRepositoryPaths(tmpDir);
+      const relativePaths = scannedFiles.map((f) => f.path);
+
+      // Phase 2: read contents
+      const contentMap = await readFileContents(tmpDir, relativePaths);
+      const files = Array.from(contentMap.entries()).map(([p, content]) => ({
+        path: p,
+        content,
+      }));
+
+      // Phase 3: parse through the worker pool (the sole parse path).
+      // Should NOT throw even if the Swift grammar is unavailable — the
+      // worker skips files whose native parser can't load.
+      const { graph } = await parseFilesWithWorkers(files);
+
+      // TypeScript files should produce Function nodes
+      const nodes = graph.nodes;
+      const functionNodes = nodes.filter((n) => n.label === 'Function');
+      const functionNames = functionNodes.map((n) => n.properties.name);
+
+      expect(functionNames).toContain('main');
+      expect(functionNames).toContain('greet');
+
+      const userServiceNodes = nodes.filter(
+        (node) => node.label === 'Class' && node.properties.name === 'UserService',
+      );
+      expect(userServiceNodes).toHaveLength(1);
+      expect(userServiceNodes[0].properties.filePath).toBe('src/service.ts');
+      expect(nodes.some((node) => node.properties.filePath === 'src/service.d.ts')).toBe(false);
+
+      expect(
+        nodes.filter((node) => node.label === 'Class' && node.properties.name === 'EsmService'),
+      ).toHaveLength(1);
+      expect(
+        nodes.filter((node) => node.label === 'Class' && node.properties.name === 'CjsService'),
+      ).toHaveLength(1);
+      expect(
+        nodes.filter(
+          (node) => node.label === 'Class' && node.properties.name === 'AmbientEsmService',
+        ),
+      ).toHaveLength(1);
+      expect(
+        nodes.filter(
+          (node) => node.label === 'Class' && node.properties.name === 'AmbientCjsService',
+        ),
+      ).toHaveLength(1);
+
+      // Function nodes should reference the correct source files
+      const fnFilePaths = functionNodes.map((n) =>
+        (n.properties.filePath as string).replace(/\\/g, '/'),
+      );
+      expect(fnFilePaths.some((p) => p.includes('index.ts'))).toBe(true);
+      expect(fnFilePaths.some((p) => p.includes('greet.ts'))).toBe(true);
+
+      // Swift behavior depends on grammar availability
+      if (!isLanguageAvailable(SupportedLanguages.Swift)) {
+        // No Swift-sourced nodes should appear in the graph
+        const swiftNodes = nodes.filter((n) =>
+          (n.properties.filePath as string | undefined)?.endsWith('.swift'),
+        );
+        expect(swiftNodes).toHaveLength(0);
+      }
+      // If Swift IS available, Swift nodes may appear — that's fine
+    });
+  });
+});

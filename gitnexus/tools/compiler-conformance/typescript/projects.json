@@ -1,26 +1,11 @@
 {
   "methodFacts": ["lang-resolution/typescript-method-enrichment"],
-  "runtimeDispatch": {
-    "lang-resolution/ts-virtual-dispatch": "run",
-    "lang-resolution/typescript-cast-constructor-inference": "process",
-    "lang-resolution/typescript-double-cast-inference": "process"
-  },
   "propertyAccess": [
     "compiler-conformance/typescript-block-shadowing",
     "compiler-conformance/typescript-property-access",
     "lang-resolution/ts-write-access"
   ],
   "projects": [
-    "mini-repo",
-    "lang-resolution/api-impact-indirect-consumers",
-    "typescript-callable-flow/assignment",
-    "typescript-callable-flow/block-shadow",
-    "typescript-callable-flow/bound-method",
-    "typescript-callable-flow/cache-and-pdg",
-    "typescript-callable-flow/copy-cycle",
-    "typescript-callable-flow/factory-argument",
-    "typescript-callable-flow/imported",
-    "typescript-callable-flow/non-callable-result",
     "cross-file-binding/ts-circular",
     "cross-file-binding/ts-consumer-before-provider",
     "cross-file-binding/ts-deep-alias-chain",
@@ -70,6 +55,7 @@
     "lang-resolution/typescript-factory-singleton",
     "lang-resolution/typescript-for-of-call-expr",
     "lang-resolution/typescript-generic-base",
+    "lang-resolution/typescript-generic-calls",
     "lang-resolution/typescript-generic-parent-resolution",
     "lang-resolution/typescript-inline-constructor-receiver",
     "lang-resolution/typescript-instanceof-narrowing",
@@ -97,14 +83,9 @@
     "lang-resolution/typescript-tsx-jsx",
     "lang-resolution/typescript-type-parameters",
     "lang-resolution/typescript-typed-param-chain",
-    "lang-resolution/typescript-variadic-resolution",
-    "skills-e2e/idempotency",
-    "skills-e2e/typescript",
-    "skills-e2e/typescript-python/packages/backend"
+    "lang-resolution/typescript-variadic-resolution"
   ],
   "declarationInventory": [
-    "compiler-conformance/typescript-detect-changes-siblings",
-    "compiler-conformance/typescript-exported-doc-comment",
     "cross-file-binding/ts-circular",
     "cross-file-binding/ts-consumer-before-provider",
     "cross-file-binding/ts-deep-alias-chain",
@@ -161,9 +142,6 @@
     "lang-resolution/typescript-tsconfig-aliases",
     "lang-resolution/typescript-tsx-jsx",
     "lang-resolution/typescript-typed-param-chain",
-    "lang-resolution/typescript-variadic-resolution",
-    "skills-e2e/idempotency",
-    "skills-e2e/typescript",
-    "skills-e2e/typescript-python/packages/backend"
+    "lang-resolution/typescript-variadic-resolution"
   ]
 }

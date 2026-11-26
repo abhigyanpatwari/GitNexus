@@ -12,7 +12,6 @@ type DeclarationScope = {
   globalNames: string[];
   scriptNames?: string[];
   containsJsx?: boolean;
-  constructions?: { name: string; line: number; column: number; className: string }[];
 };
 
 export function declarationScope(channel: unknown): DeclarationScope | undefined {
@@ -27,33 +26,6 @@ export function declarationScope(channel: unknown): DeclarationScope | undefined
 }
 
 let pending: { filePath: string; value: boolean | DeclarationScope } | undefined;
-
-export function recordImmutableConstruction(node: SyntaxNode, constructor: SyntaxNode | undefined) {
-  if (!pending || node.type !== 'variable_declarator' || constructor?.type !== 'identifier') return;
-  const annotation = node.childForFieldName('type')?.firstNamedChild;
-  if (
-    annotation?.type !== 'type_identifier' ||
-    annotation.text === constructor.text ||
-    node.parent?.childForFieldName('kind')?.type !== 'const'
-  )
-    return;
-  const name = node.childForFieldName('name');
-  if (name?.type !== 'identifier') return;
-  if (typeof pending.value === 'boolean') {
-    pending.value = {
-      kind: 'typescript-declarations',
-      commonJs: pending.value,
-      script: false,
-      globalNames: [],
-    };
-  }
-  (pending.value.constructions ??= []).push({
-    name: name.text,
-    line: node.startPosition.row + 1,
-    column: node.startPosition.column,
-    className: constructor.text,
-  });
-}
 
 export function withCommonJsModuleKind(emit: CaptureEmitter): CaptureEmitter {
   return (...args) => {

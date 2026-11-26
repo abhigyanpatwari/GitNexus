@@ -135,19 +135,6 @@ test('workspace package links survive asynchronous readers and are cleaned up on
   assert.equal(existsSync(scratch), false);
 });
 
-test('callback assignments retain each possible source declaration at the same invocation', () => {
-  const report = compilerReport(
-    path.resolve(root, '../typescript-callback-assignment'),
-  ).CALLBACK_TARGETS;
-  assert.deepEqual(
-    new Set(report.sites.map((site) => site.target)),
-    new Set(['index.ts#1:0', 'index.ts#2:0', 'index.ts#3:0']),
-  );
-  assert.equal(new Set(report.sites.map((site) => site.start)).size, 1);
-  const sites = report.sites.filter((site) => site.target !== 'index.ts#3:0');
-  assert.throws(() => compareReports(report, { ...report, sites }), /Missing from/);
-});
-
 test('invoked parameters with the same name retain their own declarations and types', () => {
   const report = compilerReport(
     path.resolve(root, '../typescript-parameter-calls'),
@@ -168,24 +155,13 @@ test('invoked parameters with the same name retain their own declarations and ty
 });
 
 test('the compiler identifies an anonymous default class in its heritage and overrides', () => {
-  const project = path.resolve(root, '../../typescript-class-declarations/anonymous-default');
+  const project = path.resolve(root, '../typescript-anonymous-default-class');
   const report = compilerReport(project, [], true);
-  assert.deepEqual(report.EXTENDS.edges, [{ from: 'main.ts#5:15', to: 'main.ts#1:7' }]);
+  assert.deepEqual(report.EXTENDS.edges, [{ from: 'base.ts#2:15', to: 'base.ts#1:7' }]);
   assert.deepEqual(report.METHOD_OVERRIDES.edges, [
-    { from: 'main.ts#5:15', to: 'main.ts#1:7.run' },
+    { from: 'base.ts#2:15', to: 'base.ts#1:7.run' },
   ]);
-  assert.ok(report.DECLARATIONS.edges.some(({ to }) => to === 'Class:default@main.ts#5:15'));
-});
-
-test('a same-named callback in another module fails the concrete target comparison', () => {
-  const project = path.resolve(root, '../../typescript-callable-flow/imported');
-  const report = compilerReport(project).CALLBACK_TARGETS;
-  assert.equal(report.sites.length, 1);
-  const [call] = report.sites;
-  assert.equal(call.file, 'wrapper.ts');
-  assert.equal(call.target, 'target.ts#1:7');
-  const sites = [{ ...call, target: 'decoy.ts#1:7' }];
-  assert.throws(() => compareReports(report, { ...report, sites }), /Missing from actual/);
+  assert.ok(report.DECLARATIONS.edges.some(({ to }) => to === 'Class:default@base.ts#2:15'));
 });
 
 test('a JSX member and the function it invokes have different declarations at the same site', () => {
@@ -211,15 +187,13 @@ test('a JSX member and the function it invokes have different declarations at th
 
 test('an unchecked call and a typed call to the same method keep distinct source locations', () => {
   const project = path.resolve(root, '../../lang-resolution/ts-virtual-dispatch');
-  const evidence = { unchecked: [], methods: [] };
-  const report = compilerReport(project, ['src/app.ts:22:9 TS2339'], false, { runtime: evidence });
-  const method = evidence.methods.find(({ name }) => name === 'fetchBall');
-  assert.ok(method);
-  const calls = report.CALLS.sites.filter(({ target }) => target === method.target);
+  const report = compilerReport(project, ['src/app.ts:22:9 TS2339']);
+  assert.equal(report.uncheckedMemberSites.length, 1);
+  const [{ file, start: uncheckedStart }] = report.uncheckedMemberSites;
+  const calls = report.CALLS.sites.filter(
+    (site) => site.file === file && site.target === 'src/app.ts#14:2',
+  );
   assert.equal(calls.length, 1);
-  assert.equal(evidence.unchecked.length, 1);
-  const [line, column] = evidence.unchecked[0].start;
-  const uncheckedStart = line + 1 + ':' + column;
   assert.notEqual(calls[0].start, uncheckedStart);
   assert.throws(
     () => compareReports({ sites: calls }, { sites: [{ ...calls[0], start: uncheckedStart }] }),

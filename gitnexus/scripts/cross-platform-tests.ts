@@ -175,6 +175,10 @@ const PLATFORM_LOGIC = [
   // #3073: cwd-based repository selection canonicalizes real paths, compares
   // platform separators/case, and rejects nested Git-boundary fallthrough.
   'test/unit/calltool-dispatch.test.ts',
+  // Preview capabilities use real file symlinks, canonical temp paths, atomic
+  // replacements and physical-target drift checks on each host filesystem.
+  'test/unit/rename-preview-plans.test.ts',
+  'test/unit/rename-plan.test.ts',
   // The index write-lock (#2658) selects its backend by process.platform — the
   // OS socket lock (Windows named pipe / Linux abstract socket) vs the file
   // fallback — and its socket-backend describe block is gated to linux/win32.
@@ -188,6 +192,10 @@ const PLATFORM_LOGIC = [
 // N-API addon which has known platform-specific behavior (Windows
 // file-lock lag after close, macOS N-API destructor segfaults)
 const LBUG_NATIVE = [
+  'test/integration/analysis-embedding-flow.test.ts',
+  'test/integration/analysis-generation-routing.test.ts',
+  'test/integration/analysis-publication-flow.test.ts',
+  'test/integration/embedding-job-controller.test.ts',
   'test/integration/embedding-job-restart.test.ts',
   'test/integration/embedding-native-release.test.ts',
   'test/integration/legacy-embedding-controller.test.ts',
@@ -197,6 +205,7 @@ const LBUG_NATIVE = [
   'test/integration/legacy-vector-export.test.ts',
   'test/integration/dangling-owner-edges.test.ts',
   'test/integration/impact-private-type-file-seed.test.ts',
+  'test/integration/impact-private-type-source.test.ts',
   // Inline-handler findings must survive native persistence and cold explain
   // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
   'test/integration/taint-explain.test.ts',
@@ -223,15 +232,20 @@ const LBUG_NATIVE = [
   'test/integration/rename-provider-ruby.test.ts',
   'test/integration/rename-provider-rust.test.ts',
   'test/integration/rename-provider-swift.test.ts',
+  'test/integration/rename-provider-typescript.test.ts',
   'test/integration/rename-provider-vue.test.ts',
   'test/integration/rename-provider-zig.test.ts',
   'test/integration/pdg-explicit-owner.test.ts',
+  'test/integration/skip-fts.test.ts',
   // Dirty snapshot freshness depends on native FTS, Git paths and file reads.
-
+  'test/integration/analyze-dirty-snapshot.test.ts',
   'test/integration/incremental-worktree-context.test.ts',
   'test/integration/lbug-core-adapter.test.ts',
   // Native COPY, cached vectors and cold shared-store readers vary by platform.
   'test/integration/embedding-identity-integrity.test.ts',
+  'test/integration/shared-store-embedding-reuse.test.ts',
+  // Real endpoint retries include native index writes and cold database reads.
+  'test/integration/embedding-input-isolation.test.ts',
   'test/integration/lbug-vector-extension.test.ts',
   'test/integration/lbug-pool.test.ts',
   'test/integration/lbug-pool-stability.test.ts',
@@ -246,7 +260,10 @@ const LBUG_NATIVE = [
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
   'test/integration/go-incremental-method-owners.test.ts',
+  'test/integration/query-symbol-integrity.test.ts',
   'test/integration/mcp-index-generation.test.ts',
+  // A real refresh worker must preserve active readers or report native contention.
+  'test/integration/mcp-refresh-index-e2e.test.ts',
   'test/integration/fts-repair-warm-session.test.ts',
   'test/integration/fts-empty-tables.test.ts',
   'test/integration/persisted-mutation-rows.test.ts',
@@ -258,6 +275,7 @@ const LBUG_NATIVE = [
   // opens them through the pool adapter (native addon + bridge file locking).
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
   'test/integration/group/cross-trace-e2e.test.ts',
+  'test/integration/group/graphql-resolve-symbol.test.ts',
   // Group sync leases a real pool entry across extraction; the idle sweep and
   // LRU eviction it guards against close native handles.
   'test/integration/group/sync-extraction-lease.test.ts',
@@ -268,7 +286,10 @@ const LBUG_NATIVE = [
   'test/integration/search-pool.test.ts',
   'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
+  'test/integration/analyze-wal-checkpoint-failure.test.ts',
   // Publication, cold readers and sidecar handling depend on native filesystem behavior.
+  'test/integration/analyze-atomic-swap.test.ts',
+  'test/unit/incremental-write-integrity.test.ts',
   'test/unit/lbug-publication.test.ts',
   'test/integration/fts-stemmer-sweep.test.ts',
   'test/integration/lbug-multiwriter-deadlock.test.ts',
@@ -277,20 +298,51 @@ const LBUG_NATIVE = [
   // environment for #2409 was Windows, so the write pattern must be proven
   // on the windows-latest native addon, not just Ubuntu.
   'test/integration/lbug-delete-nodes-for-files.test.ts',
+  // #2409 defect 2: dirty-flag recovery parks lbug.wal/.shadow (rename next
+  // to a live native DB, rm-then-rename over an existing parked copy) before
+  // any open — rename semantics are exactly what differs on Windows.
+  'test/unit/incremental-dirty-recovery.test.ts',
+  // #2623: the incremental writeback must load VECTOR before the CodeEmbedding
+  // join-delete, and the blocked path must escalate instead of crashing. The
+  // win32 VECTOR gate was removed in the same PR, so this ordering must be
+  // proven on the windows-latest native addon, not just Ubuntu. Budget: ~25s
+  // on Linux → expect ~2min on the slowest Windows shard.
+  'test/unit/incremental-vector-extension-ordering.test.ts',
+  // #2841: the FTS half of that same gate, plus the both-extensions-blocked
+  // case — and it needs this matrix for two reasons the VECTOR sibling above
+  // does not cover. The reported failure environment is a machine where the
+  // extension stopped LOADING, which is the #2374 class and Windows-reported
+  // (the same reason fts-extension-e2e.test.ts is registered below), so the
+  // FTS-unavailable branch has to run on a real Windows/macOS runner rather
+  // than only on Ubuntu where FTS always loads. And its both-blocked case is
+  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml requires in both
+  // coverage and platform jobs so an unavailable VECTOR fails loudly. Budget: four real analyze runs, so expect it to sit alongside the
+  // VECTOR sibling's ~87s Windows measurement.
+  'test/unit/incremental-index-extension-dml-gate.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real
 // process spawning, which behaves differently across platforms (shell
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
+  // Real shard/blob/JSON roundtrip: path identities and child invocation vary by OS.
+  'test/unit/shard-timings-roundtrip.test.ts',
+  'test/unit/run-cross-platform.test.ts',
   // Spawns Node on the tree releaser's source (type stripping, file URLs) to
   // check its real V8 nudge and the zero-fill flag spellings.
   'test/unit/tree-sitter/native-tree-release.test.ts',
+  'test/integration/cli-e2e.test.ts',
+  'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
+  // Spawns the real CLI across hermetic HOME/USERPROFILE homes to exercise the
+  // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
+  // run on the Windows/macOS matrix, not just the Ubuntu full suite.
+  'test/integration/fts-extension-e2e.test.ts',
   'test/integration/fts-vendored-root-seam.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
+  'test/integration/analyze-heap-oom-e2e.test.ts',
   'test/integration/group/group-cli.test.ts',
   'test/integration/cli/tool-no-index-stderr.test.ts',
   // Real CLI spawn + directory symlinks for the update-notice parent/child path.
@@ -358,12 +410,16 @@ const WORKER_THREADS = [
   'test/integration/cfg/adonis-taint.test.ts',
   'test/integration/function-local-identity.test.ts',
   'test/unit/community-processor.test.ts',
+  'test/integration/worker-pool.test.ts',
   'test/integration/worker-pool-admission.test.ts',
+  'test/integration/class-expression-owners.test.ts',
   'test/integration/parse-impl-quarantine-cache-skip.test.ts',
   // Real parse workers and both on-disk parse stores must retain lexical
   // local-import ownership on each platform's native grammar/runtime pair.
   'test/integration/local-import-worker-parity.test.ts',
+  'test/integration/resolvers/local-import-persistence.test.ts',
   // The same worker and store path for fetch-wrapper facts and their resolution.
+  'test/integration/resolvers/fetch-wrapper-persistence.test.ts',
 ];
 
 // Native addon smoke tests — verify binary compatibility and recovery on each OS.
@@ -374,6 +430,7 @@ const NATIVE_ADDON_SMOKE = [
   'test/integration/tree-sitter-languages.test.ts',
   'test/integration/parsing.test.ts',
   'test/integration/pipeline.test.ts',
+  'test/integration/pipeline-graph-golden.test.ts',
   'test/unit/parser-loader.test.ts',
   'test/unit/parser-loader-abi.test.ts',
 ];
@@ -396,11 +453,13 @@ const FILESYSTEM = [
   // mounts — are Windows- and macOS-flavored, and the permission-based case
   // skips itself where chmod cannot block a delete, so run it everywhere.
   'test/unit/parsedfile-store.test.ts',
+  'test/integration/filesystem-walker.test.ts',
   'test/integration/analyze-directory-symlinks.test.ts',
   'test/integration/watch-filesystem.test.ts',
   'test/unit/watch-external-config.test.ts',
   'test/integration/server-route-hook-config.test.ts',
   'test/integration/markdown-processor-crlf.test.ts',
+  'test/integration/ignore-and-skip-e2e.test.ts',
   // Pins that the bridge pairing verdict is measured before the database is
   // opened. The property it protects is about mtime behavior across OS and
   // filesystem, and the alternative — really opening the bridge — cannot run on
@@ -422,6 +481,7 @@ const FILESYSTEM = [
   // whose NUL it exists to catch. Budget: the heaviest single case is one
   // 4893-file pass — 2.3 s on a slow virtualised filesystem, 0.34 s on a local
   // disk — against a 30 s testTimeout.
+  'test/unit/source-control-bytes.test.ts',
   // Auto-sync reads a cloned `.gitnexusrc` through the symlink/hard-link guard,
   // and clone recovery uses real `git` plus temp dirs. Ubuntu coverage alone
   // would never create the Windows file symlink (`type: 'file'`) or run the

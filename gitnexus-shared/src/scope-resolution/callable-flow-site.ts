@@ -99,7 +99,6 @@ export interface CallableFlowLoadSite {
 /** Maps a callable definition's parameter position to its lexical binding. */
 export interface CallableFlowFormalSite {
   readonly kind: 'formal';
-  readonly isConstructorImplementation?: true;
   readonly ownerName: string;
   readonly ownerRange: Range;
   readonly parameterIndex: number;

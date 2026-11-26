@@ -73,8 +73,6 @@ export interface CallableCaptureSignature {
 
 export interface CallableFlowCaptureOptions {
   readonly functionNodeTypes: ReadonlySet<string>;
-  /** Construction passes arguments but does not invoke the operand as a function. */
-  readonly constructorCallNodeTypes?: ReadonlySet<string>;
   readonly callNodeTypes: ReadonlySet<string>;
   readonly parameterListNodeTypes: ReadonlySet<string>;
   readonly parameterNodeTypes: ReadonlySet<string>;
@@ -137,8 +135,6 @@ export interface CallableFlowCaptureOptions {
    * path (mirrors `extractFunctionParameters`).
    */
   readonly extractCallArguments?: (call: SyntaxNode) => readonly SyntaxNode[] | undefined;
-  /** Constructor implementations whose formal parameters belong to the constructed class. */
-  readonly isConstructorImplementation?: (node: SyntaxNode) => boolean;
   readonly extractCallCallee?: (node: SyntaxNode) => SyntaxNode | undefined;
   readonly isCallNode?: (node: SyntaxNode) => boolean;
   /**
@@ -160,8 +156,6 @@ export interface CallableFlowCaptureOptions {
         readonly qualifiedName?: string;
       }
     | undefined;
-  /** Argument expression kinds whose possible callable values need separate flow facts. */
-  readonly argumentAlternativeNodeTypes?: ReadonlySet<string>;
   /**
    * Provider-owned branches of a value-selecting expression (#3354). The
    * shared rule only knows the field shapes `left`/`operator`/`right` (with a
@@ -296,7 +290,7 @@ export function synthesizeCallableFlowCaptures(
   for (const fn of functions) emitFormalFacts(fn, options, out);
   for (const node of nodes) {
     if (
-      (options.callNodeTypes.has(node.type) || options.constructorCallNodeTypes?.has(node.type)) &&
+      options.callNodeTypes.has(node.type) &&
       (options.isCallNode === undefined || options.isCallNode(node))
     ) {
       emitCallFacts(node, knownCallableNames, valueBindings, options, out);
@@ -1023,7 +1017,6 @@ function emitFormalFacts(
   options: CallableFlowCaptureOptions,
   out: CaptureMatch[],
 ): void {
-  const constructor = fn.parameters.length > 0 && options.isConstructorImplementation?.(fn.node);
   for (let index = 0; index < fn.parameters.length; index++) {
     const parameter = fn.parameters[index]!;
     const binding = bindingIdentifier(parameter, options);
@@ -1044,13 +1037,6 @@ function emitFormalFacts(
         mode,
       ),
     };
-    if (constructor) {
-      match['@callable-flow.constructor'] = syntheticCapture(
-        '@callable-flow.constructor',
-        fn.node,
-        'true',
-      );
-    }
     addSignatureCaptures(match, parameter, options.expectedSignature?.(parameter, parameter));
     out.push(match);
   }
@@ -1097,16 +1083,16 @@ function emitCallFacts(
   // read back through the parse callback, each read is a fresh copy of the
   // call, and 40,000 arguments held 40,000 copies.
   let callSiteText: string | undefined;
-  function emitArgument(argument: SyntaxNode, index: number) {
-    const rawSource = operandSyntax(argument, options, false, valueBindings);
-    if (rawSource === undefined) return;
+  for (let index = 0; index < args.length; index++) {
+    const rawSource = operandSyntax(args[index]!, options, false, valueBindings);
+    if (rawSource === undefined) continue;
     // A call/constructor/composite result is a produced value, not a reference
     // to the terminal identifier inside the expression.
     if (!rawSource.directDesignator && rawSource.indirection === 0 && !rawSource.addressOf) {
-      return;
+      continue;
     }
     const sourceIsValueBinding = isVisibleValueBinding(
-      argument,
+      args[index]!,
       rawSource.name,
       valueBindings,
       options,
@@ -1119,7 +1105,7 @@ function emitCallFacts(
       !sourceIsValueBinding
     ) {
       // Bare argument name = a call's produced value in this language.
-      return;
+      continue;
     }
     const sourceIsKnownCallable =
       rawSource.callableReference ||
@@ -1137,7 +1123,7 @@ function emitCallFacts(
       !rawSource.directDesignator &&
       !rawSource.addressOf
     ) {
-      return;
+      continue;
     }
     const source = sourceIsKnownCallable ? asCallableDesignator(rawSource) : rawSource;
     out.push({
@@ -1182,28 +1168,6 @@ function emitCallFacts(
         : {}),
     });
   }
-  for (const [index, argument] of args.entries()) {
-    if (options.argumentAlternativeNodeTypes?.has(argument.type)) {
-      // A computed result such as `value - 1` cannot forward a callback operand.
-      // Providers with custom selection rules classify the expression themselves.
-      const inner = unwrapParentheses(argument);
-      const operator = options.argumentAlternativeNodeTypes.has(inner.type)
-        ? inner.childForFieldName('operator')?.type
-        : undefined;
-      if (
-        !options.valueAlternatives &&
-        operator &&
-        !VALUE_SELECTING_OPERATORS.has(operator) &&
-        !RIGHT_SELECTING_OPERATORS.has(operator)
-      )
-        continue;
-      for (const source of valueAlternatives(argument, options)) emitArgument(source, index);
-    } else {
-      emitArgument(argument, index);
-    }
-  }
-
-  if (options.constructorCallNodeTypes?.has(call.type)) return;
 
   if (member !== undefined) {
     if (

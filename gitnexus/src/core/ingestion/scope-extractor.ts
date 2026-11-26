@@ -1749,9 +1749,6 @@ function pass6CollectCallableFlows(
           kind,
           ownerName: owner.text,
           ownerRange: owner.range,
-          ...(match['@callable-flow.constructor']
-            ? { isConstructorImplementation: true as const }
-            : {}),
           parameterIndex,
           binding,
           passingMode,

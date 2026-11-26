@@ -8,25 +8,13 @@ permissions:
 
 jobs:
   compiler-conformance:
-    name: ${{ matrix.label }}
+    name: ${{ matrix.label }} compiler conformance
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { label: Java compiler conformance, provider: java, artifact: java }
-          - { label: TypeScript compiler conformance, provider: typescript, artifact: typescript }
-          - {
-              label: TypeScript product conformance (1/2),
-              provider: typescript,
-              artifact: typescript-product-1,
-              shard: 1/2,
-            }
-          - {
-              label: TypeScript product conformance (2/2),
-              provider: typescript,
-              artifact: typescript-product-2,
-              shard: 2/2,
-            }
+          - { provider: java, label: Java }
+          - { provider: typescript, label: TypeScript }
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -53,22 +41,13 @@ jobs:
       - name: Ensure FTS + VECTOR extensions installed
         working-directory: gitnexus
         run: node --import tsx scripts/ensure-fts.ts
-      - name: Compare compiler results with GitNexus
+      - name: Compare fixture declarations with GitNexus
         working-directory: gitnexus
         env:
           NODE_V8_COVERAGE: ${{ runner.temp }}/conformance-v8
           GITNEXUS_BENCH: '1'
           GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
-          PRODUCT_SHARD: ${{ matrix.shard }}
-        run: |
-          if [[ -n "$PRODUCT_SHARD" ]]; then
-            node tools/compiler-conformance/typescript/check-products.mjs --shard "$PRODUCT_SHARD"
-          elif [[ "$PROVIDER" == typescript ]]; then
-            node --test tools/compiler-conformance/typescript/controls.test.mjs
-            node tools/compiler-conformance/typescript/check.mjs
-          else
-            npm run "test:conformance:$PROVIDER"
-          fi
+        run: npm run "test:conformance:$PROVIDER"
       - name: Report conformance coverage against TypeScript sources
         working-directory: gitnexus
         run: |
@@ -81,26 +60,24 @@ jobs:
       - name: Upload compiler conformance LCOV
         uses: ./.github/actions/upload-test-artifact
         with:
-          name: ${{ matrix.artifact }}-conformance-coverage
+          name: ${{ matrix.provider }}-conformance-coverage
           path: gitnexus/coverage/conformance/lcov.info
 
-  compiler-platform-conformance:
-    name: ${{ matrix.language }} platform conformance (${{ matrix.os }})
+  java-platform-conformance:
+    name: Java platform conformance (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
-        language: [Java, TypeScript]
     env:
       GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - if: matrix.language == 'Java'
-        uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
         with:
           distribution: temurin
           java-version: '21'
@@ -109,16 +86,8 @@ jobs:
         working-directory: gitnexus
         run: node --import tsx scripts/ensure-fts.ts
       - name: Check persisted Java behavior and non-ASCII paths
-        if: matrix.language == 'Java'
         working-directory: gitnexus
         run: node tools/compiler-conformance/java/check-products.mjs --platform
-      - name: Check persisted TypeScript behavior and compiler bindings
-        if: matrix.language == 'TypeScript'
-        working-directory: gitnexus
-        env:
-          GITNEXUS_REQUIRE_FTS: '1'
-          GITNEXUS_REQUIRE_VECTOR: '1'
-        run: node tools/compiler-conformance/typescript/check-products.mjs --platform
 
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
@@ -588,25 +557,23 @@ jobs:
           name: java-conformance-coverage
           path: ${{ runner.temp }}/java-conformance-coverage
       - name: Download TypeScript conformance LCOV
-        id: ts-lcov-download
+        id: typescript-lcov-download
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        uses: ./.github/actions/download-test-artifact
         with:
-          pattern: typescript*-conformance-coverage
+          name: typescript-conformance-coverage
           path: ${{ runner.temp }}/typescript-conformance-coverage
-          digest-mismatch: error
       - name: Add compiler conformance to the CLI SonarQube report
         id: conformance-lcov
-        if: ${{ !cancelled() && steps.java-lcov-download.outcome == 'success' && steps.ts-lcov-download.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.java-lcov-download.outcome == 'success' && steps.typescript-lcov-download.outcome == 'success' }}
         working-directory: gitnexus
         run: |
           test -s coverage/lcov.info
-          reports=("$RUNNER_TEMP/java-conformance-coverage/lcov.info")
-          for suite in typescript typescript-product-1 typescript-product-2; do
-            reports+=("$RUNNER_TEMP/typescript-conformance-coverage/$suite-conformance-coverage/lcov.info")
+          for provider in java typescript; do
+            report="$RUNNER_TEMP/$provider-conformance-coverage/lcov.info"
+            test -s "$report"
+            cat "$report" >> coverage/lcov.info
           done
-          for report in "${reports[@]}"; do test -s "$report"; done
-          cat "${reports[@]}" >> coverage/lcov.info
       - name: Upload learned coverage timings
         uses: ./.github/actions/upload-test-artifact
         with:
@@ -2021,7 +1988,7 @@ jobs:
         shard-plan,
         coverage-merge,
         cross-platform,
-        compiler-platform-conformance,
+        java-platform-conformance,
         benchmarks,
         eval-tests,
         eval-containment-linux,

@@ -141,6 +141,19 @@ describe('RustWorkspaceExtractor', () => {
     expect(result.links[0].contract).toBe('utils::Config');
   });
 
+  it('skips repos without Cargo.toml', async () => {
+    await writeFile('js-app/package.json', '{"name": "js-app"}');
+    await writeFile('js-app/src/index.ts', 'export const x = 1;');
+
+    const repos = { app: 'js-app' };
+    const repoPaths = new Map([['app', path.join(tmpDir, 'js-app')]]);
+
+    const result = await extractRustWorkspaceLinks(repos, repoPaths);
+
+    expect(result.links).toHaveLength(0);
+    expect(result.discoveredCrates.size).toBe(0);
+  });
+
   it('deduplicates identical imports from multiple files', async () => {
     await writeFile(
       'lib/Cargo.toml',

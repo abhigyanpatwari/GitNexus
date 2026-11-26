@@ -107,9 +107,7 @@ Each call comparison checks the source range and the selected declaration, inclu
 
 Fixtures that exercise compiler recovery declare their expected diagnostics in `typescript/diagnostics.json`. For example, TypeScript 7 reports two configuration errors in the legacy baseUrl fixture. Unlisted or missing diagnostics fail the job. For a type-only import used as a constructor, the runner checks that GitNexus leaves the call unbound. Annotated receivers still have compiler-selected methods.
 
-The compiler comparison checks the declaration selected at each typed call, including inherited overloads. A separate product test checks GitNexus inference at calls for which TypeScript supplies no declaration in the two cast fixtures and the virtual-dispatch fixture. It executes the emitted JavaScript in Node and compares the observed method and call location with the published GitNexus edge and binding. The compiler job can run all three fixtures without executing their code.
-
-The native product checks cover GitNexus behavior that has no compiler equivalent, including graph persistence, rename, and resuming an interrupted embedding run. Windows and macOS run the platform selection with `node tools/compiler-conformance/typescript/check-products.mjs --platform`.
+For a call through an identifier with an inline function-type annotation, the compiler report records the parameter declaration and its annotated signature. Calls on an unchecked receiver can have no compiler-selected declaration. The comparison records those locations separately.
 
 To use the TypeScript producer with another analyzer, run the following from `gitnexus/` using a project that passes type checking. Both reports use the format described above.
 

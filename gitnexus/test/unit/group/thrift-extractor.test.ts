@@ -177,6 +177,14 @@ service OrderService {
 
     await expect(extractor.extract(null, tmpDir, makeRepo(tmpDir))).resolves.toEqual([]);
   });
+
+  it('test_extract_repo_without_thrift_returns_empty', async () => {
+    writeFile('src/index.ts', 'console.log("hello")');
+
+    const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+
+    expect(contracts).toEqual([]);
+  });
 });
 
 describe('buildThriftContext', () => {

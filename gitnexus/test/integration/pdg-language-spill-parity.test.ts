@@ -27,6 +27,7 @@ const fixtures: Partial<Record<SupportedLanguages, [filename: string, source?: s
   ruby: ['ruby-hazards.rb'],
   rust: ['rust-hazards.rs'],
   swift: ['swift-hazards.swift'],
+  typescript: ['ten-functions.ts'],
   vue: ['vue-hazards.vue'],
   zig: ['sample.zig', 'fn choose(x: i32) i32 { if (x > 0) { return 1; } return 2; }'],
   r: ['sample.R', 'choose <- function(x) {\n  if (x) 1 else 2\n}\n'],
@@ -44,9 +45,10 @@ const pdgLanguages = Object.values(SupportedLanguages).filter((language) => {
   const provider = getProvider(language);
   return provider.cfgVisitor || provider.collectSourceCfgs;
 });
-const compilerFixtures = [SupportedLanguages.Java, SupportedLanguages.TypeScript];
 it('has a graph fixture for every language that builds a PDG', () => {
-  expect([...Object.keys(fixtures), ...compilerFixtures].sort()).toEqual([...pdgLanguages].sort());
+  expect([...Object.keys(fixtures), SupportedLanguages.Java].sort()).toEqual(
+    [...pdgLanguages].sort(),
+  );
 });
 
 afterEach(() => {
@@ -54,7 +56,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
-for (const language of pdgLanguages.filter((language) => !compilerFixtures.includes(language))) {
+for (const language of pdgLanguages.filter((language) => language !== SupportedLanguages.Java)) {
   const optional = listGrammarSources().some(
     (source) => source.key === language && source.optional,
   );

@@ -290,7 +290,7 @@ const REBUILD_REASON_COVERAGE = [
   { key: 'shared-store-missing-graph', file: 'test/integration/shared-store-analyze.test.ts' },
   {
     key: 'content-retention',
-    file: 'tools/compiler-conformance/typescript/product/external-storage-content-retention.ts',
+    file: 'test/integration/external-storage-content-retention.test.ts',
   },
   { key: 'pdg-mode', file: 'test/unit/pdg-mode-flip.test.ts' },
   { key: 'schema-fingerprint', file: 'test/unit/incremental-orchestration.test.ts' },
@@ -299,10 +299,7 @@ const REBUILD_REASON_COVERAGE = [
   { key: 'spring-vendor-prefixes', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'route-hook-config', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'runner-identity', file: 'test/unit/incremental-orchestration.test.ts' },
-  {
-    key: 'parser-identity',
-    file: 'tools/compiler-conformance/typescript/product/parse-cache-identity-lifecycle.ts',
-  },
+  { key: 'parser-identity', file: 'test/integration/parse-cache-identity-lifecycle.test.ts' },
   { key: 'cjk-segmentation', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'embedding-dims', file: 'test/unit/embedding-dims-guard.test.ts' },
   { key: 'spring-actuator', file: 'test/unit/incremental-orchestration.test.ts' },

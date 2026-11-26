@@ -41,6 +41,28 @@ const callEdges = async (filename: string, source: string): Promise<string[]> =>
   }
 };
 
+/** Node ids in a one-file repo whose id contains `needle`. */
+const nodeIdsContaining = async (
+  filename: string,
+  source: string,
+  needle: string,
+): Promise<string[]> => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-review-ids-'));
+  try {
+    fs.writeFileSync(path.join(dir, filename), source, 'utf-8');
+    const result = await runPipelineFromRepo(dir, () => {}, {
+      workerPoolSize: 1,
+      workerUrlForTest: DIST_WORKER_URL,
+    });
+    return result.graph.nodes
+      .map((n) => n.id)
+      .filter((id) => id.includes(needle))
+      .sort();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+};
+
 describeIfWorkerBuilt(
   '#2735 — a multi-line closure binding is a call SOURCE (not merely fail-closed)',
   () => {
@@ -73,6 +95,22 @@ describeIfWorkerBuilt(
       expect(edges).toEqual([
         'Function:ml.rs:outer -> Function:ml.rs:outer.handler@2:4',
         'Function:ml.rs:outer.handler@2:4 -> Function:ml.rs:target',
+      ]);
+    });
+
+    it('TypeScript: a multi-line const arrow binding emits CALLS to target', async () => {
+      const edges = await callEdges(
+        'ml.ts',
+        'function target(x: number): number { return x; }\nfunction outer(): number {\n' +
+          '  const single = (x: number) => target(x);\n' +
+          '  const multi =\n    (x: number) => target(x);\n  return single(1) + multi(2);\n}\n',
+      );
+
+      expect(edges).toEqual([
+        'Function:ml.ts:outer -> Function:ml.ts:outer.multi@3:2',
+        'Function:ml.ts:outer -> Function:ml.ts:outer.single@2:2',
+        'Function:ml.ts:outer.multi@3:2 -> Function:ml.ts:target',
+        'Function:ml.ts:outer.single@2:2 -> Function:ml.ts:target',
       ]);
     });
 
@@ -157,6 +195,29 @@ describeIfPathSupportsColon('#2734 — def ids parse coordinates after the file 
     ]);
   });
 });
+
+describeIfWorkerBuilt(
+  '#2699 review P1-2 — widening identity to values must not touch class members',
+  () => {
+    it('a TypeScript constructor PARAMETER PROPERTY keeps its class-qualified id', async () => {
+      // Admitting `Property` to the position-qualified set made this walk reach
+      // the constructor's `method_definition` THROUGH the parameter list — a
+      // LOCAL_SCOPE_BODY hit before any class boundary — so a genuine field was
+      // re-keyed `Service.constructor.port@r:c`. That silently empties the
+      // `Service.port` slot `impact`, `rename` and FTS address, while the class
+      // still asserts HAS_PROPERTY against it. This is the DI idiom every
+      // Angular/NestJS codebase uses, so the blast radius is large.
+      const ids = await nodeIdsContaining(
+        'svc.ts',
+        'export class Port { send(): void {} }\n' +
+          'export class Service {\n  constructor(private readonly port: Port) {}\n}\n',
+        'port',
+      );
+
+      expect(ids).toEqual(['Property:svc.ts:Service.port']);
+    });
+  },
+);
 
 describeIfWorkerBuilt('#2699 review P1-3 — every Dart binding shape can be a call SOURCE', () => {
   it('top-level `var` and `final` closures are call sources, not just function-local ones', async () => {

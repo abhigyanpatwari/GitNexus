@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { compilerImportTrace } from './import-trace.mjs';
-import { callbackTargets, implementationParameters } from './compiler-callbacks.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 import { existsSync, globSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,7 +26,6 @@ export const relations = [
   'TYPE_PARAMETER_USES',
   'CLASS_TYPE_PARAMETERS',
   'PARAMETER_CALLS',
-  'CALLBACK_TARGETS',
   'VARIABLE_READS',
   'DECLARATIONS',
   'HAS_METHOD',
@@ -41,6 +39,15 @@ export function emptyReport() {
 
 function relative(root, source) {
   return path.relative(root, source.fileName).split(path.sep).join('/');
+}
+
+function sourceRange(root, node) {
+  const file = node.getSourceFile();
+  const position = (offset) => {
+    const { line, character } = file.getLineAndCharacterOfPosition(offset);
+    return line + 1 + ':' + character;
+  };
+  return { file: relative(root, file), start: position(node.getStart()), end: position(node.end) };
 }
 
 function startOfDeclaration(node) {
@@ -152,12 +159,7 @@ export function compilerReport(root, expectedDiagnostics = [], inventory = false
   );
 }
 
-function reportProject(
-  root,
-  expectedDiagnostics,
-  inventory,
-  { runtime, methodFacts, propertyAccess },
-) {
+function reportProject(root, expectedDiagnostics, inventory, { methodFacts, propertyAccess }) {
   const localConfig = path.join(root, 'tsconfig.json');
   const scratch = existsSync(localConfig)
     ? undefined
@@ -202,7 +204,7 @@ function reportProject(
       }),
     );
     assert.ok(files.size, 'Empty TypeScript project ' + config);
-    const result = emptyReport();
+    const result = { ...emptyReport(), uncheckedMemberSites: [] };
     const compilerDiagnostics = [
       ...program.getConfigFileParsingDiagnostics(),
       ...program.getProgramDiagnostics(),
@@ -245,67 +247,30 @@ function reportProject(
 
     function edge(kind, from, to, site) {
       if (to && files.has(to.getSourceFile().fileName)) {
-        // The graph publishes one callable node for an overloaded free function.
-        // Direct calls still carry their checker-selected overload in CALLS.sites.
-        const target =
-          kind === 'CALLBACK_TARGETS' && to.kind === SyntaxKind.FunctionDeclaration
-            ? graphIdentity(root, to, project)
-            : identity(root, to);
         result[kind].edges.push({
           from: graphIdentity(root, from, project),
           to: graphIdentity(root, to, project),
         });
         if (site) {
-          const source = site.getSourceFile();
-          const position = (offset) => {
-            const { line, character } = source.getLineAndCharacterOfPosition(offset);
-            return line + 1 + ':' + character;
-          };
           result[kind].sites.push({
-            file: relative(root, source),
-            start: position(site.getStart()),
-            end: position(site.end),
+            ...sourceRange(root, site),
             status: 'resolved',
-            target,
+            target: identity(root, to),
           });
         }
       }
     }
 
-    const callsWithArguments = [];
-    const invokedParameters = [];
-    const assignments = [];
-    function rememberArguments(node, selected) {
-      if (
-        node.arguments?.length &&
-        selected?.parameters?.length &&
-        files.has(selected.getSourceFile().fileName)
-      ) {
-        callsWithArguments.push({
-          parameters: implementationParameters(project, selected),
-          args: node.arguments,
-        });
-      }
-    }
     function call(node, callee) {
       const caller = enclosingCaller(node);
       const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
-      rememberArguments(node, selected);
       const parameter =
         callee.kind === SyntaxKind.Identifier
           ? symbolDeclaration(checker.getSymbolAtLocation(callee), project)
           : undefined;
       if (parameter?.kind === SyntaxKind.Parameter && parameter.type) {
-        invokedParameters.push({ parameter, caller, site: node });
-        const source = node.getSourceFile();
-        const position = (offset) => {
-          const { line, character } = source.getLineAndCharacterOfPosition(offset);
-          return line + 1 + ':' + character;
-        };
         result.PARAMETER_CALLS.sites.push({
-          file: relative(root, source),
-          start: position(node.getStart()),
-          end: position(node.end),
+          ...sourceRange(root, node),
           status: 'resolved',
           target: JSON.stringify([identity(root, parameter.name), parameter.type.getText()]),
         });
@@ -528,24 +493,6 @@ function reportProject(
           ),
         });
       }
-      if (
-        (node.kind === SyntaxKind.VariableDeclaration || node.kind === SyntaxKind.Parameter) &&
-        node.name.kind === SyntaxKind.Identifier &&
-        node.initializer
-      ) {
-        assignments.push([node.name, node.initializer]);
-      } else if (
-        node.kind === SyntaxKind.BinaryExpression &&
-        node.left.kind === SyntaxKind.Identifier &&
-        [
-          SyntaxKind.EqualsToken,
-          SyntaxKind.QuestionQuestionEqualsToken,
-          SyntaxKind.BarBarEqualsToken,
-          SyntaxKind.AmpersandAmpersandEqualsToken,
-        ].includes(node.operatorToken.kind)
-      ) {
-        assignments.push([node.left, node.right]);
-      }
       if (propertyAccess && node.kind === SyntaxKind.PropertyAccessExpression)
         propertyReference(node);
 
@@ -559,15 +506,6 @@ function reportProject(
               checker.typeToString(checker.getTypeAtLocation(parameter)),
             ),
           ]),
-        });
-      }
-      if (runtime && node.kind === SyntaxKind.MethodDeclaration && node.body && node.parent.name) {
-        runtime.methods.push({
-          file: relative(root, node.getSourceFile()),
-          owner: node.parent.name.getText(),
-          name: declarationName(node),
-          target: identity(root, node),
-          edgeTarget: graphIdentity(root, node, project),
         });
       }
       if (inventory) {
@@ -602,13 +540,8 @@ function reportProject(
           variable?.kind === SyntaxKind.VariableDeclaration &&
           files.has(variable.getSourceFile().fileName)
         ) {
-          const source = use.getSourceFile();
-          const start = source.getLineAndCharacterOfPosition(use.getStart());
-          const end = source.getLineAndCharacterOfPosition(use.end);
           result.VARIABLE_READS.sites.push({
-            file: relative(root, source),
-            start: start.line + 1 + ':' + start.character,
-            end: end.line + 1 + ':' + end.character,
+            ...sourceRange(root, use),
             status: 'resolved',
             target: identity(root, variable.name),
           });
@@ -636,18 +569,12 @@ function reportProject(
               ]),
             )));
       if (rejected) {
-        const source = node.getSourceFile();
-        const start = source.getLineAndCharacterOfPosition(node.getStart());
-        const end = source.getLineAndCharacterOfPosition(node.end);
         result.REJECTED_CALLS.sites.push({
-          file: relative(root, source),
-          start: start.line + 1 + ':' + start.character,
-          end: end.line + 1 + ':' + end.character,
+          ...sourceRange(root, node),
           status: 'unresolved',
         });
       }
       if (!rejected && node.kind === SyntaxKind.NewExpression) {
-        rememberArguments(node, checker.getResolvedSignature(node)?.declaration?.resolve(project));
         const type = checker.getTypeAtLocation(node);
         edge('CALLS', enclosingCaller(node), symbolDeclaration(type?.getSymbol(), project), node);
       }
@@ -656,16 +583,8 @@ function reportProject(
           edge('IMPORTS', node.getSourceFile(), importedDeclaration(node.arguments[0]));
         }
         const selected = call(node, node.expression);
-        if (runtime && !selected && node.expression.kind === SyntaxKind.PropertyAccessExpression) {
-          const source = node.getSourceFile();
-          const start = source.getLineAndCharacterOfPosition(node.getStart());
-          const end = source.getLineAndCharacterOfPosition(node.end);
-          runtime.unchecked.push({
-            file: relative(root, source),
-            start: [start.line, start.character],
-            end: [end.line, end.character],
-            caller: graphIdentity(root, enclosingCaller(node), project),
-          });
+        if (!selected && node.expression.kind === SyntaxKind.PropertyAccessExpression) {
+          result.uncheckedMemberSites.push(sourceRange(root, node));
         }
       }
       if (
@@ -682,15 +601,8 @@ function reportProject(
         if (decl?.kind === SyntaxKind.TypeParameter) {
           const owner = decl.parent.name ?? decl.parent;
           if (owner) {
-            const source = node.getSourceFile();
-            const position = (offset) => {
-              const p = source.getLineAndCharacterOfPosition(offset);
-              return p.line + 1 + ':' + p.character;
-            };
             result.TYPE_PARAMETER_USES.sites.push({
-              file: relative(root, source),
-              start: position(node.typeName.getStart()),
-              end: position(node.typeName.end),
+              ...sourceRange(root, node.typeName),
               status: 'type-parameter',
               target: identity(root, owner) + '/' + decl.name.getText(),
             });
@@ -711,14 +623,6 @@ function reportProject(
       assert.ok(source, 'Missing compiler source ' + file);
       visit(source);
     }
-    callbackTargets(
-      project,
-      callsWithArguments,
-      assignments,
-      invokedParameters,
-      (decl) => identity(root, decl),
-      (caller, target, site) => edge('CALLBACK_TARGETS', caller, target, site),
-    );
     return result;
   } finally {
     api.close();
@@ -736,7 +640,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     path.resolve(directory),
     [],
     relation === 'DECLARATIONS' || relation === 'HAS_METHOD',
-    { methodFacts: relation === 'METHOD_FACTS' },
+    {
+      methodFacts: relation === 'METHOD_FACTS',
+      propertyAccess: relation === 'PROPERTY_READS' || relation === 'PROPERTY_WRITES',
+    },
   );
   console.log(JSON.stringify({ producer: 'TypeScript', ...report[relation] }, null, 2));
 }
