@@ -374,6 +374,10 @@ describe('generateAIContextFiles', () => {
     // to the pre-trim size — so a legitimate clause fits without ceremony
     // while a genuine re-pad fails. (The structural guard is the sibling test
     // asserting the six #856 section headers stay deleted; this one bounds bulk.)
+    //
+    // 0.70 → 0.71 for #3976: the impact MUST now says it covers code, config, and
+    // tests and exempts docs-only edits. The block regenerates on every analyze,
+    // so the scoping cannot live as a hand edit.
     const PRE_TRIM_BLOCK_CHARS = 5465;
     const stats = { nodes: 50, edges: 100, processes: 5 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
@@ -383,7 +387,7 @@ describe('generateAIContextFiles', () => {
       content.indexOf('<!-- gitnexus:start -->'),
       content.indexOf('<!-- gitnexus:end -->'),
     );
-    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.7);
+    expect(block.length).toBeLessThan(PRE_TRIM_BLOCK_CHARS * 0.71);
   });
 
   it('handles empty stats', async () => {
