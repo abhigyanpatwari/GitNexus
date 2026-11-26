@@ -106,7 +106,7 @@ describe('analyzer identity cache on Windows', () => {
       await withWindowsCache(fixture, async (hashedBytes) => {
         _setWindowsDirectoryPrivacyHooksForTests({
           read: () => privateAccess(),
-          lock: () => true,
+          lock: () => privateAccess(),
         });
 
         expect(hashedBytes()).toBeGreaterThanOrEqual(64 * 1024);
@@ -129,7 +129,7 @@ describe('analyzer identity cache on Windows', () => {
       await withWindowsCache(fixture, async (hashedBytes) => {
         _setWindowsDirectoryPrivacyHooksForTests({
           read: () => null,
-          lock: () => true,
+          lock: () => privateAccess(),
         });
 
         expect(hashedBytes()).toBeGreaterThanOrEqual(64 * 1024);
@@ -159,7 +159,7 @@ describe('analyzer identity cache on Windows', () => {
 
         _setWindowsDirectoryPrivacyHooksForTests({
           read: () => privateAccess(),
-          lock: () => true,
+          lock: () => privateAccess(),
         });
 
         expect(hashedBytes()).toBeGreaterThanOrEqual(64 * 1024);
@@ -188,10 +188,10 @@ describe('analyzer identity cache on Windows', () => {
         await writeFile(path.join(fixture.cachePath, planted), '{"planted":true}\n');
         await writeFile(path.join(fixture.cachePath, 'notes.txt'), 'keep me\n');
 
-        const reads: WindowsDirectoryAccess[] = [permissiveAccess(), privateAccess()];
+        const reads: WindowsDirectoryAccess[] = [permissiveAccess()];
         _setWindowsDirectoryPrivacyHooksForTests({
           read: () => reads.shift() ?? null,
-          lock: () => true,
+          lock: () => privateAccess(),
         });
 
         expect(hashedBytes()).toBeGreaterThanOrEqual(64 * 1024);

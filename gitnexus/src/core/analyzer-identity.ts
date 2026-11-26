@@ -2777,7 +2777,11 @@ function persistIdentityCache(
       mode: 0o600,
     });
     renameSync(temporary, target);
-    if (!hasTrustedCacheOverride(options)) {
+    // The per-user default directory is bounded on Windows, where it is new:
+    // every analyzer build adds a file of its own, and a file carries the
+    // analyzer's file inventory, so the directory would grow with every
+    // update. The POSIX default directory is left exactly as it is.
+    if (process.platform === 'win32' && !hasTrustedCacheOverride(options)) {
       pruneIdentityCacheFiles(path.dirname(target), path.basename(target));
     }
   } catch {

@@ -83,7 +83,7 @@ describe('ensurePrivateWindowsDirectory', () => {
       },
       lock: () => {
         locks += 1;
-        return true;
+        return privateAccess();
       },
     });
     try {
@@ -97,17 +97,13 @@ describe('ensurePrivateWindowsDirectory', () => {
   });
 
   it('locks a permissive directory and discards what it may contain', () => {
-    const reads: WindowsDirectoryAccess[] = [
-      privateAccess({ allowedSids: [USER_SID, STRANGER_SID] }),
-      privateAccess(),
-    ];
     let locks = 0;
     const discarded: string[] = [];
     _setWindowsDirectoryPrivacyHooksForTests({
-      read: () => reads.shift() ?? null,
+      read: () => privateAccess({ allowedSids: [USER_SID, STRANGER_SID] }),
       lock: () => {
         locks += 1;
-        return true;
+        return privateAccess();
       },
     });
     try {
@@ -128,7 +124,7 @@ describe('ensurePrivateWindowsDirectory', () => {
       read: () => privateAccess({ allowedSids: [USER_SID, STRANGER_SID] }),
       lock: () => {
         locks += 1;
-        return false;
+        return null;
       },
     });
     try {
@@ -149,7 +145,7 @@ describe('ensurePrivateWindowsDirectory', () => {
       read: () => null,
       lock: () => {
         locks += 1;
-        return true;
+        return privateAccess();
       },
     });
     try {
@@ -167,7 +163,7 @@ describe('ensurePrivateWindowsDirectory', () => {
         reads += 1;
         return privateAccess();
       },
-      lock: () => true,
+      lock: () => privateAccess(),
     });
     try {
       expect(ensurePrivateWindowsDirectory('C:\\cache')).toBe(true);
@@ -201,13 +197,12 @@ describe.skipIf(process.platform !== 'win32')('the real Windows access-control p
   it('locks a directory so that only the user, SYSTEM and Administrators may access it', async () => {
     const directory = await createTempDir();
     try {
-      expect(lockWindowsDirectory(directory.dbPath)).toBe(true);
-      const access = readWindowsDirectoryAccess(directory.dbPath);
-      expect(access).not.toBeNull();
-      if (!access) return;
-      expect(isWindowsDirectoryPrivate(access)).toBe(true);
-      expect([...access.allowedSids].sort()).toEqual(
-        [access.currentUser, WINDOWS_LOCAL_SYSTEM_SID, WINDOWS_ADMINISTRATORS_SID].sort(),
+      const locked = lockWindowsDirectory(directory.dbPath);
+      expect(locked).not.toBeNull();
+      if (!locked) return;
+      expect(isWindowsDirectoryPrivate(locked)).toBe(true);
+      expect([...locked.allowedSids].sort()).toEqual(
+        [locked.currentUser, WINDOWS_LOCAL_SYSTEM_SID, WINDOWS_ADMINISTRATORS_SID].sort(),
       );
     } finally {
       await directory.cleanup();

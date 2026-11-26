@@ -4,7 +4,7 @@
  * POSIX proves cache privacy with `stat.uid` and `stat.mode`. Windows has no
  * equivalent in Node: `fs.stat` reports a synthetic mode that ignores the
  * access-control list, so the DACL has to be read through the OS. This module
- * reads it with one bounded `powershell.exe` call and decides — in TypeScript,
+ * reads it with a bounded `powershell.exe` call and decides — in TypeScript,
  * not in the shell script — whether the directory is private to the current
  * user.
  *
@@ -68,14 +68,18 @@ function acceptableWindowsSids(currentUser: string): Set<string> {
 }
 
 /**
- * Reads the owner and the allowing ACEs of `directory`.
+ * Reports the owner and the allowing ACEs of a directory as JSON.
  *
  * The script resolves every identity reference to its SID, so the result is
  * independent of the machine's UI language. It reports the access-control list
  * as it is stored, which means an ACE that only propagates to children is
  * included — the cache files created inside the directory inherit it.
+ *
+ * The snippet reads the access-control list again every time it runs, so it
+ * can be appended to the script that rewrites that list: the facts it reports
+ * are then the facts of the directory as it was just left.
  */
-const WINDOWS_ACCESS_SCRIPT = String.raw`
+const WINDOWS_ACCESS_FACTS = String.raw`
 $ErrorActionPreference = 'Stop'
 $dir = $env:GITNEXUS_INTERNAL_IDENTITY_CACHE_DIRECTORY
 if ([string]::IsNullOrEmpty($dir)) { exit 3 }
@@ -106,7 +110,7 @@ Write-Output ('{"currentUser":"' + $current + '","owner":"' + $owner + '","allow
  * directory that inherits a permissive rule from its parent can only be made
  * private by protecting it.
  */
-const WINDOWS_LOCK_SCRIPT = String.raw`
+const WINDOWS_LOCK = String.raw`
 $ErrorActionPreference = 'Stop'
 $dir = $env:GITNEXUS_INTERNAL_IDENTITY_CACHE_DIRECTORY
 if ([string]::IsNullOrEmpty($dir)) { exit 3 }
@@ -128,8 +132,20 @@ foreach ($sid in @($current, 'S-1-5-18', 'S-1-5-32-544')) {
 $dirInfo.SetAccessControl($acl)
 `;
 
+const WINDOWS_ACCESS_SCRIPT = WINDOWS_ACCESS_FACTS;
+
+/**
+ * The lock and the check that follows it share one process.
+ *
+ * PowerShell start-up dominates the cost of the probe, and the facts of a
+ * locked directory are worth more than the facts of the directory before it
+ * was locked — so the lock reports the result of the lock instead of leaving
+ * a window in which the directory could change again.
+ */
+const WINDOWS_LOCK_SCRIPT = WINDOWS_LOCK + WINDOWS_ACCESS_FACTS;
+
 const WINDOWS_DIRECTORY_ENV = 'GITNEXUS_INTERNAL_IDENTITY_CACHE_DIRECTORY';
-const WINDOWS_SCRIPT_TIMEOUT_MS = 30_000;
+const WINDOWS_SCRIPT_TIMEOUT_MS = 15_000;
 
 function runWindowsScript(script: string, directory: string): string | null {
   try {
@@ -181,14 +197,19 @@ export function readWindowsDirectoryAccess(directory: string): WindowsDirectoryA
   return stdout === null ? null : parseWindowsDirectoryAccess(stdout);
 }
 
-/** Rewrites the access-control list of `directory`; `false` when it cannot be applied. */
-export function lockWindowsDirectory(directory: string): boolean {
+/**
+ * Rewrites the directory's access-control list and reports the result.
+ *
+ * The reported facts are the ones the rewritten list produced, read by the
+ * same process that wrote it. `null` means the list could not be applied.
+ */
+export function lockWindowsDirectory(directory: string): WindowsDirectoryAccess | null {
   const stdout = runWindowsScript(WINDOWS_LOCK_SCRIPT, directory);
-  return stdout !== null;
+  return stdout === null ? null : parseWindowsDirectoryAccess(stdout);
 }
 
 type DirectoryAccessReader = (directory: string) => WindowsDirectoryAccess | null;
-type DirectoryLocker = (directory: string) => boolean;
+type DirectoryLocker = (directory: string) => WindowsDirectoryAccess | null;
 
 let readDirectoryAccess: DirectoryAccessReader = readWindowsDirectoryAccess;
 let lockDirectory: DirectoryLocker = lockWindowsDirectory;
@@ -217,9 +238,10 @@ export function ensurePrivateWindowsDirectory(
     // The files are only discarded once the directory is locked: a failed lock
     // means the directory stays untrusted, and keeping its contents costs
     // nothing while wiping them would throw the cache away every run.
-    if (lockDirectory(directory)) {
+    const locked = lockDirectory(directory);
+    if (locked !== null) {
       discard?.(directory);
-      access = readDirectoryAccess(directory);
+      access = locked;
     }
   }
   const isPrivate = access !== null && isWindowsDirectoryPrivate(access);
