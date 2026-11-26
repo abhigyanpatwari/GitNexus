@@ -187,6 +187,9 @@ export default defineConfig({
             // file-lock exposure this project serializes (TESTING.md § Vitest
             // projects), on the Windows/macOS platforms #2915 was reported from.
             'test/integration/detect-changes-path-anchoring.test.ts',
+            // #4136. Same harness: detect_changes over a real git repo and engine,
+            // with the index holding the pre-image of the edited file.
+            'test/integration/detect-changes-pre-image.test.ts',
             // #2915. Native @ladybugdb/core via withTestLbugDB(poolAdapter:true) —
             // the wiki's graph queries executed by a real engine rather than a
             // fake that answers on `query.includes(...)`.
@@ -293,6 +296,7 @@ export default defineConfig({
             'test/integration/lbug-query-importers-batch.test.ts',
             'test/integration/impact-ambiguous-blast-radius.test.ts',
             'test/integration/detect-changes-path-anchoring.test.ts',
+            'test/integration/detect-changes-pre-image.test.ts',
             'test/integration/wiki-graph-queries-engine.test.ts',
             'test/unit/incremental-dirty-recovery.test.ts',
             'test/unit/incremental-write-integrity.test.ts',

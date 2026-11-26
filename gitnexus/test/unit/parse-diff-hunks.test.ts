@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { parseDiffHunks, parseDiffHunksResult } from '../../src/storage/git.js';
+import {
+  parseDiffHunks,
+  parseDiffHunksResult,
+  parseDiffWithPreImage,
+} from '../../src/storage/git.js';
 
 describe('parseDiffHunks', () => {
   it('parses a single file with one hunk', () => {
@@ -318,6 +322,31 @@ describe('parseDiffHunks', () => {
     expect(parseDiffHunksResult(diff)).toEqual({
       files: [{ filePath: 'new name.ts', oldFilePath: 'old.ts', hunks: [] }],
       unparsedGitHeaders: 0,
+    });
+  });
+
+  // #4136: the same hunks in the OLD file's line space.
+  it('records each file’s old-side ranges and blob ids', () => {
+    const diff = [
+      'diff --git a/util.ts b/util.ts',
+      'index 1111111..2222222 100644',
+      '--- a/util.ts',
+      '+++ b/util.ts',
+      '@@ -0,0 +1,3 @@', // prepended: inside no symbol, omitted
+      '@@ -4 +7 @@', // replaced old line 4
+      '@@ -5,2 +7,0 @@', // removed old lines 5-6
+      '@@ -8,0 +9,2 @@', // inserted between old lines 8 and 9
+    ].join('\n');
+    const { files, preImages } = parseDiffWithPreImage(diff);
+    expect(files).toEqual(parseDiffHunks(diff));
+    expect(preImages.get(files[0])).toEqual({
+      hunks: [
+        { startLine: 4, endLine: 4 },
+        { startLine: 5, endLine: 6 },
+        { startLine: 9, endLine: 8 },
+      ],
+      oldBlob: '1111111',
+      newBlob: '2222222',
     });
   });
 

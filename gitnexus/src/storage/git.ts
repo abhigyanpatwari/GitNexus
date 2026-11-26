@@ -867,10 +867,34 @@ export interface FileDiff {
   hunks: DiffHunk[];
 }
 
+/**
+ * One file's diff seen from the OLD side, for an index that still holds the
+ * pre-image (#4136).
+ */
+export interface FileDiffPreImage {
+  /**
+   * The hunks in the old file's line space. A removed or replaced run is its old
+   * lines. A pure insertion removes nothing, so it is the EMPTY range
+   * `{ startLine: n + 1, endLine: n }` for "between old lines n and n + 1": that
+   * overlaps exactly the symbols spanning the gap, the ones the inserted text
+   * lands inside (see {@link coalesceHunks}). An insertion before old line 1
+   * lands inside no symbol and is omitted.
+   */
+  hunks: DiffHunk[];
+  /** Blob ids from the `index <old>..<new>` header, when git printed one. */
+  oldBlob?: string;
+  newBlob?: string;
+}
+
 /** `parseDiffHunks` plus how many `diff --git` headers could not be decoded. */
 export interface DiffHunkParseResult {
   files: FileDiff[];
   unparsedGitHeaders: number;
+}
+
+/** {@link DiffHunkParseResult} plus each parsed file's old side. */
+export interface DiffParseWithPreImage extends DiffHunkParseResult {
+  preImages: Map<FileDiff, FileDiffPreImage>;
 }
 
 const DIFF_GIT_PREFIX = 'diff --git ';
@@ -1075,7 +1099,26 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
  * previous file.
  */
 export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
+  const { files, unparsedGitHeaders } = parseDiffWithPreImage(diffOutput);
+  return { files, unparsedGitHeaders };
+}
+
+/**
+ * Same as {@link parseDiffHunksResult}, plus every file's old side (see
+ * {@link FileDiffPreImage}). `detect_changes` maps a file with those ranges
+ * when the index holds its pre-image (#4136).
+ */
+export function parseDiffWithPreImage(diffOutput: string): DiffParseWithPreImage {
   const files: FileDiff[] = [];
+  const preImages = new Map<FileDiff, FileDiffPreImage>();
+  const preImageOf = (file: FileDiff): FileDiffPreImage => {
+    let preImage = preImages.get(file);
+    if (!preImage) {
+      preImage = { hunks: [] };
+      preImages.set(file, preImage);
+    }
+    return preImage;
+  };
   let current: FileDiff | null = null;
   let unparsedGitHeaders = 0;
   // `+++` after the first `@@` of a file is hunk body (`+` plus source text
@@ -1109,6 +1152,13 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
         current = { filePath, hunks: [] };
         files.push(current);
       }
+    } else if (!inHunk && line.startsWith('index ') && current) {
+      const blobs = line.match(/^index ([0-9a-f]+)\.\.([0-9a-f]+)/);
+      if (blobs) {
+        const preImage = preImageOf(current);
+        preImage.oldBlob = blobs[1];
+        preImage.newBlob = blobs[2];
+      }
     } else if (!inHunk && line === '+++ /dev/null') {
       currentFileDeleted = true;
     } else if (!inHunk && line.startsWith('+++ ')) {
@@ -1134,10 +1184,18 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
           const anchor = Math.max(start, 1);
           current.hunks.push({ startLine: anchor, endLine: anchor });
         }
+        const oldStart = parseInt(match[1], 10);
+        const oldCount = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+        const oldHunks = preImageOf(current).hunks;
+        if (oldCount > 0) {
+          oldHunks.push({ startLine: oldStart, endLine: oldStart + oldCount - 1 });
+        } else if (oldStart > 0) {
+          oldHunks.push({ startLine: oldStart + 1, endLine: oldStart });
+        }
       }
     }
   }
-  return { files, unparsedGitHeaders };
+  return { files, unparsedGitHeaders, preImages };
 }
 
 /**
@@ -1157,13 +1215,29 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
  */
 export function coalesceHunks(hunks: readonly GraphLineRange[]): GraphLineRange[] {
   if (hunks.length === 0) return [];
-  const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine);
+  // Ties put an empty range (a pre-image insertion gap, see FileDiffPreImage)
+  // first, so endLine stays ascending for the binary search in hunksOverlapRange.
+  const sorted = [...hunks].sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
   const merged: GraphLineRange[] = [{ ...sorted[0] }];
   for (let i = 1; i < sorted.length; i++) {
     const last = merged[merged.length - 1];
     const next = sorted[i];
-    if (next.startLine <= last.endLine + 1) last.endLine = Math.max(last.endLine, next.endLine);
-    else merged.push({ ...next });
+    if (next.startLine > next.endLine) {
+      // A gap after line g is spanned only by symbols containing g. If `last`
+      // already covers g (or is the same gap), those symbols overlap `last`.
+      const g = next.endLine;
+      if (last.startLine <= g && g <= last.endLine) continue;
+      if (last.startLine > last.endLine && last.endLine === g) continue;
+      merged.push({ ...next });
+    } else if (last.startLine > last.endLine) {
+      // Abutting an empty gap must not widen it into the line before: replace
+      // the gap only when `next` starts right after it, where every symbol
+      // spanning the gap also overlaps `next`.
+      if (next.startLine === last.startLine) merged[merged.length - 1] = { ...next };
+      else merged.push({ ...next });
+    } else if (next.startLine <= last.endLine + 1) {
+      last.endLine = Math.max(last.endLine, next.endLine);
+    } else merged.push({ ...next });
   }
   return merged;
 }
