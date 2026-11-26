@@ -236,13 +236,15 @@ function primaryArgSubjects(
     if (s.parent?.[0] !== callSiteIndex || s.parent?.[1] !== 0) continue;
     memberSubjects.push({ binding: s.object, property: s.property });
   }
-  // Compound args (`isValid(req.body + req.query)`) do not vouch for either
-  // member individually — under-kill (no subjects).
+  // Compound args do not vouch for any operand individually.
   if (memberSubjects.length > 1) return [];
-  if (memberSubjects.length === 1) return memberSubjects;
-  // Plain bindings: require exactly one unique binding (`isValid(x)`), not
-  // compounds like `isValid(command + suffix)`.
   const plain = [...new Set(argPositionBindings(callSite, 0))];
+  if (memberSubjects.length === 1) {
+    // `isValid(req.body + suffix)` lists object + other bindings in arg 0.
+    if (plain.length > 1) return [];
+    return memberSubjects;
+  }
+  // Plain bindings: require exactly one unique binding (`isValid(x)`).
   if (plain.length !== 1) return [];
   return [{ binding: plain[0] }];
 }
@@ -329,11 +331,53 @@ export function buildBarrierGuardIndex(
   return { bySubject, cdg };
 }
 
+/** True when statement `stmt` defines binding `b`. */
+function statementDefines(
+  stmt: { defs: readonly number[]; mayDefs?: readonly number[] },
+  b: number,
+): boolean {
+  if (stmt.defs.includes(b)) return true;
+  return stmt.mayDefs?.includes(b) === true;
+}
+
+/**
+ * True when the subject object binding is redefined on the validated branch
+ * before the sink (`req = other` after validating `req.body`).
+ */
+export function subjectBindingAssignedOnValidatedPath(
+  cfg: FunctionCfg,
+  index: BarrierGuardIndex,
+  controller: BarrierController,
+  sinkPoint: ProgramPoint,
+): boolean {
+  const b = controller.subjectBinding;
+  for (const edge of index.cdg) {
+    if (edge.controllerBlock !== controller.controllerBlock) continue;
+    if (edge.label !== controller.validatedLabel) continue;
+    const block = cfg.blocks[edge.dependentBlock];
+    const stmts = block?.statements;
+    if (!stmts) continue;
+    if (block.index === sinkPoint.blockIndex) {
+      for (let i = 0; i < sinkPoint.stmtIndex && i < stmts.length; i++) {
+        if (statementDefines(stmts[i], b)) return true;
+      }
+      continue;
+    }
+    if (block.endLine < sinkPoint.line) {
+      for (const stmt of stmts) {
+        if (statementDefines(stmt, b)) return true;
+      }
+    }
+  }
+  return false;
+}
+
 /**
  * True when a validated member property is assigned on the controller's
  * validated branch *before* the sink (`req.body = …` then `exec(req.body)`).
- * Writes after the sink must not disable the barrier. Property writes are not
- * binding defs, so taintDefPoint cannot see them.
+ * Uses statement order within the sink block so same-line
+ * `req.body = x; exec(req.body)` is caught. Writes after the sink must not
+ * disable the barrier.
  */
 export function memberPropertyAssignedOnValidatedPath(
   cfg: FunctionCfg,
@@ -345,23 +389,21 @@ export function memberPropertyAssignedOnValidatedPath(
   if (!prop) return false;
   const escaped = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const assignRe = new RegExp(`(\\.${escaped}|\\[['"]${escaped}['"]\\])\\s*=`);
-  const sinkLine = sinkPoint.line;
   for (const edge of index.cdg) {
     if (edge.controllerBlock !== controller.controllerBlock) continue;
     if (edge.label !== controller.validatedLabel) continue;
     const block = cfg.blocks[edge.dependentBlock];
     if (!block?.text) continue;
-    if (block.startLine > sinkLine) continue; // entirely after the sink
-    if (block.endLine < sinkLine) {
-      if (assignRe.test(block.text)) return true;
+    const lines = block.text.split('\n');
+    if (block.index === sinkPoint.blockIndex) {
+      // Statement order within the sink block (handles same source line).
+      for (let i = 0; i < sinkPoint.stmtIndex && i < lines.length; i++) {
+        if (assignRe.test(lines[i])) return true;
+      }
       continue;
     }
-    // Block overlaps the sink line — only count assignments on earlier lines.
-    const lines = block.text.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const lineNo = block.startLine + i;
-      if (lineNo >= sinkLine) break;
-      if (assignRe.test(lines[i])) return true;
+    if (block.endLine < sinkPoint.line) {
+      if (assignRe.test(block.text)) return true;
     }
   }
   return false;

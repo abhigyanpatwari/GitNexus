@@ -114,6 +114,7 @@ import {
   isBarrierGuarded,
   memberPropertiesAtArg,
   memberPropertyAssignedOnValidatedPath,
+  subjectBindingAssignedOnValidatedPath,
   type BarrierGuardOptions,
 } from './barrier-guards.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
@@ -589,9 +590,11 @@ export function computeTaintFlows(
       sinkProperty,
     );
     if (!controller) return false;
-    // Member writes (`req.body = …`) are not binding defs — refuse when the
-    // validated property is assigned on the validated branch *before* the sink.
+    // Member writes (`req.body = …`) and object rebinding (`req = other`)
+    // before the sink invalidate the barrier (not always visible as taintDefPoint).
     if (memberPropertyAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint))
+      return false;
+    if (subjectBindingAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint))
       return false;
     recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
     return true;

@@ -186,6 +186,16 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not suppress same-line member overwrite before the sink', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        req.body = req.query; exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('still suppresses when the member write is after the sink', () => {
     const { flows } = analyze(`
       function f(req: any) {
@@ -197,10 +207,32 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings).toHaveLength(0);
   });
 
+  it('does not suppress after the validated object binding is rebound', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        req = other;
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('does not treat compound validator args as validating each member', () => {
     const { flows } = analyze(`
       function f(req: any) {
         if (!isValidHostName(req.body + req.query)) return;
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not treat member+binding compounds as validating the member', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const suffix = req.query;
+        if (!isValidHostName(req.body + suffix)) return;
         exec(req.body);
       }
     `);
