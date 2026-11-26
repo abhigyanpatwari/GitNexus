@@ -17,8 +17,9 @@
 
 import { writeSync } from 'node:fs';
 import { LocalBackend, VALID_NODE_LABELS } from '../mcp/local/local-backend.js';
-import { cliErrorKey, cliWarnKey } from './cli-message.js';
+import { cliError, cliErrorKey, cliWarnKey } from './cli-message.js';
 import { formatDetectChangesResult } from './detect-changes-format.js';
+import { IntegerOptionError, parseIntegerOption } from './int-option.js';
 import {
   ImpactBudgetExceededError,
   shapeImpactForAgent,
@@ -245,6 +246,18 @@ export async function contextCommand(
   output(result);
 }
 
+/** Parse the hop limit once, before loading an index or running a tool. */
+function parseToolDepth(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  try {
+    return parseIntegerOption(raw, '--depth', { minimum: 1 });
+  } catch (err) {
+    if (!(err instanceof IntegerOptionError)) throw err;
+    cliError(err.message);
+    process.exit(1);
+  }
+}
+
 export async function impactCommand(
   target?: string,
   options?: {
@@ -277,6 +290,7 @@ export async function impactCommand(
     cliErrorKey('tool.usage.impact');
     process.exit(1);
   }
+  const maxDepth = parseToolDepth(options?.depth);
   // Soft-validate --kind: an unknown kind is a no-op hint (the backend scores
   // it but it matches nothing), so warn and proceed rather than rejecting —
   // parity with the lenient MCP surface and forward-compatible with new labels.
@@ -306,7 +320,7 @@ export async function impactCommand(
       mode: options?.mode,
       // PDG-only statement anchor — forwarded only when --line was given.
       ...(parsedLine !== undefined ? { line: parsedLine } : {}),
-      maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
+      maxDepth,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
       branch: options?.branch,
@@ -511,15 +525,7 @@ export async function traceCommand(
     cliErrorKey('tool.usage.trace');
     process.exit(1);
   }
-  // Reject a non-numeric / non-positive --depth up front rather than forwarding
-  // NaN (which the backend would silently treat as the default).
-  if (options?.depth !== undefined) {
-    const parsedDepth = Number(options.depth);
-    if (!Number.isInteger(parsedDepth) || parsedDepth < 1) {
-      cliErrorKey('tool.usage.trace');
-      process.exit(1);
-    }
-  }
+  const maxDepth = parseToolDepth(options?.depth);
 
   try {
     const backend = await getBackend();
@@ -531,7 +537,7 @@ export async function traceCommand(
       to: to || undefined,
       to_uid: options?.toUid,
       to_file: options?.toFile,
-      maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
+      maxDepth,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
       branch: options?.branch,

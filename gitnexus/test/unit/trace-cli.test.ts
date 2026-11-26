@@ -28,7 +28,7 @@ vi.mock('../../src/core/lbug/native-check.js', () => ({
   checkLbugNative: () => ({ ok: true }),
 }));
 
-import { traceCommand } from '../../src/cli/tool.js';
+import { impactCommand, traceCommand } from '../../src/cli/tool.js';
 
 describe('CLI trace command', () => {
   beforeEach(() => {
@@ -146,6 +146,29 @@ describe('CLI trace command', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(callTool).not.toHaveBeenCalled();
     exitSpy.mockRestore();
+  });
+
+  it.each(['1e1', '0x2', '1.5', '-1', '0', '9007199254740992'])(
+    'rejects invalid depth %s before starting trace or impact',
+    async (depth) => {
+      const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => {
+        throw new Error('process.exit');
+      });
+      try {
+        await expect(traceCommand('A', 'B', { depth })).rejects.toThrow('process.exit');
+        await expect(impactCommand('A', { depth })).rejects.toThrow('process.exit');
+        expect(exitSpy).toHaveBeenCalledTimes(2);
+        expect(exitSpy).toHaveBeenCalledWith(1);
+        expect(callTool).not.toHaveBeenCalled();
+      } finally {
+        exitSpy.mockRestore();
+      }
+    },
+  );
+
+  it('forwards a valid decimal impact depth without changing its value', async () => {
+    await impactCommand('A', { depth: '10' });
+    expect(callTool).toHaveBeenCalledWith('impact', expect.objectContaining({ maxDepth: 10 }));
   });
 
   it('exits with usage when --from-uid or --to-uid is a swallowed flag value', async () => {
