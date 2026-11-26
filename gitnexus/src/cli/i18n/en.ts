@@ -131,6 +131,8 @@ export const en = {
   'tool.usage.trace':
     'Usage: gitnexus trace <from> <to> [-f|--file <path>] [--from-file <path>] [--to-file <path>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': 'Usage: gitnexus cypher <cypher_query>',
+  'tool.stale.indexStale':
+    'Index is stale relative to HEAD ({{status}}). Re-run `gitnexus analyze`.',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' is not a known symbol kind (e.g. Function, Class, Method); it will not narrow the result.",
   'tool.detectChanges.noChanges': 'No changes detected.',
@@ -417,6 +419,7 @@ export const en = {
   'help.option.detectChanges.limit': 'Max changed symbols to return',
   'help.option.cypher.limit': 'Max result rows to return',
   'help.option.check.cycles': 'Detect circular imports and fail when any are found',
+  'help.option.stalePolicy': 'Stale-index handling: warn (default), ignore, or error',
   'help.option.evalServer.host':
     'Bind address or resolvable hostname (default: 127.0.0.1; non-loopback requires GITNEXUS_AUTH_TOKEN; hostnames resolve to IPv4)',
   'help.option.evalServer.idleTimeout': 'Auto-shutdown after N seconds idle (0 = disabled)',

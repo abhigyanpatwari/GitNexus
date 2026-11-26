@@ -122,6 +122,8 @@ export const zhCN = {
   'tool.usage.trace':
     '用法：gitnexus trace <起点> <终点> [-f|--file <路径>] [--from-file <路径>] [--to-file <路径>] [--from-uid <uid>] [--to-uid <uid>] [--depth <n>]',
   'tool.usage.cypher': '用法：gitnexus cypher <Cypher 查询>',
+  'tool.stale.indexStale':
+    '索引相对 HEAD 已过期（{{status}}）。请重新运行 `gitnexus analyze`。',
   'tool.warn.unknownKind':
     "--kind '{{kind}}' 不是已知的符号类型（如 Function、Class、Method），不会用于缩小结果范围。",
   'tool.detectChanges.noChanges': '未检测到变更。',
@@ -378,6 +380,7 @@ export const zhCN = {
   'help.option.detectChanges.limit': '最多返回的已变更符号数',
   'help.option.cypher.limit': '最多返回的结果行数',
   'help.option.check.cycles': '检测循环导入，并在发现循环时失败',
+  'help.option.stalePolicy': '处理过期索引：warn（默认）、ignore 或 error',
   'help.option.evalServer.host':
     '绑定地址或可解析的主机名（默认：127.0.0.1；非回环绑定需要 GITNEXUS_AUTH_TOKEN；主机名解析为 IPv4）',
   'help.option.evalServer.idleTimeout': '空闲 N 秒后自动关闭（0 = 禁用）',

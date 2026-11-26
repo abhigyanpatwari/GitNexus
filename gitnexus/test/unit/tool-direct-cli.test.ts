@@ -239,6 +239,127 @@ describe('direct CLI tool commands', () => {
     expect(disconnectMock).toHaveBeenCalledOnce();
   });
 
+  it('keeps staleness under --stale-policy warn (default) and exits 0', async () => {
+    callToolMock.mockResolvedValue({
+      definitions: [],
+      processes: [],
+      staleness: { status: 'behind', commitsBehind: 3 },
+    });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow', { stalePolicy: 'warn' });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"status":"behind"'));
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('strips staleness under --stale-policy ignore', async () => {
+    callToolMock.mockResolvedValue({
+      definitions: [],
+      processes: [],
+      staleness: { status: 'behind', commitsBehind: 3 },
+    });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow', { stalePolicy: 'ignore' });
+
+    const text = writeSyncMock.mock.calls[0][1] as string;
+    expect(text).not.toContain('staleness');
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits non-zero under --stale-policy error when status is behind', async () => {
+    callToolMock.mockResolvedValue({
+      definitions: [],
+      processes: [],
+      staleness: { status: 'behind', commitsBehind: 3 },
+    });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow', { stalePolicy: 'error' });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"status":"behind"'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('does not fail --stale-policy error when status is unknown', async () => {
+    callToolMock.mockResolvedValue({
+      definitions: [],
+      processes: [],
+      staleness: { status: 'unknown' },
+    });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow', { stalePolicy: 'error' });
+
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('exits non-zero under --stale-policy error for diverged even without commitsBehind', async () => {
+    callToolMock.mockResolvedValue({
+      status: 'clean',
+      cycles: [],
+      staleness: { status: 'diverged', hint: 'not at HEAD' },
+    });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true, json: true, stalePolicy: 'error' });
+
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints a stale line in check prose under --stale-policy error', async () => {
+    callToolMock.mockResolvedValue({
+      status: 'clean',
+      cycleCount: 0,
+      cycles: [],
+      staleness: { status: 'behind', commitsBehind: 2 },
+    });
+    const { checkCommand } = await import('../../src/cli/tool.js');
+
+    await checkCommand({ cycles: true, stalePolicy: 'error' });
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('No circular imports'));
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('Index is stale relative to HEAD (behind)'),
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('prints a stale line for detect-changes prose under --stale-policy error', async () => {
+    callToolMock.mockResolvedValue({
+      summary: { changed_files: 0, changed_count: 0, affected_count: 0, risk_level: 'LOW' },
+      changed_symbols: [],
+      affected_processes: [],
+      staleness: { status: 'diverged', hint: 'not at HEAD' },
+    });
+    const { detectChangesCommand } = await import('../../src/cli/tool.js');
+
+    await detectChangesCommand({ stalePolicy: 'error' });
+
+    const texts = writeSyncMock.mock.calls.map((c) => c[1] as string);
+    expect(texts.some((t) => t.includes('Index is stale relative to HEAD (diverged)'))).toBe(true);
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('impact keeps staleness through agent shaping so --stale-policy error still fires', async () => {
+    callToolMock.mockResolvedValue({
+      impactedCount: 1,
+      byDepth: {
+        1: [{ id: 'caller', name: 'caller', processes: ['a', 'b', 'c', 'd'] }],
+      },
+      staleness: { status: 'behind', commitsBehind: 1 },
+    });
+    const { impactCommand } = await import('../../src/cli/tool.js');
+
+    await impactCommand('auth', { stalePolicy: 'error' });
+
+    const text = writeSyncMock.mock.calls[0][1] as string;
+    expect(text).toContain('"status":"behind"');
+    expect(process.exitCode).toBe(1);
+  });
+
   it('disconnects when a query throws', async () => {
     callToolMock.mockRejectedValue(new Error('embedding failed'));
     const { queryCommand } = await import('../../src/cli/tool.js');

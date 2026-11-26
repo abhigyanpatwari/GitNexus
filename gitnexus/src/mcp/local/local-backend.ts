@@ -3287,10 +3287,13 @@ export class LocalBackend {
           await this.impact(repo, p as unknown as ImpactParams),
           true,
         );
+      // #3127: same non-blocking `staleness` field as query/impact (MCP + CLI).
       case 'detect_changes':
-        return this.detectChanges(repo, p);
+        return this.withToolStaleness(repo, await this.detectChanges(repo, p));
       case 'check':
-        return this.check(repo, p);
+        return this.withToolStaleness(repo, await this.check(repo, p));
+      case 'trace':
+        return this.withToolStaleness(repo, await this.trace(repo, p));
       case 'rename':
         return this.rename(repo, p as unknown as Parameters<LocalBackend['rename']>[1]);
       // Legacy aliases for backwards compatibility
@@ -3311,8 +3314,6 @@ export class LocalBackend {
         return this.toolMap(repo, p);
       case 'api_impact':
         return this.apiImpact(repo, p);
-      case 'trace':
-        return this.trace(repo, p);
       case 'read_file':
         return this.withToolStaleness(repo, await this.readFile(repo, p));
       case 'grep':
