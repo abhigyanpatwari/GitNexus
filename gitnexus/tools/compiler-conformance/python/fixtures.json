@@ -1,0 +1,38 @@
+{
+  "lang-resolution/python-multi-level-mro": {
+    "entry": "from app import run; run()",
+    "names": ["gp_method"]
+  },
+  "lang-resolution/python-super-resolution": {
+    "entry": "from models.user import User; User().save()",
+    "names": ["save"]
+  },
+  "lang-resolution/python-grandparent-resolution": {
+    "entry": "from app import process; process()",
+    "names": ["greet", "save"]
+  },
+  "lang-resolution/python-static-class-methods": {
+    "entry": "from app import process; process()",
+    "names": ["find_user", "create_user", "from_config", "delete_user"]
+  },
+  "lang-resolution/python-reexport-chain": {
+    "entry": "from app import main; main()",
+    "names": ["save", "persist"]
+  },
+  "lang-resolution/python-constructor-calls": {
+    "entry": "from app import process; process()",
+    "names": ["save"]
+  },
+  "lang-resolution/python-constructor-type-inference": {
+    "entry": "from services.app import process_entities; process_entities()",
+    "names": ["save"]
+  },
+  "lang-resolution/python-inline-constructor-receiver": {
+    "entry": "from app import process_inline, process_twostep; process_inline('x'); process_twostep('x')",
+    "names": ["save"]
+  },
+  "lang-resolution/python-self-this-resolution": {
+    "entry": "from models.user import User; User().process()",
+    "names": ["save"]
+  }
+}
