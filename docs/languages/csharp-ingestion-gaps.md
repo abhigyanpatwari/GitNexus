@@ -21,18 +21,18 @@ and no same-named call to a different owner. WRONG-TARGET records incorrect edge
 | `nonNullAssert`         | RESOLVES       | `svc!.GetUser().Save();`              |
 | `awaitParen`            | RESOLVES       | `(await svc.GetUserAsync()).Save();`  |
 | `explicitTypeArgs`      | RESOLVES       | `svc.GetTyped<User>().Save();`        |
-| `indexElement`          | VISIBLE-GAP    | `repos[0].Save();`                    |
+| `indexElement`          | RESOLVES       | `repos[0].Save();`                    |
 | `fieldReceiverCall`     | RESOLVES       | `this.repo.Save();`                   |
 | `decoratedReceiverBase` | N/A            | C# `this` carries no type decoration. |
 | `decoratedFieldType`    | RESOLVES       | `this.repo.Save();`                   |
 
-The matrix resolves local nullable fields and the tested chain wrappers. It still loses `repos[0].Save()` with a `User[]` parameter. The resolver already registers an `elementTypeOf` hook, so this gap needs a full capture-to-resolution trace, not an assumption that the hook is absent.
+The matrix resolves local nullable fields, the tested chain wrappers and, since #4098, `repos[0].Save()` with a `User[]` parameter. The lost evidence was the parameter binding: the C# query had no `array_type` parameter pattern, while the `elementTypeOf` index route already peeled `User[]` to `User`. The new binding is limited to scoped owners and to identifier or predefined-type elements; see CSHARP-01 for the shapes that remain open.
 
 ## Planning candidates
 
 | ID        | Evidence            | Gap or boundary                                                                                                 | Next planning step and acceptance                                                                                                                                       |
 | --------- | ------------------- | --------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CSHARP-01 | Measured gap        | `indexElement` remains VISIBLE-GAP for a typed array.                                                           | Locate the lost array/type-owner evidence, then assert the exact User.Save target with a same-name decoy and an untyped/unsupported negative.                           |
+| CSHARP-01 | Resolved in #4099   | `indexElement` RESOLVES for a `User[]` parameter of a method, constructor, local function or operator. Still open: `params T[]`, qualified (`Ns.User[]`) and nullable (`User[]?`, `User?[]`) element spellings, jagged and rank arrays, generic elements, array locals and fields, and lambda, delegate and primary-constructor parameters. | Each remaining shape needs its own binding plus a no-target row in [csharp-array-parameter-binding.test.ts](../../gitnexus/test/integration/resolvers/csharp-array-parameter-binding.test.ts), which pins the exact target against a same-name decoy and the unsupported and leaking negatives. |
 | CSHARP-02 | Documented boundary | Qualified nullable fields, including `Custom.List<User>?`, are refused until their written owner can be proven. | Establish namespace-aware ownership before adding support. Keep wrapper types distinct from element types and preserve external and workspace-tail collision negatives. |
 
 ## Code and regression entry points
