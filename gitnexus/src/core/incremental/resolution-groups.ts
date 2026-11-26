@@ -1,13 +1,18 @@
+import { getLanguageFromFilename } from 'gitnexus-shared';
 import { getProviderForFile } from '../ingestion/languages/index.js';
 import { MAX_PROPERTY_DISPATCH_EDGES_PER_KEY } from '../ingestion/scope-resolution/property-dispatch-budget.js';
 
 function resolutionGroupForFile(filePath: string): string | undefined {
   const provider = getProviderForFile(filePath);
-  if (provider === null) return undefined;
   // A budget decision depends on all sites, including context files shared
   // across language passes. Re-examine source rows; the existing digest gate
   // still rewrites only files whose rows changed, including removed CALLS.
-  if (Number.isFinite(MAX_PROPERTY_DISPATCH_EDGES_PER_KEY)) return 'property-dispatch:workspace';
+  if (Number.isFinite(MAX_PROPERTY_DISPATCH_EDGES_PER_KEY)) {
+    return provider !== null || getLanguageFromFilename(filePath) !== null
+      ? 'property-dispatch:workspace'
+      : undefined;
+  }
+  if (provider === null) return undefined;
   const group = provider.incrementalResolutionGroup?.(filePath);
   return group === undefined ? undefined : `${provider.id}\0${group}`;
 }
