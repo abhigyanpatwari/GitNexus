@@ -29,7 +29,9 @@
  * hoist onto `Foo`'s scope (`populateClassOwnedMembers` completes the
  * ownership stamp) — the same mechanism C# uses for `partial class`.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * Capture output is deterministic for the input source text. The provider's
+ * capture-side-channel collector serializes the current file's overload-label
+ * metadata onto ParsedFile before the next file is extracted. No I/O.
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
@@ -356,6 +358,8 @@ export function emitSwiftScopeCaptures(
       if (ownerTag !== undefined && declaredName !== undefined && declNode != null) {
         const owner = swiftEnclosingTypeName(declNode);
         if (owner !== null) {
+          // The vendored Swift grammar places parameters directly on this
+          // declaration. overload-labels.test.ts checks that AST and its labels.
           captureSwiftParameterLabels(overloadLabels, declNode, grouped[ownerTag].range);
           grouped['@declaration.qualified_name'] = syntheticCapture(
             '@declaration.qualified_name',
