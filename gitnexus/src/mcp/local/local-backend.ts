@@ -7074,14 +7074,17 @@ export class LocalBackend {
       // untracked source never appears in that diff, so a clean result used to
       // read as "nothing to review" while new code sat outside the gate (#4177).
       // Keep the Git semantics; name the omission when the tracked tree is clean.
-      // Do not set `partial` — untracked paths cannot land in a commit until
-      // staged, and failing the gate for scratch files would teach people to
-      // skip it. Status failure (`null`) stays quiet: inventing an empty set
-      // would hide real omissions, inventing a failure would invent noise.
+      // Do not set `partial` for a successful probe that found untracked sources
+      // — those paths cannot land in a commit until staged. A failed probe
+      // (`null`) is different: `listUntrackedPaths` forbids treating that as an
+      // empty set, so fail closed rather than printing a bare all-clear.
       let omittedUntrackedSources: string[] | undefined;
+      let untrackedProbeFailed = false;
       if (!parseFailed && scope === 'all') {
         const untracked = listUntrackedPaths(diffCwd);
-        if (untracked && untracked.length > 0) {
+        if (untracked === null) {
+          untrackedProbeFailed = true;
+        } else if (untracked.length > 0) {
           const { isIndexedSourceFile } = await loadQueryProviders();
           const sources = untracked.filter(isIndexedSourceFile).sort();
           if (sources.length > 0) omittedUntrackedSources = sources;
@@ -7091,19 +7094,21 @@ export class LocalBackend {
         summary: {
           changed_count: 0,
           affected_count: 0,
-          risk_level: parseFailed ? 'unknown' : 'none',
+          risk_level: parseFailed || untrackedProbeFailed ? 'unknown' : 'none',
           message: parseFailed
             ? 'Could not parse the git diff output — no file headers recognised.'
-            : omittedUntrackedSources
-              ? 'No tracked changes vs HEAD.'
-              : 'No changes detected.',
+            : untrackedProbeFailed
+              ? 'No tracked changes vs HEAD. Could not list untracked sources (git status failed).'
+              : omittedUntrackedSources
+                ? 'No tracked changes vs HEAD.'
+                : 'No changes detected.',
         },
         changed_symbols: [],
         affected_processes: [],
         ...(omittedUntrackedSources && {
           omitted_untracked_sources: omittedUntrackedSources,
         }),
-        ...(parseFailed && { partial: true }),
+        ...((parseFailed || untrackedProbeFailed) && { partial: true }),
       };
     }
 

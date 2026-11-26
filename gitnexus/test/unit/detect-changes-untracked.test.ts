@@ -9,6 +9,7 @@ import path from 'path';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import * as pool from '../../src/core/lbug/pool-adapter.js';
 import * as registry from '../../src/storage/repo-manager.js';
+import * as git from '../../src/storage/git.js';
 import { createTempDirPool } from '../helpers/temp-dir-pool.js';
 import { commitAll, initGitRepo } from '../helpers/temp-git-repo.js';
 import { findToolDefinition } from '../../src/mcp/tools.js';
@@ -80,10 +81,11 @@ describe('detect_changes scope all — untracked source omission (#4177)', () =>
     expect(result.summary.message).toBe('No changes detected.');
   });
 
-  it('does not apply the omission note to the default unstaged scope', async () => {
+  it('does not apply the omission note when scope is omitted (default unstaged)', async () => {
     writeFileSync(path.join(repoDir, 'extra.ts'), 'export function added() { return 1; }\n');
+    // Omit `scope` so this exercises `params.scope || 'unstaged'`, not an
+    // explicit unstaged argument that would hide a default-regression.
     const result = (await backend.callTool('detect_changes', {
-      scope: 'unstaged',
       repo: params.repo,
     })) as {
       summary: { message?: string };
@@ -91,5 +93,18 @@ describe('detect_changes scope all — untracked source omission (#4177)', () =>
     };
     expect(result.omitted_untracked_sources).toBeUndefined();
     expect(result.summary.message).toBe('No changes detected.');
+  });
+
+  it('fails closed when untracked status cannot be listed', async () => {
+    vi.spyOn(git, 'listUntrackedPaths').mockReturnValue(null);
+    const result = (await backend.callTool('detect_changes', params)) as {
+      summary: { message?: string; risk_level?: string };
+      omitted_untracked_sources?: string[];
+      partial?: boolean;
+    };
+    expect(result.partial).toBe(true);
+    expect(result.summary.risk_level).toBe('unknown');
+    expect(result.omitted_untracked_sources).toBeUndefined();
+    expect(result.summary.message).toMatch(/Could not list untracked sources/);
   });
 });
