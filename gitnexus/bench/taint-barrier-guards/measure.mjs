@@ -20,10 +20,7 @@ import TypeScript from 'tree-sitter-typescript';
 import { createTypeScriptCfgVisitor } from '../../src/core/ingestion/cfg/visitors/typescript.ts';
 import { computeReachingDefs } from '../../src/core/ingestion/cfg/reaching-defs.ts';
 import { hasTaintSafeSites } from '../../src/core/ingestion/taint/site-safety.ts';
-import {
-  buildTaintImportIndex,
-  matchFunctionSites,
-} from '../../src/core/ingestion/taint/match.ts';
+import { buildTaintImportIndex, matchFunctionSites } from '../../src/core/ingestion/taint/match.ts';
 import { computeTaintFlows } from '../../src/core/ingestion/taint/propagate.ts';
 import { discoverProtoGuardCallees } from '../../src/core/ingestion/taint/barrier-guards.ts';
 import { TS_JS_TAINT_MODEL } from '../../src/core/ingestion/taint/typescript-model.ts';
@@ -104,15 +101,12 @@ function buildCfgs(source) {
       if (c) stack.push(c);
     }
   }
-  return fns
-    .map((fn) => bound.buildFunctionCfg(fn, 'bench.ts'))
-    .filter((cfg) => cfg !== undefined);
+  return fns.map((fn) => bound.buildFunctionCfg(fn, 'bench.ts')).filter((cfg) => cfg !== undefined);
 }
 
 function analyzeAll(cfgs) {
   const protoGuards = discoverProtoGuardCallees(cfgs);
-  const barrierOptions =
-    protoGuards.size > 0 ? { extraBarrierCallees: protoGuards } : undefined;
+  const barrierOptions = protoGuards.size > 0 ? { extraBarrierCallees: protoGuards } : undefined;
   const importIndex = buildTaintImportIndex([]);
   let findings = 0;
   let kills = 0;
@@ -123,14 +117,7 @@ function analyzeAll(cfgs) {
     const matches = matchFunctionSites(cfg, SPEC, importIndex);
     if (!matches.hasSource || !matches.hasSink) continue;
     const defUse = computeReachingDefs(cfg);
-    const flows = computeTaintFlows(
-      cfg,
-      defUse,
-      matches,
-      undefined,
-      undefined,
-      barrierOptions,
-    );
+    const flows = computeTaintFlows(cfg, defUse, matches, undefined, undefined, barrierOptions);
     if (flows.status !== 'computed') continue;
     analyzed++;
     findings += flows.findings.length;

@@ -808,9 +808,7 @@ export function computeTaintFlows(
       for (let si = 0; si < ctx.sites.length; si++) {
         const site = ctx.sites[si];
         if (!site.resultDefs?.includes(d)) continue;
-        if (
-          !isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, stmtText)
-        )
+        if (!isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, stmtText))
           continue;
         filterSiteIndex = si;
         break;

@@ -74,9 +74,7 @@ describe('barrier-guards name + polarity helpers', () => {
   });
 
   it('maps leading ! polarity to the validated CDG label', () => {
-    expect(validatedLabelForCondition('(!isValidHostName(hostname))', 'isValidHostName')).toBe(
-      'F',
-    );
+    expect(validatedLabelForCondition('(!isValidHostName(hostname))', 'isValidHostName')).toBe('F');
     expect(validatedLabelForCondition('(isValidHostName(hostname))', 'isValidHostName')).toBe('T');
   });
 });
@@ -91,9 +89,11 @@ describe('barrier-guards CDG index', () => {
       }
     `);
     const index = buildBarrierGuardIndex(cfg);
-    const hostname = cfg.bindings!.findIndex((b) => b.name === 'hostname');
-    const sink = cfg.blocks.find((b) => b.text.includes('exec(hostname)'))!.index;
-    expect(isBarrierGuarded(index, hostname, sink)?.callee).toBe('isValidHostName');
+    const hostname = (cfg.bindings ?? []).findIndex((b) => b.name === 'hostname');
+    const sinkBlock = cfg.blocks.find((b) => b.text.includes('exec(hostname)'));
+    expect(sinkBlock).toBeDefined();
+    if (!sinkBlock) throw new Error('missing sink block');
+    expect(isBarrierGuarded(index, hostname, sinkBlock.index)?.callee).toBe('isValidHostName');
   });
 });
 
