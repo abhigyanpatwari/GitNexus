@@ -1748,11 +1748,16 @@ export function runScopeResolution(
       const receiverDropPositions = new Map<string, number>();
       let kept = 0;
       for (const outcome of resolutionOutcomes) {
-        if (outcome.kind === 'suppressed' && outcome.reason === 'receiver-unresolved') {
+        if (
+          outcome.kind === 'suppressed' &&
+          (outcome.reason === 'receiver-unresolved' ||
+            outcome.reason === 'receiver-owned-but-unbound')
+        ) {
           const resolved =
-            selectedCalls === undefined
+            outcome.reason === 'receiver-unresolved' &&
+            (selectedCalls === undefined
               ? resolvedOnReplay.has(callableFlowSiteKey(outcome.filePath, outcome.range))
-              : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null;
+              : selectedCalls.get(selectedCallKey(outcome.filePath, outcome.range)) != null);
           if (resolved) continue;
           if (outcome.siteKind !== undefined) {
             const key = answeredSiteKey(
