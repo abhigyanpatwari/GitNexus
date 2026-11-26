@@ -25,6 +25,13 @@ import type { ProgramPoint } from '../cfg/reaching-defs.js';
 export interface BarrierController {
   readonly controllerBlock: number;
   readonly subjectBinding: number;
+  /**
+   * When the validator argument is a member-read (`req.body`), the property
+   * that was checked. Absent for plain bindings (`hostname`). Matching a sink
+   * requires the same property (or both absent) so validating `req.body`
+   * cannot suppress `exec(req.query)`.
+   */
+  readonly subjectProperty?: string;
   /** CDG label on which the subject is considered validated. */
   readonly validatedLabel: CdgLabel;
   readonly siteIndex: number;
@@ -113,20 +120,30 @@ function hasProtoEquality(text: string): boolean {
 
 /**
  * True when a function CFG body *rejects* the `__proto__` key.
- * Under-kill: require an affirming `return … !== "__proto__"` (set-value
- * shape), or equality + `return false`. Inequality only in an `if` that
- * returns false for safe keys (`acceptsProto`) must not qualify.
+ * Under-kill: affirming `return … !== "__proto__"`, or
+ * `if (key === "__proto__") return false` where `return false` is
+ * control-dependent on the equality's true branch (not merely co-present).
  */
 export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
-  let sawEqualityProto = false;
-  let sawReturnFalse = false;
   for (const block of cfg.blocks) {
-    const text = block.text;
-    if (/\breturn\s+false\b/.test(text)) sawReturnFalse = true;
-    if (isAffirmingProtoRejectReturn(text)) return true;
-    if (hasProtoEquality(text)) sawEqualityProto = true;
+    if (isAffirmingProtoRejectReturn(block.text)) return true;
   }
-  return sawEqualityProto && sawReturnFalse;
+  const equalityControllers = cfg.blocks.filter((b) => hasProtoEquality(b.text));
+  if (equalityControllers.length === 0) return false;
+  const cdg = computeControlDependence(cfg).edges;
+  for (const controller of equalityControllers) {
+    for (const dep of cfg.blocks) {
+      if (!/\breturn\s+false\b/.test(dep.text)) continue;
+      const onTrue = cdg.some(
+        (e) =>
+          e.controllerBlock === controller.index &&
+          e.dependentBlock === dep.index &&
+          e.label === 'T',
+      );
+      if (onTrue) return true;
+    }
+  }
+  return false;
 }
 
 /**
@@ -194,14 +211,38 @@ function argPositionBindings(site: SiteRecord, pos: number): number[] {
   return out;
 }
 
-/** First-argument bindings only — the value a unary validator checks. */
-function primaryArgBindings(site: SiteRecord): number[] {
-  return argPositionBindings(site, 0);
-}
-
 function isFilterCallee(callee: string | undefined): boolean {
   if (!callee) return false;
   return callee === 'filter' || callee.endsWith('.filter');
+}
+
+/** Subject(s) of validator arg 0: prefer member-read property when present. */
+function primaryArgSubjects(
+  sites: readonly SiteRecord[],
+  callSiteIndex: number,
+  callSite: SiteRecord,
+): readonly { binding: number; property?: string }[] {
+  const memberSubjects: { binding: number; property?: string }[] = [];
+  for (const s of sites) {
+    if (s.kind !== 'member-read' || s.object === undefined) continue;
+    if (s.parent?.[0] !== callSiteIndex || s.parent?.[1] !== 0) continue;
+    memberSubjects.push({ binding: s.object, property: s.property });
+  }
+  if (memberSubjects.length > 0) return memberSubjects;
+  return argPositionBindings(callSite, 0).map((binding) => ({ binding }));
+}
+
+/** Property of a member-read feeding call `siteIndex` arg `argPos`, if any. */
+export function memberPropertyAtArg(
+  sites: readonly SiteRecord[],
+  siteIndex: number,
+  argPos: number,
+): string | undefined {
+  for (const s of sites) {
+    if (s.kind !== 'member-read') continue;
+    if (s.parent?.[0] === siteIndex && s.parent?.[1] === argPos) return s.property;
+  }
+  return undefined;
 }
 
 /** Collect validating-predicate controllers from CFG call sites. */
@@ -221,16 +262,15 @@ export function collectBarrierControllers(cfg: FunctionCfg): BarrierController[]
         if (!isBarrierCalleeName(site.callee)) continue;
         // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
         if (isFilterCallee(site.callee)) continue;
-        // Only the primary (first) argument is the validated subject — later
-        // args may be options / unrelated tainted values.
-        const subjects = primaryArgBindings(site);
+        const subjects = primaryArgSubjects(sites, siteIndex, site);
         if (subjects.length === 0) continue;
         const validatedLabel = validatedLabelForCondition(block.text, site.callee);
         if (validatedLabel === undefined) continue; // compound / non-simple condition
-        for (const subjectBinding of subjects) {
+        for (const subject of subjects) {
           out.push({
             controllerBlock: block.index,
-            subjectBinding,
+            subjectBinding: subject.binding,
+            ...(subject.property !== undefined ? { subjectProperty: subject.property } : {}),
             validatedLabel,
             siteIndex,
             statementIndex,
@@ -266,6 +306,9 @@ export function buildBarrierGuardIndex(
  * True when `sinkBlock` is control-dependent on a validating predicate over
  * `bindingIdx` on the validated branch sense.
  *
+ * `sinkProperty` must match the controller's `subjectProperty` (both absent
+ * for plain bindings) so validating `req.body` cannot suppress `req.query`.
+ *
  * When `taintDefPoint` is provided, refuse the barrier if that def was itself
  * assigned on the validated branch (value reassigned after the check).
  */
@@ -274,6 +317,7 @@ export function isBarrierGuarded(
   bindingIdx: number,
   sinkBlock: number,
   taintDefPoint?: ProgramPoint,
+  sinkProperty?: string,
 ): BarrierController | undefined {
   const controllers = index.bySubject.get(bindingIdx);
   if (!controllers || controllers.length === 0) return undefined;
@@ -282,6 +326,7 @@ export function isBarrierGuarded(
     for (const c of controllers) {
       if (c.controllerBlock !== edge.controllerBlock) continue;
       if (c.validatedLabel !== edge.label) continue;
+      if ((c.subjectProperty ?? undefined) !== (sinkProperty ?? undefined)) continue;
       // Reassignment after validation: the reaching def lives on the validated
       // branch of the same controller → the checked value was overwritten.
       if (taintDefPoint !== undefined) {

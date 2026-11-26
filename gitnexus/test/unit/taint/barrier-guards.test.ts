@@ -146,6 +146,16 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings).toHaveLength(0);
   });
 
+  it('does not suppress a different member of the same object', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        exec(req.query);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
   it('still finds the unguarded flow', () => {
     const { flows } = analyze(`
       function f(req: any) {
@@ -342,6 +352,26 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     `);
     expect(functionContainsProtoGuard(cfgs[0])).toBe(false);
     expect([...discoverProtoGuardCallees(cfgs)]).not.toContain('acceptsProto');
+  });
+
+  it('rejects equality that accepts __proto__ then returns false elsewhere', () => {
+    const cfgs = cfgsOf(`
+      function acceptsProto(key: string) {
+        if (key === "__proto__") return true;
+        return false;
+      }
+    `);
+    expect(functionContainsProtoGuard(cfgs[0])).toBe(false);
+  });
+
+  it('accepts if (key === "__proto__") return false as a proto-guard', () => {
+    const cfgs = cfgsOf(`
+      function safeKey(key: string) {
+        if (key === "__proto__") return false;
+        return true;
+      }
+    `);
+    expect(functionContainsProtoGuard(cfgs[0])).toBe(true);
   });
 
   it('rejects helpers that only log a !== __proto__ check then return true', () => {

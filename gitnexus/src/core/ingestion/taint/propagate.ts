@@ -112,6 +112,7 @@ import {
   barrierControllerPoint,
   buildBarrierGuardIndex,
   isBarrierGuarded,
+  memberPropertyAtArg,
   type BarrierGuardOptions,
 } from './barrier-guards.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
@@ -577,12 +578,14 @@ export function computeTaintFlows(
     bindingIdx: number,
     sinkPoint: ProgramPoint,
     taintDefPoint?: ProgramPoint,
+    sinkProperty?: string,
   ): boolean => {
     const controller = isBarrierGuarded(
       barrierIndex,
       bindingIdx,
       sinkPoint.blockIndex,
       taintDefPoint,
+      sinkProperty,
     );
     if (!controller) return false;
     recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
@@ -849,11 +852,10 @@ export function computeTaintFlows(
             continue;
           if (!sofar.kinds.has(kind)) {
             const localBinding = srcSite.object as number;
-            // Statement-local member-read at the sink: sourceOcc.point IS the
-            // sink statement, not a prior def — omit taintDefPoint so the
-            // post-check reassignment guard does not false-refuse the barrier
-            // (e.g. if (!isValid(req.body)) return; exec(req.body)).
-            if (suppressedByBarrier(localBinding, ctx.point)) continue;
+            // Statement-local member-read at the sink: omit taintDefPoint
+            // (sourceOcc.point IS the sink). Pass property so validating
+            // req.body cannot suppress exec(req.query).
+            if (suppressedByBarrier(localBinding, ctx.point, undefined, srcSite.property)) continue;
             recordFinding(
               kind,
               sourceOcc,
@@ -960,7 +962,8 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
-              if (suppressedByBarrier(b, ctx.point, t.point)) continue;
+              const sinkProp = memberPropertyAtArg(ctx.sites, siteIndex, argPos);
+              if (suppressedByBarrier(b, ctx.point, t.point, sinkProp)) continue;
               const chain = chainHops(key);
               chain.hops.push({
                 bindingIdx: b,
