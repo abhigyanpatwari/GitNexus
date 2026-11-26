@@ -176,6 +176,9 @@ const CASES: readonly LanguageCase[] = [
     void Element(User[] repos) {
         repos[0].Save();
     }
+    void MultidimensionalElement(User[,] repos) {
+        repos[0, 0].Save();
+    }
     void OptionalElement(User[] repos) {
         repos?[0].Save();
     }
@@ -230,6 +233,13 @@ const CASES: readonly LanguageCase[] = [
       {
         language: 'csharp',
         source: 'Element',
+        member: 'Save',
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
+      },
+      {
+        language: 'csharp',
+        source: 'MultidimensionalElement',
         member: 'Save',
         targets: ['Method:Models.cs:User.Save#0'],
         drops: [],

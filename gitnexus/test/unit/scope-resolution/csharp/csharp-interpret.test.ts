@@ -52,6 +52,8 @@ describe('interpretCsharpTypeBinding — type normalization (F41 analog #1928)',
 
   it('normalizes an array parameter to its element type', () => {
     expect(raw('User[]')).toBe('User');
+    expect(raw('User[,]')).toBe('User');
+    expect(raw('User[,,]')).toBe('User');
   });
 
   it('unwraps a nullable single-arg generic (`List<User>?` → `User`)', () => {

@@ -58,6 +58,12 @@ export function unwrapCsharpElementType(
   // dictionary parse below was reachable only from the accessor hook.
   if (via.kind === 'index') {
     if (args !== undefined) return args.value;
+    // `extractElementTypeFromString` handles vector arrays (`User[]`) but not
+    // C# rank specifiers (`User[,]`, `User[,,]`). Peel one rank so chained
+    // indexing on jagged/mixed-rank arrays can continue through the remaining
+    // array spelling.
+    const rankedArray = containerType.trim().match(/^(.*?)\[(,*)\]$/);
+    if (rankedArray !== null && rankedArray[1]!.length > 0) return rankedArray[1]!.trim();
     return extractElementTypeFromString(containerType);
   }
   if (via.name !== 'Values' && via.name !== 'Keys') return undefined;

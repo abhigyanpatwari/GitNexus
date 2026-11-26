@@ -95,7 +95,7 @@ export function interpretCsharpTypeBinding(captures: CaptureMatch): ParsedTypeBi
     }
   }
   // A nullable wrapper field is not its element: List<User> is not User.
-  const unwrappedArray = withoutNullable.replace(/(?:\[\])+$/, '');
+  const unwrappedArray = withoutNullable.replace(/(?:\[(?:,*)\])+$/, '');
   const rawType =
     captures['@type-binding.nullable-field'] !== undefined
       ? withoutNullable
