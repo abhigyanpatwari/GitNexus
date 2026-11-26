@@ -3970,6 +3970,8 @@ export const paren = (() => helper());
 export const asserted = ((x: number) => helper()) as (x: number) => number;
 export const satisfied = (() => helper()) satisfies () => number;
 export const hoc = wrap(() => helper()) as () => number;
+export const outer = ((() => helper()) as () => number);
+export const outerHoc = (wrap(() => helper()) satisfies () => number);
 export const mapped = (xs.map((x: number) => helper())) as number[];
 export const nested = (memo(forwardRef(() => helper())));
 const local = (() => helper()) satisfies () => number;
@@ -3979,8 +3981,8 @@ declare function wrap<T>(f: T): T;
 declare function memo<T>(f: T): T;
 declare function forwardRef<T>(f: T): T;
 `,
-    'src/use.ts': `import { paren, asserted, satisfied, hoc } from './lib';
-export function useAll() { return paren() + asserted(1) + satisfied() + hoc(); }
+    'src/use.ts': `import { paren, asserted, satisfied, hoc, outer, outerHoc } from './lib';
+export function useAll() { return paren() + asserted(1) + satisfied() + hoc() + outer() + outerHoc(); }
 `,
   });
   const calls = () => getRelationships(result(), 'CALLS');
@@ -3990,20 +3992,21 @@ export function useAll() { return paren() + asserted(1) + satisfied() + hoc(); }
       .filter((c) => c.source === 'useAll' && c.targetFilePath === 'src/lib.ts')
       .map((c) => c.target)
       .sort();
-    expect(targets).toEqual(['asserted', 'hoc', 'paren', 'satisfied']);
+    expect(targets).toEqual(['asserted', 'hoc', 'outer', 'outerHoc', 'paren', 'satisfied']);
   });
 
   it('attributes calls inside a wrapped initializer to its Function', () => {
     const sources = calls()
       .filter((c) => c.target === 'helper' && c.sourceFilePath === 'src/lib.ts')
       .map((c) => c.source);
-    for (const name of ['paren', 'asserted', 'satisfied', 'hoc']) expect(sources).toContain(name);
+    for (const name of ['paren', 'asserted', 'satisfied', 'hoc', 'outer', 'outerHoc'])
+      expect(sources).toContain(name);
   });
 
   it('declares each wrapped initializer as one Function node, with no Const twin', () => {
     const functions = getNodesByLabel(result(), 'Function');
     const consts = getNodesByLabel(result(), 'Const');
-    for (const name of ['paren', 'asserted', 'satisfied', 'hoc', 'local']) {
+    for (const name of ['paren', 'asserted', 'satisfied', 'hoc', 'outer', 'outerHoc', 'local']) {
       expect(functions, name).toContain(name);
       expect(consts, name).not.toContain(name);
     }

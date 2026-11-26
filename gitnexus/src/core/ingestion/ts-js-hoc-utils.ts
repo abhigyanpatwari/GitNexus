@@ -101,8 +101,11 @@ export const DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE =
 /**
  * Wrapper chains (outermost first) a callable initializer may sit under and
  * still bind the declared name: `const F = (fn)`, `fn as T`, `fn satisfies T`,
- * and the parenthesized arrow an `as` / `satisfies` needs
- * (`((p) => …) as FC`). JavaScript has only the parentheses.
+ * the parenthesized arrow an `as` / `satisfies` needs (`((p) => …) as FC`),
+ * and each assertion inside one more pair of parentheses
+ * (`(fn as T)`, `(((p) => …) as FC)`). A query has a fixed depth, so further
+ * redundant parentheses, which formatters remove, are not followed.
+ * JavaScript has only the parentheses.
  */
 export const TS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
   ['parenthesized_expression'],
@@ -110,6 +113,10 @@ export const TS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
   ['satisfies_expression'],
   ['as_expression', 'parenthesized_expression'],
   ['satisfies_expression', 'parenthesized_expression'],
+  ['parenthesized_expression', 'as_expression'],
+  ['parenthesized_expression', 'satisfies_expression'],
+  ['parenthesized_expression', 'as_expression', 'parenthesized_expression'],
+  ['parenthesized_expression', 'satisfies_expression', 'parenthesized_expression'],
 ];
 export const JS_INITIALIZER_WRAPPERS: readonly (readonly string[])[] = [
   ['parenthesized_expression'],
