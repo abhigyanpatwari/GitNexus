@@ -1295,6 +1295,7 @@ const cachedFindEnclosingClassInfo = (
     provider.resolveFileTypeOwner,
     provider.resolveContainerTypeOwner,
     provider.resolveDetachedOwnerName,
+    provider.classExtractor?.qualifiedMemberIds,
   );
   classIdCache.set(node, result);
   return result;

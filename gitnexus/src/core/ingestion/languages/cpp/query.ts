@@ -130,43 +130,21 @@ const CPP_SCOPE_QUERY = `
     declarator: (function_declarator
       declarator: (identifier) @declaration.name))) @declaration.function
 
-;; ─── Declarations — out-of-class method (qualified_identifier) ──────
+;; Unwrap return-type declarators in the provider. An ordinary function with
+;; a bare name has its own query above and needs no detached-owner lookup.
 (function_definition
-  declarator: (function_declarator
-    declarator: (qualified_identifier
-      name: (identifier) @declaration.name))) @declaration.method
-
-;; Out-of-class operator method: Point::operator+(...)
-(function_definition
-  declarator: (function_declarator
-    declarator: (qualified_identifier
-      name: (operator_name) @declaration.name))) @declaration.method
-
-;; ─── Declarations — out-of-class method with pointer return ─────────
-(function_definition
-  declarator: (pointer_declarator
-    declarator: (function_declarator
-      declarator: (qualified_identifier
-        name: (identifier) @declaration.name)))) @declaration.method
-
-;; ─── Declarations — out-of-class method (destructor_name) ───────────
-(function_definition
-  declarator: (function_declarator
-    declarator: (qualified_identifier
-      name: (destructor_name) @declaration.name))) @declaration.method
+  declarator: [
+    (function_declarator declarator: [(qualified_identifier) (parenthesized_declarator)])
+    (pointer_declarator)
+    (reference_declarator)
+    (parenthesized_declarator)
+  ]) @declaration.qualified-candidate
 
 ;; ─── Declarations — template function definition ────────────────────
 (template_declaration
   (function_definition
     declarator: (function_declarator
       declarator: (identifier) @declaration.name)) @declaration.function)
-
-;; ─── Declarations — template method (qualified) ─────────────────────
-(template_declaration
-  (function_definition
-    declarator: (function_declarator
-      declarator: (qualified_identifier
-        name: (identifier) @declaration.name))) @declaration.method)
 
 ;; ─── Declarations — inline method in class body (field_identifier) ──
 ;; tree-sitter-cpp uses field_identifier for names inside class bodies

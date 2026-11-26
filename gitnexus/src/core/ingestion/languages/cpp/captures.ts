@@ -1,3 +1,8 @@
+import {
+  findCppFunctionDeclarator,
+  resolveCppDetachedOwnerName,
+  unwrapCppQualifiedNameNode,
+} from './detached-member-owner.js';
 import type { Capture, CaptureMatch, ParameterTypeClass } from 'gitnexus-shared';
 import {
   nodeIfType,
@@ -219,9 +224,34 @@ export function emitCppScopeCaptures(
     for (const c of m.captures) {
       const tag = '@' + c.name;
       if (tag.startsWith('@_')) continue;
-      grouped[tag] = nodeToCapture(tag, c.node);
       nodeMap[tag] = c.node;
+      if (tag !== '@declaration.qualified-candidate') grouped[tag] = nodeToCapture(tag, c.node);
     }
+    const candidate = nodeMap['@declaration.qualified-candidate'];
+    if (candidate) {
+      // A::B::f has nested qualified_identifier nodes. Capture its terminal
+      // name at any depth and keep the entire definition as the owning scope.
+      const owner = resolveCppDetachedOwnerName(candidate);
+      if (!owner) continue;
+      const declarator = findCppFunctionDeclarator(candidate)?.childForFieldName('declarator');
+      const qualified =
+        declarator?.type === 'parenthesized_declarator'
+          ? declarator.namedChildren.find((child) => child.type === 'qualified_identifier')
+          : declarator;
+      if (qualified?.type !== 'qualified_identifier') continue;
+      const name = unwrapCppQualifiedNameNode(qualified);
+      if (!name) continue;
+      nodeMap['@declaration.method'] = candidate;
+      nodeMap['@declaration.name'] = name;
+      grouped['@declaration.method'] = nodeToCapture('@declaration.method', candidate);
+      grouped['@declaration.name'] = nodeToCapture('@declaration.name', name);
+      grouped['@declaration.qualified_name'] = syntheticCapture(
+        '@declaration.qualified_name',
+        qualified,
+        owner + '.' + name.text,
+      );
+    }
+
     if (Object.keys(grouped).length === 0) continue;
 
     if (grouped['@import.namespace-alias'] !== undefined) {

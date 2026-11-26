@@ -1006,6 +1006,7 @@ export const findEnclosingClassInfo = (
     filePath: string,
   ) => { readonly name: string; readonly label: NodeLabel } | null,
   resolveDetachedOwnerName?: LanguageProvider['resolveDetachedOwnerName'],
+  qualifiedMemberIds = false,
 ): EnclosingClassInfo | null => {
   let current = node.parent;
   let iterations = 0;
@@ -1276,7 +1277,9 @@ export const findEnclosingClassInfo = (
               : qualifiedOwnerName
             : undefined;
         const qualifiedClassName =
-          qualifiedMemberOwnerName !== undefined && qualifiedMemberOwnerName !== nameNode.text
+          qualifiedMemberIds &&
+          qualifiedMemberOwnerName !== undefined &&
+          qualifiedMemberOwnerName !== nameNode.text
             ? qualifiedMemberOwnerName
             : undefined;
         const qualifiedClassId =

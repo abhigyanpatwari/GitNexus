@@ -129,7 +129,11 @@ namespace N {
   void N::Redundant::go() {}
 }
 
-void N::Box::save() {}
+void helper() {}
+void N::Box::save() { helper(); }
+namespace Other { struct Box { void save(); }; }
+void otherHelper() {}
+void Other::Box::save() { otherHelper(); }
 
 struct GlobalBox {
   void ping();
@@ -163,6 +167,14 @@ PtrNs::Box& PtrNs::Box::ref() { return *this; }
     });
 
     expect(methodIds.has('Method:main.cpp:N.Box.save#0')).toBe(true);
+    const helperCalls = getRelationships(result, 'CALLS').filter(
+      ({ rel }) => rel.targetId === 'Function:main.cpp:helper#0',
+    );
+    expect(helperCalls.map(({ rel }) => rel.sourceId)).toContain('Method:main.cpp:N.Box.save#0');
+    const otherCalls = getRelationships(result, 'CALLS').filter(
+      ({ rel }) => rel.targetId === 'Function:main.cpp:otherHelper#0',
+    );
+    expect(otherCalls.map(({ rel }) => rel.sourceId)).toEqual(['Method:main.cpp:Other.Box.save#0']);
     expect(methodIds.has('Method:main.cpp:N.InNs.run#0')).toBe(true);
     expect(methodIds.has('Method:main.cpp:N.Redundant.go#0')).toBe(true);
     expect(methodIds.has('Method:main.cpp:N.N.Redundant.go#0')).toBe(false);
