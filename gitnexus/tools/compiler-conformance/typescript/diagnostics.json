@@ -1,4 +1,42 @@
 {
+  "compiler-conformance/typescript-module-ownership": [
+    "ambiguous.ts:4:0 TS2308",
+    "direct-mixed.ts:1:34 TS2308",
+    "entry.ts:102:12 TS2339",
+    "entry.ts:11:2 TS1362",
+    "entry.ts:13:13 TS2339",
+    "entry.ts:15:17 TS2339",
+    "entry.ts:17:6 TS1361",
+    "entry.ts:52:2 TS1362",
+    "entry.ts:54:2 TS1362",
+    "entry.ts:60:6 TS2339",
+    "entry.ts:66:10 TS2339",
+    "entry.ts:71:15 TS2339",
+    "entry.ts:78:10 TS2339",
+    "entry.ts:87:53 TS2694",
+    "entry.ts:92:2 TS1362",
+    "entry.ts:96:2 TS1362",
+    "entry.ts:9:2 TS1362",
+    "mixed-owners.ts:1:33 TS2308",
+    "mixed-owners.ts:1:33 TS2308",
+    "namespace-visibility.ts:6:38 TS2694",
+    "namespace.ts:5:2 TS2304",
+    "quoted/entry.ts:15:12 TS2339",
+    "reversed.ts:4:0 TS2308"
+  ],
+  "compiler-conformance/typescript-map-tuple-positions": [
+    "entry.ts:37:13 TS2491",
+    "entry.ts:37:41 TS2339"
+  ],
+  "compiler-conformance/typescript-default-import": [
+    "src/Ghost.ts:1:7 TS1192",
+    "src/Parent.tsx:6:38 TS7026",
+    "src/Parent.tsx:6:9 TS7026",
+    "src/c/Child.tsx:1:61 TS7026",
+    "src/c/Child.tsx:1:69 TS7026",
+    "src/c/Named.tsx:1:33 TS7026",
+    "src/c/Widget.tsx:1:41 TS7026"
+  ],
   "compiler-conformance/typescript-ambient-module-exports": [
     "use.ts:1:22 TS2305",
     "use.ts:1:30 TS2305"

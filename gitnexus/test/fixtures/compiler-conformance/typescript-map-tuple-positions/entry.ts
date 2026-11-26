@@ -1,21 +1,4 @@
-import { describe, expect, it } from 'vitest';
-import { getRelationships, useFixture } from './helpers.js';
 
-describe('TypeScript Map iteration tuple positions', () => {
-  const result = useFixture('ts-map-tuple-positions', {
-    'owners.ts': `
-export class Key {
-  pair: [number, number] = [1, 2];
-  save() {}
-}
-export class Value {
-  save() {}
-}
-export class Outside {
-  save() {}
-}
-`,
-    'entry.ts': `
 import { Key, Outside, Value } from './owners.js';
 
 export function ordinary(entries: Map<Key, Value>) {
@@ -50,32 +33,6 @@ export function unrelated(entries: Iterable<[Key, Value]>) {
   for (const [, value] of entries) value.save();
 }
 export function forIn(entries: Map<Key, Value>) {
-  // @ts-expect-error A for-in loop cannot destructure a property name.
+  // A for-in loop cannot destructure a property name.
   for (const [, value] in entries) value.save();
 }
-`,
-  });
-
-  const key = 'Method:owners.ts:Key.save#0';
-  const value = 'Method:owners.ts:Value.save#0';
-  it.each([
-    ['ordinary', [key, value]],
-    ['keyOnly', [key]],
-    ['valueOnly', [value]],
-    ['elision', [value]],
-    ['nested', [value]],
-    ['defaultKey', [value]],
-    ['asyncElision', [value]],
-    ['outerValue', ['Method:owners.ts:Outside.save#0']],
-    ['unrelated', []],
-    ['forIn', []],
-  ] as const)('gives %s its exact save targets', (caller, expected) => {
-    const calls = getRelationships(result(), 'CALLS')
-      .filter(
-        ({ rel, target }) => rel.sourceId === `Function:entry.ts:${caller}` && target === 'save',
-      )
-      .map(({ rel }) => rel.targetId)
-      .sort();
-    expect(calls).toEqual(expected);
-  });
-});

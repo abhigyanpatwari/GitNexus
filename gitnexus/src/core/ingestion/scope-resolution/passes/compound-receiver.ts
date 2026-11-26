@@ -82,7 +82,7 @@ const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
 const UNPARSEABLE_CAST_TYPE_RE =
   /^[a-zA-Z_]\w*(?:\s*\.\s*[a-zA-Z_]\w*)*(?:\s*<[^()]*>)?(?:\s*\[\s*\])*$/;
 
-function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } | null {
+export function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } | null {
   const match = MAP_TUPLE_SENTINEL_RE.exec(text);
   if (match === null) return null;
   const [, idxStr, rhs] = match;

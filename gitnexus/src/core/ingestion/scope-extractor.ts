@@ -1965,6 +1965,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.qualified_name',
   '@declaration.graph-position',
   '@declaration.is-synthetic',
+  '@declaration.is-exported',
   '@declaration.global',
   '@declaration.lexical-method',
   '@import.name',

@@ -38,6 +38,7 @@
  *     branch-on-ambiguity behavior should consume the registries directly.
  */
 
+import { publishedNamespaceMember } from './scope-resolution/scope/published-namespace-member.js';
 import {
   buildClassRegistry,
   buildFieldRegistry,
@@ -183,21 +184,27 @@ export function createReferenceLookup(
       // are owners. Preserve the former's file constraint and require the
       // latter to own the exact qualified declaration.
       const namespaceImport = claim.imports.some((edge) => edge.kind === 'namespace');
+      const member =
+        !namespaceImport &&
+        publishedNamespaceMember(claim.bindings, qualified.split('.').slice(1), scopes);
       const definition = namespaceImport
         ? findClassBindingInScope(scope, qualified, scopes, undefined, {
             ...options,
             uniqueQualifiedNameFallback: false,
             namespaceMemberVisible: input.isNamespaceMemberVisible,
           })
-        : resolveQualifiedInheritanceBase(
+        : ((member && CLASS_KINDS.includes(member.def.type) ? member.def : undefined) ??
+          resolveQualifiedInheritanceBase(
             scope,
             site.rawQualifiedName,
             scopes,
             findEnclosingClassDef(scope, scopes),
-          );
+          ));
       if (
         definition === undefined ||
+        member === null ||
         (!namespaceImport &&
+          !member &&
           ((claim.imports.length > 0 && claim.bindings.length === 0) ||
             !claim.bindings.every(({ def }) => qualifierOwnsDefinition(def, definition, scopes))))
       ) {

@@ -1,0 +1,1 @@
+export function run() {} export class K { save() {} }

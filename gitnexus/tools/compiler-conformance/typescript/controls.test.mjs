@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
+import { checkModuleValues } from './module-values.mjs';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
@@ -12,6 +14,8 @@ const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('runtime module exports agree with the JavaScript emitted by TypeScript', checkModuleValues);
 
 test('a call in a returned function belongs to that function', () => {
   const project = path.resolve(root, '../typescript-local-binding-identities');
@@ -318,4 +322,24 @@ test('a class property read and a same-named block local resolve to separate dec
     site === field ? { ...site, target: local.target } : site,
   );
   assert.throws(() => compareReports(fields, { ...fields, sites: wrong }), /Missing from actual/);
+});
+
+test('module ownership exposes conflict candidates and marks erased file dependencies', async () => {
+  const directory = path.resolve(root, '../typescript-module-ownership');
+  const { graph, resolutionOutcomes } = await runPipelineFromRepo(directory, () => {});
+  const conflicts = (resolutionOutcomes ?? []).filter(
+    (outcome) => outcome.kind === 'reexport-ambiguous' && outcome.name === 'publish',
+  );
+  const candidates = ['def:left.ts#2:7:Function:publish', 'def:right.ts#1:7:Function:publish'];
+  for (const barrel of ['ambiguous.ts', 'reversed.ts']) {
+    const conflict = conflicts.find((outcome) => outcome.filePath === barrel);
+    assert.deepEqual(conflict && [...conflict.candidateIds].sort(), candidates);
+  }
+  const imports = [...graph.iterRelationshipsByType('IMPORTS')];
+  for (const file of ['types.ts', 'type-star.ts', 'type-namespace.ts']) {
+    const edge = imports.find(
+      (edge) => edge.sourceId === 'File:' + file && edge.targetId === 'File:left.ts',
+    );
+    assert.match(edge?.reason ?? '', /\(type-only\)/);
+  }
 });

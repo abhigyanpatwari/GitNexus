@@ -31,6 +31,7 @@ import {
   tsReceiverCallSite,
 } from './call-arguments.js';
 import { resolveTsFunctionOverload } from './function-overloads.js';
+import { populateTsRangeBindings } from './range-bindings.js';
 import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
 import { tsQualifiedTypeLookupSpelling } from './interpret.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
@@ -120,6 +121,7 @@ const typescriptScopeResolver: ScopeResolver = {
   receiverMemberLookupCoversAllCalls: true,
   receiverCallSite: tsReceiverCallSite,
   callResultAssignmentApplies: tsCallResultAssignmentApplies,
+  populateRangeBindings: populateTsRangeBindings,
   // One hook, both routes. TypeScript exposes collection views as METHOD calls
   // (`.values()`), which the call-expression branch already handles, so the
   // accessor route yields nothing here — but it is now the same hook rather

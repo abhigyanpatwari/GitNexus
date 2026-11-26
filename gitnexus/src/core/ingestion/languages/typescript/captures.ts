@@ -41,6 +41,8 @@ import { splitImportStatement } from './import-decomposer.js';
 import { getTsParser, getTsScopeQuery, tsCachedTreeMatchesGrammar } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { synthesizeTsReceiverBinding } from './receiver-binding.js';
+import { canonicalTypeScriptName } from './identifiers.js';
+import { defaultFactoryResult } from './default-factory.js';
 import { unboundCallableName } from './unbound-callables.js';
 import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
@@ -417,6 +419,10 @@ export function emitTsScopeCaptures(
   const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
   const exportEvidence = collectEsmExportEvidence(tree.rootNode, filePath);
+  const returnedDefault = sourceText.includes('default')
+    ? defaultFactoryResult(tree.rootNode)
+    : undefined;
+  const implicitNamespaceExports = new Map<number, boolean>();
   const out: CaptureMatch[] = [];
   let awaitedCalls: Map<string, Capture> | undefined;
 
@@ -433,6 +439,9 @@ export function emitTsScopeCaptures(
     }
     if (Object.keys(grouped).length === 0) continue;
     synthesizeTsJsClassIdentity(grouped, groupedNodes);
+    const qualified = grouped['@reference.qualified-name'];
+    if (qualified?.text.includes('\\'))
+      grouped[qualified.name] = { ...qualified, text: canonicalTypeScriptName(qualified.text) };
 
     // Decompose each `import_statement` / re-export `export_statement`
     // so `interpretTsImport` sees the kind/source/name/alias markers
@@ -758,6 +767,55 @@ export function emitTsScopeCaptures(
     // export surface can decide (see `ts-js-export-marker.ts`); nothing where
     // it cannot, because absence is the honest answer there.
     addEsmExportMarkerCaptures(grouped, groupedNodes['@declaration.name'], exportEvidence);
+    if (returnedDefault && unbound?.id === returnedDefault.id) {
+      grouped['@declaration.is-exported'] = syntheticCapture(
+        '@declaration.is-exported',
+        unbound,
+        'true',
+      );
+      grouped['@declaration.is-default-export'] = syntheticCapture(
+        '@declaration.is-default-export',
+        unbound,
+        'true',
+      );
+      grouped['@declaration.named-exports'] = syntheticCapture(
+        '@declaration.named-exports',
+        unbound,
+        '[]',
+      );
+    }
+    const declaredName = groupedNodes['@declaration.name'];
+    const declaration = declaredName?.parent;
+    const statement =
+      declaration?.parent?.type === 'export_statement' ? declaration.parent : declaration;
+    if (declaredName && statement?.parent?.parent?.type === 'internal_module') {
+      // The enclosing namespace owns this export list. File-level visibility
+      // is recorded independently by addEsmExportMarkerCaptures.
+      const body = statement.parent;
+      let implicit = implicitNamespaceExports.get(body.id);
+      if (implicit === undefined) {
+        // Ambient namespace members are public unless an explicit export
+        // declaration or assignment defines that namespace's export surface.
+        const ambient =
+          /\.d\.[cm]?ts$/i.test(filePath) || body.closest('ambient_declaration') !== null;
+        implicit =
+          ambient &&
+          !body.namedChildren.some(
+            (child) => child.type === 'export_statement' && !child.childForFieldName('declaration'),
+          );
+        implicitNamespaceExports.set(body.id, implicit);
+      }
+      const names =
+        statement.type === 'export_statement' || implicit
+          ? [canonicalTypeScriptName(declaredName.text)]
+          : [];
+      grouped['@declaration.named-exports'] = syntheticCapture(
+        '@declaration.named-exports',
+        declaredName,
+        JSON.stringify(names),
+      );
+    }
+
     synthesizeReceiverChainCapture(grouped, groupedNodes['@reference.receiver']);
     out.push(grouped);
 

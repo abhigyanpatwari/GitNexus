@@ -358,18 +358,36 @@ export function emitFreeCallFallback(
         // was imported is precise — C++ `#include "user.h"` and Rust
         // `use`/`pub use` often mint no lexical class binding. An
         // imported sibling file of a different name is not evidence.
-        let classDef = resolveInheritanceBaseInScope(
-          site.inScope,
-          site.name,
-          scopes,
-          site.rawQualifiedName,
-          undefined,
-          {
-            ...classLookupOptions,
-            uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined,
-          },
-        );
-        if (classDef === undefined) {
+        const qualifier = site.rawQualifiedName?.split(/[.:]/, 1)[0];
+        const qualifierClaim =
+          qualifier && qualifier !== site.name
+            ? lookupNameClaim(site.inScope, qualifier, scopes, lookupOptions)
+            : undefined;
+        const localNamespace =
+          qualifierClaim?.scope?.kind !== 'Module' &&
+          qualifierClaim?.imports.some((edge) => edge.kind === 'namespace');
+        // A local namespace import shadows a module import with the same name.
+        let classDef =
+          localNamespace && site.rawQualifiedName
+            ? findClassBindingInScope(
+                site.inScope,
+                site.rawQualifiedName,
+                scopes,
+                undefined,
+                classLookupOptions,
+              )
+            : resolveInheritanceBaseInScope(
+                site.inScope,
+                site.name,
+                scopes,
+                site.rawQualifiedName,
+                undefined,
+                {
+                  ...classLookupOptions,
+                  uniqueQualifiedNameFallback: site.rawQualifiedName !== undefined,
+                },
+              );
+        if (classDef === undefined && !localNamespace) {
           classDef =
             findClassBindingInScope(site.inScope, site.name, scopes, undefined, {
               ...classLookupOptions,

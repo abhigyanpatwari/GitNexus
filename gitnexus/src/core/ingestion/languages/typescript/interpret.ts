@@ -15,6 +15,7 @@
  * `@type-binding.type`.
  */
 
+import { publishedNamespaceMember } from '../../scope-resolution/scope/published-namespace-member.js';
 import type {
   CaptureMatch,
   ParsedImport,
@@ -311,9 +312,10 @@ export function tsQualifiedTypeLookupSpelling(
     position: typeRef.lookupPosition,
     purpose: typeRef.lookupPurpose ?? 'type',
   });
-  return claim.scope && claim.imports.some((edge) => edge.kind === 'namespace')
-    ? { spelling, scope: claim.scope.id }
-    : null;
+  if (claim.scope && claim.imports.some((edge) => edge.kind === 'namespace'))
+    return { spelling, scope: claim.scope.id };
+  const local = publishedNamespaceMember(claim.bindings, spelling.split('.').slice(1), scopes);
+  return local ? { spelling: typeRef.rawName, scope: local.scope } : null;
 }
 
 /** Types that carry no discriminating information for chain resolution.
