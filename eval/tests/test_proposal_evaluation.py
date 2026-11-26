@@ -157,6 +157,30 @@ def test_probe_servers_classifies_sandbox_error_causes(monkeypatch, tmp_path):
     with pytest.raises(evaluator.SandboxError, match=r"session failed: exit code 1 \(permission_denied\)"):
         evaluator._probe_servers(source, client, tmp_path)
 
+    # Exit-0 application error prefers subtype/diagnostics over misleading 'exit code 0'
+    monkeypatch.setattr(
+        evaluator,
+        "propose",
+        make_fake_propose(
+            ok=False,
+            error_detail={"returncode": 0, "subtype": "is_error", "stdout_tail": "invalid tool use"},
+        ),
+    )
+    with pytest.raises(evaluator.SandboxError, match=r"session failed: is_error \(invalid tool use\)"):
+        evaluator._probe_servers(source, client, tmp_path)
+
+    # Process timeout prefers process_state and detail
+    monkeypatch.setattr(
+        evaluator,
+        "propose",
+        make_fake_propose(
+            ok=False,
+            error_detail={"returncode": None, "process_state": "timeout", "process_detail": "timed out after 120s"},
+        ),
+    )
+    with pytest.raises(evaluator.SandboxError, match=r"session failed: timeout \(timed out after 120s\)"):
+        evaluator._probe_servers(source, client, tmp_path)
+
     # Actual tool result count mismatch
     monkeypatch.setattr(evaluator, "propose", make_fake_propose(tool_results=[]))
     with pytest.raises(evaluator.SandboxError, match=r"failed: 0/1 successful tool results"):
