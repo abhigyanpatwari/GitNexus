@@ -4946,25 +4946,37 @@ async function runFullAnalysisInner(
         const derivedSnapshot = preserveDerivedLayer
           ? await snapshotDerivedRelsForFiles(filesToDelete, [...tablesWithRows])
           : [];
-        await dropSearchFTSIndexes(indexCatalogRows, ftsIndexes, incrementalFtsRebuildTables);
-        // 1b. Remove the write set's existing rows — batched (#2409): one
-        //     DETACH DELETE per table per 200-file chunk. The former per-file
-        //     loop issued a count + delete per table per FILE — ~13k
-        //     single-row write transactions on a ~700-file write set — which
-        //     made this phase slower than a full rebuild and is the WAL-append
-        //     storm behind the native mid-writeback deaths in #2409. Errors
-        //     are NOT swallowed anymore: a zero-match file is a no-op by
-        //     construction, so anything thrown is a real engine failure that
-        //     must surface instead of silently skipping (that silent skip was
-        //     how #2409 hid its root cause).
-        progress('lbug', 62, `Removing rows for changed files (0/${filesToDelete.length})...`);
-        await deleteNodesForFiles(filesToDelete, {
-          onChunk: (done, total) =>
-            progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
-          nodeTables: incrementalFtsRebuildTables
-            ? nodeTablesForIncrementalDelete(NODE_TABLES, incrementalFtsRebuildTables)
-            : undefined,
-        });
+        try {
+          await dropSearchFTSIndexes(indexCatalogRows, ftsIndexes, incrementalFtsRebuildTables);
+          // 1b. Remove the write set's existing rows - batched (#2409): one
+          // DETACH DELETE per table per 200-file chunk. The former per-file
+          // loop issued a count + delete per table per FILE - ~13k
+          // single-row write transactions on a >700-file write set - which
+          // made this phase slower than a full rebuild and is the WAL-append
+          // storm behind the native mid-writeback deaths in #2409. Errors
+          // are NOT swallowed anymore: a zero-match file is a no-op by
+          // construction, so anything thrown is a real engine failure that
+          // must surface instead of silently skipping (that silent skip was
+          // how #2409 hid its root cause).
+          progress('lbug', 62, `Removing rows for changed files (0/${filesToDelete.length})...`);
+          await deleteNodesForFiles(filesToDelete, {
+            onChunk: (done, total) =>
+              progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
+            nodeTables: incrementalFtsRebuildTables
+              ? nodeTablesForIncrementalDelete(NODE_TABLES, incrementalFtsRebuildTables)
+              : undefined,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (/FTS index .* is inconsistent/i.test(message)) {
+            throw new Error(
+              `Incremental analyze failed because the full-text search index is corrupted (${message}). ` +
+                `Run 'gitnexus clean -f' and re-run 'gitnexus analyze' to rebuild the index.`,
+              { cause: err },
+            );
+          }
+          throw err;
+        }
         // Surgical path: Phase 3.5 restores exactly these files' embedding
         // rows (FIX 3). Sound because deleteNodesForFiles propagates errors
         // — reaching this line means every listed file's rows are gone
