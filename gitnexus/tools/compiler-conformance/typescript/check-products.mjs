@@ -28,6 +28,7 @@ const selected = platform
       'product/rename.ts',
       'product/shared-store-embedding-reuse.ts',
       'product/skills-e2e.ts',
+      'product/watch-filesystem.ts',
       'provider/rename-typescript-member-keys.ts',
     ]
   : globSync(['product/*.ts', 'provider/*.ts'], { cwd: directory });
