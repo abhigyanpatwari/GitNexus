@@ -131,9 +131,10 @@ the validated branch, and the reaching def was not assigned after the check.
 Same-file functions whose body *rejects* `__proto__` (inequality / deny-list,
 or equality + `return false`) are discovered as barrier callees, including
 `const safeKey = …` arrows via inferred `functionName`. Qualified calls like
-`!validators.isValidHostName(x)` keep bang polarity. Chained `.filter(isValidKey)`
-neutralizes filtered keys (set-value). See `taint/barrier-guards.ts` and
-`bench/taint-barrier-guards/`.
+`!validators.isValidHostName(x)` keep bang polarity. Chained `.filter(pred)`
+neutralizes only when `pred` is a discovered proto-guard (arg 0 only; name-alone
+`isValid*` is not enough). Validator controllers bind the first argument only.
+See `taint/barrier-guards.ts` and `bench/taint-barrier-guards/`.
 
 ## GitNexus-specific gotchas
 

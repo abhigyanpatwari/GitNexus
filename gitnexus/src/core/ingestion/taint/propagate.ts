@@ -816,7 +816,8 @@ export function computeTaintFlows(
       }
       // #3913 set-value: chained `path.split(".").filter(isValidKey)` harvests
       // the outer call without a receiver binding, so the floor above would
-      // keep keys fully tainted. If this def is the filter's result, neutralize.
+      // keep keys fully tainted. Neutralize only when the callback was a
+      // proven same-file proto-guard (not name-alone isValid*).
       let filterSiteIndex = -1;
       for (let si = 0; si < ctx.sites.length; si++) {
         const site = ctx.sites[si];

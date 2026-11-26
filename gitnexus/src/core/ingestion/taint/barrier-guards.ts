@@ -164,16 +164,20 @@ export function validatedLabelForCondition(
   return m[1].length % 2 === 0 ? 'T' : 'F';
 }
 
-function directArgBindings(site: SiteRecord): number[] {
+/** Direct binding indices in argument position `pos` only (not thisArg etc.). */
+function argPositionBindings(site: SiteRecord, pos: number): number[] {
   const out: number[] = [];
-  const args = site.args;
-  if (!args) return out;
-  for (const entries of args) {
-    for (const e of entries) {
-      if (typeof e === 'number') out.push(e);
-    }
+  const entries = site.args?.[pos];
+  if (!entries) return out;
+  for (const e of entries) {
+    if (typeof e === 'number') out.push(e);
   }
   return out;
+}
+
+/** First-argument bindings only — the value a unary validator checks. */
+function primaryArgBindings(site: SiteRecord): number[] {
+  return argPositionBindings(site, 0);
 }
 
 function isFilterCallee(callee: string | undefined): boolean {
@@ -181,25 +185,29 @@ function isFilterCallee(callee: string | undefined): boolean {
   return callee === 'filter' || callee.endsWith('.filter');
 }
 
-function callbackIsBarrier(
+/**
+ * True when filter's *callback* (arg 0) is a proven same-file proto-guard
+ * name. Name-alone `isValid*` is insufficient — `() => true` must not kill.
+ * `thisArg` (arg 1) is never consulted.
+ */
+function filterCallbackIsProvenBarrier(
   site: SiteRecord,
   bindings: FunctionCfg['bindings'],
   barrierCalleeNames: ReadonlySet<string>,
 ): boolean {
-  for (const bindingIdx of directArgBindings(site)) {
+  if (barrierCalleeNames.size === 0) return false;
+  for (const bindingIdx of argPositionBindings(site, 0)) {
     const name = bindings?.[bindingIdx]?.name;
-    if (!name) continue;
-    if (isBarrierCalleeName(name) || barrierCalleeNames.has(name)) return true;
+    if (name && barrierCalleeNames.has(name)) return true;
   }
   return false;
 }
 
 /**
- * True when `site` is a `.filter(barrierPred)` call whose callback name is a
- * barrier callee (set-value shape). Chained forms like
- * `path.split(".").filter(isValidKey)` harvest the outer call without a static
- * callee path (receiver is a call result); those are recognized via
- * `statementText` containing `.filter(`.
+ * True when `site` is a `.filter(protoGuard)` call whose callback (arg 0)
+ * was discovered as a same-file `__proto__` reject-style guard (set-value).
+ * Chained forms like `path.split(".").filter(isValidKey)` harvest the outer
+ * call without a static callee; those need `statementText` containing `.filter(`.
  */
 export function isFilterBarrierCall(
   site: SiteRecord,
@@ -208,7 +216,7 @@ export function isFilterBarrierCall(
   statementText?: string,
 ): boolean {
   if (site.kind !== 'call') return false;
-  if (!callbackIsBarrier(site, bindings, barrierCalleeNames)) return false;
+  if (!filterCallbackIsProvenBarrier(site, bindings, barrierCalleeNames)) return false;
   if (isFilterCallee(site.callee)) return true;
   // Chained `.filter(pred)` — no callee, has result defs, statement spells filter.
   if (
@@ -246,7 +254,9 @@ export function collectBarrierControllers(
         if (!isBarrierCallName(site.callee, barrierCalleeNames)) continue;
         // `.filter(isValidKey)` is handled as a flow neutralization, not CDG.
         if (isFilterCallee(site.callee)) continue;
-        const subjects = directArgBindings(site);
+        // Only the primary (first) argument is the validated subject — later
+        // args may be options / unrelated tainted values.
+        const subjects = primaryArgBindings(site);
         if (subjects.length === 0) continue;
         const validatedLabel = validatedLabelForCondition(block.text, site.callee);
         if (validatedLabel === undefined) continue; // compound / non-simple condition

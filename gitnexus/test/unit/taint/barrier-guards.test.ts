@@ -227,16 +227,28 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('reduce-object: early return before the sink leaves no finding on that path', () => {
-    // Patched shape: config-flag early return; no sink remains on the continuing path.
+  it('does not treat reduce-object config-flag early-return as a validator barrier', () => {
+    // Under-kill: `obj.plain` is not a validating predicate — sink still fires.
     const { flows } = analyze(`
       function reduce(req: any) {
         const obj = req.body;
         if (obj && obj.plain) return obj;
-        return obj;
+        exec(obj);
       }
     `);
-    expect(flows.findings).toHaveLength(0);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not validate secondary args of a multi-arg validator call', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const hostname = req.body;
+        const command = req.query;
+        if (!isValidHostName(hostname, command)) return;
+        exec(command);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -316,9 +328,8 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(flows.findings).toHaveLength(0);
   });
 
-  it('set-value: .filter(isValidKey) neutralizes keys before the sink', () => {
-    const { flows } = analyze(
-      `
+  it('set-value: .filter(isValidKey) neutralizes keys when callback is a proto-guard', () => {
+    const code = `
       function isValidKey(key: string) {
         return key !== "__proto__" && key !== "constructor";
       }
@@ -329,10 +340,43 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
           exec(key);
         }
       }
-    `,
-      1,
-    );
+    `;
+    const { flows } = analyzeWithFileProtoGuards(code, 1);
     expect(flows.findings).toHaveLength(0);
+  });
+
+  it('does not neutralize .filter when isValid* callback always returns true', () => {
+    const code = `
+      function isValidKey(_key: string) {
+        return true;
+      }
+      function set(req: any) {
+        const path = req.body;
+        const keys = path.split(".").filter(isValidKey);
+        for (const key of keys) {
+          exec(key);
+        }
+      }
+    `;
+    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not treat filter thisArg as the barrier callback', () => {
+    const code = `
+      function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+      function set(req: any) {
+        const path = req.body;
+        const keys = path.split(".").filter(() => true, isValidKey);
+        for (const key of keys) {
+          exec(key);
+        }
+      }
+    `;
+    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
   it('keeps node.extend-style setProperty without a __proto__ guard as a finding', () => {
