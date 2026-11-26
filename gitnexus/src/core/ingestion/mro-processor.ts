@@ -21,7 +21,7 @@
 
 import { KnowledgeGraph } from '../graph/types.js';
 import { generateId } from '../../lib/utils.js';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { EdgeConfidence, SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from './languages/index.js';
 import { c3Linearize, gatherAncestors } from './model/resolve.js';
 
@@ -123,7 +123,7 @@ type Resolution = { resolvedTo: string | null; reason: string; confidence: numbe
 
 /** Confidence for a single-ancestor override edge (a subclass overriding one parent
  *  method via class inheritance) — same tier as MRO-ordered resolution. */
-const SINGLE_ANCESTOR_OVERRIDE_CONFIDENCE = 0.9;
+const SINGLE_ANCESTOR_OVERRIDE_CONFIDENCE = EdgeConfidence.singleAncestorOverride;
 
 /** Resolve by MRO order — first ancestor in linearized order wins. */
 function resolveByMroOrder(
@@ -138,14 +138,14 @@ function resolveByMroOrder(
       return {
         resolvedTo: match.methodId,
         reason: `${reasonPrefix}: ${match.className}::${methodName}`,
-        confidence: 0.9, // MRO-ordered resolution
+        confidence: EdgeConfidence.mroOrderedMethod, // MRO-ordered resolution
       };
     }
   }
   return {
     resolvedTo: defs[0].methodId,
     reason: `${reasonPrefix} fallback: first definition`,
-    confidence: 0.7,
+    confidence: EdgeConfidence.mroFirstDefinition,
   };
 }
 
@@ -170,7 +170,7 @@ function resolveCsharpJava(
     return {
       resolvedTo: classDefs[0].methodId,
       reason: `class method wins: ${classDefs[0].className}::${methodName}`,
-      confidence: 0.95, // Class method is authoritative
+      confidence: EdgeConfidence.mroClassMethod, // Class method is authoritative
     };
   }
 
@@ -178,7 +178,7 @@ function resolveCsharpJava(
     return {
       resolvedTo: null,
       reason: `ambiguous: ${methodName} defined in multiple interfaces: ${interfaceDefs.map((d) => d.className).join(', ')}`,
-      confidence: 0.5,
+      confidence: EdgeConfidence.mroAmbiguousInterface,
     };
   }
 
@@ -186,11 +186,15 @@ function resolveCsharpJava(
     return {
       resolvedTo: interfaceDefs[0].methodId,
       reason: `single interface default: ${interfaceDefs[0].className}::${methodName}`,
-      confidence: 0.85, // Single interface, unambiguous
+      confidence: EdgeConfidence.mroSingleInterfaceDefault, // Single interface, unambiguous
     };
   }
 
-  return { resolvedTo: null, reason: 'no resolution found', confidence: 0.5 };
+  return {
+    resolvedTo: null,
+    reason: 'no resolution found',
+    confidence: EdgeConfidence.mroUnresolved,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +307,7 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
           resolution = {
             resolvedTo: null,
             reason: `requires qualified syntax: <Type as Trait>::${methodName}()`,
-            confidence: 0.5,
+            confidence: EdgeConfidence.mroRequiresQualification,
           };
           break;
         default:

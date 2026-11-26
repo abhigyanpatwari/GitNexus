@@ -12,7 +12,12 @@ import {
 } from './callable-id.js';
 import Parser from 'tree-sitter';
 import { getLanguageGrammar, isLanguageAvailable } from '../../tree-sitter/parser-loader.js';
-import { buildPositionIndex, SupportedLanguages, type PositionIndex } from 'gitnexus-shared';
+import {
+  EdgeConfidence,
+  buildPositionIndex,
+  SupportedLanguages,
+  type PositionIndex,
+} from 'gitnexus-shared';
 import { getLanguageForFileContent, getProvider } from '../languages/index.js';
 import {
   getTreeSitterBufferSize,
@@ -2155,7 +2160,7 @@ const processFileGroupFiles = (
               sourceId: fileId,
               targetId: nodeId,
               type: 'DEFINES',
-              confidence: 1.0,
+              confidence: EdgeConfidence.fileDefinition,
               reason: '',
             });
           }
@@ -2166,7 +2171,7 @@ const processFileGroupFiles = (
               sourceId: propEnclosingClassId,
               targetId: nodeId,
               type: 'HAS_PROPERTY',
-              confidence: 1.0,
+              confidence: EdgeConfidence.memberOwnership,
               reason: '',
             });
           }
@@ -3064,7 +3069,7 @@ const processFileGroupFiles = (
           sourceId: fileId,
           targetId: nodeId,
           type: 'DEFINES',
-          confidence: 1.0,
+          confidence: EdgeConfidence.fileDefinition,
           reason: '',
         });
       }
@@ -3078,7 +3083,7 @@ const processFileGroupFiles = (
           sourceId: ownerId,
           targetId: nodeId,
           type: memberEdgeType,
-          confidence: 1.0,
+          confidence: EdgeConfidence.memberOwnership,
           reason: objectLiteralOwnerInfo
             ? 'object literal member belongs to exported object binding'
             : '',

@@ -72,7 +72,7 @@ import { referenceEdgeKey } from '../graph-bridge/edges.js';
 import { callableFlowSiteKey } from './callable-value-flow.js';
 import { isTestFile } from '../../entry-point-scoring.js';
 import { answeredSiteKey } from '../resolution-outcome.js';
-import { getLanguageFromFilename } from 'gitnexus-shared';
+import { EdgeConfidence, getLanguageFromFilename } from 'gitnexus-shared';
 
 /** Language a definition lives in, for reporting which anchor a reader cannot reach. */
 function languageOf(filePath: string): string {
@@ -84,7 +84,7 @@ function languageOf(filePath: string): string {
  * 0.5 and not the 0.85 default: a consumer filtering on confidence must be able
  * to drop these without dropping scope-resolved edges.
  */
-const UNIQUE_NAME_CONFIDENCE = 0.5;
+const UNIQUE_NAME_CONFIDENCE = EdgeConfidence.uniquePropertyName;
 
 const EDGE_REASON = 'scope-resolution: unique-name property';
 

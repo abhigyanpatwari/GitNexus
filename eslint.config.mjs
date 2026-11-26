@@ -4,12 +4,13 @@ import unusedImports from 'eslint-plugin-unused-imports';
 import reactHooks from 'eslint-plugin-react-hooks';
 import prettierConfig from 'eslint-config-prettier';
 import requireSafeParse from './eslint-rules/require-safe-parse.mjs';
+import noInlineConfidence from './eslint-rules/no-inline-confidence.mjs';
 
-// Local plugin hosting custom rules that enforce GitNexus-specific invariants
-// (currently: the Windows-SIGSEGV-safe parser entrypoint).
+// Local plugin hosting custom rules that enforce GitNexus-specific invariants.
 const gitnexusLocalPlugin = {
   rules: {
     'require-safe-parse': requireSafeParse,
+    'no-inline-confidence': noInlineConfidence,
   },
 };
 
@@ -160,6 +161,25 @@ export default [
     },
     rules: {
       'gitnexus/require-safe-parse': 'error',
+    },
+  },
+
+  // Fixed confidence scores in resolution and its ingestion edge producers
+  // come from the shared EdgeConfidence map.
+  {
+    files: [
+      'gitnexus/src/core/ingestion/scope-resolution/**',
+      'gitnexus/src/core/ingestion/markdown-processor.ts',
+      'gitnexus/src/core/ingestion/mro-processor.ts',
+      'gitnexus/src/core/ingestion/workers/parse-worker.ts',
+      'gitnexus/src/core/ingestion/call-processor.ts',
+      'gitnexus/src/core/ingestion/structure-processor.ts',
+    ],
+    plugins: {
+      gitnexus: gitnexusLocalPlugin,
+    },
+    rules: {
+      'gitnexus/no-inline-confidence': 'error',
     },
   },
 

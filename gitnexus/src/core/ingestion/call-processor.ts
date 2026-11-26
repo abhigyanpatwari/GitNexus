@@ -18,6 +18,7 @@
 import { KnowledgeGraph } from '../graph/types.js';
 import type { SemanticModel, SymbolTableReader } from './model/index.js';
 import { compareCodeUnits, generateId } from '../../lib/utils.js';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { ParsedImport, SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
@@ -176,7 +177,7 @@ export function buildExportedTypeMapFromGraph(
  * resolve by global class name, so this matches the legacy `global`-tier
  * confidence the tiered resolver previously assigned these edges.
  */
-const ROUTE_EDGE_CONFIDENCE = 0.5;
+const ROUTE_EDGE_CONFIDENCE = EdgeConfidence.routeControllerCall;
 
 /**
  * Resolve a route's controller class from its normalized dot-joined
@@ -888,7 +889,7 @@ export const processNextjsFetchRoutes = (
       sourceId: edge.sourceId,
       targetId: edge.targetId,
       type: 'FETCHES',
-      confidence: 0.9,
+      confidence: EdgeConfidence.fetchRoute,
       reason,
     });
   }

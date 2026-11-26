@@ -1,4 +1,5 @@
 import { generateId } from '../../lib/utils.js';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 
@@ -34,7 +35,7 @@ export const processStructure = (graph: KnowledgeGraph, paths: string[]) => {
           type: 'CONTAINS',
           sourceId: parentId,
           targetId: nodeId,
-          confidence: 1.0,
+          confidence: EdgeConfidence.directoryContainment,
           reason: '',
         };
 

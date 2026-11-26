@@ -36,6 +36,7 @@
  * name inference, and keep being reported when it declines.
  */
 
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { CallableFlowOperand, ParsedFile, Scope, ScopeId } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { answeredSiteKey } from '../resolution-outcome.js';
@@ -57,7 +58,7 @@ import type { PropertyNameIndex } from './unique-name-properties.js';
  * it — so it carries the ordinary emission confidence, not the reduced tier
  * name inference uses. Nothing here is guessed.
  */
-const RETURN_SHAPE_CONFIDENCE = 0.9;
+const RETURN_SHAPE_CONFIDENCE = EdgeConfidence.returnShapeMember;
 
 const EDGE_REASON = 'scope-resolution: return-shape member';
 

@@ -27,6 +27,7 @@ import type {
   ScopeId,
   SymbolDefinition,
 } from 'gitnexus-shared';
+import { EdgeConfidence } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
@@ -1056,7 +1057,7 @@ export function emitFreeCallFallback(
       const preciseHere = fnDefFromGlobalNameFallback
         ? undefined
         : {
-            confidence: 0.85,
+            confidence: EdgeConfidence.resolvedFreeCall,
             // Match legacy DAG's reason convention so consumers that
             // assert `reason === 'import-resolved'` keep working. The
             // construction-site marker is opt-in for the same reason.
@@ -1087,7 +1088,7 @@ export function emitFreeCallFallback(
           targetId: tgtGraphId,
           type: 'CALLS',
           // Guess values as placeholders; decided at flush from `precise`.
-          confidence: 0.5,
+          confidence: EdgeConfidence.globalNameFallback,
           reason: GLOBAL_NAME_FALLBACK_REASON,
         },
       });
