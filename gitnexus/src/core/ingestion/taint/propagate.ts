@@ -38,6 +38,16 @@
  * be a suppressed live injection, the forbidden false-negative direction)
  * while still suppressing `res.send(b)` (xss IS neutralized).
  *
+ * ## Barrier guards (#3913)
+ *
+ * Transforming sanitizers are not the only safe pattern: a sink reached only
+ * because a validating predicate vouched for the value (`if (!isValidHostName(x))
+ * return; exec(x)`) should also be clean. Before recording a finding, the
+ * engine consults {@link buildBarrierGuardIndex}: if the sink block is
+ * control-dependent on a validator call over the same binding on the validated
+ * CDG branch sense, the finding is suppressed and a kill is recorded. Unknown
+ * predicates never kill (under-kill only).
+ *
  * - **Occurrence interposition (KTD4a):** evaluated over the U1 site
  *   structure. An occurrence reaching a sink arg / def-feeding position
  *   through a matched sanitizer site accumulates that sanitizer's
@@ -98,6 +108,11 @@
 
 import { createFunctionRefinement, type FunctionRefinement } from './guard-refinement.js';
 import { applyValueEffect, provesInertCommand, UNKNOWN_VALUE } from './value-refinement.js';
+import {
+  barrierControllerPoint,
+  buildBarrierGuardIndex,
+  isBarrierGuarded,
+} from './barrier-guards.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
 import { pointKey } from '../cfg/reaching-defs.js';
 import type { DefUseFact, FunctionDefUse, ProgramPoint } from '../cfg/reaching-defs.js';
@@ -315,6 +330,8 @@ export function computeTaintFlows(
   }
 
   const bindings = defUse.bindings;
+  // #3913 — CDG-aware validating-predicate barriers (computed once per function).
+  const barrierIndex = buildBarrierGuardIndex(cfg);
   const guardProvesSink = (
     block: number,
     statement: number,
@@ -539,6 +556,18 @@ export function computeTaintFlows(
         kill: { sanitizer, killedDef, bindingIdx },
         kinds: new Set(kinds),
       });
+  };
+
+  /**
+   * Suppress a finding when the sink use of `bindingIdx` is control-dependent
+   * on a validating predicate over that binding on the validated branch (#3913).
+   * Records a kill so SANITIZES evidence still surfaces.
+   */
+  const suppressedByBarrier = (bindingIdx: number, sinkPoint: ProgramPoint): boolean => {
+    const controller = isBarrierGuarded(barrierIndex, bindingIdx, sinkPoint.blockIndex);
+    if (!controller) return false;
+    recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
+    return true;
   };
 
   // KTD6 statement-level finding identity: source occurrence + sink occurrence
@@ -798,6 +827,8 @@ export function computeTaintFlows(
           )
             continue;
           if (!sofar.kinds.has(kind)) {
+            const localBinding = srcSite.object as number;
+            if (suppressedByBarrier(localBinding, ctx.point)) continue;
             recordFinding(
               kind,
               sourceOcc,
@@ -805,13 +836,13 @@ export function computeTaintFlows(
                 point: ctx.point,
                 siteIndex,
                 argIndex: argPos,
-                bindingIdx: srcSite.object as number,
+                bindingIdx: localBinding,
                 entryName: sink.entry.name,
               },
               [
                 {
-                  bindingIdx: srcSite.object as number,
-                  name: bindings[srcSite.object as number]?.name ?? `#${srcSite.object}`,
+                  bindingIdx: localBinding,
+                  name: bindings[localBinding]?.name ?? `#${localBinding}`,
                   point: ctx.point,
                   ...(sofar.viaCall ? { viaCall: true } : {}),
                 },
@@ -904,6 +935,7 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
+              if (suppressedByBarrier(b, ctx.point)) continue;
               const chain = chainHops(key);
               chain.hops.push({
                 bindingIdx: b,
