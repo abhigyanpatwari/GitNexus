@@ -269,7 +269,10 @@ describe('impact tool runtime text matches the skill wording (#2975)', () => {
 
   it('describes depth-1 items for both directions in the tool description', () => {
     const description = GITNEXUS_TOOLS.find((tool) => tool.name === 'impact')?.description;
-    expect(description).toContain('direct callers/importers upstream');
-    expect(description).toContain('direct callees/imports downstream');
+    expect(description).toContain('direct dependents upstream');
+    expect(description).toContain('direct dependencies downstream');
+    // Callers are one kind of dependent: EXTENDS/IMPLEMENTS edges are walked
+    // too, and a downstream walk returns no callers at all.
+    expect(description).not.toMatch(/review direct callers/i);
   });
 });

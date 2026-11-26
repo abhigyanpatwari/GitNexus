@@ -73,18 +73,19 @@ Repository: <name> (<path>)   Worktree: <path>   Index: <commit>, <n> behind HEA
 
 | Depth | Review priority           | Meaning                  |
 | ----- | ------------------------- | ------------------------ |
-| d=1   | **DIRECT — REVIEW FIRST** | Direct callers/importers |
+| d=1   | **DIRECT — REVIEW FIRST** | Direct dependents        |
 | d=2   | LIKELY AFFECTED           | Indirect dependencies    |
 | d=3   | MAY NEED TESTING          | Transitive effects       |
 
 Depth is graph distance, not proof of failure. A d=1 edge is a strong review
-lead: check whether the change alters what that caller relies on. The listing is
-a lower bound when the result is `partial` or truncated, or when callers go
-through dynamic dispatch, dependency injection or cross-language calls, so an
-absent caller is not evidence that nothing breaks.
+lead: check whether the change alters what that dependent (a caller, importer,
+subclass or implementer) relies on. The listing is a lower bound when the
+result is `partial` or truncated, or when callers go through dynamic dispatch,
+dependency injection or cross-language calls, so an absent caller is not
+evidence that nothing breaks.
 
 The table describes an upstream walk. With `direction: "downstream"` the same
-depths list what the target depends on: d=1 holds its direct callees/imports.
+depths list what the target depends on: d=1 holds its direct dependencies.
 
 ## Risk Assessment
 
