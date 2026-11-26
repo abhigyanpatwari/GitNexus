@@ -61,3 +61,25 @@ export function publishedNamespaceMember(
   }
   return undefined;
 }
+
+/** Collect the visible exports when several namespace declarations form one scope. */
+export function namespaceExportsForBindings(
+  owners: readonly BindingRef[],
+  scopes: ScopeResolutionIndexes,
+): Map<string, BindingRef[]> {
+  const exports = new Map<string, BindingRef[]>();
+  for (const { def } of owners) {
+    if (def.type !== 'Namespace') continue;
+    for (const id of bodyScopes(def, scopes)) {
+      for (const [name, members] of scopes.scopeTree.getScope(id)?.bindings ?? []) {
+        for (const ref of members) {
+          if (!ref.def.namedExports?.includes(name)) continue;
+          const published = exports.get(name);
+          if (published) published.push(ref);
+          else exports.set(name, [ref]);
+        }
+      }
+    }
+  }
+  return exports;
+}

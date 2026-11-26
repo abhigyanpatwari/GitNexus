@@ -785,7 +785,8 @@ export function emitTsScopeCaptures(
       );
     }
     const declaredName = groupedNodes['@declaration.name'];
-    const declaration = declaredName?.parent;
+    const declarator = declaredName?.parent;
+    const declaration = declarator?.type === 'variable_declarator' ? declarator.parent : declarator;
     const statement =
       declaration?.parent?.type === 'export_statement' ? declaration.parent : declaration;
     if (declaredName && statement?.parent?.parent?.type === 'internal_module') {

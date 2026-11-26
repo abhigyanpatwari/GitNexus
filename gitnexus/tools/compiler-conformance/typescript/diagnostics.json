@@ -153,6 +153,11 @@
     "src/Button.tsx:4:9 TS7026"
   ],
   "compiler-conformance/typescript-script-legacy": ["use.ts:5:33 TS2304"],
+  "compiler-conformance/typescript-qualified-heritage": ["value-member.ts:2:30 TS2749"],
+  "compiler-conformance/typescript-solution-globals": [
+    "app/src/main.ts:8:35 TS2304",
+    "isolated/main.ts:2:29 TS2304"
+  ],
   "compiler-conformance/typescript-script-force": [
     "use.ts:2:23 TS2304",
     "use.ts:4:2 TS2552",

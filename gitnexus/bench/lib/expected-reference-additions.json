@@ -25,7 +25,7 @@
     }
   },
   "4db60ff34b782fb7818221a9f8d4e6837e1a504a:9c78863c80c71f87db2d303f7342fca24e50db0e": {
-    "_note": "#4084: The compiler confirms 12,545 property declaration columns, 3,920 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The alias and generic-constraint comparison verified both ends of 379 USES edges, including all 334 reattributions from their enclosing file or function. The compiler also verifies the owners, ranges and target declarations of 32 references in callable type signatures. TypeScript locates three call edges at the operand of await on two explicit generic calls.",
+    "_note": "#4084: The compiler confirms 12,545 property declaration columns, 3,920 type references, 70 property accesses, 4 calls and 27 interface extends clauses. The alias and generic-constraint comparison verified both ends of 379 USES edges, including all 334 reattributions from their enclosing file or function. The compiler also verifies the owners, ranges and target declarations of 32 references in callable type signatures. TypeScript locates three call edges at the operand of await on two explicit generic calls. TypeScript confirms the starts of 29 arrow functions. Restoring the two Zig extractor callbacks adds two property references and two indirect calls.",
     "declarationPositions": {
       "baseline": {
         "count": 27089,
@@ -33,12 +33,12 @@
       },
       "candidate": {
         "count": 27089,
-        "sha256": "b849a8c34a05ba7593c20cdf35428821d84bb3823e243308f965679d34dd942a"
+        "sha256": "fffefae620d463d79c4edcbb71e5269d1a5290f6b461d99aac188373eabee2b2"
       }
     },
     "additions": {
-      "count": 4056,
-      "sha256": "592794bbf7c7cc59ae80f527d55d838c1407601ca3e0309a8280097fb979cfe0"
+      "count": 4060,
+      "sha256": "ea61ced3678f7437d00e8de6ed48bea2809c2595179d1468d765a237bbe7f104"
     },
     "removals": {
       "count": 217,

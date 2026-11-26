@@ -55,13 +55,18 @@ export interface TsconfigScope {
   readonly files?: readonly string[];
   readonly include?: readonly string[];
   readonly exclude?: readonly string[];
+  readonly noResolve?: boolean;
 }
 
 /** Every tsconfig in the repo, indexed so the nearest one to a file wins. */
 export interface TsconfigIndex {
   /** Deepest-first, so the first `dir` that prefixes a file path governs it. */
   readonly scopes: readonly TsconfigScope[];
+  /** Configured programs, including projects reached through solution references. */
+  readonly programs?: readonly TsconfigScope[];
 }
+
+const nearestByIndex = new WeakMap<TsconfigIndex, Map<string, TsconfigScope>>();
 
 const SCAN_MAX_DIRS = 20_000;
 const SCAN_MAX_DEPTH = 24;
@@ -78,11 +83,21 @@ const MAX_EXTENDS_DEPTH = 16;
  */
 export function tsconfigFor(index: TsconfigIndex | null, filePath: string): TsconfigScope | null {
   if (index === null) return null;
-  for (const scope of index.scopes) {
-    if (scope.dir === '') return scope;
-    if (filePath.startsWith(`${scope.dir}/`)) return scope;
+  let nearest = nearestByIndex.get(index);
+  if (!nearest) {
+    nearest = new Map();
+    for (const scope of index.scopes) if (!nearest.has(scope.dir)) nearest.set(scope.dir, scope);
+    nearestByIndex.set(index, nearest);
   }
-  return null;
+  for (
+    let slash = filePath.lastIndexOf('/');
+    slash > 0;
+    slash = filePath.lastIndexOf('/', slash - 1)
+  ) {
+    const scope = nearest.get(filePath.slice(0, slash));
+    if (scope) return scope;
+  }
+  return nearest.get('') ?? null;
 }
 
 /** Load every tsconfig in the repo, resolving `extends` chains. */
@@ -90,8 +105,10 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
   const files = await findTsconfigFiles(repoRoot);
   if (files.length === 0) return null;
 
-  const ranked: { scope: TsconfigScope; rank: number }[] = [];
-  for (const absPath of files) {
+  const ranked: { scope: TsconfigScope; rank: number; path: string }[] = [];
+  const references = new Map<string, string[]>();
+  const pathsToRead = new Set(files);
+  for (const absPath of pathsToRead) {
     const options = await readCompilerOptions(absPath, 0);
     if (options === null) continue;
     // `readCompilerOptions` resolves both to ABSOLUTE paths against whichever
@@ -112,15 +129,28 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
     for (const key of ['files', 'include', 'exclude'] as const) {
       if (options[key]) selection[key] = options[key].map((entry) => repoRelative(repoRoot, entry));
     }
+    const { references: declared = [], ...compilerOptions } = options;
+    const targets = declared.filter((target) => {
+      const relative = path.relative(repoRoot, target);
+      return (
+        relative &&
+        !path.isAbsolute(relative) &&
+        relative.split(path.sep)[0] !== '..' &&
+        !relative.split(path.sep).includes('node_modules')
+      );
+    });
+    references.set(absPath, targets);
+    for (const target of targets) pathsToRead.add(target);
     ranked.push({
       scope: {
-        ...options,
+        ...compilerOptions,
         ...selection,
         dir: repoRelative(repoRoot, path.dirname(absPath)),
         baseUrl,
         paths,
       },
       rank: configRank(path.basename(absPath)),
+      path: absPath,
     });
   }
   if (ranked.length === 0) return null;
@@ -134,7 +164,16 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
   // directory listing returned first made a config's own `paths` invisible
   // whenever its base happened to be listed earlier.
   ranked.sort((a, b) => b.scope.dir.length - a.scope.dir.length || a.rank - b.rank);
-  return { scopes: ranked.map((entry) => entry.scope) };
+  const programs = new Set(ranked.filter((entry) => entry.rank < 2).map((entry) => entry.path));
+  for (const program of programs)
+    for (const target of references.get(program) ?? []) programs.add(target);
+  const scopes = ranked.map((entry) => entry.scope);
+  return {
+    scopes,
+    programs: programs.size
+      ? ranked.filter((entry) => programs.has(entry.path)).map((entry) => entry.scope)
+      : scopes,
+  };
 }
 
 /**
@@ -149,6 +188,8 @@ function configRank(fileName: string): number {
 
 /** Resolved compiler options, rebased to repo-relative paths. */
 interface ResolvedOptions {
+  noResolve?: boolean;
+  references?: string[];
   baseUrl?: string;
   paths?: TsPathMapping[];
   moduleDetection?: string;
@@ -204,6 +245,7 @@ async function readCompilerOptions(
   const compilerOptions = parsed.compilerOptions;
   if (compilerOptions !== null && typeof compilerOptions === 'object') {
     const opts = compilerOptions as Record<string, unknown>;
+    if (typeof opts.noResolve === 'boolean') own.noResolve = opts.noResolve;
     for (const key of ['moduleDetection', 'module', 'moduleResolution', 'jsx'] as const) {
       if (typeof opts[key] === 'string') own[key] = opts[key].toLowerCase();
     }
@@ -233,6 +275,20 @@ async function readCompilerOptions(
   return {
     ...(inherited ?? {}),
     ...own,
+    // Project references belong to this configuration and are never inherited.
+    references: Array.isArray(parsed.references)
+      ? parsed.references.flatMap((reference: unknown) => {
+          if (
+            !reference ||
+            typeof reference !== 'object' ||
+            !('path' in reference) ||
+            typeof reference.path !== 'string'
+          )
+            return [];
+          const target = path.resolve(dir, reference.path);
+          return [path.extname(target) === '.json' ? target : path.join(target, 'tsconfig.json')];
+        })
+      : undefined,
   };
 }
 

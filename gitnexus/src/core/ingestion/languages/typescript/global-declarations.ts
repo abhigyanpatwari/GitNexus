@@ -1,4 +1,6 @@
 import { Minimatch } from 'minimatch';
+import path from 'node:path';
+import { makeScopeId } from 'gitnexus-shared';
 import type {
   BindingRef,
   ParsedFile,
@@ -13,6 +15,7 @@ import {
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { declarationScope } from './module-kind.js';
+import { namespaceExportsForBindings } from '../../scope-resolution/scope/published-namespace-member.js';
 import { tsconfigFor, type TsconfigIndex, type TsconfigScope } from './tsconfig.js';
 import { owningPackage, type NodeWorkspacePackages } from './workspace-packages.js';
 
@@ -23,6 +26,41 @@ type Projects = {
 const projectsByFiles = new WeakMap<readonly ParsedFile[], Projects | undefined>();
 const scriptDeclarations = new WeakSet<SymbolDefinition>();
 const visibleGlobals = new WeakMap<ParsedFile, ReadonlyMap<string, readonly BindingRef[]>>();
+
+/** Keep a single project table when each importer shadows a different name. */
+class UnshadowedGlobals implements ReadonlyMap<string, BindingRef[]> {
+  constructor(
+    private readonly globals: ReadonlyMap<string, BindingRef[]>,
+    private readonly shadowed: ReadonlySet<string>,
+  ) {}
+  get size() {
+    return this.globals.size - this.shadowed.size;
+  }
+  has(name: string) {
+    return !this.shadowed.has(name) && this.globals.has(name);
+  }
+  get(name: string) {
+    return this.shadowed.has(name) ? undefined : this.globals.get(name);
+  }
+  *entries() {
+    for (const entry of this.globals) if (!this.shadowed.has(entry[0])) yield entry;
+  }
+  *keys() {
+    for (const [name] of this.entries()) yield name;
+  }
+  *values() {
+    for (const [, refs] of this.entries()) yield refs;
+  }
+  [Symbol.iterator]() {
+    return this.entries();
+  }
+  forEach(
+    callback: (value: BindingRef[], key: string, map: ReadonlyMap<string, BindingRef[]>) => void,
+    thisArg?: unknown,
+  ) {
+    for (const [name, refs] of this) callback.call(thisArg, refs, name, this);
+  }
+}
 
 export const projectNameFallback: ScopeResolver['isGlobalNameFallbackPlausible'] = ({
   callerParsed,
@@ -130,7 +168,7 @@ function fileSelection(scope: TsconfigScope) {
     });
   };
   const files = new Set(scope.files);
-  const include = (scope.include ?? (scope.files ? [] : ['**/*'])).map((p) => compile(p, false));
+  const include = (scope.include ?? (scope.files ? [] : [scope.dir])).map((p) => compile(p, false));
   const exclude = scope.exclude?.map((p) => compile(p, true)) ?? [];
   return (file: string) => {
     if (files.has(file)) return true;
@@ -154,31 +192,58 @@ function projectMembers(
   indexes: ScopeResolutionIndexes,
   projectOf: (file: ParsedFile) => TsconfigScope | string,
 ) {
-  const scopes = config?.tsconfigs?.scopes;
+  const scopes = config?.tsconfigs?.programs ?? config?.tsconfigs?.scopes;
   if (
     !scopes?.length ||
-    (scopes.length === 1 && !scopes[0].files && !scopes[0].include && !scopes[0].exclude)
+    (scopes.length === 1 &&
+      !scopes[0].dir &&
+      !scopes[0].files &&
+      !scopes[0].include &&
+      !scopes[0].exclude)
   )
     return;
   const byPath = new Map(files.map((file) => [file.filePath, file]));
   const roots = new Map<TsconfigScope | string, Set<ParsedFile>>();
-  const selections = new Map<TsconfigScope, ReturnType<typeof fileSelection>>();
-  for (const file of files) {
-    const project = projectOf(file);
-    if (typeof project !== 'string') {
-      let selected = selections.get(project);
-      if (!selected) {
-        selected = fileSelection(project);
-        selections.set(project, selected);
-      }
-      if (!selected(file.filePath)) continue;
-    }
+  function addRoot(project: TsconfigScope | string, file: ParsedFile) {
     let members = roots.get(project);
     if (!members) {
       members = new Set();
       roots.set(project, members);
     }
     members.add(file);
+  }
+  const selections = new Map<string, Map<TsconfigScope, ReturnType<typeof fileSelection>>>();
+  for (const project of scopes) {
+    for (const name of project.files ?? []) {
+      const file = byPath.get(name);
+      if (file) addRoot(project, file);
+    }
+    const selected = fileSelection(project);
+    for (const pattern of project.include ?? (project.files ? [] : [project.dir])) {
+      const prefix = pattern.split(/[?*]/, 1)[0];
+      const dir = prefix.endsWith('/')
+        ? prefix.slice(0, -1)
+        : prefix === pattern && !path.posix.extname(prefix)
+          ? prefix
+          : prefix.slice(0, Math.max(0, prefix.lastIndexOf('/')));
+      let configs = selections.get(dir);
+      if (!configs) {
+        configs = new Map();
+        selections.set(dir, configs);
+      }
+      configs.set(project, selected);
+    }
+  }
+  for (const file of files) {
+    const owner = projectOf(file);
+    if (typeof owner === 'string') addRoot(owner, file);
+    let dir = file.filePath;
+    do {
+      dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')));
+      for (const [project, selected] of selections.get(dir) ?? []) {
+        if (selected(file.filePath)) addRoot(project, file);
+      }
+    } while (dir);
   }
   const membership = new Map<ParsedFile, Set<TsconfigScope | string>>();
   for (const [project, members] of roots) {
@@ -189,11 +254,17 @@ function projectMembers(
         membership.set(file, projects);
       }
       projects.add(project);
-      if (members.size < files.length) {
+      if (members.size < files.length && (typeof project === 'string' || !project.noResolve)) {
         indexes.imports.forEachTarget(file.moduleScope, (target) => {
           const dependency = byPath.get(target);
           if (dependency) members.add(dependency);
         });
+        for (const reference of declarationScope(file.captureSideChannel)?.referencePaths ?? []) {
+          const target = byPath.get(
+            path.posix.normalize(path.posix.join(path.posix.dirname(file.filePath), reference)),
+          );
+          if (target) members.add(target);
+        }
       }
     }
   }
@@ -212,7 +283,9 @@ export function bindGlobalDeclarations(
     owningPackage(file.filePath, config?.nodeWorkspacePackages)?.dir ??
     '';
   const membership = projectMembers(files, config, indexes, projectOf);
+  const programIds = new Map(config?.tsconfigs?.scopes.map((scope, index) => [scope, index]));
   const globals = new Map<TsconfigScope | string, Map<string, BindingRef[]>>();
+  const declaredNamespaces = new Map<ParsedFile, Set<SymbolDefinition>>();
   for (const file of files) {
     const scope = declarationScope(file.captureSideChannel);
     if (!scope) continue;
@@ -253,11 +326,29 @@ export function bindGlobalDeclarations(
         const refs = symbols.get(name) ?? [];
         refs.push({ def, origin: 'namespace' });
         symbols.set(name, refs);
+        if (def.type === 'Namespace') {
+          let declarations = declaredNamespaces.get(file);
+          if (!declarations) {
+            declarations = new Set();
+            declaredNamespaces.set(file, declarations);
+          }
+          declarations.add(def);
+        }
       }
     }
   }
   const namespaces = indexes.namespaceFqnBindings as Map<string, ReadonlyMap<string, BindingRef[]>>;
   const accessible = indexes.accessibleNamespacesByScope as Map<ScopeId, readonly string[]>;
+  const definitionsByBucket = new WeakMap<readonly BindingRef[], Set<SymbolDefinition>>();
+  const agreedByProjects = new Map<string, Map<string, BindingRef[]>>();
+  function definitions(refs: readonly BindingRef[]) {
+    let result = definitionsByBucket.get(refs);
+    if (!result) {
+      result = new Set(refs.map((ref) => ref.def));
+      definitionsByBucket.set(refs, result);
+    }
+    return result;
+  }
   for (const file of files) {
     visibleGlobals.delete(file);
     const owner = projectOf(file);
@@ -271,16 +362,15 @@ export function bindGlobalDeclarations(
     for (const entry of file.parsedImports) {
       if ('localName' in entry && symbols.has(entry.localName)) shadowed.add(entry.localName);
     }
-    const namespace = JSON.stringify([
-      'typescript-global',
+    const projectKey = JSON.stringify(
       visibleProjects
-        .map((project) => (typeof project === 'string' ? project : project.dir))
+        .map((project) => (typeof project === 'string' ? project : programIds.get(project)))
         .sort(),
-      [...shadowed].sort(),
-    ]);
+    );
+    const namespace = JSON.stringify(['typescript-global', projectKey, [...shadowed].sort()]);
     if (!namespaces.has(namespace)) {
-      let shared = symbols;
-      if (visibleProjects.length > 1) {
+      let shared = agreedByProjects.get(projectKey) ?? symbols;
+      if (visibleProjects.length > 1 && !agreedByProjects.has(projectKey)) {
         // A shared dependency without its own project only has a unique binding
         // when its including programs agree on the declarations.
         shared = new Map(
@@ -289,18 +379,32 @@ export function bindGlobalDeclarations(
               const other = globals.get(project)?.get(name);
               return (
                 other?.length === refs.length &&
-                refs.every((ref) => other.some((candidate) => candidate.def === ref.def))
+                refs.every((ref) => definitions(other).has(ref.def))
               );
             }),
           ),
         );
+        agreedByProjects.set(projectKey, shared);
       }
-      namespaces.set(
-        namespace,
-        shadowed.size ? new Map([...shared].filter(([name]) => !shadowed.has(name))) : shared,
-      );
+      for (const name of shadowed) if (!shared.has(name)) shadowed.delete(name);
+      namespaces.set(namespace, shadowed.size ? new UnshadowedGlobals(shared, shadowed) : shared);
     }
     accessible.set(file.moduleScope, [...(accessible.get(file.moduleScope) ?? []), namespace]);
-    visibleGlobals.set(file, namespaces.get(namespace)!);
+    const visible = namespaces.get(namespace)!;
+    visibleGlobals.set(file, visible);
+    for (const def of declaredNamespaces.get(file) ?? []) {
+      if (!def.declarationRange || !def.qualifiedName) continue;
+      const siblings = visible.get(def.qualifiedName);
+      if (!siblings || siblings.length < 2 || !definitions(siblings).has(def)) continue;
+      const name = JSON.stringify([namespace, def.qualifiedName]);
+      if (!namespaces.has(name))
+        namespaces.set(name, namespaceExportsForBindings(siblings, indexes));
+      const scope = makeScopeId({
+        filePath: file.filePath,
+        range: def.declarationRange,
+        kind: 'Namespace',
+      });
+      accessible.set(scope, [...(accessible.get(scope) ?? []), name]);
+    }
   }
 }

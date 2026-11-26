@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { compilerImportTrace } from './import-trace.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
-import { existsSync, globSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, globSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { API, SymbolFlags } from 'typescript/unstable/sync';
 import { NodeFlags, SyntaxKind } from 'typescript/unstable/ast';
 import { skipTrivia } from 'typescript/unstable/ast/scanner';
@@ -154,13 +155,29 @@ function symbolDeclaration(symbol, project) {
 }
 
 export function compilerReport(root, expectedDiagnostics = [], inventory = false, options = {}) {
-  return withWorkspacePackages(root, (projectRoot) =>
-    reportProject(projectRoot, expectedDiagnostics, inventory, options),
-  );
+  return withWorkspacePackages(root, (projectRoot) => {
+    const result = { ...emptyReport(), publishedCalls: [], uncheckedMemberSites: [] };
+    const diagnostics = [];
+    const configs = new Set([path.join(projectRoot, 'tsconfig.json')]);
+    for (const config of configs) {
+      reportProject(
+        projectRoot,
+        config,
+        { configs, result, diagnostics },
+        { ...options, inventory },
+      );
+    }
+    assert.deepEqual(diagnostics.sort(), expectedDiagnostics, 'TypeScript diagnostics for ' + root);
+    return result;
+  });
 }
 
-function reportProject(root, expectedDiagnostics, inventory, { methodFacts, propertyAccess }) {
-  const localConfig = path.join(root, 'tsconfig.json');
+function reportProject(
+  root,
+  localConfig,
+  { configs, result, diagnostics },
+  { inventory, methodFacts, propertyAccess },
+) {
   const scratch = existsSync(localConfig)
     ? undefined
     : mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-config-'));
@@ -203,8 +220,23 @@ function reportProject(root, expectedDiagnostics, inventory, { methodFacts, prop
         );
       }),
     );
-    assert.ok(files.size, 'Empty TypeScript project ' + config);
-    const result = { ...emptyReport(), publishedCalls: [], uncheckedMemberSites: [] };
+    // The native API opens one configured project. Ask the compiler for its
+    // resolved references so a solution opens each member exactly once.
+    let references = [];
+    if (!scratch) {
+      const cli = fileURLToPath(new URL('bin/tsc', import.meta.resolve('typescript/package.json')));
+      const shown = JSON.parse(
+        execFileSync(process.execPath, [cli, '--project', config, '--showConfig'], {
+          encoding: 'utf8',
+        }),
+      );
+      references = shown.references ?? [];
+      for (const reference of references) {
+        const entry = path.resolve(path.dirname(config), reference.path);
+        configs.add(statSync(entry).isDirectory() ? path.join(entry, 'tsconfig.json') : entry);
+      }
+    }
+    assert.ok(files.size || references.length, 'Empty TypeScript project ' + config);
     const compilerDiagnostics = [
       ...program.getConfigFileParsingDiagnostics(),
       ...program.getProgramDiagnostics(),
@@ -214,25 +246,27 @@ function reportProject(root, expectedDiagnostics, inventory, { methodFacts, prop
     ];
     const erasedValueUses = new Map();
     const nonCallableExpressions = new Set();
-    const diagnostics = compilerDiagnostics
-      .map((diagnostic) => {
-        if (diagnostic.code === 2349) {
-          nonCallableExpressions.add(
-            JSON.stringify([diagnostic.fileName, diagnostic.pos, diagnostic.end]),
-          );
-        }
-        if (diagnostic.code === 1361 || diagnostic.code === 1362) {
-          const positions = erasedValueUses.get(diagnostic.fileName) ?? new Set();
-          positions.add(diagnostic.pos);
-          erasedValueUses.set(diagnostic.fileName, positions);
-        }
-        const file = diagnostic.fileName && program.getSourceFile(diagnostic.fileName);
-        if (!file) return 'project TS' + diagnostic.code;
-        const { line, character } = file.getLineAndCharacterOfPosition(diagnostic.pos);
-        return relative(root, file) + ':' + (line + 1) + ':' + character + ' TS' + diagnostic.code;
-      })
-      .sort();
-    assert.deepEqual(diagnostics, expectedDiagnostics, 'TypeScript diagnostics for ' + root);
+    for (const diagnostic of compilerDiagnostics) {
+      if (diagnostic.code === 2349) {
+        nonCallableExpressions.add(
+          JSON.stringify([diagnostic.fileName, diagnostic.pos, diagnostic.end]),
+        );
+      }
+      if (diagnostic.code === 1361 || diagnostic.code === 1362) {
+        const positions = erasedValueUses.get(diagnostic.fileName) ?? new Set();
+        positions.add(diagnostic.pos);
+        erasedValueUses.set(diagnostic.fileName, positions);
+      }
+      const file = diagnostic.fileName && program.getSourceFile(diagnostic.fileName);
+      if (!file) {
+        diagnostics.push('project TS' + diagnostic.code);
+        continue;
+      }
+      const { line, character } = file.getLineAndCharacterOfPosition(diagnostic.pos);
+      diagnostics.push(
+        relative(root, file) + ':' + (line + 1) + ':' + character + ' TS' + diagnostic.code,
+      );
+    }
 
     let importTrace;
     function importedDeclaration(literal) {
@@ -658,7 +692,6 @@ function reportProject(root, expectedDiagnostics, inventory, { methodFacts, prop
       assert.ok(source, 'Missing compiler source ' + file);
       visit(source);
     }
-    return result;
   } finally {
     api.close();
     if (scratch) rmSync(scratch, { recursive: true, force: true });

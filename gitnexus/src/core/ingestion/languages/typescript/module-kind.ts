@@ -12,6 +12,7 @@ type DeclarationScope = {
   globalNames: string[];
   scriptNames?: string[];
   containsJsx?: boolean;
+  referencePaths?: string[];
 };
 
 export function declarationScope(channel: unknown): DeclarationScope | undefined {
@@ -45,6 +46,16 @@ export function recordCommonJsModuleKind(
   const ordinarySource = /\.[cm]?tsx?$/.test(filePath);
   if (!ordinarySource && !sourceText?.includes('global')) return;
   const statements = root.namedChildren;
+  const referencePaths: string[] = [];
+  if (sourceText?.includes('<reference')) {
+    for (const statement of statements) {
+      if (statement?.type !== 'comment' && statement?.type !== 'hash_bang_line') break;
+      const directive = /^\/\/\/\s*<reference\s+path\s*=\s*(?:"([^"]+)"|'([^']+)')\s*\/>/i.exec(
+        statement.text,
+      );
+      if (directive) referencePaths.push(directive[1] ?? directive[2]);
+    }
+  }
   const externalModule =
     statements.some(
       (statement) =>
@@ -52,7 +63,7 @@ export function recordCommonJsModuleKind(
     ) ||
     (sourceText?.includes('import') &&
       root.descendantsOfType('meta_property').some((node) => node.firstChild?.type === 'import'));
-  if (externalModule && !sourceText?.includes('global')) return;
+  if (externalModule && !referencePaths.length && !sourceText?.includes('global')) return;
   const script = !externalModule && ordinarySource;
   if (!script && !externalModule) return;
   const globalNames: string[] = [];
@@ -98,7 +109,14 @@ export function recordCommonJsModuleKind(
   const hasScriptVars = script && !declarationFile && (!sourceText || /\bvar\b/.test(sourceText));
   for (const statement of statements) {
     if (!statement) continue;
-    if (script) recordDeclaration(statement, declarationFile ? globalNames : scriptNames);
+    if (script) {
+      const declaration =
+        statement.type === 'expression_statement' &&
+        statement.firstNamedChild?.type === 'internal_module'
+          ? statement.firstNamedChild
+          : statement;
+      recordDeclaration(declaration, declarationFile ? globalNames : scriptNames);
+    }
     if (hasScriptVars && statement.type !== 'variable_declaration')
       recordNestedVars(statement, scriptNames);
     if (
@@ -111,12 +129,13 @@ export function recordCommonJsModuleKind(
         recordDeclaration(declaration, globalNames);
     }
   }
-  if (script || globalNames.length) {
+  if (script || globalNames.length || referencePaths.length) {
     pending.value = {
       kind: 'typescript-declarations',
       commonJs,
       script,
       globalNames,
+      ...(referencePaths.length ? { referencePaths } : {}),
       ...(script && !declarationFile ? { scriptNames } : {}),
       ...(script &&
       /\.tsx$/.test(filePath) &&
