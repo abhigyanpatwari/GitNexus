@@ -170,6 +170,10 @@ const CSHARP_SCOPE_QUERY = `
   type: (predefined_type) @type-binding.type
   name: (identifier) @type-binding.name) @type-binding.parameter
 
+(parameter
+  type: (array_type) @type-binding.type
+  name: (identifier) @type-binding.name) @type-binding.parameter
+
 ;; Type bindings — local variable annotations: \`User u = new User();\`
 ;; Typed local with identifier type + \`new X()\` initializer — shape
 ;; matters so \`u\` binds to \`X\` (the constructor call's type), not the

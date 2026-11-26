@@ -173,6 +173,9 @@ const CASES: readonly LanguageCase[] = [
     void OptionalField(User user) {
         user?.Address.Save();
     }
+    void Element(User[] repos) {
+        repos[0].Save();
+    }
     void OptionalElement(User[] repos) {
         repos?[0].Save();
     }
@@ -225,14 +228,18 @@ const CASES: readonly LanguageCase[] = [
         drops: [],
       },
       {
-        // KNOWN GAP. The chain `2|repos|i` is now built, so the miss is
-        // recorded, but an array-typed parameter (`User[] repos`) gets no
-        // type binding yet.
+        language: 'csharp',
+        source: 'Element',
+        member: 'Save',
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
+      },
+      {
         language: 'csharp',
         source: 'OptionalElement',
         member: 'Save',
-        targets: [],
-        drops: ['Main.cs:21'],
+        targets: ['Method:Models.cs:User.Save#0'],
+        drops: [],
       },
     ],
   },
