@@ -104,6 +104,13 @@ const typeReferencePatterns = [
   )
   .join('\n');
 
+// Quoted and identifier object keys name the same callable. Sharing their
+// pattern avoids compiling the whole enclosing call once for each key form.
+const callablePairName = `[
+    (property_identifier) @declaration.name
+    (string (string_fragment) @declaration.name)
+  ]`;
+
 export const TYPESCRIPT_SCOPE_QUERY = `
 ${unboundCallableQuery('declaration.function')}
 ;; Scopes — module / namespace / class-likes / function-likes
@@ -346,20 +353,8 @@ ${unboundCallableQuery('declaration.function')}
 ;; the name in the object's surrounding scope). Each pair-arrow becomes
 ;; an independent caller anchor in the walk.
 (pair
-  key: (property_identifier) @declaration.name
-  value: (arrow_function) @declaration.function)
-
-(pair
-  key: (property_identifier) @declaration.name
-  value: (function_expression) @declaration.function)
-
-(pair
-  key: (string (string_fragment) @declaration.name)
-  value: (arrow_function) @declaration.function)
-
-(pair
-  key: (string (string_fragment) @declaration.name)
-  value: (function_expression) @declaration.function)
+  key: ${callablePairName}
+  value: [(arrow_function) (function_expression)] @declaration.function)
 
 ;; HOC-wrapped pair values: create: procedure.mutation(async ({ input }) => { ... }).
 ;; tRPC, Express route definitions, and similar frameworks use this pattern where
@@ -380,7 +375,7 @@ ${unboundCallableQuery('declaration.function')}
 ;; the outer call_expression. The arrow's range matches its @scope.function range,
 ;; so pass2AttachDeclarations auto-hoists the binding to the parent scope.
 ((pair
-  key: (property_identifier) @declaration.name
+  key: ${callablePairName}
   value: (call_expression
     function: (identifier) @hoc
     arguments: (arguments
@@ -391,31 +386,7 @@ ${unboundCallableQuery('declaration.function')}
 ; '{ visible: items.filter(item => item.active) }' is a value holding an
 ; array, not a Function — same exclusion as the HOC variable rules below.
 ((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      [(arrow_function) (function_expression)] @declaration.function)))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-;; String-key pair variants: { 'create': procedure.mutation(async () => ...) }.
-;; Quoted object keys are identical shapes to the identifier-key pairs above —
-;; a tRPC router that quotes its keys (lint-enforced or JSON-ish style) would
-;; otherwise leave its procedures anonymous and file-level attributed.
-;; Quoted-key identifier callees ({ 'handler': wrap(() => {}) }) match these
-;; string-key rules, not the identifier-key block above; member-expression
-;; callees keep the array-method exclusion.
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      [(arrow_function) (function_expression)] @declaration.function)))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
+  key: ${callablePairName}
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
@@ -441,7 +412,7 @@ ${unboundCallableQuery('declaration.function')}
 ;;           arguments: arguments
 ;;             arrow_function | function_expression
 ((pair
-  key: (property_identifier) @declaration.name
+  key: ${callablePairName}
   value: (call_expression
     function: (identifier) @hoc
     arguments: (arguments
@@ -452,30 +423,7 @@ ${unboundCallableQuery('declaration.function')}
   ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
 
 ((pair
-  key: (property_identifier) @declaration.name
-  value: (call_expression
-    function: (member_expression
-      property: (property_identifier) @callee)
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          [(arrow_function) (function_expression)] @declaration.function)))))
-  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
-  value: (call_expression
-    function: (identifier) @hoc
-    arguments: (arguments
-      (call_expression
-        function: (identifier)
-        arguments: (arguments
-          [(arrow_function) (function_expression)] @declaration.function)))))
-  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
-
-((pair
-  key: (string (string_fragment) @declaration.name)
+  key: ${callablePairName}
   value: (call_expression
     function: (member_expression
       property: (property_identifier) @callee)
@@ -1283,19 +1231,7 @@ ${unboundCallableQuery('declaration.function')}
             object: (this) @type-binding.this-field
             property: (property_identifier) @type-binding.name)
           right: (new_expression
-            constructor: (identifier) @type-binding.type)) @type-binding.constructor))))
-
-;; Qualified form: \`this.p = new models.Outer()\`.
-(class_body
-  (method_definition
-    body: (statement_block
-      (expression_statement
-        (assignment_expression
-          left: (member_expression
-            object: (this) @type-binding.this-field
-            property: (property_identifier) @type-binding.name)
-          right: (new_expression
-            constructor: (member_expression) @type-binding.type)) @type-binding.constructor))))
+            constructor: [(identifier) (member_expression)] @type-binding.type)) @type-binding.constructor))))
 
 (assignment_expression
   left: (identifier) @type-binding.name
