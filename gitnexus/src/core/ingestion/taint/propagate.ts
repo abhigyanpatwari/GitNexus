@@ -852,8 +852,11 @@ export function computeTaintFlows(
             continue;
           if (!sofar.kinds.has(kind)) {
             const localBinding = srcSite.object as number;
-            // Statement-local: the source occurrence point is the reaching def.
-            if (suppressedByBarrier(localBinding, ctx.point, sourceOcc.point)) continue;
+            // Statement-local member-read at the sink: sourceOcc.point IS the
+            // sink statement, not a prior def — omit taintDefPoint so the
+            // post-check reassignment guard does not false-refuse the barrier
+            // (e.g. if (!isValid(req.body)) return; exec(req.body)).
+            if (suppressedByBarrier(localBinding, ctx.point)) continue;
             recordFinding(
               kind,
               sourceOcc,

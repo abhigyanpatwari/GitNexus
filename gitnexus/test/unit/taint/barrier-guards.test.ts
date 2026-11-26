@@ -147,6 +147,18 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings).toHaveLength(0);
   });
 
+  it('suppresses direct source use at the sink (no intermediate binding def)', () => {
+    // sourceOcc.point is the sink statement — must not be treated as a
+    // post-check reassignment of the validated binding.
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings).toHaveLength(0);
+  });
+
   it('still finds the unguarded flow', () => {
     const { flows } = analyze(`
       function f(req: any) {
@@ -345,6 +357,16 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect([...discoverProtoGuardCallees(cfgs)]).not.toContain('acceptsProto');
   });
 
+  it('rejects helpers that only log a !== __proto__ check then return true', () => {
+    const cfgs = cfgsOf(`
+      function logOk(key: string) {
+        if (key !== "__proto__") console.log("ok");
+        return true;
+      }
+    `);
+    expect(functionContainsProtoGuard(cfgs[0])).toBe(false);
+  });
+
   it('suppresses qualified !validators.isValidHostName early-return', () => {
     const { flows } = analyze(`
       function f(req: any) {
@@ -365,25 +387,6 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
       function set(req: any) {
         const path = req.body;
         const keys = path.split(".").filter(isValidKey);
-        for (const key of keys) {
-          exec(key);
-        }
-      }
-    `;
-    const cfgs = cfgsOf(code);
-    expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
-    const { flows } = analyzeWithFileProtoGuards(code, 1);
-    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
-  });
-
-  it('does not treat filter thisArg as the barrier callback', () => {
-    const code = `
-      function isValidKey(key: string) {
-        return key !== "__proto__" && key !== "constructor";
-      }
-      function set(req: any) {
-        const path = req.body;
-        const keys = path.split(".").filter(() => true, isValidKey);
         for (const key of keys) {
           exec(key);
         }

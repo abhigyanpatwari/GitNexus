@@ -190,7 +190,8 @@ export function emitFileTaint(
     limits?.maxFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION;
   const maxHops = limits?.maxHops ?? DEFAULT_PDG_MAX_TAINT_HOPS;
   const maxFacts = limits?.maxFacts ?? DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION;
-  // #3913 — same-file `__proto__` guard functions barrier writers that call them.
+  // #3913 — discover same-file affirming `__proto__` reject helpers. Only
+  // name-heuristic validators KIND_ORDER-suppress; proto-only names do not.
   const protoGuardCallees = discoverProtoGuardCallees(cfgs);
   const barrierOptions =
     protoGuardCallees.size > 0 ? { extraBarrierCallees: protoGuardCallees } : undefined;

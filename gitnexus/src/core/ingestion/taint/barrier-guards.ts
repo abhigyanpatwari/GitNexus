@@ -3,10 +3,14 @@
  *
  * Taint is killed by transforming sanitizers today. Patched CVEs often guard
  * a sink with a validating predicate instead (`if (!isValidHostName(x)) return;
- * exec(x)`), filter keys through a `__proto__` guard (set-value), or early-
- * return on a config flag. When the sink use of binding `b` is control-
- * dependent on such a predicate over `b` on the *validated* branch sense —
- * or flows through `.filter(isValidKey)` — suppress the finding.
+ * exec(x)`). When the sink use of binding `b` is control-dependent on such a
+ * predicate over `b` on the *validated* branch sense, suppress the finding.
+ *
+ * Proto-key helpers (`return key !== "__proto__"`) are discovered for
+ * same-file writers, but only name-heuristic validators (`isValid*` /
+ * `validate*` / `validX`) KIND_ORDER-suppress — rejecting `__proto__` alone
+ * must not kind-blind kill command-injection. `.filter(pred)` is intentionally
+ * not a neutralization path for the same reason.
  *
  * PURE AND DETERMINISTIC: no I/O, no logger. Under-kill only — unknown or
  * non-dominating predicates never kill.
@@ -208,51 +212,6 @@ function isFilterCallee(callee: string | undefined): boolean {
   return callee === 'filter' || callee.endsWith('.filter');
 }
 
-/**
- * True when filter's *callback* (arg 0) is a proven same-file proto-guard
- * name. Name-alone `isValid*` is insufficient — `() => true` must not kill.
- * `thisArg` (arg 1) is never consulted.
- */
-function filterCallbackIsProvenBarrier(
-  site: SiteRecord,
-  bindings: FunctionCfg['bindings'],
-  barrierCalleeNames: ReadonlySet<string>,
-): boolean {
-  if (barrierCalleeNames.size === 0) return false;
-  for (const bindingIdx of argPositionBindings(site, 0)) {
-    const name = bindings?.[bindingIdx]?.name;
-    if (name && barrierCalleeNames.has(name)) return true;
-  }
-  return false;
-}
-
-/**
- * True when `site` is a `.filter(protoGuard)` call whose callback (arg 0)
- * was discovered as a same-file `__proto__` reject-style guard (set-value).
- * Chained forms like `path.split(".").filter(isValidKey)` harvest the outer
- * call without a static callee; those need `statementText` containing `.filter(`.
- */
-export function isFilterBarrierCall(
-  site: SiteRecord,
-  bindings: FunctionCfg['bindings'],
-  barrierCalleeNames: ReadonlySet<string>,
-  statementText?: string,
-): boolean {
-  if (site.kind !== 'call') return false;
-  if (!filterCallbackIsProvenBarrier(site, bindings, barrierCalleeNames)) return false;
-  if (isFilterCallee(site.callee)) return true;
-  // Chained `.filter(pred)` — no callee, has result defs, statement spells filter.
-  if (
-    !site.callee &&
-    site.resultDefs &&
-    site.resultDefs.length > 0 &&
-    typeof statementText === 'string' &&
-    /\.filter\s*\(/.test(statementText)
-  )
-    return true;
-  return false;
-}
-
 function isBarrierCallName(callee: string, barrierCalleeNames: ReadonlySet<string>): boolean {
   if (isBarrierCalleeName(callee)) return true;
   return barrierCalleeNames.has(calleeLeaf(callee));
@@ -275,7 +234,7 @@ export function collectBarrierControllers(
         const site = sites[siteIndex];
         if (site.kind !== 'call' || !site.callee) continue;
         if (!isBarrierCallName(site.callee, barrierCalleeNames)) continue;
-        // `.filter(isValidKey)` is handled as a flow neutralization, not CDG.
+        // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
         if (isFilterCallee(site.callee)) continue;
         // Only the primary (first) argument is the validated subject — later
         // args may be options / unrelated tainted values.
