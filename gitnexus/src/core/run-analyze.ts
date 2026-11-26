@@ -35,6 +35,10 @@ import {
   shouldStampFtsDirtyPhase,
 } from './search/fts-crash-marker.js';
 import { PDG_EDGE_TYPES } from './lbug/pdg-emit-sink.js';
+import {
+  PROPERTY_DISPATCH_BUDGET_STAMP,
+  propertyDispatchBudgetMismatch,
+} from './ingestion/scope-resolution/property-dispatch-budget.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { constants as fsConstants, existsSync } from 'node:fs';
@@ -2943,6 +2947,15 @@ async function runFullAnalysisInner(
       text:
         'Spring vendor mapping prefixes changed — persisted Route evidence will be rebuilt ' +
         'to match the configured aliases.',
+    });
+  }
+
+  // A budget flip changes CALLS for unchanged files too. Rebuild before the
+  // same-commit fast path, retaining parse caches whose extraction is unchanged.
+  if (existingMeta && propertyDispatchBudgetMismatch(existingMeta.propertyDispatchBudget)) {
+    addGateReason({
+      key: 'property-dispatch-budget',
+      text: 'property dispatch budget changed — rebuilding CALLS to match the effective setting.',
     });
   }
 
@@ -6054,6 +6067,7 @@ async function runFullAnalysisInner(
       contentRetentionSchemaVersion: CONTENT_RETENTION_SCHEMA_VERSION,
       ftsProfile,
       runnerIdentity,
+      propertyDispatchBudget: PROPERTY_DISPATCH_BUDGET_STAMP,
       // Persist only normalized repo-relative exclusions, never absolute paths
       // or payloads. Keep them after runtime enrichment is disabled so a later
       // ordinary scan cannot rediscover an unchanged snapshot as source/FTS.

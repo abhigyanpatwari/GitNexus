@@ -300,6 +300,10 @@ const REBUILD_REASON_COVERAGE = [
   { key: 'route-hook-config', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'runner-identity', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'parser-identity', file: 'test/integration/parse-cache-identity-lifecycle.test.ts' },
+  {
+    key: 'property-dispatch-budget',
+    file: 'test/integration/property-dispatch-budget-incremental.test.ts',
+  },
   { key: 'cjk-segmentation', file: 'test/unit/incremental-orchestration.test.ts' },
   { key: 'embedding-dims', file: 'test/unit/embedding-dims-guard.test.ts' },
   { key: 'spring-actuator', file: 'test/unit/incremental-orchestration.test.ts' },

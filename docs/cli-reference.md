@@ -231,7 +231,7 @@ Notes:
 
 | Property dispatch variable | Default | Effect | When to tune |
 | --- | --- | --- | --- |
-| `GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY` | Unlimited | Positive safe integer caps member-call sites × distinct registrations per property key. Over-budget keys lose all synthesized CALLS; registration USES remain. Dropped keys and candidate-pair counts appear in stats and warnings. With the budget enabled, source edits re-examine unchanged source rows; only changed rows are rewritten. Unset/invalid values preserve the unlimited pair budget; the existing registration-fanout cap still applies. | Opt in for excessive dispatch expansion, accepting incomplete call coverage: `GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY=8192 gitnexus analyze --index-only --force`. Use `--force` when changing or removing this setting, even on an unchanged repository. |
+| `GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY` | Unlimited | Positive safe integer caps member-call sites × distinct registrations per property key. Over-budget keys lose all synthesized CALLS; registration USES remain. Dropped keys and candidate-pair counts appear in stats and warnings. With the budget enabled, source edits re-examine unchanged source rows; only changed rows are rewritten. Unset/invalid values preserve the unlimited pair budget; the existing registration-fanout cap still applies. | Opt in for excessive dispatch expansion, accepting incomplete call coverage: `GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY=8192 gitnexus analyze --index-only`. Changing or removing the effective budget automatically rebuilds the graph, even on an unchanged repository; valid parse caches remain reusable. |
 
 | HTTP embedding variable | Default | Effect | When to tune |
 | --- | --- | --- | --- |

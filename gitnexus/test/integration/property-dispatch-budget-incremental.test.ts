@@ -100,3 +100,77 @@ it.each(['ts', 'js'])(
   },
   180_000,
 );
+
+it(
+  'rebuilds an unchanged repository when the effective budget changes',
+  async () => {
+    const temp = await createTempDir();
+    let closeLbug: (() => Promise<void>) | undefined;
+    try {
+      const root = await fs.realpath(temp.dbPath);
+      vi.stubEnv('GITNEXUS_HOME', path.join(root, 'home'));
+      vi.stubEnv('GITNEXUS_STORAGE_PATH', undefined);
+      vi.stubEnv('GITNEXUS_STORAGE_ROOT', undefined);
+      vi.stubEnv('GITNEXUS_SHARED_STORE', 'off');
+      vi.stubEnv('GITNEXUS_LBUG_EXTENSION_INSTALL', 'load-only');
+      vi.stubEnv('GITNEXUS_MAX_PROPERTY_DISPATCH_FANOUT', '32');
+      const repo = path.join(root, 'budget-change');
+      await fs.mkdir(repo);
+      await fs.writeFile(path.join(repo, '.gitignore'), '.gitnexus/\n');
+      await fs.writeFile(
+        path.join(repo, 'registry.ts'),
+        'export function first() {}\nexport function second() {}\n' +
+          'export const one = { run: first };\nexport const two = { run: second };\n',
+      );
+      await fs.writeFile(
+        path.join(repo, 'caller.ts'),
+        'export function caller(provider) { provider.run(); }\n',
+      );
+      initGitRepo(repo);
+      commitAll(repo, 'unchanged property dispatch');
+      const options = { skipAgentsMd: true, skipSkills: true, skipFts: true };
+      const callbacks = { onProgress: () => {} };
+      for (const [step, [budget, expectedCalls]] of (
+        [
+          [undefined, 2],
+          ['1', 0],
+          ['2', 2],
+          [undefined, 2],
+        ] as const
+      ).entries()) {
+        vi.resetModules();
+        vi.stubEnv('GITNEXUS_MAX_PROPERTY_DISPATCH_EDGES_PER_KEY', budget);
+        const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+        const { closeLbug: closeDatabase, executeQuery, initLbug } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+        closeLbug = closeDatabase;
+        const { getStoragePaths, loadMeta } = await import('../../src/storage/repo-manager.js');
+        const result = await runFullAnalysis(repo, options, callbacks);
+        expect(result.alreadyUpToDate).not.toBe(true);
+        if (step > 0) expect(result.rebuildReasons).toContain('property-dispatch-budget');
+        const storage = getStoragePaths(repo);
+        expect((await loadMeta(path.dirname(storage.metaPath)))?.propertyDispatchBudget).toBe(
+          budget === undefined ? null : Number(budget),
+        );
+        await initLbug(storage.lbugPath, { skipFts: true });
+        try {
+          const edges = await executeQuery(
+            'MATCH (a)-[r:CodeRelation]->(b) WHERE r.reason IN ' +
+              "['property-dispatch', 'scope-resolution: value-ref'] " +
+              'RETURN r.type AS type',
+          );
+          expect(edges.filter((edge) => edge.type === 'CALLS')).toHaveLength(expectedCalls);
+          expect(edges.filter((edge) => edge.type === 'USES')).toHaveLength(2);
+        } finally {
+          await closeLbug();
+        }
+        expect((await runFullAnalysis(repo, options, callbacks)).alreadyUpToDate).toBe(true);
+      }
+    } finally {
+      await closeLbug?.();
+      vi.unstubAllEnvs();
+      await temp.cleanup();
+    }
+  },
+  180_000,
+);
