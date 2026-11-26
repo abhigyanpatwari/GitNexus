@@ -116,11 +116,14 @@ import {
 import type { ScopeResolver, UndecidedSatisfaction } from '../contract/scope-resolver.js';
 import { buildsPdg } from './registry.js';
 import {
+  findClassBindingInScope,
   findEnclosingClassDef,
   hasExplicitNameClaim,
+  isClassLike,
   lookupNameClaim,
   resolveInheritanceBaseInScope,
 } from '../scope/walkers.js';
+import { publishedNamespaceMember } from '../scope/published-namespace-member.js';
 import { normalizeQualifiedName, stripTrailingTypeArguments } from '../../utils/qualified-name.js';
 import {
   heritageTypeArgumentsKey,
@@ -429,6 +432,36 @@ function resolveImplicitInheritanceBaseAtSite(
   return resolveImplicitBase(site.name, derivingClass, scopes, site);
 }
 
+/** When the lookup name includes its qualifier, the lexical root owns the lookup. */
+function explicitInheritanceBase(
+  site: ReferenceSite,
+  caller: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition | undefined {
+  const start = site.lookupScope ?? site.inScope;
+  const options = { position: site.atRange, purpose: site.lookupPurpose ?? 'type' } as const;
+  if (site.rawQualifiedName !== site.name || !site.name.includes('.')) {
+    return resolveInheritanceBaseInScope(
+      start,
+      site.name,
+      scopes,
+      site.rawQualifiedName,
+      caller,
+      options,
+    );
+  }
+  const [root, ...path] = site.name.split('.');
+  const claim = lookupNameClaim(start, root, scopes, options);
+  if (claim.imports.some((edge) => edge.kind === 'namespace')) {
+    return findClassBindingInScope(start, site.name, scopes, undefined, {
+      ...options,
+      uniqueQualifiedNameFallback: false,
+    });
+  }
+  const member = publishedNamespaceMember(claim.bindings, path, scopes);
+  return member && isClassLike(member.def.type) ? member.def : undefined;
+}
+
 /**
  * Resolve inheritance reference sites early and pre-emit their EXTENDS edges
  * before MRO construction. This lets template-base captures contribute to the
@@ -494,14 +527,8 @@ function preEmitInheritanceEdges(
     }
 
     const targetDef =
-      resolveInheritanceBaseInScope(
-        site.lookupScope ?? site.inScope,
-        site.name,
-        scopes,
-        site.rawQualifiedName,
-        callerClass,
-        { position: site.atRange, purpose: site.lookupPurpose ?? 'type' },
-      ) ?? resolveImplicitInheritanceBaseAtSite(site, callerClass, scopes, resolveImplicitBase);
+      explicitInheritanceBase(site, callerClass, scopes) ??
+      resolveImplicitInheritanceBaseAtSite(site, callerClass, scopes, resolveImplicitBase);
     if (targetDef === undefined || targetDef.nodeId === callerClass.nodeId) {
       // Static lookup can mistake the current declaration for an earlier
       // same-named base. A self-edge is not inheritance evidence and would
@@ -1723,13 +1750,14 @@ export function runScopeResolution(
     const replayedReceiverBound = emitReceiverBoundCalls(
       graph,
       indexes,
-      replayFiles,
+      emitParsedFiles,
       postHeritageNodeLookup,
       handledSites,
       provider,
       workspaceIndex,
       readonlyModel,
       {
+        siteFiles: replayFiles,
         calleeIdSink: calleeIdAccumulator,
         recordSourceBinding,
         recordResolutionOutcome: selectedCalls === undefined ? undefined : recordResolutionOutcome,

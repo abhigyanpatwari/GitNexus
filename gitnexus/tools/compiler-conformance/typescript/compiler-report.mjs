@@ -204,7 +204,7 @@ function reportProject(root, expectedDiagnostics, inventory, { methodFacts, prop
       }),
     );
     assert.ok(files.size, 'Empty TypeScript project ' + config);
-    const result = { ...emptyReport(), uncheckedMemberSites: [] };
+    const result = { ...emptyReport(), publishedCalls: [], uncheckedMemberSites: [] };
     const compilerDiagnostics = [
       ...program.getConfigFileParsingDiagnostics(),
       ...program.getProgramDiagnostics(),
@@ -247,16 +247,17 @@ function reportProject(root, expectedDiagnostics, inventory, { methodFacts, prop
 
     function edge(kind, from, to, site) {
       if (to && files.has(to.getSourceFile().fileName)) {
-        result[kind].edges.push({
-          from: graphIdentity(root, from, project),
-          to: graphIdentity(root, to, project),
-        });
+        const caller = graphIdentity(root, from, project);
+        const target = graphIdentity(root, to, project);
+        result[kind].edges.push({ from: caller, to: target });
         if (site) {
-          result[kind].sites.push({
+          const binding = {
             ...sourceRange(root, site),
             status: 'resolved',
             target: identity(root, to),
-          });
+          };
+          result[kind].sites.push(binding);
+          if (kind === 'CALLS') result.publishedCalls.push({ ...binding, caller, target });
         }
       }
     }
@@ -452,6 +453,37 @@ function reportProject(root, expectedDiagnostics, inventory, { methodFacts, prop
       );
     }
 
+    // Runtime inference is a separate product contract. Only the method on a
+    // const receiver's constructed type may appear as an extra graph binding.
+    function constructedMember(access) {
+      if (access.expression.kind !== SyntaxKind.Identifier) return undefined;
+      const variable = symbolDeclaration(checker.getSymbolAtLocation(access.expression), project);
+      if (
+        variable?.kind !== SyntaxKind.VariableDeclaration ||
+        !(variable.parent.flags & NodeFlags.Const)
+      )
+        return undefined;
+      let value = variable.initializer;
+      while (
+        value &&
+        [
+          SyntaxKind.AsExpression,
+          SyntaxKind.TypeAssertionExpression,
+          SyntaxKind.ParenthesizedExpression,
+          SyntaxKind.NonNullExpression,
+        ].includes(value.kind)
+      )
+        value = value.expression;
+      if (value?.kind !== SyntaxKind.NewExpression) return undefined;
+      const type = checker.getTypeAtLocation(value);
+      const method =
+        type && symbolDeclaration(checker.getPropertyOfType(type, access.name.text), project);
+      return method?.kind === SyntaxKind.MethodDeclaration &&
+        files.has(method.getSourceFile().fileName)
+        ? identity(root, method)
+        : undefined;
+    }
+
     const declarationLabels = new Map([
       [SyntaxKind.ClassDeclaration, 'Class'],
       [SyntaxKind.InterfaceDeclaration, 'Interface'],
@@ -584,7 +616,10 @@ function reportProject(root, expectedDiagnostics, inventory, { methodFacts, prop
         }
         const selected = call(node, node.expression);
         if (!selected && node.expression.kind === SyntaxKind.PropertyAccessExpression) {
-          result.uncheckedMemberSites.push(sourceRange(root, node));
+          result.uncheckedMemberSites.push({
+            ...sourceRange(root, node),
+            constructedTarget: constructedMember(node.expression),
+          });
         }
       }
       if (

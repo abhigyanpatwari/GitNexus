@@ -8,12 +8,26 @@ import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
 import { checkModuleValues } from './module-values.mjs';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
+import { comparePublishedCalls } from './check.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 
 const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('published calls retain the compiler target at each stored call range', () => {
+  const calls = [
+    { file: 'a.ts', start: '1:0', end: '1:3', caller: 'main', target: 'first' },
+    { file: 'a.ts', start: '2:0', end: '2:3', caller: 'main', target: 'first' },
+    { file: 'a.ts', start: '3:0', end: '3:3', caller: 'main', target: 'second' },
+  ];
+  comparePublishedCalls(calls, calls);
+  assert.throws(() => comparePublishedCalls(calls, calls.slice(1)), /Missing published CALLS/);
+  const swapped = [calls[0], { ...calls[1], target: 'second' }, { ...calls[2], target: 'first' }];
+  assert.throws(() => comparePublishedCalls(calls, swapped), /Unexpected published CALLS/);
+  comparePublishedCalls(calls, [{ caller: 'main', target: 'first' }, calls[2]]);
+});
 
 test('runtime module exports agree with the JavaScript emitted by TypeScript', checkModuleValues);
 

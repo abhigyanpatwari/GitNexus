@@ -708,6 +708,8 @@ export function emitReceiverBoundCalls(
 }
 
 interface ReceiverBoundOptions {
+  /** Only these files have call sites to revisit. Declarations from all files remain visible. */
+  readonly siteFiles?: readonly ParsedFile[];
   /** Stable pass identity for provider indexes shared with return propagation. */
   readonly allFilePaths?: ReadonlySet<string>;
   readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
@@ -774,7 +776,8 @@ function emitReceiverBoundCallsInPass(
 ): ReceiverBoundResult {
   // Files without receiver sites still supply classes, inherited members and
   // namespace targets to the workspace indexes when any receiver needs them.
-  const firstFile = parsedFiles.findIndex((file) => file.referenceSites.some(isReceiverSite));
+  const siteFiles = options.siteFiles ?? parsedFiles;
+  const firstFile = siteFiles.findIndex((file) => file.referenceSites.some(isReceiverSite));
   if (firstFile === -1) {
     return { emitted: 0, dispatchFanoutSkipped: 0, dispatchFanoutSkippedNames: [] };
   }
@@ -1665,8 +1668,8 @@ function emitReceiverBoundCallsInPass(
   };
 
   const resolveReceiverNamespace = provider.createReceiverNamespaceResolver?.(scopes, index);
-  for (let fileIndex = firstFile; fileIndex < parsedFiles.length; fileIndex++) {
-    const parsed = parsedFiles[fileIndex];
+  for (let fileIndex = firstFile; fileIndex < siteFiles.length; fileIndex++) {
+    const parsed = siteFiles[fileIndex];
     const firstSite = parsed.referenceSites.findIndex(isReceiverSite);
     if (firstSite === -1) continue;
     const namespaceCache = createNamespaceTargetCache(

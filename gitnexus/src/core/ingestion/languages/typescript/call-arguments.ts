@@ -6,6 +6,7 @@ import {
   type ParsedFile,
   type Range,
   type ReferenceSite,
+  type ScopeId,
   type SymbolDefinition,
 } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
@@ -109,7 +110,6 @@ export function indexTsCallArguments(
   for (const file of files) {
     if (!file.callableFlowSites?.length && !file.callResultAssignmentSites?.length) continue;
     const calls = new Map<string, ReferenceSite>();
-    const usesByName = new Map<string, OverloadUse[]>();
     const hasOverload = file.referenceSites.some(
       (site) =>
         site.kind === 'call' &&
@@ -122,6 +122,15 @@ export function indexTsCallArguments(
       receiverCalls.delete(site);
     }
     if (!hasOverload) continue;
+    const usesByScope = new Map<string, Map<ScopeId, OverloadUse[]>>();
+    for (const { lhs, inScope } of file.callResultAssignmentSites ?? []) {
+      let scopes = usesByScope.get(lhs);
+      if (!scopes) {
+        scopes = new Map();
+        usesByScope.set(lhs, scopes);
+      }
+      if (!scopes.has(inScope)) scopes.set(inScope, []);
+    }
     for (const fact of file.callableFlowSites ?? []) {
       if (fact.kind !== 'argument' || fact.source.expressionKind !== 'binding') continue;
       const call = calls.get(rangeKey(fact.callSite));
@@ -132,10 +141,16 @@ export function indexTsCallArguments(
       if (args) args.push(fact);
       else argumentsByCall.set(call, [fact]);
       if (!owners) continue;
-      const uses = usesByName.get(fact.source.name);
+      const scopes = usesByScope.get(fact.source.name);
+      if (!scopes) continue;
       const use = { argument: fact, call, owners };
-      if (uses) uses.push(use);
-      else usesByName.set(fact.source.name, [use]);
+      let scope = indexes.scopeTree.getScope(fact.source.inScope);
+      while (scope) {
+        scopes.get(scope.id)?.push(use);
+        if (scope.bindings.has(fact.source.name) || scope.lexicalNames?.has(fact.source.name))
+          break;
+        scope = indexes.scopeTree.getParent(scope.id);
+      }
     }
     for (const assignment of file.callResultAssignmentSites ?? []) {
       const outer = calls.get(rangeKey(assignment.callSite));
@@ -143,8 +158,8 @@ export function indexTsCallArguments(
       if (outer?.callForm === 'free') {
         candidates = names.has(outer.name) ? overloadedFunctions : undefined;
       }
-      const uses = usesByName.get(assignment.lhs);
-      if (!uses && !candidates?.size) {
+      const uses = usesByScope.get(assignment.lhs)?.get(assignment.inScope);
+      if (!uses?.length && !candidates?.size) {
         usesByAssignment.delete(assignment);
         continue;
       }
@@ -254,10 +269,9 @@ export const tsCallResultAssignmentApplies: ScopeResolver['callResultAssignmentA
   const applies =
     overloadedReturn ||
     entry.consumers.some(({ argument: { source }, call, owners }) => {
-      if (!matchesOverloadOwner(call, owners, indexes)) return false;
       let scope = indexes.scopeTree.getScope(source.inScope);
       while (scope) {
-        if (scope.id === assignment.inScope) return true;
+        if (scope.id === assignment.inScope) return matchesOverloadOwner(call, owners, indexes);
         if (
           scope.bindings.has(source.name) ||
           scope.typeBindings.has(source.name) ||

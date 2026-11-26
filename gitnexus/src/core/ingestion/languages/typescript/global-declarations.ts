@@ -99,6 +99,7 @@ function isProjectModule(
   const detection = config?.moduleDetection ?? (nodeModule ? 'force' : 'auto');
   if (detection === 'force') return true;
   if (detection === 'legacy') return false;
+  if (/\.[cm]ts$/.test(file)) return true;
   if (jsx && (config?.jsx === 'react-jsx' || config?.jsx === 'react-jsxdev')) return true;
   const nodeResolution = config?.moduleResolution
     ? ['node16', 'nodenext'].includes(config.moduleResolution)

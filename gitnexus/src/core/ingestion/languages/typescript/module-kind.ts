@@ -46,8 +46,6 @@ export function recordCommonJsModuleKind(
   if (!ordinarySource && !sourceText?.includes('global')) return;
   const statements = root.namedChildren;
   const externalModule =
-    commonJs ||
-    /\.[cm]ts$/.test(filePath) ||
     statements.some(
       (statement) =>
         statement?.type === 'import_statement' || statement?.type === 'export_statement',

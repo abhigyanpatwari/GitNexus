@@ -7,5 +7,12 @@
     "strict": true,
     "noEmit": true
   },
-  "files": ["definitions.ts", "use.ts"]
+  "files": [
+    "definitions.ts",
+    "use.ts",
+    "globals.d.mts",
+    "globals.cts",
+    "ordinary.mts",
+    "meta.ts"
+  ]
 }

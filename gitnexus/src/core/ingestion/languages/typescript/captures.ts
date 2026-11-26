@@ -987,6 +987,8 @@ function emitTsInheritanceBase(
   if (base === null) return;
   const nameNode = terminalTsTypeNameNode(base);
   if (nameNode === null) return;
+  const namedBase = base.type === 'generic_type' ? base.childForFieldName('name') : base;
+  const qualified = namedBase && qualifiedHeritageName(namedBase);
   const argumentsNode =
     base.type === 'generic_type'
       ? base.childForFieldName('type_arguments')
@@ -1000,7 +1002,17 @@ function emitTsInheritanceBase(
         ? nodeToCapture(argumentTag, argumentsNode)
         : syntheticCapture(argumentTag, base, ''),
     '@reference.inherits': nodeToCapture('@reference.inherits', base),
-    '@reference.name': nodeToCapture('@reference.name', nameNode),
+    '@reference.name': qualified
+      ? syntheticCapture('@reference.name', nameNode, qualified)
+      : nodeToCapture('@reference.name', nameNode),
+    ...(qualified &&
+      namedBase && {
+        '@reference.qualified-name': syntheticCapture(
+          '@reference.qualified-name',
+          namedBase,
+          qualified,
+        ),
+      }),
     '@reference.heritage-kind': syntheticCapture(
       '@reference.heritage-kind',
       base,
@@ -1008,6 +1020,22 @@ function emitTsInheritanceBase(
     ),
     '@reference.lookup-purpose': syntheticCapture('@reference.lookup-purpose', base, purpose),
   });
+}
+
+function qualifiedHeritageName(node: SyntaxNode): string | undefined {
+  if (node.type !== 'member_expression' && node.type !== 'nested_type_identifier') return undefined;
+  const parts: string[] = [];
+  let current: SyntaxNode | null = node;
+  while (current?.type === 'member_expression' || current?.type === 'nested_type_identifier') {
+    const member = current.childForFieldName('property') ?? current.childForFieldName('name');
+    if (!member || !['type_identifier', 'property_identifier', 'identifier'].includes(member.type))
+      return undefined;
+    parts.unshift(canonicalTypeScriptName(member.text));
+    current = current.childForFieldName('object') ?? current.childForFieldName('module');
+  }
+  return current && ['identifier', 'type_identifier'].includes(current.type)
+    ? [canonicalTypeScriptName(current.text), ...parts].join('.')
+    : undefined;
 }
 
 /** Resolve a TypeScript heritage base node to its bare simple-identifier node.

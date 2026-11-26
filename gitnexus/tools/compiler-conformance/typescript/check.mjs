@@ -18,12 +18,13 @@ function graphReport(
   propertyAccess,
   parameterCalls,
   classes,
-  uncheckedRanges,
+  constructedTargets,
 ) {
   // Class nodes carry a line. The real graph bridge joins their IDs to the
   // exact scope declarations, including two local classes on that same line.
   const classPositions = new Map();
   const result = emptyReport();
+  result.publishedCalls = [];
   const lookup = buildGraphNodeLookup(graph);
   for (const def of classes) {
     const id = resolveDefGraphId(def.filePath, def, lookup);
@@ -124,7 +125,7 @@ function graphReport(
   for (const site of boundCalls) {
     const key = siteKey(site);
     boundRanges.add(key);
-    if (!uncheckedRanges.has(key)) result.CALLS.sites.push(site);
+    if (constructedTargets.get(key) !== site.target) result.CALLS.sites.push(site);
   }
   for (const relation of graphRelations) {
     for (const edge of graph.iterRelationshipsByType(relation)) {
@@ -144,8 +145,16 @@ function graphReport(
       if (relation === 'CALLS' && to.label === 'Property') kind = 'CALLABLE_PROPERTIES';
       if (edge.reason === 'callable-value-flow' && site && parameterRanges.has(siteKey(site)))
         continue; // The checker binds this invocation to its parameter signature.
-      if (kind === 'CALLS' && site && uncheckedRanges.has(siteKey(site))) continue;
+      if (kind === 'CALLS' && site && constructedTargets.get(siteKey(site)) === graphIdentity(to))
+        continue;
       result[kind].edges.push({ from: callableIdentity(from), to: callableIdentity(to) });
+      if (kind === 'CALLS') {
+        result.publishedCalls.push({
+          ...(site && site.start !== site.end ? site : {}),
+          caller: callableIdentity(from),
+          target: callableIdentity(to),
+        });
+      }
       if (
         site &&
         site.start !== site.end &&
@@ -160,6 +169,24 @@ function graphReport(
 
 function siteKey(site) {
   return JSON.stringify([site.file, site.start, site.end]);
+}
+
+// Some relationship IDs encode only an endpoint pair. For those pairs the
+// observer separately verifies the binding at each compiler site.
+export function comparePublishedCalls(expected, published) {
+  const pair = ({ caller, target }) => JSON.stringify([caller, target]);
+  const row = (call) => JSON.stringify([siteKey(call), call.caller, call.target]);
+  const collapsed = new Set(published.filter((call) => !call.start).map(pair));
+  const located = new Set(published.filter((call) => call.start).map(row));
+  const compilerSites = new Set(expected.map(row));
+  for (const call of located)
+    assert.ok(compilerSites.has(call), 'Unexpected published CALLS ' + call);
+  for (const call of expected) {
+    assert.ok(
+      located.has(row(call)) || collapsed.has(pair(call)),
+      'Missing published CALLS ' + row(call),
+    );
+  }
 }
 
 function publishedParameterCalls(graph, calls) {
@@ -339,8 +366,13 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
     propertyAccess,
     parameterCalls,
     classes,
-    new Set(reference.uncheckedMemberSites.map(siteKey)),
+    new Map(
+      reference.uncheckedMemberSites
+        .filter((site) => site.constructedTarget)
+        .map((site) => [siteKey(site), site.constructedTarget]),
+    ),
   );
+  comparePublishedCalls(reference.publishedCalls, observed.publishedCalls);
   observed.TYPE_PARAMETER_USES.sites = typeParameters;
   // Each compiler-selected variable read must have a binding at the same range.
   // The observer also sees property reads, argument reads and other syntax.
