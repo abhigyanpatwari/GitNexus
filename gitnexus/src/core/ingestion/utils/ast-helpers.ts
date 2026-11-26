@@ -1273,12 +1273,23 @@ export const findEnclosingClassInfo = (
                 }`,
               )
             : undefined;
+        // #2874: the member-id prefix keeps the qualified scope AND the written
+        // name. `qualifiedOwnerName` has the template arguments stripped for C++
+        // (`N.Box`), but a member prefix has always carried them (`Box<bool>`),
+        // so `Box<bool>::save` and `Box<int>::save` stay distinct nodes.
+        const simpleTail = stripTemplateArguments(nameNode.text);
+        const qualifiedClassName =
+          qualifiedOwnerName == null || qualifiedOwnerName.endsWith(nameNode.text)
+            ? qualifiedOwnerName
+            : qualifiedOwnerName.endsWith(simpleTail)
+              ? `${qualifiedOwnerName.slice(0, qualifiedOwnerName.length - simpleTail.length)}${nameNode.text}`
+              : qualifiedOwnerName;
         return {
           classId: generateId(label, `${filePath}:${classIdName}`),
           className: nameNode.text,
           ...(qualifiedClassId !== undefined ? { qualifiedClassId } : {}),
-          ...(qualifiedClassId !== undefined && qualifiedOwnerName != null
-            ? { qualifiedClassName: qualifiedOwnerName }
+          ...(qualifiedClassId !== undefined && qualifiedClassName != null
+            ? { qualifiedClassName }
             : {}),
         };
       }

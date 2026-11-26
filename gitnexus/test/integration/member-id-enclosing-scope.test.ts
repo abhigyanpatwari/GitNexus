@@ -22,6 +22,17 @@ namespace N { template <class T> struct Box { void save(); }; }
 template <class T> struct Box { void save(); };
 `,
     );
+    // Explicit specializations of one namespaced template are distinct owners.
+    await fs.writeFile(
+      path.join(root, 'spec.cpp'),
+      `
+namespace N {
+template <class T> struct Box { void save(); };
+template <> struct Box<bool> { void save(); };
+template <> struct Box<int> { void save(); };
+}
+`,
+    );
     // Same anonymous namespace, shifted down by unrelated leading lines.
     await fs.writeFile(
       path.join(root, 'anon_a.cpp'),
@@ -83,6 +94,11 @@ end
     expect(ids.size).toBe(2);
   });
 
+  it('C++: specializations of one namespaced template keep distinct member ids', () => {
+    const ids = new Set(membersNamed('save', 'spec.cpp').map((n) => n.id));
+    expect(ids.size).toBe(3);
+  });
+
   it('C++: a member id carries its namespace chain, not just the class name', () => {
     const ids = membersNamed('save', 'box.cpp').map((n) => n.id);
     expect(ids.some((id) => id.includes(':N.Box.save'))).toBe(true);
@@ -96,6 +112,7 @@ end
 
   it('Ruby: compact `class A::B` members share the owner of the nested spelling', () => {
     const ids = membersNamed('x', 'compact.rb').concat(membersNamed('y', 'compact.rb'));
+    expect(ids).toHaveLength(2);
     const owners = new Set(ids.map((n) => n.id.split(':')[2]?.split('.').slice(0, -1).join('.')));
     expect(owners.size).toBe(1);
   });
