@@ -186,11 +186,45 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('still suppresses when the member write is after the sink', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        exec(req.body);
+        req.body = req.query;
+      }
+    `);
+    expect(flows.findings).toHaveLength(0);
+  });
+
   it('does not treat compound validator args as validating each member', () => {
     const { flows } = analyze(`
       function f(req: any) {
         if (!isValidHostName(req.body + req.query)) return;
         exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not treat compound plain-binding validator args as validating each part', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const command = req.body;
+        const suffix = req.query;
+        if (!isValidHostName(command + suffix)) return;
+        exec(command);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress after a post-validation transform into the sink', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const host = req.body;
+        if (!isValidHostName(host)) return;
+        exec(host.replaceAll(".", ";"));
       }
     `);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);

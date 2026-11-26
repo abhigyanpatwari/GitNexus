@@ -240,7 +240,11 @@ function primaryArgSubjects(
   // member individually — under-kill (no subjects).
   if (memberSubjects.length > 1) return [];
   if (memberSubjects.length === 1) return memberSubjects;
-  return argPositionBindings(callSite, 0).map((binding) => ({ binding }));
+  // Plain bindings: require exactly one unique binding (`isValid(x)`), not
+  // compounds like `isValid(command + suffix)`.
+  const plain = [...new Set(argPositionBindings(callSite, 0))];
+  if (plain.length !== 1) return [];
+  return [{ binding: plain[0] }];
 }
 
 /**
@@ -278,10 +282,11 @@ export function collectBarrierControllers(
       for (let siteIndex = 0; siteIndex < sites.length; siteIndex++) {
         const site = sites[siteIndex];
         if (site.kind !== 'call' || !site.callee) continue;
-        // Name-heuristic validators only — proto-reject helpers are excluded
-        // even when named isValid* (kind under-kill).
+        // Name-heuristic validators only. Proto-reject helpers are excluded
+        // only for *bare* same-file calls (`isValidKey`), not qualified
+        // `obj.isValidKey` / `validators.isValidKey` (avoid cross-object FPs).
         if (!isBarrierCalleeName(site.callee)) continue;
-        if (excludeBarrierCallees.has(calleeLeaf(site.callee))) continue;
+        if (!site.callee.includes('.') && excludeBarrierCallees.has(site.callee)) continue;
         // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
         if (isFilterCallee(site.callee)) continue;
         const subjects = primaryArgSubjects(sites, siteIndex, site);
@@ -326,23 +331,38 @@ export function buildBarrierGuardIndex(
 
 /**
  * True when a validated member property is assigned on the controller's
- * validated branch (`req.body = …` after `isValid(req.body)`). Property
- * writes are not binding defs, so taintDefPoint cannot see them.
+ * validated branch *before* the sink (`req.body = …` then `exec(req.body)`).
+ * Writes after the sink must not disable the barrier. Property writes are not
+ * binding defs, so taintDefPoint cannot see them.
  */
 export function memberPropertyAssignedOnValidatedPath(
   cfg: FunctionCfg,
   index: BarrierGuardIndex,
   controller: BarrierController,
+  sinkPoint: ProgramPoint,
 ): boolean {
   const prop = controller.subjectProperty;
   if (!prop) return false;
   const escaped = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const assignRe = new RegExp(`(\\.${escaped}|\\[['"]${escaped}['"]\\])\\s*=`);
+  const sinkLine = sinkPoint.line;
   for (const edge of index.cdg) {
     if (edge.controllerBlock !== controller.controllerBlock) continue;
     if (edge.label !== controller.validatedLabel) continue;
-    const text = cfg.blocks[edge.dependentBlock]?.text ?? '';
-    if (assignRe.test(text)) return true;
+    const block = cfg.blocks[edge.dependentBlock];
+    if (!block?.text) continue;
+    if (block.startLine > sinkLine) continue; // entirely after the sink
+    if (block.endLine < sinkLine) {
+      if (assignRe.test(block.text)) return true;
+      continue;
+    }
+    // Block overlaps the sink line — only count assignments on earlier lines.
+    const lines = block.text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const lineNo = block.startLine + i;
+      if (lineNo >= sinkLine) break;
+      if (assignRe.test(lines[i])) return true;
+    }
   }
   return false;
 }

@@ -590,8 +590,9 @@ export function computeTaintFlows(
     );
     if (!controller) return false;
     // Member writes (`req.body = …`) are not binding defs — refuse when the
-    // validated property is assigned on the validated branch before/at sink.
-    if (memberPropertyAssignedOnValidatedPath(cfg, barrierIndex, controller)) return false;
+    // validated property is assigned on the validated branch *before* the sink.
+    if (memberPropertyAssignedOnValidatedPath(cfg, barrierIndex, controller, sinkPoint))
+      return false;
     recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
     return true;
   };
@@ -856,10 +857,13 @@ export function computeTaintFlows(
             continue;
           if (!sofar.kinds.has(kind)) {
             const localBinding = srcSite.object as number;
-            // Statement-local member-read at the sink: omit taintDefPoint
-            // (sourceOcc.point IS the sink). Pass property so validating
-            // req.body cannot suppress exec(req.query).
-            if (suppressedByBarrier(localBinding, ctx.point, undefined, srcSite.property)) continue;
+            // Statement-local: omit taintDefPoint; pass property. Refuse when
+            // the value reaches the sink through a nested call (transformed).
+            if (
+              !sofar.viaCall &&
+              suppressedByBarrier(localBinding, ctx.point, undefined, srcSite.property)
+            )
+              continue;
             recordFinding(
               kind,
               sourceOcc,
@@ -966,10 +970,10 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
-              // Multi-property args (exec(p.body + p.query)): under-kill —
-              // do not let one validated property suppress the whole binding.
+              // Under-kill: multi-property args, or values that reached the
+              // sink through a nested call (e.g. host.replaceAll(...)).
               const sinkProps = memberPropertiesAtArg(ctx.sites, siteIndex, argPos);
-              if (sinkProps.length <= 1) {
+              if (!justify.viaCall && sinkProps.length <= 1) {
                 if (suppressedByBarrier(b, ctx.point, t.point, sinkProps[0])) continue;
               }
               const chain = chainHops(key);
