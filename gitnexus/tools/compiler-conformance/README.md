@@ -97,7 +97,7 @@ Each `methodAccess` entry identifies a source method by file, line, and column. 
 
 ## TypeScript fixtures
 
-Run `npm run build` and `npm run test:conformance:typescript` in `gitnexus/`. To check one project, pass its directory to `node tools/compiler-conformance/typescript/check.mjs`. Add new source projects under `test/fixtures/compiler-conformance/typescript-<case>/`. The runner also compares existing projects listed in `typescript/projects.json`.
+After `npm run build`, run `node tools/compiler-conformance/typescript/check.mjs` from `gitnexus/`. It runs the native controls, then compares every registered project. Pass a project directory to run the controls and compare just that project. CI invokes the same command through `npm run test:conformance:typescript`. Add new source projects under `test/fixtures/compiler-conformance/typescript-<case>/`. The runner also compares existing projects listed in `typescript/projects.json`.
 
 The oracle uses the TypeScript compiler installed by the package lock. It reads the fixture's tsconfig when present. Projects without a config use strict checking and bundler module resolution. The compiler and GitNexus read the same source. For npm workspaces, the compiler gets a temporary copy with the local packages linked.
 

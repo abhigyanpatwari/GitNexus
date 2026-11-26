@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -448,6 +449,20 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
+  const controls = ['controls.test.mjs', 'capture-controls.test.mjs', 'product/mcp-tools.ts'].map(
+    (file) => fileURLToPath(new URL(file, import.meta.url)),
+  );
+  const reporter = new URL('../java/native-reporter.mjs', import.meta.url);
+  execFileSync(
+    process.execPath,
+    ['--import', 'tsx', '--test', '--test-reporter=' + reporter.href, ...controls],
+    {
+      cwd: fileURLToPath(new URL('../../../', import.meta.url)),
+      stdio: 'inherit',
+      env: { ...process.env, GITNEXUS_CONFORMANCE_TEST_FILES: JSON.stringify(controls) },
+    },
+  );
+
   const corpus = fileURLToPath(
     new URL('../../../test/fixtures/compiler-conformance/', import.meta.url),
   );
