@@ -57,7 +57,7 @@ import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
-import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
+import { ftsDegradedWarning, redactPaths } from '../core/search/fts-indexes.js';
 import {
   checkoutIsDirectory,
   contentRetentionFromMeta,
@@ -1520,7 +1520,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         async () => {
           let searchResults: any[];
           let ftsAvailable: boolean | undefined;
-          let ftsQueryFailed = false;
+          let ftsQueryErrors: readonly string[] = [];
           const metadata = mode === 'bm25' ? null : await loadMeta(entry.storagePath);
           const snapshot =
             metadata &&
@@ -1561,7 +1561,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           } else if (mode === 'bm25') {
             const ftsResponse = await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason);
             ftsAvailable = ftsResponse.ftsAvailable;
-            ftsQueryFailed = !!ftsResponse.nonBenignErrors?.length;
+            ftsQueryErrors = ftsResponse.nonBenignErrors ?? [];
             searchResults = ftsResponse.results.map((r: any, i: number) => ({
               ...r,
               rank: i + 1,
@@ -1579,7 +1579,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               );
               searchResults = hybrid.results;
               ftsAvailable = hybrid.ftsAvailable;
-              ftsQueryFailed = hybrid.ftsQueryFailed;
+              ftsQueryErrors = hybrid.ftsQueryErrors;
             } else {
               const ftsResponse = await searchFTSFromLbug(
                 query,
@@ -1588,12 +1588,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 ftsDisabledReason,
               );
               ftsAvailable = ftsResponse.ftsAvailable;
-              ftsQueryFailed = !!ftsResponse.nonBenignErrors?.length;
+              ftsQueryErrors = ftsResponse.nonBenignErrors ?? [];
               searchResults = ftsResponse.results;
             }
           }
 
-          if (!enrich) return { searchResults, ftsAvailable, ftsQueryFailed };
+          if (!enrich) return { searchResults, ftsAvailable, ftsQueryErrors };
 
           // Server-side enrichment: add connections, cluster, processes per result
           // Uses parameterized queries to prevent Cypher injection via nodeId
@@ -1679,18 +1679,23 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             }),
           );
 
-          return { searchResults: enriched, ftsAvailable, ftsQueryFailed };
+          return { searchResults: enriched, ftsAvailable, ftsQueryErrors };
         },
         readOnlyFtsOptions(skipFts),
       );
       const response: any = { results: results.searchResults ?? results };
       if (results.warning) {
         response.warning = results.warning;
+      } else if (results.ftsQueryErrors?.length && !ftsDisabledReason) {
+        logger.warn(
+          { errors: results.ftsQueryErrors.map(redactPaths) },
+          'HTTP search keyword lane reported FTS query errors',
+        );
+        response.warning = results.ftsAvailable
+          ? 'FTS keyword search partially failed; some keyword matches may be missing. See server logs for details.'
+          : 'FTS keyword search failed; results do not include keyword matches. See server logs for details.';
       } else if (results.ftsAvailable === false) {
-        response.warning =
-          results.ftsQueryFailed && !ftsDisabledReason
-            ? 'FTS keyword search failed; results do not include keyword matches. See server logs for details.'
-            : ftsDegradedWarning(undefined, ftsDisabledReason);
+        response.warning = ftsDegradedWarning(undefined, ftsDisabledReason);
       }
       res.json(response);
     } catch (err: any) {
