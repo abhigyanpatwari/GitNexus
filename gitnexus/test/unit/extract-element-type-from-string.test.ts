@@ -138,6 +138,7 @@ describe('extractElementTypeFromString', () => {
     });
 
     it('string longer than 2048 chars → undefined', () => {
+      // Test the typeStr.length > 2048 guard at shared.ts:620
       expect(extractElementTypeFromString('A'.repeat(2049))).toBeUndefined();
     });
 
