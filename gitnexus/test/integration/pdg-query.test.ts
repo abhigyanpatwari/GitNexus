@@ -426,6 +426,23 @@ withTestLbugDB(
         // ':' in the drive letter (fnLineOf splits from the right).
         expect(result.results[0].functionLine).toBe(6);
       });
+
+      it('the skill doc raw guard-clause Cypher is file-anchored and bounded (#2978)', async () => {
+        const skill = fs.readFileSync(
+          path.join(__dirname, '..', '..', 'skills', 'gitnexus-pdg-query.md'),
+          'utf-8',
+        );
+        const match = /```cypher\n([\s\S]*?)```/.exec(skill);
+        expect(match).not.toBeNull();
+        const cypher = match![1].replace('src/auth/login.ts', 'src/guard.ts');
+        expect(cypher).toMatch(/LIMIT \d+/);
+        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+        const rows = (await adapter.executePrepared(cypher, {})) as Array<Record<string, unknown>>;
+        // Only src/guard.ts guard blocks: the return and the throw. Not the
+        // non-guard `work();` dependent, and not src/other.ts's return.
+        const texts = rows.map((r) => String(r['dep.text'])).sort();
+        expect(texts).toEqual(['return null;', 'throw new Error("x");']);
+      });
     });
   },
   {
@@ -469,6 +486,20 @@ withTestLbugDB(
       await block('BasicBlock:C:/src/win.ts:6:0:0', 'C:/src/win.ts', 7, 'if (y)');
       await block('BasicBlock:C:/src/win.ts:6:0:1', 'C:/src/win.ts', 7, 'd();');
       await cdg('BasicBlock:C:/src/win.ts:6:0:0', 'BasicBlock:C:/src/win.ts:6:0:1');
+
+      // (4) Raw guard-clause query from the skill doc (#2978): guard.ts has an
+      // early-return and a throw guard plus a non-guard dependent; other.ts has
+      // its own early-return guard that the file-prefix anchor must exclude.
+      await block('BasicBlock:src/guard.ts:3:0:0', 'src/guard.ts', 4, 'if (!ok)');
+      await block('BasicBlock:src/guard.ts:3:0:1', 'src/guard.ts', 5, 'return null;');
+      await block('BasicBlock:src/guard.ts:3:0:2', 'src/guard.ts', 6, 'throw new Error("x");');
+      await block('BasicBlock:src/guard.ts:3:0:3', 'src/guard.ts', 7, 'work();');
+      await cdg('BasicBlock:src/guard.ts:3:0:0', 'BasicBlock:src/guard.ts:3:0:1');
+      await cdg('BasicBlock:src/guard.ts:3:0:0', 'BasicBlock:src/guard.ts:3:0:2');
+      await cdg('BasicBlock:src/guard.ts:3:0:0', 'BasicBlock:src/guard.ts:3:0:3');
+      await block('BasicBlock:src/other.ts:3:0:0', 'src/other.ts', 4, 'if (!ok)');
+      await block('BasicBlock:src/other.ts:3:0:1', 'src/other.ts', 5, 'return 0;');
+      await cdg('BasicBlock:src/other.ts:3:0:0', 'BasicBlock:src/other.ts:3:0:1');
 
       vi.mocked(listRegisteredRepos).mockResolvedValue([
         {
