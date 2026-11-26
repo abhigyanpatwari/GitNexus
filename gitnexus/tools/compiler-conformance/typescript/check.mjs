@@ -30,7 +30,7 @@ function graphReport(graph, boundCalls, inventory, methodFacts, propertyAccess, 
       : graphIdentity(node);
   }
   const result = emptyReport();
-  result.PARAMETER_CALLS.sites = parameterCalls;
+  result.PARAMETER_CALLS.sites = publishedParameterCalls(graph, parameterCalls);
   const parameterRanges = new Set(parameterCalls.map(siteKey));
   if (propertyAccess) {
     for (const edge of graph.iterRelationshipsByType('ACCESSES')) {
@@ -117,6 +117,25 @@ function siteKey(site) {
   return JSON.stringify([site.file, site.start, site.end]);
 }
 
+function publishedParameterCalls(graph, calls) {
+  if (!calls.length) return [];
+  const owners = new Map();
+  for (const node of graph.iterNodes()) {
+    if (
+      (node.label === 'Method' || node.label === 'Function') &&
+      Array.isArray(node.properties.parameterTypes) &&
+      Number.isInteger(node.properties.startColumn)
+    ) {
+      owners.set(graphDeclaration(node), node.properties.parameterTypes);
+    }
+  }
+  return calls.map(({ formal, ...site }) => {
+    const annotation = owners.get(formal.owner)?.[formal.index];
+    assert.ok(annotation, 'Missing published parameter type at ' + formal.declaration);
+    return { ...site, target: JSON.stringify([formal.declaration, annotation]) };
+  });
+}
+
 function parameterInvocations(file, indexes) {
   const formals = new Map();
   for (const site of file.callableFlowSites ?? []) {
@@ -127,13 +146,13 @@ function parameterInvocations(file, indexes) {
         def.declarationRange?.startLine === site.ownerRange.startLine &&
         def.declarationRange?.startCol === site.ownerRange.startCol,
     );
-    const annotation = owner?.parameterTypes?.[site.parameterIndex];
-    if (!annotation) continue;
+    if (!owner?.parameterTypes?.[site.parameterIndex]) continue;
     const name = site.binding.atRange;
-    formals.set(
-      JSON.stringify([scope.id, site.binding.name]),
-      JSON.stringify([file.filePath + '#' + name.startLine + ':' + name.startCol, annotation]),
-    );
+    formals.set(JSON.stringify([scope.id, site.binding.name]), {
+      declaration: file.filePath + '#' + name.startLine + ':' + name.startCol,
+      owner: file.filePath + '#' + site.ownerRange.startLine + ':' + site.ownerRange.startCol,
+      index: site.parameterIndex,
+    });
   }
   const calls = [];
   for (const site of file.callableFlowSites ?? []) {
@@ -142,15 +161,15 @@ function parameterInvocations(file, indexes) {
       purpose: 'value',
       position: site.callee.atRange,
     });
-    const target = scope && formals.get(JSON.stringify([scope.id, site.callee.name]));
-    if (!target) continue;
+    const formal = scope && formals.get(JSON.stringify([scope.id, site.callee.name]));
+    if (!formal) continue;
     const range = site.callSite;
     calls.push({
       file: file.filePath,
       start: range.startLine + ':' + range.startCol,
       end: range.endLine + ':' + range.endCol,
       status: 'resolved',
-      target,
+      formal,
     });
   }
   return calls;
