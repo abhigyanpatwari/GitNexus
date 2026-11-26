@@ -81,6 +81,18 @@ describe('barrier-guards name + polarity helpers', () => {
     expect(validatedLabelForCondition('(isValidHostName(hostname))', 'isValidHostName')).toBe('T');
   });
 
+  it('keeps bang polarity across qualified callees', () => {
+    expect(
+      validatedLabelForCondition(
+        '(!validators.isValidHostName(hostname))',
+        'validators.isValidHostName',
+      ),
+    ).toBe('F');
+    expect(
+      validatedLabelForCondition('(validators.isValidHostName(hostname))', 'isValidHostName'),
+    ).toBe('T');
+  });
+
   it('refuses compound conditions (|| / &&)', () => {
     expect(
       validatedLabelForCondition('(isValidHostName(hostname) || debugMode)', 'isValidHostName'),
@@ -256,6 +268,51 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
       }
     `;
     const { flows } = analyzeWithFileProtoGuards(code, 1);
+    expect(flows.findings).toHaveLength(0);
+  });
+
+  it('discovers const-arrow __proto__ guards via inferred functionName', () => {
+    const code = `
+      const safeKey = (key: string) => key !== "__proto__" && key !== "constructor";
+      function write(req: any) {
+        const key = req.body;
+        if (!safeKey(key)) return;
+        exec(key);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect(cfgs.some((c) => c.functionName === 'safeKey')).toBe(true);
+    expect([...discoverProtoGuardCallees(cfgs)]).toContain('safeKey');
+    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    expect(flows.findings).toHaveLength(0);
+  });
+
+  it('does not treat a __proto__ logger that always returns true as a guard', () => {
+    const code = `
+      function logProto(key: string) {
+        if (key === "__proto__") console.log("proto");
+        return true;
+      }
+      function write(req: any) {
+        const key = req.body;
+        if (!logProto(key)) return;
+        exec(key);
+      }
+    `;
+    const cfgs = cfgsOf(code);
+    expect([...discoverProtoGuardCallees(cfgs)]).not.toContain('logProto');
+    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('suppresses qualified !validators.isValidHostName early-return', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const hostname = req.body;
+        if (!validators.isValidHostName(hostname)) return;
+        exec(hostname);
+      }
+    `);
     expect(flows.findings).toHaveLength(0);
   });
 

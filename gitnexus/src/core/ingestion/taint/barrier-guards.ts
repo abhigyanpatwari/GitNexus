@@ -73,24 +73,41 @@ export function calleeLeaf(callee: string): string {
   return callee.includes('.') ? (callee.split('.').pop() ?? callee) : callee;
 }
 
-/** True when a function CFG body compares against the `__proto__` literal. */
+/**
+ * True when a function CFG body *rejects* the `__proto__` key.
+ * Under-kill: require an inequality / deny-list form, or an equality check
+ * paired with `return false` somewhere in the function. A helper that only
+ * logs `key === "__proto__"` and returns true must not become a barrier.
+ */
 export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
+  let sawEqualityProto = false;
+  let sawReturnFalse = false;
   for (const block of cfg.blocks) {
     const text = block.text;
+    if (/\breturn\s+false\b/.test(text)) sawReturnFalse = true;
     if (!text.includes('__proto__')) continue;
-    // Require a comparison / inequality so a comment alone cannot qualify.
+    if (!/['"]__proto__['"]/.test(text)) continue;
+    // Deny-list / inequality — the set-value patched shape.
     if (
-      /['"]__proto__['"]/.test(text) &&
-      (text.includes('===') ||
-        text.includes('!==') ||
-        text.includes('==') ||
-        text.includes('!=') ||
-        text.includes('includes(') ||
-        text.includes('indexOf('))
-    )
+      /!==\s*['"]__proto__['"]/.test(text) ||
+      /!=\s*['"]__proto__['"]/.test(text) ||
+      /['"]__proto__['"]\s*!==/.test(text) ||
+      /['"]__proto__['"]\s*!=/.test(text) ||
+      text.includes('includes(') ||
+      text.includes('indexOf(')
+    ) {
       return true;
+    }
+    if (
+      /===\s*['"]__proto__['"]/.test(text) ||
+      /==\s*['"]__proto__['"]/.test(text) ||
+      /['"]__proto__['"]\s*===/.test(text) ||
+      /['"]__proto__['"]\s*==/.test(text)
+    ) {
+      sawEqualityProto = true;
+    }
   }
-  return false;
+  return sawEqualityProto && sawReturnFalse;
 }
 
 /**
@@ -106,27 +123,31 @@ export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): Readonl
   return out;
 }
 
+/** Optional `qual.qual.` prefix before a callee leaf. */
+const QUALIFIED_PREFIX = '(?:[A-Za-z_$][\\w$]*\\.)*';
+
 /**
- * True when the condition is ONLY the validator call (optional parens / !).
- * Rejects compounds like `isValid(x) || debugMode` that can take the true
- * branch without the validator accepting.
+ * True when the condition is ONLY the validator call (optional parens / !,
+ * optional `qual.` chain). Rejects compounds like `isValid(x) || debugMode`
+ * that can take the true branch without the validator accepting.
  */
 export function isSimpleValidatorCondition(blockText: string, callee: string): boolean {
   const leaf = calleeLeaf(callee);
   if (!leaf || !blockText.includes(leaf)) return false;
   if (blockText.includes('||') || blockText.includes('&&') || blockText.includes('??'))
     return false;
-  // Strip whitespace and outer parens; require [!]leaf(...) only.
   let s = blockText.replace(/\s+/g, '');
   while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
   const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`^!*${escaped}\\([^)]*\\)$`).test(s);
+  // [!][qual.]*leaf(...) — supports `!validators.isValidHostName(x)`.
+  return new RegExp(`^!*${QUALIFIED_PREFIX}${escaped}\\([^)]*\\)$`).test(s);
 }
 
 /**
  * Which CDG label means "predicate accepted / validated" for a condition
- * block whose text wraps `callee`. Odd leading `!` flips true→F.
- * Returns undefined when the condition is not a simple validator expression.
+ * block whose text wraps `callee`. Odd leading `!` before the (possibly
+ * qualified) call flips true→F. Returns undefined when the condition is not
+ * a simple validator expression.
  */
 export function validatedLabelForCondition(
   blockText: string,
@@ -134,19 +155,13 @@ export function validatedLabelForCondition(
 ): CdgLabel | undefined {
   if (!isSimpleValidatorCondition(blockText, callee)) return undefined;
   const leaf = calleeLeaf(callee);
-  const idx = blockText.indexOf(leaf);
-  if (idx < 0) return undefined;
-  let bangs = 0;
-  for (let i = idx - 1; i >= 0; i--) {
-    const c = blockText[i];
-    if (c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '(') continue;
-    if (c === '!') {
-      bangs++;
-      continue;
-    }
-    break;
-  }
-  return bangs % 2 === 0 ? 'T' : 'F';
+  let s = blockText.replace(/\s+/g, '');
+  while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
+  const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Capture leading bangs before any `qual.` chain + leaf.
+  const m = s.match(new RegExp(`^(!*)${QUALIFIED_PREFIX}${escaped}\\(`));
+  if (!m) return undefined;
+  return m[1].length % 2 === 0 ? 'T' : 'F';
 }
 
 function directArgBindings(site: SiteRecord): number[] {

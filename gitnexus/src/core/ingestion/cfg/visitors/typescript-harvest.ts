@@ -217,14 +217,7 @@ export class TsHarvester {
   }
 
   decorate(cfg: FunctionCfg): FunctionCfg {
-    const nameNode = this.fnNode.childForFieldName('name');
-    const functionName =
-      nameNode &&
-      (nameNode.type === 'identifier' ||
-        nameNode.type === 'property_identifier' ||
-        nameNode.type === 'private_property_identifier')
-        ? nameNode.text
-        : undefined;
+    const functionName = resolveTsFunctionName(this.fnNode);
     const withName = functionName ? { functionName } : {};
     if (!this.refinementSafe) return { ...cfg, ...withName, refinementSafe: false };
     if (!this.hasRefinementFacts) return functionName ? { ...cfg, functionName } : cfg;
@@ -1313,6 +1306,58 @@ class FactAccumulator {
       ...(refinement ? { refinement } : {}),
     };
   }
+}
+
+/**
+ * Function name for CFG decoration (#3913 proto-guard discovery).
+ * Prefers the node's own `name` field; for anonymous `arrow_function` /
+ * `function_expression`, walks up to `const safeKey = …` / `safeKey = …`.
+ */
+export function resolveTsFunctionName(fnNode: SyntaxNode): string | undefined {
+  const nameNode = fnNode.childForFieldName('name');
+  if (
+    nameNode &&
+    (nameNode.type === 'identifier' ||
+      nameNode.type === 'property_identifier' ||
+      nameNode.type === 'private_property_identifier')
+  ) {
+    return nameNode.text;
+  }
+
+  let parent = fnNode.parent;
+  // Skip wrapping parentheses: const f = (x => …)
+  while (parent?.type === 'parenthesized_expression') parent = parent.parent;
+  if (!parent) return undefined;
+
+  if (parent.type === 'variable_declarator') {
+    const declName = parent.childForFieldName('name');
+    if (declName?.type === 'identifier') return declName.text;
+    return undefined;
+  }
+
+  if (parent.type === 'assignment_expression') {
+    const left = parent.childForFieldName('left');
+    if (left?.type === 'identifier') return left.text;
+    return undefined;
+  }
+
+  // public safeKey = (key) => …  /  safeKey: (key) => …
+  if (parent.type === 'public_field_definition' || parent.type === 'pair') {
+    const key =
+      parent.childForFieldName('name') ??
+      parent.childForFieldName('key') ??
+      parent.namedChildren[0];
+    if (
+      key &&
+      (key.type === 'identifier' ||
+        key.type === 'property_identifier' ||
+        key.type === 'private_property_identifier')
+    ) {
+      return key.text;
+    }
+  }
+
+  return undefined;
 }
 
 /** Trim trailing empty arg positions; drop `args` entirely when all-empty. */

@@ -128,9 +128,12 @@ finding is NOT proof of safety.
 `validate*` / `validX`, excluding `invalid`) suppress findings when the sink
 use is control-dependent on a *simple* (non-`||`/`&&`) validator condition on
 the validated branch, and the reaching def was not assigned after the check.
-Same-file functions whose body compares against `__proto__` are discovered as
-barrier callees. Chained `.filter(isValidKey)` neutralizes filtered keys
-(set-value). See `taint/barrier-guards.ts` and `bench/taint-barrier-guards/`.
+Same-file functions whose body *rejects* `__proto__` (inequality / deny-list,
+or equality + `return false`) are discovered as barrier callees, including
+`const safeKey = …` arrows via inferred `functionName`. Qualified calls like
+`!validators.isValidHostName(x)` keep bang polarity. Chained `.filter(isValidKey)`
+neutralizes filtered keys (set-value). See `taint/barrier-guards.ts` and
+`bench/taint-barrier-guards/`.
 
 ## GitNexus-specific gotchas
 
