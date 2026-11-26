@@ -326,18 +326,26 @@ export function emitFreeCallFallback(
         // Competing bindings withhold the edge on purpose, but the site still
         // called something real. Record it so `impact` reports a lower bound
         // instead of a confident zero. Directive and class-scope blocks carry
-        // no `competing` marker and stay unrecorded.
-        if (nameClaim.claims.some((claim) => claim.competing === true))
-          options.recordResolutionOutcome?.({
-            kind: 'suppressed',
-            reason: 'competing-binding-barrier',
-            candidateIds: [],
-            phase: 'free-call-fallback',
-            filePath: parsed.filePath,
-            name: site.name,
-            range: site.atRange,
-            siteKind: 'call',
-          });
+        // no `competing` marker and stay unrecorded. An aliased import binds
+        // the local spelling to another source name, so the drop is recorded
+        // under every such name too; the summary counts the site once.
+        const competingClaims = nameClaim.claims.filter((claim) => claim.competing === true);
+        if (competingClaims.length > 0) {
+          const names = new Set([site.name]);
+          for (const claim of competingClaims)
+            for (const target of claim.competingTargets ?? []) names.add(target);
+          for (const name of names)
+            options.recordResolutionOutcome?.({
+              kind: 'suppressed',
+              reason: 'competing-binding-barrier',
+              candidateIds: [],
+              phase: 'free-call-fallback',
+              filePath: parsed.filePath,
+              name,
+              range: site.atRange,
+              siteKind: 'call',
+            });
+        }
         continue;
       }
 

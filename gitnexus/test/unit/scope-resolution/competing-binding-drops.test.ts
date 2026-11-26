@@ -12,12 +12,13 @@ import {
 } from '../../../src/core/ingestion/scope-resolution/competing-binding-drops.js';
 import type { ResolutionOutcome } from '../../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 
-const range = { startLine: 1, startCol: 0, endLine: 1, endCol: 1 };
+let nextLine = 1;
 
 function dropped(
   name: string,
   reason: 'competing-binding-barrier' | 'receiver-unresolved' = 'competing-binding-barrier',
   siteKind: 'call' | 'read' = 'call',
+  line = nextLine++,
 ): ResolutionOutcome {
   return {
     kind: 'suppressed',
@@ -26,7 +27,7 @@ function dropped(
     phase: 'free-call-fallback',
     filePath: 'app.py',
     name,
-    range,
+    range: { startLine: line, startCol: 0, endLine: line, endCol: 1 },
     siteKind,
   };
 }
@@ -48,6 +49,14 @@ describe('summarizeCompetingBindingDrops', () => {
       dropped('speedy', 'competing-binding-barrier', 'read'),
     ]);
     expect(summary).toEqual({ counts: { speedy: 2, slow: 1 }, totalSites: 3 });
+  });
+
+  it('counts a site recorded under an alias and its source name once', () => {
+    const summary = summarizeCompetingBindingDrops([
+      dropped('fast_impl', 'competing-binding-barrier', 'call', 900),
+      dropped('speedy', 'competing-binding-barrier', 'call', 900),
+    ]);
+    expect(summary).toEqual({ counts: { fast_impl: 1, speedy: 1 }, totalSites: 1 });
   });
 
   it('caps distinct names and reports the truncation', () => {

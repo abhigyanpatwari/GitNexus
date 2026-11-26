@@ -727,6 +727,11 @@ export interface NameClaim {
    * and the provider declined to pick a winner. Marks a barrier, not a missing
    * binding: a call it blocks had a real target the index cannot name. */
   readonly competing?: boolean;
+  /** With `competing`: the source-side names the competing imports bind, when
+   * they differ from the local spelling (`from m import f as g` binds `g` to
+   * `f`). A dropped call is attributed to these as well as to the local name,
+   * so a query on `f` sees the lost caller. */
+  readonly competingTargets?: readonly string[];
   readonly inactive?: 'blocked' | 'outer' | 'module';
   readonly redirect?: 'module' | 'enclosing-function';
 }

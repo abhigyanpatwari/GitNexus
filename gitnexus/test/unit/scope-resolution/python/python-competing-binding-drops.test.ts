@@ -44,6 +44,33 @@ def run():
 `,
 } as const;
 
+/** An aliased import binds the local spelling to another source name; the drop
+ *  must be recorded under the source name(s) so `impact` on them sees it. */
+const ALIASED_FIXTURES = {
+  alias_none_fallback: {
+    source: `try:
+    from pkg.fast import speedy as fast_impl
+except ImportError:
+    fast_impl = None
+
+def run():
+    return fast_impl()
+`,
+    names: ['fast_impl', 'speedy'],
+  },
+  alias_two_targets: {
+    source: `try:
+    from pkg.fast import speedy as fast_impl
+except ImportError:
+    from pkg.slow import slowpoke as fast_impl
+
+def run():
+    return fast_impl()
+`,
+    names: ['fast_impl', 'slowpoke', 'speedy'],
+  },
+} as const;
+
 const PLAIN_IMPORT_FIXTURE = `from pkg.fast import speedy
 
 def run():
@@ -53,7 +80,7 @@ def run():
 const PACKAGE_FILES = {
   'pkg/__init__.py': '',
   'pkg/fast.py': 'def speedy():\n    return 1\n',
-  'pkg/slow.py': 'def speedy():\n    return 2\n',
+  'pkg/slow.py': 'def speedy():\n    return 2\n\ndef slowpoke():\n    return 3\n',
 };
 
 describe('Python competing-binding barrier drops', () => {
@@ -66,6 +93,9 @@ describe('Python competing-binding barrier drops', () => {
       ...PACKAGE_FILES,
       ...Object.fromEntries(
         Object.entries(COMPETING_BINDING_FIXTURES).map(([name, source]) => [`${name}.py`, source]),
+      ),
+      ...Object.fromEntries(
+        Object.entries(ALIASED_FIXTURES).map(([name, { source }]) => [`${name}.py`, source]),
       ),
       'plain_import.py': PLAIN_IMPORT_FIXTURE,
     });
@@ -96,6 +126,17 @@ describe('Python competing-binding barrier drops', () => {
       expect(barrierDrops(filePath)).toMatchObject([
         { name: 'speedy', siteKind: 'call', phase: 'free-call-fallback' },
       ]);
+    },
+  );
+
+  it.each(Object.entries(ALIASED_FIXTURES))(
+    'records the dropped aliased call under its source names in %s',
+    (name, { names }) => {
+      const filePath = `${name}.py`;
+      const drops = barrierDrops(filePath);
+      expect(drops.map((outcome) => outcome.name).sort()).toEqual([...names]);
+      // One call site, recorded once per name.
+      expect(new Set(drops.map((outcome) => JSON.stringify(outcome.range))).size).toBe(1);
     },
   );
 

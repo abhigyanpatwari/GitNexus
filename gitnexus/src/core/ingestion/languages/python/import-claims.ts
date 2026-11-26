@@ -3,6 +3,9 @@ import type { NameClaim } from 'gitnexus-shared';
 export interface PythonImportClaim {
   identity: string;
   packageRoot?: string;
+  /** The source-side name a named or aliased import binds (`f` in
+   * `from m import f as g`); absent for module imports. */
+  importedName?: string;
   claim: NameClaim;
 }
 
@@ -35,6 +38,16 @@ export function reconcilePythonImportClaims(
     );
     const importedClaims = new Set(imports.map((imp) => imp.claim));
     const mixed = positions.some((position) => !importedClaims.has(claims[position]!));
+    // An aliased import binds the local name to a different source name. A
+    // blocked call must also count against that name, or a query on the
+    // imported symbol still reads an exact zero.
+    const competingTargets = [
+      ...new Set(
+        imports.flatMap((imp) =>
+          imp.importedName !== undefined && imp.importedName !== name ? [imp.importedName] : [],
+        ),
+      ),
+    ];
     for (const position of positions) {
       const item = claims[position]!;
       // A definite def/class store keeps its own target even when imports
@@ -42,7 +55,12 @@ export function reconcilePythonImportClaims(
       if (definiteDeclarations.has(item)) continue;
       result[position] =
         !compatible || mixed
-          ? { ...item, kind: 'blocked', competing: true }
+          ? {
+              ...item,
+              kind: 'blocked',
+              competing: true,
+              ...(competingTargets.length > 0 ? { competingTargets } : {}),
+            }
           : { ...item, merge: true };
     }
   }

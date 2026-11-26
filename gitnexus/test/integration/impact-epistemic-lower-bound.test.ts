@@ -584,26 +584,29 @@ withTestLbugDB(
     // trace of the lost caller is the recorded drop. Without it `impact` on the
     // imported function reads exactly like an unused one.
     it.each([
-      ['a `speedy = None` fallback', 'lower-bound', 'speedy = None'],
-      ['an import fallback', 'lower-bound', 'from pkg.slow import speedy'],
-      ['a local def fallback', 'lower-bound', 'def speedy():\n        return 0'],
-      ['no fallback', 'exact', undefined],
+      ['a `speedy = None` fallback', 'lower-bound', 'speedy = None', undefined],
+      ['an import fallback', 'lower-bound', 'from pkg.slow import speedy', undefined],
+      ['a local def fallback', 'lower-bound', 'def speedy():\n        return 0', undefined],
+      // The call site spells the alias; the drop must still reach `speedy`.
+      ['an aliased `None` fallback', 'lower-bound', 'fast_impl = None', 'fast_impl'],
+      ['no fallback', 'exact', undefined, undefined],
     ] as const)(
       'impact() on an import with %s is %s',
-      async (_label, epistemic, fallback) => {
+      async (_label, epistemic, fallback, alias) => {
         const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-epistemic-barrier-'));
         try {
           fs.mkdirSync(path.join(repoDir, 'pkg'), { recursive: true });
           fs.writeFileSync(path.join(repoDir, 'pkg', '__init__.py'), '', 'utf8');
           fs.writeFileSync(path.join(repoDir, 'pkg', 'fast.py'), 'def speedy():\n    return 1\n');
           fs.writeFileSync(path.join(repoDir, 'pkg', 'slow.py'), 'def speedy():\n    return 2\n');
+          const imported = alias === undefined ? 'speedy' : `speedy as ${alias}`;
           const binding =
             fallback === undefined
-              ? 'from pkg.fast import speedy\n'
-              : `try:\n    from pkg.fast import speedy\nexcept ImportError:\n    ${fallback}\n`;
+              ? `from pkg.fast import ${imported}\n`
+              : `try:\n    from pkg.fast import ${imported}\nexcept ImportError:\n    ${fallback}\n`;
           fs.writeFileSync(
             path.join(repoDir, 'app.py'),
-            `${binding}\ndef run():\n    return speedy()\n`,
+            `${binding}\ndef run():\n    return ${alias ?? 'speedy'}()\n`,
             'utf8',
           );
           const analysed = await runPipelineFromRepo(repoDir, () => {}, {});

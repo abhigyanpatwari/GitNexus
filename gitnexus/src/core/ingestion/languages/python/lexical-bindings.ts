@@ -45,6 +45,7 @@ interface Event {
   conditional?: boolean;
   identity?: string;
   packageRoot?: string;
+  importedName?: string;
 }
 
 /** Attach plain-data facts only: no syntax nodes survive worker transport. */
@@ -242,6 +243,9 @@ export function applyPythonLexicalBindings(
             ...(imp.kind === 'namespace' && !imp.explicitAlias
               ? { packageRoot: imp.localName }
               : {}),
+            ...('importedName' in imp && imp.importedName !== ''
+              ? { importedName: imp.importedName }
+              : {}),
           });
         }
       }
@@ -358,7 +362,12 @@ export function applyPythonLexicalBindings(
     if (event.declaration && !event.conditional) definiteDeclarations.add(ownerClaim);
     if (event.identity) {
       const imports = owner.imports.get(event.name) ?? [];
-      imports.push({ identity: event.identity, packageRoot: event.packageRoot, claim: ownerClaim });
+      imports.push({
+        identity: event.identity,
+        packageRoot: event.packageRoot,
+        importedName: event.importedName,
+        claim: ownerClaim,
+      });
       owner.imports.set(event.name, imports);
     }
   }

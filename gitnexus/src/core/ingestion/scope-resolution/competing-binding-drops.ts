@@ -42,7 +42,9 @@ export function summarizeCompetingBindingDrops(
   outcomes: readonly ResolutionOutcome[],
 ): CompetingBindingDropSummary | undefined {
   const counts = new Map<string, number>();
-  let totalSites = 0;
+  // One site can be recorded under several names (an aliased import's local
+  // spelling and its source name), so sites are counted by position.
+  const sites = new Set<string>();
   for (const outcome of outcomes) {
     if (
       outcome.kind !== 'suppressed' ||
@@ -51,9 +53,11 @@ export function summarizeCompetingBindingDrops(
       outcome.name.length === 0
     )
       continue;
-    totalSites++;
+    const { startLine, startCol, endLine, endCol } = outcome.range;
+    sites.add(`${outcome.filePath}:${startLine}:${startCol}:${endLine}:${endCol}`);
     counts.set(outcome.name, (counts.get(outcome.name) ?? 0) + 1);
   }
+  const totalSites = sites.size;
   if (totalSites === 0) return undefined;
   const { kept, omitted: omittedNames } = rankAndCap(counts, MAX_COMPETING_BINDING_NAMES);
   return {
