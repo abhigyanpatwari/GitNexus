@@ -137,6 +137,10 @@ describe('extractElementTypeFromString', () => {
       expect(extractElementTypeFromString('')).toBeUndefined();
     });
 
+    it('string longer than 2048 chars → undefined', () => {
+      expect(extractElementTypeFromString('A'.repeat(2049))).toBeUndefined();
+    });
+
     it('plain type name (no container) → undefined', () => {
       expect(extractElementTypeFromString('User')).toBeUndefined();
     });
