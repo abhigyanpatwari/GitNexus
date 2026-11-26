@@ -268,7 +268,8 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect([...discoverProtoGuardCallees(cfgs)]).toEqual(['safeKey']);
   });
 
-  it('barriers a writer that calls a __proto__-guard function without "valid" in the name', () => {
+  it('does not kind-blind suppress command-injection for proto-only safeKey', () => {
+    // Proto-only names vouch for key shape, not shell safety.
     const code = `
       function safeKey(key: string) {
         return key !== "__proto__" && key !== "constructor";
@@ -276,6 +277,21 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
       function write(req: any) {
         const key = req.body;
         if (!safeKey(key)) return;
+        exec(key);
+      }
+    `;
+    const { flows } = analyzeWithFileProtoGuards(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('suppresses when the proto-rejecting callback is also isValid*', () => {
+    const code = `
+      function isValidKey(key: string) {
+        return key !== "__proto__" && key !== "constructor";
+      }
+      function write(req: any) {
+        const key = req.body;
+        if (!isValidKey(key)) return;
         exec(key);
       }
     `;
@@ -295,8 +311,9 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     const cfgs = cfgsOf(code);
     expect(cfgs.some((c) => c.functionName === 'safeKey')).toBe(true);
     expect([...discoverProtoGuardCallees(cfgs)]).toContain('safeKey');
+    // Discovery only — proto-only name must not kind-blind kill command-injection.
     const { flows } = analyzeWithFileProtoGuards(code, 1);
-    expect(flows.findings).toHaveLength(0);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
   it('does not treat a __proto__ logger that always returns true as a guard', () => {
@@ -317,6 +334,17 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('rejects inverted acceptsProto as a proto-guard', () => {
+    const cfgs = cfgsOf(`
+      function acceptsProto(key: string) {
+        if (key !== "__proto__") return false;
+        return true;
+      }
+    `);
+    expect(functionContainsProtoGuard(cfgs[0])).toBe(false);
+    expect([...discoverProtoGuardCallees(cfgs)]).not.toContain('acceptsProto');
+  });
+
   it('suppresses qualified !validators.isValidHostName early-return', () => {
     const { flows } = analyze(`
       function f(req: any) {
@@ -328,7 +356,8 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(flows.findings).toHaveLength(0);
   });
 
-  it('set-value: .filter(isValidKey) neutralizes keys when callback is a proto-guard', () => {
+  it('set-value: .filter(protoKey) does not suppress command-injection findings', () => {
+    // Kind contract: rejecting __proto__ must not kind-blind kill shell taint.
     const code = `
       function isValidKey(key: string) {
         return key !== "__proto__" && key !== "constructor";
@@ -341,23 +370,8 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
         }
       }
     `;
-    const { flows } = analyzeWithFileProtoGuards(code, 1);
-    expect(flows.findings).toHaveLength(0);
-  });
-
-  it('does not neutralize .filter when isValid* callback always returns true', () => {
-    const code = `
-      function isValidKey(_key: string) {
-        return true;
-      }
-      function set(req: any) {
-        const path = req.body;
-        const keys = path.split(".").filter(isValidKey);
-        for (const key of keys) {
-          exec(key);
-        }
-      }
-    `;
+    const cfgs = cfgsOf(code);
+    expect([...discoverProtoGuardCallees(cfgs)]).toContain('isValidKey');
     const { flows } = analyzeWithFileProtoGuards(code, 1);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });

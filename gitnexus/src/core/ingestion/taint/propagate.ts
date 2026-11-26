@@ -111,8 +111,8 @@ import { applyValueEffect, provesInertCommand, UNKNOWN_VALUE } from './value-ref
 import {
   barrierControllerPoint,
   buildBarrierGuardIndex,
+  isBarrierCalleeName,
   isBarrierGuarded,
-  isFilterBarrierCall,
   type BarrierGuardOptions,
 } from './barrier-guards.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
@@ -421,23 +421,10 @@ export function computeTaintFlows(
     return site.kind !== 'member-read' && !ctx.sanitizersBySite.has(siteIndex);
   };
 
-  const statementTextAt = (ctx: StmtContext): string =>
-    cfg.blocks[ctx.point.blockIndex]?.text ?? '';
-
-  const filterBarrierKinds = (ctx: StmtContext, site: SiteRecord): readonly SinkKind[] =>
-    isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, statementTextAt(ctx))
-      ? KIND_ORDER
-      : [];
-
   const emerge = (ctx: StmtContext, siteIndex: number, argPos: number, inner: OccPath): OccPath => {
-    const site = ctx.sites[siteIndex];
-    // #3913 set-value: `.filter(isValidKey)` neutralizes all sink kinds on the
-    // filtered result (keys that passed the `__proto__` / validator predicate).
-    const filterBarrier = site ? filterBarrierKinds(ctx, site) : [];
-    const added =
-      filterBarrier.length > 0
-        ? [...new Set([...neutralizedAt(ctx, siteIndex, argPos), ...filterBarrier])]
-        : neutralizedAt(ctx, siteIndex, argPos);
+    // Proto-key `.filter` does NOT neutralize sink kinds: rejecting `__proto__`
+    // does not strip shell metacharacters (kind-blind kill → false negative).
+    const added = neutralizedAt(ctx, siteIndex, argPos);
     return {
       kinds: added.length === 0 ? inner.kinds : new Set([...inner.kinds, ...added]),
       viaCall: inner.viaCall || isUnmodeledCall(ctx, siteIndex),
@@ -486,19 +473,9 @@ export function computeTaintFlows(
     if (site.receiver === b) {
       // Receiver TITO (KTD5): the receiver's value flows through the call
       // into its result — but a sanitizer does not neutralize its receiver.
-      // Exception (#3913 set-value): `.filter(isValidKey)` DOES neutralize —
-      // the callback vouches for every emitted element.
-      if (
-        isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, statementTextAt(ctx))
-      ) {
-        out.push({
-          kinds: new Set<SinkKind>(KIND_ORDER),
-          viaCall: true,
-          sanitizers: [{ siteIndex, kinds: [...KIND_ORDER] }],
-        });
-      } else {
-        out.push({ ...DIRECT_PATH, viaCall: isUnmodeledCall(ctx, siteIndex) });
-      }
+      // Proto-key `.filter` is intentionally not an exception: key-shape
+      // guards must not kind-blind kill command-injection (#3913 under-kill).
+      out.push({ ...DIRECT_PATH, viaCall: isUnmodeledCall(ctx, siteIndex) });
     }
     guard.delete(siteIndex);
     return out;
@@ -594,8 +571,9 @@ export function computeTaintFlows(
    * `taintDefPoint` refuses suppression when the reaching value was assigned
    * after the check. Records a kill so SANITIZES evidence still surfaces.
    *
-   * Full `KIND_ORDER` neutralization is intentional only for `isValid*` /
-   * `validate*` / proto-guard names (narrow heuristic) — not bare `checkX`.
+   * Full `KIND_ORDER` neutralization applies only to name-heuristic validators
+   * (`isValid*` / `validate*` / `validX`). Proto-only callees (`safeKey`) vouch
+   * for key shape, not sink-kind safety — do not kind-blind suppress.
    */
   const suppressedByBarrier = (
     bindingIdx: number,
@@ -609,6 +587,7 @@ export function computeTaintFlows(
       taintDefPoint,
     );
     if (!controller) return false;
+    if (!isBarrierCalleeName(controller.callee)) return false;
     recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
     return true;
   };
@@ -791,7 +770,6 @@ export function computeTaintFlows(
     const defs = [...ctx.facts.defs, ...(ctx.facts.mayDefs ?? [])];
     if (defs.length === 0) return;
     const seen = new Set<number>();
-    const stmtText = statementTextAt(ctx);
     for (const d of defs) {
       if (seen.has(d)) continue;
       seen.add(d);
@@ -814,24 +792,8 @@ export function computeTaintFlows(
         // else: floor — tainted with no exclusions added, no kill (the input
         // provably never flows into the producing call; conflation FP pinned).
       }
-      // #3913 set-value: chained `path.split(".").filter(isValidKey)` harvests
-      // the outer call without a receiver binding, so the floor above would
-      // keep keys fully tainted. Neutralize only when the callback was a
-      // proven same-file proto-guard (not name-alone isValid*).
-      let filterSiteIndex = -1;
-      for (let si = 0; si < ctx.sites.length; si++) {
-        const site = ctx.sites[si];
-        if (!site.resultDefs?.includes(d)) continue;
-        if (!isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, stmtText))
-          continue;
-        filterSiteIndex = si;
-        break;
-      }
-      if (filterSiteIndex >= 0) {
-        addKinds = new Set<SinkKind>([...addKinds, ...KIND_ORDER]);
-        viaCall = true;
-        recordKill(ctx.point, ctx.point, d, KIND_ORDER);
-      }
+      // Proto-key `.filter` intentionally does not add exclusions here —
+      // rejecting `__proto__` must not suppress command-injection findings.
       const exclusions =
         addKinds.size === 0 ? inputExclusions : new Set([...inputExclusions, ...addKinds]);
       deriveTaint(d, ctx.point, exclusions, parentKey, source, viaCall);

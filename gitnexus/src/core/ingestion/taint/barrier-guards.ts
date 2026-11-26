@@ -73,11 +73,53 @@ export function calleeLeaf(callee: string): string {
   return callee.includes('.') ? (callee.split('.').pop() ?? callee) : callee;
 }
 
+const PROTO_LIT = `['"]__proto__['"]`;
+
+/** True when `text` affirms the key is not `__proto__` (return or expr body). */
+function isAffirmingProtoRejectReturn(text: string): boolean {
+  if (!new RegExp(PROTO_LIT).test(text)) return false;
+  // Inverted acceptors return false when key !== "__proto__" — not a guard.
+  if (/\breturn\s+false\b/.test(text)) return false;
+  const rejectsProto =
+    new RegExp(`!==\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`(?<![=!])!=(?!=)\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*!==`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*!=(?!=)`).test(text) ||
+    text.includes('includes(') ||
+    text.includes('indexOf(');
+  if (!rejectsProto) return false;
+  // `return key !== "__proto__"` (possibly with &&).
+  if (/\breturn\b/.test(text)) return true;
+  // Expression-bodied arrow: whole block is the predicate. Reject bare
+  // parenthesized conditions like `(key !== "__proto__")` from `if (...)`.
+  let s = text.replace(/\s+/g, '');
+  while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
+  if (
+    !s.includes('&&') &&
+    !s.includes('||') &&
+    !s.includes('includes(') &&
+    !s.includes('indexOf(')
+  ) {
+    return false;
+  }
+  return true;
+}
+
+/** True when `text` has a real `===`/`==` against `__proto__` (not `!==`/`!=`). */
+function hasProtoEquality(text: string): boolean {
+  return (
+    new RegExp(`(?<![=!])===\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`(?<![=!])==(?!=)\\s*${PROTO_LIT}`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*===`).test(text) ||
+    new RegExp(`${PROTO_LIT}\\s*==(?!=)`).test(text)
+  );
+}
+
 /**
  * True when a function CFG body *rejects* the `__proto__` key.
- * Under-kill: require an inequality / deny-list form, or an equality check
- * paired with `return false` somewhere in the function. A helper that only
- * logs `key === "__proto__"` and returns true must not become a barrier.
+ * Under-kill: require an affirming `return … !== "__proto__"` (set-value
+ * shape), or equality + `return false`. Inequality only in an `if` that
+ * returns false for safe keys (`acceptsProto`) must not qualify.
  */
 export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
   let sawEqualityProto = false;
@@ -85,27 +127,8 @@ export function functionContainsProtoGuard(cfg: FunctionCfg): boolean {
   for (const block of cfg.blocks) {
     const text = block.text;
     if (/\breturn\s+false\b/.test(text)) sawReturnFalse = true;
-    if (!text.includes('__proto__')) continue;
-    if (!/['"]__proto__['"]/.test(text)) continue;
-    // Deny-list / inequality — the set-value patched shape.
-    if (
-      /!==\s*['"]__proto__['"]/.test(text) ||
-      /!=\s*['"]__proto__['"]/.test(text) ||
-      /['"]__proto__['"]\s*!==/.test(text) ||
-      /['"]__proto__['"]\s*!=/.test(text) ||
-      text.includes('includes(') ||
-      text.includes('indexOf(')
-    ) {
-      return true;
-    }
-    if (
-      /===\s*['"]__proto__['"]/.test(text) ||
-      /==\s*['"]__proto__['"]/.test(text) ||
-      /['"]__proto__['"]\s*===/.test(text) ||
-      /['"]__proto__['"]\s*==/.test(text)
-    ) {
-      sawEqualityProto = true;
-    }
+    if (isAffirmingProtoRejectReturn(text)) return true;
+    if (hasProtoEquality(text)) sawEqualityProto = true;
   }
   return sawEqualityProto && sawReturnFalse;
 }

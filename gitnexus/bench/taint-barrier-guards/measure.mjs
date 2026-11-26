@@ -54,13 +54,16 @@ function handler${i}(req: any) {
 }
 function set${i}(req: any) {
   const path = req.body;
-  const keys = String(path).split(".").filter(isValidKey);
-  for (const key of keys) exec(key);
+  const keys = String(path).split(".");
+  for (const key of keys) {
+    if (!isValidKey(key)) continue;
+    exec(key);
+  }
 }
 function isValidKey(key: string) { return key !== "__proto__" && key !== "constructor"; }
 function write${i}(req: any) {
   const key = req.body;
-  if (!safeKey(key)) return;
+  if (!isValidKey(key)) return;
   exec(key);
 }
 `);
