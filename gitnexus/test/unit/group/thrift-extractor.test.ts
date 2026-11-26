@@ -10,6 +10,7 @@ import {
   thriftMethodContractId,
   thriftServiceContractId,
 } from '../../../src/core/group/extractors/thrift-extractor.js';
+import { serviceFromAnnotatedClient } from '../../../src/core/group/extractors/thrift-patterns/java.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
 describe('ThriftExtractor', () => {
@@ -220,6 +221,64 @@ service LeakedService {
       expect(
         contracts.find((c) => c.contractId === 'thrift::leaked.v1.LeakedService/Ping'),
       ).toBeUndefined();
+    });
+  });
+
+  // --- Annotation-based thrift client detection (#2629) ---
+  // Note: End-to-end Java consumer tests are in conformance tests.
+  // These tests verify the service name extraction logic.
+  describe('annotation-based thrift client service name extraction (#2629)', () => {
+    it('extracts service from ISimpleClient pattern with ThriftClient annotation', () => {
+      const result = serviceFromAnnotatedClient('ISimpleServiceClient', 'SimpleThriftClient');
+      expect(result).toEqual({
+        serviceName: 'SimpleService',
+        usesGeneratedServiceMember: true,
+      });
+    });
+
+    it('extracts service from ServiceClient pattern with RpcClient annotation', () => {
+      const result = serviceFromAnnotatedClient('OrderServiceClient', 'OrderRpcClient');
+      expect(result).toEqual({
+        serviceName: 'OrderService',
+        usesGeneratedServiceMember: true,
+      });
+    });
+
+    it('extracts service from IClient pattern', () => {
+      const result = serviceFromAnnotatedClient('IUserClient', 'UserThriftClient');
+      expect(result).toEqual({
+        serviceName: 'User',
+        usesGeneratedServiceMember: true,
+      });
+    });
+
+    it('handles qualified type names', () => {
+      const result = serviceFromAnnotatedClient(
+        'com.example.service.IOrderServiceClient',
+        'OrderThriftClient',
+      );
+      expect(result).toEqual({
+        serviceName: 'OrderService',
+        usesGeneratedServiceMember: true,
+      });
+    });
+
+    it('returns null for non-thrift annotations', () => {
+      const result = serviceFromAnnotatedClient('SomeService', 'Autowired');
+      expect(result).toBeNull();
+    });
+
+    it('returns null for non-Client type patterns', () => {
+      const result = serviceFromAnnotatedClient('OrderService', 'OrderThriftClient');
+      expect(result).toBeNull();
+    });
+
+    it('handles ServiceServiceClient pattern correctly', () => {
+      const result = serviceFromAnnotatedClient('UserServiceServiceClient', 'UserThriftClient');
+      expect(result).toEqual({
+        serviceName: 'UserServiceService',
+        usesGeneratedServiceMember: true,
+      });
     });
   });
 });

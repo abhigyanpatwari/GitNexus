@@ -58,6 +58,37 @@ const VARIABLE_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+const ANNOTATED_CLIENT_PATTERNS = compilePatterns({
+  name: 'java-thrift-annotated-clients',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (field_declaration
+          (modifiers
+            (marker_annotation
+              name: (identifier) @annotation_name))
+          type: (_) @type
+          declarator: (variable_declarator
+            name: (identifier) @var))
+      `,
+    },
+    {
+      meta: {},
+      query: `
+        (field_declaration
+          (modifiers
+            (annotation
+              name: (identifier) @annotation_name))
+          type: (_) @type
+          declarator: (variable_declarator
+            name: (identifier) @var))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
 const CALL_PATTERNS = compilePatterns({
   name: 'java-thrift-method-calls',
   language: Java,
@@ -111,6 +142,42 @@ function serviceFromType(typeText: string): ServiceTypeMatch | null {
   return last && SERVICE_TYPE_RE.test(last)
     ? { serviceName: last, usesGeneratedServiceMember: false }
     : null;
+}
+
+export function serviceFromAnnotatedClient(
+  typeText: string,
+  annotationName: string,
+): ServiceTypeMatch | null {
+  // Only process annotations that look like thrift client annotations
+  if (!annotationName.includes('ThriftClient') && !annotationName.includes('RpcClient')) {
+    return null;
+  }
+
+  // Extract service name from interface types like ISimpleClient → SimpleClient
+  // or SimpleServiceClient → SimpleService
+  const segments = typeText.split('.').filter((segment) => segment.length > 0);
+  const last = segments.at(-1);
+  if (!last) return null;
+
+  // Pattern 1: I{Service}Client → {Service}
+  const iClientMatch = last.match(/^I([A-Z][A-Za-z0-9]+)Client$/);
+  if (iClientMatch) {
+    return { serviceName: iClientMatch[1], usesGeneratedServiceMember: true };
+  }
+
+  // Pattern 2: {Service}ServiceClient → {Service}Service
+  const serviceClientMatch = last.match(/^([A-Z][A-Za-z0-9]+Service)Client$/);
+  if (serviceClientMatch) {
+    return { serviceName: serviceClientMatch[1], usesGeneratedServiceMember: true };
+  }
+
+  // Pattern 3: {Service}Client → {Service}
+  const clientMatch = last.match(/^([A-Z][A-Za-z0-9]+)Client$/);
+  if (clientMatch) {
+    return { serviceName: clientMatch[1], usesGeneratedServiceMember: true };
+  }
+
+  return null;
 }
 
 function methodNamesInClassBody(body: Parser.SyntaxNode): string[] {
@@ -195,6 +262,27 @@ export const JAVA_THRIFT_PLUGIN: ThriftLanguagePlugin = {
       const varNode = match.captures.var;
       if (!typeNode || !varNode) continue;
       const service = serviceFromType(typeNode.text);
+      if (!service) continue;
+      const scope = bindingScope(varNode);
+      if (!scope) continue;
+      bindings.push({
+        name: varNode.text,
+        serviceName: service.serviceName,
+        usesGeneratedServiceMember: service.usesGeneratedServiceMember,
+        scopeStart: scope.scope.startIndex,
+        scopeEnd: scope.scope.endIndex,
+        declarationEnd: scope.declarationEnd,
+        scopeSize: scope.scope.endIndex - scope.scope.startIndex,
+      });
+    }
+
+    // Process annotation-based thrift clients (#2629)
+    for (const match of runCompiledPatterns(ANNOTATED_CLIENT_PATTERNS, tree)) {
+      const annotationNode = match.captures.annotation_name;
+      const typeNode = match.captures.type;
+      const varNode = match.captures.var;
+      if (!annotationNode || !typeNode || !varNode) continue;
+      const service = serviceFromAnnotatedClient(typeNode.text, annotationNode.text);
       if (!service) continue;
       const scope = bindingScope(varNode);
       if (!scope) continue;
