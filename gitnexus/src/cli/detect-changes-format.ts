@@ -37,6 +37,7 @@ type DetectChangesResult = {
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
   unmapped_files?: string[];
+  omitted_untracked_sources?: string[];
   incompatible_calls?: import('../core/ingestion/call-compatibility.js').BrokenKeywordCall[];
   incompatible_call_skips?: { filePath?: string; reason: string }[];
 };
@@ -82,6 +83,18 @@ export function formatDetectChangesResult(result: unknown): string {
       }),
     );
   }
+  // Scope `all` is tracked-vs-HEAD. When that diff is empty, name the untracked
+  // indexed sources Git never showed so the clean sentence is not the whole story.
+  if (payload.omitted_untracked_sources?.length) {
+    const listed = payload.omitted_untracked_sources.slice(0, 10);
+    const files = listed.map(formatPathForTerminal).join(', ');
+    const overflow = payload.omitted_untracked_sources.length - listed.length;
+    notes.push(
+      t('tool.detectChanges.omittedUntracked', {
+        files: overflow > 0 ? `${files}, … (+${overflow})` : files,
+      }),
+    );
+  }
   // The plain truncation note reassures that the counts are whole. That is only
   // true when the run did NOT also degrade — `changed_count` sums the batches
   // that succeeded — so the two flags together get a different sentence.
@@ -117,6 +130,8 @@ export function formatDetectChangesResult(result: unknown): string {
     if (payload.partial) {
       return notes.join('\n');
     }
+    // Omission note already explains the tracked-clean / untracked-outside case.
+    if (payload.omitted_untracked_sources?.length) return notes.join('\n');
     return [...notes, t('tool.detectChanges.noChanges')].join('\n');
   }
 

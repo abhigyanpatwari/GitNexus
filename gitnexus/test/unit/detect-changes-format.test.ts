@@ -80,6 +80,36 @@ describe('formatDetectChangesResult — zero-symbol honesty (#3131)', () => {
     expect(text).toBe('No changes detected.');
   });
 
+  it('names omitted untracked sources instead of a bare clean-tree sentence (#4177)', () => {
+    const text = formatDetectChangesResult({
+      omitted_untracked_sources: ['extra.ts', 'lib/new.ts'],
+      summary: {
+        changed_count: 0,
+        affected_count: 0,
+        changed_files: 0,
+        risk_level: 'none',
+        message: 'No tracked changes vs HEAD.',
+      },
+    });
+    expect(text).toContain('extra.ts');
+    expect(text).toContain('lib/new.ts');
+    expect(text).toMatch(/tracked paths only|untracked source/i);
+    expect(text).not.toContain('No changes detected.');
+    expect(text).not.toContain('PARTIAL RESULT');
+  });
+
+  it('localizes the untracked-omission note under GITNEXUS_LANG=zh-CN', () => {
+    setCliLanguage('zh-CN');
+    const text = formatDetectChangesResult({
+      omitted_untracked_sources: ['extra.ts'],
+      summary: { changed_count: 0, affected_count: 0, risk_level: 'none' },
+    });
+    expect(text).toContain('extra.ts');
+    expect(text).toContain('未跟踪');
+    expect(text).not.toContain('未检测到变更。');
+    expect(text).not.toContain('No changes detected.');
+  });
+
   it('explains the indexed snapshot even when a new Markdown heading has no matching symbol', () => {
     const text = formatDetectChangesResult({
       summary: { changed_files: 1, changed_count: 0, documentation_basis: 'indexed_headings' },

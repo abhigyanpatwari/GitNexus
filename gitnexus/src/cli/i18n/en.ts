@@ -143,6 +143,8 @@ export const en = {
   'tool.detectChanges.keywordCoverage': 'Call compatibility check incomplete: {{examples}}',
   'tool.detectChanges.unmappedSource':
     'No symbols mapped for changed source files: {{files}}. Rebuild the index and inspect the diff; retry alone may not resolve missing or out-of-range symbols.',
+  'tool.detectChanges.omittedUntracked':
+    'No tracked changes vs HEAD. Scope "all" covers tracked paths only; untracked source files are outside this diff (stage them or review separately): {{files}}.',
   'tool.detectChanges.truncated':
     'LISTING CAPPED: one or more result lists were shortened. Counts include all observed results.',
   // The reassurance above is only true on its own. When the run also degraded,

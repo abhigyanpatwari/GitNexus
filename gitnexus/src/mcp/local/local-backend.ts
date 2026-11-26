@@ -82,6 +82,7 @@ import {
   findGitRootByDotGit,
   getCanonicalRepoRoot,
   getGitRoot,
+  listUntrackedPaths,
 } from '../../storage/git.js';
 import { realpathSync } from 'fs';
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from '../../server/grep-params.js';
@@ -7069,6 +7070,23 @@ export class LocalBackend {
       // and the clean branch below would report it to the pre-commit gate as
       // `risk_level:'none'`, no `partial`, exit 0 — a false all-clear (#2915).
       const parseFailed = diffOutput.trim().length > 0;
+      // Scope `all` is `git diff HEAD`: tracked staged+unstaged only. An
+      // untracked source never appears in that diff, so a clean result used to
+      // read as "nothing to review" while new code sat outside the gate (#4177).
+      // Keep the Git semantics; name the omission when the tracked tree is clean.
+      // Do not set `partial` — untracked paths cannot land in a commit until
+      // staged, and failing the gate for scratch files would teach people to
+      // skip it. Status failure (`null`) stays quiet: inventing an empty set
+      // would hide real omissions, inventing a failure would invent noise.
+      let omittedUntrackedSources: string[] | undefined;
+      if (!parseFailed && scope === 'all') {
+        const untracked = listUntrackedPaths(diffCwd);
+        if (untracked && untracked.length > 0) {
+          const { isIndexedSourceFile } = await loadQueryProviders();
+          const sources = untracked.filter(isIndexedSourceFile).sort();
+          if (sources.length > 0) omittedUntrackedSources = sources;
+        }
+      }
       return {
         summary: {
           changed_count: 0,
@@ -7076,10 +7094,15 @@ export class LocalBackend {
           risk_level: parseFailed ? 'unknown' : 'none',
           message: parseFailed
             ? 'Could not parse the git diff output — no file headers recognised.'
-            : 'No changes detected.',
+            : omittedUntrackedSources
+              ? 'No tracked changes vs HEAD.'
+              : 'No changes detected.',
         },
         changed_symbols: [],
         affected_processes: [],
+        ...(omittedUntrackedSources && {
+          omitted_untracked_sources: omittedUntrackedSources,
+        }),
         ...(parseFailed && { partial: true }),
       };
     }

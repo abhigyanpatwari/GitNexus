@@ -968,6 +968,39 @@ describe('isWorkingTreeDirty', () => {
   });
 });
 
+describe('listUntrackedPaths', () => {
+  it('returns only untracked paths and omits GitNexus-managed writes', async () => {
+    const { listUntrackedPaths } = await import('../../src/storage/git.js');
+    const repo = makeIsolatedGitRepo();
+    try {
+      fs.writeFileSync(path.join(repo, 'README.md'), 'hi');
+      execFileSync(gitExecutable, ['add', '--', 'README.md'], { cwd: repo, stdio: 'ignore' });
+      execFileSync(gitExecutable, ['commit', '-q', '-m', 'init'], {
+        cwd: repo,
+        stdio: 'ignore',
+      });
+      fs.writeFileSync(path.join(repo, 'README.md'), 'edited\n');
+      fs.writeFileSync(path.join(repo, 'extra.ts'), 'export const n = 1;\n');
+      fs.mkdirSync(path.join(repo, '.gitnexus'), { recursive: true });
+      fs.writeFileSync(path.join(repo, '.gitnexus', 'meta.json'), '{}');
+
+      expect(listUntrackedPaths(repo)).toEqual(['extra.ts']);
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('returns null outside a git repository', async () => {
+    const { listUntrackedPaths } = await import('../../src/storage/git.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gnx-no-git-'));
+    try {
+      expect(listUntrackedPaths(dir)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('listWorkingTreeDirtyPaths', () => {
   it('returns an empty list for a clean repository', async () => {
     const { listWorkingTreeDirtyPaths } = await import('../../src/storage/git.js');

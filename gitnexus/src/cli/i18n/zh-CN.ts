@@ -133,6 +133,8 @@ export const zhCN = {
   'tool.detectChanges.keywordCoverage': '调用兼容性检查不完整：{{examples}}',
   'tool.detectChanges.unmappedSource':
     '变更源码文件未映射到符号：{{files}}。请重建索引并检查 diff；仅重试可能无法解决符号缺失或源码范围不匹配。',
+  'tool.detectChanges.omittedUntracked':
+    '相对 HEAD 无已跟踪变更。scope "all" 只覆盖已跟踪路径；未跟踪的源码文件不在此 diff 中（请先暂存或单独审查）：{{files}}。',
   'tool.detectChanges.truncated':
     '列表已截断：一个或多个结果列表未完整显示。计数涵盖全部已观测结果。',
   'tool.detectChanges.truncatedDegraded':

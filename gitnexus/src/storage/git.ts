@@ -88,6 +88,42 @@ const listHiddenIndexPaths = (repoPath: string): string[] => {
 };
 
 /**
+ * Repo-relative paths that are untracked (and not ignored), using the same
+ * managed-path excludes as {@link isWorkingTreeDirty}. `null` means the status
+ * query failed — callers must not treat that as an empty untracked set.
+ *
+ * Porcelain `??` only: modified/staged tracked paths are out of scope. Used by
+ * `detect_changes` scope `all` so a tracked-vs-HEAD clean result can still name
+ * untracked sources that Git's `diff HEAD` never sees (#4177).
+ */
+export const listUntrackedPaths = (repoPath: string): string[] | null => {
+  try {
+    const out = execFileSync(
+      'git',
+      [
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--untracked-files=all',
+        '--',
+        '.',
+        ...GITNEXUS_MANAGED_PATH_EXCLUDES,
+      ],
+      { cwd: repoPath, windowsHide: true, ...gitPathListExec },
+    );
+    const paths = new Set<string>();
+    for (const record of out.split('\0')) {
+      if (record.length < 4 || record.slice(0, 2) !== '??') continue;
+      const rel = record.slice(3);
+      if (!isGitNexusManagedPath(rel)) paths.add(rel);
+    }
+    return [...paths];
+  } catch {
+    return null;
+  }
+};
+
+/**
  * Repo-relative paths `git status` reports as dirty or untracked, using the
  * same managed-path excludes as {@link isWorkingTreeDirty}, plus tracked paths
  * whose assume-unchanged or skip-worktree bits can hide content changes from
