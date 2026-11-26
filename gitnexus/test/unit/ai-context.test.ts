@@ -207,6 +207,19 @@ describe('generateAIContextFiles', () => {
     }
   });
 
+  it('routes generated MCP examples to the configured registry name (#1542)', async () => {
+    await generateAIContextFiles(tmpDir, storagePath, 'workspace "dev"', {}, undefined, {
+      skipSkills: true,
+    });
+
+    for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf8');
+      expect(content).toContain(
+        'For repo-scoped MCP calls, pass `repo: ' + JSON.stringify('workspace "dev"') + '`.',
+      );
+    }
+  });
+
   it('uses the configured runner for transport fallbacks, including PDG impact (#2671)', () => {
     const content = generateGitNexusContent(
       'TransportFallback',
@@ -319,9 +332,7 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
     expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze --index-only`');
-    expect(content).toContain(
-      'On query/context/impact/cypher object results, read staleness.status and branch/lastCommit',
-    );
+    expect(content).toContain('Check staleness.status and branch/lastCommit in tool results.');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');

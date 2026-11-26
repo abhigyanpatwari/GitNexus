@@ -225,6 +225,7 @@ ${tableBody}`
   // stay under the CLAUDE.md block token budget (#856); the cli skill carries the
   // full bootstrap + npm-11 fallback (`node.target is null` npx install crash).
   const runner = `node ${runnerPath}`;
+  const mcpRepo = JSON.stringify(projectName).replace(/`/g, '\\u0060');
   // Bootstrap names every install-free one-shot rather than the one this machine
   // resolves to: the block is committed, so a host-specific command would make
   // two contributors on different package managers rewrite it at each other on
@@ -252,7 +253,7 @@ ${tableBody}`
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}.
 
 > Index stale? Run \`${runner} analyze --index-only\`. ${bootstrapNote}
-> On query/context/impact/cypher object results, read staleness.status and branch/lastCommit. Re-analyze only for behind or diverged — current is clone HEAD, not main.
+> For repo-scoped MCP calls, pass \`repo: ${mcpRepo}\`. Check staleness.status and branch/lastCommit in tool results. Re-index only if behind or diverged from checkout HEAD.
 
 ## Always Do
 
