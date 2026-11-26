@@ -44,17 +44,31 @@ All three are `BasicBlock → BasicBlock` edges in the single `CodeRelation` tab
 `target` is **required** — a file path or a symbol/function name (resolved like
 `context()`). There is no anchorless mode (see below).
 
-## The corrected guard-clause Cypher
+## Finding guard clauses
 
-The RFC #567 §2 form (`[:CDG {label:'F'}]`) does **not** run as written. Edges
-are values of the single `CodeRelation` table's `type` property, and the branch
-sense is in `reason`, NOT a `label` column:
+Use `pdg_query` first. It requires a `target` and bounds the page for you:
+
+```
+pdg_query({ mode: 'controls', target: 'src/auth/login.ts' })
+```
+
+Edges into an early-return/throw block come back with `guard: true`.
+
+If you must use raw Cypher, anchor it on one file's BasicBlock id-prefix and
+add a `LIMIT`. The RFC #567 §2 form (`[:CDG {label:'F'}]`) does **not** run as
+written. Edges are values of the single `CodeRelation` table's `type` property,
+and the branch sense is in `reason`, NOT a `label` column:
 
 ```cypher
 MATCH (pred:BasicBlock)-[r:CodeRelation {type: 'CDG'}]->(dep:BasicBlock)
-WHERE dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw'
+WHERE dep.id STARTS WITH 'BasicBlock:src/auth/login.ts:'
+  AND (dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw')
 RETURN pred.startLine, r.reason AS branch, dep.startLine, dep.text
+LIMIT 50
 ```
+
+Replace `src/auth/login.ts` with your file path. Without the id-prefix anchor and
+`LIMIT`, this scans every CDG edge in the repository.
 
 `r.reason` is the sense the predicate took to reach the early exit. For
 `if (!ok) return;` the return rides the predicate's **true** arm (`'T'`) and the
