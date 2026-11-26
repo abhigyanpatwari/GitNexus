@@ -403,6 +403,24 @@ describe('@declaration.is-default-export (#3956)', () => {
         defaultExports(emit, 'const F = forwardRef((p, r) => 1);\nexport default memo(F);', file),
       ).toEqual(['F']);
       expect(wrapped('memo(/* pure */ Foo)')).toEqual(['Foo']);
+      expect(wrapped('mobx.observer(Foo)')).toEqual(['Foo']);
+    }
+  });
+
+  it('marks no default for a call that builds a value from the component', () => {
+    for (const [emit, file] of BOTH_EMITTERS) {
+      for (const expr of [
+        'React.createElement(Card)',
+        'createElement(Card)',
+        'h(Card)',
+        'createApp(Card)',
+        'createStore(Card)',
+        'wrap(Card)',
+      ])
+        expect(
+          defaultExports(emit, `function Card() {}\nexport default ${expr};`, file),
+          expr,
+        ).toEqual([]);
     }
   });
 

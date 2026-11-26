@@ -172,6 +172,28 @@ function isBlockedWrapperCallee(callee: SyntaxNode | null): boolean {
   );
 }
 
+/** Wrappers that return a component standing in for their first argument. */
+const COMPONENT_WRAPPERS: ReadonlySet<string> = new Set(['memo', 'forwardRef', 'observer']);
+const HOC_NAME = /^with[A-Z]/;
+
+/**
+ * Does this callee return a wrapped version of its first argument? Known
+ * wrappers (`memo`, `React.memo`, `forwardRef`, `observer`), `withX` HOCs, and
+ * curried HOC factories (`connect(m)(Card)`, `withStyles(s)(Card)`). Any other
+ * call may build a value from the argument (`createElement(Card)`,
+ * `createApp(App)`), which is not the argument itself.
+ */
+function isComponentWrapperCallee(callee: SyntaxNode | null): boolean {
+  if (callee?.type === 'call_expression') return true;
+  const name =
+    callee?.type === 'identifier'
+      ? decodeIdentifierEscapes(callee.text)
+      : callee?.type === 'member_expression'
+        ? callee.childForFieldName('property')?.text
+        : undefined;
+  return name !== undefined && (COMPONENT_WRAPPERS.has(name) || HOC_NAME.test(name));
+}
+
 function callArguments(call: SyntaxNode): SyntaxNode[] | undefined {
   const args = call.childForFieldName('arguments');
   if (args?.type !== 'arguments') return undefined;
@@ -230,13 +252,13 @@ function declaresTopLevelCallable(root: SyntaxNode, name: string): boolean {
  * The top-level function or class a wrapper call exports: `memo(Card)`,
  * `React.memo(Card, areEqual)`, `memo(forwardRef(Card))` and
  * `connect(mapState)(Card)` all name `Card`, the first argument unwrapped
- * through nested wrapper calls. An inline first argument is not a name: the
- * synthesized HOC default above owns it.
+ * through nested component wrappers (`isComponentWrapperCallee`). An inline
+ * first argument is not a name: the synthesized HOC default above owns it.
  */
 export function wrappedDefaultLocal(call: SyntaxNode, root: SyntaxNode): string | undefined {
   let current = call;
   while (current.type === 'call_expression') {
-    if (isBlockedWrapperCallee(current.childForFieldName('function'))) return undefined;
+    if (!isComponentWrapperCallee(current.childForFieldName('function'))) return undefined;
     const [first] = callArguments(current) ?? [];
     if (first === undefined) return undefined;
     current = unwrapTransparentExpression(first);
