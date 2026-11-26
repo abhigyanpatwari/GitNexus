@@ -21,7 +21,6 @@ import type { EmbeddingCheckpoint } from '../../../../src/core/embedding-checkpo
 import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
 
 import {
-  ensurePrivateSharedGraph,
   featureKeyOf,
   publishSharedGraph,
   seedSharedSlot,
@@ -119,6 +118,36 @@ describe('shared sibling store analyze (#3352)', () => {
         const entry = registered.find((e) => e.path === checkout);
         expect(entry?.storagePath).toBe(layoutOf(checkout).checkoutSlot);
       }
+    },
+  );
+
+  it(
+    'seeds a checkout that hides committed files and republishes after a real analyze',
+    { timeout: 180_000 },
+    async () => {
+      const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
+      const analyze = (checkout: string) =>
+        runFullAnalysis(checkout, { skipAgentsMd: true, skipSkills: true }, { onProgress() {} });
+      await analyze(main);
+      const shared = (await loadMeta(layoutOf(main).checkoutSlot))?.graphPath;
+      assert(shared);
+      const head = git(main, 'rev-parse', 'HEAD').trim();
+      git(wtA, 'update-index', '--skip-worktree', '--', 'a.ts');
+      const layout = layoutOf(wtA);
+      await seedSharedSlot(layout, wtA, () => {});
+      expect(await loadMeta(layout.checkoutSlot)).toMatchObject({
+        graphPath: shared,
+        lastCommit: '',
+      });
+      await analyze(wtA);
+      const privateMeta = await loadMeta(layout.checkoutSlot);
+      expect(privateMeta?.lastCommit).toBe(head);
+      expect(privateMeta?.graphPath).toBeUndefined();
+      expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(true);
+      git(wtA, 'update-index', '--no-skip-worktree', '--', 'a.ts');
+      await analyze(wtA);
+      expect((await loadMeta(layout.checkoutSlot))?.graphPath).toBe(shared);
+      expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(false);
     },
   );
 
@@ -524,30 +553,6 @@ describe('publishSharedGraph race (#3352)', () => {
     const seeded = await seedFreshSlot(wt);
     expect(seeded?.graphPath).toBe((await loadMeta(layoutOf(main).checkoutSlot))?.graphPath);
     expect(seeded?.lastCommit).toBe(head);
-  });
-
-  it('seeds a checkout that hides committed files without a commit, then re-points', async () => {
-    const { checkouts, head } = await setup();
-    const [main, wt] = checkouts;
-    await publishSharedGraph(layoutOf(main), main, head, () => {});
-    const shared = (await loadMeta(layoutOf(main).checkoutSlot))?.graphPath;
-    git(wt, 'update-index', '--skip-worktree', '--', 'a.ts');
-    const seeded = await seedFreshSlot(wt);
-    expect(seeded?.graphPath).toBe(shared);
-    // An empty lastCommit sends the next analyze through the file-hash diff.
-    expect(seeded?.lastCommit).toBe('');
-
-    // That analyze copies the graph, finds nothing to change, and stamps HEAD;
-    // once the checkout shows every file again, publish drops the copy.
-    const slot = layoutOf(wt).checkoutSlot;
-    expect(await ensurePrivateSharedGraph(slot, () => {})).toBe(true);
-    const copied = await loadMeta(slot);
-    expect(copied).not.toBeNull();
-    await saveMeta(slot, { ...(copied as RepoMeta), lastCommit: head });
-    git(wt, 'update-index', '--no-skip-worktree', '--', 'a.ts');
-    await publishSharedGraph(layoutOf(wt), wt, head, () => {});
-    expect((await loadMeta(slot))?.graphPath).toBe(shared);
-    expect(existsSync(path.join(slot, 'lbug'))).toBe(false);
   });
 
   const checkpoint: EmbeddingCheckpoint = {

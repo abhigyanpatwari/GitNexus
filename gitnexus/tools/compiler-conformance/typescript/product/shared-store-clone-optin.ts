@@ -11,6 +11,7 @@ import {
   it,
 } from 'node:test';
 import { expect } from 'expect';
+import type { AnalyzeOptions } from '../../../../src/core/run-analyze.js';
 import { resolveOptedInStore } from '../../../../src/core/shared-store-analyze.js';
 import { getRemoteUrl } from '../../../../src/storage/git.js';
 import {
@@ -55,7 +56,7 @@ describe('shared store clone sharing (#3352)', () => {
   let wt: string;
   let storeLayout: SharedStoreLayout;
 
-  const analyze = async (checkout: string, options: Record<string, unknown> = {}) => {
+  const analyze = async (checkout: string, options: AnalyzeOptions = {}) => {
     const { runFullAnalysis } = await import('../../../../src/core/run-analyze.js');
     return runFullAnalysis(checkout, options, { onProgress: () => {} });
   };

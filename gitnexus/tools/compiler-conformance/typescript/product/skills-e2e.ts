@@ -89,15 +89,24 @@ describe('Mixed TypeScript + Python', () => {
   });
 });
 
+function generatedSkillDirectories(repo: string): string[] {
+  return fs
+    .readdirSync(path.join(repo, '.claude', 'skills'), { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith('gitnexus-area-'))
+    .map((entry) => entry.name)
+    .sort();
+}
+
 describe('Idempotency', () => {
   let tmpDir: string;
-  let result1: ReturnType<typeof runSkillsCli>;
+  let firstDirectories: string[];
   let result2: ReturnType<typeof runSkillsCli>;
 
   beforeAll(
     () => {
       tmpDir = createFixtureRepo('idempotency', fixtureFiles('idempotency'));
-      result1 = runSkillsCli(tmpDir);
+      assertSkillsCliSucceeded(runSkillsCli(tmpDir));
+      firstDirectories = generatedSkillDirectories(tmpDir);
       result2 = runSkillsCli(tmpDir);
       // 120s to match the other describe hooks in this file. This hook runs
       // runSkillsCli TWICE, each capped at 45s, so a 90s budget has no headroom
@@ -116,18 +125,13 @@ describe('Idempotency', () => {
    * and CLAUDE.md still references generated skills.
    */
   it('second analyze --skills produces stable output', { timeout: 90000 }, () => {
-    assertSkillsCliSucceeded(result1);
     assertSkillsCliSucceeded(result2);
 
     const skillsRoot = path.join(tmpDir, '.claude', 'skills');
     expect(fs.existsSync(skillsRoot)).toBe(true);
 
-    const skillDirs = fs
-      .readdirSync(skillsRoot)
-      .filter(
-        (d) =>
-          d.startsWith('gitnexus-area-') && fs.statSync(path.join(skillsRoot, d)).isDirectory(),
-      );
+    const skillDirs = generatedSkillDirectories(tmpDir);
+    expect(skillDirs).toEqual(firstDirectories);
     expect(skillDirs.length).toBeGreaterThanOrEqual(1);
 
     /* All SKILL.md files should still have valid frontmatter */

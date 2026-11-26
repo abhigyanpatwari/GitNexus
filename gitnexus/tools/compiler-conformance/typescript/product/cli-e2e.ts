@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
  * - analyzeCommand: verify pipeline runs and creates .gitnexus/ output
  *
  * Uses process.execPath (never 'node' string), no shell: true.
- * Accepts status === null (timeout) as valid on slow CI runners.
+ * Only an explicit subprocess timeout is tolerated on slow CI runners.
  */
 import { describe, it, before as beforeAll, after as afterAll } from 'node:test';
 import { expect } from 'expect';
@@ -99,6 +99,12 @@ function cliEnv(extraEnv: Record<string, string> = {}) {
     GITNEXUS_HOME: suiteGitnexusHome,
     ...extraEnv,
   });
+}
+
+function cliTimedOut(result: ReturnType<typeof spawnSync>): boolean {
+  if (result.status !== null) return false;
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') return true;
+  throw result.error ?? new Error(`CLI terminated by signal ${result.signal}`);
 }
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
@@ -305,7 +311,7 @@ describe('CLI end-to-end', () => {
     const result = runCli('status', MINI_REPO);
 
     // Accept timeout as valid on slow CI
-    if (result.status === null) return;
+    if (cliTimedOut(result)) return;
 
     expect(result.status).toBe(0);
     const combined = result.stdout + result.stderr;
@@ -318,13 +324,13 @@ describe('CLI end-to-end', () => {
   // branch can actually fire on slow runners (Windows CI routinely
   // comes in at ~2x macOS wall-clock). Without a larger test-level
   // timeout, the default 30 s vitest timeout races the 30 s
-  // subprocess timeout and the `if (result.status === null) return;`
+  // subprocess timeout and the `if (cliTimedOut(result)) return;`
   // tolerance never activates.
   it('analyze command runs pipeline on mini-repo', { timeout: 60_000 }, () => {
     const result = runCli('analyze', MINI_REPO, 30000);
 
     // Accept timeout as valid on slow CI
-    if (result.status === null) return;
+    if (cliTimedOut(result)) return;
 
     assert.doesNotThrow(
       () => expect(result.status).toBe(0),
@@ -523,7 +529,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             60000,
           );
-          if (r1.status === null) return; // CI timeout tolerance
+          if (cliTimedOut(r1)) return; // CI timeout tolerance
           assert.doesNotThrow(
             () => expect(r1.status).toBe(0),
             [
@@ -547,7 +553,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             60000,
           );
-          if (r2.status === null) return;
+          if (cliTimedOut(r2)) return;
           expect(r2.status).toBe(1);
           const r2Output = `${r2.stdout}${r2.stderr}`;
           expect(r2Output).toMatch(/Registry name collision|already used/i);
@@ -570,7 +576,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             60000,
           );
-          if (r3.status === null) return;
+          if (cliTimedOut(r3)) return;
           assert.doesNotThrow(
             () => expect(r3.status).toBe(0),
             [
@@ -607,7 +613,7 @@ describe('CLI end-to-end', () => {
               { GITNEXUS_HOME: gnHome },
               60000,
             );
-            if (r4.status === null) return;
+            if (cliTimedOut(r4)) return;
             expect(r4.status).toBe(1);
             const r4Output = `${r4.stdout}${r4.stderr}`;
             expect(r4Output).toMatch(/Registry name collision|already used/i);
@@ -662,7 +668,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             60000,
           );
-          if (r1.status === null) return;
+          if (cliTimedOut(r1)) return;
           assert.doesNotThrow(
             () => expect(r1.status).toBe(0),
             [
@@ -697,7 +703,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             15000,
           );
-          if (r2.status === null) return;
+          if (cliTimedOut(r2)) return;
           expect(r2.status).toBe(0);
           const r2Output = `${r2.stdout}${r2.stderr}`;
           expect(r2Output).toMatch(/Run with --force/i);
@@ -724,7 +730,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             15000,
           );
-          if (r3.status === null) return;
+          if (cliTimedOut(r3)) return;
           assert.doesNotThrow(
             () => expect(r3.status).toBe(0),
             [
@@ -762,7 +768,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             15000,
           );
-          if (r4.status === null) return;
+          if (cliTimedOut(r4)) return;
           expect(r4.status).toBe(0);
           expect(`${r4.stdout}${r4.stderr}`).toMatch(/Nothing to remove/i);
         } finally {
@@ -791,7 +797,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             60000,
           );
-          if (r1.status === null) return;
+          if (cliTimedOut(r1)) return;
           expect(r1.status).toBe(0);
 
           const r2 = runCliWithEnv(
@@ -800,7 +806,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             60000,
           );
-          if (r2.status === null) return;
+          if (cliTimedOut(r2)) return;
           expect(r2.status).toBe(0);
 
           const registryPath = path.join(gnHome, 'registry.json');
@@ -814,7 +820,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             15000,
           );
-          if (r3.status === null) return;
+          if (cliTimedOut(r3)) return;
           expect(r3.status).toBe(1);
           const r3Output = `${r3.stdout}${r3.stderr}`;
           expect(r3Output).toMatch(/Multiple registered repos match/i);
@@ -858,7 +864,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             15000,
           );
-          if (r4.status === null) return;
+          if (cliTimedOut(r4)) return;
           assert.doesNotThrow(
             () => expect(r4.status).toBe(0),
             [
@@ -910,7 +916,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             60000,
           );
-          if (r1.status === null) return;
+          if (cliTimedOut(r1)) return;
           expect(r1.status).toBe(0);
 
           const registryPath = path.join(gnHome, 'registry.json');
@@ -936,7 +942,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             15000,
           );
-          if (r2.status === null) return;
+          if (cliTimedOut(r2)) return;
 
           assert.doesNotThrow(
             () => expect(r2.status).toBe(1),
@@ -1015,7 +1021,7 @@ describe('CLI end-to-end', () => {
               { GITNEXUS_HOME: gnHome },
               60000,
             );
-            if (r.status === null) return;
+            if (cliTimedOut(r)) return;
             assert.doesNotThrow(
               () => expect(r.status).toBe(0),
               `analyze ${alias} exited ${r.status}: ${r.stdout}${r.stderr}`,
@@ -1049,7 +1055,7 @@ describe('CLI end-to-end', () => {
             { GITNEXUS_HOME: gnHome },
             30000,
           );
-          if (r.status === null) return;
+          if (cliTimedOut(r)) return;
 
           // clean --all's per-entry error handling always exits 0 at
           // the end (it only logs per-repo failures). The important
@@ -1105,7 +1111,7 @@ describe('CLI end-to-end', () => {
       const result = runCliRaw([], MINI_REPO);
 
       // Accept timeout as valid on slow CI
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       // Commander exits with code 1 when no subcommand is given and
       // prints a usage/error message to stderr.
@@ -1118,7 +1124,7 @@ describe('CLI end-to-end', () => {
       const result = runCliRaw(['--help'], MINI_REPO);
 
       // Accept timeout as valid on slow CI
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       expect(result.status).toBe(0);
       // Commander writes --help output to stdout.
@@ -1342,7 +1348,7 @@ describe('CLI end-to-end', () => {
       const result = runCliRaw(['nonexistent'], MINI_REPO);
 
       // Accept timeout as valid on slow CI
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       // Commander exits with code 1 and prints an error to stderr for unknown commands.
       expect(result.status).toBe(1);
@@ -1389,7 +1395,7 @@ describe('CLI end-to-end', () => {
         });
 
         const result = runCliOutsideProject(['status'], tmpDir);
-        if (result.status === null) return;
+        if (cliTimedOut(result)) return;
 
         expect(result.status).toBe(0);
         expect(result.stdout).toMatch(/Repository not indexed/);
@@ -1402,7 +1408,7 @@ describe('CLI end-to-end', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-nogit-'));
       try {
         const result = runCliOutsideProject(['status'], tmpDir);
-        if (result.status === null) return;
+        if (cliTimedOut(result)) return;
 
         // status.ts doesn't set process.exitCode — just prints and returns
         expect(result.status).toBe(0);
@@ -1418,7 +1424,7 @@ describe('CLI end-to-end', () => {
         // Pass the non-git path as a separate argument via runCliRaw
         // (runCli passes the whole string as one arg which breaks path parsing)
         const result = runCliRaw(['analyze', tmpDir], repoRoot);
-        if (result.status === null) return;
+        if (cliTimedOut(result)) return;
 
         // analyze.ts sets process.exitCode = 1 for non-git paths
         expect(result.status).toBe(1);
@@ -1434,7 +1440,7 @@ describe('CLI end-to-end', () => {
   describe('wiki command flags', () => {
     it('wiki --help shows --provider, --review, --verbose flags', () => {
       const result = runCliRaw(['wiki', '--help'], repoRoot);
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('--provider <provider>');
@@ -1452,7 +1458,7 @@ describe('CLI end-to-end', () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wiki-nogit-'));
       try {
         const result = runCliRaw(['wiki', tmpDir], repoRoot);
-        if (result.status === null) return;
+        if (cliTimedOut(result)) return;
 
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/not.*git repository/i);
@@ -1485,7 +1491,7 @@ describe('CLI end-to-end', () => {
           stdio: ['pipe', 'pipe', 'pipe'],
           env: cliEnv(),
         });
-        if (result.status === null) return;
+        if (cliTimedOut(result)) return;
 
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/No GitNexus index found/);
@@ -1498,7 +1504,7 @@ describe('CLI end-to-end', () => {
       // In non-TTY (piped stdin), --provider cursor should skip the API key prompt
       // and proceed (or fail gracefully with Cursor CLI not found)
       const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'cursor'], repoRoot, 15000);
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       const combined = result.stdout + result.stderr;
       // Should NOT ask for API key — cursor provider doesn't need one
@@ -1507,7 +1513,7 @@ describe('CLI end-to-end', () => {
 
     it('wiki --provider claude without API key does not prompt for key in non-TTY', () => {
       const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'claude'], repoRoot, 15000);
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       const combined = result.stdout + result.stderr;
       expect(combined).not.toMatch(/API key:/);
@@ -1515,7 +1521,7 @@ describe('CLI end-to-end', () => {
 
     it('wiki --provider codex without API key does not prompt for key in non-TTY', () => {
       const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'codex'], repoRoot, 15000);
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       const combined = result.stdout + result.stderr;
       expect(combined).not.toMatch(/API key:/);
@@ -1523,7 +1529,7 @@ describe('CLI end-to-end', () => {
 
     it('wiki --provider grok without API key does not prompt for key in non-TTY', () => {
       const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'grok'], repoRoot, 15000);
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       const combined = result.stdout + result.stderr;
       expect(combined).not.toMatch(/API key:/);
@@ -1531,7 +1537,7 @@ describe('CLI end-to-end', () => {
 
     it('wiki --help includes --verbose flag description', () => {
       const result = runCliRaw(['wiki', '--help'], repoRoot);
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       expect(result.status).toBe(0);
       expect(result.stdout).toMatch(/verbose/i);
@@ -1550,7 +1556,7 @@ describe('CLI end-to-end', () => {
         ['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      if (result.status === null) return; // CI timeout tolerance
+      if (cliTimedOut(result)) return; // CI timeout tolerance
 
       expect(result.status).toBe(0);
 
@@ -1567,7 +1573,7 @@ describe('CLI end-to-end', () => {
     it('query: JSON appears on stdout, not stderr', () => {
       // "handler" is a generic term likely to match something in mini-repo
       const result = runCliRaw(['query', 'handler', '--repo', 'mini-repo'], MINI_REPO);
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       expect(result.status).toBe(0);
       expect(() => JSON.parse(result.stdout.trim())).not.toThrow();
@@ -1578,7 +1584,7 @@ describe('CLI end-to-end', () => {
         ['impact', 'handleRequest', '--direction', 'upstream', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       expect(result.status).toBe(0);
       // impact may return an error object (symbol not found) or a real result —
@@ -1591,7 +1597,7 @@ describe('CLI end-to-end', () => {
         ['cypher', 'MATCH (n:Function) RETURN n.name LIMIT 5', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      if (result.status === null) return;
+      if (cliTimedOut(result)) return;
 
       expect(result.status).toBe(0);
 
@@ -1933,7 +1939,7 @@ describe('impact disambiguation flags reach the backend (e2e, #1907)', () => {
   it('forwards --uid alone with no positional target (U1 + --uid end-to-end)', () => {
     if (!uid) return; // environment could not index — validated in CI
     const res = runCliRaw(['impact', '--uid', uid, '--repo', 'mini-repo'], MINI_REPO, 30000);
-    if (res.status === null) return;
+    if (cliTimedOut(res)) return;
     expect(res.status).toBe(0);
     const out = JSON.parse(res.stdout.trim());
     expect(out).not.toHaveProperty('error');
@@ -1948,7 +1954,7 @@ describe('impact disambiguation flags reach the backend (e2e, #1907)', () => {
       MINI_REPO,
       30000,
     );
-    if (ok.status === null) return;
+    if (cliTimedOut(ok)) return;
     expect(ok.status).toBe(0);
     const okOut = JSON.parse(ok.stdout.trim());
     expect(okOut.status).not.toBe('ambiguous');
@@ -1961,7 +1967,7 @@ describe('impact disambiguation flags reach the backend (e2e, #1907)', () => {
       MINI_REPO,
       30000,
     );
-    if (wrong.status === null) return;
+    if (cliTimedOut(wrong)) return;
     const wrongOut = JSON.parse(wrong.stdout.trim());
     expect(wrongOut.error !== undefined || wrongOut.target?.filePath !== symbolFile).toBe(true);
   });
@@ -1973,7 +1979,7 @@ describe('impact disambiguation flags reach the backend (e2e, #1907)', () => {
       MINI_REPO,
       30000,
     );
-    if (res.status === null) return;
+    if (cliTimedOut(res)) return;
     expect(res.status).toBe(0);
     const out = JSON.parse(res.stdout.trim());
     expect(out).not.toHaveProperty('error');
