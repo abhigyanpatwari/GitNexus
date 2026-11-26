@@ -1520,6 +1520,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         async () => {
           let searchResults: any[];
           let ftsAvailable: boolean | undefined;
+          let ftsQueryFailed = false;
           const metadata = mode === 'bm25' ? null : await loadMeta(entry.storagePath);
           const snapshot =
             metadata &&
@@ -1544,7 +1545,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
           if (mode === 'semantic') {
             if (!semanticReady) {
-              return { searchResults: [] as any[], ftsAvailable: undefined };
+              return {
+                searchResults: [],
+                warning: 'Semantic search unavailable: the embedder is not ready.',
+              };
             }
             searchResults = await semanticLane(executeQuery, query, limit);
             // Normalize semantic results to HybridSearchResult shape
@@ -1557,6 +1561,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           } else if (mode === 'bm25') {
             const ftsResponse = await searchFTSFromLbug(query, limit, undefined, ftsDisabledReason);
             ftsAvailable = ftsResponse.ftsAvailable;
+            ftsQueryFailed = !!ftsResponse.nonBenignErrors?.length;
             searchResults = ftsResponse.results.map((r: any, i: number) => ({
               ...r,
               rank: i + 1,
@@ -1565,14 +1570,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           } else {
             // hybrid (default)
             if (semanticReady) {
-              searchResults = await hybridSearch(
+              const hybrid = await hybridSearch(
                 query,
                 limit,
                 executeQuery,
                 semanticLane,
                 ftsDisabledReason,
               );
-              if (ftsDisabledReason) ftsAvailable = false;
+              searchResults = hybrid.results;
+              ftsAvailable = hybrid.ftsAvailable;
+              ftsQueryFailed = hybrid.ftsQueryFailed;
             } else {
               const ftsResponse = await searchFTSFromLbug(
                 query,
@@ -1581,11 +1588,12 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 ftsDisabledReason,
               );
               ftsAvailable = ftsResponse.ftsAvailable;
+              ftsQueryFailed = !!ftsResponse.nonBenignErrors?.length;
               searchResults = ftsResponse.results;
             }
           }
 
-          if (!enrich) return { searchResults, ftsAvailable };
+          if (!enrich) return { searchResults, ftsAvailable, ftsQueryFailed };
 
           // Server-side enrichment: add connections, cluster, processes per result
           // Uses parameterized queries to prevent Cypher injection via nodeId
@@ -1671,13 +1679,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             }),
           );
 
-          return { searchResults: enriched, ftsAvailable };
+          return { searchResults: enriched, ftsAvailable, ftsQueryFailed };
         },
         readOnlyFtsOptions(skipFts),
       );
       const response: any = { results: results.searchResults ?? results };
-      if (results.ftsAvailable === false) {
-        response.warning = ftsDegradedWarning(undefined, ftsDisabledReason);
+      if (results.warning) {
+        response.warning = results.warning;
+      } else if (results.ftsAvailable === false) {
+        response.warning =
+          results.ftsQueryFailed && !ftsDisabledReason
+            ? 'FTS keyword search failed; results do not include keyword matches. See server logs for details.'
+            : ftsDegradedWarning(undefined, ftsDisabledReason);
       }
       res.json(response);
     } catch (err: any) {
