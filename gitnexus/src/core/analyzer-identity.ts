@@ -15,6 +15,11 @@
  */
 
 import {
+  isWindowsDirectoryPrivate,
+  readWindowsDirectoryAccess,
+} from '../utils/windows-directory-privacy.js';
+import { pruneWindowsIdentityCache } from './windows-identity-cache-retention.js';
+import {
   accessSync,
   closeSync,
   constants as fsConstants,
@@ -29,7 +34,7 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
-  rmSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -2156,28 +2161,51 @@ function windowsProfileCacheDirectory(): string | null {
   }
   const candidate = path.join(profile, WINDOWS_CACHE_SUBDIRECTORY);
   if (isWindowsProfileCacheDirectory(candidate)) return candidate;
+  const parent = path.dirname(candidate);
   try {
-    mkdirSync(candidate, { recursive: true });
+    const profileAccess = readWindowsDirectoryAccess(profile);
+    if (!profileAccess || !isWindowsDirectoryPrivate(profileAccess)) return null;
+    mkdirSync(parent, { recursive: true });
+    if (!isRealWindowsDirectory(parent)) return null;
+    const parentAccess = readWindowsDirectoryAccess(parent);
+    if (!parentAccess || !isWindowsDirectoryPrivate(parentAccess)) return null;
+    try {
+      mkdirSync(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') return null;
+    }
   } catch {
     return null;
   }
-  if (!isRealWindowsDirectory(candidate)) return null;
   const userSid = currentWindowsUserSid();
-  if (!userSid) return null;
-  if (!isPrivateWindowsDirectory(candidate, userSid)) {
-    // Nothing written while the directory was not private is trusted, and any
-    // extra access entries go with it: recreate the directory and restrict it.
+  if (!userSid || !isRealWindowsDirectory(candidate)) return null;
+  const access = readWindowsDirectoryAccess(candidate);
+  const dacl = readWindowsDacl(candidate);
+  if (!access || access.currentUser !== userSid || dacl === null) return null;
+  if (!isWindowsDirectoryPrivate(access) || !isPrivateWindowsDacl(dacl, userSid)) {
+    // Existing handles to the untrusted directory cannot write into its replacement.
+    const retired = path.join(
+      parent,
+      `analyzer-identity.retired-${randomBytes(12).toString('hex')}`,
+    );
     try {
-      rmSync(candidate, { recursive: true, force: true });
+      renameSync(candidate, retired);
       mkdirSync(candidate);
+      if (!isRealWindowsDirectory(candidate) || !restrictWindowsDirectory(candidate, userSid))
+        return null;
+      const locked = readWindowsDirectoryAccess(candidate);
+      if (
+        !locked ||
+        !isWindowsDirectoryPrivate(locked) ||
+        !isPrivateWindowsDirectory(candidate, userSid)
+      )
+        return null;
+      for (const entry of readdirSync(retired)) {
+        if (/^[0-9a-f]{64}\.json(?:\.\d+\.[0-9a-f]{12}\.tmp)?$/.test(entry))
+          unlinkSync(path.join(retired, entry));
+      }
+      if (readdirSync(retired).length === 0) rmdirSync(retired);
     } catch {
-      return null;
-    }
-    if (
-      !isRealWindowsDirectory(candidate) ||
-      !restrictWindowsDirectory(candidate, userSid) ||
-      !isPrivateWindowsDirectory(candidate, userSid)
-    ) {
       return null;
     }
   }
@@ -2831,6 +2859,9 @@ function persistIdentityCache(
       mode: 0o600,
     });
     renameSync(temporary, target);
+    if (process.platform === 'win32' && !hasTrustedCacheOverride(options)) {
+      pruneWindowsIdentityCache(path.dirname(target), path.basename(target));
+    }
   } catch {
     // The cache is optional (notably for read-only package/container setups).
     // A failed write only loses the optimization; identity remains fail-closed.

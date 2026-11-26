@@ -105,6 +105,9 @@ const PLATFORM_LOGIC = [
   // mixed-prefix relativize hazard as is-inside, reached through a
   // caller-supplied path.
   'test/unit/windows-long-path-prefix.test.ts',
+  // Real Windows ACL and per-user analyzer cache checks for #4128.
+  'test/unit/analyzer-identity-windows-cache.test.ts',
+  'test/unit/windows-directory-privacy.test.ts',
   // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
   // plus a live-probe test whose only real non-4K coverage is macos-arm64's
   // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).
