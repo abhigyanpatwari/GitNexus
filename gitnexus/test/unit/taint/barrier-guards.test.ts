@@ -311,6 +311,38 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('does not suppress after a kind-partial sanitizer transform into the sink', () => {
+    // escape neutralizes xss only; viaCall stays false for matched sanitizers,
+    // but the barrier must still refuse — validated pre-escape value ≠ sink arg.
+    const mech: SourceSinkSanitizerSpec = {
+      ...MECH,
+      sanitizers: [{ name: 'escape', neutralizes: ['xss'], global: true }],
+    };
+    for (const code of [
+      `
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        exec(escape(req.body));
+      }
+    `,
+      `
+      function f(req: any) {
+        const host = req.body;
+        if (!isValidHostName(host)) return;
+        exec(escape(host));
+      }
+    `,
+    ]) {
+      const cfgs = cfgsOf(code);
+      const cfg = cfgs[0];
+      expect(hasTaintSafeSites(cfg)).toBe(true);
+      const defUse = computeReachingDefs(cfg);
+      const matches = matchFunctionSites(cfg, mech, buildTaintImportIndex(importsFor(code)));
+      const flows = computeTaintFlows(cfg, defUse, matches);
+      expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+    }
+  });
+
   it('does not suppress when a direct and transformed path share the sink arg', () => {
     const { flows } = analyze(`
       function f(req: any) {

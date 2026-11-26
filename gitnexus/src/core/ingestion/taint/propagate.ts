@@ -46,7 +46,11 @@
  * engine consults {@link buildBarrierGuardIndex}: if the sink block is
  * control-dependent on a validator call over the same binding on the validated
  * CDG branch sense, the finding is suppressed and a kill is recorded. Unknown
- * predicates never kill (under-kill only).
+ * predicates never kill (under-kill only). Barriers also refuse when the
+ * occurrence reached the sink through any nested call — unmodeled (`viaCall`)
+ * *or* a matched sanitizer that did not neutralize this sink kind (e.g.
+ * `exec(escape(req.body))` after validating `req.body`: `escape` is modeled
+ * for xss only, so `viaCall` stays false, but the value was still transformed).
  *
  * - **Occurrence interposition (KTD4a):** evaluated over the U1 site
  *   structure. An occurrence reaching a sink arg / def-feeding position
@@ -284,6 +288,14 @@ interface OccPath {
 }
 
 const DIRECT_PATH: OccPath = { kinds: EMPTY_KINDS, viaCall: false, sanitizers: [] };
+
+/**
+ * True when the occurrence may not be the validated value: unmodeled call, or
+ * a matched sanitizer hop (`viaCall` stays false for modeled sanitizers).
+ */
+function pathMayTransform(path: OccPath): boolean {
+  return path.viaCall || path.sanitizers.length > 0;
+}
 
 /** Per-statement match/site context, indexed once per visited statement. */
 interface StmtContext {
@@ -865,9 +877,10 @@ export function computeTaintFlows(
           if (!sofar.kinds.has(kind)) {
             const localBinding = srcSite.object as number;
             // Statement-local: omit taintDefPoint; pass property. Refuse when
-            // the value reaches the sink through a nested call (transformed).
+            // the value reaches the sink through a nested call — unmodeled or
+            // a kind-partial sanitizer (escape ≠ command-safe).
             if (
-              !sofar.viaCall &&
+              !pathMayTransform(sofar) &&
               suppressedByBarrier(localBinding, ctx.point, undefined, srcSite.property, siteIndex)
             )
               continue;
@@ -977,10 +990,11 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
-              // Under-kill: multi-property args, or any via-call path in this
-              // argument (direct + wrap(host) must not let the direct win).
+              // Under-kill: multi-property args, or any transform path in this
+              // argument (unmodeled call or kind-partial sanitizer — direct +
+              // wrap(host) / escape(host) must not let the direct win).
               const sinkProps = memberPropertiesAtArg(ctx.sites, siteIndex, argPos);
-              if (!paths.some((path) => path.viaCall) && sinkProps.length <= 1) {
+              if (!paths.some(pathMayTransform) && sinkProps.length <= 1) {
                 if (suppressedByBarrier(b, ctx.point, t.point, sinkProps[0], siteIndex)) continue;
               }
               const chain = chainHops(key);
