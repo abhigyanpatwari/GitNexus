@@ -222,6 +222,37 @@ function handler() {} function other() {}`);
     ).toEqual(['GET /a', 'POST /b']);
   });
 
+  // A constant must read exactly as the same literal would, escapes included.
+  it.each([
+    ['a unicode escape', String.raw`'/a\u002Fb'`],
+    ['a braced unicode escape', String.raw`'/caf\u{e9}'`],
+    ['a hex escape', String.raw`'/x\x2Dy'`],
+    ['an escaped quote', String.raw`'/it\'s'`],
+    ['an escape-only template', '`/t\\u0061b`'],
+  ])('decodes %s in a constant path exactly as the literal does', (_label, literal) => {
+    const direct = urls(`import express from 'express'; const app = express();
+      app.get(${literal}, handler);`);
+    expect(direct).toHaveLength(1);
+    expect(
+      urls(`import express from 'express'; const app = express();
+      const P = ${literal};
+      app.get(P, handler);`),
+    ).toEqual(direct);
+  });
+
+  it('decodes escapes in the static pieces of an interpolated constant path', () => {
+    // Plain string so the escapes reach the parsed source undecoded.
+    const source = [
+      "import express from 'express'; const app = express();",
+      "const BASE = '/api';",
+      "const T = { USERS: '/us\\u0065rs' };",
+      'app.get(`${BASE}\\u002Fv1${T.USERS}`, handler);',
+      "app.post(BASE + '\\x2Fitems', handler);",
+    ].join('\n');
+    expect(source).toContain('\\u002F');
+    expect(urls(source).sort()).toEqual(['GET /api/v1/users', 'POST /api/items']);
+  });
+
   it('keeps a string constant that contains ${…} exactly as its literal would', () => {
     const literal = urls(`import express from 'express'; const app = express();
       app.get('/files/\${name}', handler);`);

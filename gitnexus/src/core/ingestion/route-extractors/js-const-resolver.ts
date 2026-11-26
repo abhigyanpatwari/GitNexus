@@ -35,6 +35,7 @@
  */
 
 import type Parser from 'tree-sitter';
+import { decodeStringLiteral } from '../utils/ecmascript-literals.js';
 import {
   MAX_FOLD_LENGTH,
   resolveConstant as foldConstant,
@@ -330,19 +331,31 @@ function unwrapTsExpression(node: Parser.SyntaxNode): Parser.SyntaxNode {
  * The literal string a node denotes, or `null` when it is not a plain literal.
  * A template string counts only when it has no `${…}` substitution — an
  * interpolated one is an expression, handled by {@link parseJsConstOperands}.
+ *
+ * The value is the DECODED literal (`'/a\u002Fb'` → `/a/b`), the same reading
+ * `plainString` gives a literal route path: tree-sitter splits a literal
+ * around every `escape_sequence`, so joining only its `string_fragment`
+ * children silently dropped each escape. An escape that cannot be decoded
+ * makes the literal unreadable (`null`), never a guess.
  */
 function literalStringOf(node: Parser.SyntaxNode): string | null {
   const n = unwrapTsExpression(node);
-  if (n.type === 'string') {
-    const fragments = n.namedChildren.filter((c) => c.type === 'string_fragment');
-    if (fragments.length === 0) return n.namedChildren.length === 0 ? '' : null;
-    return fragments.map((f) => f.text).join('');
-  }
+  if (n.type === 'string') return decodeStringLiteral(n.text);
   if (n.type === 'template_string') {
     if (n.namedChildren.some((c) => c.type === 'template_substitution')) return null;
-    const fragments = n.namedChildren.filter((c) => c.type === 'string_fragment');
-    return fragments.map((f) => f.text).join('');
+    return decodeStringLiteral(n.text);
   }
+  return null;
+}
+
+/**
+ * The decoded text of one static piece of an interpolated template: a
+ * `string_fragment` as written, an `escape_sequence` decoded, or `null` for
+ * anything else (a substitution, or an escape that cannot be decoded).
+ */
+function templatePieceText(node: Parser.SyntaxNode): string | null {
+  if (node.type === 'string_fragment') return node.text;
+  if (node.type === 'escape_sequence') return decodeStringLiteral(`\`${node.text}\``);
   return null;
 }
 
@@ -422,8 +435,10 @@ export function parseJsConstOperands(node: Parser.SyntaxNode, depth = 0): Operan
   if (n.type === 'template_string') {
     const out: Operand[] = [];
     for (const child of n.namedChildren) {
-      if (child.type === 'string_fragment') {
-        out.push({ kind: 'literal', value: child.text });
+      if (child.type === 'string_fragment' || child.type === 'escape_sequence') {
+        const value = templatePieceText(child);
+        if (value === null) return null;
+        out.push({ kind: 'literal', value });
       } else if (child.type === 'template_substitution') {
         const inner = child.namedChild(0);
         if (!inner) return null;
@@ -1100,7 +1115,7 @@ function foldPathExpression(
   const terms: Parser.SyntaxNode[] = [];
   if (n.type === 'template_string') {
     for (const child of n.namedChildren) {
-      if (child.type === 'string_fragment') {
+      if (child.type === 'string_fragment' || child.type === 'escape_sequence') {
         terms.push(child);
       } else if (child.type === 'template_substitution') {
         const inner = child.namedChild(0);
@@ -1119,9 +1134,14 @@ function foldPathExpression(
   let out = '';
   let anchored: boolean | null = null;
   for (const term of terms) {
+    const piece =
+      term.type === 'string_fragment' || term.type === 'escape_sequence'
+        ? templatePieceText(term)
+        : undefined;
+    if (piece === null) return null;
     const folded =
-      term.type === 'string_fragment'
-        ? { text: term.text, concrete: true }
+      piece !== undefined
+        ? { text: piece, concrete: true }
         : foldTermOrPlaceholder(fileKey, term, facts, depth + 1);
     if (folded === null) return null;
     if (anchored === null) anchored = folded.concrete;
