@@ -300,9 +300,13 @@ export const Header = ({
                                         data-testid="repo-status-analyzing"
                                         className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] text-accent"
                                       >
-                                        {t('header:analyzingPercent', {
-                                          percent: Math.round(runningJob.progress.percent),
-                                        })}
+                                        {/* A failed/cancelled job still holds the slot until its worker exits. */}
+                                        {runningJob.status === 'failed' ||
+                                        runningJob.status === 'complete'
+                                          ? t('header:stopping')
+                                          : t('header:analyzingPercent', {
+                                              percent: Math.round(runningJob.progress.percent),
+                                            })}
                                       </span>
                                     ) : (
                                       isReady && (

@@ -59,6 +59,7 @@ vi.mock('react-i18next', () => ({
       if (key === 'header:repositories') return 'Repositories';
       if (key === 'header:active') return 'Active';
       if (key === 'header:analyzingPercent') return `Analyzing ${options?.percent}%`;
+      if (key === 'header:stopping') return 'Stopping…';
       if (key === 'header:ready') return 'Ready';
       if (key === 'errors:analyzeBusy')
         return `${options?.repoName} is still being analyzed (${options?.percent}%)`;
@@ -369,6 +370,18 @@ describe('Header', () => {
       for (const button of screen.getAllByTestId('repo-switcher-reanalyze')) {
         expect(button).toBeDisabled();
       }
+    });
+
+    it('shows Stopping, not progress, for a failed job that still holds the slot', async () => {
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([runningJob({ status: 'failed' })]);
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+      const badge = await screen.findByTestId('repo-status-analyzing');
+      expect(badge).toHaveTextContent('Stopping…');
+      expect(badge).not.toHaveTextContent('42%');
+      expect(screen.getByRole('button', { name: 'Analyze new' })).toBeDisabled();
     });
 
     it('shows Ready once the running job completes and refreshes the repo list', async () => {
