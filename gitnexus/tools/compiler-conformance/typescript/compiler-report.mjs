@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { compilerImportTrace } from './import-trace.mjs';
-import { callbackTargets } from './compiler-callbacks.mjs';
+import { callbackTargets, implementationParameters } from './compiler-callbacks.mjs';
 import { withWorkspacePackages } from './workspace.mjs';
 import { existsSync, globSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -256,19 +256,23 @@ function reportProject(
 
     const callsWithArguments = [];
     const invokedParameters = [];
-    function call(node, callee) {
-      const caller = enclosingCaller(node);
-      const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
+    const assignments = [];
+    function rememberArguments(node, selected) {
       if (
         node.arguments?.length &&
         selected?.parameters?.length &&
         files.has(selected.getSourceFile().fileName)
       ) {
         callsWithArguments.push({
-          parameters: Array.from(selected.parameters).filter((p) => p.name?.getText() !== 'this'),
+          parameters: implementationParameters(project, selected),
           args: node.arguments,
         });
       }
+    }
+    function call(node, callee) {
+      const caller = enclosingCaller(node);
+      const selected = checker.getResolvedSignature(node)?.declaration?.resolve(project);
+      rememberArguments(node, selected);
       const parameter =
         callee.kind === SyntaxKind.Identifier
           ? symbolDeclaration(checker.getSymbolAtLocation(callee), project)
@@ -441,6 +445,19 @@ function reportProject(
     }
 
     function visit(node) {
+      if (
+        (node.kind === SyntaxKind.VariableDeclaration || node.kind === SyntaxKind.Parameter) &&
+        node.name.kind === SyntaxKind.Identifier &&
+        node.initializer
+      ) {
+        assignments.push([node.name, node.initializer]);
+      } else if (
+        node.kind === SyntaxKind.BinaryExpression &&
+        node.left.kind === SyntaxKind.Identifier &&
+        node.operatorToken.kind === SyntaxKind.EqualsToken
+      ) {
+        assignments.push([node.left, node.right]);
+      }
       if (propertyAccess && node.kind === SyntaxKind.PropertyAccessExpression)
         propertyReference(node);
 
@@ -542,6 +559,7 @@ function reportProject(
         });
       }
       if (!rejected && node.kind === SyntaxKind.NewExpression) {
+        rememberArguments(node, checker.getResolvedSignature(node)?.declaration?.resolve(project));
         const type = checker.getTypeAtLocation(node);
         edge('CALLS', enclosingCaller(node), symbolDeclaration(type?.getSymbol(), project), node);
       }
@@ -608,6 +626,7 @@ function reportProject(
     callbackTargets(
       project,
       callsWithArguments,
+      assignments,
       invokedParameters,
       (decl) => identity(root, decl),
       (caller, target, site) => edge('CALLBACK_TARGETS', caller, target, site),

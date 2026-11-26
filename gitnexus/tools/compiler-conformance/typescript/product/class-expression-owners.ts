@@ -1,4 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { registerCases } from '../support/cases.mjs';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import {
@@ -6,30 +8,32 @@ import {
   executeQuery,
   initLbug,
   loadGraphToLbug,
-} from '../../src/core/lbug/lbug-adapter.js';
-import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
+} from '../../../../src/core/lbug/lbug-adapter.js';
+import { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
 import {
   loadParseCache,
   loadParseCacheFiles,
   pruneCache,
   saveParseCache,
-} from '../../src/storage/parse-cache.js';
+} from '../../../../src/storage/parse-cache.js';
 import {
   clearParsedFileStore,
   loadParsedFilesForPaths,
-} from '../../src/storage/parsedfile-store.js';
-import { loadFileResultStore, pinFileResults } from '../../src/storage/file-result-store.js';
-import { runtimeParseIdentity } from '../helpers/runtime-parse-identity.js';
-import { createTempDir } from '../helpers/test-db.js';
-import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
-import { findDanglingEdges } from './resolvers/helpers.js';
+} from '../../../../src/storage/parsedfile-store.js';
+import { loadFileResultStore, pinFileResults } from '../../../../src/storage/file-result-store.js';
+import { runtimeParseIdentity } from '../../../../test/helpers/runtime-parse-identity.js';
+import { createTempDir } from '../../../../test/helpers/test-db.js';
+import { parseFilesWithWorkers } from '../../../../test/helpers/worker-parse.js';
+import { findDanglingEdges } from '../support/fixture.js';
 
 describe('named class-expression owners through the real parse worker', () => {
-  it.each([
-    ['ts', '#0'],
-    ['tsx', '#0'],
-    ['vue', ''],
-  ])(
+  registerCases(
+    it,
+    [
+      ['ts', '#0'],
+      ['tsx', '#0'],
+      ['vue', ''],
+    ],
     'keeps method-local type alias owners aligned with their members in .%s',
     async (extension, methodSuffix) => {
       const source = `class Named {
@@ -105,7 +109,9 @@ const Expr = class Internal {
     }
   });
 
-  it.each(['ts', 'tsx', 'js', 'mjs'])(
+  registerCases(
+    it,
+    ['ts', 'tsx', 'js', 'mjs'],
     'resolves a declaration shadowing an outer class inside an expression in .%s',
     async (extension) => {
       const temp = await createTempDir();
@@ -133,29 +139,37 @@ const Expr = class Internal {
       }
     },
   );
-  it.each(['jsx', 'vue'])('preserves owners for the shared .%s provider', async (extension) => {
-    const source = 'const X = class Named { status = 500; run() { return this.status; } };';
-    const { graph } = await parseFilesWithWorkers([
-      {
-        path: `shared.${extension}`,
-        content: extension === 'vue' ? `<script setup lang="ts">\n${source}\n</script>` : source,
-      },
-    ]);
-    const owner = graph.nodes.find(
-      (node) => node.label === 'Class' && node.properties.name === 'Named',
-    );
-    expect(owner).toBeDefined();
-    const edges = graph.relationships.filter(
-      (edge) =>
-        edge.sourceId === owner!.id && (edge.type === 'HAS_METHOD' || edge.type === 'HAS_PROPERTY'),
-    );
-    expect(edges.map((edge) => graph.getNode(edge.targetId)?.properties.name).sort()).toEqual([
-      'run',
-      'status',
-    ]);
-  });
+  registerCases(
+    it,
+    ['jsx', 'vue'],
+    'preserves owners for the shared .%s provider',
+    async (extension) => {
+      const source = 'const X = class Named { status = 500; run() { return this.status; } };';
+      const { graph } = await parseFilesWithWorkers([
+        {
+          path: `shared.${extension}`,
+          content: extension === 'vue' ? `<script setup lang="ts">\n${source}\n</script>` : source,
+        },
+      ]);
+      const owner = graph.nodes.find(
+        (node) => node.label === 'Class' && node.properties.name === 'Named',
+      );
+      expect(owner).toBeDefined();
+      const edges = graph.relationships.filter(
+        (edge) =>
+          edge.sourceId === owner!.id &&
+          (edge.type === 'HAS_METHOD' || edge.type === 'HAS_PROPERTY'),
+      );
+      expect(edges.map((edge) => graph.getNode(edge.targetId)?.properties.name).sort()).toEqual([
+        'run',
+        'status',
+      ]);
+    },
+  );
 
-  it.each(['ts', 'js'])(
+  registerCases(
+    it,
+    ['ts', 'js'],
     'keeps declaration and anonymous-expression controls in .%s',
     async (extension) => {
       const { graph } = await parseFilesWithWorkers([
@@ -177,7 +191,9 @@ const Expr = class Internal {
       ]);
     },
   );
-  it.each(['ts', 'tsx', 'js', 'mjs'])(
+  registerCases(
+    it,
+    ['ts', 'tsx', 'js', 'mjs'],
     'retains the class and its members in .%s',
     async (extension) => {
       const { graph } = await parseFilesWithWorkers([
@@ -258,7 +274,9 @@ const Expr = class Internal {
     }
   });
 
-  it.each(['ts', 'tsx', 'js', 'mjs'])(
+  registerCases(
+    it,
+    ['ts', 'tsx', 'js', 'mjs'],
     'keeps nested expression members distinct from declarations in .%s',
     async (extension) => {
       const { graph } = await parseFilesWithWorkers([
@@ -298,7 +316,9 @@ class Holder {
     },
   );
 
-  it.each(['ts', 'tsx', 'js', 'mjs'])(
+  registerCases(
+    it,
+    ['ts', 'tsx', 'js', 'mjs'],
     'distinguishes same-named expressions in sibling methods in .%s',
     async (extension) => {
       const { graph } = await parseFilesWithWorkers([
@@ -335,7 +355,9 @@ class Holder {
     },
   );
 
-  it.each(['ts', 'tsx', 'js', 'mjs'])(
+  registerCases(
+    it,
+    ['ts', 'tsx', 'js', 'mjs'],
     'resolves expression members and keeps self names internal in .%s',
     async (extension) => {
       const temp = await createTempDir();
@@ -383,119 +405,125 @@ Named.s();`,
     },
   );
 
-  it('preserves owners through the full pipeline, both durable caches, and native COPY', async () => {
-    const temp = await createTempDir();
-    const repo = path.join(temp.dbPath, 'repo');
-    const storage = path.join(temp.dbPath, 'storage');
-    const identity = await runtimeParseIdentity();
-    const extensions = ['ts', 'tsx', 'js', 'mjs'];
-    const source = `class ApiError { status = 200; messageForUser() { return 'outer'; } }
+  it(
+    'preserves owners through the full pipeline, both durable caches, and native COPY',
+    { timeout: 120000 },
+    async () => {
+      const temp = await createTempDir();
+      const repo = path.join(temp.dbPath, 'repo');
+      const storage = path.join(temp.dbPath, 'storage');
+      const identity = await runtimeParseIdentity();
+      const extensions = ['ts', 'tsx', 'js', 'mjs'];
+      const source = `class ApiError { status = 200; messageForUser() { return 'outer'; } }
 vi.mock('api', () => ({
   ApiError: class MockError extends Error { status = 500; messageForUser() { return 'mock'; } },
 }));
 class Holder {
   nested = class ApiError { status = 501; messageForUser() { return 'inner'; } };
 }`;
-    try {
-      await fs.mkdir(repo);
-      for (const extension of extensions)
-        await fs.writeFile(path.join(repo, `mock.${extension}`), source);
-      const coldCache = await loadParseCache(storage, identity, storage);
-      const cold = await runPipelineFromRepo(repo, () => {}, {
-        workerPoolSize: 1,
-        parseCache: coldCache,
-      });
-      expect(cold.usedWorkerPool).toBe(true);
-      expect(cold.reparsedFileCount).toBe(4);
-      expect(cold.parseCacheHitFileCount).toBe(0);
-      expect(cold.scopeExtractionFailures).toEqual([]);
+      try {
+        await fs.mkdir(repo);
+        for (const extension of extensions)
+          await fs.writeFile(path.join(repo, `mock.${extension}`), source);
+        const coldCache = await loadParseCache(storage, identity, storage);
+        const cold = await runPipelineFromRepo(repo, () => {}, {
+          workerPoolSize: 1,
+          parseCache: coldCache,
+        });
+        expect(cold.usedWorkerPool).toBe(true);
+        expect(cold.reparsedFileCount).toBe(4);
+        expect(cold.parseCacheHitFileCount).toBe(0);
+        expect(cold.scopeExtractionFailures).toEqual([]);
 
-      const assertOwners = (result: typeof cold) => {
-        expect(findDanglingEdges(result, ['HAS_METHOD', 'HAS_PROPERTY'])).toEqual([]);
-        for (const extension of extensions) {
-          for (const name of ['ApiError', 'MockError@2:12', 'Holder.ApiError@5:11']) {
-            const ownerId = `Class:mock.${extension}:${name}`;
-            expect(result.graph.getNode(ownerId)).toBeDefined();
-            const edges = result.graph.relationships.filter(
-              (edge) =>
-                edge.sourceId === ownerId &&
-                (edge.type === 'HAS_METHOD' || edge.type === 'HAS_PROPERTY'),
-            );
-            expect(
-              edges.map((edge) => result.graph.getNode(edge.targetId)?.properties.name).sort(),
-            ).toEqual(['messageForUser', 'status']);
-            expect(edges.map((edge) => edge.targetId).sort()).toEqual([
-              `Method:mock.${extension}:${name}.messageForUser#0`,
-              `Property:mock.${extension}:${name}.status`,
-            ]);
+        const assertOwners = (result: typeof cold) => {
+          expect(findDanglingEdges(result, ['HAS_METHOD', 'HAS_PROPERTY'])).toEqual([]);
+          for (const extension of extensions) {
+            for (const name of ['ApiError', 'MockError@2:12', 'Holder.ApiError@5:11']) {
+              const ownerId = `Class:mock.${extension}:${name}`;
+              expect(result.graph.getNode(ownerId)).toBeDefined();
+              const edges = result.graph.relationships.filter(
+                (edge) =>
+                  edge.sourceId === ownerId &&
+                  (edge.type === 'HAS_METHOD' || edge.type === 'HAS_PROPERTY'),
+              );
+              expect(
+                edges.map((edge) => result.graph.getNode(edge.targetId)?.properties.name).sort(),
+              ).toEqual(['messageForUser', 'status']);
+              expect(edges.map((edge) => edge.targetId).sort()).toEqual([
+                `Method:mock.${extension}:${name}.messageForUser#0`,
+                `Property:mock.${extension}:${name}.status`,
+              ]);
+            }
           }
+        };
+        assertOwners(cold);
+        pruneCache(coldCache, coldCache.usedKeys);
+        await saveParseCache(storage, coldCache);
+        await clearParsedFileStore(storage);
+        const durable = await loadFileResultStore(
+          path.join(storage, 'parse-cache', 'files'),
+          identity.base,
+        );
+        await pinFileResults(durable, [...durable.records.keys()], storage);
+        const paths = new Set([...durable.records.values()].map((record) => record.path));
+        expect([...paths].sort()).toEqual(
+          extensions.map((extension) => `mock.${extension}`).sort(),
+        );
+        const parsed = await loadParsedFilesForPaths(storage, paths);
+        expect(parsed.size).toBe(4);
+        for (const file of parsed.values()) {
+          expect(file.scopes.filter((scope) => scope.kind === 'Class')).toHaveLength(4);
+          expect(
+            file.localDefs
+              .filter((definition) => definition.type === 'Property')
+              .map((definition) => definition.qualifiedName)
+              .sort(),
+          ).toEqual([
+            'ApiError.status',
+            'Holder.ApiError@5:11.status',
+            'Holder.nested',
+            'MockError@2:12.status',
+          ]);
         }
-      };
-      assertOwners(cold);
-      pruneCache(coldCache, coldCache.usedKeys);
-      await saveParseCache(storage, coldCache);
-      await clearParsedFileStore(storage);
-      const durable = await loadFileResultStore(
-        path.join(storage, 'parse-cache', 'files'),
-        identity.base,
-      );
-      await pinFileResults(durable, [...durable.records.keys()], storage);
-      const paths = new Set([...durable.records.values()].map((record) => record.path));
-      expect([...paths].sort()).toEqual(extensions.map((extension) => `mock.${extension}`).sort());
-      const parsed = await loadParsedFilesForPaths(storage, paths);
-      expect(parsed.size).toBe(4);
-      for (const file of parsed.values()) {
-        expect(file.scopes.filter((scope) => scope.kind === 'Class')).toHaveLength(4);
-        expect(
-          file.localDefs
-            .filter((definition) => definition.type === 'Property')
-            .map((definition) => definition.qualifiedName)
-            .sort(),
-        ).toEqual([
-          'ApiError.status',
-          'Holder.ApiError@5:11.status',
-          'Holder.nested',
-          'MockError@2:12.status',
-        ]);
+
+        const warmCache = await loadParseCache(storage, identity, storage);
+        const facts = await loadParseCacheFiles(warmCache, [...durable.records.values()], storage);
+        expect(facts.size).toBe(4);
+        // Scope artifacts remain separately loaded from the pinned disk snapshot.
+        expect([...facts.values()].flatMap((part) => part.parsedFiles)).toEqual([]);
+        const warm = await runPipelineFromRepo(repo, () => {}, {
+          workerPoolSize: 1,
+          parseCache: warmCache,
+        });
+        expect(warm.usedWorkerPool).toBe(false);
+        expect(warm.reparsedFileCount).toBe(0);
+        expect(warm.parseCacheHitFileCount).toBe(4);
+        expect(warm.scopeExtractionFailures).toEqual([]);
+        assertOwners(warm);
+        const members = (result: typeof cold) =>
+          result.graph.relationships
+            .filter((edge) => edge.type === 'HAS_METHOD' || edge.type === 'HAS_PROPERTY')
+            .map((edge) => `${edge.type}:${edge.sourceId}->${edge.targetId}`)
+            .sort();
+        expect(members(warm)).toEqual(members(cold));
+
+        await initLbug(path.join(temp.dbPath, 'lbug'), { skipFts: true });
+        const loaded = await loadGraphToLbug(warm.graph, repo, storage);
+        expect(loaded.warnings).toEqual([]);
+        expect(loaded.skippedRels).toBe(0);
+        const rows = await executeQuery(
+          "MATCH (c:Class)-[r:CodeRelation]->(m) WHERE r.type IN ['HAS_METHOD', 'HAS_PROPERTY'] RETURN c.id AS owner, m.id AS member, r.type AS type",
+        );
+        expect(rows.map((row) => `${row.type}:${row.owner}->${row.member}`).sort()).toEqual(
+          members(warm),
+        );
+        const classes = await executeQuery('MATCH (c:Class) RETURN c.id AS id');
+        expect(classes).toHaveLength(16);
+      } finally {
+        await closeLbug();
+        await clearParsedFileStore(storage);
+        await temp.cleanup();
       }
-
-      const warmCache = await loadParseCache(storage, identity, storage);
-      const facts = await loadParseCacheFiles(warmCache, [...durable.records.values()], storage);
-      expect(facts.size).toBe(4);
-      // Scope artifacts remain separately loaded from the pinned disk snapshot.
-      expect([...facts.values()].flatMap((part) => part.parsedFiles)).toEqual([]);
-      const warm = await runPipelineFromRepo(repo, () => {}, {
-        workerPoolSize: 1,
-        parseCache: warmCache,
-      });
-      expect(warm.usedWorkerPool).toBe(false);
-      expect(warm.reparsedFileCount).toBe(0);
-      expect(warm.parseCacheHitFileCount).toBe(4);
-      expect(warm.scopeExtractionFailures).toEqual([]);
-      assertOwners(warm);
-      const members = (result: typeof cold) =>
-        result.graph.relationships
-          .filter((edge) => edge.type === 'HAS_METHOD' || edge.type === 'HAS_PROPERTY')
-          .map((edge) => `${edge.type}:${edge.sourceId}->${edge.targetId}`)
-          .sort();
-      expect(members(warm)).toEqual(members(cold));
-
-      await initLbug(path.join(temp.dbPath, 'lbug'), { skipFts: true });
-      const loaded = await loadGraphToLbug(warm.graph, repo, storage);
-      expect(loaded.warnings).toEqual([]);
-      expect(loaded.skippedRels).toBe(0);
-      const rows = await executeQuery(
-        "MATCH (c:Class)-[r:CodeRelation]->(m) WHERE r.type IN ['HAS_METHOD', 'HAS_PROPERTY'] RETURN c.id AS owner, m.id AS member, r.type AS type",
-      );
-      expect(rows.map((row) => `${row.type}:${row.owner}->${row.member}`).sort()).toEqual(
-        members(warm),
-      );
-      const classes = await executeQuery('MATCH (c:Class) RETURN c.id AS id');
-      expect(classes).toHaveLength(16);
-    } finally {
-      await closeLbug();
-      await clearParsedFileStore(storage);
-      await temp.cleanup();
-    }
-  }, 120000);
+    },
+  );
 });

@@ -1,16 +1,49 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
 import { runtimeCalls } from './runtime-calls.mjs';
+import { withWorkspacePackages } from './workspace.mjs';
 
 const root = fileURLToPath(
   new URL('../../../test/fixtures/compiler-conformance/typescript-bindings/', import.meta.url),
 );
 const facts = compilerReport(root);
+
+test('workspace package links survive asynchronous readers and are cleaned up on rejection', async () => {
+  const project = path.resolve(root, '../typescript-named-over-star');
+  let scratch;
+  await assert.rejects(
+    withWorkspacePackages(project, async (directory) => {
+      scratch = directory;
+      await Promise.resolve();
+      const manifest = JSON.parse(
+        readFileSync(path.join(directory, 'node_modules/@x/ui/package.json'), 'utf8'),
+      );
+      assert.equal(manifest.name, '@x/ui');
+      throw new Error('reader rejected');
+    }),
+    /reader rejected/,
+  );
+  assert.notEqual(scratch, project);
+  assert.equal(existsSync(scratch), false);
+});
+
+test('callback assignments retain each possible source declaration at the same invocation', () => {
+  const report = compilerReport(
+    path.resolve(root, '../typescript-callback-assignment'),
+  ).CALLBACK_TARGETS;
+  assert.deepEqual(
+    new Set(report.sites.map((site) => site.target)),
+    new Set(['index.ts#1:0', 'index.ts#2:0', 'index.ts#3:0']),
+  );
+  assert.equal(new Set(report.sites.map((site) => site.start)).size, 1);
+  const sites = report.sites.filter((site) => site.target !== 'index.ts#3:0');
+  assert.throws(() => compareReports(report, { ...report, sites }), /Missing from/);
+});
 
 test('invoked parameters with the same name retain their own declarations and types', () => {
   const report = compilerReport(

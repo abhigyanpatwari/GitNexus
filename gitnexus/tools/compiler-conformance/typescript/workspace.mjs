@@ -18,6 +18,8 @@ export function withWorkspacePackages(root, run) {
   const patterns = Array.isArray(workspaces) ? workspaces : workspaces?.packages;
   if (!patterns?.length) return run(root);
   const scratch = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-workspace-'));
+  const cleanup = () => rmSync(scratch, { recursive: true, force: true });
+  let result;
   try {
     cpSync(root, scratch, {
       recursive: true,
@@ -37,8 +39,14 @@ export function withWorkspacePackages(root, run) {
       mkdirSync(path.dirname(link), { recursive: true });
       symlinkSync(directory, link, 'junction');
     }
-    return run(scratch);
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    result = run(scratch);
+    if (result && typeof result.then === 'function') {
+      return Promise.resolve(result).finally(cleanup);
+    }
+  } catch (error) {
+    cleanup();
+    throw error;
   }
+  cleanup();
+  return result;
 }

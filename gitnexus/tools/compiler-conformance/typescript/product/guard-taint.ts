@@ -11,7 +11,7 @@ describe('guard-aware command taint (#3490)', () => {
     'preserves alias proofs across blocks and retains destructuring findings in real workers',
     { timeout: 120_000 },
     async (t) => {
-      const temp = await createTempDir('gn-guard-taint-');
+      const temp = await createTempDir('gitnexus-test-guard-taint-');
       t.after(temp.cleanup);
       const repo = temp.dbPath;
       fs.writeFileSync(
@@ -108,7 +108,7 @@ export function handleBypass(req: any, log: boolean) {
         suspended:
           'const value: string = req.query.ref; if (!/^[0-9a-f]{7,40}$/.test(value)) return; await pending(); execSync("git show " + value);',
       };
-      const temp = await createTempDir('gn-guard-taint-');
+      const temp = await createTempDir('gitnexus-test-guard-taint-');
       t.after(temp.cleanup);
       const repo = temp.dbPath;
       fs.writeFileSync(
@@ -150,7 +150,7 @@ export function handleEscaped(req: any) { escapedValue(req.query.ref, req); }
     'preserves a validated value across command construction without hiding unsafe siblings',
     { timeout: 120_000 },
     async (t) => {
-      const temp = await createTempDir('gn-guard-taint-');
+      const temp = await createTempDir('gitnexus-test-guard-taint-');
       t.after(temp.cleanup);
       const repo = temp.dbPath;
       fs.writeFileSync(

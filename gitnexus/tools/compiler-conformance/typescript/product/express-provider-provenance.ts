@@ -1,18 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 import fs from 'node:fs';
-import * as globModule from 'glob';
-import * as fsUtils from '../../../src/core/group/extractors/fs-utils.js';
 import os from 'node:os';
 import path from 'node:path';
-import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
-import type { RepoHandle } from '../../../src/core/group/types.js';
-import {
-  getRelationships,
-  runPipelineFromRepo,
-  writeFixtureRepo,
-} from '../../integration/resolvers/helpers.js';
-
-vi.mock('glob', { spy: true });
+import { HttpRouteExtractor } from '../../../../src/core/group/extractors/http-route-extractor.js';
+import type { RepoHandle } from '../../../../src/core/group/types.js';
+import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from '../support/fixture.js';
 
 describe('Express group provider provenance', () => {
   let root: string;
@@ -21,8 +14,6 @@ describe('Express group provider provenance', () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-group-express-'));
   });
   afterEach(() => {
-    vi.resetAllMocks();
-    vi.restoreAllMocks();
     fs.rmSync(root, { recursive: true, force: true });
   });
   const write = (files: Record<string, string>) => writeFixtureRepo(root, files);
@@ -48,17 +39,30 @@ describe('Express group provider provenance', () => {
     ]);
   });
 
-  it('retains project providers when the filesystem supplies Windows separators', async () => {
+  it('retains project providers when the filesystem supplies Windows separators', async (t) => {
     write({
       'src/server.ts': `import express from 'express'; import router from './router'; const app = express(); app.use('/api', router);`,
       'src/router.ts': `import { Router } from 'express'; const router = Router(); router.get('/users', () => {}); export default router;`,
     });
-    vi.spyOn(globModule, 'glob').mockResolvedValue(['src\\server.ts', 'src\\router.ts']);
-    const readSafe = fsUtils.readSafe;
-    vi.spyOn(fsUtils, 'readSafe').mockImplementation((repoPath, rel) =>
-      readSafe(repoPath, rel.replace(/\\/g, '/')),
+    const glob = await import('glob');
+    const fsUtils = await import('../../../../dist/core/group/extractors/fs-utils.js');
+    t.mock.module('glob', {
+      namedExports: { ...glob, glob: async () => ['src\\server.ts', 'src\\router.ts'] },
+    });
+    t.mock.module(
+      new URL('../../../../dist/core/group/extractors/fs-utils.js', import.meta.url).href,
+      {
+        namedExports: {
+          ...fsUtils,
+          readSafe: (dir: string, file: string) =>
+            fsUtils.readSafe(dir, file.replaceAll('\\', '/')),
+        },
+      },
     );
-    expect(providers(await extractor.extract(null, root, repo()))).toEqual([
+    const { HttpRouteExtractor: WindowsExtractor } =
+      await import('../../../../dist/core/group/extractors/http-route-extractor.js');
+    const windowsExtractor = new WindowsExtractor();
+    expect(providers(await windowsExtractor.extract(null, root, repo()))).toEqual([
       'http::GET::/api/users',
     ]);
   });
@@ -85,64 +89,68 @@ describe('Express group provider provenance', () => {
     ]);
   });
 
-  it('agrees with ingestion across mixed extensions, aliases and multiple mounts while preserving consumers and other providers', async () => {
-    write({
-      'tsconfig.json': JSON.stringify({
-        compilerOptions: { baseUrl: '.', paths: { '@routes/*': ['src/*'] } },
-      }),
-      'server.ts': `import express from 'express'; import { middle } from '@routes/middle'; import hidden from './src/hidden'; const app = express(); app.use(['/v1', '/v2'], auth, middle); app.use(runtimePrefix, middle); app.use(runtimePrefix, hidden);`,
-      'src/middle.js': `import { Router } from 'express'; import { nested } from './leaf'; export const middle = Router(); middle.use('/admin', nested);`,
-      'src/leaf.tsx': `import { Router } from 'express'; import axios from 'axios'; export const nested = Router(); nested.get('/users', () => {}); export async function outbound() { await fetch('/remote'); return axios.post('/outbound'); }`,
-      'src/hidden.js': `import { Router } from 'express'; const hidden = Router(); hidden.get('/hidden', () => {}); export default hidden;`,
-      'src/other.ts': `import { Hono } from 'hono'; import { Controller, Get } from '@nestjs/common'; const edge = new Hono(); edge.get('/hono', () => {}); @Controller('nest') class ControllerClass { @Get('list') list() {} } const routes = [{ path: '/table', method: 'POST', handler: tableHandler }]; function tableHandler() {} for (const route of routes) { if (route.path === request.path && route.method === request.method) route.handler(); }`,
-    });
-    const expected = [
-      'http::GET::/hono',
-      'http::GET::/nest/list',
-      'http::GET::/v1/admin/users',
-      'http::GET::/v2/admin/users',
-      'http::POST::/table',
-    ];
-    const sourceOnly = await extractor.extract(null, root, repo());
-    expect(providers(sourceOnly)).toEqual(expected);
-    expect(
-      sourceOnly
-        .filter((contract) => contract.role === 'consumer')
-        .map((contract) => contract.contractId)
-        .sort(),
-    ).toEqual(['http::GET::/remote', 'http::POST::/outbound']);
-
-    const ingested = await runPipelineFromRepo(root, () => {});
-    const rows = getRelationships(ingested, 'HANDLES_ROUTE')
-      .filter((edge) => edge.sourceLabel === 'File')
-      .map((edge) => {
-        const route = ingested.graph.getNode(edge.rel.targetId)!;
-        return {
-          fileId: edge.rel.sourceId,
-          filePath: edge.sourceFilePath,
-          routePath: edge.target,
-          routeMethod: route.properties.method,
-          routeSource: edge.rel.reason,
-          handlerSymbolId: route.properties.handlerSymbolId,
-        };
+  it(
+    'agrees with ingestion across mixed extensions, aliases and multiple mounts while preserving consumers and other providers',
+    { timeout: 60000 },
+    async () => {
+      write({
+        'tsconfig.json': JSON.stringify({
+          compilerOptions: { baseUrl: '.', paths: { '@routes/*': ['src/*'] } },
+        }),
+        'server.ts': `import express from 'express'; import { middle } from '@routes/middle'; import hidden from './src/hidden'; const app = express(); app.use(['/v1', '/v2'], auth, middle); app.use(runtimePrefix, middle); app.use(runtimePrefix, hidden);`,
+        'src/middle.js': `import { Router } from 'express'; import { nested } from './leaf'; export const middle = Router(); middle.use('/admin', nested);`,
+        'src/leaf.tsx': `import { Router } from 'express'; import axios from 'axios'; export const nested = Router(); nested.get('/users', () => {}); export async function outbound() { await fetch('/remote'); return axios.post('/outbound'); }`,
+        'src/hidden.js': `import { Router } from 'express'; const hidden = Router(); hidden.get('/hidden', () => {}); export default hidden;`,
+        'src/other.ts': `import { Hono } from 'hono'; import { Controller, Get } from '@nestjs/common'; const edge = new Hono(); edge.get('/hono', () => {}); @Controller('nest') class ControllerClass { @Get('list') list() {} } const routes = [{ path: '/table', method: 'POST', handler: tableHandler }]; function tableHandler() {} for (const route of routes) { if (route.path === request.path && route.method === request.method) route.handler(); }`,
       });
-    expect(rows.map((row) => `http::${row.routeMethod}::${row.routePath}`).sort()).toEqual(
-      expected,
-    );
-    const db = async (query: string) => (query.includes("type: 'HANDLES_ROUTE'") ? rows : []);
-    expect(providers(await extractor.extract(db, root, repo()))).toEqual(expected);
+      const expected = [
+        'http::GET::/hono',
+        'http::GET::/nest/list',
+        'http::GET::/v1/admin/users',
+        'http::GET::/v2/admin/users',
+        'http::POST::/table',
+      ];
+      const sourceOnly = await extractor.extract(null, root, repo());
+      expect(providers(sourceOnly)).toEqual(expected);
+      expect(
+        sourceOnly
+          .filter((contract) => contract.role === 'consumer')
+          .map((contract) => contract.contractId)
+          .sort(),
+      ).toEqual(['http::GET::/remote', 'http::POST::/outbound']);
 
-    // A later run rebuilds project relationships even when router files are unchanged.
-    write({
-      'server.ts': `import express from 'express'; import { middle } from '@routes/middle'; import hidden from './src/hidden'; const app = express(); app.use('/v3', middle); app.use(runtimePrefix, hidden);`,
-    });
-    expect(providers(await extractor.extract(null, root, repo()))).toEqual([
-      'http::GET::/hono',
-      'http::GET::/nest/list',
-      'http::GET::/v3/admin/users',
-      'http::POST::/table',
-    ]);
-  }, 60000);
+      const ingested = await runPipelineFromRepo(root, () => {});
+      const rows = getRelationships(ingested, 'HANDLES_ROUTE')
+        .filter((edge) => edge.sourceLabel === 'File')
+        .map((edge) => {
+          const route = ingested.graph.getNode(edge.rel.targetId)!;
+          return {
+            fileId: edge.rel.sourceId,
+            filePath: edge.sourceFilePath,
+            routePath: edge.target,
+            routeMethod: route.properties.method,
+            routeSource: edge.rel.reason,
+            handlerSymbolId: route.properties.handlerSymbolId,
+          };
+        });
+      expect(rows.map((row) => `http::${row.routeMethod}::${row.routePath}`).sort()).toEqual(
+        expected,
+      );
+      const db = async (query: string) => (query.includes("type: 'HANDLES_ROUTE'") ? rows : []);
+      expect(providers(await extractor.extract(db, root, repo()))).toEqual(expected);
+
+      // A later run rebuilds project relationships even when router files are unchanged.
+      write({
+        'server.ts': `import express from 'express'; import { middle } from '@routes/middle'; import hidden from './src/hidden'; const app = express(); app.use('/v3', middle); app.use(runtimePrefix, hidden);`,
+      });
+      expect(providers(await extractor.extract(null, root, repo()))).toEqual([
+        'http::GET::/hono',
+        'http::GET::/nest/list',
+        'http::GET::/v3/admin/users',
+        'http::POST::/table',
+      ]);
+    },
+  );
 
   it('enriches composed graph routes from exact same-line registrations and imported handler aliases', async () => {
     write({
