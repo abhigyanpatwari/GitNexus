@@ -109,6 +109,36 @@ describe('chat-history-store', () => {
     expect(loadChatHistory(REPO)).toEqual([msg(0), msg(1)]);
   });
 
+  it('drops malformed optional fields but keeps the message', () => {
+    const valid = {
+      ...msg(1),
+      steps: [{ id: 's1', type: 'content', content: 'ok' }],
+      toolCalls: [{ id: 't1', name: 'search', args: {}, status: 'completed' }],
+      historyMessages: [{ role: 'assistant', content: 'ok' }],
+      toolCallId: 'call-1',
+    };
+    sessionStorage.setItem(
+      KEY,
+      JSON.stringify([
+        msg(0),
+        valid,
+        { ...msg(2), steps: 'not an array' },
+        { ...msg(3), steps: {} },
+        { ...msg(4), steps: [null] },
+        { ...msg(5), toolCalls: [{ id: 't', name: 'x' }] },
+        { ...msg(6), historyMessages: 'replayed as a string' },
+        { ...msg(7), historyMessages: [{ role: 'assistant' }] },
+        { ...msg(8), toolCallId: 42 },
+      ]),
+    );
+
+    const loaded = loadChatHistory(REPO);
+
+    expect(loaded[1]).toEqual(valid);
+    // Each malformed entry survives with only its required fields.
+    expect(loaded.slice(2)).toEqual([msg(2), msg(3), msg(4), msg(5), msg(6), msg(7), msg(8)]);
+  });
+
   it('works in memory when storage access throws', () => {
     vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => {
       throw new DOMException('blocked', 'SecurityError');

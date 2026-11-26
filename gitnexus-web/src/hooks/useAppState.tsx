@@ -790,6 +790,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       // Helper to update the message with current steps
       const updateMessage = () => {
+        // Once this reply is aborted (Stop, Clear, or a repo switch) its late
+        // frames must not write into whatever conversation is showing now.
+        if (chatAbortController.signal.aborted) return;
         // Build content from steps for backwards compatibility
         const contentParts = stepsForMessage
           .filter((s) => s.type === 'reasoning' || s.type === 'content')
@@ -1201,6 +1204,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const restoreChatHistory = useCallback((repoKey: string) => {
+    // Stop a reply still streaming for the previous repo; otherwise it keeps
+    // appending to this repo's conversation and gets saved under its key.
+    // As with Stop, the reply's own `finally` returns the chat to idle, so a
+    // message sent right after the switch can't be reset by that cleanup.
+    if (chatStateRef.current === 'streaming') {
+      chatStateRef.current = 'aborting';
+      chatAbortRef.current?.abort();
+      chatAbortRef.current = null;
+    }
     setChatHistoryKey(repoKey);
     setChatMessages(loadChatHistory(repoKey));
   }, []);

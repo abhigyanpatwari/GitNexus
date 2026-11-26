@@ -28,16 +28,53 @@ const getStorage = (): Storage | null => {
   }
 };
 
-const isChatMessage = (value: unknown): value is ChatMessage => {
-  if (!value || typeof value !== 'object') return false;
-  const m = value as Record<string, unknown>;
-  return (
-    typeof m.id === 'string' &&
-    typeof m.role === 'string' &&
-    ROLES.has(m.role) &&
-    typeof m.content === 'string' &&
-    typeof m.timestamp === 'number'
-  );
+type Fields = Record<string, unknown>;
+
+const isObject = (value: unknown): value is Fields =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/** `value` if it is an array whose every item passes `isItem`, else undefined. */
+const arrayOf = (value: unknown, isItem: (item: Fields) => boolean): unknown[] | undefined =>
+  Array.isArray(value) && value.every((item) => isObject(item) && isItem(item)) ? value : undefined;
+
+const isStep = (s: Fields) => typeof s.id === 'string' && typeof s.type === 'string';
+const isToolCall = (t: Fields) =>
+  typeof t.id === 'string' && typeof t.name === 'string' && typeof t.status === 'string';
+const isHistoryMessage = (h: Fields) => typeof h.role === 'string' && typeof h.content === 'string';
+
+/**
+ * A stored entry as a ChatMessage, or null if its required fields are
+ * missing. The optional `steps`, `toolCalls` and `historyMessages` are kept
+ * only when they are arrays of the right shape: the chat panel maps over them
+ * and the agent replays `historyMessages`, so a malformed one is dropped
+ * rather than allowed to break rendering or the next turn.
+ */
+const toChatMessage = (value: unknown): ChatMessage | null => {
+  if (!isObject(value)) return null;
+  const { id, role, content, timestamp } = value;
+  if (
+    typeof id !== 'string' ||
+    typeof role !== 'string' ||
+    !ROLES.has(role) ||
+    typeof content !== 'string' ||
+    typeof timestamp !== 'number'
+  ) {
+    return null;
+  }
+  const message: ChatMessage = {
+    id,
+    role: role as ChatMessage['role'],
+    content,
+    timestamp,
+  };
+  const steps = arrayOf(value.steps, isStep);
+  if (steps) message.steps = steps as ChatMessage['steps'];
+  const toolCalls = arrayOf(value.toolCalls, isToolCall);
+  if (toolCalls) message.toolCalls = toolCalls as ChatMessage['toolCalls'];
+  const historyMessages = arrayOf(value.historyMessages, isHistoryMessage);
+  if (historyMessages) message.historyMessages = historyMessages as ChatMessage['historyMessages'];
+  if (typeof value.toolCallId === 'string') message.toolCallId = value.toolCallId;
+  return message;
 };
 
 /**
@@ -63,7 +100,8 @@ export const loadChatHistory = (repoKey: string): ChatMessage[] => {
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return trimChatHistory(parsed.filter(isChatMessage));
+    const messages = parsed.map(toChatMessage).filter((m): m is ChatMessage => m !== null);
+    return trimChatHistory(messages);
   } catch {
     return [];
   }
