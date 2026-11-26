@@ -458,11 +458,17 @@ MATCH (n:Function {id: emb.nodeId}) RETURN n`,
         if (hasStart || hasEnd) {
           const allLines = content.split('\n');
           const total = allLines.length;
-          const start = hasStart ? Math.floor(startLine as number) : 1;
-          const requestedEnd = hasEnd ? Math.floor(endLine as number) : total;
-          if (!Number.isFinite(start) || !Number.isFinite(requestedEnd) || start < 1) {
-            return `Invalid line range for ${filePath}: startLine and endLine are 1-indexed line numbers.`;
+          // Reject rather than round: a silently floored 1.9 would report line 1
+          // as if it were the requested range.
+          const isLineNumber = (n: number) => Number.isInteger(n) && n >= 1;
+          if (
+            (hasStart && !isLineNumber(startLine as number)) ||
+            (hasEnd && !isLineNumber(endLine as number))
+          ) {
+            return `Invalid line range for ${filePath}: startLine and endLine must be whole 1-indexed line numbers (got startLine=${startLine ?? 'unset'}, endLine=${endLine ?? 'unset'}).`;
           }
+          const start = hasStart ? (startLine as number) : 1;
+          const requestedEnd = hasEnd ? (endLine as number) : total;
           if (hasEnd && requestedEnd < start) {
             return `Invalid line range for ${filePath}: endLine (${requestedEnd}) is before startLine (${start}).`;
           }

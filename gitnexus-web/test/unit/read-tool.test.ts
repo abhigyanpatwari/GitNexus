@@ -76,6 +76,26 @@ describe('read tool line ranges (#439)', () => {
     expect(output).toContain('Invalid line range');
   });
 
+  it('rejects an endLine below 1', async () => {
+    const { tool } = readTool(TEN_LINES);
+    const output = await tool.invoke({ filePath: 'src/a.ts', endLine: 0 });
+    expect(output).toContain('Invalid line range');
+    expect(output).toContain('endLine=0');
+  });
+
+  it.each([
+    { startLine: 1.9, endLine: 3 },
+    { startLine: 2, endLine: 4.5 },
+    { startLine: 2.5 },
+    { endLine: 0.5 },
+  ])('rejects fractional bounds instead of rounding them (%o)', async (range) => {
+    const { tool } = readTool(TEN_LINES);
+    const output = await tool.invoke({ filePath: 'src/a.ts', ...range });
+    expect(output).toContain('Invalid line range');
+    expect(output).toContain('whole 1-indexed line numbers');
+    expect(output).not.toContain('line 1\n');
+  });
+
   it('reaches lines beyond the whole-file truncation point', async () => {
     // ~70k characters: a plain read truncates at 50k, a range must still reach the tail.
     const big = Array.from({ length: 7000 }, (_, i) => `line ${i + 1} `.padEnd(10, '.')).join('\n');
