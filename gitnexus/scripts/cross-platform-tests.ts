@@ -257,6 +257,14 @@ const LBUG_NATIVE = [
   'test/integration/lbug-checkpoint-accounting.test.ts',
   'test/integration/lbug-rel-copy-page-padding.test.ts',
   'test/integration/lbug-incremental-search.test.ts',
+  // api_impact, route_map and shape_check prepare OPTIONAL MATCH shapes with a
+  // property predicate. LadybugDB 0.21.0/0.21.1 hung or crashed with 0xC0000005
+  // in planOptionalMatch on Windows while Ubuntu stayed green (#3706), so these
+  // suites must run where that planner bug showed up.
+  'test/integration/api-impact-e2e.test.ts',
+  'test/integration/api-impact-method-e2e.test.ts',
+  'test/integration/api-impact-indirect-consumers-e2e.test.ts',
+  'test/integration/shape-check-regression.test.ts',
   // Retained identities and reader metadata must agree on every native platform.
   'test/integration/incremental-method-integrity.test.ts',
   'test/integration/go-incremental-method-owners.test.ts',
