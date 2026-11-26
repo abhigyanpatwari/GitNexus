@@ -332,7 +332,7 @@ describe('generateAIContextFiles', () => {
     const content = await fs.readFile(path.join(tmpDir, 'CLAUDE.md'), 'utf-8');
 
     expect(content).toContain('Index stale? Run `node .gitnexus/run.cjs analyze --index-only`');
-    expect(content).toContain('Check staleness.status and branch/lastCommit in tool results.');
+    expect(content).toContain('Check staleness.status and branch/lastCommit when present.');
     expect(content).toContain('## Always Do');
     expect(content).toContain('## Never Do');
     expect(content).toContain('## Resources');

@@ -253,7 +253,7 @@ ${tableBody}`
 This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${stats.nodes || 0} symbols, ${stats.edges || 0} relationships, ${stats.processes || 0} execution flows)`}.
 
 > Index stale? Run \`${runner} analyze --index-only\`. ${bootstrapNote}
-> For repo-scoped MCP calls, pass \`repo: ${mcpRepo}\`. Check staleness.status and branch/lastCommit in tool results. Re-index only if behind or diverged from checkout HEAD.
+> For repo-scoped MCP calls, pass \`repo: ${mcpRepo}\`. Check staleness.status and branch/lastCommit when present. Re-index only if behind or diverged from checkout HEAD.
 
 ## Always Do
 
