@@ -10,6 +10,30 @@ import { resolveVendoredFtsPath, resolveVendoredVectorPath } from './vendored-ex
 const NATIVE_LOAD_PROBE_TIMEOUT_MS = 15_000;
 
 /**
+ * Bounds for the throwaway `:memory:` database the extension probe opens below.
+ * Both defaults are reservations a constrained host may refuse before
+ * `LOAD EXTENSION` ever runs (#4074):
+ *
+ * - `maxDBSize` defaults to `0`, which the native runtime reads as "reserve the
+ *   platform's full mmap address space" — typically 8 TiB on 64-bit Linux.
+ *   Constrained environments (proot, containers, restricted CI) reject that
+ *   reservation with `Buffer manager exception: Mmap for size 8796093022208
+ *   failed.`, and the probe reports FTS/VECTOR "unavailable" even though the
+ *   extensions load fine.
+ * - `bufferManagerSize` defaults to the native ~80%-of-RAM reservation — the
+ *   same unbounded-reservation failure class on large-memory hosts.
+ *
+ * A probe that only runs `LOAD EXTENSION` needs neither: 64 MiB of pool (the
+ * value of lbug-config's tiny-host floor) and a 1 GiB size cap are
+ * far past anything the probe touches. Kept local rather than imported —
+ * this module is the dependency-light startup gate and deliberately does not
+ * import lbug-config, so `doctor` still reports when the native addon is
+ * missing entirely.
+ */
+const EXTENSION_PROBE_BUFFER_POOL_BYTES = 64 * 1024 * 1024;
+const EXTENSION_PROBE_MAX_DB_SIZE_BYTES = 1024 * 1024 * 1024;
+
+/**
  * Why the native check failed. A failed check is NOT necessarily a missing
  * binary — the package may be absent, the binary may be absent, a binary that is
  * right there may fail to load (host glibc too old, truncated download), or the
@@ -553,7 +577,13 @@ async function probeExtensionLoad(
   const probe = (async (): Promise<ExtensionProbeResult> => {
     try {
       const { default: lbug } = await import('@ladybugdb/core');
-      const db = new lbug.Database(':memory:');
+      const db = new lbug.Database(
+        ':memory:',
+        EXTENSION_PROBE_BUFFER_POOL_BYTES,
+        false, // enableCompression — irrelevant for a probe, pinned like lbug-config
+        false, // readOnly
+        EXTENSION_PROBE_MAX_DB_SIZE_BYTES,
+      );
       // Nested finallys so `db` is closed even if the Connection ctor throws.
       try {
         const conn = new lbug.Connection(db);

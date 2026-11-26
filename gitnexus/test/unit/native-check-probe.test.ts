@@ -14,12 +14,15 @@ const h = vi.hoisted(() => ({
   query: vi.fn<(sql: string) => Promise<unknown>>(),
   connCtor: vi.fn<() => void>(),
   connClose: vi.fn<() => Promise<void>>(async () => undefined),
+  dbCtor: vi.fn<(...args: unknown[]) => void>(),
   dbClose: vi.fn<() => Promise<void>>(async () => undefined),
 }));
 
 vi.mock('@ladybugdb/core', () => {
   class Database {
-    constructor(_path: string) {}
+    constructor(...args: unknown[]) {
+      h.dbCtor(...args);
+    }
     close = h.dbClose;
   }
   class Connection {
@@ -44,10 +47,29 @@ beforeEach(() => {
   h.query.mockReset();
   h.connCtor.mockReset();
   h.connClose.mockClear();
+  h.dbCtor.mockClear();
   h.dbClose.mockClear();
 });
 
 describe('probeFtsExtensionLoad (#2374)', () => {
+  it('opens the probe database with bounded mmap reservations (#4074)', async () => {
+    h.query.mockResolvedValue(closeable());
+
+    await expect(probeFtsExtensionLoad()).resolves.toEqual({ loaded: true });
+
+    // maxDBSize=0 means "reserve the platform's full mmap address space"
+    // (~8 TiB on 64-bit Linux) and the default bufferManagerSize reserves
+    // ~80% of physical RAM — constrained hosts refuse either before
+    // `LOAD EXTENSION` runs. Both must stay bounded.
+    expect(h.dbCtor).toHaveBeenCalledWith(
+      ':memory:',
+      64 * 1024 * 1024,
+      false,
+      false,
+      1024 * 1024 * 1024,
+    );
+  });
+
   it('reports loaded and closes every result when LOAD succeeds (array result)', async () => {
     const results = [closeable(), closeable()];
     h.query.mockResolvedValue(results);
