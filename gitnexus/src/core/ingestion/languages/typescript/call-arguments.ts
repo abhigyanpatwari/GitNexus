@@ -338,8 +338,6 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
 ) => {
   if (receiverTypeIsOutOfScope(owner, site, indexes))
     return { kind: 'inapplicable', candidateIds: [] };
-  const constructed = immutableReceiverMethod(owner, name, site, indexes, model);
-  if (constructed) return { kind: 'resolved', definition: constructed };
   const declarations = interfaceDeclarationOrder(owner, indexes);
   if (declarations) {
     const methods = [...declarations.keys()].flatMap((id) =>
@@ -356,6 +354,8 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
       };
     }
   }
+  const constructed = immutableReceiverMethod(owner, name, site, indexes, model);
+  if (constructed) return { kind: 'resolved', definition: constructed };
   if (!argumentsByCall.has(site) || !site.argumentTypes) return undefined;
   let methods = model.methods.lookupAllByOwner(owner.nodeId, name);
   if (!methods.length) {

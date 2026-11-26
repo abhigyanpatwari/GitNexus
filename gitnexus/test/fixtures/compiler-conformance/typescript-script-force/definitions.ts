@@ -1,1 +1,2 @@
-class GlobalThing { hit() {} }
+class GlobalThing { static stat() {} hit() {} }
+function hiddenFunction() {}

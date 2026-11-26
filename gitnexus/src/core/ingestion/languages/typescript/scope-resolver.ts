@@ -14,7 +14,11 @@
 
 import type { NodeLabel, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { bindGlobalDeclarations, rememberDeclarationProjects } from './global-declarations.js';
+import {
+  bindGlobalDeclarations,
+  projectNameFallback,
+  rememberDeclarationProjects,
+} from './global-declarations.js';
 import { generateId } from '../../../../lib/utils.js';
 import { buildMro } from '../../scope-resolution/passes/mro.js';
 import { depthFirstAncestors } from '../../model/resolve.js';
@@ -105,6 +109,7 @@ const typescriptScopeResolver: ScopeResolver = {
     );
   },
   populateImportNamespaces: bindGlobalDeclarations,
+  isGlobalNameFallbackPlausible: projectNameFallback,
   resolveReceiverMember: resolveTsMemberArguments,
   receiverMemberLookupCoversAllCalls: true,
   receiverCallSite: tsReceiverCallSite,

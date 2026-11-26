@@ -1,3 +1,4 @@
+import { Minimatch } from 'minimatch';
 import type {
   BindingRef,
   ParsedFile,
@@ -10,6 +11,7 @@ import {
   findReceiverTypeBinding,
 } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
+import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { declarationScope } from './module-kind.js';
 import { tsconfigFor, type TsconfigIndex, type TsconfigScope } from './tsconfig.js';
 import { owningPackage, type NodeWorkspacePackages } from './workspace-packages.js';
@@ -19,7 +21,20 @@ type Projects = {
   nodeWorkspacePackages: NodeWorkspacePackages | null;
 };
 const projectsByFiles = new WeakMap<readonly ParsedFile[], Projects | undefined>();
-const scriptClasses = new WeakSet<SymbolDefinition>();
+const scriptDeclarations = new WeakSet<SymbolDefinition>();
+const visibleGlobals = new WeakMap<ParsedFile, ReadonlyMap<string, readonly BindingRef[]>>();
+
+export const projectNameFallback: ScopeResolver['isGlobalNameFallbackPlausible'] = ({
+  callerParsed,
+  candidate,
+  site,
+}) =>
+  candidate.filePath === callerParsed.filePath ||
+  !scriptDeclarations.has(candidate) ||
+  !!visibleGlobals
+    .get(callerParsed)
+    ?.get(site?.name ?? candidate.qualifiedName ?? '')
+    ?.some((ref) => ref.def.nodeId === candidate.nodeId);
 
 /** A unique spelling in the graph cannot make an out-of-scope script class visible. */
 export function receiverTypeIsOutOfScope(
@@ -27,7 +42,20 @@ export function receiverTypeIsOutOfScope(
   site: ReferenceSite,
   indexes: ScopeResolutionIndexes,
 ): boolean {
-  if (!scriptClasses.has(owner) || !site.explicitReceiver?.name) return false;
+  if (!scriptDeclarations.has(owner) || !site.explicitReceiver?.name || !owner.qualifiedName)
+    return false;
+  const receiver = site.explicitReceiver.name;
+  if (
+    receiver === owner.qualifiedName ||
+    /^new\s+([\p{ID_Start}$_][\p{ID_Continue}$]*)\s*[(<]/u.exec(receiver)?.[1] ===
+      owner.qualifiedName
+  ) {
+    return !findClassBindingInScope(site.inScope, owner.qualifiedName, indexes, undefined, {
+      purpose: 'value',
+      position: site.atRange,
+      uniqueQualifiedNameFallback: false,
+    });
+  }
   const binding = findReceiverTypeBinding(site.inScope, site.explicitReceiver.name, indexes, {
     purpose: 'value',
     position: site.atRange,
@@ -85,6 +113,72 @@ function isProjectModule(
   }
 }
 
+function fileSelection(scope: TsconfigScope) {
+  const compile = (pattern: string, exclude: boolean) => {
+    // TypeScript treats brackets, braces and parentheses literally. Only *, ** and ? are wildcards.
+    const tail = pattern.slice(pattern.lastIndexOf('/') + 1);
+    const glob = /[.*?]/.test(tail) ? pattern : (pattern ? pattern + '/' : '') + '**/*';
+    return new Minimatch(glob.replace(/[\[\]\\]/g, '\\$&'), {
+      nobrace: true,
+      noext: true,
+      nonegate: true,
+      nocomment: true,
+      platform: 'linux',
+      nocase: process.platform === 'win32',
+      dot: exclude,
+    });
+  };
+  const files = new Set(scope.files);
+  const include = (scope.include ?? (scope.files ? [] : ['**/*'])).map((p) => compile(p, false));
+  const exclude = scope.exclude?.map((p) => compile(p, true)) ?? [];
+  return (file: string) => {
+    if (files.has(file)) return true;
+    if (!include.some((pattern) => pattern.match(file))) return false;
+    // An exclude matching a directory also excludes every descendant.
+    for (
+      let part = file;
+      part && exclude.length;
+      part = part.slice(0, Math.max(0, part.lastIndexOf('/')))
+    ) {
+      if (exclude.some((pattern) => pattern.match(part))) return false;
+    }
+    return true;
+  };
+}
+
+/** Explicit file entries and transitive imports stay in a project even when an exclude matches. */
+function projectMembers(
+  files: readonly ParsedFile[],
+  config: Projects | undefined,
+  indexes: ScopeResolutionIndexes,
+) {
+  if (!config?.tsconfigs?.scopes.some((scope) => scope.files || scope.include || scope.exclude))
+    return;
+  const byPath = new Map(files.map((file) => [file.filePath, file]));
+  const included = new Set<ParsedFile>();
+  const selections = new Map<TsconfigScope, ReturnType<typeof fileSelection>>();
+  for (const file of files) {
+    const scope = tsconfigFor(config.tsconfigs, file.filePath);
+    if (!scope) {
+      included.add(file);
+      continue;
+    }
+    let selected = selections.get(scope);
+    if (!selected) {
+      selected = fileSelection(scope);
+      selections.set(scope, selected);
+    }
+    if (selected(file.filePath)) included.add(file);
+  }
+  for (const file of included) {
+    indexes.imports.forEachTarget(file.moduleScope, (target) => {
+      const dependency = byPath.get(target);
+      if (dependency) included.add(dependency);
+    });
+  }
+  return included;
+}
+
 /** Publish globals at the module scope so lexical declarations retain precedence. */
 export function bindGlobalDeclarations(
   files: readonly ParsedFile[],
@@ -92,6 +186,7 @@ export function bindGlobalDeclarations(
 ) {
   if (!projectsByFiles.has(files)) return;
   const config = projectsByFiles.get(files);
+  const members = projectMembers(files, config, indexes);
   const projectOf = (file: ParsedFile) =>
     tsconfigFor(config?.tsconfigs ?? null, file.filePath)?.dir ??
     owningPackage(file.filePath, config?.nodeWorkspacePackages)?.dir ??
@@ -103,14 +198,11 @@ export function bindGlobalDeclarations(
     if (scope.scriptNames?.length) {
       const candidates = new Set(scope.scriptNames);
       for (const def of file.localDefs) {
-        if (
-          def.type === 'Class' &&
-          def.nameRange &&
-          candidates.has(`${def.nameRange.startLine}:${def.nameRange.startCol}`)
-        )
-          scriptClasses.add(def);
+        if (def.nameRange && candidates.has(`${def.nameRange.startLine}:${def.nameRange.startCol}`))
+          scriptDeclarations.add(def);
       }
     }
+    if (members && !members.has(file)) continue;
     const names =
       scope.scriptNames &&
       !isProjectModule(
@@ -147,6 +239,7 @@ export function bindGlobalDeclarations(
   for (const file of files) {
     const project = projectOf(file);
     const symbols = globals.get(project);
+    visibleGlobals.delete(file);
     if (!symbols?.size) continue;
     // An explicit import owns its local spelling even when its target is not a module.
     const shadowed = new Set<string>();
@@ -161,5 +254,6 @@ export function bindGlobalDeclarations(
       );
     }
     accessible.set(file.moduleScope, [...(accessible.get(file.moduleScope) ?? []), namespace]);
+    visibleGlobals.set(file, namespaces.get(namespace)!);
   }
 }

@@ -52,6 +52,9 @@ export interface TsconfigScope {
   readonly module?: string;
   readonly moduleResolution?: string;
   readonly jsx?: string;
+  readonly files?: readonly string[];
+  readonly include?: readonly string[];
+  readonly exclude?: readonly string[];
 }
 
 /** Every tsconfig in the repo, indexed so the nearest one to a file wins. */
@@ -105,8 +108,18 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
     // package lookups — silently inherited the repo root's aliases instead.
     // An empty scope is the accurate answer for such a file, and only a scope
     // can express it.
+    const selection: Pick<ResolvedOptions, 'files' | 'include' | 'exclude'> = {};
+    for (const key of ['files', 'include', 'exclude'] as const) {
+      if (options[key]) selection[key] = options[key].map((entry) => repoRelative(repoRoot, entry));
+    }
     ranked.push({
-      scope: { ...options, dir: repoRelative(repoRoot, path.dirname(absPath)), baseUrl, paths },
+      scope: {
+        ...options,
+        ...selection,
+        dir: repoRelative(repoRoot, path.dirname(absPath)),
+        baseUrl,
+        paths,
+      },
       rank: configRank(path.basename(absPath)),
     });
   }
@@ -142,6 +155,9 @@ interface ResolvedOptions {
   module?: string;
   moduleResolution?: string;
   jsx?: string;
+  files?: string[];
+  include?: string[];
+  exclude?: string[];
 }
 
 /**
@@ -177,6 +193,14 @@ async function readCompilerOptions(
   const inherited = await readExtended(parsed.extends, dir, depth, repoRootHint);
 
   const own: ResolvedOptions = {};
+  for (const key of ['files', 'include', 'exclude'] as const) {
+    const list = parsed[key];
+    if (Array.isArray(list)) {
+      own[key] = list
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => path.resolve(dir, entry));
+    }
+  }
   const compilerOptions = parsed.compilerOptions;
   if (compilerOptions !== null && typeof compilerOptions === 'object') {
     const opts = compilerOptions as Record<string, unknown>;

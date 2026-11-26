@@ -116,11 +116,22 @@
     "endpoints.ts:2:71 TS2307",
     "endpoints.ts:3:33 TS2307"
   ],
-  "compiler-conformance/typescript-script-force": ["use.ts:2:23 TS2304"],
+  "compiler-conformance/typescript-script-force": [
+    "use.ts:2:23 TS2304",
+    "use.ts:4:2 TS2552",
+    "use.ts:5:6 TS2552",
+    "use.ts:6:2 TS2304"
+  ],
   "compiler-conformance/typescript-script-auto-package": ["use.ts:2:23 TS2304"],
   "compiler-conformance/typescript-script-auto-jsx": ["use.ts:2:23 TS2304"],
   "compiler-conformance/typescript-runtime-construction-guards": [
     "app.ts:10:8 TS2339",
     "app.ts:13:10 TS2339"
+  ],
+  "compiler-conformance/typescript-project-script-membership": [
+    "src/use.ts:2:25 TS2552",
+    "src/use.ts:2:38 TS2304",
+    "src/use.ts:8:44 TS2304",
+    "src/use.ts:8:60 TS2304"
   ]
 }
