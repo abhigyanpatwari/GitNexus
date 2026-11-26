@@ -41,7 +41,8 @@ const SPEC = {
 function corpus(kind, n) {
   const parts = [
     `function isValidHostName(h: string) { return /^[a-z0-9.-]+$/i.test(h); }`,
-    `function isValidKey(key: string) { return key !== "__proto__" && key !== "constructor"; }`,
+    // Value-vouching key check (not proto-only — those are excluded from barriers).
+    `function isValidKey(key: string) { return /^[a-z0-9._-]+$/i.test(key); }`,
   ];
   for (let i = 0; i < n; i++) {
     if (kind === 'guarded') {

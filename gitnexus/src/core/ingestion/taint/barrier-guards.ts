@@ -7,9 +7,10 @@
  * predicate over `b` on the *validated* branch sense, suppress the finding.
  *
  * Controllers are name-heuristic only (`isValid*` / `validate*` / `validX`).
- * `discoverProtoGuardCallees` remains a separate discovery helper for tests /
- * tooling; proto-only names like `safeKey` do not enter the CDG barrier set
- * (rejecting `__proto__` must not kind-blind kill command-injection).
+ * Same-file affirming `__proto__` reject helpers are *excluded* from that set
+ * even when named `isValid*` (rejecting `__proto__` must not kind-blind kill
+ * command-injection). Compound validator args and post-check member writes
+ * also under-kill.
  *
  * PURE AND DETERMINISTIC: no I/O, no logger. Under-kill only — unknown or
  * non-dominating predicates never kill.
@@ -47,6 +48,13 @@ export interface BarrierGuardIndex {
 }
 
 export interface BarrierGuardOptions {
+  /**
+   * Same-file affirming `__proto__` reject helpers (from
+   * {@link discoverProtoGuardCallees}). Excluded from CDG barriers even when
+   * the name matches `isValid*` — rejecting `__proto__` must not kind-blind
+   * kill command-injection.
+   */
+  readonly excludeBarrierCallees?: ReadonlySet<string>;
   /** Precomputed CDG edges (tests); otherwise computed when needed. */
   readonly cdgEdges?: readonly ControlDepEdge[];
 }
@@ -228,7 +236,10 @@ function primaryArgSubjects(
     if (s.parent?.[0] !== callSiteIndex || s.parent?.[1] !== 0) continue;
     memberSubjects.push({ binding: s.object, property: s.property });
   }
-  if (memberSubjects.length > 0) return memberSubjects;
+  // Compound args (`isValid(req.body + req.query)`) do not vouch for either
+  // member individually — under-kill (no subjects).
+  if (memberSubjects.length > 1) return [];
+  if (memberSubjects.length === 1) return memberSubjects;
   return argPositionBindings(callSite, 0).map((binding) => ({ binding }));
 }
 
@@ -252,7 +263,10 @@ export function memberPropertiesAtArg(
 }
 
 /** Collect validating-predicate controllers from CFG call sites. */
-export function collectBarrierControllers(cfg: FunctionCfg): BarrierController[] {
+export function collectBarrierControllers(
+  cfg: FunctionCfg,
+  excludeBarrierCallees: ReadonlySet<string> = new Set(),
+): BarrierController[] {
   const out: BarrierController[] = [];
   for (const block of cfg.blocks) {
     const statements = block.statements;
@@ -264,8 +278,10 @@ export function collectBarrierControllers(cfg: FunctionCfg): BarrierController[]
       for (let siteIndex = 0; siteIndex < sites.length; siteIndex++) {
         const site = sites[siteIndex];
         if (site.kind !== 'call' || !site.callee) continue;
-        // Name-heuristic validators only — proto-only callees never suppress.
+        // Name-heuristic validators only — proto-reject helpers are excluded
+        // even when named isValid* (kind under-kill).
         if (!isBarrierCalleeName(site.callee)) continue;
+        if (excludeBarrierCallees.has(calleeLeaf(site.callee))) continue;
         // Skip `.filter(…)` — not a CDG validator call (and not a kind-safe kill).
         if (isFilterCallee(site.callee)) continue;
         const subjects = primaryArgSubjects(sites, siteIndex, site);
@@ -294,7 +310,7 @@ export function buildBarrierGuardIndex(
   cfg: FunctionCfg,
   options?: BarrierGuardOptions,
 ): BarrierGuardIndex {
-  const controllers = collectBarrierControllers(cfg);
+  const controllers = collectBarrierControllers(cfg, options?.excludeBarrierCallees ?? new Set());
   const bySubject = new Map<number, BarrierController[]>();
   for (const c of controllers) {
     const list = bySubject.get(c.subjectBinding);
@@ -306,6 +322,29 @@ export function buildBarrierGuardIndex(
     options?.cdgEdges ??
     (needsCdg ? computeControlDependence(cfg).edges : ([] as ControlDepEdge[]));
   return { bySubject, cdg };
+}
+
+/**
+ * True when a validated member property is assigned on the controller's
+ * validated branch (`req.body = …` after `isValid(req.body)`). Property
+ * writes are not binding defs, so taintDefPoint cannot see them.
+ */
+export function memberPropertyAssignedOnValidatedPath(
+  cfg: FunctionCfg,
+  index: BarrierGuardIndex,
+  controller: BarrierController,
+): boolean {
+  const prop = controller.subjectProperty;
+  if (!prop) return false;
+  const escaped = prop.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const assignRe = new RegExp(`(\\.${escaped}|\\[['"]${escaped}['"]\\])\\s*=`);
+  for (const edge of index.cdg) {
+    if (edge.controllerBlock !== controller.controllerBlock) continue;
+    if (edge.label !== controller.validatedLabel) continue;
+    const text = cfg.blocks[edge.dependentBlock]?.text ?? '';
+    if (assignRe.test(text)) return true;
+  }
+  return false;
 }
 
 /**

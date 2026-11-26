@@ -33,13 +33,22 @@ const MECH: SourceSinkSanitizerSpec = {
 };
 
 function analyze(code: string, fnIndex = 0) {
-  const cfg = cfgOf(code, fnIndex);
+  const cfgs = cfgsOf(code);
+  const cfg = cfgs[fnIndex] ?? cfgOf(code, fnIndex);
   expect(hasTaintSafeSites(cfg)).toBe(true);
   const defUse = computeReachingDefs(cfg);
   const matches = matchFunctionSites(cfg, MECH, buildTaintImportIndex(importsFor(code)));
+  const excludeBarrierCallees = discoverProtoGuardCallees(cfgs);
   return {
     cfg,
-    flows: computeTaintFlows(cfg, defUse, matches),
+    flows: computeTaintFlows(
+      cfg,
+      defUse,
+      matches,
+      undefined,
+      undefined,
+      excludeBarrierCallees.size > 0 ? { excludeBarrierCallees } : undefined,
+    ),
   };
 }
 
@@ -161,6 +170,27 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
       function f(req: any) {
         if (!isValidHostName(req.body)) return;
         exec(req.body + req.query);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress after the validated member is overwritten', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body)) return;
+        req.body = req.query;
+        exec(req.body);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not treat compound validator args as validating each member', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        if (!isValidHostName(req.body + req.query)) return;
+        exec(req.body);
       }
     `);
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
@@ -303,10 +333,25 @@ describe('barrier-guards __proto__ callee + filter (#3913 §2)', () => {
     expect(flows.findings.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('suppresses when the proto-rejecting callback is also isValid*', () => {
+  it('does not kind-blind suppress isValidKey that only rejects __proto__', () => {
     const code = `
       function isValidKey(key: string) {
         return key !== "__proto__" && key !== "constructor";
+      }
+      function write(req: any) {
+        const key = req.body;
+        if (!isValidKey(key)) return;
+        exec(key);
+      }
+    `;
+    const { flows } = analyze(code, 1);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('suppresses when isValidKey vouchers the value (not proto-only)', () => {
+    const code = `
+      function isValidKey(key: string) {
+        return /^[a-z0-9._-]+$/i.test(key);
       }
       function write(req: any) {
         const key = req.body;

@@ -81,6 +81,7 @@ import {
 import type { BindingEntry, FunctionCfg } from '../cfg/types.js';
 import { hasTaintSafeSites } from './site-safety.js';
 import { buildTaintImportIndex, matchFunctionSites } from './match.js';
+import { discoverProtoGuardCallees } from './barrier-guards.js';
 import {
   computeTaintFlows,
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
@@ -189,6 +190,10 @@ export function emitFileTaint(
     limits?.maxFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION;
   const maxHops = limits?.maxHops ?? DEFAULT_PDG_MAX_TAINT_HOPS;
   const maxFacts = limits?.maxFacts ?? DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION;
+  // Proto-reject helpers (even if named isValid*) must not KIND_ORDER-suppress.
+  const excludeBarrierCallees = discoverProtoGuardCallees(cfgs);
+  const barrierOptions = excludeBarrierCallees.size > 0 ? { excludeBarrierCallees } : undefined;
+
   // Defensive cross-CFG id guard: finding identity is unique WITHIN a
   // function by construction (the propagation engine dedups), so a repeat can
   // only mean two CFGs sharing an anchor — skip, never double-insert.
@@ -223,6 +228,7 @@ export function emitFileTaint(
       matches,
       { maxFindingsPerFunction, maxHops },
       refine(cfg),
+      barrierOptions,
     );
     if (flows.status === 'coverage-gap') {
       // R4: skipped entirely, counted by reason; aggregate-warned by the
