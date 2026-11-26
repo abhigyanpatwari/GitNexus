@@ -630,6 +630,26 @@ export interface ScopeResolver {
     ctx: ConstraintContext,
   ) => ArityVerdict;
 
+  /**
+   * Optional per-language specialization selector for parameterized class
+   * lookups (`resolveClassBindingForName`). Receives candidate definitions of
+   * the base type along with the raw use-site type arguments (whitespace
+   * preserved) and returns the matching specialization(s), or `'ambiguous'`
+   * when multiple partial specializations match incomparably (causing the
+   * caller to fall back to the primary declaration rather than guessing).
+   *
+   * Absent by default, preserving exact token-for-token `templateArguments`
+   * matching.
+   */
+  readonly matchTemplateSpecializations?: (
+    candidates: readonly SymbolDefinition[],
+    wantedArgs: readonly string[],
+    context: {
+      readonly scopeId: ScopeId;
+      readonly scopes: ScopeResolutionIndexes;
+    },
+  ) => readonly SymbolDefinition[] | 'ambiguous';
+
   // ─── Per-language strategies ───────────────────────────────────────────────
 
   /**

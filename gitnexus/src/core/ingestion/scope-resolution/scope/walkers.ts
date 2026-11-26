@@ -1006,6 +1006,19 @@ export type ClassBindingLookup = IndexedNameLookupOptions & {
    * Read by nothing else; absent (the default) leaves every lookup unchanged.
    */
   readonly qualifiedTypeSpellings?: boolean;
+  /**
+   * `ScopeResolver.matchTemplateSpecializations`. When supplied, parameterized
+   * class lookups delegate specialization selection (and partial ordering) to
+   * the language hook before falling back to the primary declaration.
+   */
+  readonly matchTemplateSpecializations?: (
+    candidates: readonly SymbolDefinition[],
+    wantedArgs: readonly string[],
+    context: {
+      readonly scopeId: ScopeId;
+      readonly scopes: ScopeResolutionIndexes;
+    },
+  ) => readonly SymbolDefinition[] | 'ambiguous';
 };
 
 export function findClassBindingInScope(
@@ -1260,6 +1273,46 @@ function classDefsByQualifiedName(
   return out;
 }
 
+function extractRawTemplateArguments(rawClassName: string): readonly string[] | undefined {
+  const open = rawClassName.indexOf('<');
+  if (open < 0) return undefined;
+  let depth = 0;
+  let start = open + 1;
+  const args: string[] = [];
+  for (let i = open; i < rawClassName.length; i++) {
+    const ch = rawClassName[i];
+    if (ch === '<') {
+      depth++;
+    } else if (ch === '>') {
+      depth--;
+      if (depth === 0) {
+        const tail = rawClassName.slice(start, i).trim();
+        if (tail.length > 0) args.push(tail);
+        return args.length > 0 ? args : undefined;
+      }
+      if (depth < 0) return undefined;
+    } else if (ch === ',' && depth === 1) {
+      const seg = rawClassName.slice(start, i).trim();
+      if (seg.length > 0) args.push(seg);
+      start = i + 1;
+    }
+  }
+  return undefined;
+}
+
+function selectMatchingTemplateSpecializations(
+  candidates: readonly SymbolDefinition[],
+  rawWantedArgs: readonly string[],
+  scopeId: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  lookup: ClassBindingLookup | undefined,
+): readonly SymbolDefinition[] | 'ambiguous' {
+  if (lookup?.matchTemplateSpecializations !== undefined) {
+    return lookup.matchTemplateSpecializations(candidates, rawWantedArgs, { scopeId, scopes });
+  }
+  return matchingTemplateArguments(candidates, rawWantedArgs.map(normalizeTemplateArgToken));
+}
+
 /** Defs from `candidates` whose own template arguments equal `wantedArgs`
  *  token-for-token (whitespace already squeezed on both sides). */
 function matchingTemplateArguments(
@@ -1504,28 +1557,39 @@ export function resolveClassBindingForName(
   const baseClaim = lookupNameClaim(scopeId, baseName, scopes, { purpose: 'type', ...lookup });
   if (lexical.length === 0 && hasExplicitNameClaim(baseClaim, baseName)) return undefined;
 
-  const wantedArgs = extractTemplateArguments(rawClassName)?.map(normalizeTemplateArgToken);
-  if (wantedArgs !== undefined && wantedArgs.length > 0) {
+  const rawWantedArgs =
+    lookup?.matchTemplateSpecializations !== undefined
+      ? extractRawTemplateArguments(rawClassName)
+      : extractTemplateArguments(rawClassName);
+  if (rawWantedArgs !== undefined && rawWantedArgs.length > 0) {
     // LEXICAL FIRST. The workspace-wide index is not scoped, so matching against
     // it up front let a field inside `namespace N` be answered by the GLOBAL
     // `Box<bool>` — or, when both namespaces declare one, by neither: two
     // matches, a decline, and a fall through to whatever base-name declaration
     // the walk reached first. Candidates the scope chain actually offers are
     // ranked ahead of it, exactly as every other lookup in this file does.
-    const lexicalMatches = matchingTemplateArguments(
+    const lexicalMatches = selectMatchingTemplateSpecializations(
       classBindingsVisibleFrom(lexical, baseName, scopes),
-      wantedArgs,
+      rawWantedArgs,
+      scopeId,
+      scopes,
+      lookup,
     );
-    if (lexicalMatches.length === 1) return lexicalMatches[0];
-    if (lexicalMatches.length === 0) {
-      // Workspace-wide fallback — consulted ONLY when the scope chain offered no
-      // exact match, which is how a declaration specialized in a different file
-      // than the one instantiating it still binds.
-      const indexMatches = matchingTemplateArguments(
-        classDefsByQualifiedName(baseName, scopes),
-        wantedArgs,
-      );
-      if (indexMatches.length === 1) return indexMatches[0];
+    if (lexicalMatches !== 'ambiguous') {
+      if (lexicalMatches.length === 1) return lexicalMatches[0];
+      if (lexicalMatches.length === 0) {
+        // Workspace-wide fallback — consulted ONLY when the scope chain offered no
+        // match, which is how a declaration specialized in a different file than
+        // the one instantiating it still binds.
+        const indexMatches = selectMatchingTemplateSpecializations(
+          classDefsByQualifiedName(baseName, scopes),
+          rawWantedArgs,
+          scopeId,
+          scopes,
+          lookup,
+        );
+        if (indexMatches !== 'ambiguous' && indexMatches.length === 1) return indexMatches[0];
+      }
     }
   }
 
@@ -1550,7 +1614,7 @@ function qualifiedSpellingFallback(
   lookup: ClassBindingLookup | undefined,
 ): SymbolDefinition | undefined {
   return lookup?.qualifiedTypeSpellings === true
-    ? resolveQualifiedClassSpelling(scopeId, rawClassName, scopes)
+    ? resolveQualifiedClassSpelling(scopeId, rawClassName, scopes, lookup)
     : undefined;
 }
 
@@ -1576,17 +1640,86 @@ export function resolveQualifiedClassSpelling(
   scopeId: string,
   rawClassName: string,
   scopes: ScopeResolutionIndexes,
+  lookup?: ClassBindingLookup,
 ): SymbolDefinition | undefined {
   const normalized = stripTrailingTypeArguments(normalizeQualifiedName(rawClassName));
   const dot = normalized.indexOf('.');
   if (dot <= 0) return undefined;
   if (bindsTypeParameter(scopeId, normalized.slice(0, dot), scopes)) return undefined;
-  return resolveQualifiedInheritanceBase(
+  const enclosingClass = findEnclosingClassDef(scopeId, scopes);
+  const unique = resolveQualifiedInheritanceBase(scopeId, rawClassName, scopes, enclosingClass);
+  if (unique !== undefined || !rawClassName.includes('<')) return unique;
+
+  const rawWantedArgs =
+    lookup?.matchTemplateSpecializations !== undefined
+      ? extractRawTemplateArguments(rawClassName)
+      : extractTemplateArguments(rawClassName);
+  if (rawWantedArgs === undefined || rawWantedArgs.length === 0) return undefined;
+
+  const candidates = qualifiedClassCandidatesInNamespace(
     scopeId,
     rawClassName,
+    normalized,
     scopes,
-    findEnclosingClassDef(scopeId, scopes),
+    enclosingClass,
   );
+  if (candidates.length === 0) return undefined;
+
+  const specMatches = selectMatchingTemplateSpecializations(
+    candidates,
+    rawWantedArgs,
+    scopeId,
+    scopes,
+    lookup,
+  );
+  if (specMatches !== 'ambiguous' && specMatches.length === 1) return specMatches[0];
+  return theInstantiationAgnosticDeclaration(candidates);
+}
+
+function qualifiedClassCandidatesInNamespace(
+  startScope: ScopeId,
+  rawQualifiedName: string,
+  normalized: string,
+  scopes: ScopeResolutionIndexes,
+  enclosingClassDef?: SymbolDefinition,
+): readonly SymbolDefinition[] {
+  const isRootAnchored = /^\s*::/.test(rawQualifiedName);
+  const enclosing = isRootAnchored
+    ? []
+    : enclosingScopeSegments(startScope, scopes, enclosingClassDef);
+  const normParts = splitQualifiedName(normalized);
+  const isRelativeToEnclosing =
+    enclosing.length > 0 &&
+    normParts.length > 0 &&
+    normParts[0] === enclosing[enclosing.length - 1];
+  const keys: string[] = [];
+  if (!isRelativeToEnclosing) keys.push(normalized);
+  for (let i = enclosing.length; i >= 1; i--) {
+    keys.push([...enclosing.slice(0, i), normalized].join('.'));
+  }
+  if (!keys.includes(normalized)) keys.push(normalized);
+
+  for (const key of keys) {
+    const ids = scopes.qualifiedNames.get(key);
+    if (ids.length === 0) continue;
+    const defs = ids
+      .map((id) => scopes.defs.get(id))
+      .filter((def): def is SymbolDefinition => def !== undefined && isClassLike(def.type));
+    if (defs.length > 0) return defs;
+  }
+
+  const tail = normParts[normParts.length - 1];
+  const qualifier = normParts.slice(0, -1).join('.');
+  if (tail === undefined || qualifier.length === 0) return [];
+  const out: SymbolDefinition[] = [];
+  for (const id of scopes.qualifiedNames.get(tail)) {
+    const def = scopes.defs.get(id);
+    if (def === undefined || !isClassLike(def.type)) continue;
+    const np = def.namespacePrefix;
+    if (np === undefined || np.length === 0) continue;
+    if (np === qualifier || np.endsWith(`.${qualifier}`)) out.push(def);
+  }
+  return out;
 }
 
 /**

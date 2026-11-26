@@ -23,6 +23,7 @@ import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './a
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
+import { captureCppCtadFacts, inferLocalCppCtadTemplateArguments } from './ctad.js';
 import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
 import {
   attachCppUsingClaims,
@@ -689,6 +690,7 @@ export function emitCppScopeCaptures(
   // bases per ISO C++ two-phase lookup.
   detectCppDependentBases(tree.rootNode, filePath);
   captureCppMemberLookupFacts(tree.rootNode, filePath);
+  captureCppCtadFacts(tree.rootNode, filePath, lookupFullTypeSpellingForIdentifier);
 
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CPP_CALLABLE_CAPTURE_OPTIONS));
   attachCppUsingClaims(out, filePath);
@@ -1317,6 +1319,12 @@ function inferCppCallArgTypes(node: SyntaxNode): string[] | undefined {
     } else if (child.type === 'identifier') {
       // Variable reference — look up declared type in enclosing scope
       types.push(lookupDeclaredTypeForIdentifier(child));
+    } else if (child.type === 'compound_literal_expression') {
+      const tNode = child.childForFieldName('type');
+      types.push(tNode !== null ? normalizeCppTypeText(tNode.text) : '');
+    } else if (child.type === 'unary_expression') {
+      const addrType = inferCppAddressOfArgType(child);
+      types.push(addrType !== null ? addrType.token : '');
     } else {
       types.push('');
     }
@@ -1338,11 +1346,43 @@ function inferCppCallArgTypeClasses(node: SyntaxNode): ParameterTypeClass[] | un
       classes.push(valueTypeClass(litType));
     } else if (child.type === 'identifier') {
       classes.push(lookupDeclaredTypeClassForIdentifier(child));
+    } else if (child.type === 'compound_literal_expression') {
+      const tNode = child.childForFieldName('type');
+      classes.push(
+        tNode !== null ? classifyCppParameterType(tNode.text) : unknownTypeClass('unknown'),
+      );
+    } else if (child.type === 'unary_expression') {
+      const addrType = inferCppAddressOfArgType(child);
+      classes.push(addrType !== null ? addrType.typeClass : unknownTypeClass('unknown'));
     } else {
       classes.push(unknownTypeClass('unknown'));
     }
   }
   return classes.length > 0 ? classes : undefined;
+}
+
+function inferCppAddressOfArgType(
+  node: SyntaxNode,
+): { token: string; typeClass: ParameterTypeClass } | null {
+  const op = node.childForFieldName('operator') ?? node.child(0);
+  const operand = node.childForFieldName('argument') ?? node.namedChild(node.namedChildCount - 1);
+  if (op?.text !== '&' || operand?.type !== 'identifier') return null;
+  const baseToken = lookupDeclaredTypeForIdentifier(operand);
+  const baseClass = lookupDeclaredTypeClassForIdentifier(operand);
+  if (baseToken === '' || baseClass.indirection === 'unknown') return null;
+  const nextDepth = baseClass.indirection === 'pointer' ? baseClass.pointerDepth + 1 : 1;
+  return {
+    token: baseToken,
+    typeClass: {
+      base: baseClass.base,
+      cv: baseClass.cv,
+      indirection: 'pointer',
+      pointerDepth: nextDepth,
+      ...(baseClass.templateArguments !== undefined
+        ? { templateArguments: baseClass.templateArguments }
+        : {}),
+    },
+  };
 }
 
 function inferCppBinaryOperatorArgTypes(
@@ -1493,18 +1533,28 @@ function inferCppBracedInitType(node: SyntaxNode): string {
  */
 interface CppFileLookupIndex {
   enumNames: Set<string> | null;
+  templateClassNames: Set<string> | null;
   scopeDecls: Map<number, Map<string, SyntaxNode>>;
+  scopeTypeClasses: Map<number, Map<string, ParameterTypeClass>>;
   fnParams: Map<number, Map<string, SyntaxNode> | null>;
 }
 
 let fileLookupIndex: CppFileLookupIndex = {
   enumNames: null,
+  templateClassNames: null,
   scopeDecls: new Map(),
+  scopeTypeClasses: new Map(),
   fnParams: new Map(),
 };
 
 function resetCppFileLookupIndex(): void {
-  fileLookupIndex = { enumNames: null, scopeDecls: new Map(), fnParams: new Map() };
+  fileLookupIndex = {
+    enumNames: null,
+    templateClassNames: null,
+    scopeDecls: new Map(),
+    scopeTypeClasses: new Map(),
+    fnParams: new Map(),
+  };
 }
 
 /**
@@ -1590,6 +1640,10 @@ function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterT
   const paramTypeClass = lookupFunctionParameterTypeClass(scope, varName, identNode);
   if (paramTypeClass !== undefined) return paramTypeClass;
 
+  let scopeMemo = fileLookupIndex.scopeTypeClasses.get(scope.id);
+  const memoized = scopeMemo?.get(varName);
+  if (memoized !== undefined) return memoized;
+
   // Indexed scope-declaration lookup (#2432; was a per-identifier scan).
   const stmt = scopeDeclarationsFor(scope).get(varName);
   if (stmt === undefined) return unknownTypeClass('unknown');
@@ -1598,15 +1652,141 @@ function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterT
   const nameChild = declarator !== null ? declaredNameNode(declarator) : null;
   if (typeNode === null || nameChild === null) return unknownTypeClass('unknown');
 
-  const typeClass = classifyCppParameterType(
+  let typeClass = classifyCppParameterType(
     typeNode.text,
     nameChild.text,
     stmt.text.replace(/;\s*$/, ''),
   );
-  if (isKnownEnumName(identNode, typeClass.base)) {
-    return { ...typeClass, base: `enum:${typeClass.base}` };
+  if (typeClass.templateArguments === undefined && !typeNode.text.includes('<')) {
+    const ctadArgs = inferLocalCppCtadTemplateArguments(
+      stmt,
+      () => knownTemplateClassNames(identNode),
+      lookupFullTypeSpellingForIdentifier,
+    );
+    if (ctadArgs !== undefined && ctadArgs.length > 0) {
+      typeClass = { ...typeClass, templateArguments: ctadArgs };
+    }
   }
+  if (isKnownEnumName(identNode, typeClass.base)) {
+    typeClass = { ...typeClass, base: `enum:${typeClass.base}` };
+  }
+  if (scopeMemo === undefined) {
+    scopeMemo = new Map();
+    fileLookupIndex.scopeTypeClasses.set(scope.id, scopeMemo);
+  }
+  scopeMemo.set(varName, typeClass);
   return typeClass;
+}
+
+function lookupFullTypeSpellingForIdentifier(identNode: SyntaxNode): string {
+  const varName = identNode.text;
+  let scope: SyntaxNode | null = identNode.parent;
+  while (
+    scope !== null &&
+    scope.type !== 'compound_statement' &&
+    scope.type !== 'translation_unit'
+  ) {
+    scope = scope.parent;
+  }
+  if (scope === null) return '';
+
+  const param = findEnclosingFunctionParameter(scope, varName);
+  if (param !== null) {
+    return formatDeclarationNodeTypeSpelling(param);
+  }
+
+  const stmt = scopeDeclarationsFor(scope).get(varName);
+  if (stmt === undefined) return '';
+  const baseSpelling = formatDeclarationNodeTypeSpelling(stmt);
+  if (baseSpelling !== '' && !baseSpelling.includes('<')) {
+    const ctadArgs = inferLocalCppCtadTemplateArguments(
+      stmt,
+      () => knownTemplateClassNames(identNode),
+      lookupFullTypeSpellingForIdentifier,
+    );
+    if (ctadArgs !== undefined && ctadArgs.length > 0) {
+      return `${baseSpelling}<${ctadArgs.join(', ')}>`;
+    }
+  }
+  return baseSpelling;
+}
+
+function formatDeclarationNodeTypeSpelling(declOrParam: SyntaxNode): string {
+  const typeNode = declOrParam.childForFieldName('type');
+  if (typeNode === null || typeNode.type === 'placeholder_type_specifier') return '';
+  const quals: string[] = [];
+  for (let i = 0; i < declOrParam.childCount; i++) {
+    const c = declOrParam.child(i);
+    if (c !== null && c.type === 'type_qualifier') {
+      const q = c.text.trim();
+      if (q === 'const' || q === 'volatile') quals.push(q);
+    }
+  }
+  const rawDecl = declOrParam.childForFieldName('declarator');
+  const nameOrWrapper = rawDecl !== null ? declaredNameNode(rawDecl) : null;
+  let suffix = '';
+  let cur = nameOrWrapper;
+  let hops = 8;
+  while (cur !== null && hops-- > 0) {
+    if (cur.type === 'identifier') break;
+    if (cur.type === 'pointer_declarator' || cur.type === 'abstract_pointer_declarator') {
+      let ptr = '*';
+      for (let i = 0; i < cur.childCount; i++) {
+        const c = cur.child(i);
+        if (c !== null && c.type === 'type_qualifier') ptr += ` ${c.text.trim()}`;
+      }
+      suffix = `${ptr}${suffix}`;
+      cur = cur.childForFieldName('declarator') ?? cur.namedChild(cur.namedChildCount - 1);
+      continue;
+    }
+    if (cur.type === 'reference_declarator' || cur.type === 'abstract_reference_declarator') {
+      const refTok = cur.text.trim().startsWith('&&') ? '&&' : '&';
+      suffix = `${refTok}${suffix}`;
+      cur = cur.childForFieldName('declarator') ?? cur.namedChild(0);
+      continue;
+    }
+    break;
+  }
+  const prefix = quals.length > 0 ? `${quals.join(' ')} ` : '';
+  return `${prefix}${typeNode.text.trim()}${suffix}`.trim();
+}
+
+function knownTemplateClassNames(node: SyntaxNode): ReadonlySet<string> {
+  if (fileLookupIndex.templateClassNames === null) {
+    let root: SyntaxNode = node;
+    while (root.parent !== null) root = root.parent;
+    const names = new Set<string>();
+    const stack: SyntaxNode[] = [root];
+    while (stack.length > 0) {
+      const cur = stack.pop();
+      if (cur === undefined) continue;
+      if (cur.type === 'template_declaration') {
+        const cls = findChildOfType(cur, ['class_specifier', 'struct_specifier']);
+        if (cls !== null) {
+          const n = getTypeIdentifierName(cls);
+          const lt = n.indexOf('<');
+          const simple = (lt >= 0 ? n.slice(0, lt) : n).trim();
+          if (simple.length > 0) names.add(simple);
+        }
+      }
+      if (
+        cur.type === 'translation_unit' ||
+        cur.type === 'namespace_definition' ||
+        cur.type === 'declaration_list' ||
+        cur.type === 'template_declaration' ||
+        cur.type === 'class_specifier' ||
+        cur.type === 'struct_specifier' ||
+        cur.type === 'field_declaration_list'
+      ) {
+        for (let i = 0; i < cur.namedChildCount; i++) {
+          const c = cur.namedChild(i);
+          if (c !== null) stack.push(c);
+        }
+      }
+    }
+    fileLookupIndex.templateClassNames = names;
+  }
+  return fileLookupIndex.templateClassNames;
 }
 
 function lookupFunctionParameterType(scope: SyntaxNode, varName: string): string {
@@ -1710,7 +1890,8 @@ function isKnownEnumName(node: SyntaxNode, typeName: string): boolean {
     const names = new Set<string>();
     const stack: SyntaxNode[] = [root];
     while (stack.length > 0) {
-      const cur = stack.pop()!;
+      const cur = stack.pop();
+      if (cur === undefined) continue;
       if (cur.type === 'enum_specifier') {
         const name = cur.childForFieldName('name');
         if (name !== null) names.add(name.text);

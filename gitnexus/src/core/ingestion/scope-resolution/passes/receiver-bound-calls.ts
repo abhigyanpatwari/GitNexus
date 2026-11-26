@@ -247,6 +247,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'conversionRankFn'
   | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
+  | 'matchTemplateSpecializations'
   | 'isStaticOnly'
   | 'normalizeTypeArgument'
   | 'markConstructionSites'
@@ -1112,6 +1113,7 @@ function emitReceiverBoundCallsInPass(
     qualifiedTypeLookupSpelling: provider.qualifiedTypeLookupSpelling,
     resolveThisViaEnclosingClass: provider.resolveThisViaEnclosingClass,
     qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+    matchTemplateSpecializations: provider.matchTemplateSpecializations,
     resolveQualifiedCallee,
   };
   // Loop-invariant: every hook comes off the pass arguments, so the evidence for
@@ -2122,6 +2124,7 @@ function emitReceiverBoundCallsInPass(
                   purpose: 'type',
                   onNameFallback,
                   qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                  matchTemplateSpecializations: provider.matchTemplateSpecializations,
                 },
                 namespaceMemberVisible,
               );
@@ -2138,6 +2141,7 @@ function emitReceiverBoundCallsInPass(
                     purpose: 'type',
                     position: returned.lookupPosition,
                     qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                    matchTemplateSpecializations: provider.matchTemplateSpecializations,
                   },
                 )
               : (qualifiedElement ?? undefined);
@@ -2719,6 +2723,15 @@ function emitReceiverBoundCallsInPass(
                     scopes,
                   }),
         }) ??
+        (provider.matchTemplateSpecializations !== undefined && receiverName.includes('<')
+          ? resolveClassBindingForName(site.inScope, receiverName, scopes, undefined, {
+              onNameFallback,
+              position: site.atRange,
+              purpose: 'value',
+              qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+              matchTemplateSpecializations: provider.matchTemplateSpecializations,
+            })
+          : undefined) ??
         resolveNamespaceQualifiedClass(receiverName, site.inScope, namespaceTargets, site.atRange);
       if (classDef !== undefined) {
         const languageResolution = provider.resolveReceiverMember?.(
@@ -3187,6 +3200,7 @@ function emitReceiverBoundCallsInPass(
           purpose: typeRef.lookupPurpose ?? 'type',
           onNameFallback,
           qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+          matchTemplateSpecializations: provider.matchTemplateSpecializations,
         };
         const qualifiedOwner = classOfQualifiedTypeSpelling(
           typeRef,
@@ -3860,6 +3874,7 @@ function emitReceiverBoundCallsInPass(
                     onNameFallback,
                     purpose: fieldDeclaredType.purpose,
                     qualifiedTypeSpellings: provider.resolveQualifiedTypeSpellings === true,
+                    matchTemplateSpecializations: provider.matchTemplateSpecializations,
                   },
                 );
           if (receiverClass !== undefined) {

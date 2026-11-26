@@ -241,17 +241,58 @@ export function stripCppSpecifiers(text: string): string {
  * by base-name fallback in resolveClassBindingForName.
  */
 export function normalizeCppTypeName(text: string): string {
-  let t = stripCppSpecifiers(text);
-  // Strip pointer stars
-  while (t.endsWith('*')) t = t.slice(0, -1).trim();
+  if (!text.includes('<')) {
+    let t = stripCppSpecifiers(text);
+    // Strip pointer stars
+    while (t.endsWith('*')) t = t.slice(0, -1).trim();
+    while (t.startsWith('*')) t = t.slice(1).trim();
+    // Strip reference markers
+    while (t.endsWith('&')) t = t.slice(0, -1).trim();
+    // Strip array brackets
+    t = t.replace(/\[.*?\]/g, '').trim();
+    // Strip struct/union/enum/class prefixes
+    t = t.replace(/^(struct|union|enum|class)\s+/, '');
+    // Strip leading :: (global namespace qualifier)
+    t = t.replace(/^::/, '');
+    return t;
+  }
+
+  // Template-bearing spelling (`const S<const int*>&`, `Arr<int[4]>[2]`,
+  // `const Outer<const int*>::Inner*`): strip specifiers and array bounds ONLY
+  // outside `<...>` blocks so inner cv/array tokens survive for specialization
+  // selection while nested `::Inner` member-type suffixes are preserved (#1896).
+  const rebuilt: string[] = [];
+  let depth = 0;
+  let segStart = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<') {
+      if (depth === 0) {
+        rebuilt.push(cleanOuterTypeSegment(text.slice(segStart, i)));
+        segStart = i;
+      }
+      depth++;
+    } else if (ch === '>') {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0) {
+          rebuilt.push(text.slice(segStart, i + 1).trim());
+          segStart = i + 1;
+        }
+      }
+    }
+  }
+  if (depth !== 0) return stripCppSpecifiers(text);
+  rebuilt.push(cleanOuterTypeSegment(text.slice(segStart)));
+
+  let t = rebuilt.join('').trim();
+  while (t.endsWith('*') || t.endsWith('&')) t = t.slice(0, -1).trim();
   while (t.startsWith('*')) t = t.slice(1).trim();
-  // Strip reference markers
-  while (t.endsWith('&')) t = t.slice(0, -1).trim();
-  // Strip array brackets
-  t = t.replace(/\[.*?\]/g, '').trim();
-  // Strip struct/union/enum/class prefixes
   t = t.replace(/^(struct|union|enum|class)\s+/, '');
-  // Strip leading :: (global namespace qualifier)
-  t = t.replace(/^::/, '');
+  t = t.replace(/^::/, '').trim();
   return t;
+}
+
+function cleanOuterTypeSegment(segment: string): string {
+  return segment.replace(CPP_SPECIFIER_RE, '').replace(/\[.*?\]/g, '');
 }

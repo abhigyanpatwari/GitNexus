@@ -65,6 +65,8 @@ import {
   populateCppUsingBindings,
   cppQualifiedTypeLookupSpelling,
 } from './using-bindings.js';
+import { clearCppCtadState, populateCppCtadBindings } from './ctad.js';
+import { matchCppTemplateSpecializations } from './template-specialization.js';
 
 /** A pointee worth binding: a bare identifier, not `T**`, `T[]`, `A::B` or a
  *  template spelling. Hoisted — a literal here would mint a fresh RegExp on
@@ -127,6 +129,7 @@ export const cppScopeResolver: ScopeResolver = {
     clearCppUserDefinedConversions();
     clearCppMemberLookupState();
     clearCppUsingDeclarations();
+    clearCppCtadState();
     return loadCFamilyResolutionConfig(repoPath, CPP_HEADER_EXTENSIONS);
   },
 
@@ -163,6 +166,7 @@ export const cppScopeResolver: ScopeResolver = {
   // C++20 `requires P`) provably fail at the call site. Three-valued —
   // `'unknown'` keeps the candidate, preserving "degrade not lie".
   constraintCompatibility: cppConstraintCompatibility,
+  matchTemplateSpecializations: matchCppTemplateSpecializations,
 
   buildMro: buildCppMemberLookupMro,
 
@@ -254,6 +258,7 @@ export const cppScopeResolver: ScopeResolver = {
       }
     }
     populateCppUsingBindings(parsedFiles, indexes);
+    populateCppCtadBindings(parsedFiles, indexes);
     populateCppIncludedOverloads(indexes);
   },
 

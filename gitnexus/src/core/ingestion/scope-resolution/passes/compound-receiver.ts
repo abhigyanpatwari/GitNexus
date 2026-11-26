@@ -223,6 +223,7 @@ interface ResolveCompoundReceiverOptions {
    *  declared and returned receiver types (member, head and fold lookups).
    *  Absent ⇒ `rawName` alone, exactly as before. */
   readonly qualifiedTypeLookupSpelling?: ScopeResolver['qualifiedTypeLookupSpelling'];
+  readonly matchTemplateSpecializations?: ScopeResolver['matchTemplateSpecializations'];
 }
 
 /** The options the two declared-type lookups below read. */
@@ -233,6 +234,7 @@ type TypeLookupOptions = Pick<
   | 'qualifiedTypeSpellings'
   | 'qualifiedTypeLookupSpelling'
   | 'namespaceMemberVisible'
+  | 'matchTemplateSpecializations'
 >;
 
 /** Is this hop the language's construction selector applied to the class
@@ -548,6 +550,7 @@ function classOfDeclaredType(
     purpose: typeRef.lookupPurpose ?? 'type',
     onNameFallback: options.onNameFallback,
     qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+    matchTemplateSpecializations: options.matchTemplateSpecializations,
   };
   const qualified = classOfQualifiedTypeSpelling(
     typeRef,
@@ -660,28 +663,43 @@ function classOfReturnType(
   scopes: ScopeResolutionIndexes,
   options: TypeLookupOptions,
 ): SymbolDefinition | undefined {
+  const lookup: ClassBindingLookup = {
+    position: retType.lookupPosition,
+    purpose: retType.lookupPurpose ?? 'type',
+    onNameFallback: options.onNameFallback,
+    qualifiedTypeSpellings: options.qualifiedTypeSpellings,
+    matchTemplateSpecializations: options.matchTemplateSpecializations,
+  };
   const qualified = classOfQualifiedTypeSpelling(
     retType,
     scopes,
     options.qualifiedTypeLookupSpelling,
-    {
-      position: retType.lookupPosition,
-      purpose: retType.lookupPurpose ?? 'type',
-      onNameFallback: options.onNameFallback,
-      qualifiedTypeSpellings: options.qualifiedTypeSpellings,
-    },
+    lookup,
     options.namespaceMemberVisible,
   );
   const def =
     qualified === undefined
-      ? (findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
-          position: retType.lookupPosition,
-          purpose: retType.lookupPurpose ?? 'type',
-          onNameFallback: options.onNameFallback,
-        }) ??
-        (options.qualifiedTypeSpellings === true
-          ? resolveQualifiedClassSpelling(retType.declaredAtScope, retType.rawName, scopes)
-          : undefined))
+      ? options.matchTemplateSpecializations !== undefined && retType.rawName.includes('<')
+        ? resolveClassBindingForName(
+            retType.declaredAtScope,
+            retType.rawName,
+            scopes,
+            undefined,
+            lookup,
+          )
+        : (findClassBindingInScope(retType.declaredAtScope, retType.rawName, scopes, undefined, {
+            position: retType.lookupPosition,
+            purpose: retType.lookupPurpose ?? 'type',
+            onNameFallback: options.onNameFallback,
+          }) ??
+          (options.qualifiedTypeSpellings === true
+            ? resolveQualifiedClassSpelling(
+                retType.declaredAtScope,
+                retType.rawName,
+                scopes,
+                lookup,
+              )
+            : undefined))
       : (qualified ?? undefined);
   const record = options.recordReceiverType;
   if (def === undefined || record === undefined) return def;

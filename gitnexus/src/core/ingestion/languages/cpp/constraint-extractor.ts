@@ -31,18 +31,33 @@ export type ConstraintExpr =
   | { readonly kind: 'not'; readonly child: ConstraintExpr }
   | { readonly kind: 'unknown' };
 
+export type CppTemplateParamUnwrap =
+  | { readonly kind: 'pointer'; readonly depth: number }
+  | { readonly kind: 'lvalue-ref' }
+  | {
+      readonly kind: 'template-arg';
+      readonly containerBase: string;
+      readonly argIndex: number;
+      readonly pointerDepth: number;
+    };
+
 export interface CppConstraintPayload {
   /** Ordered template parameter names (type-params only — non-type defaults
    *  carrying enable_if predicates are folded into `expr`). */
   readonly templateParams: readonly string[];
   /**
-   * Mapping from each template parameter name to the call-site argument
-   * index where its deduced type lives. Computed by scanning the function's
-   * parameter list for the first parameter whose type is the bare template
-   * parameter name (or template-typed by it). Missing entries → 'unknown'
-   * verdict at evaluation time.
+   * Mapping from each uniquely-deducible template parameter name to the
+   * call-site argument index where its deduced type lives. Parameters with
+   * zero or multiple occurrences across the function signature are omitted so
+   * evaluation yields `'unknown'` (#1896).
    */
   readonly paramArgIndex: { readonly [paramName: string]: number };
+  /**
+   * Optional per-parameter unwrap instructions for one-level peeled deduction
+   * (`T*`, `const T&`, `std::vector<T>`, `std::pair<T, U>`). Omitted when all
+   * deduced parameters are bare by-value `T`.
+   */
+  readonly paramUnwraps?: { readonly [paramName: string]: CppTemplateParamUnwrap };
   /** Root constraint expression. When multiple constraints (multiple
    *  enable_if defaults, requires clause, etc.) are present they are
    *  implicitly conjoined under a top-level `and` node. */
@@ -112,7 +127,7 @@ export function extractCppTemplateConstraints(
 
   if (templateParams.length === 0 && exprs.length === 0) return undefined;
 
-  const paramArgIndex = buildParamArgIndex(templateParams, funcDeclarator);
+  const { paramArgIndex, paramUnwraps } = buildParamDeductions(templateParams, funcDeclarator);
   const expr: ConstraintExpr =
     exprs.length === 0
       ? { kind: 'unknown' }
@@ -120,7 +135,12 @@ export function extractCppTemplateConstraints(
         ? exprs[0]
         : { kind: 'and', children: exprs };
 
-  return { templateParams, paramArgIndex, expr };
+  return {
+    templateParams,
+    paramArgIndex,
+    ...(Object.keys(paramUnwraps).length > 0 ? { paramUnwraps } : {}),
+    expr,
+  };
 }
 
 /**
@@ -172,8 +192,10 @@ function extractEnableIfPredicate(typeNode: SyntaxNode | null): ConstraintExpr |
  *  over atomic predicates (variable templates like `is_integral_v<T>`). */
 function parseRequiresClause(requiresClause: SyntaxNode): ConstraintExpr | undefined {
   // tree-sitter-cpp exposes the expression as a named child or via a
-  // `constraint` field. Probe both.
+  // `constraint` field. On parenthesized `requires (A && B)` the `constraint`
+  // field points at the anonymous `'('` token, so require `expr.isNamed`.
   let expr: SyntaxNode | null = requiresClause.childForFieldName('constraint');
+  if (expr !== null && !expr.isNamed) expr = null;
   if (expr === null) {
     for (let i = 0; i < requiresClause.namedChildCount; i++) {
       const c = requiresClause.namedChild(i);
@@ -206,16 +228,20 @@ function parseAtomicOrBoolean(node: SyntaxNode): ConstraintExpr {
     return inner === null ? { kind: 'unknown' } : parseAtomicOrBoolean(inner);
   }
   // Boolean composition.
-  if (node.type === 'binary_expression') {
-    const left = node.childForFieldName('left');
-    const right = node.childForFieldName('right');
-    const opNode = node.childForFieldName('operator');
-    if (left !== null && right !== null && opNode !== null) {
-      const op = opNode.text;
+  if (
+    node.type === 'binary_expression' ||
+    node.type === 'constraint_conjunction' ||
+    node.type === 'constraint_disjunction'
+  ) {
+    const left = node.childForFieldName('left') ?? node.namedChild(0);
+    const right = node.childForFieldName('right') ?? node.namedChild(1);
+    const opText =
+      node.childForFieldName('operator')?.text ?? findBinaryOperatorToken(node, left, right);
+    if (left !== null && right !== null && opText !== null) {
       const l = parseAtomicOrBoolean(left);
       const r = parseAtomicOrBoolean(right);
-      if (op === '&&') return { kind: 'and', children: [l, r] };
-      if (op === '||') return { kind: 'or', children: [l, r] };
+      if (opText === '&&') return { kind: 'and', children: [l, r] };
+      if (opText === '||') return { kind: 'or', children: [l, r] };
     }
     return { kind: 'unknown' };
   }
@@ -269,16 +295,37 @@ function parseAtomicTemplate(t: SyntaxNode): ConstraintExpr {
   return { kind: 'atomic', name, args };
 }
 
-/** Build a `paramName → call-site argument index` map by scanning the
- *  function's parameter list for parameters typed by each template param. */
-function buildParamArgIndex(
+/**
+ * Scan the function's parameter list to record unique one-level deduction
+ * paths (`[temp.deduct.call]`, issue #1896):
+ *   - bare `T` (by value) -> `paramArgIndex[T] = argIdx`
+ *   - `T*` / `const T*`   -> `pointer` unwrap
+ *   - `T&` / `const T&`   -> `lvalue-ref` unwrap (forwarding `T&&` stays unknown)
+ *   - `C<..., T, ...>`    -> one-level `template-arg` unwrap when `T` is a
+ *                            direct undecorated template argument
+ *
+ * Any template parameter appearing in multiple parameter positions (or
+ * multiple times within a single parameter, e.g. `pair<T, T>`) is omitted so
+ * evaluation conservatively yields `'unknown'`.
+ */
+function buildParamDeductions(
   templateParams: readonly string[],
   funcDeclarator: SyntaxNode | null,
-): { [paramName: string]: number } {
-  const out: { [paramName: string]: number } = {};
-  if (funcDeclarator === null || templateParams.length === 0) return out;
+): {
+  paramArgIndex: { [paramName: string]: number };
+  paramUnwraps: { [paramName: string]: CppTemplateParamUnwrap };
+} {
+  const paramArgIndex: { [paramName: string]: number } = {};
+  const paramUnwraps: { [paramName: string]: CppTemplateParamUnwrap } = {};
+  if (funcDeclarator === null || templateParams.length === 0) {
+    return { paramArgIndex, paramUnwraps };
+  }
   const paramList = funcDeclarator.childForFieldName('parameters');
-  if (paramList === null) return out;
+  if (paramList === null) return { paramArgIndex, paramUnwraps };
+
+  const templateSet = new Set(templateParams);
+  const occurrences = new Map<string, number>();
+  const candidates = new Map<string, { argIdx: number; unwrap?: CppTemplateParamUnwrap }>();
 
   let argIdx = 0;
   for (let i = 0; i < paramList.childCount; i++) {
@@ -293,26 +340,192 @@ function buildParamArgIndex(
     }
     const typeNode = p.childForFieldName('type');
     if (typeNode !== null) {
-      const tname = bareTypeIdentifier(typeNode);
-      if (tname !== null && templateParams.includes(tname) && !(tname in out)) {
-        out[tname] = argIdx;
+      countTemplateParamOccurrences(typeNode, templateSet, occurrences);
+      if (p.type !== 'variadic_parameter_declaration') {
+        extractOneLevelDeductionsFromParameter(p, typeNode, argIdx, templateSet, candidates);
       }
     }
     argIdx++;
   }
-  return out;
+
+  for (const tname of templateParams) {
+    if (occurrences.get(tname) !== 1) continue;
+    const cand = candidates.get(tname);
+    if (cand === undefined) continue;
+    paramArgIndex[tname] = cand.argIdx;
+    if (cand.unwrap !== undefined) paramUnwraps[tname] = cand.unwrap;
+  }
+
+  return { paramArgIndex, paramUnwraps };
 }
 
-function bareTypeIdentifier(typeNode: SyntaxNode): string | null {
-  if (typeNode.type === 'type_identifier') return typeNode.text;
-  // Allow `T const`, `T&`, `T*` shapes — the inner type_identifier still wins.
-  const id = firstDescendantOfType(typeNode, 'type_identifier');
-  return id !== null ? id.text : null;
+function countTemplateParamOccurrences(
+  node: SyntaxNode,
+  templateSet: ReadonlySet<string>,
+  counts: Map<string, number>,
+): void {
+  if (
+    (node.type === 'type_identifier' || node.type === 'identifier') &&
+    templateSet.has(node.text)
+  ) {
+    counts.set(node.text, (counts.get(node.text) ?? 0) + 1);
+    return;
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (c !== null) countTemplateParamOccurrences(c, templateSet, counts);
+  }
+}
+
+function extractOneLevelDeductionsFromParameter(
+  paramNode: SyntaxNode,
+  typeNode: SyntaxNode,
+  argIdx: number,
+  templateSet: ReadonlySet<string>,
+  out: Map<string, { argIdx: number; unwrap?: CppTemplateParamUnwrap }>,
+): void {
+  const declShape = inspectParameterDeclarator(paramNode);
+  if (declShape === null) return;
+
+  // Unwrap namespace-qualified type (`std::vector<T>`) only when the qualifier
+  // scope itself contains no template parameter; `typename T::value_type` and
+  // `Box<T>::iterator` are ISO `[temp.deduct.type]/5` non-deduced contexts.
+  let coreType = typeNode;
+  while (coreType.type === 'qualified_identifier') {
+    const scope = coreType.childForFieldName('scope');
+    if (scope !== null && subtreeContainsTemplateParam(scope, templateSet)) return;
+    const name = coreType.childForFieldName('name');
+    if (name === null) return;
+    coreType = name;
+  }
+
+  if (coreType.type === 'type_identifier' && templateSet.has(coreType.text)) {
+    const tname = coreType.text;
+    if (declShape.pointerDepth > 0) {
+      out.set(tname, {
+        argIdx,
+        unwrap: { kind: 'pointer', depth: declShape.pointerDepth },
+      });
+      return;
+    }
+    if (declShape.refKind === 'none') {
+      out.set(tname, { argIdx });
+      return;
+    }
+    // Forwarding reference (`T&&` without cv-qualifier) deduces `U&` on lvalues
+    // and `U` on rvalues; leave unknown without expression value-category facts.
+    if (declShape.refKind === 'rvalue-ref' && !declShape.hasCvQualifier) {
+      return;
+    }
+    out.set(tname, { argIdx, unwrap: { kind: 'lvalue-ref' } });
+    return;
+  }
+
+  if (coreType.type === 'template_type') {
+    const nameNode = coreType.childForFieldName('name');
+    const argList =
+      coreType.childForFieldName('arguments') ?? childOfType(coreType, 'template_argument_list');
+    if (nameNode === null || argList === null) return;
+    const containerBase = stripQualifiedPrefix(nameNode.text.trim());
+    if (containerBase === '') return;
+
+    let slotIdx = 0;
+    for (let i = 0; i < argList.namedChildCount; i++) {
+      const argDesc = argList.namedChild(i);
+      if (argDesc === null) continue;
+      if (argDesc.type === 'type_descriptor') {
+        const hasQual = childOfType(argDesc, 'type_qualifier') !== null;
+        const hasDeclarator = argDesc.childForFieldName('declarator') !== null;
+        const innerType = argDesc.childForFieldName('type');
+        if (
+          !hasQual &&
+          !hasDeclarator &&
+          innerType !== null &&
+          innerType.type === 'type_identifier' &&
+          templateSet.has(innerType.text)
+        ) {
+          out.set(innerType.text, {
+            argIdx,
+            unwrap: {
+              kind: 'template-arg',
+              containerBase,
+              argIndex: slotIdx,
+              pointerDepth: declShape.pointerDepth,
+            },
+          });
+        }
+      }
+      slotIdx++;
+    }
+  }
+}
+
+function inspectParameterDeclarator(paramNode: SyntaxNode): {
+  pointerDepth: number;
+  refKind: 'none' | 'lvalue-ref' | 'rvalue-ref';
+  hasCvQualifier: boolean;
+} | null {
+  let hasCvQualifier = false;
+  for (let i = 0; i < paramNode.childCount; i++) {
+    const c = paramNode.child(i);
+    if (c !== null && c.type === 'type_qualifier') {
+      const t = c.text.trim();
+      if (t === 'const' || t === 'volatile') hasCvQualifier = true;
+    }
+  }
+
+  let pointerDepth = 0;
+  let refKind: 'none' | 'lvalue-ref' | 'rvalue-ref' = 'none';
+  let cur: SyntaxNode | null = paramNode.childForFieldName('declarator');
+  let hops = 8;
+  while (cur !== null && hops-- > 0) {
+    if (cur.type === 'function_declarator' || cur.type === 'array_declarator') return null;
+    if (cur.type === 'pointer_declarator' || cur.type === 'abstract_pointer_declarator') {
+      pointerDepth++;
+      cur = cur.childForFieldName('declarator') ?? cur.namedChild(cur.namedChildCount - 1);
+      continue;
+    }
+    if (cur.type === 'reference_declarator' || cur.type === 'abstract_reference_declarator') {
+      refKind = cur.text.trim().startsWith('&&') ? 'rvalue-ref' : 'lvalue-ref';
+      cur = cur.childForFieldName('declarator') ?? cur.namedChild(0);
+      continue;
+    }
+    break;
+  }
+  return { pointerDepth, refKind, hasCvQualifier };
+}
+
+function subtreeContainsTemplateParam(node: SyntaxNode, templateSet: ReadonlySet<string>): boolean {
+  if (
+    (node.type === 'type_identifier' || node.type === 'identifier') &&
+    templateSet.has(node.text)
+  ) {
+    return true;
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (c !== null && subtreeContainsTemplateParam(c, templateSet)) return true;
+  }
+  return false;
 }
 
 function stripQualifiedPrefix(text: string): string {
   const idx = text.lastIndexOf('::');
   return idx >= 0 ? text.slice(idx + 2) : text;
+}
+
+function findBinaryOperatorToken(
+  node: SyntaxNode,
+  left: SyntaxNode | null,
+  right: SyntaxNode | null,
+): string | null {
+  for (let i = 0; i < node.childCount; i++) {
+    const c = node.child(i);
+    if (c === null || c === left || c === right) continue;
+    const t = c.text.trim();
+    if (t === '&&' || t === '||') return t;
+  }
+  return null;
 }
 
 function childOfType(node: SyntaxNode, type: string): SyntaxNode | null {
