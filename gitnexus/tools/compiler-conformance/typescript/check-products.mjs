@@ -15,6 +15,7 @@ const selected = platform
       'product/class-expression-owners.ts',
       'product/cli-e2e.ts',
       'product/dangling-owner-edges.ts',
+      'product/embedding-identity-integrity.ts',
       'product/embedding-input-isolation.ts',
       'product/fetch-wrapper-persistence.ts',
       'product/fts-extension-e2e.ts',

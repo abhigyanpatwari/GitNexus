@@ -13,7 +13,7 @@
  * close. Zero vectors need no VECTOR extension: the CodeEmbedding TABLE is
  * plain schema; only the HNSW index is extension-gated.
  */
-import { expect } from 'vitest';
+import assert from 'node:assert/strict';
 import {
   getStoragePaths,
   loadMeta,
@@ -109,7 +109,7 @@ export async function readEmbeddingNodeIds(repoPath: string): Promise<string[]> 
  *  (loadMeta → spread → saveMeta, same pattern as the dirty-flag tests). */
 export async function stampEmbeddingCount(storagePath: string, embeddings: number): Promise<void> {
   const meta = await loadMeta(storagePath);
-  expect(meta).not.toBeNull();
-  const tampered: RepoMeta = { ...meta!, stats: { ...meta!.stats, embeddings } };
+  assert.ok(meta, 'Missing repository metadata for embedding seed');
+  const tampered: RepoMeta = { ...meta, stats: { ...meta.stats, embeddings } };
   await saveMeta(storagePath, tampered);
 }
