@@ -74,12 +74,46 @@ function unwrapTransparent(node: Node | null): Node | null {
   return current;
 }
 
+/** Nesting bound for {@link isPlainTable}; deeper tables are simply not trusted. */
+const MAX_TABLE_DEPTH = 8;
+
+/**
+ * Whether an object literal's value at runtime is exactly what
+ * `flattenObjectLiteral` records: only `key: value` pairs with static,
+ * distinct keys, and nested tables that are plain too.
+ *
+ * The flattener skips everything else, and anything else can change what a
+ * member read returns: a getter or setter (`get A() {…}` beats an earlier
+ * `A: '/x'`), a method, a spread, a computed key, a shorthand property, a
+ * repeated key, or a `__proto__` entry that swaps the prototype. Any of those
+ * makes the whole table untrusted instead of folding a value the runtime may
+ * never see.
+ */
+function isPlainTable(node: Node, depth = 0): boolean {
+  if (depth > MAX_TABLE_DEPTH) return false;
+  const keys = new Set<string>();
+  for (const member of children(node)) {
+    if (member.type !== 'pair') return false;
+    const key = member.childForFieldName('key');
+    if (!key || (key.type !== 'property_identifier' && key.type !== 'string')) return false;
+    const name = key.type === 'string' ? plainString(key) : key.text;
+    if (name === null || name === '__proto__' || keys.has(name)) return false;
+    keys.add(name);
+    const value = unwrapTransparent(member.childForFieldName('value'));
+    if (value?.type === 'object' && !isPlainTable(value, depth + 1)) return false;
+  }
+  return true;
+}
+
 /**
  * Top-level `const` declarator names, including `export const`. `table` marks a
  * const bound to an object literal: its members stay writable, unlike a string.
+ * `plain` is {@link isPlainTable} for a table.
  */
-function moduleConstNames(root: Node): { name: Node; table: boolean; exported: boolean }[] {
-  const names: { name: Node; table: boolean; exported: boolean }[] = [];
+function moduleConstNames(
+  root: Node,
+): { name: Node; table: boolean; plain: boolean; exported: boolean }[] {
+  const names: { name: Node; table: boolean; plain: boolean; exported: boolean }[] = [];
   for (const statement of children(root)) {
     const declaration =
       statement.type === 'export_statement'
@@ -91,9 +125,11 @@ function moduleConstNames(root: Node): { name: Node; table: boolean; exported: b
       const name = declarator.childForFieldName('name');
       if (declarator.type !== 'variable_declarator' || name?.type !== 'identifier') continue;
       const value = unwrapTransparent(declarator.childForFieldName('value'));
+      const table = value?.type === 'object';
       names.push({
         name,
-        table: value?.type === 'object',
+        table,
+        plain: table && value !== null && isPlainTable(value),
         exported: statement.type === 'export_statement',
       });
     }
@@ -145,8 +181,10 @@ function writtenMember(node: Node): Node | null {
  * a shorthand property, an export in any form, a subscript, a sub-table read),
  * and an escaped object can be written where this scan cannot follow, so the
  * table is not folded. `as const` is a type, not `Object.freeze`, so an
- * exported table is writable by its importers. Strings are immutable, so plain
- * consts, exported or not, need no such check.
+ * exported table is writable by its importers. A table whose literal is not
+ * plain ({@link isPlainTable}: a getter, a method, a spread, a computed or
+ * repeated key) is not folded either. Strings are immutable, so plain consts,
+ * exported or not, need no such check.
  *
  * Every reference in the path must fold on its own, so a const whose value is
  * not a string leaves the path unknown instead of a `${…}` placeholder, while
@@ -162,19 +200,21 @@ function createConstantPaths(
 ): (node: Node | undefined) => string[] | null {
   // Top-level statements only: cheap, and enough to reject the common case (a
   // helper called with a local or a parameter) before any whole-file work.
+  // `untrustedTables` are tables rejected from their declaration alone: exported,
+  // or not plain. The escape scan in `fold` adds the ones rejected by their uses.
   let consts:
-    | { ids: Set<string>; tables: Set<string>; exportedTables: Set<string>; declared: Set<number> }
+    | { ids: Set<string>; tables: Set<string>; untrustedTables: Set<string>; declared: Set<number> }
     | undefined;
   const moduleConsts = () => {
     if (consts) return consts;
-    consts = { ids: new Set(), tables: new Set(), exportedTables: new Set(), declared: new Set() };
-    for (const { name, table, exported } of moduleConstNames(tree.rootNode)) {
+    consts = { ids: new Set(), tables: new Set(), untrustedTables: new Set(), declared: new Set() };
+    for (const { name, table, plain, exported } of moduleConstNames(tree.rootNode)) {
       const id = lexical.bindingId(name);
       if (!id || lexical.ambiguous(id)) continue;
       consts.ids.add(id);
       consts.declared.add(name.id);
       if (table) consts.tables.add(id);
-      if (table && exported) consts.exportedTables.add(id);
+      if (table && (exported || !plain)) consts.untrustedTables.add(id);
     }
     return consts;
   };
@@ -183,10 +223,10 @@ function createConstantPaths(
   let folding: { untrusted: Set<string>; facts: JsRepoFacts } | undefined;
   const fold = () => {
     if (folding) return folding;
-    const { tables, exportedTables, declared } = moduleConsts();
+    const { tables, untrustedTables, declared } = moduleConsts();
     const facts = buildJsRepoFacts(new Map([[filePath, extractJsModuleFacts(tree)]]));
     const leaves = facts.byFile.get(filePath)?.constants.literals ?? new Map<string, string>();
-    const untrusted = new Set(exportedTables);
+    const untrusted = new Set(untrustedTables);
     const pending: Node[] = tables.size > 0 ? [tree.rootNode] : [];
     for (let node = pending.pop(); node; node = pending.pop()) {
       for (const child of node.namedChildren) pending.push(child);

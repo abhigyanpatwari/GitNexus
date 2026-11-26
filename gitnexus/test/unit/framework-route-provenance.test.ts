@@ -184,6 +184,30 @@ function handler() {} function other() {}`);
     ]);
   });
 
+  // Runtime/extraction parity: for each table literal, read the member the
+  // route uses at runtime, then require the extractor to emit exactly that path
+  // (plain tables) or nothing at all (every shape the flattener cannot model).
+  it.each([
+    ['{ A: "/plain" }', 'T.A', true],
+    ['{ N: { A: "/nested" } }', 'T.N.A', true],
+    ['{ "A": "/quoted" }', 'T.A', true],
+    ['{ A: "/plain" } as const', 'T.A', true],
+    ['{ A: "/stale", get A() { return "/actual"; } }', 'T.A', false],
+    ['{ N: { A: "/stale", get A() { return "/actual"; } } }', 'T.N.A', false],
+    ['{ get A() { return "/getter-only"; } }', 'T.A', false],
+    ['{ A: "/stale", ["A"]: "/computed" }', 'T.A', false],
+    ['{ A: "/first", A: "/second" }', 'T.A', false],
+    ['{ A: "/own", __proto__: { B: "/proto" } }', 'T.A', false],
+    ['{ A: "/stale", ...{ A: "/spread" } }', 'T.A', false],
+  ] as const)('matches runtime for the table %s read as %s', (table, read, folds) => {
+    const runtime = new Function(`const T = ${table.replace(/ as const$/, '')}; return ${read};`)();
+    expect(typeof runtime).toBe('string');
+    const emitted = urls(`import express from 'express'; const app = express();
+      const T = ${table};
+      app.get(${read}, handler);`);
+    expect(emitted).toEqual(folds ? [`GET ${runtime}`] : []);
+  });
+
   it('keeps a string constant that contains ${…} exactly as its literal would', () => {
     const literal = urls(`import express from 'express'; const app = express();
       app.get('/files/\${name}', handler);`);
@@ -258,6 +282,20 @@ function handler() {} function other() {}`);
       'a non-string const in a template',
       `const P = '/p'; const S = other; app.get(\`\${P}/\${S}\`, h);`,
     ],
+    [
+      'a getter overriding a literal',
+      `const T = { A: '/stale', get A() { return '/actual'; } }; app.get(T.A, h);`,
+    ],
+    [
+      'a nested getter',
+      `const T = { N: { A: '/stale', get A() { return '/actual'; } } }; app.get(T.N.A, h);`,
+    ],
+    ['a setter', `const T = { A: '/a', set B(v) {} }; app.get(T.A, h);`],
+    ['a method', `const T = { A: '/a', toString() { return '/x'; } }; app.get(T.A, h);`],
+    ['a spread', `const T = { A: '/a', ...OVERRIDES }; app.get(T.A, h);`],
+    ['a computed key', `const T = { A: '/stale', ['A']: '/actual' }; app.get(T.A, h);`],
+    ['a repeated key', `const T = { A: '/first', 'A': '/second' }; app.get(T.A, h);`],
+    ['a __proto__ entry', `const T = { __proto__: BASE, A: '/a' }; app.get(T.A, h);`],
     ['a subscript', `const T = { A: '/a' }; app.get(T['A'], h);`],
     ['a call', `const P = '/p'; app.get(build(P), h);`],
     ['a call in a template', `const P = '/p'; app.get(\`\${P}/\${id()}\`, h);`],
