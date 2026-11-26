@@ -3,8 +3,7 @@
  * route groups and method-value handlers. Exercises `GO_HTTP_PLUGIN.scan`
  * directly with a real tree-sitter parser, asserting the FULL registered path
  * (every enclosing `x := y.Group("/p")` prefix joined in) and the handler name
- * the group layer resolves by. The last block runs the real extractor on a Go
- * provider repo and a fetch() consumer repo and pairs them with `runExactMatch`.
+ * the group layer resolves by. The qualified-handler case exercises graph-backed name resolution.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -18,8 +17,7 @@ import {
   HttpRouteExtractor,
   RESOLVE_BY_NAME_QUERY,
 } from '../../../src/core/group/extractors/http-route-extractor.js';
-import { runExactMatch } from '../../../src/core/group/matching.js';
-import type { RepoHandle, StoredContract } from '../../../src/core/group/types.js';
+import type { RepoHandle } from '../../../src/core/group/types.js';
 
 const parser = new Parser();
 
@@ -40,37 +38,13 @@ function providers(src: string): Provider[] {
 // `{ }` blocks, nested groups three levels deep, empty-prefix groups used only
 // to attach middleware, method-value / package-func / identifier / inline
 // handlers, and variadic middleware before the handler.
-const GIN_ROUTES = `package handlers
-
-import "github.com/gin-gonic/gin"
-
-func RegisterRoutes(r *gin.Engine, svc *service.Service) {
-	playerHandler := NewPlayerHandler(svc.Player)
-	matchHandler := NewMatchHandler(svc.Match)
-	r.GET("/ping", pingHandle)
-	v1 := r.Group("/api/v1")
-	{
-		v1.GET("/health", func(c *gin.Context) { c.Status(200) })
-		v1.GET("/players", playerHandler.GetPlayersHandle)
-		v1.POST("/upload/avatar", UploadAvatarHandle)
-		v1.GET("/exports", exports.ListExportsHandle)
-		v1.PATCH("/players/:playerId", middleware.AuthRequired(svc.Auth), playerHandler.UpdatePlayerHandle)
-		admin := v1.Group("/admin")
-		admin.Use(middleware.AdminRequired(svc.AdminControl))
-		{
-			admin.POST("/seasons/:seasonId/rounds/:roundId/unfinalize", matchHandler.UnfinalizeRoundHandle)
-			newsAdmin := admin.Group("/news")
-			{
-				newsAdmin.DELETE("/:id", newsHandler.DeleteNewsHandle)
-			}
-			knockoutAdmin := admin.Group("", middleware.KnockoutGuard())
-			knockoutAdmin.POST("/seasons/:seasonId/knockout", knockoutHandler.CreateKnockoutHandle)
-			adminOnly := admin.Group("")
-			adminOnly.PUT("/seasons/:seasonId/streak-config", streakHandler.SaveStreakConfigHandle)
-		}
-	}
-}
-`;
+const GIN_ROUTES = fs.readFileSync(
+  new URL(
+    '../../fixtures/typescript-products/http-route-pairing/gin/backend/internal/handlers/routes.go',
+    import.meta.url,
+  ),
+  'utf8',
+);
 
 describe('GO_HTTP_PLUGIN — gin route groups', () => {
   const got = providers(GIN_ROUTES);
@@ -1139,49 +1113,5 @@ func routes(r *gin.Engine, b *B) {
     };
     expect(await run([aList, bList])).toBe('');
     expect(await run([bList])).toBe(bList.uid);
-  });
-
-  it('cross-links a grouped method-value route to a ${API_BASE}-prefixed fetch', async () => {
-    const backend = path.join(tmpDir, 'backend');
-    const web = path.join(tmpDir, 'web');
-    fs.mkdirSync(path.join(backend, 'internal/handlers'), { recursive: true });
-    fs.mkdirSync(path.join(web, 'src/pages'), { recursive: true });
-    fs.writeFileSync(path.join(backend, 'internal/handlers/routes.go'), GIN_ROUTES);
-    fs.writeFileSync(
-      path.join(web, 'src/pages/AdminMatchesPage.tsx'),
-      `const API_BASE = import.meta.env.VITE_API_BASE;
-
-export async function handleUnfinalize(seasonId: string, roundId: string) {
-  await fetch(\`\${API_BASE}/api/v1/admin/seasons/\${seasonId}/rounds/\${roundId}/unfinalize\`, {
-    method: 'POST',
-  });
-}
-`,
-    );
-
-    const extractor = new HttpRouteExtractor();
-    const contracts: StoredContract[] = [
-      ...(await extractor.extract(null, backend, repoHandle(backend, 'backend'))).map((c) => ({
-        ...c,
-        repo: 'backend',
-      })),
-      ...(await extractor.extract(null, web, repoHandle(web, 'web'))).map((c) => ({
-        ...c,
-        repo: 'web',
-      })),
-    ];
-
-    const { matched } = runExactMatch(contracts);
-    const link = matched.find(
-      (l) => l.contractId === 'http::POST::/api/v1/admin/seasons/{param}/rounds/{param}/unfinalize',
-    );
-    expect(link).toMatchObject({
-      from: { repo: 'web', symbolRef: { filePath: 'src/pages/AdminMatchesPage.tsx' } },
-      to: {
-        repo: 'backend',
-        symbolRef: { filePath: 'internal/handlers/routes.go', name: 'UnfinalizeRoundHandle' },
-      },
-      matchType: 'exact',
-    });
   });
 });

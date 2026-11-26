@@ -17,6 +17,7 @@ const selected = platform
       'product/embedding-input-isolation.ts',
       'product/fetch-wrapper-persistence.ts',
       'product/fts-extension-e2e.ts',
+      'product/git-working-tree.ts',
       'product/ignore-and-skip-e2e.ts',
       'product/local-import-worker-parity.ts',
       'product/mcp-refresh-index-e2e.ts',

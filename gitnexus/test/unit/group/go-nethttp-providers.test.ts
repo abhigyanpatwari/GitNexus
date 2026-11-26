@@ -7,16 +7,10 @@
  * them, so the provider is method-agnostic (`*`) by default (#1670).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
+import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
 import Go from 'tree-sitter-go';
 import { GO_HTTP_PLUGIN } from '../../../src/core/group/extractors/http-patterns/go.js';
-import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
-import { runExactMatch } from '../../../src/core/group/matching.js';
-import type { RepoHandle, StoredContract } from '../../../src/core/group/types.js';
 
 const parser = new Parser();
 
@@ -194,74 +188,6 @@ describe('Go net/http providers', () => {
     expect([providers(body, 'client_test.go'), providers(body, 'client.go')]).toEqual([
       [],
       [{ method: '*', path: '/api/users', name: 'users' }],
-    ]);
-  });
-});
-
-describe('Go net/http provider ↔ fetch() consumer pairing', () => {
-  let tmpDir: string;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-go-nethttp-'));
-  });
-
-  afterEach(() => {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  const repoHandle = (repoPath: string, id: string): RepoHandle => ({
-    id,
-    path: id,
-    repoPath,
-    storagePath: path.join(repoPath, '.gitnexus'),
-  });
-
-  it('links consumers of every verb to a method-agnostic ServeMux route', async () => {
-    const backend = path.join(tmpDir, 'backend');
-    const web = path.join(tmpDir, 'web');
-    fs.mkdirSync(backend, { recursive: true });
-    fs.mkdirSync(web, { recursive: true });
-    fs.writeFileSync(
-      path.join(backend, 'server.go'),
-      `package main
-
-import "net/http"
-
-func users(w http.ResponseWriter, r *http.Request) {}
-
-func main() {
-\tmux := http.NewServeMux()
-\tmux.HandleFunc("/api/users", users)
-}
-`,
-    );
-    fs.writeFileSync(
-      path.join(web, 'client.ts'),
-      `export const listUsers = () => fetch('/api/users');
-export const createUser = (body: string) => fetch('/api/users', { method: 'POST', body });
-`,
-    );
-
-    const extractor = new HttpRouteExtractor();
-    const contracts: StoredContract[] = [
-      ...(await extractor.extract(null, backend, repoHandle(backend, 'backend'))).map((c) => ({
-        ...c,
-        repo: 'backend',
-      })),
-      ...(await extractor.extract(null, web, repoHandle(web, 'web'))).map((c) => ({
-        ...c,
-        repo: 'web',
-      })),
-    ];
-
-    const { matched } = runExactMatch(contracts);
-    expect(
-      matched
-        .map((l) => ({ consumer: l.from.repo, provider: l.to.repo, contractId: l.contractId }))
-        .sort((a, b) => a.contractId.localeCompare(b.contractId)),
-    ).toEqual([
-      { consumer: 'web', provider: 'backend', contractId: 'http::GET::/api/users' },
-      { consumer: 'web', provider: 'backend', contractId: 'http::POST::/api/users' },
     ]);
   });
 });

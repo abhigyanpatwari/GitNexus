@@ -54,7 +54,9 @@ function startOfDeclaration(node) {
   ) {
     const prefix = Array.from(node.modifiers ?? []).filter(
       (modifier) =>
-        modifier.kind === SyntaxKind.ExportKeyword || modifier.kind === SyntaxKind.DefaultKeyword,
+        modifier.kind === SyntaxKind.ExportKeyword ||
+        modifier.kind === SyntaxKind.DefaultKeyword ||
+        modifier.kind === SyntaxKind.DeclareKeyword,
     );
     if (prefix.length) return skipTrivia(node.getSourceFile().text, prefix.at(-1).end);
   }
@@ -232,7 +234,12 @@ function reportProject(
 
     function edge(kind, from, to, site) {
       if (to && files.has(to.getSourceFile().fileName)) {
-        const target = identity(root, to);
+        // The graph publishes one callable node for an overloaded free function.
+        // Direct calls still carry their checker-selected overload in CALLS.sites.
+        const target =
+          kind === 'CALLBACK_TARGETS' && to.kind === SyntaxKind.FunctionDeclaration
+            ? graphIdentity(root, to, project)
+            : identity(root, to);
         result[kind].edges.push({
           from: graphIdentity(root, from, project),
           to: graphIdentity(root, to, project),
@@ -454,7 +461,12 @@ function reportProject(
       } else if (
         node.kind === SyntaxKind.BinaryExpression &&
         node.left.kind === SyntaxKind.Identifier &&
-        node.operatorToken.kind === SyntaxKind.EqualsToken
+        [
+          SyntaxKind.EqualsToken,
+          SyntaxKind.QuestionQuestionEqualsToken,
+          SyntaxKind.BarBarEqualsToken,
+          SyntaxKind.AmpersandAmpersandEqualsToken,
+        ].includes(node.operatorToken.kind)
       ) {
         assignments.push([node.left, node.right]);
       }

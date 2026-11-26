@@ -1,17 +1,20 @@
+import { createTestEnvironment } from '../support/environment.js';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it } from 'node:test';
+import { expect } from 'expect';
 
 import {
   countScanCandidates,
   walkRepositoryPaths,
-} from '../../src/core/ingestion/filesystem-walker.js';
+} from '../../../../src/core/ingestion/filesystem-walker.js';
 
 // #3524: refresh_index admits a rebuild from this count of the working tree,
 // so it must see what analyze's scan sees, and stop once it passes the limit.
 
+const environment = createTestEnvironment();
 let root: string;
 
 async function write(relativePath: string, content = 'export const x = 1;\n'): Promise<void> {
@@ -21,7 +24,7 @@ async function write(relativePath: string, content = 'export const x = 1;\n'): P
 }
 
 beforeEach(async () => {
-  vi.stubEnv('GITNEXUS_INCLUDE_DOT_DIRS', undefined);
+  environment.set('GITNEXUS_INCLUDE_DOT_DIRS', undefined);
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-scan-count-'));
   await write('src/a.ts');
   await write('src/b.ts');
@@ -33,7 +36,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  vi.unstubAllEnvs();
+  environment.restore();
   await fs.rm(root, { recursive: true, force: true });
 });
 

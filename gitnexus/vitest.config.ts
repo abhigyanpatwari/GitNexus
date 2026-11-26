@@ -99,7 +99,6 @@ export default defineConfig({
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
-            'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
@@ -130,7 +129,6 @@ export default defineConfig({
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
             'test/integration/fts-fullfile-search.test.ts',
-            'test/integration/fts-cjk-segmentation-search.test.ts',
             'test/integration/augmentation.test.ts',
             'test/integration/staleness-and-stability.test.ts',
             'test/integration/lbug-lock-retry.test.ts',
@@ -211,7 +209,6 @@ export default defineConfig({
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
             'test/integration/analyze-dirty-snapshot.test.ts',
             'test/integration/dangling-owner-edges.test.ts',
-            'test/integration/class-expression-owners.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
             'test/integration/skip-fts.test.ts',
@@ -242,7 +239,6 @@ export default defineConfig({
             'test/integration/search-pool.test.ts',
             'test/integration/fts-description-search.test.ts',
             'test/integration/fts-fullfile-search.test.ts',
-            'test/integration/fts-cjk-segmentation-search.test.ts',
             'test/integration/augmentation.test.ts',
             'test/integration/staleness-and-stability.test.ts',
             'test/integration/lbug-lock-retry.test.ts',
@@ -269,7 +265,6 @@ export default defineConfig({
             'test/integration/group/sync-extraction-lease.test.ts',
             'test/integration/group/graphql-resolve-symbol.test.ts',
             'test/integration/skills-e2e.test.ts',
-            'test/integration/fts-extension-e2e.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
             'test/integration/lbug-multiwriter-deadlock.test.ts',
             'test/integration/extension-binary-real.test.ts',
@@ -296,12 +291,7 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'cli-e2e',
-          include: [
-            'test/integration/skills-e2e.test.ts',
-            // Spawns the real CLI per test; runs sequentially (fileParallelism:
-            // false) so it doesn't aggravate the under-load timeout-flake class.
-            'test/integration/fts-extension-e2e.test.ts',
-          ],
+          include: ['test/integration/skills-e2e.test.ts'],
           fileParallelism: false,
           sequence: { groupOrder: 2 },
         },

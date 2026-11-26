@@ -56,34 +56,6 @@ describe('detect_changes EOL filtering', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
-
-  it('suppresses CRLF-only changes but retains other whitespace changes', () => {
-    const repoDir = mkdtempSync(path.join(tmpdir(), 'gitnexus-detect-eol-'));
-    try {
-      initGitRepo(repoDir);
-      writeFileSync(path.join(repoDir, 'sample.ts'), 'const first = 1;\r\nconst second = 2;\r\n');
-      commitAll(repoDir, 'initial');
-
-      writeFileSync(path.join(repoDir, 'sample.ts'), 'const first = 1;\nconst second = 2;\n');
-      const diffArgs = diffArgsFor('unstaged');
-      expect(
-        execFileSync('git', diffArgs, {
-          cwd: repoDir,
-          encoding: 'utf8',
-        }),
-      ).toBe('');
-
-      writeFileSync(path.join(repoDir, 'sample.ts'), 'const first = 1;\n  const second = 2;\n');
-      expect(
-        execFileSync('git', diffArgs, {
-          cwd: repoDir,
-          encoding: 'utf8',
-        }),
-      ).toContain('+  const second = 2;');
-    } finally {
-      rmSync(repoDir, { recursive: true, force: true });
-    }
-  });
 });
 
 /**

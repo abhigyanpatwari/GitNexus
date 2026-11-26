@@ -1,7 +1,7 @@
 import { SignatureKind, SymbolFlags } from 'typescript/unstable/sync';
 import { SyntaxKind } from 'typescript/unstable/ast';
 
-export function implementationParameters(project, selected) {
+function implementationOf(project, selected) {
   let implementation = selected;
   if (!selected.body && selected.kind === SyntaxKind.Constructor) {
     implementation = selected.parent.members.find(
@@ -13,7 +13,11 @@ export function implementationParameters(project, selected) {
       .map((declaration) => declaration.resolve(project))
       .find((declaration) => declaration.body);
   }
-  return Array.from((implementation ?? selected).parameters).filter(
+  return implementation;
+}
+
+export function implementationParameters(project, selected) {
+  return Array.from((implementationOf(project, selected) ?? selected).parameters).filter(
     (parameter) => parameter.name?.getText() !== 'this',
   );
 }
@@ -47,6 +51,7 @@ export function callbackTargets(project, calls, assignments, invocations, declar
   for (const { parameter, caller, site } of invocations) {
     const pending = [parameter.name];
     const visited = new Set();
+    const targets = new Set();
     while (pending.length) {
       const expression = pending.pop();
       if (expression.kind === SyntaxKind.Identifier) {
@@ -92,8 +97,12 @@ export function callbackTargets(project, calls, assignments, invocations, declar
         checker.getTypeAtLocation(expression),
         SignatureKind.Call,
       )) {
-        const target = signature.declaration?.resolve(project);
-        if (target?.body) record(caller, target, site);
+        const declaration = signature.declaration?.resolve(project);
+        const target = declaration && implementationOf(project, declaration);
+        if (target?.body && !targets.has(declarationKey(target))) {
+          targets.add(declarationKey(target));
+          record(caller, target, site);
+        }
       }
     }
   }
