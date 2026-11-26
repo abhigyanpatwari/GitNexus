@@ -280,27 +280,6 @@ const LBUG_NATIVE = [
   // environment for #2409 was Windows, so the write pattern must be proven
   // on the windows-latest native addon, not just Ubuntu.
   'test/integration/lbug-delete-nodes-for-files.test.ts',
-  // #2409 defect 2: dirty-flag recovery parks lbug.wal/.shadow (rename next
-  // to a live native DB, rm-then-rename over an existing parked copy) before
-  // any open — rename semantics are exactly what differs on Windows.
-  'test/unit/incremental-dirty-recovery.test.ts',
-  // #2623: the incremental writeback must load VECTOR before the CodeEmbedding
-  // join-delete, and the blocked path must escalate instead of crashing. The
-  // win32 VECTOR gate was removed in the same PR, so this ordering must be
-  // proven on the windows-latest native addon, not just Ubuntu. Budget: ~25s
-  // on Linux → expect ~2min on the slowest Windows shard.
-  'test/unit/incremental-vector-extension-ordering.test.ts',
-  // #2841: the FTS half of that same gate, plus the both-extensions-blocked
-  // case — and it needs this matrix for two reasons the VECTOR sibling above
-  // does not cover. The reported failure environment is a machine where the
-  // extension stopped LOADING, which is the #2374 class and Windows-reported
-  // (also covered by TypeScript platform conformance), so the
-  // FTS-unavailable branch has to run on a real Windows/macOS runner rather
-  // than only on Ubuntu where FTS always loads. And its both-blocked case is
-  // gated on GITNEXUS_REQUIRE_VECTOR=1, which ci-tests.yml requires in both
-  // coverage and platform jobs so an unavailable VECTOR fails loudly. Budget: four real analyze runs, so expect it to sit alongside the
-  // VECTOR sibling's ~87s Windows measurement.
-  'test/unit/incremental-index-extension-dml-gate.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real

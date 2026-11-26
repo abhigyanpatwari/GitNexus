@@ -19,30 +19,37 @@
  */
 
 import { writeFile, readFile } from 'fs/promises';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, it } from 'node:test';
+import { expect } from 'expect';
+import assert from 'node:assert/strict';
+import { isolateAnalysisHome } from '../support/analysis-home.js';
+import { createTestEnvironment } from '../support/environment.js';
 import {
   getStoragePaths,
   saveMeta,
   loadMeta,
   type RepoMeta,
-} from '../../src/storage/repo-manager.js';
-import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
+} from '../../../../dist/storage/repo-manager.js';
+import { setupMiniRepo as setupSharedMiniRepo } from '../../../../test/helpers/mini-repo.js';
 // Shared embedding-seed helper (this shipping review, FIX 8) — the KTD9
 // zero-vector seeding pattern previously lived here as a divergent copy of
 // incremental-orchestration.test.ts's (a helper module has no
 // describe-registration problem, unlike importing a sibling test file).
-import { seedEmbeddingsForFiles } from '../helpers/embedding-seed.js';
+import { seedEmbeddingsForFiles } from '../../../../test/helpers/embedding-seed.js';
+
+await isolateAnalysisHome();
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-dirty-rec-');
 
 async function parkCrashSidecarsAndRebuild(options?: { alwaysSpill?: boolean }) {
-  vi.stubEnv('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000');
+  const environment = createTestEnvironment();
+  environment.set('GITNEXUS_WORKER_READY_TIMEOUT_MS', '60000');
   if (options?.alwaysSpill) {
-    vi.stubEnv('GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT', '0');
+    environment.set('GITNEXUS_EMBEDDING_CACHE_IN_MEMORY_LIMIT', '0');
   }
   const repo = await setupMiniRepo();
   try {
-    const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+    const { runFullAnalysis } = await import('../../../../dist/core/run-analyze.js');
     await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
     // Seed real embeddings BEFORE the tamper (tri-review 4669518496 / U5):
@@ -66,9 +73,10 @@ async function parkCrashSidecarsAndRebuild(options?: { alwaysSpill?: boolean }) 
     // WAL above the tiny-orphan threshold — the state the sidecar
     // preflight deliberately leaves in place for engine replay.
     const meta = await loadMeta(storagePath);
+    assert.ok(meta, 'Expected the initial index metadata');
     const tampered: RepoMeta = {
-      ...meta!,
-      stats: { ...meta!.stats, embeddings: seededNodeIds.length },
+      ...meta,
+      stats: { ...meta.stats, embeddings: seededNodeIds.length },
       incrementalInProgress: {
         startedAt: Date.now() - 60_000,
         toWriteCount: 12,
@@ -120,24 +128,29 @@ async function parkCrashSidecarsAndRebuild(options?: { alwaysSpill?: boolean }) 
     // round-trip (the strongest signal the preservation open really ran:
     // the DB was wiped, so these rows can only come from the cache load).
     const after = await loadMeta(storagePath);
-    expect(after!.incrementalInProgress).toBeUndefined();
-    expect(after!.stats?.embeddings).toBe(seededNodeIds.length);
+    assert.ok(after, 'Expected the recovered index metadata');
+    expect(after.incrementalInProgress).toBeUndefined();
+    expect(after.stats?.embeddings).toBe(seededNodeIds.length);
   } finally {
-    vi.unstubAllEnvs();
+    environment.restore();
     await repo.cleanup();
   }
 }
 
 describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () => {
-  afterEach(() => {
-    vi.unstubAllEnvs();
-  });
+  it(
+    'parks the crashed run WAL/shadow sidecars before reopening, then rebuilds clean',
+    { timeout: 300_000 },
+    async () => {
+      await parkCrashSidecarsAndRebuild();
+    },
+  );
 
-  it('parks the crashed run WAL/shadow sidecars before reopening, then rebuilds clean', async () => {
-    await parkCrashSidecarsAndRebuild();
-  }, 300_000);
-
-  it('restores seeded embeddings from a spill after wipe when the in-memory limit is 0', async () => {
-    await parkCrashSidecarsAndRebuild({ alwaysSpill: true });
-  }, 300_000);
+  it(
+    'restores seeded embeddings from a spill after wipe when the in-memory limit is 0',
+    { timeout: 300_000 },
+    async () => {
+      await parkCrashSidecarsAndRebuild({ alwaysSpill: true });
+    },
+  );
 });

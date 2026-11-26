@@ -94,6 +94,9 @@ jobs:
       - name: Check persisted TypeScript behavior and compiler bindings
         if: matrix.language == 'TypeScript'
         working-directory: gitnexus
+        env:
+          GITNEXUS_REQUIRE_FTS: '1'
+          GITNEXUS_REQUIRE_VECTOR: '1'
         run: node tools/compiler-conformance/typescript/check-products.mjs --platform
 
   file-result-reuse-benchmark:
