@@ -10,6 +10,7 @@ import {
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import {
+  findAllCallableBindingsInScope,
   findClassBindingInScope,
   findReceiverTypeBinding,
 } from '../../scope-resolution/scope/walkers.js';
@@ -21,6 +22,7 @@ const receiverCalls = new WeakMap<ReferenceSite, ReferenceSite>();
 type OverloadUse = { argument: Argument; call: ReferenceSite; owners: ReadonlySet<string> };
 type AssignmentUse = {
   consumers: OverloadUse[];
+  producer?: { call: ReferenceSite; candidates: ReadonlySet<string> };
   chainedReceiver?: { outer: ReferenceSite; inner: ReferenceSite };
 };
 const usesByAssignment = new WeakMap<CallResultAssignmentSite, AssignmentUse>();
@@ -43,9 +45,12 @@ function rangeKey(range: Range): string {
 export function indexTsCallArguments(files: ParsedFile[]): void {
   canonicalizeEcmaWorkspaceBindings(files);
   const overloads = new Map<string, Set<string>>();
+  const overloadedFunctions = new Set<string>();
   for (const file of files) {
     const seen = new Set<string>();
+    let hasFreeSignatures = false;
     for (const def of file.localDefs) {
+      if (def.type === 'Function' && def.isOverloadSignature) hasFreeSignatures = true;
       if (def.type !== 'Method' || !def.isOverloadSignature || !def.qualifiedName || !def.ownerId)
         continue;
       const key = def.ownerId + ':' + def.qualifiedName;
@@ -57,10 +62,20 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
       }
       seen.add(key);
     }
+    if (hasFreeSignatures) {
+      for (const scope of file.scopes) {
+        for (const bindings of scope.bindings.values()) {
+          if (bindings.some(({ def }) => def.type === 'Function' && def.isOverloadSignature)) {
+            for (const { def } of bindings)
+              if (def.type === 'Function') overloadedFunctions.add(def.nodeId);
+          }
+        }
+      }
+    }
   }
-  if (!overloads.size) return;
+  if (!overloads.size && !overloadedFunctions.size) return;
   for (const file of files) {
-    if (!file.callableFlowSites?.length) continue;
+    if (!file.callableFlowSites?.length && !file.callResultAssignmentSites?.length) continue;
     const calls = new Map<string, ReferenceSite>();
     const usesByName = new Map<string, OverloadUse[]>();
     for (const site of file.referenceSites) {
@@ -69,7 +84,7 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
       argumentsByCall.delete(site);
       receiverCalls.delete(site);
     }
-    for (const fact of file.callableFlowSites) {
+    for (const fact of file.callableFlowSites ?? []) {
       if (fact.kind !== 'argument' || fact.source.expressionKind !== 'binding') continue;
       const call = calls.get(rangeKey(fact.callSite));
       if (!call || call.argumentTypes?.[fact.parameterIndex] !== '') continue;
@@ -84,14 +99,17 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
       else usesByName.set(fact.source.name, [use]);
     }
     for (const assignment of file.callResultAssignmentSites ?? []) {
+      const outer = calls.get(rangeKey(assignment.callSite));
+      const candidates =
+        outer?.callForm === 'free' ? overloadedFunctions : outer && overloads.get(outer.name);
       const uses = usesByName.get(assignment.lhs);
-      if (!uses) {
+      if (!uses && !candidates?.size) {
         usesByAssignment.delete(assignment);
         continue;
       }
-      const entry: AssignmentUse = { consumers: uses };
+      const entry: AssignmentUse = { consumers: uses ?? [] };
+      if (outer && candidates?.size) entry.producer = { call: outer, candidates };
       usesByAssignment.set(assignment, entry);
-      const outer = calls.get(rangeKey(assignment.callSite));
       if (!outer) continue;
       const receiver = outer.explicitReceiver?.name;
       if (!receiver?.endsWith(')')) continue;
@@ -114,44 +132,63 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
   }
 }
 
+function matchesOverloadOwner(
+  call: ReferenceSite,
+  owners: ReadonlySet<string>,
+  indexes: ScopeResolutionIndexes,
+): boolean {
+  const receiver = call.explicitReceiver?.name;
+  if (!receiver) return false;
+  const type = findReceiverTypeBinding(call.inScope, receiver, indexes, {
+    purpose: 'value',
+    position: call.atRange,
+  });
+  const owner =
+    type &&
+    findClassBindingInScope(type.declaredAtScope, type.rawName, indexes, undefined, {
+      purpose: type.lookupPurpose ?? 'type',
+      position: type.lookupPosition,
+      uniqueQualifiedNameFallback: false,
+    });
+  return (
+    !!owner &&
+    [owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)].some((id) => owners.has(id))
+  );
+}
+
 export const tsCallResultAssignmentApplies: ScopeResolver['callResultAssignmentApplies'] = (
   assignment,
   indexes,
 ) => {
   const entry = usesByAssignment.get(assignment);
   if (!entry) return false;
-  const applies = entry.consumers.some(({ argument: { source }, call, owners }) => {
-    const receiver = call.explicitReceiver?.name;
-    if (!receiver) return false;
-    const type = findReceiverTypeBinding(call.inScope, receiver, indexes, {
-      purpose: 'value',
-      position: call.atRange,
-    });
-    const owner =
-      type &&
-      findClassBindingInScope(type.declaredAtScope, type.rawName, indexes, undefined, {
-        purpose: type.lookupPurpose ?? 'type',
-        position: type.lookupPosition,
-        uniqueQualifiedNameFallback: false,
-      });
-    if (
-      !owner ||
-      ![owner.nodeId, ...indexes.methodDispatch.mroFor(owner.nodeId)].some((id) => owners.has(id))
-    )
+  const producer = entry.producer;
+  const overloadedReturn =
+    producer &&
+    (producer.call.callForm === 'free'
+      ? findAllCallableBindingsInScope(producer.call.inScope, producer.call.name, indexes, {
+          purpose: 'value',
+          position: producer.call.atRange,
+          callee: true,
+        }).some((def) => producer.candidates.has(def.nodeId))
+      : matchesOverloadOwner(producer.call, producer.candidates, indexes));
+  const applies =
+    overloadedReturn ||
+    entry.consumers.some(({ argument: { source }, call, owners }) => {
+      if (!matchesOverloadOwner(call, owners, indexes)) return false;
+      let scope = indexes.scopeTree.getScope(source.inScope);
+      while (scope) {
+        if (scope.id === assignment.inScope) return true;
+        if (
+          scope.bindings.has(source.name) ||
+          scope.typeBindings.has(source.name) ||
+          scope.lexicalNames?.has(source.name)
+        )
+          return false;
+        scope = indexes.scopeTree.getParent(scope.id);
+      }
       return false;
-    let scope = indexes.scopeTree.getScope(source.inScope);
-    while (scope) {
-      if (scope.id === assignment.inScope) return true;
-      if (
-        scope.bindings.has(source.name) ||
-        scope.typeBindings.has(source.name) ||
-        scope.lexicalNames?.has(source.name)
-      )
-        return false;
-      scope = indexes.scopeTree.getParent(scope.id);
-    }
-    return false;
-  });
+    });
   if (applies && entry.chainedReceiver) {
     const { outer, inner } = entry.chainedReceiver;
     receiverCalls.set(outer, inner);
