@@ -5,6 +5,11 @@ This covers what runs **inside this PR** (extractors + manifest) and
 the downstream handoff to the bridge storage (PR #795) and
 cross-impact query (PR #606).
 
+Dubbo groups can opt in with `detect.dubbo: true`. The extractor shares an
+interface catalog across members, then anchors each endpoint to its member's
+real graph symbols before ordinary exact matching and bridge persistence.
+See [Dubbo groups](DUBBO.md) for supported forms and limits.
+
 ## High-level overview
 
 ```mermaid

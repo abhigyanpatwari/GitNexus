@@ -15,6 +15,7 @@ export const productionPaths = [
 ];
 
 const registries = new Set([
+  'gitnexus/src/core/group/extractors/dubbo-patterns/index.ts',
   'gitnexus-shared/src/languages.ts',
   'gitnexus-shared/src/language-detection.ts',
   'gitnexus-shared/src/scope-resolution/language-classification.ts',

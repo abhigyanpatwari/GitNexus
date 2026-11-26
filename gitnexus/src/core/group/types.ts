@@ -5,11 +5,12 @@ export type ContractType =
   | 'graphql'
   | 'grpc'
   | 'thrift'
+  | 'dubbo'
   | 'topic'
   | 'lib'
   | 'custom'
   | 'include';
-export type ManifestContractType = Exclude<ContractType, 'graphql'>;
+export type ManifestContractType = Exclude<ContractType, 'graphql' | 'dubbo'>;
 export type MatchType = 'exact' | 'manifest' | 'wildcard';
 export type ContractRole = 'provider' | 'consumer';
 
@@ -37,6 +38,7 @@ export interface DetectConfig {
   graphql?: boolean;
   grpc: boolean;
   thrift: boolean;
+  dubbo?: boolean;
   topics: boolean;
   includes: boolean;
   workspace_deps: boolean;
