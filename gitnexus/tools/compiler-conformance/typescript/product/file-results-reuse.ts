@@ -1,0 +1,198 @@
+import { after, afterEach, describe, it, mock } from 'node:test';
+import { expect } from 'expect';
+import { registerCases } from '../support/cases.mjs';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import type { runPipelineFromRepo } from '../../../../src/core/ingestion/pipeline.js';
+import { graphIdentity } from '../../../../test/helpers/graph-identity.js';
+import * as fileResultCodec from '../../../../src/storage/file-result-codec.js';
+let rejectInterning = false;
+let rejectedSections = 0;
+const decodeFileResultSection: typeof fileResultCodec.decodeFileResultSection = (...args) => {
+  if (rejectInterning && args[3] === 'facts' && args[4]) {
+    rejectedSections++;
+    return undefined;
+  }
+  return fileResultCodec.decodeFileResultSection(...args);
+};
+const codecMock = mock.module(
+  new URL('../../../../src/storage/file-result-codec.ts', import.meta.url).href,
+  {
+    namedExports: { ...fileResultCodec, decodeFileResultSection },
+  },
+);
+after(() => codecMock.restore());
+const { createFileResultsFixture } =
+  await import('../../../../test/helpers/file-results-fixture.js');
+const roots: string[] = [];
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
+});
+async function fixture(files: Record<string, string>) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-file-reuse-'));
+  roots.push(root);
+  return createFileResultsFixture(root, files);
+}
+const rows = (run: Awaited<ReturnType<typeof runPipelineFromRepo>>) => graphIdentity(run.graph);
+describe('per-file parse-result reuse', () => {
+  it(
+    'preserves fresh facts and cache hits when optional string interning fails',
+    { timeout: 120_000 },
+    async () => {
+      const f = await fixture({
+        'a.ts': 'export function value() { return 1; }',
+        'b.ts': "import { value } from './a'; export function run() { return value(); }",
+      });
+      const control = await f.run('none');
+      rejectInterning = true;
+      try {
+        const cold = await f.run('cold');
+        expect(cold.reparsedFileCount).toBe(2);
+        expect(rows(cold)).toEqual(rows(control));
+        const warm = await f.run('reuse');
+        expect(warm.reparsedFileCount).toBe(0);
+        expect(warm.parseCacheHitFileCount).toBe(2);
+        expect(warm.usedWorkerPool).toBe(false);
+        expect(rows(warm)).toEqual(rows(control));
+        expect(rejectedSections).toBeGreaterThan(0);
+      } finally {
+        rejectInterning = false;
+      }
+    },
+  );
+  it(
+    'keeps zero-output files correct when they require another worker dispatch',
+    { timeout: 120_000 },
+    async () => {
+      const f = await fixture({
+        'normal.ts': 'export function normal() { return 1; }',
+        'template.vue': '<template><div>Hello</div></template>',
+      });
+      const cold = await f.run('cold');
+      const warm = await f.run('reuse');
+      expect(rows(warm)).toEqual(rows(cold));
+      expect(warm.reparsedFileCount).toBe(1);
+      expect(warm.parseCacheHitFileCount).toBe(1);
+      expect(warm.usedWorkerPool).toBe(true);
+    },
+  );
+  if (process.platform !== 'win32')
+    it(
+      'keeps CR/LF filenames usable through the real worker raw fallback',
+      { timeout: 120_000 },
+      async () => {
+        const f = await fixture({
+          'normal.ts': 'export function normal() { return 1; }',
+          'we\nird.ts': 'export function newline() { return 2; }',
+          'we\rird.ts': 'export function carriageReturn() { return 3; }',
+        });
+        const control = await f.run('none');
+        const cold = await f.run('cold');
+        expect(rows(cold)).toEqual(rows(control));
+        const warm = await f.run('reuse');
+        expect(rows(warm)).toEqual(rows(control));
+        expect(warm.reparsedFileCount).toBe(2);
+        expect(warm.parseCacheHitFileCount).toBe(1);
+      },
+    );
+  it(
+    'reparses only the edited file in a shared chunk, across additions, renames and packing changes',
+    { timeout: 120_000 },
+    async () => {
+      const names = ['file0.ts', 'file13.ts', 'file35.ts', 'file135.ts'];
+      const f = await fixture(
+        Object.fromEntries(
+          names.map((name, i) => [name, `export function value${i}() { return ${i}; }`]),
+        ),
+      );
+      const cold = await f.run('cold');
+      expect(cold.reparsedFileCount).toBe(4);
+      const warm = await f.run('reuse');
+      expect(warm.reparsedFileCount).toBe(0);
+      expect(warm.usedWorkerPool).toBe(false);
+      expect(rows(warm)).toEqual(rows(cold));
+      await fs.appendFile(
+        path.join(f.repo, names[0]),
+        '\nexport function newlyAdded() { return value0(); }',
+      );
+      const edit = await f.run('reuse');
+      expect(edit.reparsedFileCount).toBe(1);
+      expect(edit.parseCacheHitFileCount).toBe(3);
+      expect([...edit.graph.nodes].some((node) => node.properties.name === 'newlyAdded')).toBe(
+        true,
+      );
+      expect(rows(edit)).toEqual(rows(await f.run('none')));
+      await fs.writeFile(path.join(f.repo, 'added.ts'), 'export const added = 1;');
+      expect((await f.run('reuse')).reparsedFileCount).toBe(1);
+      await fs.rm(path.join(f.repo, 'added.ts'));
+      expect((await f.run('reuse')).reparsedFileCount).toBe(0);
+      await fs.rename(path.join(f.repo, names[1]), path.join(f.repo, 'renamed.ts'));
+      const renamed = await f.run('reuse');
+      expect(renamed.reparsedFileCount).toBe(1);
+      const repacked = await f.run('reuse', false, true);
+      expect(repacked.reparsedFileCount).toBe(0);
+      expect(repacked.usedWorkerPool).toBe(false);
+      expect(rows(repacked)).toEqual(rows(renamed));
+    },
+  );
+  registerCases(
+    it,
+    [false, true],
+    'preserves every graph row on cold, warm and mixed polyglot runs with PDG=%s',
+    async (pdg: boolean) => {
+      const f = await fixture({
+        'a.ts': 'export class Base { value() { return 1; } }',
+        'b.ts':
+          "import { Base } from './a'; export class Child extends Base { run() { return this.value(); } }",
+        'view.tsx': 'export function View() { return <div>Hello</div>; }',
+        'empty.ts': '',
+        'service.py': 'def value():\n    return 1\n',
+        'api.py':
+          'from fastapi import APIRouter\nfrom service import value\nrouter = APIRouter()\n@router.get("/items")\ndef items():\n    return value()\n',
+        'main.go': 'package main\nfunc run() int { return value() }\n',
+        'value.go': 'package main\nfunc value() int { return 1 }\n',
+      });
+      const full = await f.run('none', pdg);
+      expect(rows(await f.run('cold', pdg))).toEqual(rows(full));
+      const warm = await f.run('reuse', pdg);
+      expect(warm.reparsedFileCount).toBe(0);
+      expect(warm.usedWorkerPool).toBe(false);
+      expect(rows(warm)).toEqual(rows(full));
+      await fs.writeFile(
+        path.join(f.repo, 'a.ts'),
+        'export class Base { renamed() { return 2; } }',
+      );
+      await fs.writeFile(path.join(f.repo, 'service.py'), 'def replacement():\n    return 2\n');
+      const mixed = await f.run('reuse', pdg);
+      expect(mixed.reparsedFileCount).toBe(2);
+      expect(mixed.parseCacheHitFileCount).toBe(6);
+      expect(rows(mixed)).toEqual(rows(await f.run('none', pdg)));
+      expect(rows(mixed)).not.toEqual(rows(full));
+      expect(mixed.progress).toEqual([...mixed.progress].sort((a, b) => a - b));
+    },
+    120000,
+  );
+  registerCases(
+    it,
+    ['facts', 'scopes'],
+    'reparses only a file whose %s section is corrupt',
+    async (section: string) => {
+      const f = await fixture({ 'a.ts': 'export const a = 1;', 'b.ts': 'export const b = 2;' });
+      const cold = await f.run('cold');
+      const directory = path.join(f.live, 'parse-cache', 'files');
+      const index = JSON.parse(await fs.readFile(path.join(directory, 'index.json'), 'utf8'));
+      const ref = index.records.find((r: { path: string }) => r.path === 'a.ts');
+      const pack = path.join(directory, ref.pack),
+        bytes = await fs.readFile(pack);
+      bytes[ref.offset + (section === 'scopes' ? ref.factsLength : 0) + 8] ^= 255;
+      await fs.writeFile(pack, bytes);
+      const repaired = await f.run('reuse');
+      expect(repaired.reparsedFileCount).toBe(1);
+      expect(repaired.parseCacheHitFileCount).toBe(1);
+      expect(rows(repaired)).toEqual(rows(cold));
+      expect((await f.run('reuse')).reparsedFileCount).toBe(0);
+    },
+    120000,
+  );
+});
