@@ -440,6 +440,24 @@ describe('Header', () => {
       }
     });
 
+    it('pauses polling for Retry-After when rate-limited, then recovers', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockRejectedValueOnce(new BackendError('Too many requests', 429, 'rate_limited', 10_000))
+        .mockResolvedValue([runningJob()]);
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS * 3));
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId('repo-status-analyzing')).not.toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
+    });
+
     it('names the running job when a re-analyze is rejected with 409', async () => {
       vi.mocked(fetchActiveAnalyzeJobs)
         .mockResolvedValueOnce([])
