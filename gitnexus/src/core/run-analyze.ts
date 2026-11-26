@@ -3207,9 +3207,15 @@ async function runFullAnalysisInner(
             (rel) => existingMeta.fileHashes?.[rel] !== undefined,
           );
           const currentDirtyHashes = await computeFileHashes(repoPath, pathsToCheck);
-          indexedContentChanged = pathsToCheck.some(
-            (rel) => currentDirtyHashes.get(rel) !== existingMeta.fileHashes?.[rel],
-          );
+          indexedContentChanged =
+            pathsToCheck.some(
+              (rel) => currentDirtyHashes.get(rel) !== existingMeta.fileHashes?.[rel],
+            ) ||
+            indexedDirtyPaths.some(
+              (rel) =>
+                existingMeta.fileHashes?.[rel] === undefined &&
+                existsSync(path.join(repoPath, rel)),
+            );
           // A mode-only dirty snapshot can leave a coverage receipt even though
           // restoring the mode makes porcelain clean and content hashes equal.
           // Clear that receipt before taking the fast path; otherwise shared
@@ -6228,7 +6234,11 @@ async function runFullAnalysisInner(
             dirtyPaths: (
               listWorkingTreeDirtyPaths(repoPath) ?? Object.keys(newFileHashesRecord)
             ).filter(
-              (rel) => newFileHashesRecord[rel] !== undefined && !isGitNexusManagedPath(rel),
+              // A tracked path can be absent from a sparse checkout. Keep that
+              // absence as evidence so restoring it at the same HEAD triggers indexing.
+              (rel) =>
+                !isGitNexusManagedPath(rel) &&
+                (newFileHashesRecord[rel] !== undefined || !existsSync(path.join(repoPath, rel))),
             ),
           }
         : undefined,

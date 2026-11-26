@@ -120,9 +120,7 @@ export const createTsJsClassExtractor = (config: ClassExtractionConfig) => {
 const ownerExtractor = createTsJsClassExtractor(typescriptClassConfig);
 
 /** Use the definition's qualified name for both the owner and its member IDs. */
-export const resolveTsJsContainerTypeOwner: NonNullable<
-  LanguageProvider['resolveContainerTypeOwner']
-> = (node) => {
+export const resolveTsJsContainerTypeOwner = ((node: SyntaxNode) => {
   const owner = ownerExtractor.extract(node);
   return owner === null ? null : { name: owner.qualifiedName, label: owner.type };
-};
+}) satisfies NonNullable<LanguageProvider['resolveContainerTypeOwner']>;

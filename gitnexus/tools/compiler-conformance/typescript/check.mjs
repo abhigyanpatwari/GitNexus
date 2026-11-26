@@ -300,8 +300,8 @@ const manifest = JSON.parse(readFileSync(new URL('./projects.json', import.meta.
 export async function compareProject(root, options = {}, expectedDiagnostics = []) {
   const key = path.relative(fixturesDirectory, root).split(path.sep).join('/');
   const inventory = manifest.declarationInventory.includes(key);
-  const takesRuntimeEvidence = manifest.runtimeDispatch.includes(key);
-  const evidence = takesRuntimeEvidence ? { methods: [], unchecked: [] } : undefined;
+  const entryPoint = Object.hasOwn(manifest.runtimeDispatch, key) && manifest.runtimeDispatch[key];
+  const evidence = entryPoint ? { methods: [], unchecked: [] } : undefined;
   const methodFacts = manifest.methodFacts.includes(key);
   const propertyAccess = manifest.propertyAccess.includes(key);
   const reference = compilerReport(root, expectedDiagnostics, inventory, {
@@ -343,7 +343,7 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   // The observer also sees property reads, argument reads and other syntax.
   let runtimeCount = 0;
   if (evidence) {
-    const runtime = runtimeCalls(root, evidence);
+    const runtime = runtimeCalls(root, evidence, entryPoint);
     const exercised = new Set(runtime.sites.map(siteKey));
     compareReports(
       { producer: 'Node.js', sites: runtime.sites },

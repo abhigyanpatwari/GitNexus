@@ -19,7 +19,7 @@ function mergedMethodCollisions(
   if (!collisions) {
     const groups = new Map<string, SyntaxNode[]>();
     for (const declaration of owner.tree.rootNode.descendantsOfType('interface_declaration')) {
-      const name = resolveTsJsContainerTypeOwner(declaration, context.filePath)?.name;
+      const name = resolveTsJsContainerTypeOwner(declaration)?.name;
       if (!name) continue;
       const group = groups.get(name);
       if (group) group.push(declaration);

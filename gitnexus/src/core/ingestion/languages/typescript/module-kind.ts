@@ -10,6 +10,9 @@ type DeclarationScope = {
   commonJs: boolean;
   script: boolean;
   globalNames: string[];
+  scriptNames?: string[];
+  containsJsx?: boolean;
+  constructions?: { name: string; line: number; column: number; className: string }[];
 };
 
 export function declarationScope(channel: unknown): DeclarationScope | undefined {
@@ -25,6 +28,33 @@ export function declarationScope(channel: unknown): DeclarationScope | undefined
 
 let pending: { filePath: string; value: boolean | DeclarationScope } | undefined;
 
+export function recordImmutableConstruction(node: SyntaxNode, constructor: SyntaxNode | undefined) {
+  if (!pending || node.type !== 'variable_declarator' || constructor?.type !== 'identifier') return;
+  const annotation = node.childForFieldName('type')?.firstNamedChild;
+  if (
+    annotation?.type !== 'type_identifier' ||
+    annotation.text === constructor.text ||
+    node.parent?.childForFieldName('kind')?.type !== 'const'
+  )
+    return;
+  const name = node.childForFieldName('name');
+  if (name?.type !== 'identifier') return;
+  if (typeof pending.value === 'boolean') {
+    pending.value = {
+      kind: 'typescript-declarations',
+      commonJs: pending.value,
+      script: false,
+      globalNames: [],
+    };
+  }
+  (pending.value.constructions ??= []).push({
+    name: name.text,
+    line: node.startPosition.row + 1,
+    column: node.startPosition.column,
+    className: constructor.text,
+  });
+}
+
 export function withCommonJsModuleKind(emit: CaptureEmitter): CaptureEmitter {
   return (...args) => {
     pending = undefined;
@@ -39,8 +69,9 @@ export function recordCommonJsModuleKind(
 ): void {
   const commonJs = isCommonJsModule(root, filePath);
   pending = { filePath, value: commonJs };
-  const declarationFile = filePath.endsWith('.d.ts');
-  if (!declarationFile && !sourceText?.includes('global')) return;
+  const declarationFile = /\.d\.[cm]?ts$/.test(filePath);
+  const ordinarySource = /\.[cm]?tsx?$/.test(filePath);
+  if (!ordinarySource && !sourceText?.includes('global')) return;
   const statements = root.namedChildren;
   const externalModule =
     commonJs ||
@@ -48,38 +79,55 @@ export function recordCommonJsModuleKind(
     statements.some(
       (statement) =>
         statement?.type === 'import_statement' || statement?.type === 'export_statement',
-    );
-  const script = declarationFile && !externalModule;
+    ) ||
+    (sourceText?.includes('import') &&
+      root.descendantsOfType('meta_property').some((node) => node.firstChild?.type === 'import'));
+  if (externalModule && !sourceText?.includes('global')) return;
+  const script = !externalModule && ordinarySource;
   if (!script && !externalModule) return;
   const globalNames: string[] = [];
-  function recordDeclaration(node: SyntaxNode | null) {
+  const scriptNames: string[] = [];
+  function recordDeclaration(node: SyntaxNode | null, names: string[]) {
     if (!node) return;
     if (
       node.type === 'ambient_declaration' ||
       node.type === 'lexical_declaration' ||
       node.type === 'variable_declaration'
     ) {
-      for (const child of node.namedChildren) recordDeclaration(child);
+      for (const child of node.namedChildren) recordDeclaration(child, names);
       return;
     }
     const name = node.childForFieldName('name');
     if (name?.type === 'identifier' || name?.type === 'type_identifier') {
-      globalNames.push(`${name.startPosition.row + 1}:${name.startPosition.column}`);
+      names.push(`${name.startPosition.row + 1}:${name.startPosition.column}`);
     }
   }
   for (const statement of statements) {
     if (!statement) continue;
-    if (script) recordDeclaration(statement);
-    else if (
+    if (script) recordDeclaration(statement, declarationFile ? globalNames : scriptNames);
+    if (
+      (!script || !declarationFile) &&
       statement.type === 'ambient_declaration' &&
       statement.children.some((child) => child?.type === 'global')
     ) {
       const block = statement.namedChildren.find((child) => child?.type === 'statement_block');
-      for (const declaration of block?.namedChildren ?? []) recordDeclaration(declaration);
+      for (const declaration of block?.namedChildren ?? [])
+        recordDeclaration(declaration, globalNames);
     }
   }
   if (script || globalNames.length) {
-    pending.value = { kind: 'typescript-declarations', commonJs, script, globalNames };
+    pending.value = {
+      kind: 'typescript-declarations',
+      commonJs,
+      script,
+      globalNames,
+      ...(script && !declarationFile ? { scriptNames } : {}),
+      ...(script &&
+      /\.tsx$/.test(filePath) &&
+      root.descendantsOfType(['jsx_element', 'jsx_self_closing_element']).length
+        ? { containsJsx: true }
+        : {}),
+    };
   }
 }
 

@@ -133,6 +133,7 @@ describe('shared sibling store analyze (#3352)', () => {
       assert(shared);
       const head = git(main, 'rev-parse', 'HEAD').trim();
       git(wtA, 'update-index', '--skip-worktree', '--', 'a.ts');
+      await fs.rm(path.join(wtA, 'a.ts'));
       const layout = layoutOf(wtA);
       await seedSharedSlot(layout, wtA, () => {});
       expect(await loadMeta(layout.checkoutSlot)).toMatchObject({
@@ -143,10 +144,15 @@ describe('shared sibling store analyze (#3352)', () => {
       const privateMeta = await loadMeta(layout.checkoutSlot);
       expect(privateMeta?.lastCommit).toBe(head);
       expect(privateMeta?.graphPath).toBeUndefined();
+      expect(privateMeta?.fileHashes).not.toHaveProperty('a.ts');
+      expect(privateMeta?.indexCoverage?.dirtyPaths).toContain('a.ts');
       expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(true);
       git(wtA, 'update-index', '--no-skip-worktree', '--', 'a.ts');
+      git(wtA, 'restore', '--', 'a.ts');
       await analyze(wtA);
-      expect((await loadMeta(layout.checkoutSlot))?.graphPath).toBe(shared);
+      const restored = await loadMeta(layout.checkoutSlot);
+      expect(restored?.graphPath).toBe(shared);
+      expect(restored?.fileHashes?.['a.ts']).toBeTruthy();
       expect(existsSync(path.join(layout.checkoutSlot, 'lbug'))).toBe(false);
     },
   );

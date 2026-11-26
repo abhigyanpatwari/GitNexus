@@ -8,9 +8,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from '@babel/parser';
 
-// Only the two checked-in cast projects run JavaScript. The standalone compiler producer
-// never executes a subject project. The fixtures' process() function exercises both receivers.
-export function runtimeCalls(root, evidence) {
+// The dedicated runtime fixtures exercise calls with no compiler-selected declaration.
+export function runtimeCalls(root, evidence, entryPoint) {
+  assert.match(entryPoint, /^[A-Za-z_$][\w$]*$/, 'Expected a fixture entry point identifier');
   const scratch = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-dispatch-'));
   try {
     const input = path.join(scratch, 'input');
@@ -35,7 +35,7 @@ export function runtimeCalls(root, evidence) {
     );
     const cli = fileURLToPath(new URL('bin/tsc', import.meta.resolve('typescript/package.json')));
     execFileSync(process.execPath, [cli, '--project', config], { timeout: 30_000 });
-    appendFileSync(path.join(out, 'src/app.js'), '\nprocess();\n');
+    appendFileSync(path.join(out, 'src/app.js'), '\n' + entryPoint + '();\n');
     const trace = execFileSync(process.execPath, [fileURLToPath(import.meta.url), out, input], {
       input: JSON.stringify(evidence),
       encoding: 'utf8',

@@ -10,7 +10,7 @@ export function synthesizeTsJsClassIdentity(
   const type =
     nodes['@declaration.class'] ?? nodes['@declaration.interface'] ?? nodes['@declaration.enum'];
   if (type !== undefined) {
-    const owner = resolveTsJsContainerTypeOwner(type, '');
+    const owner = resolveTsJsContainerTypeOwner(type);
     if (owner !== null) {
       captures['@declaration.qualified_name'] = syntheticCapture(
         '@declaration.qualified_name',
@@ -40,7 +40,7 @@ export function synthesizeTsJsClassIdentity(
       parent.type === 'abstract_class_declaration' ||
       parent.type === 'interface_declaration'
     ) {
-      const owner = resolveTsJsContainerTypeOwner(parent, '');
+      const owner = resolveTsJsContainerTypeOwner(parent);
       if (owner !== null) {
         captures['@declaration.qualified_name'] = syntheticCapture(
           '@declaration.qualified_name',

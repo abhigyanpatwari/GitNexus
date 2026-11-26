@@ -26,7 +26,7 @@
  * immediate side-channel collection. Performs no I/O.
  */
 
-import { recordCommonJsModuleKind } from './module-kind.js';
+import { recordCommonJsModuleKind, recordImmutableConstruction } from './module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { isAnonymousDefaultClass } from '../../class-extractors/configs/typescript-javascript.js';
 import { synthesizeTsJsClassIdentity } from './class-identity.js';
@@ -446,6 +446,8 @@ export function emitTsScopeCaptures(
       groupedNodes[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+    const construction = groupedNodes['@type-binding.constructor'];
+    if (construction) recordImmutableConstruction(construction, groupedNodes['@type-binding.type']);
     synthesizeTsJsClassIdentity(grouped, groupedNodes);
 
     // Decompose each `import_statement` / re-export `export_statement`
@@ -820,9 +822,8 @@ function relevantNodesRightFirst(root: SyntaxNode, types: readonly string[]): Sy
  * pipeline drops for registry-primary languages — yielding 0 inheritance edges
  * in worker mode (issue #1951).
  *
- * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
- * `extends_clause` value + `implements_clause` types, matching the legacy
- * TypeScript heritage query's class scope (TYPESCRIPT_QUERIES). Generic
+ * Named classes and anonymous default-export classes supply an `extends_clause`
+ * value and `implements_clause` types through their `class_heritage`. Generic
  * bases agree across both paths: `extends Base<T>` is captured by the legacy
  * `extends_clause value: (identifier)` already (the `type_arguments` are a
  * sibling field), and `implements IFoo<T>` is captured by a legacy clause

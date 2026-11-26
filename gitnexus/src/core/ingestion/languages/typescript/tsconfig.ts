@@ -48,6 +48,10 @@ export interface TsconfigScope {
    */
   readonly baseUrl: string | null;
   readonly paths: readonly TsPathMapping[];
+  readonly moduleDetection?: string;
+  readonly module?: string;
+  readonly moduleResolution?: string;
+  readonly jsx?: string;
 }
 
 /** Every tsconfig in the repo, indexed so the nearest one to a file wins. */
@@ -102,7 +106,7 @@ export async function loadTsconfigIndex(repoRoot: string): Promise<TsconfigIndex
     // An empty scope is the accurate answer for such a file, and only a scope
     // can express it.
     ranked.push({
-      scope: { dir: repoRelative(repoRoot, path.dirname(absPath)), baseUrl, paths },
+      scope: { ...options, dir: repoRelative(repoRoot, path.dirname(absPath)), baseUrl, paths },
       rank: configRank(path.basename(absPath)),
     });
   }
@@ -134,6 +138,10 @@ function configRank(fileName: string): number {
 interface ResolvedOptions {
   baseUrl?: string;
   paths?: TsPathMapping[];
+  moduleDetection?: string;
+  module?: string;
+  moduleResolution?: string;
+  jsx?: string;
 }
 
 /**
@@ -172,6 +180,9 @@ async function readCompilerOptions(
   const compilerOptions = parsed.compilerOptions;
   if (compilerOptions !== null && typeof compilerOptions === 'object') {
     const opts = compilerOptions as Record<string, unknown>;
+    for (const key of ['moduleDetection', 'module', 'moduleResolution', 'jsx'] as const) {
+      if (typeof opts[key] === 'string') own[key] = opts[key].toLowerCase();
+    }
     if (typeof opts.baseUrl === 'string') {
       own.baseUrl = path.resolve(dir, opts.baseUrl);
     }

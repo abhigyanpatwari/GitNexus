@@ -13,21 +13,9 @@
       "sourceDigest": "466afd7d65c2be79b324a74de1d95275d01113dbc4a38855b63753ad9c10db1e",
       "sourceFiles": 1194,
       "baseline": {
-        "cold": [
-          "fe6ef3d70a8bd0456e82efe293b7edd0a2ea85ab1567ccfcbf18f60219a2717f",
-          37663,
-          106053
-        ],
-        "warm": [
-          "fe6ef3d70a8bd0456e82efe293b7edd0a2ea85ab1567ccfcbf18f60219a2717f",
-          37663,
-          106053
-        ],
-        "edit": [
-          "36bb7f9b5be76e191abb5a5b90918066160d3158a37c3b6c2f153155a1f7713e",
-          37664,
-          106054
-        ],
+        "cold": ["fe6ef3d70a8bd0456e82efe293b7edd0a2ea85ab1567ccfcbf18f60219a2717f", 37663, 106053],
+        "warm": ["fe6ef3d70a8bd0456e82efe293b7edd0a2ea85ab1567ccfcbf18f60219a2717f", 37663, 106053],
+        "edit": ["36bb7f9b5be76e191abb5a5b90918066160d3158a37c3b6c2f153155a1f7713e", 37664, 106054],
         "two-edits": [
           "6f8c63e7425f761f52d7179f00f6e37ac2384698d6ceb59f7eef461aee22dc4c",
           37666,
@@ -40,21 +28,9 @@
         ]
       },
       "candidate": {
-        "cold": [
-          "17ad8161d53fa86f7b10154e489551a4130a9c8a409ff4b1bb52603ff6530451",
-          37663,
-          106310
-        ],
-        "warm": [
-          "17ad8161d53fa86f7b10154e489551a4130a9c8a409ff4b1bb52603ff6530451",
-          37663,
-          106310
-        ],
-        "edit": [
-          "11bc6b1cd2f68179135fc023938305bf48059e631a2764c519d7004cf4e41393",
-          37664,
-          106311
-        ],
+        "cold": ["17ad8161d53fa86f7b10154e489551a4130a9c8a409ff4b1bb52603ff6530451", 37663, 106310],
+        "warm": ["17ad8161d53fa86f7b10154e489551a4130a9c8a409ff4b1bb52603ff6530451", 37663, 106310],
+        "edit": ["11bc6b1cd2f68179135fc023938305bf48059e631a2764c519d7004cf4e41393", 37664, 106311],
         "two-edits": [
           "07dbb92496840e99501df7783d497c60137dd3797b714d3db0508ed7448f92a0",
           37666,
@@ -79,21 +55,9 @@
       "sourceDigest": "a3033c3ecab6e7d09cad183012cb1e80bf5e13de091cd22af55ad99c893994de",
       "sourceFiles": 1198,
       "baseline": {
-        "cold": [
-          "ab4d9d880231e697da7fba467efb8f03b8fe5b1242a60def0d0cd6358eca84b0",
-          37790,
-          106640
-        ],
-        "warm": [
-          "ab4d9d880231e697da7fba467efb8f03b8fe5b1242a60def0d0cd6358eca84b0",
-          37790,
-          106640
-        ],
-        "edit": [
-          "10efeab146db1f92ed7108ec4ba17357abc66cd838791ee2a22da5e8ef189b86",
-          37791,
-          106641
-        ],
+        "cold": ["ab4d9d880231e697da7fba467efb8f03b8fe5b1242a60def0d0cd6358eca84b0", 37790, 106640],
+        "warm": ["ab4d9d880231e697da7fba467efb8f03b8fe5b1242a60def0d0cd6358eca84b0", 37790, 106640],
+        "edit": ["10efeab146db1f92ed7108ec4ba17357abc66cd838791ee2a22da5e8ef189b86", 37791, 106641],
         "two-edits": [
           "80514466d4e6a90dd2bc3debf985388a0031bb94ba39f84afe4193c0b5948185",
           37793,
@@ -106,21 +70,9 @@
         ]
       },
       "candidate": {
-        "cold": [
-          "0858507792d4e9ee9ca291a19cd94f04a6c594dfde9c3da62c70f9788b79233b",
-          37790,
-          106639
-        ],
-        "warm": [
-          "0858507792d4e9ee9ca291a19cd94f04a6c594dfde9c3da62c70f9788b79233b",
-          37790,
-          106639
-        ],
-        "edit": [
-          "412ef62550fc9a38f43ff73212c1f214f8449c22459f945db8e27c31581e4acd",
-          37791,
-          106640
-        ],
+        "cold": ["0858507792d4e9ee9ca291a19cd94f04a6c594dfde9c3da62c70f9788b79233b", 37790, 106639],
+        "warm": ["0858507792d4e9ee9ca291a19cd94f04a6c594dfde9c3da62c70f9788b79233b", 37790, 106639],
+        "edit": ["412ef62550fc9a38f43ff73212c1f214f8449c22459f945db8e27c31581e4acd", 37791, 106640],
         "two-edits": [
           "2afad661fd6be8246506059764f2c07c2cb6e0326ebd953734493e1d388c6d2a",
           37793,
@@ -145,21 +97,9 @@
       "sourceDigest": "fb88549ee277e5a062c36393e18070072b99ba615ab8d5255a882158005d8309",
       "sourceFiles": 1204,
       "baseline": {
-        "cold": [
-          "edf0edc98af6857716383a868972d2c6a93304612458f51bd557c4d4583ba2de",
-          38023,
-          107947
-        ],
-        "warm": [
-          "edf0edc98af6857716383a868972d2c6a93304612458f51bd557c4d4583ba2de",
-          38023,
-          107947
-        ],
-        "edit": [
-          "f6988e2057c07fcf2b9c3f2191e1f3308372dc4dcbcfa2620e22cc86a7ac4333",
-          38024,
-          107948
-        ],
+        "cold": ["edf0edc98af6857716383a868972d2c6a93304612458f51bd557c4d4583ba2de", 38023, 107947],
+        "warm": ["edf0edc98af6857716383a868972d2c6a93304612458f51bd557c4d4583ba2de", 38023, 107947],
+        "edit": ["f6988e2057c07fcf2b9c3f2191e1f3308372dc4dcbcfa2620e22cc86a7ac4333", 38024, 107948],
         "two-edits": [
           "f23ebde1676ccfc48cf0fc6dab85a63372cfb540cbfe164bd0cb8ecb3dc5b044",
           38026,
@@ -172,21 +112,9 @@
         ]
       },
       "candidate": {
-        "cold": [
-          "79eb81eec60ba193e33591d2cc6a5fbe90c70ab1c4c5b71d0039a0ceac4004c0",
-          38023,
-          112633
-        ],
-        "warm": [
-          "79eb81eec60ba193e33591d2cc6a5fbe90c70ab1c4c5b71d0039a0ceac4004c0",
-          38023,
-          112633
-        ],
-        "edit": [
-          "d9406171dba36d23f52e03fb5da0ea6a0bbf2f2359dac4014af23b318779de56",
-          38024,
-          112634
-        ],
+        "cold": ["79eb81eec60ba193e33591d2cc6a5fbe90c70ab1c4c5b71d0039a0ceac4004c0", 38023, 112633],
+        "warm": ["79eb81eec60ba193e33591d2cc6a5fbe90c70ab1c4c5b71d0039a0ceac4004c0", 38023, 112633],
+        "edit": ["d9406171dba36d23f52e03fb5da0ea6a0bbf2f2359dac4014af23b318779de56", 38024, 112634],
         "two-edits": [
           "22ce125f896051361afd3e2f0e41b95db3885bafecc6236fb5a2cf7425401052",
           38026,

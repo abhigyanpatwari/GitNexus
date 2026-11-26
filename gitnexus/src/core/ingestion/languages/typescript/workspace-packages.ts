@@ -58,6 +58,8 @@ export interface NodeWorkspacePackage {
 export interface NodeWorkspacePackages {
   /** Package name (`@repo/utils`, `utils`) -> that package. */
   readonly byName: ReadonlyMap<string, NodeWorkspacePackage>;
+  /** Nearest package.json controls module format, including unnamed and non-workspace packages. */
+  readonly packageModules?: ReadonlyMap<string, boolean>;
 }
 
 const SCAN_MAX_DIRS = 20_000;
@@ -546,6 +548,7 @@ async function loadNodeWorkspacePackagesUncached(
 ): Promise<NodeWorkspacePackages | null> {
   const scope = await loadWorkspaceScope(repoRoot);
   const byName = new Map<string, NodeWorkspacePackage>();
+  const packageModules = new Map<string, boolean>();
   const queue: { dir: string; depth: number }[] = [{ dir: repoRoot, depth: 0 }];
   let queueHead = 0;
   let dirsScanned = 0;
@@ -577,32 +580,30 @@ async function loadNodeWorkspacePackagesUncached(
       if (!entry.isFile() || entry.name !== 'package.json') continue;
 
       const relDir = repoRelativeDir(repoRoot, dir);
+      const manifest = await readJsonFile(path.join(dir, entry.name));
+      if (!manifest) continue;
+      packageModules.set(relDir, manifest.type === 'module');
       // Found is not the same as admitted. A manifest outside the declared
       // workspace belongs to something this repository does not build — a
       // fixture, an example, a vendored copy — and its name is not addressable.
       if (!admits(scope, relDir)) continue;
 
-      const pkg = await readManifest(path.join(dir, entry.name), repoRoot, dir);
+      const pkg = await readManifest(manifest, repoRoot, dir);
       // First declaration wins: BFS visits shallower directories first, so a
       // top-level package outranks a nested one that reuses the name.
       if (pkg !== null && !byName.has(pkg.name)) byName.set(pkg.name, pkg.package);
     }
   }
 
+  if ([...packageModules.values()].includes(true)) return { byName, packageModules };
   return byName.size === 0 ? null : { byName };
 }
 
 async function readManifest(
-  manifestPath: string,
+  parsed: Record<string, unknown>,
   repoRoot: string,
   dir: string,
 ): Promise<{ name: string; package: NodeWorkspacePackage } | null> {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(await fs.readFile(manifestPath, 'utf-8')) as Record<string, unknown>;
-  } catch {
-    return null;
-  }
   const name = typeof parsed.name === 'string' ? parsed.name : '';
   if (name === '') return null;
 

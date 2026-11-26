@@ -14,7 +14,10 @@ import {
   findClassBindingInScope,
   findReceiverTypeBinding,
 } from '../../scope-resolution/scope/walkers.js';
+import { narrowOverloadCandidates } from '../../scope-resolution/passes/overload-narrowing.js';
 import { canonicalizeEcmaWorkspaceBindings } from './canonicalize-bindings.js';
+import { receiverTypeIsOutOfScope } from './global-declarations.js';
+import { immutableReceiverMethod, indexImmutableReceivers } from './immutable-receiver.js';
 
 type Argument = Extract<CallableFlowSite, { kind: 'argument' }>;
 const argumentsByCall = new WeakMap<ReferenceSite, Argument[]>();
@@ -47,20 +50,26 @@ export function indexTsCallArguments(files: ParsedFile[]): void {
   const overloads = new Map<string, Set<string>>();
   const overloadedFunctions = new Set<string>();
   for (const file of files) {
-    const seen = new Set<string>();
+    indexImmutableReceivers(file);
+    const firstOwner = new Map<string, string>();
     let hasFreeSignatures = false;
     for (const def of file.localDefs) {
       if (def.type === 'Function' && def.isOverloadSignature) hasFreeSignatures = true;
       if (def.type !== 'Method' || !def.isOverloadSignature || !def.qualifiedName || !def.ownerId)
         continue;
-      const key = def.ownerId + ':' + def.qualifiedName;
-      if (seen.has(key)) {
+      const previous = firstOwner.get(def.qualifiedName);
+      if (previous) {
         const name = def.qualifiedName.slice(def.qualifiedName.lastIndexOf('.') + 1);
         const owners = overloads.get(name);
-        if (owners) owners.add(def.ownerId);
-        else overloads.set(name, new Set([def.ownerId]));
+        if (owners) {
+          owners.add(previous);
+          owners.add(def.ownerId);
+        } else {
+          overloads.set(name, new Set([previous, def.ownerId]));
+        }
+      } else {
+        firstOwner.set(def.qualifiedName, def.ownerId);
       }
-      seen.add(key);
     }
     if (hasFreeSignatures) {
       for (const scope of file.scopes) {
@@ -296,6 +305,30 @@ function acceptsPrimitiveArguments(
   return unknown ? undefined : true;
 }
 
+/** Later interface declarations contribute their overload group first. */
+function interfaceDeclarationOrder(
+  owner: SymbolDefinition,
+  indexes: ScopeResolutionIndexes,
+): Map<string, number> | undefined {
+  if (owner.type !== 'Interface' || !owner.declarationRange || !owner.qualifiedName) return;
+  const scope = makeScopeId({
+    filePath: owner.filePath,
+    range: owner.declarationRange,
+    kind: 'Class',
+  });
+  const name = owner.qualifiedName.slice(owner.qualifiedName.lastIndexOf('.') + 1);
+  const bindings = indexes.scopeTree.getParent(scope)?.bindings.get(name);
+  if (!bindings || bindings.length < 2) return;
+  const siblings = bindings
+    .map(({ def }) => def)
+    .filter(
+      (def) => def.type === 'Interface' && def.filePath === owner.filePath && def.declarationRange,
+    );
+  if (siblings.length < 2 || !siblings.some((def) => def.nodeId === owner.nodeId)) return;
+  siblings.sort((a, b) => byPosition(b.declarationRange!, a.declarationRange!));
+  return new Map(siblings.map((def, order) => [def.nodeId, order]));
+}
+
 export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = (
   owner,
   name,
@@ -303,8 +336,27 @@ export const resolveTsMemberArguments: ScopeResolver['resolveReceiverMember'] = 
   indexes,
   model,
 ) => {
-  const argumentsAtSite = argumentsByCall.get(site);
-  if (!argumentsAtSite || !site.argumentTypes) return undefined;
+  if (receiverTypeIsOutOfScope(owner, site, indexes))
+    return { kind: 'inapplicable', candidateIds: [] };
+  const constructed = immutableReceiverMethod(owner, name, site, indexes, model);
+  if (constructed) return { kind: 'resolved', definition: constructed };
+  const declarations = interfaceDeclarationOrder(owner, indexes);
+  if (declarations) {
+    const methods = [...declarations.keys()].flatMap((id) =>
+      model.methods.lookupAllByOwner(id, name),
+    );
+    if (methods.length) {
+      const selected = selectTsPrimitiveOverload(methods, site, indexes, declarations);
+      if (selected) return { kind: 'resolved', definition: selected };
+      const candidates = narrowOverloadCandidates(methods, site.arity, site.argumentTypes);
+      if (candidates.length === 1) return { kind: 'resolved', definition: candidates[0] };
+      return {
+        kind: candidates.length ? 'unknown' : 'inapplicable',
+        candidateIds: (candidates.length ? candidates : methods).map((method) => method.nodeId),
+      };
+    }
+  }
+  if (!argumentsByCall.has(site) || !site.argumentTypes) return undefined;
   let methods = model.methods.lookupAllByOwner(owner.nodeId, name);
   if (!methods.length) {
     if (model.fields.lookupAllByOwner(owner.nodeId, name).length) return undefined;
@@ -326,6 +378,7 @@ export function selectTsPrimitiveOverload(
   signatures: SymbolDefinition[],
   site: ReferenceSite,
   indexes: ScopeResolutionIndexes,
+  declarations?: ReadonlyMap<string, number>,
 ): SymbolDefinition | undefined {
   if (!site.argumentTypes) return undefined;
   const types = [...site.argumentTypes];
@@ -340,7 +393,11 @@ export function selectTsPrimitiveOverload(
   if (!types.every((type) => primitiveTypes.has(type))) return undefined;
   if (!signatures.every((sig) => sig.filePath === signatures[0].filePath && sig.declarationRange))
     return undefined;
-  signatures.sort((a, b) => byPosition(a.declarationRange!, b.declarationRange!));
+  signatures.sort(
+    (a, b) =>
+      (declarations?.get(a.ownerId ?? '') ?? 0) - (declarations?.get(b.ownerId ?? '') ?? 0) ||
+      byPosition(a.declarationRange!, b.declarationRange!),
+  );
   for (const signature of signatures) {
     const applicable = acceptsPrimitiveArguments(signature, types, indexes);
     if (applicable === undefined) return undefined;

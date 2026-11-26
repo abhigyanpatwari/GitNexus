@@ -115,5 +115,12 @@
     "endpoints.ts:1:64 TS2307",
     "endpoints.ts:2:71 TS2307",
     "endpoints.ts:3:33 TS2307"
+  ],
+  "compiler-conformance/typescript-script-force": ["use.ts:2:23 TS2304"],
+  "compiler-conformance/typescript-script-auto-package": ["use.ts:2:23 TS2304"],
+  "compiler-conformance/typescript-script-auto-jsx": ["use.ts:2:23 TS2304"],
+  "compiler-conformance/typescript-runtime-construction-guards": [
+    "app.ts:10:8 TS2339",
+    "app.ts:13:10 TS2339"
   ]
 }

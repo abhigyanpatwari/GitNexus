@@ -219,7 +219,7 @@ test('swapping the two unchecked save calls disagrees with ECMAScript dispatch',
   );
   const runtime = { unchecked: [], methods: [] };
   compilerReport(fixture, ['src/app.ts:9:7 TS2339'], false, { runtime });
-  const trace = runtimeCalls(fixture, runtime);
+  const trace = runtimeCalls(fixture, runtime, 'process');
   assert.equal(trace.sites.length, 2);
   const [user, repo] = trace.sites;
   assert.notEqual(user.target, repo.target);

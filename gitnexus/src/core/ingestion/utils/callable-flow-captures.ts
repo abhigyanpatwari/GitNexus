@@ -160,6 +160,8 @@ export interface CallableFlowCaptureOptions {
         readonly qualifiedName?: string;
       }
     | undefined;
+  /** Argument expression kinds whose possible callable values need separate flow facts. */
+  readonly argumentAlternativeNodeTypes?: ReadonlySet<string>;
   /**
    * Provider-owned branches of a value-selecting expression (#3354). The
    * shared rule only knows the field shapes `left`/`operator`/`right` (with a
@@ -173,8 +175,6 @@ export interface CallableFlowCaptureOptions {
    * statement lists, not values. `undefined` falls back to the shared rule
    * (mirrors `extractAssignment`).
    */
-  /** Argument expression kinds whose possible callable values need separate flow facts. */
-  readonly argumentAlternativeNodeTypes?: ReadonlySet<string>;
   readonly valueAlternatives?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
 }
 

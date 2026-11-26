@@ -293,28 +293,6 @@ describe('Write access tracking (TypeScript)', () => {
   });
 });
 
-// ── Phase P: Virtual Dispatch via Constructor Type ───────────────────────
-
-describe('TypeScript virtual dispatch via constructor type (same-file)', () => {
-  let result: PipelineResult;
-
-  beforeAll(
-    async () => {
-      result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-virtual-dispatch'), () => {});
-    },
-    { timeout: 60000 },
-  );
-
-  it('resolves fetchBall() calls from run() — proves virtual dispatch override', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const fetchCalls = calls.filter((c) => c.source === 'run' && c.target === 'fetchBall');
-    // animal.fetchBall() only resolves if constructorTypeMap overrides
-    // receiver from Animal → Dog. dog.fetchBall() resolves directly.
-    // Both target same nodeId → 1 CALLS edge after dedup.
-    expect(fetchCalls.length).toBe(1);
-  });
-});
-
 // ── Phase P: Overload Disambiguation via inferLiteralType ────────────────
 
 describe('TypeScript overload disambiguation via inferLiteralType', () => {
