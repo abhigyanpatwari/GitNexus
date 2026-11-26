@@ -69,8 +69,10 @@ describe('agent search diagnostics', () => {
     const tool = await initializeTool('search');
     const output = await tool.invoke({ query: 'authentication', limit: 3, groupByProcess });
 
-    expect(output).toContain(warning);
-    expect(output).toContain('Results may be incomplete');
+    expect(output.startsWith(`Search warning: ${warning}\nResults may be incomplete.\n\n`)).toBe(
+      true,
+    );
+    expect(output.match(/Search warning:/g)).toHaveLength(1);
     expect(output).toContain(expected);
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
@@ -84,12 +86,26 @@ describe('agent search diagnostics', () => {
   });
 
   it.each([
-    { name: 'matches', results: [match], expected: 'Found 1 matches' },
-    { name: 'no matches', results: [], expected: 'No code found' },
-  ])('does not invent a warning for $name from an older server', async ({ results, expected }) => {
+    {
+      name: 'matches without a warning',
+      response: { results: [match] },
+      expected: 'Found 1 matches',
+    },
+    { name: 'no matches without a warning', response: { results: [] }, expected: 'No code found' },
+    {
+      name: 'a whitespace-only warning',
+      response: { results: [match], warning: '   ' },
+      expected: 'Found 1 matches',
+    },
+    {
+      name: 'a non-string warning',
+      response: { results: [match], warning: 42 },
+      expected: 'Found 1 matches',
+    },
+  ])('does not display a warning for $name', async ({ response, expected }) => {
     vi.stubGlobal(
       'fetch',
-      vi.fn(async () => Response.json({ results })),
+      vi.fn(async () => Response.json(response)),
     );
     const tool = await initializeTool('search');
     const output = await tool.invoke({ query: 'authentication' });
@@ -101,18 +117,29 @@ describe('agent search diagnostics', () => {
   it.each([
     { name: 'matches', results: [match], expected: 'authenticate' },
     { name: 'no matches', results: [], expected: 'Semantic search returned no results' },
-  ])('retains warnings for semantic Cypher $name', async ({ results, expected }) => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => Response.json({ results, warning })),
-    );
+  ])('forwards a warning for semantic Cypher $name if provided', async ({ results, expected }) => {
+    // Forward compatibility: the current server does not emit warnings in semantic mode.
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({ results, warning }));
+    vi.stubGlobal('fetch', fetchMock);
     const tool = await initializeTool('cypher');
     const output = await tool.invoke({
       query: 'authentication',
       cypher: 'MATCH (n) RETURN {{QUERY_VECTOR}}',
     });
-    expect(output).toContain(warning);
+    expect(output.startsWith(`Search warning: ${warning}\nResults may be incomplete.\n\n`)).toBe(
+      true,
+    );
+    expect(output.match(/Search warning:/g)).toHaveLength(1);
     expect(output).toContain(expected);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('http://search-client.test:4747/api/search');
+    expect(JSON.parse(init?.body as string)).toEqual({
+      query: 'authentication',
+      limit: 10,
+      mode: 'semantic',
+      repo: '/work/app',
+    });
   });
 
   it('keeps the array result contract for non-agent search callers', async () => {
