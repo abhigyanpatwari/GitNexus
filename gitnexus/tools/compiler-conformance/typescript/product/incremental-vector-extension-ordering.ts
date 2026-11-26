@@ -130,7 +130,10 @@ describe(
           // loaded when the delete ran — the fix loads VECTOR rather than
           // dropping the index (run-analyze relies on HNSW self-maintaining
           // across a surgical run).
-          assert.ok(embeddingIndexAtDeleteTime, 'deleteNodesForFiles must run for the changed file');
+          assert.ok(
+            embeddingIndexAtDeleteTime,
+            'deleteNodesForFiles must run for the changed file',
+          );
           expect(embeddingIndexAtDeleteTime.length).toBeGreaterThan(0);
           for (const row of embeddingIndexAtDeleteTime) {
             expect(row.extension_loaded).toBe(true);
