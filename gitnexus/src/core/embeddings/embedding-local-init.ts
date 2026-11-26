@@ -50,6 +50,88 @@ const formatDeviceLabel = (device: EmbeddingSidecarDevice): string => {
 
 export const getCurrentDevice = (): EmbeddingSidecarDevice | null => currentDevice;
 
+/**
+ * Fixed texts embedded on the GPU device and on CPU at init (#3685). Some
+ * DirectML adapters return vectors in a different space from CPU, which would
+ * silently break semantic search against CPU-built or query-time vectors.
+ */
+export const GPU_PARITY_PROBE_TEXTS = [
+  'function: parseConfig\nexport function parseConfig(path: string): Config { return JSON.parse(readFileSync(path, "utf8")); }',
+  'class: UserRepository\nclass UserRepository:\n    def find_by_email(self, email):\n        return self.session.query(User).filter_by(email=email).first()',
+];
+
+/** fp32 GPU vs CPU agree to ~1e-5; the reported DirectML vectors had cosine ~0.37. */
+export const GPU_PARITY_MIN_COSINE = 0.99;
+
+const embedProbe = async (embedder: FeatureExtractionPipeline): Promise<Float32Array[]> => {
+  const result = await embedder(GPU_PARITY_PROBE_TEXTS, { pooling: 'mean', normalize: true });
+  const data = result.data as ArrayLike<number>;
+  const dims = (result as { dims?: number[] }).dims;
+  const width = dims?.[dims.length - 1] ?? data.length / GPU_PARITY_PROBE_TEXTS.length;
+  return GPU_PARITY_PROBE_TEXTS.map(
+    (_, i) => new Float32Array(Array.prototype.slice.call(data, i * width, (i + 1) * width)),
+  );
+};
+
+const disposeQuietly = async (embedder: FeatureExtractionPipeline | null): Promise<void> => {
+  try {
+    await embedder?.dispose();
+  } catch {
+    // Best effort: a failed release must not change which device is used.
+  }
+};
+
+const cosine = (a: Float32Array, b: Float32Array): number => {
+  if (a.length !== b.length) return -1;
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  return na === 0 || nb === 0 ? -1 : dot / Math.sqrt(na * nb);
+};
+
+/**
+ * Embeds the probe texts on `gpuEmbedder` and on a CPU pipeline. Returns the
+ * CPU pipeline when they disagree (the caller switches to it), or null when the
+ * GPU vectors match. If the check itself fails, the GPU pipeline is kept.
+ */
+export const checkGpuParity = async (
+  gpuEmbedder: FeatureExtractionPipeline,
+  device: EmbeddingSidecarDevice,
+  loadPipeline: (device: EmbeddingSidecarDevice) => Promise<FeatureExtractionPipeline>,
+): Promise<FeatureExtractionPipeline | null> => {
+  let cpuEmbedder: FeatureExtractionPipeline | null = null;
+  let minCosine: number;
+  try {
+    cpuEmbedder = await loadPipeline('cpu');
+    const gpuVectors = await embedProbe(gpuEmbedder);
+    const cpuVectors = await embedProbe(cpuEmbedder);
+    minCosine = Math.min(...gpuVectors.map((vec, i) => cosine(vec, cpuVectors[i])));
+  } catch (err) {
+    logger.warn(
+      { device, err: err instanceof Error ? err.message : String(err) },
+      `⚠️  Could not compare ${formatDeviceLabel(device)} embeddings with CPU; keeping ${device}`,
+    );
+    await disposeQuietly(cpuEmbedder);
+    return null;
+  }
+
+  if (minCosine >= GPU_PARITY_MIN_COSINE) {
+    await disposeQuietly(cpuEmbedder);
+    return null;
+  }
+  logger.warn(
+    { device, minCosine },
+    `⚠️  ${formatDeviceLabel(device)} embeddings do not match CPU (cosine ${minCosine.toFixed(3)}); using CPU instead`,
+  );
+  await disposeQuietly(gpuEmbedder);
+  return cpuEmbedder;
+};
+
 export const initLocalEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
@@ -117,6 +199,31 @@ export const initLocalEmbedder = async (
           ? [requestedDevice, 'cpu']
           : [requestedDevice];
 
+      const loadPipeline = (device: EmbeddingSidecarDevice): Promise<FeatureExtractionPipeline> =>
+        withHfDownloadRetry(
+          () =>
+            pipeline('feature-extraction', finalConfig.modelId, {
+              device: device,
+              dtype: 'fp32',
+              progress_callback: progressCallback,
+              session_options: {
+                logSeverityLevel: 3,
+                intraOpNumThreads: finalConfig.threads,
+                interOpNumThreads: 1,
+                executionMode: 'sequential',
+              },
+            }),
+          {
+            onRetry: isDev
+              ? (attempt, max, err) =>
+                  logger.warn(
+                    { attempt, max, err: err.message },
+                    `⚠️  Model download network error (attempt ${attempt}/${max}), retrying…`,
+                  )
+              : undefined,
+          },
+        );
+
       for (const device of devicesToTry) {
         try {
           if (isDev && device === 'dml') {
@@ -129,31 +236,18 @@ export const initLocalEmbedder = async (
             logger.info('🔧 Using WASM backend (slower)...');
           }
 
-          embedderInstance = await withHfDownloadRetry(
-            () =>
-              pipeline('feature-extraction', finalConfig.modelId, {
-                device: device,
-                dtype: 'fp32',
-                progress_callback: progressCallback,
-                session_options: {
-                  logSeverityLevel: 3,
-                  intraOpNumThreads: finalConfig.threads,
-                  interOpNumThreads: 1,
-                  executionMode: 'sequential',
-                },
-              }),
-            {
-              onRetry: isDev
-                ? (attempt, max, err) =>
-                    logger.warn(
-                      { attempt, max, err: err.message },
-                      `⚠️  Model download network error (attempt ${attempt}/${max}), retrying…`,
-                    )
-                : undefined,
-            },
-          );
+          embedderInstance = await loadPipeline(device);
           currentDevice = device;
           activeDimensions = finalConfig.dimensions;
+
+          if (device === 'dml' || device === 'cuda') {
+            const cpuEmbedder = await checkGpuParity(embedderInstance, device, loadPipeline);
+            if (cpuEmbedder) {
+              embedderInstance = cpuEmbedder;
+              currentDevice = 'cpu';
+              return embedderInstance;
+            }
+          }
 
           if (isDev) {
             logger.info(`✅ Using ${formatDeviceLabel(device)} backend`);
