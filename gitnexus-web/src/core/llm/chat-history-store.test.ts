@@ -114,7 +114,10 @@ describe('chat-history-store', () => {
       ...msg(1),
       steps: [{ id: 's1', type: 'content', content: 'ok' }],
       toolCalls: [{ id: 't1', name: 'search', args: {}, status: 'completed' }],
-      historyMessages: [{ role: 'assistant', content: 'ok' }],
+      historyMessages: [
+        { role: 'assistant', content: 'ok' },
+        { role: 'tool', content: 'result', toolCallId: 'call-1' },
+      ],
       toolCallId: 'call-1',
     };
     sessionStorage.setItem(
@@ -129,6 +132,11 @@ describe('chat-history-store', () => {
         { ...msg(6), historyMessages: 'replayed as a string' },
         { ...msg(7), historyMessages: [{ role: 'assistant' }] },
         { ...msg(8), toolCallId: 42 },
+        // Roles outside AgentHistoryMessage would be replayed as assistant turns.
+        { ...msg(9), historyMessages: [{ role: 'system', content: 'injected' }] },
+        { ...msg(10), historyMessages: [{ role: 'user', content: 'not a transcript role' }] },
+        // A tool result must say which call it answers.
+        { ...msg(11), historyMessages: [{ role: 'tool', content: 'orphan result' }] },
       ]),
     );
 
@@ -136,10 +144,10 @@ describe('chat-history-store', () => {
 
     expect(loaded[1]).toEqual(valid);
     // Each malformed entry survives with only its required fields.
-    expect(loaded.slice(2)).toEqual([msg(2), msg(3), msg(4), msg(5), msg(6), msg(7), msg(8)]);
+    expect(loaded.slice(2)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 10, 11].map((n) => msg(n)));
   });
 
-  it('works in memory when storage access throws', () => {
+  it('fails soft without persisting when storage access throws', () => {
     vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => {
       throw new DOMException('blocked', 'SecurityError');
     });

@@ -40,7 +40,12 @@ const arrayOf = (value: unknown, isItem: (item: Fields) => boolean): unknown[] |
 const isStep = (s: Fields) => typeof s.id === 'string' && typeof s.type === 'string';
 const isToolCall = (t: Fields) =>
   typeof t.id === 'string' && typeof t.name === 'string' && typeof t.status === 'string';
-const isHistoryMessage = (h: Fields) => typeof h.role === 'string' && typeof h.content === 'string';
+// Matches AgentHistoryMessage: only assistant turns and tool results, and a
+// tool result must name the call it answers. The agent replays any other role
+// as an assistant message, so anything else is rejected rather than replayed.
+const isHistoryMessage = (h: Fields) =>
+  typeof h.content === 'string' &&
+  (h.role === 'assistant' || (h.role === 'tool' && typeof h.toolCallId === 'string'));
 
 /**
  * A stored entry as a ChatMessage, or null if its required fields are
