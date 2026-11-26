@@ -582,10 +582,10 @@ ${unboundCallableQuery('declaration.function')}
         (function_expression) @declaration.function)))
   ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
-;; Wrapped callable initializers (#323): \`const F = (fn)\`, \`fn as T\`,
-;; \`fn satisfies T\`, \`((p) => ...) as FC\`, \`forwardRef((p, r) => ...) as FC\`.
-;; The shapes of the plain and HOC-wrapped rules above under one wrapper
-;; chain (\`JS_INITIALIZER_WRAPPERS\`), with the same anchors.
+;; Parenthesized callable initializers (#323): \`const F = (fn)\` and
+;; \`const F = (forwardRef((p, r) => ...))\`. The shapes of the plain and
+;; HOC-wrapped rules above under parentheses (\`JS_INITIALIZER_WRAPPERS\`),
+;; with the same anchors.
 ${wrappedCallableDeclarationQueries(JS_INITIALIZER_WRAPPERS, { name: '@declaration.name', fn: ' @declaration.function', definition: '' })}
 
 ;; HOC-wrapped default exports (JS parity with TS patterns in

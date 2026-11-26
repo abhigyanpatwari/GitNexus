@@ -192,6 +192,12 @@ export function isBlockedDefaultExportHoc(node: SyntaxNode): boolean {
   const callee = callExpr.childForFieldName?.('function');
   if (callee?.type === 'identifier' && DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text))
     return true;
+  // `memo((p) => …, (a, b) => …)`: only the first inline function is the
+  // wrapped component; a later one is a helper argument (a comparator).
+  const firstInline = callArguments(callExpr)?.find(
+    (arg) => arg.type === 'arrow_function' || arg.type === 'function_expression',
+  );
+  if (firstInline !== undefined && firstInline.id !== node.id) return true;
   // `memo(Card, (a, b) => …)`: the wrapper publishes the local `Card`; the
   // inline function is a helper argument (a comparator), not the export.
   let root: SyntaxNode = callExpr;

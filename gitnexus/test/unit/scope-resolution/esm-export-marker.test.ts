@@ -525,6 +525,20 @@ describe('@declaration.is-default-export (#3956)', () => {
     }
   });
 
+  it('declares only the first inline function as the default, not an inline comparator', () => {
+    for (const [emit, file] of [
+      [emitJsScopeCaptures, 'Widget.jsx'],
+      [emitTsScopeCaptures, 'Widget.tsx'],
+    ] as const) {
+      const src = 'export default memo((props) => props.a, (prev, next) => prev.a === next.a);';
+      const defaults = emit(src, file).filter(
+        (m) => m['@declaration.is-default-export']?.text === 'true',
+      );
+      expect(defaults.map((m) => m['@declaration.name']?.text)).toEqual(['Widget']);
+      expect(defaults[0]?.['@declaration.function']?.text).toBe('(props) => props.a');
+    }
+  });
+
   it('exports only the runtime value when a type shares the wrapped name', () => {
     const kinds = emitTsScopeCaptures(
       'interface Card { a: number }\nfunction Card() {}\nexport default memo(Card);\n',
