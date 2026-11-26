@@ -128,7 +128,12 @@ def _probe_servers(source: Source, client: ModelClient, parent: Path) -> None:
                 kind = result.get("error_kind")
                 err_msg = ""
                 if isinstance(detail, dict):
-                    err = detail.get("event_stream_error") or detail.get("stderr_tail") or detail.get("process_detail")
+                    err = (
+                        detail.get("event_stream_error")
+                        or detail.get("stderr_tail")
+                        or detail.get("stdout_tail")
+                        or detail.get("process_detail")
+                    )
                     rc = detail.get("returncode")
                     if rc is not None and err:
                         err_msg = f": exit code {rc} ({err})"

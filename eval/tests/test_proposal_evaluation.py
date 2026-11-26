@@ -148,6 +148,15 @@ def test_probe_servers_classifies_sandbox_error_causes(monkeypatch, tmp_path):
     with pytest.raises(evaluator.SandboxError, match=r"session failed: exit code 137 \(out of memory\)"):
         evaluator._probe_servers(source, client, tmp_path)
 
+    # Session failure falling back to stdout_tail when stderr_tail is empty
+    monkeypatch.setattr(
+        evaluator,
+        "propose",
+        make_fake_propose(ok=False, error_detail={"returncode": 1, "stderr_tail": "", "stdout_tail": "permission_denied"}),
+    )
+    with pytest.raises(evaluator.SandboxError, match=r"session failed: exit code 1 \(permission_denied\)"):
+        evaluator._probe_servers(source, client, tmp_path)
+
     # Actual tool result count mismatch
     monkeypatch.setattr(evaluator, "propose", make_fake_propose(tool_results=[]))
     with pytest.raises(evaluator.SandboxError, match=r"failed: 0/1 successful tool results"):
