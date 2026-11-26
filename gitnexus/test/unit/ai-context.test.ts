@@ -186,17 +186,19 @@ describe('generateAIContextFiles', () => {
 
       for (const file of ['AGENTS.md', 'CLAUDE.md']) {
         const content = await fs.readFile(path.join(dir, file), 'utf-8');
-        expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
+        expect(content).toContain(
+          'impact({target: "symbolName", direction: "upstream", repo: "TransportFallback"})',
+        );
         expect(content).toContain(
           'node .gitnexus/run.cjs impact "symbolName" --direction upstream --repo .',
         );
-        expect(content).toContain('detect_changes({scope: "all"})');
+        expect(content).toContain('detect_changes({scope: "all", repo: "TransportFallback"})');
         expect(content).toContain('node .gitnexus/run.cjs detect-changes --scope all --repo .');
         expect(content).toContain('target branch "develop"');
         expect(content).toContain('target branch "develop" from its remote');
         expect(content).toContain('compute its merge base with the reviewed HEAD');
         expect(content).toContain(
-          'detect_changes({scope: "compare", base_ref: "<merge-base SHA>"})',
+          'detect_changes({scope: "compare", base_ref: "<merge-base SHA>", repo: "TransportFallback"})',
         );
         expect(content).toContain('--scope compare --base-ref "<merge-base SHA>" --repo .');
         expect(content).toContain('Never substitute grep for graph analysis');
@@ -208,16 +210,37 @@ describe('generateAIContextFiles', () => {
   });
 
   it('routes generated MCP examples to the configured registry name (#1542)', async () => {
-    await generateAIContextFiles(tmpDir, storagePath, 'workspace "dev"', {}, undefined, {
+    const repoName = 'workspace "$& `dev`"';
+    const repo = JSON.stringify(repoName).replace(/`/g, '\\u0060');
+    await generateAIContextFiles(tmpDir, storagePath, repoName, {}, undefined, {
+      hasPdg: true,
       skipSkills: true,
     });
 
+    const expected = [
+      `impact({target: "symbolName", direction: "upstream", repo: ${repo}})`,
+      `detect_changes({scope: "all", repo: ${repo}})`,
+      `detect_changes({scope: "compare", base_ref: "<merge-base SHA>", repo: ${repo}})`,
+      `query({search_query: "concept", repo: ${repo}})`,
+      `context({name: "symbolName", repo: ${repo}})`,
+      `explain({target: "fileOrSymbol", repo: ${repo}})`,
+      `pdg_query({mode: "controls", target: "fileOrSymbol", repo: ${repo}})`,
+      `pdg_query({mode: "flows", target, variable, repo: ${repo}})`,
+    ];
+    expect(JSON.parse(repo)).toBe(repoName);
+
     for (const file of ['AGENTS.md', 'CLAUDE.md']) {
       const content = await fs.readFile(path.join(tmpDir, file), 'utf8');
-      expect(content).toContain(
-        'For repo-scoped MCP calls, pass `repo: ' + JSON.stringify('workspace "dev"') + '`.',
-      );
+      for (const call of expected) expect(content).toContain('`' + call + '`');
     }
+
+    expect((await refreshBaseRefLine(tmpDir, 'develop')).files).toHaveLength(2);
+    for (const file of ['AGENTS.md', 'CLAUDE.md']) {
+      const content = await fs.readFile(path.join(tmpDir, file), 'utf8');
+      expect(content).toContain('target branch "develop" from its remote');
+      for (const call of expected) expect(content).toContain(call);
+    }
+    expect((await refreshBaseRefLine(tmpDir, 'develop')).files).toEqual([]);
   });
 
   it('uses the configured runner for transport fallbacks, including PDG impact (#2671)', () => {
@@ -1753,13 +1776,13 @@ Indexed as **placeholder** (1 symbols, 1 relationships, 1 execution flows). Cust
     // generated instructions must use the exact callable names or agents call a
     // tool that does not exist.
     expect(content).not.toMatch(/gitnexus_(impact|query|context|detect_changes|rename|cypher)/);
-    expect(content).toContain('impact({target: "symbolName", direction: "upstream"})');
-    expect(content).toContain('detect_changes({scope: "all"})');
+    expect(content).toContain('impact({target: "symbolName", direction: "upstream", repo: "P"})');
+    expect(content).toContain('detect_changes({scope: "all", repo: "P"})');
     // #2175: the generated guidance must advertise the renamed param, never the
     // legacy "query" key (Claude Code drops a tool arg named exactly "query").
-    expect(content).toContain('query({search_query: "concept"})');
+    expect(content).toContain('query({search_query: "concept", repo: "P"})');
     expect(content).not.toContain('query({query:');
-    expect(content).toContain('context({name: "symbolName"})');
+    expect(content).toContain('context({name: "symbolName", repo: "P"})');
   });
 
   it('JSON-escapes a markdown/quote-bearing branch so it cannot break the code span (#243)', () => {
