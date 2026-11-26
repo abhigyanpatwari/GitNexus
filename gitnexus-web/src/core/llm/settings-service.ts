@@ -62,7 +62,7 @@ export const normalizeTokenBudget = (value?: number): number => {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return DEFAULT_TOKEN_BUDGET;
   }
-  return Math.floor(value);
+  return Math.max(1, Math.floor(value));
 };
 
 export const getAgentConfig = (settings?: Partial<LLMSettings> | null): AgentConfig => ({

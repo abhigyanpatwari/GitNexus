@@ -1139,8 +1139,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               if (rafHandle != null) {
                 cancelAnimationFrame(rafHandle);
                 rafHandle = null;
-                pendingUpdate = false;
               }
+              pendingUpdate = false;
               updateMessage();
               break;
             }
@@ -1173,8 +1173,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
               if (rafHandle != null) {
                 cancelAnimationFrame(rafHandle);
                 rafHandle = null;
-                pendingUpdate = false;
               }
+              pendingUpdate = false;
               updateMessage();
               break;
           }
@@ -1205,6 +1205,26 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         if (rafHandle != null) {
           cancelAnimationFrame(rafHandle);
           rafHandle = null;
+        }
+        if (pendingUpdate) {
+          pendingUpdate = false;
+          if (chatAbortController.signal.aborted) {
+            const stoppedLabel = i18n.t('chat:stopped');
+            const markStopped = (tc: ToolCallInfo): ToolCallInfo =>
+              tc.status === 'running' || tc.status === 'pending'
+                ? { ...tc, status: 'stopped', result: stoppedLabel }
+                : tc;
+            for (let i = 0; i < toolCallsForMessage.length; i++) {
+              toolCallsForMessage[i] = markStopped(toolCallsForMessage[i]);
+            }
+            for (let i = 0; i < stepsForMessage.length; i++) {
+              const step = stepsForMessage[i];
+              if (step.type === 'tool_call' && step.toolCall) {
+                stepsForMessage[i] = { ...step, toolCall: markStopped(step.toolCall) };
+              }
+            }
+          }
+          updateMessage();
         }
         chatStateRef.current = 'idle';
         setIsChatLoading(false);

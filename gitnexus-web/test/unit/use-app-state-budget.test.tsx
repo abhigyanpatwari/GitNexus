@@ -99,4 +99,62 @@ describe('useAppState token budget visibility', () => {
     expect(assistantMessages[0].estimatedCostUsd).toBeUndefined();
     expect(result.current.agentError).toBeNull();
   });
+
+  it('flushes deferred usage and cost when user stops mid-stream before animation frame runs', async () => {
+    const originalRaf = window.requestAnimationFrame;
+    const originalCancelRaf = window.cancelAnimationFrame;
+    window.requestAnimationFrame = vi.fn(() => 42);
+    window.cancelAnimationFrame = vi.fn();
+
+    try {
+      saveSettings({
+        ...loadSettings(),
+        agent: { maxIterations: 8, tokenBudget: 0 },
+      });
+      const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+
+      act(() => {
+        result.current.refreshLLMSettings();
+      });
+
+      mockStream.mockImplementation(async () => {
+        return (async function* () {
+          yield [
+            'messages',
+            [
+              {
+                _getType: () => 'ai',
+                id: 'ai-aborted',
+                content: 'Partial answer',
+                tool_calls: [],
+                usage_metadata: { input_tokens: 100, output_tokens: 20, total_tokens: 120 },
+              },
+              {},
+            ],
+          ];
+          act(() => {
+            result.current.stopChatResponse();
+          });
+          throw new DOMException('Aborted', 'AbortError');
+        })();
+      });
+
+      await act(async () => {
+        await result.current.sendChatMessage('interrupt test');
+      });
+
+      const assistantMessages = result.current.chatMessages.filter((m) => m.role === 'assistant');
+      expect(assistantMessages).toHaveLength(1);
+      expect(assistantMessages[0].content).toBe('Partial answer');
+      expect(assistantMessages[0].tokenUsage).toEqual({
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+      });
+      expect(assistantMessages[0].estimatedCostUsd).toBeCloseTo(0.00045, 6);
+    } finally {
+      window.requestAnimationFrame = originalRaf;
+      window.cancelAnimationFrame = originalCancelRaf;
+    }
+  });
 });

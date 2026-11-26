@@ -32,6 +32,8 @@ describe('pricing utilities', () => {
       outputPerMillion: 0.4,
     });
     expect(getModelPricing('gemini', 'gemini-2.0-flash-lite')).toBeNull();
+    expect(getModelPricing('openrouter', 'custom-org/gpt-4o')).toBeNull();
+    expect(getModelPricing('openrouter', 'anthropic/gpt-4o')).toBeNull();
     expect(getModelPricing('openai', 'my-custom-finetune')).toBeNull();
   });
 

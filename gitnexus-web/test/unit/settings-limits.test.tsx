@@ -44,6 +44,7 @@ describe('agent limits settings-service helpers', () => {
     expect(normalizeTokenBudget(undefined)).toBe(DEFAULT_TOKEN_BUDGET);
     expect(normalizeTokenBudget(Number.NaN)).toBe(0);
     expect(normalizeTokenBudget(-500)).toBe(0);
+    expect(normalizeTokenBudget(0.5)).toBe(1);
     expect(normalizeTokenBudget(15000.4)).toBe(15000);
   });
 

@@ -66,6 +66,15 @@ const MODEL_PRICING_PREFIXES: ReadonlyArray<readonly [string, ModelPricing]> = [
 
 const VERSION_SUFFIX_RE = /^(?:\d+(?:-\d+)*|latest)$/;
 
+const PUBLISHER_MODEL_OWNERS: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+  ['openai', ['gpt-', 'o1', 'o3']],
+  ['google', ['gemini-']],
+  ['anthropic', ['claude-']],
+  ['deepseek', ['deepseek-']],
+  ['minimax', ['minimax-']],
+  ['z-ai', ['glm-']],
+];
+
 const isMatchingModelPrefix = (normalized: string, prefix: string): boolean => {
   if (normalized === prefix) return true;
   if (normalized.startsWith(`${prefix}-`) || normalized.startsWith(`${prefix}:`)) {
@@ -77,8 +86,18 @@ const isMatchingModelPrefix = (normalized: string, prefix: string): boolean => {
 
 const normalizeModelName = (model: string): string => {
   const trimmed = model.trim().toLowerCase();
-  const slashIdx = trimmed.lastIndexOf('/');
-  return slashIdx >= 0 ? trimmed.slice(slashIdx + 1) : trimmed;
+  const slashIdx = trimmed.indexOf('/');
+  if (slashIdx < 0) return trimmed;
+
+  const publisher = trimmed.slice(0, slashIdx);
+  const modelPart = trimmed.slice(slashIdx + 1);
+  if (!modelPart || modelPart.includes('/')) return '';
+
+  const ownerEntry = PUBLISHER_MODEL_OWNERS.find(([name]) => name === publisher);
+  if (!ownerEntry) return '';
+
+  const [, allowedPrefixes] = ownerEntry;
+  return allowedPrefixes.some((p) => modelPart.startsWith(p)) ? modelPart : '';
 };
 
 /**
