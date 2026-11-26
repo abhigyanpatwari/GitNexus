@@ -166,6 +166,51 @@ describe('impact skill risk table matches scoreImpactRisk (#2975)', () => {
   });
 });
 
+// The boundary cases above come from the bounds the table lists, so a
+// criterion deleted from the table would silently take its cases with it.
+// Probe the scorer one axis at a time instead: the smallest value at which it
+// reaches a level must be the smallest bound the table documents for that
+// level or a higher one. A level reached only through a higher row's bound
+// (MEDIUM at 3 processes, which is the HIGH bound) counts as that bound.
+const RANK: Record<ImpactRisk, number> = { UNKNOWN: -1, LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3 };
+const PROBE_LIMIT = 1000;
+const AXES: readonly Axis[] = ['direct', 'processes', 'modules', 'total'];
+
+function scorerFirstValue(level: Graded, input: (value: number) => ImpactRiskInput) {
+  for (let value = 1; value <= PROBE_LIMIT; value++) {
+    if (RANK[scoreImpactRisk(input(value)).risk] >= RANK[level]) return value;
+  }
+  return undefined;
+}
+
+function documentedFirstValue(level: Graded, bound: (row: Graded) => number | undefined) {
+  const bounds = GRADED.slice(0, GRADED.indexOf(level) + 1)
+    .map(bound)
+    .filter((value): value is number => value !== undefined);
+  return bounds.length > 0 ? Math.min(...bounds) : undefined;
+}
+
+const coverageCases = GRADED.flatMap((level) => [
+  {
+    name: `upstream direct reaches ${level}`,
+    level,
+    input: upstreamInput,
+    bound: (row: Graded) => upstreamBound[row],
+  },
+  ...AXES.map((axis) => ({
+    name: `downstream ${axis} reaches ${level}`,
+    level,
+    input: (value: number) => downstreamInput(axis, value),
+    bound: (row: Graded) => downstreamBounds[row][axis],
+  })),
+]);
+
+describe('impact skill risk table lists every scoreImpactRisk criterion', () => {
+  it.each(coverageCases)('$name at the documented bound', ({ level, input, bound }) => {
+    expect(scorerFirstValue(level, input)).toBe(documentedFirstValue(level, bound));
+  });
+});
+
 // The acceptance test in #2975: incomplete evidence must never read as a
 // complete LOW (or MEDIUM). The table's UNKNOWN row says so; check the scorer
 // keeps that promise at each graded bound, and that it leaves HIGH/CRITICAL
@@ -210,5 +255,15 @@ describe('impact tool runtime text matches the skill wording (#2975)', () => {
     expect(impact?.description).toContain('DIRECT — REVIEW FIRST');
     expect(impact?.description).not.toContain('WILL BREAK');
     expect(getNextStepHint('impact', {})).not.toContain('WILL BREAK');
+  });
+
+  it('names depth-1 items by the direction of the walk', () => {
+    const upstream = getNextStepHint('impact', { direction: 'upstream' });
+    const downstream = getNextStepHint('impact', { direction: 'downstream' });
+    expect(upstream).toContain('direct dependents');
+    expect(downstream).toContain('direct dependencies');
+    expect(downstream).not.toContain('dependents');
+    expect(upstream).not.toContain('WILL BREAK');
+    expect(downstream).not.toContain('WILL BREAK');
   });
 });
