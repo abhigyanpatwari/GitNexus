@@ -16,17 +16,18 @@ How we structure tests and which commands to run locally and in CI.
 
 From `gitnexus/`:
 
-| Command                       | What it runs                                       | When to use                           |
-| ----------------------------- | -------------------------------------------------- | ------------------------------------- |
-| `npm test`                    | Full suite (all 3 vitest projects)                 | Before opening a PR                   |
-| `npm run typecheck:tests`     | TypeScript checks for source, tests, and helpers   | Before opening a PR                   |
-| `npm run test:unit`           | Unit tests only (`test/unit/`)                     | Tight development loop                |
-| `npm run test:integration`    | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
-| `npm run test:coverage`       | Full suite + v8 coverage with thresholds           | Checking coverage impact              |
-| `npm run test:parity`         | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
-| `npm run test:cross-platform` | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
-| `npm run test:watch`          | Vitest in watch mode                               | Active development                    |
-| `npm run test:dupes`          | Duplicate-test scan of lines changed vs `main`     | Before adding tests or benchmarks     |
+| Command                         | What it runs                                       | When to use                           |
+| ------------------------------- | -------------------------------------------------- | ------------------------------------- |
+| `npm test`                      | All three Vitest projects                          | Before opening a PR                   |
+| `npm run typecheck:tests`       | TypeScript checks for source, tests, and helpers   | Before opening a PR                   |
+| `npm run test:unit`             | Unit tests only (`test/unit/`)                     | Tight development loop                |
+| `npm run test:integration`      | Integration tests (`test/integration/`)            | After changing pipelines, DB, workers |
+| `npm run test:conformance:java` | javac comparisons and GitNexus product checks      | After building the CLI (JDK 21)       |
+| `npm run test:coverage`         | Full suite + v8 coverage with thresholds           | Checking coverage impact              |
+| `npm run test:parity`           | Scope-resolution parity for all migrated languages | After changing resolver or scope code |
+| `npm run test:cross-platform`   | Platform-sensitive subset only                     | Debugging a Windows/macOS issue       |
+| `npm run test:watch`            | Vitest in watch mode                               | Active development                    |
+| `npm run test:dupes`            | Duplicate-test scan of lines changed vs `main`     | Before adding tests or benchmarks     |
 
 Vitest transpiles TypeScript without checking types. Run `npm run typecheck:tests`
 in `gitnexus/` to check test code and helpers against the production types. This
@@ -49,6 +50,8 @@ From `gitnexus-web/`:
 # gitnexus-shared/dist must exist first. `npm install` / `npm run build` in
 # gitnexus/ compiles it via parent `lib/tsc.js` (do not npm ci gitnexus-shared).
 cd gitnexus && npx tsc --noEmit && npm run typecheck:tests && npm test
+# For Java changes, set JAVA_HOME to JDK 21 and run the compiler comparisons.
+npm run build && npm run test:conformance:java
 cd ../gitnexus-web && npx tsc -b --noEmit && npm test
 ```
 
@@ -80,12 +83,14 @@ When adding a new test that uses native LadybugDB (`@ladybugdb/core`), add it to
 
 - **Unit** — Pure logic, parsers, graph/query helpers; fast; no network.
 - **Integration** — Real combinations (filesystem, MCP wiring, larger pipelines) as already organized under `gitnexus/test/integration`.
-- **Resolver / parity** — Language-specific call-resolution tests in `test/integration/resolvers/`.
+- **Resolver / parity** — Java compiler fixtures live in `test/fixtures/compiler-conformance/`. Other languages have resolver suites in `test/integration/resolvers/`.
 - **E2E (web)** — Critical user paths only; prefer `data-testid` attributes for stable selectors. Tests run against real backend (`gitnexus serve`) and Vite dev server.
 
 ## Scope-resolution tests
 
-Every language resolves calls and inheritance through the scope-resolution pipeline — the legacy call-resolution DAG and the per-language `REGISTRY_PRIMARY_<LANG>` flag were removed in RING4-1 (#942). Each language's resolver test lives at `test/integration/resolvers/<slug>.test.ts` and runs once, on the single scope-resolution path, as part of the normal `tests` job (`vitest test/**/*.test.ts`).
+Run `npm run test:conformance:java` from a built `gitnexus/` checkout with JDK 21 to compare call targets, ambiguity, source declarations, and inheritance with javac. Add a self-contained `test/fixtures/compiler-conformance/java-<case>/` directory to register a new compiler case. The runner discovers it automatically. Other compilers and analyzers can use the same standalone comparison command by emitting JSON reports. See the [call-resolution conformance guide](gitnexus/tools/compiler-conformance/README.md).
+
+The same command runs product checks for Spring, persistence, rename, and fixtures that exercise Java alongside other languages. These checks verify behavior specific to GitNexus after the compiler comparisons. The Java job also runs the fixture benchmarks. For a clean checkout, `npm run test:java` builds the CLI before invoking the conformance command.
 
 Adding a language: register its `ScopeResolver` in `scope-resolution/pipeline/registry.ts` (`SCOPE_RESOLVERS`) and add the resolver test file — no workflow or config edit needed.
 
@@ -164,9 +169,11 @@ The `CI Gate` job in `ci.yml` requires the quality and test workflows to pass.
 The browser E2E workflow must pass or be skipped because no web files changed.
 
 The Ubuntu coverage merge job enforces the CLI and web Vitest thresholds,
-including coverage from CLI server tests. It uploads both LCOV files after
-the required tests, even when a threshold fails. The SonarQube job checks that
-both reports have line data and that their source paths exist in the checkout.
+including coverage from CLI server tests. The Java conformance job collects
+V8 coverage from the compiled CLI and its product checks. Source maps assign
+those hits to the TypeScript files. The merge job adds that coverage to the CLI
+LCOV report for SonarQube. The SonarQube job checks that both the CLI and web
+reports have line data and that their source paths exist in the checkout.
 A missing or invalid report fails the SonarQube check.
 
 Same-repository code PRs targeting any branch get a scan. Fork PRs run the
@@ -187,9 +194,10 @@ The `typecheck` job runs both the production compiler check and
 
 ### Complete execution, including platform and benchmark tests
 
-The required `every test executed` job reconciles execution receipts from Ubuntu
-coverage, every Windows/macOS shard, the serial benchmark run, and the real Python
-workflow preflight. It requires a recorded pass for every collected test. A skip
+The required `every test executed` job reconciles Vitest execution receipts from Ubuntu
+coverage, every Windows/macOS shard, the serial benchmark runs, and the real Python
+workflow preflight. Java fixture failures fail the dedicated conformance job.
+The Vitest audit requires a recorded pass for every collected test. A skip
 on Linux is satisfied only by a pass of that exact test in another required job.
 Test identities include the file, suite/title and source location; ambiguous
 parameterized cases must have unique titles. Missing receipts, missing test files,

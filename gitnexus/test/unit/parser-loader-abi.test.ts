@@ -58,11 +58,6 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
     snippet: 'x = 1\n',
     rootType: 'module',
   },
-  [SupportedLanguages.Java]: {
-    language: SupportedLanguages.Java,
-    snippet: 'class A {}\n',
-    rootType: 'program',
-  },
   [SupportedLanguages.CSharp]: {
     language: SupportedLanguages.CSharp,
     snippet: 'class A {}\n',
@@ -137,7 +132,7 @@ const SMOKE_CASES: Record<string, SmokeCase> = {
 };
 
 describe('parser-loader ABI load-smoke (#1922)', () => {
-  const sources = listGrammarSources();
+  const sources = listGrammarSources().filter(({ key }) => key !== SupportedLanguages.Java);
 
   it('has a smoke case for every registered grammar SOURCES entry', () => {
     const missing = sources.map((s) => s.key).filter((key) => !(key in SMOKE_CASES));

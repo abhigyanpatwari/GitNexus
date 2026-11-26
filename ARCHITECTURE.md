@@ -845,6 +845,8 @@ Node IDs use arity suffix (`#<paramCount>`): `Method:file:Class.method#1` vs `#2
 
 **ID stability:** collision-only tags mean IDs change when overloads are added. `save#1` becomes `save#1~int` when `save(String)` is added.
 
+Java distinguishes colliding variadic methods and constructors by their declared parameter types, for example `#1~String...`. Generic signatures also include the declared type-parameter bounds. When several types in one Java file share a simple name, their graph IDs use their qualified identities so calls can point to distinct declarations.
+
 **Variadic matching:** confidence 0.7 when one side is variadic and the other has fixed count.
 
 **METHOD_IMPLEMENTS confidence tiering:**

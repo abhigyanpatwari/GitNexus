@@ -2,6 +2,7 @@ import type { Range, ReferenceKind } from 'gitnexus-shared';
 import type { DecodedReceiverChain } from '../utils/receiver-chain-codec.js';
 
 export type ResolutionSuppressionReason =
+  | 'external-call-target'
   | 'adl-ordinary-lookup-blocked'
   | 'conversion-rank-tied'
   | 'inline-ns-ambiguous'
@@ -63,6 +64,8 @@ export type ResolutionOutcome =
        * qualified namespace resolver returns only an `ambiguous` sentinel.
        */
       readonly candidateIds: readonly string[];
+      /** Provider-qualified binary declaration for an external-call-target. */
+      readonly externalTarget?: string;
       /** Public graph identities, kept separate from scope definition IDs. */
       readonly candidateGraphIds?: readonly string[];
       /** Public graph identities of the candidates' declaring types. */

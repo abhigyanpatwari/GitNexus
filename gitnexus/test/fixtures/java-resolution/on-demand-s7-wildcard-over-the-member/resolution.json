@@ -1,0 +1,12 @@
+{
+  "diagnostics": {},
+  "onDemand": {
+    "status": "known semantic gap: JLS 7.5.2 and 6.5.4.2 import a.Outer.T",
+    "extraEdges": [],
+    "missingCompilerEdges": [
+      "CALLS Method:viaField -> Method:src/a/Outer.java:run",
+      "CALLS Method:viaNew -> Method:src/a/Outer.java:run",
+      "CALLS Method:viaParam -> Method:src/a/Outer.java:run"
+    ]
+  }
+}

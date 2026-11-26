@@ -1,0 +1,1 @@
+package d; public class Lib { public static void make() {} public void run() {} }

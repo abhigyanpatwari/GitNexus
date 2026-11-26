@@ -1799,6 +1799,16 @@ export interface ScopeResolver {
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
 
+  /** Identify the binary declaration of a call with no workspace receiver
+   * target. Its signature is diagnostic evidence; it has no source graph node. */
+  readonly externalCallTarget?: (
+    filePath: string,
+    name: string,
+    range: ReferenceSite['atRange'],
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+  ) => string | undefined;
+
   /** Opt this member lookup into compound, super and chained call receivers.
    * Existing providers retain their historical simple-receiver paths. */
   readonly receiverMemberLookupCoversAllCalls?: boolean;
@@ -1819,6 +1829,16 @@ export interface ScopeResolver {
    * must not resume first-match or global-name fallback. */
   readonly resolveUnqualifiedCall?: (
     callsite: ReferenceSite,
+    scopes: ScopeResolutionIndexes,
+    model: SemanticModel,
+  ) => ReceiverMemberResolution | undefined;
+
+  /** Select among explicit constructors once the written type has been resolved.
+   * A rejection is authoritative. Undefined keeps the shared arity-based lookup. */
+  readonly resolveConstructorCall?: (
+    owner: SymbolDefinition,
+    constructors: readonly SymbolDefinition[],
+    site: ReferenceSite,
     scopes: ScopeResolutionIndexes,
     model: SemanticModel,
   ) => ReceiverMemberResolution | undefined;
@@ -2223,6 +2243,8 @@ export interface ScopeResolver {
     parsedFiles: readonly ParsedFile[],
     indexes: ScopeResolutionIndexes,
     ctx: {
+      /** Read-only member lookup for a range expression whose type depends on overload selection. */
+      readonly model?: SemanticModel;
       readonly fileContents: ReadonlyMap<string, string>;
       readonly treeCache?: { get(filePath: string): unknown };
     },

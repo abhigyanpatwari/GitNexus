@@ -1,10 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import {
-  collectJavaCaptureSideChannel,
-  type JavaCaptureSideChannel,
-} from '../../src/core/ingestion/languages/java/capture-side-channel.js';
-import { emitJavaScopeCaptures } from '../../src/core/ingestion/languages/java/captures.js';
-import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.js';
 import { deriveSpringBeanMetadata } from '../../src/core/ingestion/frameworks/spring/bean-catalog.js';
 import {
   collectKotlinCaptureSideChannel,
@@ -12,90 +6,6 @@ import {
 } from '../../src/core/ingestion/languages/kotlin/capture-side-channel.js';
 import { emitKotlinScopeCaptures } from '../../src/core/ingestion/languages/kotlin/captures.js';
 import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.js';
-
-function captureClassAnnotations(code: string): JavaCaptureSideChannel['classAnnotations'] {
-  const filePath = 'src/Test.java';
-  emitJavaScopeCaptures(code, filePath);
-  return collectJavaCaptureSideChannel(filePath)?.classAnnotations ?? [];
-}
-
-function captureSpringDiFacts(code: string): NonNullable<JavaCaptureSideChannel['springDiFacts']> {
-  const filePath = 'src/Test.java';
-  emitJavaScopeCaptures(code, filePath);
-  return collectJavaCaptureSideChannel(filePath)?.springDiFacts ?? [];
-}
-
-describe('Java class annotation capture', () => {
-  it('collects annotation names during the existing scope-query traversal', () => {
-    const facts = captureClassAnnotations(`
-      @Component("widget") class Widget {
-        @Deprecated @Service static class BillingService {}
-      }
-      @org.springframework.context.annotation.Configuration class AppConfiguration {}
-
-      @Service interface ServiceContract {}
-      @Service enum ServiceState { READY }
-      @Service record ServiceRecord(String value) {}
-      @Service @interface ServiceMarker {}
-    `);
-
-    expect(facts.map((fact) => fact.annotationNames)).toEqual([
-      ['Component'],
-      ['Deprecated', 'Service'],
-      ['org.springframework.context.annotation.Configuration'],
-    ]);
-  });
-
-  it('clears worker side-channel facts at the start of each workspace pass', async () => {
-    const filePath = 'src/Stale.java';
-    emitJavaScopeCaptures('@Service class Stale {}', filePath);
-    expect(collectJavaCaptureSideChannel(filePath)?.classAnnotations).toHaveLength(1);
-
-    await javaScopeResolver.loadResolutionConfig?.('/tmp/repo');
-
-    expect(collectJavaCaptureSideChannel(filePath)).toBeUndefined();
-  });
-});
-
-describe('Java Spring injection syntax capture', () => {
-  it('preserves constructor, field, method, qualifier, and bean-name syntax in the side channel', () => {
-    const facts = captureSpringDiFacts(`
-      @Service("checkout") class Checkout {
-        Checkout(@Qualifier("fastGateway") Gateway gateway) {}
-        @Autowired Gateway fallback;
-        @Inject void setRepo(Repo repo) {}
-      }
-    `);
-
-    expect(facts).toHaveLength(1);
-    expect(facts[0].classAnnotations).toEqual([
-      { name: 'Service', text: '@Service("checkout")', line: 2 },
-    ]);
-    expect(facts[0].injectionSites).toMatchObject([
-      {
-        kind: 'constructor',
-        implicitConstructor: true,
-        dependencies: [
-          {
-            name: 'gateway',
-            rawType: 'Gateway',
-            annotations: [{ name: 'Qualifier', text: '@Qualifier("fastGateway")' }],
-          },
-        ],
-      },
-      {
-        kind: 'field',
-        memberName: 'fallback',
-        dependencies: [{ name: 'fallback', rawType: 'Gateway' }],
-      },
-      {
-        kind: 'method',
-        memberName: 'setRepo',
-        dependencies: [{ name: 'repo', rawType: 'Repo' }],
-      },
-    ]);
-  });
-});
 
 function captureKotlinClassAnnotations(code: string): KotlinCaptureSideChannel['classAnnotations'] {
   const filePath = 'src/Test.kt';

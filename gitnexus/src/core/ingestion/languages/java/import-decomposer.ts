@@ -15,7 +15,10 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
+import { getJavaParser } from './query.js';
+import { stripGaps } from './type-spelling.js';
 
 type ImportKind = 'named' | 'wildcard' | 'static' | 'static-wildcard';
 
@@ -38,59 +41,44 @@ export function splitImportDeclaration(stmtNode: SyntaxNode): CaptureMatch | nul
 }
 
 function parseImportDeclaration(node: SyntaxNode): ImportSpec | null {
-  // Detect `static` by checking for an anonymous `static` token child.
-  let isStatic = false;
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child !== null && child.type === 'static') {
-      isStatic = true;
-      break;
-    }
+  const pathNode = node.namedChildren.find(
+    (child) => child.type === 'scoped_identifier' || child.type === 'identifier',
+  );
+  if (!pathNode?.text) return null;
+  const source = stripGaps(pathNode.text);
+  const isStatic = node.children.some((child) => child.type === 'static');
+  if (node.namedChildren.some((child) => child.type === 'asterisk')) {
+    return { kind: isStatic ? 'static-wildcard' : 'wildcard', source, name: '*', atNode: node };
   }
+  const name = source.slice(source.lastIndexOf('.') + 1);
+  return { kind: isStatic ? 'static' : 'named', source, name, atNode: node };
+}
 
-  // Detect wildcard by checking for `asterisk` named child.
-  let isWildcard = false;
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null && child.type === 'asterisk') {
-      isWildcard = true;
-      break;
-    }
+export function readJavaWorkspaceImports(source: string, filePath: string) {
+  const lastImport = source.lastIndexOf('import');
+  if (lastImport < 0) return [];
+  const parse = (text: string) =>
+    parseSourceSafe(getJavaParser(), text, undefined, undefined, filePath).rootNode;
+  // A complete import at the end of this prefix accounts for every import
+  // keyword in the file. A semicolon inside trivia or a later use of the
+  // word in a method body can cut the prefix short. Parse the full unit then.
+  const end = source.indexOf(';', lastImport) + 1;
+  const prefix = end > 0 && end < source.length ? parse(source.slice(0, end)) : undefined;
+  const root =
+    prefix && !prefix.hasError && prefix.lastNamedChild?.type === 'import_declaration'
+      ? prefix
+      : parse(source);
+  const imports = [];
+  for (const node of root.namedChildren) {
+    if (node.type !== 'import_declaration') continue;
+    const spec = parseImportDeclaration(node);
+    if (spec)
+      imports.push({
+        name: spec.name === '*' ? spec.source + '.*' : spec.source,
+        isStatic: spec.kind === 'static' || spec.kind === 'static-wildcard',
+      });
   }
-
-  // Find the scoped_identifier (or identifier for single-segment imports).
-  let pathNode: SyntaxNode | null = null;
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child !== null && (child.type === 'scoped_identifier' || child.type === 'identifier')) {
-      pathNode = child;
-      break;
-    }
-  }
-  if (pathNode === null) return null;
-
-  const fullPath = pathNode.text;
-  if (fullPath === '') return null;
-
-  if (isStatic && isWildcard) {
-    // `import static com.example.Utils.*;`
-    return { kind: 'static-wildcard', source: fullPath, name: '*', atNode: node };
-  }
-  if (isStatic) {
-    // `import static com.example.Utils.format;`
-    const lastDot = fullPath.lastIndexOf('.');
-    const name = lastDot >= 0 ? fullPath.slice(lastDot + 1) : fullPath;
-    return { kind: 'static', source: fullPath, name, atNode: node };
-  }
-  if (isWildcard) {
-    // `import com.example.*;`
-    return { kind: 'wildcard', source: fullPath, name: '*', atNode: node };
-  }
-
-  // `import com.example.User;`
-  const lastDot = fullPath.lastIndexOf('.');
-  const name = lastDot >= 0 ? fullPath.slice(lastDot + 1) : fullPath;
-  return { kind: 'named', source: fullPath, name, atNode: node };
+  return imports;
 }
 
 function buildImportMatch(stmtNode: SyntaxNode, spec: ImportSpec): CaptureMatch {

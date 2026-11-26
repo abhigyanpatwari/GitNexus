@@ -85,10 +85,10 @@ console.log(
   }),
 );
 if (values.check) {
-  // Reviewed before/after #3695: 66,300 nodes and 126,600 relationships.
+  // Each public method declares ten block-scoped local variables.
   assert.equal(
     fingerprint,
-    '3209302e91e7023328464540ec7d0ac72ac03bf49fa73303817a56ed3d415ef5',
+    '7ff03cec3bbfd427bb232bc75fcebc19b37f097aa6d1e7b4e1a5fbf0d00197b2',
     'Dense Java graph differs from the reviewed baseline',
   );
 }

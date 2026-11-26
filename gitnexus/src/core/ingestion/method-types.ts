@@ -21,6 +21,8 @@ export interface ParameterInfo {
 
 export interface MethodInfo {
   name: string;
+  /** Provider-supplied graph ID suffix for declarations whose ordinary IDs collide. */
+  graphIdSuffix?: string;
   receiverType: string | null;
   returnType: string | null;
   parameters: readonly Readonly<ParameterInfo>[];

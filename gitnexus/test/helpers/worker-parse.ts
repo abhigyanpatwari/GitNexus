@@ -15,6 +15,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { createWorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
 import {
   processParsing,
@@ -57,6 +58,12 @@ export const parseFilesWithWorkers = async (
     outRawResults?: ParseWorkerResult[];
   } = {},
 ): Promise<WorkerParseResult> => {
+  if (
+    process.env.VITEST === 'true' &&
+    files.some((file) => getLanguageFromFilename(file.path) === SupportedLanguages.Java)
+  ) {
+    throw new Error('Move this Java source fixture to npm run test:conformance:java.');
+  }
   const graph = createKnowledgeGraph();
   const model = createSemanticModel();
   const pool = createWorkerPool(DIST_WORKER_URL, opts.poolSize ?? 1);

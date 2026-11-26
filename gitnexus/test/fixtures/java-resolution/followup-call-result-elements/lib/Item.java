@@ -1,0 +1,1 @@
+package lib; public class Item { public void save() {} }

@@ -61,17 +61,6 @@ describe('ServiceBoundaryDetector', () => {
       expect(boundaries[0].markers).toContain('go.mod');
     });
 
-    it('test_detect_pom_xml_marker_returns_boundary', async () => {
-      writeFile('microservices/billing/pom.xml', '<project/>');
-      writeFile('microservices/billing/src/Main.java', 'class Main {}');
-
-      const boundaries = await detectServiceBoundaries(tmpDir);
-
-      expect(boundaries).toHaveLength(1);
-      expect(boundaries[0].serviceName).toBe('billing');
-      expect(boundaries[0].markers).toContain('pom.xml');
-    });
-
     it('test_detect_dockerfile_marker_returns_boundary', async () => {
       writeFile('apps/worker/Dockerfile', 'FROM python:3.12');
       writeFile('apps/worker/requirements.txt', 'flask');
@@ -124,17 +113,6 @@ describe('ServiceBoundaryDetector', () => {
       expect(boundaries[0].markers).toContain('Cargo.toml');
     });
 
-    it('test_detect_build_gradle_marker_returns_boundary', async () => {
-      writeFile('modules/gateway/build.gradle', 'apply plugin: "java"');
-      writeFile('modules/gateway/src/Main.java', '');
-
-      const boundaries = await detectServiceBoundaries(tmpDir);
-
-      expect(boundaries).toHaveLength(1);
-      expect(boundaries[0].serviceName).toBe('gateway');
-      expect(boundaries[0].markers).toContain('build.gradle');
-    });
-
     it('test_detect_empty_repo_returns_empty', async () => {
       const boundaries = await detectServiceBoundaries(tmpDir);
       expect(boundaries).toHaveLength(0);
@@ -162,19 +140,6 @@ describe('ServiceBoundaryDetector', () => {
       const paths = boundaries.map((b) => b.servicePath);
       expect(paths).toContain('services/auth');
       expect(paths).not.toContain('vendor/some-dep');
-    });
-
-    it('test_detect_skips_target_directory', async () => {
-      writeFile('services/api/go.mod', 'module api');
-      writeFile('services/api/main.go', '');
-      writeFile('target/classes/Main.java', '');
-      writeFile('target/pom.xml', '<project/>');
-
-      const boundaries = await detectServiceBoundaries(tmpDir);
-
-      const paths = boundaries.map((b) => b.servicePath);
-      expect(paths).toContain('services/api');
-      expect(paths).not.toContain('target');
     });
 
     it('test_detect_skips_pycache_directory', async () => {

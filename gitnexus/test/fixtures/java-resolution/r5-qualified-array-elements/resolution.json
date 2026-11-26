@@ -1,0 +1,15 @@
+{
+  "diagnostics": {"compiler.err.ref.ambiguous": 2},
+  "calls": [
+    {"caller": "Method:p/Use.java:Use.parameter#1", "member": "save", "source": ["p/Use.java#5:2"]},
+    {"caller": "Method:p/Use.java:Use.local#0", "member": "save", "source": ["p/Use.java#6:2"]},
+    {"caller": "Method:p/Use.java:Use.viaField#0", "member": "save", "source": ["p/Use.java#7:2"]},
+    {"caller": "Method:p/Use.java:Use.viaThis#0", "member": "save", "source": ["p/Use.java#8:2"]},
+    {"caller": "Method:p/Use.java:Use.importedRoot#1", "member": "save", "source": ["p/Use.java#9:2"]},
+    {"caller": "Method:p/Use.java:Use.fullyQualified#1", "member": "save", "source": ["p/Use.java#10:2"]},
+    {"caller": "Method:p/Use.java:Use.simple#1", "member": "save", "source": ["p/Use.java#11:2"]},
+    {"caller": "Method:p/Single.java:Single.run#1", "member": "save", "source": ["p/Single.java#3:34"]},
+    {"caller": "Method:p/Ambiguous.java:Ambiguous.run#1", "member": "save", "source": ["p/Ambiguous.java#4:2"], "targets": 0},
+    {"caller": "Method:p/Ambiguous.java:Ambiguous.runPlain#1", "member": "save", "source": ["p/Ambiguous.java#5:2"], "targets": 0}
+  ]
+}

@@ -1,0 +1,1 @@
+package q; public class prefix { public static class User { public void save() {} } }

@@ -1,0 +1,1 @@
+package app; import static b.Tools.helper; import static b.Tools.Inner; public class Direct { void correct() { helper(); Inner.in(); } }

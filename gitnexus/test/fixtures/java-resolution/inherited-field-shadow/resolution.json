@@ -1,0 +1,39 @@
+{
+  "diagnostics": {"compiler.err.ref.ambiguous": 2},
+  "calls": [
+    {"caller": "Method:app/Outer.java:External.run#0", "member": "save", "published": [], "compilerTargets": ["app/User.java#1:33"], "source": ["app/Outer.java#35:4"]},
+    {"caller": "Method:app/Outer.java:Direct.run#0", "member": "save", "source": ["app/Outer.java#26:4"]},
+    {"caller": "Method:app/Outer.java:SamePackage.run#0", "member": "save", "source": ["app/Outer.java#29:4"]},
+    {"caller": "Method:app/Outer.java:AcrossPackages.run#0", "member": "save", "source": ["app/Outer.java#32:4"]},
+    {"caller": "Method:app/Outer.java:Untyped.run#0", "member": "save", "published": [], "compilerTargets": ["app/Other.java#1:34"], "source": ["app/Outer.java#38:4"]},
+    {"caller": "Method:app/Outer.java:Private.run#0", "member": "save", "source": ["app/Outer.java#41:4"]},
+    {"caller": "Method:app/Outer.java:Constant.run#0", "member": "save", "source": ["app/Outer.java#44:4"]},
+    {"caller": "Method:app/Outer.java:DirectContract.bare#0", "member": "save", "source": ["app/Outer.java#12:4"]},
+    {"caller": "Method:app/Outer.java:DirectContract.elements#0", "member": "save", "source": ["app/Outer.java#13:4"]},
+    {"caller": "Method:app/Outer.java:ThroughHidingBase.bare#0", "member": "save", "source": ["app/Outer.java#16:4"]},
+    {"caller": "Method:app/Outer.java:ThroughHidingBase.elements#0", "member": "save", "source": ["app/Outer.java#17:4"]},
+    {"caller": "Method:app/Outer.java:Ambiguous.bare#0", "member": "save", "source": ["app/Outer.java#22:4"], "targets": 0},
+    {"caller": "Method:app/Outer.java:Ambiguous.elements#0", "member": "save", "published": [], "compilerTargets": ["app/User.java#1:33"], "source": ["app/Outer.java#23:4"]},
+    {"caller": "Method:app/Outer.java:LocalField.bare#0", "member": "save", "source": ["app/Outer.java#19:46"]},
+    {"caller": "Method:app/Outer.java:ForeignField.bare#0", "member": "save", "source": ["app/Outer.java#20:58"]},
+    {"caller": "Method:app/Outer.java:Own.run#0", "member": "save", "source": ["app/Outer.java#48:4"]}
+  ],
+  "nodes": [
+    "Method:app/Outer.java:AcrossPackages.run#0",
+    "Method:app/Outer.java:Ambiguous.bare#0",
+    "Method:app/Outer.java:Ambiguous.elements#0",
+    "Method:app/Outer.java:Constant.run#0",
+    "Method:app/Outer.java:Direct.run#0",
+    "Method:app/Outer.java:DirectContract.bare#0",
+    "Method:app/Outer.java:DirectContract.elements#0",
+    "Method:app/Outer.java:External.run#0",
+    "Method:app/Outer.java:ForeignField.bare#0",
+    "Method:app/Outer.java:LocalField.bare#0",
+    "Method:app/Outer.java:Own.run#0",
+    "Method:app/Outer.java:Private.run#0",
+    "Method:app/Outer.java:SamePackage.run#0",
+    "Method:app/Outer.java:ThroughHidingBase.bare#0",
+    "Method:app/Outer.java:ThroughHidingBase.elements#0",
+    "Method:app/Outer.java:Untyped.run#0"
+  ]
+}

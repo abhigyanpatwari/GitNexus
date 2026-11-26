@@ -32,45 +32,6 @@ describe('TopicExtractor', () => {
     storagePath: path.join(repoPath, '.gitnexus'),
   });
 
-  describe('Kafka — Java', () => {
-    it('test_extract_kafka_listener_returns_consumer', async () => {
-      writeFile(
-        'src/EventHandler.java',
-        `@KafkaListener(topics = "user.created")
-public void handleUserCreated(ConsumerRecord<String, String> record) {
-    // process
-}`,
-      );
-
-      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
-      const consumers = contracts.filter((c) => c.role === 'consumer');
-
-      expect(consumers).toHaveLength(1);
-      expect(consumers[0].contractId).toBe('topic::user.created');
-      expect(consumers[0].confidence).toBe(0.8);
-      expect(consumers[0].meta.broker).toBe('kafka');
-    });
-
-    it('test_extract_kafka_template_send_returns_producer', async () => {
-      writeFile(
-        'src/EventPublisher.java',
-        `public class EventPublisher {
-    @Autowired KafkaTemplate<String, String> template;
-    public void publish() {
-        kafkaTemplate.send("user.created", payload);
-    }
-}`,
-      );
-
-      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
-      const producers = contracts.filter((c) => c.role === 'provider');
-
-      expect(producers).toHaveLength(1);
-      expect(producers[0].contractId).toBe('topic::user.created');
-      expect(producers[0].meta.broker).toBe('kafka');
-    });
-  });
-
   describe('Kafka — Node', () => {
     it('test_extract_kafkajs_subscribe_returns_consumer', async () => {
       writeFile(
@@ -114,37 +75,6 @@ await consumer.run({ eachMessage: async () => {} });`,
       expect(consumers).toHaveLength(1);
       expect(consumers[0].contractId).toBe('topic::user.logged-in');
       expect(consumers[0].meta.broker).toBe('kafka');
-    });
-  });
-
-  describe('RabbitMQ — Java', () => {
-    it('test_extract_rabbit_listener_returns_consumer', async () => {
-      writeFile(
-        'src/OrderListener.java',
-        `@RabbitListener(queues = "order-queue")
-public void processOrder(OrderMessage msg) {}`,
-      );
-
-      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
-      const consumers = contracts.filter((c) => c.role === 'consumer');
-
-      expect(consumers).toHaveLength(1);
-      expect(consumers[0].contractId).toBe('topic::order-queue');
-      expect(consumers[0].meta.broker).toBe('rabbitmq');
-    });
-
-    it('test_extract_rabbit_template_send_returns_producer', async () => {
-      writeFile(
-        'src/Publisher.java',
-        `rabbitTemplate.convertAndSend("order-exchange", "order.new", payload);`,
-      );
-
-      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
-      const producers = contracts.filter((c) => c.role === 'provider');
-
-      expect(producers).toHaveLength(1);
-      expect(producers[0].contractId).toBe('topic::order-exchange');
-      expect(producers[0].meta.broker).toBe('rabbitmq');
     });
   });
 
@@ -494,28 +424,6 @@ await consumer.subscribe({ topic: 'order.placed' });`,
   // filter (so glob-level pruning still applies); the second test below
   // pins that behaviour against accidental regressions.
   describe('respects .gitnexusignore (#1185)', () => {
-    it('source-scan glob skips files matched by .gitnexusignore', async () => {
-      // Control: a regular @KafkaListener that SHOULD be discovered.
-      writeFile(
-        'src/EventHandler.java',
-        `@KafkaListener(topics = "user.created")
-public void handleUserCreated(ConsumerRecord<String, String> record) {}`,
-      );
-      // Vendored Java handler under a venv-style dir.
-      writeFile(
-        'mentor_env/lib/LeakedHandler.java',
-        `@KafkaListener(topics = "leaked.event")
-public void handleLeaked(ConsumerRecord<String, String> r) {}`,
-      );
-      writeFile('.gitnexusignore', 'mentor_env/\n');
-
-      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
-      const ids = contracts.map((c) => c.contractId);
-      expect(ids).toContain('topic::user.created');
-      expect(ids).not.toContain('topic::leaked.event');
-      expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
-    });
-
     it('still prunes `*_test.go` even when .gitnexusignore is empty (wrapper preserves glob-level filter)', async () => {
       // Regression guard: replacing the hardcoded `**/*_test.go` glob
       // entry with a wrapper around `createIgnoreFilter` must keep this

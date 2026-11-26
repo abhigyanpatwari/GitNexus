@@ -7,6 +7,79 @@ permissions:
   contents: read
 
 jobs:
+  java-compiler-conformance:
+    name: Java compiler conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GITNEXUS_REQUIRE_FTS: '1'
+      GITNEXUS_REQUIRE_VECTOR: '1'
+      GITNEXUS_REQUIRE_ZIG: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Enable source maps for conformance coverage
+        working-directory: gitnexus
+        run: |
+          jq '.compilerOptions.sourceMap = true' tsconfig.json > "$RUNNER_TEMP/java-tsconfig.json"
+          mv "$RUNNER_TEMP/java-tsconfig.json" tsconfig.json
+      # npm ci runs prepare, including the production build and shared-module rewrites.
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Ensure FTS + VECTOR extensions installed
+        working-directory: gitnexus
+        run: node --import tsx scripts/ensure-fts.ts
+      - name: Compare Java fixtures with javac and check GitNexus behavior
+        working-directory: gitnexus
+        env:
+          NODE_V8_COVERAGE: ${{ runner.temp }}/java-v8
+          GITNEXUS_BENCH: '1'
+          GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
+        run: npm run test:conformance:java
+      - name: Report conformance coverage against TypeScript sources
+        working-directory: gitnexus
+        run: |
+          node node_modules/c8/bin/c8.js report --merge-async --temp-directory="$RUNNER_TEMP/java-v8" \
+            --exclude-after-remap --include='src/**/*.ts' --reporter=lcovonly --reports-dir=coverage/java
+          awk '/^SF:/ { java = /^SF:src\/core\/ingestion\/languages\/java\/.+\.ts$/ }
+               java && /^DA:[0-9]+,[1-9][0-9]*$/ { hit = 1 }
+               END { exit !hit }' coverage/java/lcov.info
+      - name: Upload Java conformance LCOV
+        uses: ./.github/actions/upload-test-artifact
+        with:
+          name: java-conformance-coverage
+          path: gitnexus/coverage/java/lcov.info
+
+  java-platform-conformance:
+    name: Java platform conformance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    env:
+      GITNEXUS_WORKER_READY_TIMEOUT_MS: '60000'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@d1374f8ac74474200d16ef8ecee22c7ae7a51880 # v6.3.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: ./.github/actions/setup-gitnexus
+      - name: Ensure FTS and VECTOR extensions are available
+        working-directory: gitnexus
+        run: node --import tsx scripts/ensure-fts.ts
+      - name: Check persisted Java behavior and non-ASCII paths
+        working-directory: gitnexus
+        run: node tools/compiler-conformance/java/check-products.mjs --platform
+
   file-result-reuse-benchmark:
     name: parse cache / speed and memory (${{ matrix.corpus }})
     runs-on: ubuntu-latest
@@ -25,14 +98,9 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # A queued PR can get a new test merge after the event recorded its base SHA.
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -91,14 +159,8 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -182,14 +244,8 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -421,7 +477,7 @@ jobs:
           SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
           GITNEXUS_LANGUAGE_BOUNDARY_BASE: HEAD^1
         run: >-
-          npx vitest run
+          npm test --
           --shard="$SHARD"
           --reporter=default
           --reporter=blob
@@ -448,7 +504,7 @@ jobs:
   # test-results.json and runs the (unsharded) web + docker suites.
   coverage-merge:
     name: ubuntu / coverage merge
-    needs: tests
+    needs: [tests, java-compiler-conformance]
     runs-on: ubuntu-latest
     # The optional LCOV upload has its own two-minute timeout after the tests.
     timeout-minutes: 17
@@ -484,6 +540,20 @@ jobs:
           --coverage.reporter=lcovonly
           --coverage.thresholds.autoUpdate=false
         working-directory: gitnexus
+      - name: Download Java conformance LCOV
+        id: java-lcov-download
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        uses: ./.github/actions/download-test-artifact
+        with:
+          name: java-conformance-coverage
+          path: ${{ runner.temp }}/java-conformance-coverage
+      - name: Add Java conformance to the CLI SonarQube report
+        id: java-lcov
+        if: ${{ !cancelled() && steps.java-lcov-download.outcome == 'success' }}
+        working-directory: gitnexus
+        run: |
+          test -s coverage/lcov.info
+          cat "$RUNNER_TEMP/java-conformance-coverage/lcov.info" >> coverage/lcov.info
       - name: Upload learned coverage timings
         uses: ./.github/actions/upload-test-artifact
         with:
@@ -523,7 +593,7 @@ jobs:
       # original test outcomes and let the scanner report any transfer failure.
       - name: Upload SonarQube coverage
         if: >-
-          !cancelled() && ((github.event_name == 'pull_request' &&
+          !cancelled() && steps.java-lcov.outcome == 'success' && ((github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository) ||
           (github.event_name == 'push' && github.ref == 'refs/heads/main'))
         continue-on-error: true
@@ -1156,14 +1226,8 @@ jobs:
       - name: Pin comparison revision
         id: baseline
         shell: bash
-        env:
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          if [[ -n "$PR_BASE_SHA" ]]; then
-            comparison_sha="$PR_BASE_SHA"
-          else
-            comparison_sha="$(git rev-parse --verify HEAD^1)"
-          fi
+          comparison_sha="$(git rev-parse --verify HEAD^1)"
           printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
@@ -1904,6 +1968,7 @@ jobs:
         shard-plan,
         coverage-merge,
         cross-platform,
+        java-platform-conformance,
         benchmarks,
         eval-tests,
         eval-containment-linux,

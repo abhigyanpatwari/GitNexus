@@ -2173,12 +2173,21 @@ function identityCacheKey(
 const MAX_PROCESS_CACHE_ENTRIES = 12;
 const processIdentityCache = new Map<string, IdentityCachePayload>();
 
-/** Only successful runner validations enter this cache. Consumers must still
- * match the current file state before reusing a content hash. */
+/** Files the parser depends on, from the validated analyzer build and its
+ * dependencies. Consumers must match current file state before reusing a hash. */
 function cachedDependencyFileDigests(buildRoot: string) {
   const files = new Map<string, { state: ReadableFileState; digest: string }>();
   for (const cache of processIdentityCache.values()) {
     if (cache.buildRoot !== buildRoot) continue;
+    for (const entry of cache.buildEntries) {
+      if (entry.kind === 'file' && entry.digest) {
+        // For regular files the link and target are the same stat snapshot.
+        files.set(path.join(buildRoot, entry.relativePath), {
+          state: { link: entry.state, target: entry.state },
+          digest: entry.digest,
+        });
+      }
+    }
     for (const entry of cache.artifactEntries) {
       if (entry.kind === 'file') files.set(entry.absolutePath, entry);
     }

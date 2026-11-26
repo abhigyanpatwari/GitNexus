@@ -20,7 +20,9 @@ export const turnProbe = {
 };
 
 /** `safe-parse` with a pass-through `parseSourceSafe` that records each parse's turn. */
-export function recordParseTurns(actual: typeof SafeParseModule): typeof SafeParseModule {
+export function recordParseTurns<T extends Pick<typeof SafeParseModule, 'parseSourceSafe'>>(
+  actual: T,
+) {
   return {
     ...actual,
     parseSourceSafe: (...args: Parameters<typeof actual.parseSourceSafe>) => {

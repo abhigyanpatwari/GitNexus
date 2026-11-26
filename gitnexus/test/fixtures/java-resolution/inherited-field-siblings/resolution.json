@@ -1,0 +1,6 @@
+{
+  "diagnostics": {},
+  "calls": [
+    {"caller": "Method:src/app/Kid.java:Kid.run#0", "member": "*", "source": ["src/app/Kid.java#4:2"], "targets": 2}
+  ]
+}

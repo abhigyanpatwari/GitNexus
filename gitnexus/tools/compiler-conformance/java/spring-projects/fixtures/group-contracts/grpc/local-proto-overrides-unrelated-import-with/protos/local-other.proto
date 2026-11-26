@@ -1,0 +1,6 @@
+syntax = "proto3";
+package local.unrelated;
+
+service AuthService {
+    rpc Ping (PingRequest) returns (PingResponse);
+}

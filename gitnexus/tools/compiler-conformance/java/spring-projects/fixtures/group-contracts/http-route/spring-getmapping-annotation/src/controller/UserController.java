@@ -1,0 +1,16 @@
+
+package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api/v2")
+public class UserController {
+    @GetMapping("/users")
+    public List<User> list() { return service.findAll(); }
+
+    @PostMapping("/users")
+    public User create(@RequestBody User user) { return service.save(user); }
+
+    @GetMapping("/users/{id}")
+    public User getById(@PathVariable Long id) { return service.findById(id); }
+}

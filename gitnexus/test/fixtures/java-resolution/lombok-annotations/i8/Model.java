@@ -1,0 +1,1 @@
+package i8; import lombok.*; @/*c*/Value public class Model { String name; }

@@ -1,0 +1,7 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location": 1},
+  "calls": [
+    {"caller": "Method:app/Boxed.java:Boxed.run#0", "member": "save", "source": ["app/Boxed.java#5:2"]},
+    {"caller": "Method:app/Boxed.java:Boxed.missing#0", "member": "save", "source": ["app/Boxed.java#6:2"], "targets": 0}
+  ]
+}

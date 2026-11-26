@@ -1,0 +1,16 @@
+{
+  "diagnostics": {"compiler.err.cant.apply.symbol": 1, "compiler.err.cant.resolve.location": 1, "compiler.err.cant.resolve.location.args": 2, "compiler.err.not.def.public.cant.access": 1, "compiler.err.static.imp.only.classes.and.interfaces": 1},
+  "calls": [
+    {"caller": "importedPick", "member": "pick", "published": ["Method:api/Demand.java:Demand.pick#1"], "compilerTargets": ["api/Explicit.java#2:8"], "source": ["client/Imports.java#3:24"]},
+    {"caller": "importedShadow", "member": "shadow", "source": ["client/Imports.java#4:10"]},
+    {"caller": "inaccessibleOwner", "member": "hidden", "source": ["client/HiddenUse.java#2:26"], "targets": 0},
+    {"caller": "privateImport", "member": "secret", "source": ["api/PrivateHost.java#3:10"], "targets": 0},
+    {"caller": "childDispatch", "member": "task", "excludes": "Method:Dispatch.java:OtherImpl.task#0", "compilerTargets": ["Dispatch.java#1:19"], "source": ["Dispatch.java#11:10"]},
+    {"caller": "anonymousDispatch", "member": "task", "excludes": "Method:Dispatch.java:ChildImpl.task#0", "compilerTargets": ["Dispatch.java#1:19"], "source": ["Dispatch.java#12:10"]},
+    {"caller": "anonymousDispatch", "member": "task", "excludes": "Method:Dispatch.java:OtherImpl.task#0", "compilerTargets": ["Dispatch.java#1:19"], "source": ["Dispatch.java#12:10"]},
+    {"caller": "runnableGood", "member": "run", "published": ["Method:Dispatch.java:Dispatch$2.run#0"], "compilerTargets": [], "source": ["Dispatch.java#13:10"]},
+    {"caller": "runnableBad", "member": "run", "source": ["Dispatch.java#14:10"], "targets": 0},
+    {"caller": "staticDispatch", "member": "staticRun", "source": ["Dispatch.java#10:10"]},
+    {"caller": "privateBridge", "member": "privateRun", "source": ["Dispatch.java#4:10"]}
+  ]
+}

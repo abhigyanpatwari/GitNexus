@@ -11,7 +11,6 @@ import { createSymbolTable } from '../../src/core/ingestion/model/symbol-table.j
 import Parser from 'tree-sitter';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
-import Java from 'tree-sitter-java';
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 import Go from 'tree-sitter-go';
@@ -101,26 +100,6 @@ describe('inferCallForm', () => {
     it('detects member call', () => {
       parser.setLanguage(Python);
       const captures = extractCallCaptures(parser, 'self.save()', SupportedLanguages.Python);
-      const match = captures.find((c) => c.calledName === 'save');
-      expect(match).toBeDefined();
-      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
-    });
-  });
-
-  describe('Java', () => {
-    it('detects free call (no object)', () => {
-      parser.setLanguage(Java);
-      const code = `class Foo { void run() { doStuff(); } }`;
-      const captures = extractCallCaptures(parser, code, SupportedLanguages.Java);
-      const match = captures.find((c) => c.calledName === 'doStuff');
-      expect(match).toBeDefined();
-      expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('free');
-    });
-
-    it('detects member call (with object)', () => {
-      parser.setLanguage(Java);
-      const code = `class Foo { void run() { user.save(); } }`;
-      const captures = extractCallCaptures(parser, code, SupportedLanguages.Java);
       const match = captures.find((c) => c.calledName === 'save');
       expect(match).toBeDefined();
       expect(inferCallForm(match!.callNode, match!.nameNode)).toBe('member');
@@ -366,17 +345,6 @@ describe('extractReceiverName', () => {
     });
   });
 
-  describe('Java', () => {
-    it('extracts receiver from method_invocation', () => {
-      parser.setLanguage(Java);
-      const code = `class Foo { void run() { user.save(); } }`;
-      const captures = extractCallCaptures(parser, code, SupportedLanguages.Java);
-      const match = captures.find((c) => c.calledName === 'save');
-      expect(match).toBeDefined();
-      expect(extractReceiverName(match!.nameNode)).toBe('user');
-    });
-  });
-
   describe('Go', () => {
     it('extracts receiver from selector_expression', () => {
       parser.setLanguage(Go);
@@ -589,13 +557,6 @@ describe('extractMixedChain', () => {
       code: 'void f() { ns::getTyped<User>()->save(); }',
       member: 'save',
       expected: { chain: [call('getTyped')], baseReceiverName: undefined },
-    },
-    {
-      label: 'Java type arguments sit beside the name (control)',
-      language: Java,
-      code: 'class A { void m() { svc.<User>getTyped().save(); } }',
-      member: 'save',
-      expected: { chain: [call('getTyped')], baseReceiverName: 'svc' },
     },
   ];
 

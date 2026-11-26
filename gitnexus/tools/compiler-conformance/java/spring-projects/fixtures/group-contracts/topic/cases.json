@@ -1,0 +1,117 @@
+[
+  {
+    "name": "test_extract_kafka_listener_returns_consumer",
+    "project": "kafka-listener-returns-consumer",
+    "expected": [
+      {
+        "contractId": "topic::user.created",
+        "type": "topic",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/EventHandler.java",
+          "name": "kafkaListener"
+        },
+        "symbolName": "kafkaListener",
+        "confidence": 0.8,
+        "meta": {
+          "broker": "kafka",
+          "topicName": "user.created",
+          "extractionStrategy": "tree_sitter"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_extract_kafka_template_send_returns_producer",
+    "project": "kafka-template-send-returns-producer",
+    "expected": [
+      {
+        "contractId": "topic::user.created",
+        "type": "topic",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/EventPublisher.java",
+          "name": "kafkaTemplate.send"
+        },
+        "symbolName": "kafkaTemplate.send",
+        "confidence": 0.8,
+        "meta": {
+          "broker": "kafka",
+          "topicName": "user.created",
+          "extractionStrategy": "tree_sitter"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_extract_rabbit_listener_returns_consumer",
+    "project": "rabbit-listener-returns-consumer",
+    "expected": [
+      {
+        "contractId": "topic::order-queue",
+        "type": "topic",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/OrderListener.java",
+          "name": "rabbitListener"
+        },
+        "symbolName": "rabbitListener",
+        "confidence": 0.8,
+        "meta": {
+          "broker": "rabbitmq",
+          "topicName": "order-queue",
+          "extractionStrategy": "tree_sitter"
+        }
+      }
+    ]
+  },
+  {
+    "name": "test_extract_rabbit_template_send_returns_producer",
+    "project": "rabbit-template-send-returns-producer",
+    "expected": [
+      {
+        "contractId": "topic::order-exchange",
+        "type": "topic",
+        "role": "provider",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/Publisher.java",
+          "name": "rabbitTemplate.convertAndSend"
+        },
+        "symbolName": "rabbitTemplate.convertAndSend",
+        "confidence": 0.8,
+        "meta": {
+          "broker": "rabbitmq",
+          "topicName": "order-exchange",
+          "extractionStrategy": "tree_sitter"
+        }
+      }
+    ]
+  },
+  {
+    "name": "source-scan glob skips files matched by .gitnexusignore",
+    "project": "source-scan-glob-skips-files-matched-by",
+    "expected": [
+      {
+        "contractId": "topic::user.created",
+        "type": "topic",
+        "role": "consumer",
+        "symbolUid": "",
+        "symbolRef": {
+          "filePath": "src/EventHandler.java",
+          "name": "kafkaListener"
+        },
+        "symbolName": "kafkaListener",
+        "confidence": 0.8,
+        "meta": {
+          "broker": "kafka",
+          "topicName": "user.created",
+          "extractionStrategy": "tree_sitter"
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,1 @@
+package straße; public class Ünïcödé { public void save() {} }

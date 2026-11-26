@@ -1,0 +1,38 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location": 2, "compiler.err.doesnt.exist": 2, "compiler.err.ref.ambiguous": 1},
+  "calls": [
+    {"caller": "Method:app/Outer.java:Outer.direct#1", "member": "save", "source": ["app/Outer.java#3:2"]},
+    {"caller": "Method:app/Outer.java:Plain2.nearPlain#1", "member": "save", "source": ["app/Outer.java#4:17"]},
+    {"caller": "Method:app/Iface.java:Iface.viaIface#1", "member": "save", "source": ["app/Iface.java#2:28"]},
+    {"caller": "Method:app/Outer.java:Inner.nearExt#1", "member": "save", "published": [], "compilerTargets": ["app/Base.java#2:76"], "source": ["app/Outer.java#5:32"]},
+    {"caller": "Method:app/ExtSub.java:ExtSub.viaExt#1", "member": "save", "published": [], "compilerTargets": ["models/User.java#1:36"], "source": ["app/ExtSub.java#2:32"]},
+    {"caller": "Method:app/Two.java:Two.two#1", "member": "save", "source": ["app/Two.java#2:39"], "targets": 0},
+    {"caller": "Method:app/Unknown.java:Unknown.samePackage#1", "member": "save", "published": [], "compilerTargets": ["app/Root.java#2:47"], "source": ["app/Unknown.java#4:2"]},
+    {"caller": "Method:app/Unknown.java:Unknown.imported#1", "member": "save", "published": [], "compilerTargets": ["lib/Imported.java#2:51"], "source": ["app/Unknown.java#5:2"]},
+    {"caller": "Method:app/Unknown.java:ThroughUnknown.indirect#1", "member": "save", "published": [], "compilerTargets": ["app/Root.java#2:47"], "source": ["app/Unknown.java#10:39"]},
+    {"caller": "Method:app/Unknown.java:Complete$1Unseen.unknown#1", "member": "save", "published": [], "compilerTargets": ["lib/Imported.java#2:51"], "source": ["app/Unknown.java#16:42"]},
+    {"caller": "Method:app/Unknown.java:Complete.imported#1", "member": "save", "source": ["app/Unknown.java#12:2"]},
+    {"caller": "Method:app/Unknown.java:Complete$1Local.local#1", "member": "save", "source": ["app/Unknown.java#14:18"]},
+    {"caller": "Method:app/Unknown.java:Complete$1.anonymous#1", "member": "save", "source": ["app/Unknown.java#15:17"]},
+    {"caller": "Method:app/Unknown.java:Unknown.pass#1", "member": "pick", "published": [], "compilerTargets": ["app/Unknown.java#6:2"], "source": ["app/Unknown.java#8:2"]},
+    {"caller": "Method:app/Hidden.java:Hidden.hidden#1", "member": "save", "excludes": "Method:app/Base.java:User.save#0", "compilerTargets": ["app/Mid.java#2:88"], "source": ["app/Hidden.java#2:27"]},
+    {"caller": "Method:app/Hidden.java:Hidden.hidden#1", "member": "save", "excludes": "Method:models/User.java:User.save#0", "compilerTargets": ["app/Mid.java#2:88"], "source": ["app/Hidden.java#2:27"]},
+    {"caller": "Method:app/PrivSub.java:PrivSub.priv#1", "member": "save", "excludes": "Method:app/PrivBase.java:User.save#0", "compilerTargets": ["models/User.java#1:36"], "source": ["app/PrivSub.java#2:33"]},
+    {"caller": "Method:app/PkgSub.java:PkgSub.pkg#1", "member": "save", "excludes": "Method:other/PkgBase.java:User.save#0", "compilerTargets": ["models/User.java#1:36"], "source": ["app/PkgSub.java#2:37"]},
+    {"caller": "Method:app/Sub.java:Sub.pass#2", "member": "take", "source": ["app/Sub.java#2:25"]},
+    {"caller": "Method:app/Plain.java:Plain.pass#2", "member": "take", "source": ["app/Plain.java#2:14"]}
+  ],
+  "nodes": [
+    "Method:app/ExtSub.java:ExtSub.viaExt#1",
+    "Method:app/Hidden.java:Hidden.hidden#1",
+    "Method:app/Outer.java:Inner.nearExt#1",
+    "Method:app/PkgSub.java:PkgSub.pkg#1",
+    "Method:app/PrivSub.java:PrivSub.priv#1",
+    "Method:app/Two.java:Two.two#1",
+    "Method:app/Unknown.java:Complete$1Unseen.unknown#1",
+    "Method:app/Unknown.java:ThroughUnknown.indirect#1",
+    "Method:app/Unknown.java:Unknown.imported#1",
+    "Method:app/Unknown.java:Unknown.pass#1",
+    "Method:app/Unknown.java:Unknown.samePackage#1"
+  ]
+}

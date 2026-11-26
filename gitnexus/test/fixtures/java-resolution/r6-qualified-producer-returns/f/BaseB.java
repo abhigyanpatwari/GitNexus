@@ -1,0 +1,1 @@
+package f; interface BaseB { class Outer { class Inner { void save() {} } } }

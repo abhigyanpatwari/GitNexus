@@ -55,13 +55,15 @@ const FIXTURES = {
 };
 
 // Exercise the real native providers, including standalone COBOL and embedded Vue scripts.
-const LANGUAGE_FIXTURES: Record<SupportedLanguages, [string, string]> = {
+const LANGUAGE_FIXTURES: Record<
+  Exclude<SupportedLanguages, SupportedLanguages.Java>,
+  [string, string]
+> = {
   typescript: ['ts', 'function twice(x: number) { return x + x; }'],
   javascript: ['js', 'function twice(x) { return x + x; }'],
   python: ['py', 'def twice(x):\n    return x + x\n'],
   go: ['go', 'package main\nfunc twice(x int) int { return x + x }'],
   rust: ['rs', 'fn twice(x: i32) -> i32 { return x + x; }'],
-  java: ['java', 'class Sample { static int twice(int x) { return x + x; } }'],
   csharp: ['cs', 'class Sample { static int Twice(int x) { return x + x; } }'],
   c: ['c', 'int twice(int x) { return x + x; }'],
   cpp: ['cpp', 'int twice(int x) { return x + x; }'],

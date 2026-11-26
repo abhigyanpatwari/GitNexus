@@ -1,0 +1,1 @@
+package i8; public class Other { public String getName() { return ""; } }
