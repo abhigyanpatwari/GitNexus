@@ -100,6 +100,8 @@ function identity(root, node) {
 function graphIdentity(root, node, project) {
   if (node.kind === SyntaxKind.Constructor) return identity(root, node.parent) + '.constructor';
   if (node.kind === SyntaxKind.MethodDeclaration || node.kind === SyntaxKind.MethodSignature) {
+    // An interface can merge several declarations with the same method name.
+    if (node.parent.kind === SyntaxKind.InterfaceDeclaration) return identity(root, node);
     const owner =
       node.parent.kind === SyntaxKind.TypeLiteral &&
       node.parent.parent.kind === SyntaxKind.TypeAliasDeclaration
@@ -367,6 +369,16 @@ function reportProject(
       }
     }
 
+    function propertyBySymbolName(receiver, name) {
+      if (!receiver || !name) return undefined;
+      // getPropertyOfType accepts a source-level string key. Unique symbols
+      // are available through the checker's property symbols on the receiver.
+      return (
+        checker.getPropertyOfType(receiver, name) ??
+        checker.getPropertiesOfType(receiver).find((property) => property.name === name)
+      );
+    }
+
     function recordInheritedMethodSelection(node, instance) {
       const inherited = new Map();
       for (const base of baseHierarchy(checker.getBaseTypes(instance))) {
@@ -382,7 +394,7 @@ function reportProject(
       // to the method visible on it. Ask the checker which declaration wins.
       for (const [name, candidates] of inherited) {
         if (candidates.size < 2) continue;
-        const selected = symbolDeclaration(checker.getPropertyOfType(instance, name), project);
+        const selected = symbolDeclaration(propertyBySymbolName(instance, name), project);
         if (isMethod(selected) && candidates.has(identity(root, selected))) {
           edge('METHOD_OVERRIDES', node, selected);
         }
@@ -412,7 +424,10 @@ function reportProject(
             const receiver = hasModifier(method, SyntaxKind.StaticKeyword)
               ? checker.getTypeAtLocation(base.expression)
               : type;
-            const member = receiver && checker.getPropertyOfType(receiver, declarationName(method));
+            const member = propertyBySymbolName(
+              receiver,
+              checker.getSymbolAtLocation(method.name)?.name,
+            );
             const target = symbolDeclaration(member, project);
             if (isMethod(target)) edge('METHOD_OVERRIDES', node, target);
           }
@@ -429,7 +444,7 @@ function reportProject(
         for (const member of checker.getPropertiesOfType(contract)) {
           const declaration = symbolDeclaration(member, project);
           if (!isMethod(declaration)) continue;
-          const implementation = checker.getPropertyOfType(instance, member.name);
+          const implementation = propertyBySymbolName(instance, member.name);
           const method = symbolDeclaration(implementation, project);
           if (
             method?.kind === SyntaxKind.MethodDeclaration &&

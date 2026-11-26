@@ -65,6 +65,7 @@ function graphReport(
   }
   function callableIdentity(node) {
     const owner = owners.get(node.id);
+    if (node.label === 'Method' && owner?.label === 'Interface') return graphDeclaration(node);
     return node.label === 'Method' && owner
       ? graphIdentity(owner) + '.' + node.properties.name
       : graphIdentity(node);

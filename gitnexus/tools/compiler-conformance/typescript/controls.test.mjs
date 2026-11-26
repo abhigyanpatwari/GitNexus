@@ -77,10 +77,30 @@ test('constructors with the same class name resolve in their own namespaces', ()
   assert.throws(() => compareReports(calls, { ...calls, sites }), /Missing from/);
 });
 
+test('the compiler distinguishes unique symbol keys in overrides and interface contracts', (t) => {
+  const project = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-symbol-keys-'));
+  t.after(() => rmSync(project, { recursive: true, force: true }));
+  writeFileSync(
+    path.join(project, 'keys.ts'),
+    `declare const first: unique symbol, second: unique symbol;
+interface Contract { [Symbol.iterator](): void }
+class Base { [Symbol.iterator]() {} [first]() {} }
+class Derived extends Base implements Contract { [Symbol.iterator]() {} [second]() {} }
+`,
+  );
+  const facts = compilerReport(project);
+  assert.deepEqual(facts.METHOD_OVERRIDES.edges, [
+    { from: 'keys.ts#4:0', to: 'keys.ts#3:0.[Symbol.iterator]' },
+  ]);
+  assert.deepEqual(facts.METHOD_IMPLEMENTS.edges, [
+    { from: 'keys.ts#4:0.[Symbol.iterator]', to: 'keys.ts#2:21' },
+  ]);
+});
+
 test('a diamond keeps both implementation contracts and the method selected on its derived interface', () => {
   const report = compilerReport(path.resolve(root, '../typescript-interface-contracts'));
-  const inherited = 'index.ts#1:Reader.read';
-  const specialized = 'index.ts#4:TextReader.read';
+  const inherited = 'index.ts#2:2';
+  const specialized = 'index.ts#5:2';
   const contracts = report.METHOD_IMPLEMENTS;
   assert.deepEqual(new Set(contracts.edges.map(({ to }) => to)), new Set([inherited, specialized]));
   const edges = contracts.edges.filter(({ to }) => to !== inherited);

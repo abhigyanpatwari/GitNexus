@@ -24,7 +24,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { generateId } from '../../lib/utils.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from './languages/index.js';
-import { c3Linearize, gatherAncestors } from './model/resolve.js';
+import { c3Linearize, depthFirstAncestors, gatherAncestors } from './model/resolve.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -226,7 +226,10 @@ export function computeMRO(
 
     // Compute linearized MRO depending on language strategy
     const provider = getProvider(language);
-    const ancestors = gatherAncestors(classId, parentMap);
+    const ancestors =
+      provider.mroStrategy === 'depth-first'
+        ? depthFirstAncestors(classId, directParents, parentMap)
+        : gatherAncestors(classId, parentMap);
     ancestorsMap.set(classId, ancestors);
     edgeTypesMap.set(classId, buildTransitiveEdgeTypes(classId, parentMap, parentEdgeType));
 

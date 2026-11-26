@@ -67,9 +67,19 @@ const shared: Omit<ClassExtractionConfig, 'language'> = {
   },
 };
 
+export function isAnonymousDefaultClass(node: SyntaxNode): boolean {
+  return (
+    node.type === 'class' &&
+    !node.childForFieldName('name') &&
+    node.parent?.type === 'export_statement' &&
+    node.parent.children.some((child) => child?.type === 'default')
+  );
+}
+
 export const typescriptClassConfig: ClassExtractionConfig = {
   ...shared,
   language: SupportedLanguages.TypeScript,
+  extractName: (node) => (isAnonymousDefaultClass(node) ? 'default' : undefined),
 };
 
 export const javascriptClassConfig: ClassExtractionConfig = {

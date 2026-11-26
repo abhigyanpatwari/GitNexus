@@ -9,3 +9,6 @@ export interface Joined extends TextReader, Alternate {}
 export class TextLog implements Joined {
   read(value: string) {}
 }
+export interface Flipped extends Alternate, TextReader {}
+export function first(value: Joined) { value.read('x'); }
+export function second(value: Flipped) { value.read('x'); }

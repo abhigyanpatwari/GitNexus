@@ -207,7 +207,7 @@ function isWholeWord(text: string, index: number, length: number): boolean {
 }
 
 /** Source offsets outside quoted literals and two-character function arrows. */
-function* syntaxOffsets(text: string, start = 0): Generator<number> {
+export function* syntaxOffsets(text: string, start = 0): Generator<number> {
   for (let i = start; i < text.length; i++) {
     const ch = text[i];
     if ((ch === '=' || ch === '-') && text[i + 1] === '>') {

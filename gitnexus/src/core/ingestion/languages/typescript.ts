@@ -84,6 +84,7 @@ import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { javascriptConfig } from '../field-extractors/configs/typescript-javascript.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
+import { withMergedInterfaceMethodIds } from './typescript/interface-method-ids.js';
 import {
   typescriptMethodConfig,
   javascriptMethodConfig,
@@ -514,15 +515,18 @@ export const typescriptProvider = defineLanguage({
     },
   ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: TYPESCRIPT_QUERIES,
+  mroStrategy: 'depth-first',
   typeConfig: typescriptConfig,
   scopeOwnsReceivers: tsScopeOwnsReceivers,
   exportChecker: tsExportChecker,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
-  methodExtractor: createMethodExtractor({
-    ...typescriptMethodConfig,
-    extractFunctionName: tsExtractFunctionName,
-  }),
+  methodExtractor: withMergedInterfaceMethodIds(
+    createMethodExtractor({
+      ...typescriptMethodConfig,
+      extractFunctionName: tsExtractFunctionName,
+    }),
+  ),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   definitionPropertiesExtractor: extractConvexEndpointProperties,
   classExtractor: createTsJsClassExtractor(typescriptClassConfig),

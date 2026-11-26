@@ -330,6 +330,7 @@ function isDefaultExportStatement(stmt: SyntaxNode): boolean {
  * nested functions of the same name out.
  */
 export function isEsmDefaultExport(nameNode: SyntaxNode, evidence: EsmExportEvidence): boolean {
+  if (nameNode.type === 'default' && nameNode.parent?.type === 'export_statement') return true;
   if (
     evidence.defaultLocal !== undefined &&
     evidence.defaultLocal === decodeIdentifierEscapes(nameNode.text)

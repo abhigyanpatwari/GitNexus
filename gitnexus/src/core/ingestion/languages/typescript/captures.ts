@@ -28,6 +28,7 @@
 
 import { recordCommonJsModuleKind } from './module-kind.js';
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { isAnonymousDefaultClass } from '../../class-extractors/configs/typescript-javascript.js';
 import { synthesizeTsJsClassIdentity } from './class-identity.js';
 import {
   findNodeAtRange,
@@ -834,7 +835,9 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
     'interface_declaration',
     'class_declaration',
     'abstract_class_declaration',
+    'class',
   ])) {
+    if (node.type === 'class' && !isAnonymousDefaultClass(node)) continue;
     // `interface B extends A, C` hangs its bases off an `extends_type_clause`
     // DIRECTLY on the interface — there is no `class_heritage` wrapper, so the
     // class path below cannot reach them (#2842 review). The clause's `type`
@@ -854,8 +857,6 @@ function synthesizeTsInheritanceReferences(root: SyntaxNode, out: CaptureMatch[]
     // child, so the existing body handles it once the node type is admitted.
     // Omitting it severed the only link between an interface and the concrete
     // classes below an abstract base — a whole subtree, not a leaf.
-    if (node.type !== 'class_declaration' && node.type !== 'abstract_class_declaration') continue;
-
     // Find the `class_heritage` child (holds extends / implements clauses).
     let heritage: SyntaxNode | null = null;
     for (const child of node.namedChildren) {
@@ -895,15 +896,17 @@ function emitTsInheritanceBase(
   const nameNode = terminalTsTypeNameNode(base);
   if (nameNode === null) return;
   const argumentsNode =
-    base.parent?.type === 'extends_clause'
-      ? (base.parent.childForFieldName('type_arguments') ?? base.nextNamedSibling)
-      : null;
+    base.type === 'generic_type'
+      ? base.childForFieldName('type_arguments')
+      : base.parent?.type === 'extends_clause'
+        ? (base.parent.childForFieldName('type_arguments') ?? base.nextNamedSibling)
+        : null;
+  const argumentTag = '@reference.type-arguments';
   out.push({
-    ...(argumentsNode?.type === 'type_arguments'
-      ? {
-          '@reference.type-arguments': nodeToCapture('@reference.type-arguments', argumentsNode),
-        }
-      : {}),
+    [argumentTag]:
+      argumentsNode?.type === 'type_arguments'
+        ? nodeToCapture(argumentTag, argumentsNode)
+        : syntheticCapture(argumentTag, base, ''),
     '@reference.inherits': nodeToCapture('@reference.inherits', base),
     '@reference.name': nodeToCapture('@reference.name', nameNode),
     '@reference.heritage-kind': syntheticCapture(

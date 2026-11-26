@@ -16,7 +16,8 @@ import type { NodeLabel, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { bindGlobalDeclarations, rememberDeclarationProjects } from './global-declarations.js';
 import { generateId } from '../../../../lib/utils.js';
-import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
+import { buildMro } from '../../scope-resolution/passes/mro.js';
+import { depthFirstAncestors } from '../../model/resolve.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import {
@@ -146,7 +147,7 @@ const typescriptScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => typescriptArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) =>
-    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
+    buildMro(graph, parsedFiles, nodeLookup, depthFirstAncestors),
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 

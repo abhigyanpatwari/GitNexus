@@ -23,8 +23,10 @@ ${unboundCallableQuery('definition.function')}
 (class_declaration
   name: (type_identifier) @name) @definition.class
 
-; Named class expressions own members just like declarations. Anonymous
-; expressions have no name and deliberately do not match this pattern.
+; A default-exported anonymous class has a module export name.
+(export_statement "default" @name value: (class !name) @definition.class)
+
+; Named class expressions own members just like declarations.
 (class
   name: (type_identifier) @name) @definition.class
 

@@ -193,6 +193,10 @@ ${unboundCallableQuery('declaration.function')}
   name: (type_identifier) @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class @class.expression
 
+(export_statement "default" @declaration.name
+  value: (class !name
+    type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class)
+
 (abstract_class_declaration
   name: (type_identifier) @declaration.name
   type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.class
@@ -563,18 +567,22 @@ ${unboundCallableQuery('declaration.function')}
 ;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
   name: (property_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 (method_definition
-  name: (private_property_identifier) @declaration.name) @declaration.method
+  name: (private_property_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.method
 
 ;; Abstract method signatures in abstract classes.
 (abstract_method_signature
-  name: (property_identifier) @declaration.name) @declaration.method
+  name: (property_identifier) @declaration.name
+  type_parameters: (type_parameters)? @declaration.type-parameters) @declaration.method
 
 ;; Interface method signatures.
 (method_signature
   name: (property_identifier) @declaration.name @declaration.overload-signature
+  type_parameters: (type_parameters)? @declaration.type-parameters
   return_type: (type_annotation (_) @declaration.return-type)?) @declaration.method
 
 ;; Members of a declared SHAPE — interface bodies and object-type aliases both

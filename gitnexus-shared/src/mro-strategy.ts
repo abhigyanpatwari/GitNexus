@@ -39,6 +39,7 @@
  */
 export type MroStrategy =
   | 'first-wins'
+  | 'depth-first'
   | 'c3'
   | 'leftmost-base'
   | 'implements-split'

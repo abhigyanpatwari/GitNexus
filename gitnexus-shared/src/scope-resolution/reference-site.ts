@@ -112,9 +112,9 @@ export interface ReferenceSite {
    * whose `@reference.inherits` anchor spans the whole base gets this for free,
    * and one whose anchor is the bare name simply leaves it absent.
    *
-   * ABSENT MEANS UNKNOWN, never "not generic" — the two are indistinguishable
-   * here, and only the first is safe to act on. Consumers must fail OPEN on
-   * absence (keep the target), matching `SymbolDefinition.typeParameters`.
+   * An explicit empty list records a base written without arguments. Its
+   * declaration can supply defaults. An absent list means the provider has
+   * no evidence, so consumers retain the target without specializing it.
    */
   readonly typeArguments?: readonly string[];
   /** Source-text range of this reference. */

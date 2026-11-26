@@ -1515,6 +1515,7 @@ function heritageTypeArguments(
   nameCap: Capture,
 ): readonly string[] | undefined {
   const explicit = match['@reference.type-arguments']?.text;
+  if (explicit === '') return [];
   return explicit !== undefined
     ? typeApplicationArguments(explicit)
     : referenceTypeArguments(anchor.text, nameCap.text);
