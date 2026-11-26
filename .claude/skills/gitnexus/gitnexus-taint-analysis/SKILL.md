@@ -124,11 +124,12 @@ caller invokes two distinct **same-named callees**, a flow into one
 over-attributes to both (sound — over-report, never a missed flow). Absence of a
 finding is NOT proof of safety.
 
-**Barrier guards (#3913, partial):** CDG-aware validating predicates
-(`isValid*` / `valid*` / `check[A-Z]*` / `validate*`) suppress findings when the
-sink use is control-dependent on the validated branch (`taint/barrier-guards.ts`).
-Still deferred: `.filter(isValidKey)`-style barriers, `__proto__` literal guards,
-and model-registered barrier entries with per-kind `neutralizes`.
+**Barrier guards (#3913):** CDG-aware validating predicates (`isX` / `valid*` /
+`check[A-Z]*` / `test`, minus builtins like `isNaN`) suppress findings when the
+sink use is control-dependent on the validated branch. Same-file functions whose
+body compares against `__proto__` are discovered as barrier callees. Chained
+`.filter(isValidKey)` neutralizes filtered keys (set-value). See
+`taint/barrier-guards.ts` and `bench/taint-barrier-guards/`.
 
 ## GitNexus-specific gotchas
 

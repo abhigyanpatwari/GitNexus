@@ -1800,6 +1800,13 @@ jobs:
         run: node --import tsx bench/inline-taint/measure.cjs --check
         working-directory: gitnexus
 
+      - name: Taint barrier-guard scaling / cleanliness (#3913)
+        if: ${{ !cancelled() }}
+        # Build-free: guarded corpus stays finding-free; unguarded keeps findings;
+        # scaling ratio gated vs baseline.json.
+        run: node --import tsx bench/taint-barrier-guards/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Staged publication durability / scaling guards (#3591)
         if: ${{ !cancelled() }}
         run: node --import tsx bench/staged-publication/measure.cjs --check

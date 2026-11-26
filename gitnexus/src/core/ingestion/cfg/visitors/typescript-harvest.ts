@@ -217,10 +217,20 @@ export class TsHarvester {
   }
 
   decorate(cfg: FunctionCfg): FunctionCfg {
-    if (!this.refinementSafe) return { ...cfg, refinementSafe: false };
-    if (!this.hasRefinementFacts) return cfg;
+    const nameNode = this.fnNode.childForFieldName('name');
+    const functionName =
+      nameNode &&
+      (nameNode.type === 'identifier' ||
+        nameNode.type === 'property_identifier' ||
+        nameNode.type === 'private_property_identifier')
+        ? nameNode.text
+        : undefined;
+    const withName = functionName ? { functionName } : {};
+    if (!this.refinementSafe) return { ...cfg, ...withName, refinementSafe: false };
+    if (!this.hasRefinementFacts) return functionName ? { ...cfg, functionName } : cfg;
     return {
       ...cfg,
+      ...withName,
       refinementSafe: this.refinementSafe,
       ...(this.primitiveBindings?.size ? { primitiveBindings: [...this.primitiveBindings] } : {}),
     };

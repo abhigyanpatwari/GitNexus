@@ -1,0 +1,28 @@
+{
+  "guarded": {
+    "scaling_budget": 2.5,
+    "small": {
+      "findings": 0,
+      "analyzed": 144,
+      "fingerprint": "ae15ce89fb1ae7995337585afade8e1267193112d6f30d0794d7553afe88fad4"
+    },
+    "large": {
+      "findings": 0,
+      "analyzed": 576,
+      "fingerprint": "bf25396895a97489dbc9d7cb9334e25807f68025b76a68edd299513607bf43e2"
+    }
+  },
+  "unguarded": {
+    "scaling_budget": 2.5,
+    "small": {
+      "findings": 144,
+      "analyzed": 144,
+      "fingerprint": "0aa14e8fd1ac9660dbd8da7e7eb5215e57ba35439742e1af93524da5a8b3e296"
+    },
+    "large": {
+      "findings": 576,
+      "analyzed": 576,
+      "fingerprint": "1496999e457c468574779d82474e590160336571c8140746996bec98bcdbd220"
+    }
+  }
+}

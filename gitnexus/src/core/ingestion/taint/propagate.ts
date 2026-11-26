@@ -112,6 +112,8 @@ import {
   barrierControllerPoint,
   buildBarrierGuardIndex,
   isBarrierGuarded,
+  isFilterBarrierCall,
+  type BarrierGuardOptions,
 } from './barrier-guards.js';
 import type { FunctionCfg, SiteRecord, StatementFacts } from '../cfg/types.js';
 import { pointKey } from '../cfg/reaching-defs.js';
@@ -318,6 +320,7 @@ export function computeTaintFlows(
   matches: FunctionSiteMatches,
   limits?: TaintLimits,
   refinement: FunctionRefinement = createFunctionRefinement(cfg),
+  barrierOptions?: BarrierGuardOptions,
 ): FunctionTaintResult {
   if (defUse.status !== 'computed') {
     return {
@@ -330,8 +333,8 @@ export function computeTaintFlows(
   }
 
   const bindings = defUse.bindings;
-  // #3913 — CDG-aware validating-predicate barriers (computed once per function).
-  const barrierIndex = buildBarrierGuardIndex(cfg);
+  // #3913 — CDG-aware validating-predicate barriers + filter(isValidKey) flow kills.
+  const barrierIndex = buildBarrierGuardIndex(cfg, barrierOptions);
   const guardProvesSink = (
     block: number,
     statement: number,
@@ -418,8 +421,23 @@ export function computeTaintFlows(
     return site.kind !== 'member-read' && !ctx.sanitizersBySite.has(siteIndex);
   };
 
+  const statementTextAt = (ctx: StmtContext): string =>
+    cfg.blocks[ctx.point.blockIndex]?.text ?? '';
+
+  const filterBarrierKinds = (ctx: StmtContext, site: SiteRecord): readonly SinkKind[] =>
+    isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, statementTextAt(ctx))
+      ? KIND_ORDER
+      : [];
+
   const emerge = (ctx: StmtContext, siteIndex: number, argPos: number, inner: OccPath): OccPath => {
-    const added = neutralizedAt(ctx, siteIndex, argPos);
+    const site = ctx.sites[siteIndex];
+    // #3913 set-value: `.filter(isValidKey)` neutralizes all sink kinds on the
+    // filtered result (keys that passed the `__proto__` / validator predicate).
+    const filterBarrier = site ? filterBarrierKinds(ctx, site) : [];
+    const added =
+      filterBarrier.length > 0
+        ? [...new Set([...neutralizedAt(ctx, siteIndex, argPos), ...filterBarrier])]
+        : neutralizedAt(ctx, siteIndex, argPos);
     return {
       kinds: added.length === 0 ? inner.kinds : new Set([...inner.kinds, ...added]),
       viaCall: inner.viaCall || isUnmodeledCall(ctx, siteIndex),
@@ -468,7 +486,19 @@ export function computeTaintFlows(
     if (site.receiver === b) {
       // Receiver TITO (KTD5): the receiver's value flows through the call
       // into its result — but a sanitizer does not neutralize its receiver.
-      out.push({ ...DIRECT_PATH, viaCall: isUnmodeledCall(ctx, siteIndex) });
+      // Exception (#3913 set-value): `.filter(isValidKey)` DOES neutralize —
+      // the callback vouches for every emitted element.
+      if (
+        isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, statementTextAt(ctx))
+      ) {
+        out.push({
+          kinds: new Set<SinkKind>(KIND_ORDER),
+          viaCall: true,
+          sanitizers: [{ siteIndex, kinds: [...KIND_ORDER] }],
+        });
+      } else {
+        out.push({ ...DIRECT_PATH, viaCall: isUnmodeledCall(ctx, siteIndex) });
+      }
     }
     guard.delete(siteIndex);
     return out;
@@ -748,6 +778,7 @@ export function computeTaintFlows(
     const defs = [...ctx.facts.defs, ...(ctx.facts.mayDefs ?? [])];
     if (defs.length === 0) return;
     const seen = new Set<number>();
+    const stmtText = statementTextAt(ctx);
     for (const d of defs) {
       if (seen.has(d)) continue;
       seen.add(d);
@@ -769,6 +800,25 @@ export function computeTaintFlows(
         }
         // else: floor — tainted with no exclusions added, no kill (the input
         // provably never flows into the producing call; conflation FP pinned).
+      }
+      // #3913 set-value: chained `path.split(".").filter(isValidKey)` harvests
+      // the outer call without a receiver binding, so the floor above would
+      // keep keys fully tainted. If this def is the filter's result, neutralize.
+      let filterSiteIndex = -1;
+      for (let si = 0; si < ctx.sites.length; si++) {
+        const site = ctx.sites[si];
+        if (!site.resultDefs?.includes(d)) continue;
+        if (
+          !isFilterBarrierCall(site, bindings, barrierIndex.barrierCalleeNames, stmtText)
+        )
+          continue;
+        filterSiteIndex = si;
+        break;
+      }
+      if (filterSiteIndex >= 0) {
+        addKinds = new Set<SinkKind>([...addKinds, ...KIND_ORDER]);
+        viaCall = true;
+        recordKill(ctx.point, ctx.point, d, KIND_ORDER);
       }
       const exclusions =
         addKinds.size === 0 ? inputExclusions : new Set([...inputExclusions, ...addKinds]);

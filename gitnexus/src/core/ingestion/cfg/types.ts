@@ -261,6 +261,11 @@ export interface FunctionCfg {
   /** Exact graph owner for executable regions that are not ordinary functions.
    * Supplied by the provider; omission retains the source-anchor function join. */
   readonly ownerId?: string;
+  /**
+   * Optional source-level function/method name (#3913 proto-guard discovery).
+   * Omit-when-absent — pre-upgrade channels and hand-built CFGs stay valid.
+   */
+  readonly functionName?: string;
   /** Source span of the owning function — anchors the BasicBlock node ids. */
   readonly functionStartLine: number;
   readonly functionEndLine: number;
