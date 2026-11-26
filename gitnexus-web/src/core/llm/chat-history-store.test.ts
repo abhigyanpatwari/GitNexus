@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   CHAT_HISTORY_STORAGE_PREFIX,
   MAX_STORED_CHAT_MESSAGES,
+  chatHistoryKey,
   loadChatHistory,
   saveChatHistory,
   trimChatHistory,
@@ -85,14 +86,63 @@ describe('chat-history-store', () => {
     expect(stored.at(-1)).toEqual(msg(39));
   });
 
-  it('removes the entry when even the smallest write is refused', () => {
+  it('keeps the last saved conversation when even the smallest write is refused', () => {
     saveChatHistory(REPO, [msg(0), msg(1)]);
     vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new DOMException('quota', 'QuotaExceededError');
     });
 
-    expect(() => saveChatHistory(REPO, [msg(2), msg(3)])).not.toThrow();
-    expect(sessionStorage.getItem(KEY)).toBeNull();
+    expect(() => saveChatHistory(REPO, [msg(0), msg(1), msg(2), msg(3)])).not.toThrow();
+    expect(loadChatHistory(REPO)).toEqual([msg(0), msg(1)]);
+  });
+
+  it('keeps earlier turns when a new reply is too large for the byte quota', () => {
+    // A byte quota like the browser's: any value over the limit is refused.
+    const QUOTA_BYTES = 2_000;
+    const realSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (new TextEncoder().encode(value).length > QUOTA_BYTES) {
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      realSetItem.call(this, key, value);
+    });
+    const earlier = conversation(6);
+    saveChatHistory(REPO, earlier);
+    expect(loadChatHistory(REPO)).toEqual(earlier);
+
+    const hugeReply: ChatMessage = {
+      id: 'huge',
+      role: 'assistant',
+      content: 'x'.repeat(QUOTA_BYTES * 2),
+      timestamp: 100,
+    };
+    saveChatHistory(REPO, [...earlier, msg(6), hugeReply]);
+
+    expect(loadChatHistory(REPO)).toEqual(earlier);
+  });
+
+  it('drops whole turns, so a long reply is never stored without its question', () => {
+    const realSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if ((JSON.parse(value) as unknown[]).length > 4) {
+        throw new DOMException('quota', 'QuotaExceededError');
+      }
+      realSetItem.call(this, key, value);
+    });
+    // The newest turn is a question followed by three assistant/tool steps.
+    const lastTurn = [msg(4, 'user'), msg(5, 'assistant'), msg(6, 'tool'), msg(7, 'assistant')];
+
+    saveChatHistory(REPO, [...conversation(4), ...lastTurn]);
+
+    expect(loadChatHistory(REPO)).toEqual(lastTurn);
   });
 
   it('ignores stored data it cannot read', () => {
@@ -154,6 +204,36 @@ describe('chat-history-store', () => {
 
     expect(() => saveChatHistory(REPO, [msg(0)])).not.toThrow();
     expect(loadChatHistory(REPO)).toEqual([]);
+  });
+});
+
+describe('chatHistoryKey', () => {
+  it('gives the same repo path on two servers different keys', () => {
+    expect(chatHistoryKey('http://localhost:4747', REPO)).not.toBe(
+      chatHistoryKey('https://gitnexus.example.com', REPO),
+    );
+    expect(chatHistoryKey('http://localhost:4747', REPO)).not.toBe(
+      chatHistoryKey('http://localhost:4848', REPO),
+    );
+  });
+
+  it('gives one server spelled differently the same key', () => {
+    const key = chatHistoryKey('http://localhost:4747', REPO);
+    expect(chatHistoryKey('HTTP://LocalHost:4747/', REPO)).toBe(key);
+    expect(chatHistoryKey('https://host.example.com:443/base/', REPO)).toBe(
+      chatHistoryKey('https://host.example.com/base', REPO),
+    );
+  });
+
+  it('keeps credentials out of the key', () => {
+    expect(chatHistoryKey('https://user:secret@host.example.com', REPO)).toBe(
+      chatHistoryKey('https://host.example.com', REPO),
+    );
+  });
+
+  it('is empty, so nothing is saved, when the server or repo is missing', () => {
+    expect(chatHistoryKey('', REPO)).toBe('');
+    expect(chatHistoryKey('http://localhost:4747', '')).toBe('');
   });
 });
 

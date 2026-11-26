@@ -1,5 +1,5 @@
 /**
- * Per-repository chat history that survives page reloads (#432).
+ * Chat history per server and repository that survives page reloads (#432).
  *
  * Stored in sessionStorage, like the LLM provider settings
  * (`settings-service.ts`) and the deploy token (`AUTH_TOKEN_STORAGE_KEY`): a
@@ -18,6 +18,33 @@ export const MAX_STORED_CHAT_MESSAGES = 50;
 const ROLES: ReadonlySet<string> = new Set(['user', 'assistant', 'tool']);
 
 const storageKey = (repoKey: string): string => `${CHAT_HISTORY_STORAGE_PREFIX}${repoKey}`;
+
+/**
+ * `serverUrl` reduced to origin plus base path, so spellings of one server
+ * (`HTTP://Host:80/`, `http://host`) share a key and credentials never enter
+ * it. A relative same-origin base resolves against the page.
+ */
+const serverIdentity = (serverUrl: string): string => {
+  const trimmed = serverUrl.trim();
+  try {
+    const base = typeof location === 'undefined' ? undefined : location.href;
+    const url = new URL(trimmed, base);
+    return `${url.origin}${url.pathname.replace(/\/+$/, '')}`;
+  } catch {
+    return trimmed.replace(/\/+$/, '');
+  }
+};
+
+/**
+ * The key a conversation is saved under: the server it came from plus the
+ * repo's identity on that server (its path, or its name when the server
+ * reports no path). Two servers can each report a repo at the same path, so
+ * the repo alone is not enough: one server's code excerpts would show up in,
+ * and be replayed to the agent of, the other's chat. Empty when either part
+ * is missing, which loads and saves nothing.
+ */
+export const chatHistoryKey = (serverUrl: string, repoIdentity: string): string =>
+  serverUrl && repoIdentity ? JSON.stringify([serverIdentity(serverUrl), repoIdentity]) : '';
 
 const getStorage = (): Storage | null => {
   try {
@@ -114,25 +141,33 @@ export const loadChatHistory = (repoKey: string): ChatMessage[] => {
 
 /**
  * Store the newest messages for `repoKey`. An empty list removes the entry.
- * If the write is refused (usually the storage quota), the oldest half is
- * dropped and the write retried until it fits or nothing is left.
+ *
+ * If the write is refused (usually the storage quota), the oldest whole turns
+ * are dropped one at a time until it fits. If not even the newest turn fits,
+ * the entry saved last time is left as it is: a reload then shows the
+ * conversation up to that point rather than losing all of it.
  */
 export const saveChatHistory = (repoKey: string, messages: readonly ChatMessage[]): void => {
   const storage = getStorage();
   if (!storage || !repoKey) return;
   const key = storageKey(repoKey);
-  let toStore = trimChatHistory(messages);
-  while (toStore.length > 0) {
+  const toStore = trimChatHistory(messages);
+  if (toStore.length === 0) {
     try {
-      storage.setItem(key, JSON.stringify(toStore));
+      storage.removeItem(key);
+    } catch {
+      // Storage unavailable: nothing was stored, so nothing is left behind.
+    }
+    return;
+  }
+  // trimChatHistory starts at a user message, so each turn starts at one.
+  const turnStarts = toStore.flatMap((m, i) => (m.role === 'user' ? [i] : []));
+  for (const start of turnStarts) {
+    try {
+      storage.setItem(key, JSON.stringify(start === 0 ? toStore : toStore.slice(start)));
       return;
     } catch {
-      toStore = trimChatHistory(toStore, Math.floor(toStore.length / 2));
+      // Too big (or storage refused it): try again without the oldest turn.
     }
-  }
-  try {
-    storage.removeItem(key);
-  } catch {
-    // Storage unavailable: nothing was stored, so nothing is left behind.
   }
 };
