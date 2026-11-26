@@ -1,0 +1,1 @@
+package api; public interface Service { void select(long value); void select(Integer value); }

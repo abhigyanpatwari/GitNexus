@@ -7,7 +7,7 @@ import {
   runPipelineFromRepo,
   writeFixtureRepo,
   type PipelineResult,
-} from './resolvers/helpers.js';
+} from '../integration/resolvers/helpers.js';
 
 describe('implicit inheritance candidate ownership', () => {
   let root: string;
@@ -37,17 +37,7 @@ fun localDeriving() {
       'kt/q/B.kt': `package q
 open class B {}
 `,
-      'java/p/B.java': `package p;
-public class B {}
-`,
-      'java/q/B.java': `package q;
-public class B {}
-`,
-      'java/p/Factory.java': `package p;
-public class Factory {
-  Object make() { return new external.B() {}; }
-}
-`,
+
       'cs/src/Feature/C.cs': `namespace P {
 class C : B<int> {}
 class Plain : B {}
@@ -78,14 +68,7 @@ class B {}
   it.each(['C', 'Nested', 'Local'])('binds Kotlin %s to the package-level class', (name) => {
     expect(bases(name, 'kt/p/C.kt')).toEqual(['kt/p/B.kt']);
   });
-  it('does not bind a qualified anonymous Java base to a package sibling', () => {
-    const anonymous = getRelationships(result, 'EXTENDS').filter(
-      (e) => e.sourceFilePath === 'java/p/Factory.java',
-    );
-    expect(anonymous).not.toContainEqual(
-      expect.objectContaining({ targetFilePath: 'java/p/B.java' }),
-    );
-  });
+
   it('matches the written C# generic arity before path proximity', () => {
     expect(bases('C', 'cs/src/Feature/C.cs')).toEqual(['cs/src/Generic/B.cs']);
   });

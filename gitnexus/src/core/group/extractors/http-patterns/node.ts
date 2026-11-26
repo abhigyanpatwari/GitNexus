@@ -12,12 +12,13 @@ import {
 import type {
   HttpDetection,
   HttpLanguagePlugin,
-  HttpScanInput,
+  HttpProjectScan,
   HttpFileDetections,
   RepoContext,
 } from './types.js';
 import { getProviderForFile } from '../../../ingestion/languages/index.js';
 import { extractParsedFile } from '../../../ingestion/scope-extractor-bridge.js';
+import { createTreeReleaser } from '../../../tree-sitter/native-tree-release.js';
 import { extractFrameworkRouteFacts } from '../../../ingestion/route-extractors/framework-route-facts.js';
 import { resolveFrameworkRoutePaths } from '../../../ingestion/route-extractors/framework-route-paths.js';
 import type {
@@ -26,7 +27,7 @@ import type {
 } from '../../../ingestion/route-extractors/framework-route-types.js';
 import { typescriptScopeResolver } from '../../../ingestion/languages/typescript/scope-resolver.js';
 import { javascriptScopeResolver } from '../../../ingestion/languages/javascript/scope-resolver.js';
-import { getLanguageFromFilename, SupportedLanguages, type ParsedFile } from 'gitnexus-shared';
+import { getLanguageFromFilename, SupportedLanguages } from 'gitnexus-shared';
 import { MAX_FOLD_LENGTH } from '../../../ingestion/route-extractors/constant-resolver.js';
 import {
   DATA_ROUTE_TABLE_SOURCE,
@@ -419,6 +420,7 @@ async function buildNodeRepoContext(args: {
   files: string[];
   readFile: (rel: string) => string | null;
   parseSource: (parser: Parser, src: string) => Parser.Tree | null;
+  releaseTrees?: () => Promise<void>;
 }): Promise<NodeRepoContext> {
   const cached = REPO_CONTEXT_BY_FILE_LIST.get(args.files);
   if (cached) return cached;
@@ -440,7 +442,7 @@ async function buildNodeRepoContext(args: {
   // path for one. A repo where the string `axios` appears nowhere can prove no
   // receiver, so every parse below is dead work — and parsing is the expensive
   // half (measured 4.36 s / +258 MB RSS over 827 TypeScript files, on top of
-  // the parse `getScanInput` already does).
+  // the parse the orchestrator's own scan already does).
   // Only the file's identity is carried between the passes, never its text: a
   // large monorepo's whole source tree held in one array at once is the shape
   // that produced the analyzer's scale problems, and the second read is cheap
@@ -459,10 +461,13 @@ async function buildNodeRepoContext(args: {
   }
 
   if (sawAxios) {
+    const releaseTrees = args.releaseTrees ?? createTreeReleaser();
     for (const { rel, language } of eligible) {
       try {
         const content = args.readFile(rel);
         if (content === null) continue;
+        // Lets the previous iterations' dropped trees be freed.
+        await releaseTrees();
         // `parseSource` belongs INSIDE the guard: `safe-parse.ts` throws
         // `ParseTimeoutError` and makes catching it a per-caller obligation, and
         // `prepareRepo` is contractually non-throwing. One escape here left the
@@ -471,7 +476,9 @@ async function buildNodeRepoContext(args: {
         // fail the same way before falling back to literal-only scanning.
         const tree = args.parseSource(parserFor(language), content);
         if (!tree) continue;
-        byFile.set(normalizeRel(rel), extractJsModuleFacts(tree));
+        // The context outlives this file; the clone copies the strings sliced
+        // from its source, so they do not keep the whole source alive.
+        byFile.set(normalizeRel(rel), structuredClone(extractJsModuleFacts(tree)));
       } catch {
         // One malformed file must never abort the pre-pass — it simply stays
         // unresolved, exactly as it is without this pass at all.
@@ -527,29 +534,45 @@ function frameworkDetection(route: FrameworkRoute, facts: FrameworkRouteFacts): 
   };
 }
 
-/** One project family for JS, TS and TSX, using the already parsed group trees. */
-function scanNodeProject(
-  files: readonly HttpScanInput[],
+/**
+ * What `collect` keeps of one JS/TS file: its framework route facts, or null
+ * when it has none. The scope view they are read from is not kept; the import
+ * resolvers need only the file paths.
+ */
+interface NodeFileFacts {
+  readonly filePath: string;
+  readonly facts: FrameworkRouteFacts | null;
+}
+
+/** Reduce one parsed file to its framework route facts. */
+function collectNodeFileFacts(
+  { filePath: rawPath, tree }: { filePath: string; tree: Parser.Tree },
+  repoContext?: RepoContext,
+): NodeFileFacts {
+  const filePath = normalizeRel(rawPath);
+  const context = repoContext as NodeRepoContext | undefined;
+  if (context?.configurationAvailable === false) return { filePath, facts: null };
+  const provider = getProviderForFile(filePath);
+  if (!provider) return { filePath, facts: null };
+  try {
+    const parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
+    return { filePath, facts: parsed ? extractFrameworkRouteFacts(tree, parsed) : null };
+  } catch {
+    // A malformed file contributes no framework facts; other files survive.
+    return { filePath, facts: null };
+  }
+}
+
+/** One project family for JS, TS and TSX, over the facts collected per file. */
+function resolveNodeProject(
+  collected: readonly NodeFileFacts[],
   repoContext?: RepoContext,
 ): HttpFileDetections[] {
   const context = repoContext as NodeRepoContext | undefined;
   if (context?.configurationAvailable === false) return [];
-  const parsedFiles: ParsedFile[] = [];
   const facts = new Map<string, FrameworkRouteFacts>();
-  for (const { filePath: rawPath, tree } of files) {
-    const filePath = normalizeRel(rawPath);
-    const provider = getProviderForFile(filePath);
-    if (!provider) continue;
-    try {
-      const parsed = extractParsedFile(provider, tree.rootNode.text, filePath, undefined, tree);
-      if (!parsed) continue;
-      parsedFiles.push(parsed);
-      facts.set(filePath, extractFrameworkRouteFacts(tree, parsed));
-    } catch {
-      // A malformed file contributes no framework facts; other files survive.
-    }
-  }
-  const filePaths = context?.files ?? new Set(files.map((file) => normalizeRel(file.filePath)));
+  for (const file of collected) if (file.facts) facts.set(file.filePath, file.facts);
+  const filePaths = context?.files ?? new Set(collected.map((file) => file.filePath));
   const routes = resolveFrameworkRoutePaths([...facts.values()], (fromFile, specifier) => {
     const resolver =
       getLanguageFromFilename(fromFile) === SupportedLanguages.JavaScript
@@ -560,7 +583,6 @@ function scanNodeProject(
       fromFile,
       filePaths,
       context?.resolutionConfig,
-      { parsedFiles },
     );
     return typeof target === 'string' ? [target] : (target ?? []);
   });
@@ -574,6 +596,12 @@ function scanNodeProject(
   }
   return [...detections].map(([filePath, found]) => ({ filePath, detections: found }));
 }
+
+/** Shared by the three JS/TS plugins, so the orchestrator pools them as one family. */
+const NODE_PROJECT_SCAN: HttpProjectScan<NodeFileFacts> = {
+  collect: collectNodeFileFacts,
+  resolve: resolveNodeProject,
+};
 
 /** The repo facts to resolve against, or null when there was no pre-pass. */
 function resolveFactsFor(
@@ -722,7 +750,8 @@ function scanBundle(
         : bundle === TSX_BUNDLE
           ? 'routes.tsx'
           : 'routes.ts';
-    out.push(...(scanNodeProject([{ filePath, tree }])[0]?.detections ?? []));
+    const local = NODE_PROJECT_SCAN.resolve([NODE_PROJECT_SCAN.collect({ filePath, tree })]);
+    out.push(...(local[0]?.detections ?? []));
   }
 
   // Consumer: fetch with options { method: 'X' }
@@ -934,7 +963,7 @@ export const JAVASCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'javascript-http',
   language: JavaScript,
   prepareRepo: buildNodeRepoContext,
-  scanProject: scanNodeProject,
+  projectScan: NODE_PROJECT_SCAN,
   scan: (tree, repoContext, fileRel) => scanBundle(JAVASCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
@@ -942,7 +971,7 @@ export const TYPESCRIPT_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'typescript-http',
   language: TypeScript.typescript,
   prepareRepo: buildNodeRepoContext,
-  scanProject: scanNodeProject,
+  projectScan: NODE_PROJECT_SCAN,
   scan: (tree, repoContext, fileRel) => scanBundle(TYPESCRIPT_BUNDLE, tree, repoContext, fileRel),
 };
 
@@ -950,6 +979,6 @@ export const TSX_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'tsx-http',
   language: TypeScript.tsx,
   prepareRepo: buildNodeRepoContext,
-  scanProject: scanNodeProject,
+  projectScan: NODE_PROJECT_SCAN,
   scan: (tree, repoContext, fileRel) => scanBundle(TSX_BUNDLE, tree, repoContext, fileRel),
 };

@@ -1,0 +1,26 @@
+{
+  "diagnostics": {"compiler.err.ref.ambiguous": 1},
+  "calls": [
+    {"caller": "Method:h/Child.java:Child.plain#1", "member": "save", "source": ["h/Child.java#4:2"]},
+    {"caller": "Method:h/Child.java:Child.local#0", "member": "save", "source": ["h/Child.java#5:2"]},
+    {"caller": "Method:h/Child.java:Child.viaField#0", "member": "save", "source": ["h/Child.java#6:2"]},
+    {"caller": "Method:h/Child.java:Child.array#1", "member": "save", "source": ["h/Child.java#7:2"]},
+    {"caller": "Method:h/Child.java:Inner.deep#1", "member": "save", "source": ["h/Child.java#8:16"]},
+    {"caller": "Method:h/Imported.java:Imported.viaImport#1", "member": "save", "source": ["h/Imported.java#3:32"]},
+    {"caller": "Method:k/SameFile.java:SameFile.plain#1", "member": "save", "source": ["k/SameFile.java#4:2"]},
+    {"caller": "Method:pb/PChild.java:PChild.plain#1", "member": "save", "source": ["pb/PChild.java#2:32"]},
+    {"caller": "Method:pq/PkgChild.java:PkgChild.plain#1", "member": "save", "source": ["pq/PkgChild.java#3:2"]},
+    {"caller": "Method:r/PrivChild.java:PrivChild.plain#1", "member": "save", "source": ["r/PrivChild.java#2:35"]},
+    {"caller": "Method:ib/Impl.java:Impl.plain#1", "member": "save", "source": ["ib/Impl.java#3:2"]},
+    {"caller": "Method:ib/Impl.java:Impl.qualified#1", "member": "save", "source": ["ib/Impl.java#4:2"]},
+    {"caller": "Method:h/Own.java:Own.own#1", "member": "save", "source": ["h/Own.java#4:2"]},
+    {"caller": "Method:h/LocalClass.java:LocalClass.run#0", "member": "save", "source": ["h/LocalClass.java#3:2"]},
+    {"caller": "Method:h/Child.java:Child.pass#1", "member": "take", "source": ["h/Child.java#11:2"]},
+    {"caller": "Method:k/SameFile.java:SameFile.pass#1", "member": "take", "source": ["k/SameFile.java#7:2"]},
+    {"caller": "Method:pq/PkgChild.java:PkgChild.pass#1", "member": "take", "source": ["pq/PkgChild.java#6:2"]},
+    {"caller": "Method:h/Twice.java:Twice.plain#1", "member": "save", "source": ["h/Twice.java#2:48"], "targets": 0}
+  ],
+  "nodes": [
+    "Method:h/Twice.java:Twice.plain#1"
+  ]
+}

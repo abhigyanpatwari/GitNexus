@@ -129,6 +129,9 @@ Java: 300 files, 20 methods per file, 10 receiver calls per method. It reports
 per-stage heap samples and a fingerprint of complete nodes and relationships.
 Before and after the change it produced 66,300 nodes and 126,600 relationships,
 with fingerprint `3209302e91e7023328464540ec7d0ac72ac03bf49fa73303817a56ed3d415ef5`.
+The current fingerprint is `7ff03cec3bbfd427bb232bc75fcebc19b37f097aa6d1e7b4e1a5fbf0d00197b2`.
+The change marks all 60,000 method-local variables as unexported. All 60,000
+call edges match the caller and target declarations reported by javac.
 It uses the in-memory graph helper, so its RSS is not a measurement of the CLI's
 streaming graph sink. Calls pass `null` to match each receiver's parameter type;
 the 300-file workload compiles with `javac --release 17`. The probe measures

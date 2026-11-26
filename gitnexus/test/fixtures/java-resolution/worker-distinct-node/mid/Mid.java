@@ -1,0 +1,1 @@
+package mid; import a.TreeA; import b.TreeB; public class Mid { public TreeA makeA() { return new TreeA(); } }

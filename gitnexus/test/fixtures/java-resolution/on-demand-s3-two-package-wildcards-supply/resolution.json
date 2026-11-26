@@ -1,0 +1,12 @@
+{
+  "diagnostics": {
+    "compiler.err.ref.ambiguous": 3
+  },
+  "onDemand": {
+    "status": "matches JLS 6.5.5.1: ambiguous, so no use resolves",
+    "extraEdges": [
+      "IMPORTS File:U.java -> File:src/a/T.java:T.java",
+      "IMPORTS File:U.java -> File:src/b/T.java:T.java"
+    ]
+  }
+}

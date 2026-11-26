@@ -1,0 +1,11 @@
+{
+  "diagnostics": {},
+  "synthetic": {
+    "p/Outer.java": [
+      "Method:p/Outer.java:Direct.getPrice#0",
+      "Method:p/Outer.java:Inherited.getAmount#0"
+    ],
+    "p/Imported.java": [],
+    "p/StaticImport.java": ["Method:p/StaticImport.java:StaticImport.getQuantity#0"]
+  }
+}

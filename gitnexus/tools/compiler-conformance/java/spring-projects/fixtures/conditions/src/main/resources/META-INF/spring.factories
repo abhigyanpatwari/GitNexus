@@ -1,0 +1,5 @@
+org.springframework.boot.autoconfigure.EnableAutoConfiguration=\
+com.example.KotlinAutoConfig,\
+com.vendor.LegacyStarterAutoConfiguration,\
+com.vendor.SharedAutoConfiguration,\
+com.duplicate.DuplicateAutoConfiguration

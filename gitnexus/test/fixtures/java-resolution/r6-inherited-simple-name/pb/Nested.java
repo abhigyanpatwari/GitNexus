@@ -1,0 +1,1 @@
+package pb; public class Nested { public void save() {} }

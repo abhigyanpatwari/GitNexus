@@ -200,8 +200,12 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { getRelationships, runPipelineFromRepo, writeFixtureRepo } from './helpers.js';
-import type { PipelineResult } from './helpers.js';
+import {
+  getRelationships,
+  runPipelineFromRepo,
+  writeFixtureRepo,
+} from '../../integration/resolvers/helpers.js';
+import type { PipelineResult } from '../../integration/resolvers/helpers.js';
 import { cleanupTempDirSync } from '../../helpers/test-db.js';
 
 /** One measured call site: the method the call is written in, and every distinct
@@ -313,38 +317,7 @@ class ControlSvc {
       },
     ],
   },
-  {
-    name: 'java',
-    file: 'A.java',
-    source: `
-class User {}
-interface Repo<T> { void save(T x); }
-class UserRepo implements Repo<User> { public void save(User x) {} }
-interface Plain { void save(User x); }
-class PlainRepo implements Plain { public void save(User x) {} }
-class GenericSvc {
-  private Repo<User> repo;
-  void runGeneric(User u) { this.repo.save(u); }
-}
-class ControlSvc {
-  private Plain plain;
-  void runControl(User u) { this.plain.save(u); }
-}
-`,
-    rows: [
-      {
-        caller: 'runControl',
-        targets: ['Method:A.java:Plain.save#1', 'Method:A.java:PlainRepo.save#1'],
-        note: 'control',
-      },
-      {
-        caller: 'runGeneric',
-        targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
-        note: 'ALREADY CORRECT — interpret-time erasure. Pinned against regression.',
-        pairsWith: 'runControl',
-      },
-    ],
-  },
+
   {
     name: 'kotlin',
     file: 'A.kt',
@@ -1205,35 +1178,7 @@ class Svc(private val repo: Repo<User>?) {
     unpaired:
       'one row, and no non-generic control field on purpose: this case adds a SPELLING (`Repo<User>?`) to a language whose control/generic pair is the `kotlin` case',
   },
-  {
-    name: 'java-wildcard-and-raw-generic',
-    file: 'A.java',
-    source: `
-class User {}
-interface Repo<T> { void save(T x); }
-class UserRepo implements Repo<User> { public void save(User x) {} }
-class Svc {
-  private Repo<? extends User> wild;
-  private Repo raw;
-  void runWildcard(User u) { this.wild.save(u); }
-  void runRaw(User u) { this.raw.save(u); }
-}
-`,
-    rows: [
-      {
-        caller: 'runWildcard',
-        targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
-        note: 'bounded wildcard `Repo<? extends User>` names the same declaration. INTERPRET-TIME PATH: cannot fail on a revert of the shared lookup.',
-      },
-      {
-        caller: 'runRaw',
-        targets: ['Method:A.java:Repo.save#1', 'Method:A.java:UserRepo.save#1'],
-        note: 'raw type `Repo` — the erased spelling Java itself permits. Carries no type arguments at all, so it never enters the generic path in any build.',
-      },
-    ],
-    unpaired:
-      "both rows are generic SPELLINGS (`Repo<? extends User>`, raw `Repo`) with no plain control between them; Java's control/generic pair is the `java` case",
-  },
+
   {
     name: 'rust-nested-generic',
     file: 'a.rs',

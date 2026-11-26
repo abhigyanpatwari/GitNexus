@@ -1,0 +1,1 @@
+package f; class Inner { void save() {} }

@@ -41,40 +41,6 @@ export const tsExportChecker: ExportChecker = (node, _name) => {
 /** Python: public if no leading underscore (convention). */
 export const pythonExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
 
-// Parser trees are immutable during extraction; weak keys do not retain discarded trees.
-const javaPublicModifierCache = new WeakMap<SyntaxNode, boolean>();
-
-/** Java: check for 'public' modifier — modifiers are siblings of the name node, not parents. */
-export const javaExportChecker: ExportChecker = (node, _name) => {
-  let current: SyntaxNode | null = node;
-  while (current) {
-    const parent: SyntaxNode | null = current.parent;
-    if (parent) {
-      let isPublic = javaPublicModifierCache.get(parent);
-      if (isPublic === undefined) {
-        isPublic = false;
-        // Java modifiers precede the declaration's other named children.
-        // Skip comments, but never scan a class body full of sibling methods.
-        for (let i = 0; i < parent.namedChildCount; i++) {
-          const child = parent.namedChild(i);
-          if (child?.type === 'line_comment' || child?.type === 'block_comment') continue;
-          if (child?.type === 'modifiers' && child.text?.includes('public')) {
-            isPublic = true;
-          }
-          break;
-        }
-        if (parent.type === 'method_declaration' || parent.type === 'constructor_declaration') {
-          isPublic ||= parent.text?.trimStart().startsWith('public') ?? false;
-        }
-        javaPublicModifierCache.set(parent, isPublic);
-      }
-      if (isPublic) return true;
-    }
-    current = parent;
-  }
-  return false;
-};
-
 /** C# declaration node types for sibling modifier scanning. */
 const CSHARP_DECL_TYPES = new Set([
   'method_declaration',

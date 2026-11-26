@@ -1,0 +1,1 @@
+package external; class Use { void go() { Api.run(value -> value.audit()); } }

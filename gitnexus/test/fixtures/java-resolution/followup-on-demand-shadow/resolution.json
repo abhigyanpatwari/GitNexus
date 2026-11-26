@@ -1,0 +1,12 @@
+{
+  "diagnostics": {},
+  "calls": [
+    {"caller": "Method:app/Svc.java:Svc.shadowed#1", "member": "save", "source": ["app/Svc.java#4:2"]},
+    {"caller": "Method:app/Svc.java:Svc.shadowedLambda#1", "member": "save", "exceptTarget": "Method:app/Other.java:Other.save#0", "published": [], "compilerTargets": ["app/Other.java#1:34"], "source": ["app/Svc.java#5:2"]},
+    {"caller": "Method:app/Svc.java:Svc.unshadowed#1", "member": "save", "source": ["app/Svc.java#6:2"]}
+  ],
+  "nodes": [
+    "Method:app/Svc.java:Svc.shadowed#1",
+    "Method:app/Svc.java:Svc.shadowedLambda#1"
+  ]
+}

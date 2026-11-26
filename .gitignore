@@ -140,6 +140,7 @@ gitnexus/web/
 
 # Local copies of CI execution receipts.
 gitnexus/benchmarks.json
+gitnexus/java-benchmarks.json
 gitnexus/preflight.json
 gitnexus/test-results.json
 gitnexus/windows-latest-*.json

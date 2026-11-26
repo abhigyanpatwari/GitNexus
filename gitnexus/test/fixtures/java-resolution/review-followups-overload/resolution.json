@@ -1,0 +1,18 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.args": 1, "compiler.err.ref.ambiguous": 1, "compiler.err.report.access": 1},
+  "calls": [
+    {"caller": "Method:Main.java:Sub.viaSuper#0", "member": "save", "source": ["Main.java#15:2"]},
+    {"caller": "Method:Main.java:Sub.viaThis#0", "member": "save", "source": ["Main.java#16:2"]},
+    {"caller": "Method:Main.java:Sub.overloadedSuper#0", "member": "save", "source": ["Main.java#18:2"]},
+    {"caller": "Method:Main.java:Sub$1.run#0", "member": "own", "source": ["Main.java#23:6"]},
+    {"caller": "Method:Main.java:Sub$1.run#0", "member": "save", "source": ["Main.java#23:6"]},
+    {"caller": "Method:Main.java:Sub.privateSuper#0", "member": "save", "source": ["Main.java#17:2"], "targets": 0},
+    {"caller": "Method:Main.java:Sub.ambiguousSuper#0", "member": "save", "source": ["Main.java#19:2"], "targets": 0},
+    {"caller": "Method:Main.java:Lone.viaObjectSuper#0", "member": "save", "source": ["Main.java#29:2"], "targets": 0}
+  ],
+  "nodes": [
+    "Method:Main.java:Lone.viaObjectSuper#0",
+    "Method:Main.java:Sub.ambiguousSuper#0",
+    "Method:Main.java:Sub.privateSuper#0"
+  ]
+}

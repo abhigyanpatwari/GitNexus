@@ -1,0 +1,24 @@
+{
+  "diagnostics": {"compiler.err.cant.resolve.location.args": 3},
+  "calls": [
+    {"caller": "Method:Main.java:App.parameterAlias#1", "member": "save", "source": ["Main.java#20:2"]},
+    {"caller": "Method:Main.java:App.fieldAlias#1", "member": "save", "source": ["Main.java#22:2"]},
+    {"caller": "Method:Main.java:App.fieldVersusMethodAlias#1", "member": "save", "source": ["Main.java#27:2"]},
+    {"caller": "Method:Main.java:App.thisFieldAlias#0", "member": "save", "source": ["Main.java#29:2"]},
+    {"caller": "Method:Main.java:App.nestedFieldAlias#1", "member": "save", "source": ["Main.java#30:2"]},
+    {"caller": "Method:Main.java:App.beforeLocalDeclaration#0", "member": "save", "source": ["Main.java#31:2"]},
+    {"caller": "Method:Main.java:App.afterLocalDeclaration#0", "member": "save", "source": ["Main.java#36:2"]},
+    {"caller": "Method:Main.java:App.adjacentAlias#2", "member": "save", "source": ["Main.java#41:2"]},
+    {"caller": "Method:Main.java:App.adjacentTyped#2", "member": "save", "source": ["Main.java#45:2"]},
+    {"caller": "Method:Main.java:App.adjacentConstructor#1", "member": "save", "source": ["Main.java#49:2"]},
+    {"caller": "Method:Main.java:App.adjacentAnonymous#1", "member": "save", "source": ["Main.java#53:2"]},
+    {"caller": "Method:Main.java:App.factoryAlias#1", "member": "save", "source": ["Main.java#57:2"]},
+    {"caller": "Method:Main.java:App.loopFactoryAlias#1", "member": "save", "source": ["Main.java#58:2"]},
+    {"caller": "Method:Main.java:App.afterLoopFactoryAlias#2", "member": "save", "source": ["Main.java#61:2"]},
+    {"caller": "Method:Main.java:App.competingFactoryAlias#1", "member": "save", "source": ["Main.java#65:2"]},
+    {"caller": "Method:Main.java:App.unknownParameterAlias#1", "member": "save", "source": ["Main.java#21:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.unknownLocalAlias#0", "member": "save", "source": ["Main.java#66:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.unknownFieldVersusMethodAlias#1", "member": "save", "source": ["Main.java#28:2"], "targets": 0},
+    {"caller": "Method:Main.java:App.declaredTypeAfterAssignment#1", "member": "toString", "source": ["Main.java#67:2"], "targets": 0}
+  ]
+}

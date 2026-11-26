@@ -153,7 +153,12 @@ export interface HttpLanguagePlugin {
    * Optional pre-pass: walk the relevant files in the repo and produce
    * an opaque context that `scan` can use to resolve cross-file facts.
    * Implementations must not throw — return undefined on any error so
-   * the orchestrator falls back to context-less scanning.
+   * the orchestrator falls back to context-less scanning. A pre-pass that
+   * parses many files is async and awaits `releaseTrees` before each parse,
+   * so their native tree memory is freed as it goes. The context lives for the
+   * whole extraction, so it must hold no tree or syntax node, and strings read
+   * from a tree (slices of the file's source) must be copied, for example with
+   * `structuredClone`, or they keep the whole source alive.
    */
   prepareRepo?(args: {
     repoPath: string;
@@ -161,7 +166,13 @@ export interface HttpLanguagePlugin {
     parser: Parser;
     readFile: (rel: string) => string | null;
     parseSource: (parser: Parser, src: string) => Parser.Tree | null;
-  }): RepoContext | undefined;
+    /**
+     * The extraction's tree releaser (see `createTreeReleaser`), so that the
+     * pre-pass and the scans count their parses together. A caller without
+     * one may omit it; the pre-pass then makes its own.
+     */
+    releaseTrees?: () => Promise<void>;
+  }): RepoContext | undefined | Promise<RepoContext | undefined>;
   /**
    * Scan a parsed tree and return zero or more HTTP detections. Plugins
    * must not throw — they should swallow per-match errors so a single
@@ -177,9 +188,33 @@ export interface HttpLanguagePlugin {
    */
   scan(tree: Parser.Tree, repoContext?: RepoContext, fileRel?: string): HttpDetection[];
   /**
-   * Optional project-level scan hook for language rules that require
-   * multiple files, such as Java controllers inheriting Spring mappings
-   * from annotated interfaces.
+   * Optional project-level scan for language rules that require multiple
+   * files, such as Java controllers inheriting Spring mappings from annotated
+   * interfaces. Plugins whose grammars form one project family (JS, TS, TSX)
+   * share the same object, which is how the orchestrator pools them.
    */
-  scanProject?(files: readonly HttpScanInput[], repoContext?: RepoContext): HttpFileDetections[];
+  projectScan?: HttpProjectScan;
+}
+
+/**
+ * Two-phase project scan. `collect` runs once per file while its tree is
+ * alive and reduces it to plain data; `resolve` then runs the cross-file pass
+ * over those facts. Splitting the two lets the orchestrator drop each tree as
+ * soon as its file is done instead of holding every tree of the family until
+ * the cross-file pass.
+ *
+ * `collect` runs once per file, right after the plugin's `scan` of it. A
+ * throw from `collect` or `resolve`, or facts that cannot be structured-cloned,
+ * fails the extraction and drops the repo's contracts, so neither should
+ * throw. `resolve` is skipped when no file of the family was parsed, and it
+ * gets the `repoContext` of the family's first parsed file.
+ */
+export interface HttpProjectScan<TFacts = unknown> {
+  /**
+   * Reduce ONE parsed file to plain data. The result must not hold the tree,
+   * a syntax node, or anything else that cannot cross a structured clone.
+   */
+  collect(input: HttpScanInput, repoContext?: RepoContext): TFacts;
+  /** Cross-file pass over the collected facts, in scan order. */
+  resolve(facts: readonly TFacts[], repoContext?: RepoContext): HttpFileDetections[];
 }

@@ -1,0 +1,104 @@
+{
+  "lang-resolution/java-anon-extends-base": {
+    "diagnostics": {
+      "compiler.err.cant.resolve.location.args": 1,
+      "compiler.err.class.public.should.be.in.file": 1
+    },
+    "sourceMethods": 3,
+    "reason": "The declared Base receiver lacks extra(). GitNexus follows the assigned anonymous implementation.",
+    "callDifferences": [
+      "+ src/App.java#8:4 -> src/App.java#10:12"
+    ]
+  },
+  "lang-resolution/java-anonymous-class-scope": {
+    "diagnostics": {
+      "compiler.err.cant.resolve.location.args": 1
+    },
+    "sourceMethods": 3,
+    "reason": "GitNexus follows the anonymous implementation of the Runnable receiver.",
+    "callDifferences": [
+      "+ src/Worker.java#6:4 -> src/Worker.java#8:12"
+    ]
+  },
+  "lang-resolution/java-cast-receiver": {
+    "diagnostics": {
+      "compiler.err.cant.resolve.location.args": 2,
+      "compiler.err.prob.found.req": 4,
+      "compiler.err.type.doesnt.take.params": 1
+    },
+    "sourceMethods": 19,
+    "reason": "GitNexus follows the written Box cast in this decompiler fixture. The compiler rejects the cast from Wrapper.",
+    "callDifferences": [
+      "+ App.java#13:4 -> models/Box.java#4:4"
+    ]
+  },
+  "lang-resolution/java-duplicate-fqn-modules": {
+    "diagnostics": {
+      "compiler.err.duplicate.class": 1
+    },
+    "sourceMethods": 3,
+    "reason": "Both modules declare the same binary class. GitNexus links the call within its module, while javac recovers using the first declaration.",
+    "callDifferences": [
+      "- module2/src/main/java/com/example/Module2App.java#4:4 -> module1/src/main/java/com/example/UserService.java#4:4",
+      "+ module2/src/main/java/com/example/Module2App.java#4:4 -> module2/src/main/java/com/example/UserService.java#4:4"
+    ]
+  },
+  "lang-resolution/java-duplicate-fqn-source-roots": {
+    "diagnostics": {
+      "compiler.err.duplicate.class": 1
+    },
+    "sourceMethods": 3,
+    "reason": "On rejected duplicate classes javac recovers with the first source root. GitNexus keeps beta local and the unowned gamma reference unresolved.",
+    "callDifferences": [
+      "- beta/src/main/java/services/UserService.java#6:4 -> alpha/src/main/java/models/User.java#4:4",
+      "- gamma/src/main/java/reports/Report.java#6:4 -> alpha/src/main/java/models/User.java#4:4",
+      "+ beta/src/main/java/services/UserService.java#6:4 -> beta/src/main/java/models/User.java#4:4"
+    ]
+  },
+  "lang-resolution/java-enum-constant-body": {
+    "diagnostics": {
+      "compiler.err.cant.resolve.location.args": 1
+    },
+    "sourceMethods": 9,
+    "reason": "GitNexus dispatches the constant receiver to its overriding implementation. The compile-time target is the enum method.",
+    "callDifferences": [
+      "- src/EnumConst.java#25:4 -> src/EnumConst.java#13:4",
+      "+ src/EnumConst.java#25:4 -> src/EnumConst.java#3:8"
+    ]
+  },
+  "lang-resolution/java-inherited-bare-call": {
+    "diagnostics": {
+      "compiler.err.class.public.should.be.in.file": 1
+    },
+    "sourceMethods": 2
+  },
+  "lang-resolution/java-method-chain-cross-class": {
+    "diagnostics": {
+      "compiler.err.report.access": 1
+    },
+    "sourceMethods": 8,
+    "reason": "GitNexus follows the city field through a chained call, while javac rejects access to this private field.",
+    "callDifferences": [
+      "+ App.java#13:4 -> City.java#2:4"
+    ]
+  },
+  "lang-resolution/java-qualified-base": {
+    "diagnostics": {
+      "compiler.err.doesnt.exist": 4
+    },
+    "sourceMethods": 7
+  },
+  "lang-resolution/java-unrelated-method-collision": {
+    "diagnostics": {
+      "compiler.err.cant.resolve.location.args": 1,
+      "compiler.err.class.public.should.be.in.file": 1
+    },
+    "sourceMethods": 2
+  },
+  "lang-resolution/java-virtual-dispatch": {
+    "diagnostics": {
+      "compiler.err.cant.resolve.location.args": 1
+    },
+    "sourceMethods": 4
+  }
+}

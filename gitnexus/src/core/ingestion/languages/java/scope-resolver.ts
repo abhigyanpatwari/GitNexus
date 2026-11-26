@@ -6,8 +6,7 @@
  * call-resolution path.
  */
 
-import type { ParsedFile, TypeRef } from 'gitnexus-shared';
-import { SupportedLanguages } from 'gitnexus-shared';
+import { SupportedLanguages, type ParsedFile, type TypeRef } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
@@ -19,6 +18,7 @@ import {
   namesAtScope,
   populateClassOwnedMembers,
 } from '../../scope-resolution/scope/walkers.js';
+import { clearJavaPackageFacts, getJavaPackageFact } from './package-facts.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { createChainFollower } from '../../scope-resolution/passes/imported-return-types.js';
@@ -46,7 +46,7 @@ import {
   validateJavaQualifiedContextualBindings,
 } from './qualified-contextual-bindings.js';
 import {
-  reconcileJavaLombokWorkspaceProof,
+  reconcileJavaWorkspaceReferences,
   emitJavaLombokWorkspaceCorrections,
 } from './lombok-workspace-proof.js';
 import { populateJavaPackageSiblings, resolveJavaSamePackageBase } from './package-siblings.js';
@@ -67,8 +67,10 @@ import {
   applyJavaCaptureSideChannel,
   clearJavaClassAnnotationFacts,
 } from './capture-side-channel.js';
-import { clearJavaPackageFacts } from './package-facts.js';
 import {
+  resolveJavaConstructorCall,
+  populateJavaIterableBindings,
+  javaExternalCallTarget,
   resolveJavaReceiverMember,
   resolveJavaSelectedMethodImplementation,
   resolveJavaUnqualifiedCall,
@@ -115,20 +117,33 @@ const javaScopeResolver: ScopeResolver = {
 
   buildMro: buildJavaMro,
 
-  populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
-  populateWorkspaceReferences: reconcileJavaLombokWorkspaceProof,
+  populateOwners: (parsed: ParsedFile) => {
+    const pkg = getJavaPackageFact(parsed.filePath);
+    if (pkg?.status === 'known' && pkg.packageName) {
+      const prefix = pkg.packageName + '.';
+      for (const def of parsed.localDefs) {
+        if (def.namespacePrefix || !isClassLike(def.type) || !def.qualifiedName?.startsWith(prefix))
+          continue;
+        // Java source lookup uses the lexical owner chain. Only the graph ID
+        // for a colliding declaration includes its package.
+        Object.assign(def, {
+          qualifiedName: def.qualifiedName.slice(prefix.length),
+          namespacePrefix: pkg.packageName,
+        });
+      }
+    }
+    populateClassOwnedMembers(parsed);
+  },
+  populateWorkspaceReferences: reconcileJavaWorkspaceReferences,
   emitHeritageEdges: emitJavaLombokWorkspaceCorrections,
   applyCaptureSideChannel: applyJavaCaptureSideChannel,
   // A call whose every argument is an implicitly typed lambda is decided by
   // potential applicability where the general selector has no evidence.
-  resolveReceiverMember: (owner, member, site, scopes, model) =>
-    selectJavaLambdaOverload(
-      resolveJavaReceiverMember(owner, member, site, scopes, model),
-      site,
-      scopes,
-    ),
+  resolveReceiverMember: resolveJavaReceiverMember,
+  externalCallTarget: javaExternalCallTarget,
   resolveUnqualifiedCall: (site, scopes, model) =>
     selectJavaLambdaOverload(resolveJavaUnqualifiedCall(site, scopes, model), site, scopes),
+  resolveConstructorCall: resolveJavaConstructorCall,
   resolveSelectedMethodImplementation: resolveJavaSelectedMethodImplementation,
   receiverMemberLookupCoversAllCalls: true,
   // A producer indexed by trailing subscripts (`make()[0].save()`) is typed
@@ -178,7 +193,10 @@ const javaScopeResolver: ScopeResolver = {
     indexJavaEnclosingLocalAliases(parsedFiles, indexes);
   },
   resolveImplicitInheritanceBase: resolveJavaSamePackageBase,
-  populateRangeBindings: populateJavaCrossFileReturnTypes,
+  populateRangeBindings: (files, indexes, context) => {
+    populateJavaCrossFileReturnTypes(files, indexes);
+    if (context.model) populateJavaIterableBindings(files, indexes, context.model);
+  },
   emitPostResolutionEdges: (graph, parsedFiles, nodeLookup, indexes, ctx) => {
     attachSpringBeanCandidateMetadata(graph, parsedFiles, nodeLookup, indexes);
     attachJavaSpringAopMetadata(graph, parsedFiles, nodeLookup, indexes);

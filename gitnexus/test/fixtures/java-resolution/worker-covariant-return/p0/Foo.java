@@ -1,0 +1,1 @@
+package p0; public class Foo { public void fooMethod() {} }

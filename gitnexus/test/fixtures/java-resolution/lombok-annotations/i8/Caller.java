@@ -1,0 +1,1 @@
+package i8; class Caller { void f(Model m) { m.getName(); } }

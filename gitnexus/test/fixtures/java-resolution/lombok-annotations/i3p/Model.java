@@ -1,0 +1,1 @@
+package i3p; import lombok.Getter; public class Model extends Base { @Getter String name; }

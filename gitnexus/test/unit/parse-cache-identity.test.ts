@@ -215,7 +215,7 @@ describe('parse cache artifact identity', () => {
     expect(reads).toBe(0);
   });
 
-  it('reuses verified dependency bytes and rehashes them after a change', () => {
+  it('reuses verified build and dependency bytes and rehashes each after a change', () => {
     const standalone = fixture();
     const analyzed = fixture();
     const dependency = 'tree-sitter-javascript';
@@ -231,6 +231,8 @@ describe('parse cache artifact identity', () => {
       );
     }
     const binaryPath = realpathSync.native(path.join(analyzed.root, binary));
+    const parser = 'src/core/ingestion/pipeline-phases/parse-impl.ts';
+    const parserPath = realpathSync.native(path.join(analyzed.root, parser));
     const cacheDirectory = path.join(analyzed.root, 'identity-cache');
     const analyzerReads: string[] = [];
     resolveAnalyzerRunnerIdentity(analyzed.moduleUrl, {
@@ -238,6 +240,7 @@ describe('parse cache artifact identity', () => {
       onHashedInput: (input) => analyzerReads.push(input.path),
     });
     expect(analyzerReads).toContain(binaryPath);
+    expect(analyzerReads).toContain(parserPath);
 
     _clearAnalyzerIdentityProcessCacheForTests();
     const restoredReads: string[] = [];
@@ -252,12 +255,19 @@ describe('parse cache artifact identity', () => {
     const original = standalone.identity();
     expect(analyzed.identity(options)).toEqual(original);
     expect(parserReads).not.toContain(binaryPath);
+    expect(parserReads).not.toContain(parserPath);
     analyzed.write(binary, 'native fixture BYTES');
     standalone.write(binary, 'native fixture BYTES');
     const changed = analyzed.identity(options);
     expect(parserReads).toContain(binaryPath);
     expect(changed.base).not.toBe(original.base);
     expect(changed).toEqual(standalone.identity());
+    analyzed.write(parser, 'updated parser code');
+    standalone.write(parser, 'updated parser code');
+    const updated = analyzed.identity(options);
+    expect(parserReads).toContain(parserPath);
+    expect(updated.base).not.toBe(changed.base);
+    expect(updated).toEqual(standalone.identity());
   });
 
   it('fails closed when required inputs or the selected worker are missing', () => {

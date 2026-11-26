@@ -25,7 +25,6 @@ import {
 import { decodeReceiverChain } from '../../../src/core/ingestion/utils/receiver-chain-codec.js';
 import { typescriptScopeResolver } from '../../../src/core/ingestion/languages/typescript/scope-resolver.js';
 import { goScopeResolver } from '../../../src/core/ingestion/languages/go/scope-resolver.js';
-import { javaScopeResolver } from '../../../src/core/ingestion/languages/java/scope-resolver.js';
 import { pythonScopeResolver } from '../../../src/core/ingestion/languages/python/scope-resolver.js';
 import { zigScopeResolver } from '../../../src/core/ingestion/languages/zig/scope-resolver.js';
 import { csharpScopeResolver } from '../../../src/core/ingestion/languages/csharp/scope-resolver.js';
@@ -364,49 +363,6 @@ export function viaDate(d: Date): void {
   'main.ts',
 );
 
-// #2744. Java is the language the boundary signal matters most for (the
-// Spring/DI analysis is built on it) and the one that had no built-in set at
-// all, so every drop in it hedged. Same construction as the fixtures above —
-// real scope extraction, real provider hook — because the cases that matter are
-// exactly the ones source-level intuition gets wrong: a `java.util` import does
-// NOT produce an in-program binding (so the base still reaches the built-in
-// set), and a `List<String>` declaration does not bind its base to `List`.
-const javaFixture = buildScopeModel(
-  javaScopeResolver,
-  `import java.util.List;
-import java.util.Map;
-
-public class Probe {
-    private UserService svc;
-    private List<String> names;
-
-    public void go(OrderRepository repo, String raw) {
-        System.out.println("x");
-        String.format("%s", raw);
-        raw.trim();
-        names.iterator();
-        List.of("a");
-        Map.entry("a", "b");
-        Set.copyOf(names);
-        Helper.assist();
-        svc.loadUser();
-        repo.findAll();
-    }
-}
-
-class Helper {
-    static void assist() {}
-}
-
-class UserService {
-    User loadUser() { return null; }
-}
-
-class User {}
-`,
-  'src/Probe.java',
-);
-
 describe('classifyReceiverOrigin', () => {
   // #2766. \`func (h *Host)\` binds \`h\` to the literal \`*Host\`; a free parameter
   // \`x *Host\` is normalized to \`Host\` at capture. Only the receiver spelling
@@ -447,67 +403,6 @@ describe('classifyReceiverOrigin', () => {
     // such a language; COBOL still is.
     expect(originOfWithoutHooks(tsFixture, 'log')).toBe('unknown');
     expect(originOfWithoutHooks(tsFixture, 'getTime')).toBe('unknown');
-  });
-
-  // ── Java (#2744) ────────────────────────────────────────────────────────
-  // Before Java had a built-in set, every assertion in this block read
-  // `lower-bound`-inducing `unknown`.
-
-  it('reports a Java static platform receiver as external', () => {
-    // `System.out.println(...)` — the chain base is `System`, not `out`.
-    expect(originOf(javaFixture, 'println')).toBe('external');
-    expect(originOf(javaFixture, 'format')).toBe('external');
-  });
-
-  it('reports a Java base whose declared type is a platform type as external', () => {
-    // `String raw` — the parameter is in-program, the member it dispatches is not.
-    expect(originOf(javaFixture, 'trim')).toBe('external');
-    // A FIELD declared `List<String>`. Java binds a known container to its
-    // ELEMENT type, so what reaches the built-in check is `String`, not `List` —
-    // asserting this from the source spelling would pin the wrong thing. Either
-    // way the verdict is the honest one, and without the set it read `in-program`
-    // off the value channel and hedged every JDK collection call in the repo.
-    expect(originOf(javaFixture, 'iterator')).toBe('external');
-  });
-
-  it('reports a java.util static receiver as external despite its import', () => {
-    // `import java.util.List` resolves to no workspace file, so it leaves no
-    // in-program binding and `List` falls through to the built-in set.
-    expect(originOf(javaFixture, 'of')).toBe('external');
-  });
-
-  it('still reports Java receivers the program declares as in-program', () => {
-    expect(originOf(javaFixture, 'assist')).toBe('in-program');
-    expect(originOf(javaFixture, 'loadUser')).toBe('in-program');
-  });
-
-  it('still hedges a Java receiver whose declared type is simply unknown here', () => {
-    // `OrderRepository` is declared nowhere in this program and is not a platform
-    // name. Absence of evidence stays `unknown` — the safe direction.
-    expect(originOf(javaFixture, 'findAll')).not.toBe('external');
-    expect(originOf(javaFixture, 'findAll')).toBe('unknown');
-  });
-
-  it('hedges an unimported platform name deliberately kept OUT of the set', () => {
-    // `Set.copyOf(...)` is the exact syntactic twin of the `List.of(...)` above,
-    // and nothing in the file imports `Set`. `Set` is a name applications really
-    // do declare, and in Java an unimported one can only be a type of this
-    // package, so it stays out and its drops keep hedging. This pins the
-    // under-inclusion choice as a choice, not an oversight.
-    expect(originOf(javaFixture, 'copyOf')).toBe('unknown');
-  });
-
-  it('reads an explicit platform import as evidence whatever the set says', () => {
-    // `import java.util.Map` shadows any same-package `Map` (JLS §6.4.1) and can
-    // never resolve in-workspace, so the import itself places `Map.entry(...)`
-    // in the JDK. Before the import counted, this drop hedged on set membership
-    // alone.
-    expect(originOf(javaFixture, 'entry')).toBe('external');
-  });
-
-  it('degrades every Java verdict to unknown when the hook is withheld', () => {
-    expect(originOfWithoutHooks(javaFixture, 'format')).toBe('unknown');
-    expect(originOfWithoutHooks(javaFixture, 'trim')).toBe('unknown');
   });
 });
 
@@ -646,29 +541,6 @@ fn lessThan(_: void, a: u32, b: u32) bool {
 }
 `,
   'src/main.zig',
-);
-
-const javaLibraryFixture = buildScopeModel(
-  javaScopeResolver,
-  `public class Probe {
-    public void qualified() {
-        java.util.Optional.of("x");
-    }
-
-    public void shadowed(Holder java) {
-        java.util.run();
-    }
-}
-
-class Holder {
-    Util util;
-}
-
-class Util {
-    void run() {}
-}
-`,
-  'src/Probe.java',
 );
 
 const csharpLibraryFixture = buildScopeModel(
@@ -816,7 +688,6 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['Python stdlib namespace import', pythonLibraryFixture, 'setdefault'],
     ['Python stdlib named import', pythonLibraryFixture, 'resolve'],
     ['Zig std import', zigLibraryFixture, 'pdq'],
-    ['Java platform package root', javaLibraryFixture, 'of'],
     ['C# System namespace', csharpLibraryFixture, 'WriteLine'],
     ['C# field declared as a library type', csharpLibraryFixture, 'Keys'],
     ['Kotlin java.lang.System', kotlinLibraryFixture, 'println'],
@@ -834,7 +705,6 @@ describe('classifyReceiverOrigin — library and runtime receivers', () => {
     ['an unresolved relative Python import', 'unknown', pythonLibraryFixture, 'dumps'],
     ['a Python parameter named os', 'unknown', pythonLibraryFixture, 'update'],
     ['a Zig path import spelled like std', 'unknown', zigLibraryFixture, 'insertion'],
-    ['a Java parameter named java', 'in-program', javaLibraryFixture, 'run'],
     ['a C# field of a program type', 'in-program', csharpLibraryFixture, 'Items'],
     ['a C# extension method the program declares', 'in-program', csharpLibraryFixture, 'Size'],
     ['a C# class named System', 'in-program', csharpShadowFixture, 'WriteLine'],

@@ -1,0 +1,10 @@
+{
+  "diagnostics": {},
+  "onDemand": {
+    "status": "matches JLS 7.5.2",
+    "extraEdges": [
+      "CALLS Method:viaNew -> Class:src/b/T.java:T",
+      "IMPORTS File:U.java -> File:src/b/T.java:T.java"
+    ]
+  }
+}

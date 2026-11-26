@@ -30,6 +30,11 @@ import {
   loadMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import {
+  gitCommitAll,
+  withoutAnalysisFeature,
+  readWildcardServiceAnnotations,
+} from '../helpers/incremental-test-repo.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
 // Shared embedding-seed trio (this shipping review, FIX 8) — the KTD9
@@ -59,31 +64,10 @@ import {
   SPRING_NON_HTTP_HANDLERS_FEATURE,
   SPRING_ROUTE_BINDINGS_FEATURE,
 } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
-import { springVendorPrefixesKey } from '../../src/core/ingestion/frameworks/spring/vendor-prefixes.js';
 import { routeHookConfigKey } from '../../src/core/ingestion/route-hook-config.js';
-import {
-  decodeSpringAopReason,
-  SPRING_AOP_EVIDENCE_ID_PREFIX,
-} from '../../src/core/ingestion/frameworks/spring/aop.js';
-import { SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX } from '../../src/core/ingestion/frameworks/spring/auto-configuration.js';
-import {
-  JAVA_ENUM_INTERFACE_HERITAGE_FEATURE,
-  SPRING_CONFIG_BINDINGS_FEATURE,
-} from '../../src/core/ingestion/languages/java/analysis-features.js';
+import { SPRING_CONFIG_BINDINGS_FEATURE } from '../../src/core/ingestion/languages/java/analysis-features.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
-
-/** Stage + commit everything in the temp repo (mirrors mini-repo.ts's git calls). */
-const gitCommitAll = (cwd: string, message: string): void => {
-  execSync('git -c user.name=test -c user.email=t@t -c commit.gpgsign=false add -A', {
-    cwd,
-    stdio: 'pipe',
-  });
-  execSync(
-    `git -c user.name=test -c user.email=t@t -c commit.gpgsign=false commit -q -m "${message}"`,
-    { cwd, stdio: 'pipe' },
-  );
-};
 
 const SPRING_SERVICE = 'org.springframework.stereotype.Service';
 
@@ -113,49 +97,6 @@ const rebuildLineShapes = (count: number) => {
   };
 };
 
-function withoutAnalysisFeature(meta: RepoMeta, featureId: string): RepoMeta {
-  return {
-    ...meta,
-    analysisFeatures: Object.fromEntries(
-      Object.entries(meta.analysisFeatures ?? {}).filter(([id]) => id !== featureId),
-    ),
-  };
-}
-
-async function setupSpringBeanIncrementalRepo() {
-  const repo = await createTempDir('gitnexus-incr-spring-bean-');
-  const src = path.join(repo.dbPath, 'src', 'com', 'other');
-  await mkdir(src, { recursive: true });
-  await writeFile(
-    path.join(src, 'WildcardService.java'),
-    'package com.other;\n' +
-      'import org.springframework.stereotype.*;\n\n' +
-      '@Service public class WildcardService {}\n',
-    'utf-8',
-  );
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
-  gitCommitAll(repo.dbPath, 'initial spring bean candidate');
-  return repo;
-}
-
-async function setupJavaEnumHeritageIncrementalRepo() {
-  const repo = await createTempDir('gitnexus-incr-java-enum-heritage-');
-  const src = path.join(repo.dbPath, 'src');
-  await mkdir(src, { recursive: true });
-  await writeFile(
-    path.join(src, 'Status.java'),
-    'interface Named { String label(); }\n' +
-      'enum Status implements Named {\n' +
-      '  ACTIVE;\n' +
-      '  public String label() { return "active"; }\n' +
-      '}\n',
-    'utf-8',
-  );
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
-  gitCommitAll(repo.dbPath, 'initial Java enum heritage');
-  return repo;
-}
-
 async function setupKotlinSpringBeanIncrementalRepo() {
   const repo = await createTempDir('gitnexus-incr-spring-bean-kotlin-');
   const src = path.join(repo.dbPath, 'src', 'com', 'other');
@@ -169,75 +110,6 @@ async function setupKotlinSpringBeanIncrementalRepo() {
   );
   execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
   gitCommitAll(repo.dbPath, 'initial Kotlin spring bean candidate');
-  return repo;
-}
-
-const springAopAspectSource = (pointcut: string): string =>
-  `package com.example;\n` +
-  `import org.aspectj.lang.annotation.Aspect;\n` +
-  `import org.aspectj.lang.annotation.Before;\n\n` +
-  `@Aspect public class TraceAspect {\n` +
-  `  @Before("${pointcut}") public void trace() {}\n` +
-  `}\n`;
-
-async function setupSpringAopIncrementalRepo() {
-  const repo = await createTempDir('gitnexus-incr-spring-aop-');
-  const javaSrc = path.join(repo.dbPath, 'src', 'main', 'java', 'com', 'example');
-  const kotlinSrc = path.join(repo.dbPath, 'src', 'main', 'kotlin', 'com', 'example');
-  const resources = path.join(repo.dbPath, 'src', 'main', 'resources');
-  await Promise.all([
-    mkdir(javaSrc, { recursive: true }),
-    mkdir(kotlinSrc, { recursive: true }),
-    mkdir(resources, { recursive: true }),
-  ]);
-  await Promise.all([
-    writeFile(path.join(repo.dbPath, '.gitignore'), '.gitnexus/\n', 'utf-8'),
-    writeFile(
-      path.join(javaSrc, 'FirstService.java'),
-      'package com.example;\n\n' +
-        'public class FirstService {\n' +
-        '  public void first() {}\n' +
-        '}\n',
-      'utf-8',
-    ),
-    writeFile(
-      path.join(javaSrc, 'TraceAspect.java'),
-      springAopAspectSource('within(com.example.FirstService)'),
-      'utf-8',
-    ),
-    writeFile(
-      path.join(kotlinSrc, 'KotlinService.kt'),
-      'package com.example\n\n' +
-        'import org.springframework.transaction.annotation.Transactional as Tx\n\n' +
-        'class KotlinService {\n' +
-        '  @Tx fun kotlinTx() {}\n' +
-        '}\n',
-      'utf-8',
-    ),
-    writeFile(path.join(resources, 'application.properties'), 'feature.enabled=true\n', 'utf-8'),
-  ]);
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
-  gitCommitAll(repo.dbPath, 'initial spring aop fixture');
-  return repo;
-}
-
-async function setupSpringBeanFactoryIncrementalRepo() {
-  const repo = await createTempDir('gitnexus-incr-spring-bean-factory-');
-  const src = path.join(repo.dbPath, 'src', 'com', 'other');
-  await mkdir(src, { recursive: true });
-  await writeFile(
-    path.join(src, 'WildcardConfiguration.java'),
-    'package com.other;\n' +
-      'import org.springframework.context.annotation.*;\n\n' +
-      '@Configuration class WildcardConfiguration {\n' +
-      '  @Bean Gateway gateway() { return new DefaultGateway(); }\n' +
-      '}\n' +
-      'interface Gateway {}\n' +
-      'class DefaultGateway implements Gateway {}\n',
-    'utf-8',
-  );
-  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
-  gitCommitAll(repo.dbPath, 'initial spring bean factory');
   return repo;
 }
 
@@ -267,24 +139,6 @@ async function setupKotlinSpringConfigConsumerIncrementalRepo() {
   );
   gitCommitAll(repo.dbPath, 'add Kotlin Spring config consumer');
   return repo;
-}
-
-async function readWildcardServiceAnnotations(repoPath: string): Promise<string[]> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const rows = (await adapter.executeQuery(
-      "MATCH (c:Class) WHERE c.name = 'WildcardService' " +
-        'RETURN c.frameworkAnnotations AS frameworkAnnotations LIMIT 1',
-    )) as Array<{ frameworkAnnotations?: unknown }>;
-    const value = rows[0]?.frameworkAnnotations;
-    return Array.isArray(value)
-      ? value.filter((item): item is string => typeof item === 'string')
-      : [];
-  } finally {
-    await adapter.closeLbug();
-  }
 }
 
 async function readSpringConfigPropertyNames(repoPath: string): Promise<string[]> {
@@ -374,195 +228,6 @@ async function readRuntimePropertyEvidence(repoPath: string): Promise<{
     await adapter.closeLbug();
   }
 }
-
-async function countStatusImplementsNamed(repoPath: string): Promise<number> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const rows = (await adapter.executeQuery(
-      "MATCH (e:Enum {name: 'Status'})-[r:CodeRelation]->(i:Interface {name: 'Named'}) " +
-        "WHERE r.type = 'IMPLEMENTS' RETURN count(r) AS c",
-    )) as Array<{ c: number | bigint }>;
-    return Number(rows[0]?.c ?? 0);
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-async function deleteStatusImplementsNamed(repoPath: string): Promise<void> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    await adapter.executeQuery(
-      "MATCH (e:Enum {name: 'Status'})-[r:CodeRelation]->(i:Interface {name: 'Named'}) " +
-        "WHERE r.type = 'IMPLEMENTS' DELETE r",
-    );
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-/**
- * Direct count over INJECTS CodeRelation rows — mirrors pdg-mode-flip's
- * countBasicBlocks: reopen the repo DB, count, close (runFullAnalysis closes
- * the singleton on completion, so each count owns its own open/close).
- */
-async function countInjects(repoPath: string): Promise<number> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const rows = (await adapter.executeQuery(
-      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'INJECTS' RETURN count(r) AS c`,
-    )) as Array<{ c: number | bigint }>;
-    return Number(rows[0]?.c ?? 0);
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-async function countSpringAutoConfigurationDeclarations(repoPath: string): Promise<number> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const rows = (await adapter.executeQuery(
-      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' ` +
-        `AND (r.reason = 'spring-auto-configuration-import' ` +
-        `OR r.reason = 'spring-auto-configuration-factory') RETURN count(r) AS c`,
-    )) as Array<{ c: number | bigint }>;
-    return Number(rows[0]?.c ?? 0);
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-async function countSpringBeanFactoryDeclarations(repoPath: string): Promise<number> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const rows = (await adapter.executeQuery(
-      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DECLARES' ` +
-        `AND r.reason STARTS WITH 'spring-bean-factory:' RETURN count(r) AS c`,
-    )) as Array<{ c: number | bigint }>;
-    return Number(rows[0]?.c ?? 0);
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-async function countSpringAutoConfigurationSyntheticClasses(repoPath: string): Promise<number> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const rows = (await adapter.executeQuery(
-      `MATCH (n:Class) WHERE n.id STARTS WITH ` +
-        `'${SPRING_AUTO_CONFIGURATION_SYNTHETIC_ID_PREFIX}' ` +
-        `RETURN count(n) AS c`,
-    )) as Array<{ c: number | bigint }>;
-    return Number(rows[0]?.c ?? 0);
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-interface SpringAopPersistedRelationship {
-  readonly relType: string;
-  readonly sourceId: string;
-  readonly sourceName: string;
-  readonly targetId: string;
-  readonly targetName: string;
-  readonly reason: string;
-}
-
-interface SpringAopPersistedEvidence {
-  readonly id: string;
-  readonly description: string;
-}
-
-interface SpringAopPersistedSnapshot {
-  readonly relationships: readonly SpringAopPersistedRelationship[];
-  readonly evidence: readonly SpringAopPersistedEvidence[];
-}
-
-async function readSpringAopSnapshot(repoPath: string): Promise<SpringAopPersistedSnapshot> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const relationships = (await adapter.executeQuery(
-      `MATCH (s)-[r:CodeRelation]->(t) ` +
-        `WHERE (r.type = 'ADVISED_BY' OR r.type = 'DECLARES') ` +
-        `AND r.reason STARTS WITH 'spring-aop:v1:' ` +
-        `RETURN r.type AS relType, s.id AS sourceId, s.name AS sourceName, ` +
-        `t.id AS targetId, t.name AS targetName, r.reason AS reason ` +
-        `ORDER BY relType, sourceId, targetId, reason`,
-    )) as SpringAopPersistedRelationship[];
-    const evidence = (await adapter.executeQuery(
-      `MATCH (n:CodeElement) WHERE n.id STARTS WITH '${SPRING_AOP_EVIDENCE_ID_PREFIX}' ` +
-        `RETURN n.id AS id, n.description AS description ORDER BY id`,
-    )) as SpringAopPersistedEvidence[];
-    return { relationships, evidence };
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-function assertSpringAopSnapshotShape(
-  snapshot: SpringAopPersistedSnapshot,
-  expectedAdviceSource: string,
-): void {
-  expect(snapshot.relationships).toHaveLength(4);
-  expect(snapshot.evidence).toHaveLength(3);
-  const decoded = snapshot.relationships.map((relationship) => ({
-    relationship,
-    reason: decodeSpringAopReason(relationship.reason),
-  }));
-  expect(decoded.map(({ reason }) => reason?.kind).sort()).toEqual([
-    'advice',
-    'aspect',
-    'behavior',
-    'pointcut',
-  ]);
-  expect(decoded.find(({ reason }) => reason?.kind === 'behavior')?.relationship.sourceName).toBe(
-    'kotlinTx',
-  );
-  const advice = decoded.find(({ reason }) => reason?.kind === 'advice')?.relationship;
-  expect(advice?.sourceName).toBe(expectedAdviceSource);
-  expect(advice?.targetName).toBe('trace');
-  expect(
-    new Set(
-      snapshot.relationships.map(
-        (relationship) =>
-          `${relationship.relType}\0${relationship.sourceId}\0${relationship.targetId}\0${relationship.reason}`,
-      ),
-    ).size,
-  ).toBe(snapshot.relationships.length);
-  expect(new Set(snapshot.evidence.map(({ id }) => id)).size).toBe(snapshot.evidence.length);
-}
-
-/** Java DI fixture (#2200): `@Autowired List<IFoo>` + 2 implementers ⇒ exactly
- *  2 INJECTS edges (Consumer→FooA, Consumer→FooB). Same shapes as the
- *  spring-di-pipeline integration fixture. */
-const JAVA_DI_FIXTURE: ReadonlyArray<readonly [string, string]> = [
-  ['IFoo.java', 'package com.example;\n\npublic interface IFoo {}\n'],
-  ['FooA.java', 'package com.example;\n\npublic class FooA implements IFoo {}\n'],
-  ['FooB.java', 'package com.example;\n\npublic class FooB implements IFoo {}\n'],
-  [
-    'Consumer.java',
-    'package com.example;\n' +
-      'import java.util.List;\n' +
-      'import org.springframework.beans.factory.annotation.Autowired;\n' +
-      '\n' +
-      'public class Consumer {\n' +
-      '  @Autowired private List<IFoo> foos;\n' +
-      '}\n',
-  ],
-];
 
 describe('runFullAnalysis — incremental orchestration', () => {
   it('adds and removes name-only calls between untouched files when a competing definition changes', async () => {
@@ -857,43 +522,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
-  it('a Java index missing enum heritage evidence rebuilds before the fast path (#2918)', async () => {
-    const repo = await setupJavaEnumHeritageIncrementalRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      const { storagePath } = getStoragePaths(repo.dbPath);
-      const meta = await loadMeta(storagePath);
-      expect(meta!.analysisFeatures).toMatchObject({
-        [JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id]: JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.version,
-      });
-      expect(await countStatusImplementsNamed(repo.dbPath)).toBe(1);
-
-      await deleteStatusImplementsNamed(repo.dbPath);
-      expect(await countStatusImplementsNamed(repo.dbPath)).toBe(0);
-
-      await saveMeta(
-        storagePath,
-        withoutAnalysisFeature(meta!, JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id),
-      );
-      const logs: string[] = [];
-      const reanalyzed = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {}, onLog: (message) => logs.push(message) },
-      );
-
-      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
-      expect(logs.join('\n')).toContain(`missing:${JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id}`);
-      expect((await loadMeta(storagePath))!.analysisFeatures).toMatchObject({
-        [JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.id]: JAVA_ENUM_INTERFACE_HERITAGE_FEATURE.version,
-      });
-      expect(await countStatusImplementsNamed(repo.dbPath)).toBe(1);
-    } finally {
-      await repo.cleanup();
-    }
-  }, 300_000);
-
   it('a same-commit index with NO fingerprint (pre-#2798) rebuilds once, not grandfathered', async () => {
     const repo = await setupMiniRepo();
     try {
@@ -976,7 +604,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
   }, 300_000);
 
   it('rebuilds when the declared route aliases or handler wrappers change', async () => {
-    const repo = await setupSpringBeanIncrementalRepo();
+    const repo = await setupMiniRepo();
     try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const config = {
@@ -1007,39 +635,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(rebuilt.rebuildReasons).toContain('route-hook-config');
       expect(logs.join('\n')).toContain('no longer configured');
       expect((await loadMeta(storagePath))?.routeHookConfig).toBe(routeHookConfigKey());
-    } finally {
-      await repo.cleanup();
-    }
-  }, 300_000);
-
-  it('rebuilds a JVM index when the registered Spring vendor prefixes change', async () => {
-    const repo = await setupSpringBeanIncrementalRepo();
-    try {
-      vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Win');
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      const { storagePath } = getStoragePaths(repo.dbPath);
-      expect((await loadMeta(storagePath))?.springVendorPrefixes).toBe(springVendorPrefixesKey());
-
-      vi.stubEnv('GITNEXUS_SPRING_VENDOR_PREFIXES', 'Acme,Win');
-      const logs: string[] = [];
-      const rebuilt = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {}, onLog: (message) => logs.push(message) },
-      );
-
-      expect(rebuilt.alreadyUpToDate).toBeUndefined();
-      expect(rebuilt.rebuildReasons).toContain('spring-vendor-prefixes');
-      expect(logs.join('\n')).toContain('Spring vendor mapping prefixes changed');
-      expect((await loadMeta(storagePath))?.springVendorPrefixes).toBe(springVendorPrefixesKey());
-
-      const steady = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {} },
-      );
-      expect(steady.alreadyUpToDate).toBe(true);
     } finally {
       await repo.cleanup();
     }
@@ -1159,81 +754,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await repo.cleanup();
     }
   }, 300_000);
-
-  it('replaces Spring AOP evidence across real incremental runs without duplicates', async () => {
-    const repo = await setupSpringAopIncrementalRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      const firstSnapshot = await readSpringAopSnapshot(repo.dbPath);
-      assertSpringAopSnapshotShape(firstSnapshot, 'first');
-      const firstPointcutEvidenceId = firstSnapshot.relationships.find(
-        ({ reason }) => decodeSpringAopReason(reason)?.kind === 'pointcut',
-      )?.targetId;
-      expect(firstPointcutEvidenceId).toBeDefined();
-
-      const aspectPath = path.join(
-        repo.dbPath,
-        'src',
-        'main',
-        'java',
-        'com',
-        'example',
-        'TraceAspect.java',
-      );
-      await writeFile(
-        aspectPath,
-        springAopAspectSource(
-          '@annotation(org.springframework.transaction.annotation.Transactional)',
-        ),
-        'utf-8',
-      );
-      gitCommitAll(repo.dbPath, 'retarget spring advice');
-      const retargetLogs: string[] = [];
-      const retargeted = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {}, onLog: (message) => retargetLogs.push(message) },
-      );
-      expect(retargeted.alreadyUpToDate).toBeUndefined();
-      expect(retargetLogs.join('\n')).toContain('Incremental: changed=1');
-      expect(retargetLogs.join('\n')).not.toContain('switching to a full DB write');
-
-      const secondSnapshot = await readSpringAopSnapshot(repo.dbPath);
-      assertSpringAopSnapshotShape(secondSnapshot, 'kotlinTx');
-      const secondPointcutEvidenceId = secondSnapshot.relationships.find(
-        ({ reason }) => decodeSpringAopReason(reason)?.kind === 'pointcut',
-      )?.targetId;
-      expect(secondPointcutEvidenceId).toBeDefined();
-      expect(secondPointcutEvidenceId).not.toBe(firstPointcutEvidenceId);
-      expect(secondSnapshot.evidence.map(({ id }) => id)).not.toContain(firstPointcutEvidenceId);
-
-      const propertyPath = path.join(
-        repo.dbPath,
-        'src',
-        'main',
-        'resources',
-        'application.properties',
-      );
-      await writeFile(propertyPath, 'feature.enabled=false\n', 'utf-8');
-      gitCommitAll(repo.dbPath, 'change unrelated resource');
-      const replayLogs: string[] = [];
-      const replayed = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        {
-          onLog: (message) => replayLogs.push(message),
-          onProgress: () => {},
-        },
-      );
-      expect(replayed.alreadyUpToDate).toBeUndefined();
-      expect(replayLogs.join('\n')).toContain('Incremental: changed=1');
-      expect(replayLogs.join('\n')).not.toContain('switching to a full DB write');
-      expect(await readSpringAopSnapshot(repo.dbPath)).toEqual(secondSnapshot);
-    } finally {
-      await repo.cleanup();
-    }
-  }, 600_000);
 
   it('second run after a comment-only edit takes the incremental path, clears the dirty flag, and preserves graph stats exactly', async () => {
     const repo = await setupMiniRepo();
@@ -1504,30 +1024,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
-  it('rewrites unchanged Spring bean metadata when same-package shadowing changes', async () => {
-    const repo = await setupSpringBeanIncrementalRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
-
-      const shadow = path.join(repo.dbPath, 'src', 'com', 'other', 'Service.java');
-      await writeFile(shadow, 'package com.other;\npublic @interface Service {}\n', 'utf-8');
-      gitCommitAll(repo.dbPath, 'add same-package annotation shadow');
-
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([]);
-
-      await rm(shadow);
-      gitCommitAll(repo.dbPath, 'remove same-package annotation shadow');
-
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
-    } finally {
-      await repo.cleanup();
-    }
-  }, 600_000);
-
   it('rewrites unchanged Kotlin Spring bean metadata when same-package shadowing changes', async () => {
     const repo = await setupKotlinSpringBeanIncrementalRepo();
     try {
@@ -1547,30 +1043,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
-    } finally {
-      await repo.cleanup();
-    }
-  }, 600_000);
-
-  it('rewrites unchanged Bean factory declarations when same-package shadowing changes', async () => {
-    const repo = await setupSpringBeanFactoryIncrementalRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(1);
-
-      const shadow = path.join(repo.dbPath, 'src', 'com', 'other', 'Bean.java');
-      await writeFile(shadow, 'package com.other;\npublic @interface Bean {}\n', 'utf-8');
-      gitCommitAll(repo.dbPath, 'add same-package Bean annotation shadow');
-
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(0);
-
-      await rm(shadow);
-      gitCommitAll(repo.dbPath, 'remove same-package Bean annotation shadow');
-
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await countSpringBeanFactoryDeclarations(repo.dbPath)).toBe(1);
     } finally {
       await repo.cleanup();
     }
@@ -2029,102 +1501,6 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await repo.cleanup();
     }
   }, 300_000);
-
-  // U7 (#2200): the INJECTS delete-before-writeback must be UNCONDITIONAL.
-  // extractChangedSubgraph re-includes ALL INJECTS edges from the fresh graph
-  // on every incremental run (isGraphWideRelType), and CodeRelation has no PK
-  // and no read-side dedup — so a pdg-gated delete (literal TAINT_PATH
-  // mirroring) would append without deleting on every non-pdg incremental
-  // run: N runs = N copies of every INJECTS row. This test is the assertion
-  // that catches exactly that mistake.
-  it('incremental runs neither strand nor duplicate INJECTS edges (delete-all is not pdg-gated) (#2200)', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const src = path.join(repo.dbPath, 'src');
-      for (const [name, content] of JAVA_DI_FIXTURE) {
-        await writeFile(path.join(src, name), content, 'utf-8');
-      }
-      gitCommitAll(repo.dbPath, 'add java di fixture');
-
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-
-      // Full index: Consumer.foos fans out to the two IFoo implementers.
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await countInjects(repo.dbPath)).toBe(2);
-
-      // Incremental run 1: comment-only touch of an UNRELATED file (none of
-      // the Java DI files change), committed so lastCommit moves.
-      const target = path.join(src, 'logger.ts');
-      const beforeFirstTouch = await readFile(target, 'utf-8');
-      await writeFile(target, beforeFirstTouch + '\n// di idempotency touch 1\n', 'utf-8');
-      gitCommitAll(repo.dbPath, 'unrelated touch 1');
-      const run1 = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {} },
-      );
-      expect(run1.alreadyUpToDate).toBeUndefined();
-      expect(await countInjects(repo.dbPath)).toBe(2);
-
-      // Incremental run 2: second unrelated touch. A gated delete would have
-      // appended two more rows per writeback (4 by now) — must still be 2.
-      const beforeSecondTouch = await readFile(target, 'utf-8');
-      await writeFile(target, beforeSecondTouch + '\n// di idempotency touch 2\n', 'utf-8');
-      gitCommitAll(repo.dbPath, 'unrelated touch 2');
-      const run2 = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {} },
-      );
-      expect(run2.alreadyUpToDate).toBeUndefined();
-      expect(await countInjects(repo.dbPath)).toBe(2);
-    } finally {
-      await repo.cleanup();
-    }
-  }, 600_000);
-
-  it('incremental runs do not duplicate repository-wide Spring DECLARES edges (#2415)', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const sourceDir = path.join(repo.dbPath, 'src', 'main', 'java', 'com', 'example');
-      const metadataDir = path.join(repo.dbPath, 'src', 'main', 'resources', 'META-INF', 'spring');
-      await mkdir(sourceDir, { recursive: true });
-      await mkdir(metadataDir, { recursive: true });
-      await writeFile(
-        path.join(metadataDir, 'org.springframework.boot.autoconfigure.AutoConfiguration.imports'),
-        'com.example.ExampleAutoConfiguration\n',
-        'utf-8',
-      );
-      gitCommitAll(repo.dbPath, 'add auto configuration metadata');
-
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
-      expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(1);
-
-      const target = path.join(repo.dbPath, 'src', 'logger.ts');
-      for (const run of [1, 2]) {
-        const before = await readFile(target, 'utf-8');
-        await writeFile(target, `${before}\n// auto-register idempotency touch ${run}\n`, 'utf-8');
-        gitCommitAll(repo.dbPath, `unrelated auto-register touch ${run}`);
-        await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-        expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
-        expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(1);
-      }
-
-      await writeFile(
-        path.join(sourceDir, 'ExampleAutoConfiguration.java'),
-        'package com.example;\npublic class ExampleAutoConfiguration {}\n',
-        'utf-8',
-      );
-      gitCommitAll(repo.dbPath, 'add source for metadata-only auto configuration');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-      expect(await countSpringAutoConfigurationDeclarations(repo.dbPath)).toBe(1);
-      expect(await countSpringAutoConfigurationSyntheticClasses(repo.dbPath)).toBe(0);
-    } finally {
-      await repo.cleanup();
-    }
-  }, 600_000);
 });
 
 /**

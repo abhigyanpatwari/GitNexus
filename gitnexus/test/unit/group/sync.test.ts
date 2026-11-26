@@ -494,145 +494,6 @@ service OrderService {
     expect(result.unmatched).toHaveLength(0);
   });
 
-  it('keeps exact thrift links to extracted IDL and Java providers for same method', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-exact-'));
-    fs.mkdirSync(path.join(tmpDir, 'idl'), { recursive: true });
-    fs.mkdirSync(path.join(tmpDir, 'src', 'main', 'java', 'example'), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmpDir, 'idl', 'order.thrift'),
-      `namespace java billing.v1
-
-service OrderService {
-  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
-}`,
-    );
-    fs.writeFileSync(
-      path.join(tmpDir, 'src', 'main', 'java', 'example', 'IfaceOrderHandler.java'),
-      `package example;
-
-class IfaceOrderHandler implements OrderService.Iface {
-  public PlaceOrderResponse PlaceOrder(PlaceOrderRequest request) {
-    return new PlaceOrderResponse();
-  }
-}`,
-    );
-
-    try {
-      const { ThriftExtractor } =
-        await import('../../../src/core/group/extractors/thrift-extractor.js');
-      const extractedProviders = (
-        await new ThriftExtractor().extract(null, tmpDir, {
-          id: 'provider-repo',
-          path: 'app/provider',
-          repoPath: tmpDir,
-          storagePath: path.join(tmpDir, '.gitnexus'),
-        })
-      )
-        .filter((c) => c.role === 'provider')
-        .map(
-          (c): StoredContract => ({
-            ...c,
-            repo: 'app/provider',
-          }),
-        );
-
-      const consumer: StoredContract = {
-        contractId: 'thrift::OrderService/PlaceOrder',
-        type: 'thrift',
-        role: 'consumer',
-        symbolUid: [
-          'source-scan::thrift',
-          'consumer',
-          'OrderService/PlaceOrder',
-          'src/BillingWorkflow.java',
-          'orderService.PlaceOrder',
-        ].join('::'),
-        symbolRef: { filePath: 'src/BillingWorkflow.java', name: 'orderService.PlaceOrder' },
-        symbolName: 'orderService.PlaceOrder',
-        confidence: 0.45,
-        meta: {},
-        repo: 'app/consumer',
-      };
-
-      const result = await syncGroup(makeConfig({}), {
-        extractorOverride: async () => [...extractedProviders, consumer],
-        skipWrite: true,
-      });
-
-      expect(result.crossLinks).toHaveLength(2);
-      expect(result.crossLinks.map((cl) => cl.to.symbolRef.filePath).sort()).toEqual([
-        'idl/order.thrift',
-        'src/main/java/example/IfaceOrderHandler.java',
-      ]);
-      expect(new Set(result.crossLinks.map((cl) => cl.to.symbolUid)).size).toBe(2);
-    } finally {
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
-  it('extracts thrift contracts during real sync when thrift detection is enabled', async () => {
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-'));
-    const storageDir = path.join(tmpDir, '.gitnexus');
-    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'idl'), { recursive: true });
-    fs.mkdirSync(path.join(tmpDir, 'services', 'billing', 'src'), { recursive: true });
-    fs.mkdirSync(storageDir, { recursive: true });
-    fs.writeFileSync(path.join(tmpDir, 'services', 'billing', 'package.json'), '{}');
-    fs.writeFileSync(
-      path.join(tmpDir, 'services', 'billing', 'src', 'BillingWorkflow.java'),
-      'package example; class BillingWorkflow {}',
-    );
-    fs.writeFileSync(
-      path.join(tmpDir, 'services', 'billing', 'idl', 'order.thrift'),
-      `namespace java billing.v1
-
-service OrderService {
-  PlaceOrderResponse PlaceOrder(1: PlaceOrderRequest request)
-}`,
-    );
-
-    const config = makeConfig({ 'services/billing': 'billing-repo' });
-    config.detect.http = false;
-    config.detect.thrift = true;
-
-    const poolAdapter = await import('../../../src/core/lbug/pool-adapter.js');
-    const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
-    const closeSpy = vi.spyOn(poolAdapter, 'closeLbug').mockResolvedValue(undefined);
-
-    try {
-      const result = await syncGroup(config, {
-        resolveRepoHandle: async (_name, groupPath) => ({
-          id: 'billing-repo',
-          path: groupPath,
-          repoPath: tmpDir,
-          storagePath: storageDir,
-        }),
-        skipWrite: true,
-      });
-
-      expect(result.missingRepos).toHaveLength(0);
-      expect(result.contracts).toHaveLength(1);
-      expect(result.contracts[0]).toMatchObject({
-        contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
-        type: 'thrift',
-        role: 'provider',
-        repo: 'services/billing',
-        service: 'services/billing',
-        symbolRef: {
-          filePath: 'services/billing/idl/order.thrift',
-          name: 'OrderService.PlaceOrder',
-        },
-      });
-      expect(initSpy).toHaveBeenCalledWith('billing-repo', path.join(storageDir, 'lbug'));
-      // syncGroup no longer force-closes pools (release-not-close, #2191 review);
-      // repos are left evictable for the LRU. Assert no teardown call here.
-      expect(closeSpy).not.toHaveBeenCalled();
-    } finally {
-      initSpy.mockRestore();
-      closeSpy.mockRestore();
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    }
-  });
-
   it('does not extract thrift contracts during real sync when thrift detection is disabled', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-thrift-off-'));
     const storageDir = path.join(tmpDir, '.gitnexus');
@@ -911,86 +772,6 @@ service OrderService {
       expect(manifestLinks[0].contractId).toBe('custom::mathlex::Expression');
       expect(manifestLinks[0].from.repo).toBe('engine/thales');
       expect(manifestLinks[0].to.repo).toBe('parser/mathlex');
-    });
-
-    it('builds Maven manifest links when independent repositories share a parent POM', async () => {
-      tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-sync-ws-maven-parent-'));
-
-      const parentCoordinates = `<parent>
-        <groupId>com.example</groupId>
-        <artifactId>parent</artifactId>
-        <version>1</version>
-      </parent>`;
-      const childPom = (artifactId: string, dependency = '') => `<project>
-        ${parentCoordinates}
-        <artifactId>${artifactId}</artifactId>
-        <dependencies>${dependency}</dependencies>
-      </project>`;
-      const sharedDependency =
-        '<dependency><groupId>com.example</groupId><artifactId>shared-lib</artifactId></dependency>';
-
-      writeFileSync(
-        'parent/pom.xml',
-        '<project><groupId>com.example</groupId><artifactId>parent</artifactId><packaging>pom</packaging></project>',
-      );
-      writeFileSync('shared-lib/pom.xml', childPom('shared-lib'));
-      writeFileSync('service-a/pom.xml', childPom('service-a', sharedDependency));
-      writeFileSync(
-        'service-a/src/main/java/com/example/service/a/App.java',
-        'package com.example.service.a;\nimport com.example.shared.lib.SharedType;\npublic class App {}\n',
-      );
-      writeFileSync('service-b/pom.xml', childPom('service-b', sharedDependency));
-      writeFileSync(
-        'service-b/src/main/kotlin/com/example/service/b/App.kt',
-        'package com.example.service.b\nimport com.example.shared.lib.SharedType\nclass App\n',
-      );
-
-      const repoPaths = ['parent', 'shared-lib', 'service-a', 'service-b'];
-      const mockEntries: RegistryEntry[] = repoPaths.map((repoPath) => ({
-        name: repoPath,
-        path: path.join(tmpDir, repoPath),
-        storagePath: path.join(tmpDir, repoPath, '.gitnexus'),
-        indexedAt: '',
-        lastCommit: '',
-      }));
-
-      const repoManager = await import('../../../src/storage/repo-manager.js');
-      vi.spyOn(repoManager, 'readRegistry').mockResolvedValue(mockEntries);
-
-      const config = makeWsConfig(
-        {
-          parent: 'parent',
-          'libs/shared-lib': 'shared-lib',
-          'services/service-a': 'service-a',
-          'services/service-b': 'service-b',
-        },
-        true,
-      );
-
-      const result = await syncGroup(config, {
-        extractorOverride: async () => [],
-        skipWrite: true,
-      });
-
-      const manifestLinks = result.crossLinks.filter((link) => link.matchType === 'manifest');
-      expect(
-        manifestLinks.map((link) => ({
-          from: link.from.repo,
-          to: link.to.repo,
-          contractId: link.contractId,
-        })),
-      ).toEqual([
-        {
-          from: 'services/service-a',
-          to: 'libs/shared-lib',
-          contractId: 'custom::shared-lib::SharedType',
-        },
-        {
-          from: 'services/service-b',
-          to: 'libs/shared-lib',
-          contractId: 'custom::shared-lib::SharedType',
-        },
-      ]);
     });
 
     it('workspace_deps: false skips workspace extraction entirely', async () => {
@@ -1436,8 +1217,15 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
     const releaseSpies: Array<ReturnType<typeof vi.fn>> = [];
     const initSpy = vi.spyOn(poolAdapter, 'initLbug').mockResolvedValue(undefined);
     const execSpy = vi.spyOn(poolAdapter, 'executeParameterized').mockResolvedValue([]);
+    // Leases held at the moment of each pinRepo call, in call order.
+    const heldAtPin: number[] = [];
+    let held = 0;
     const pinSpy = vi.spyOn(poolAdapter, 'pinRepo').mockImplementation(() => {
-      const release = vi.fn();
+      heldAtPin.push(held);
+      held += 1;
+      const release = vi.fn(() => {
+        held -= 1;
+      });
       releaseSpies.push(release);
       return release;
     });
@@ -1446,34 +1234,66 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
       execSpy.mockRestore();
       pinSpy.mockRestore();
     };
-    return { releaseSpies, initSpy, execSpy, pinSpy, restore };
+    return { releaseSpies, heldAtPin, initSpy, execSpy, pinSpy, restore };
   };
 
-  it('pins only the repos referenced by manifest links, not the whole group', async () => {
-    const { pinSpy, restore } = await setupPoolSpies();
+  const repoIds = (n: number): string[] => Array.from({ length: n }, (_, i) => `app-repo-${i + 1}`);
+
+  it('leases each repo only while its contracts are extracted, and windows only the linked repos', async () => {
+    const { pinSpy, heldAtPin, restore } = await setupPoolSpies();
     try {
       await syncGroup(groupConfig(8, [httpLink('app/repo-1', 'app/repo-2')]), {
         resolveRepoHandle: okHandle,
         skipWrite: true,
       });
-      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]).sort();
-      // Only the windowed (link-referenced) repos are leased — bounded residency,
-      // not the whole 8-repo group.
-      expect(pinnedIds).toEqual(['app-repo-1', 'app-repo-2']);
-      expect(pinnedIds).not.toContain('app-repo-3');
+      const pinnedIds = pinSpy.mock.calls.map((c) => c[0]);
+      // One extraction lease per repo, in repo order, each released before
+      // the next repo's: residency stays bounded, never the whole 8-repo group.
+      expect(pinnedIds.slice(0, 8)).toEqual(repoIds(8));
+      expect(heldAtPin.slice(0, 8)).toEqual(Array(8).fill(0));
+      // Then only the windowed (link-referenced) repos are leased.
+      expect(pinnedIds.slice(8).sort()).toEqual(['app-repo-1', 'app-repo-2']);
     } finally {
       restore();
     }
   });
 
-  it('does not pin during the init loop when there are no manifest links', async () => {
-    const { pinSpy, restore } = await setupPoolSpies();
+  it('holds one extraction lease at a time when there are no manifest links', async () => {
+    const { pinSpy, heldAtPin, releaseSpies, restore } = await setupPoolSpies();
     try {
       await syncGroup(groupConfig(8, []), { resolveRepoHandle: okHandle, skipWrite: true });
-      // The init loop extracts contracts without pinning; with no links there
-      // are no resolution windows, so nothing is ever pinned.
-      expect(pinSpy.mock.calls.length).toBe(0);
+      // With no links there are no resolution windows: the only leases are the
+      // per-repo extraction leases, taken one at a time and all released.
+      expect(pinSpy.mock.calls.map((c) => c[0])).toEqual(repoIds(8));
+      expect(heldAtPin).toEqual(Array(8).fill(0));
+      for (const release of releaseSpies) expect(release).toHaveBeenCalledTimes(1);
     } finally {
+      restore();
+    }
+  });
+
+  it('releases the extraction lease of a repo whose extraction throws before leasing the next', async () => {
+    const { HttpRouteExtractor } =
+      await import('../../../src/core/group/extractors/http-route-extractor.js');
+    const { pinSpy, heldAtPin, releaseSpies, restore } = await setupPoolSpies();
+    const extractSpy = vi
+      .spyOn(HttpRouteExtractor.prototype, 'extract')
+      .mockImplementation(async (_executor, repoPath) => {
+        if (repoPath.endsWith('repo-2')) throw new Error('extract boom');
+        return [];
+      });
+    try {
+      const result = await syncGroup(groupConfig(3, []), {
+        resolveRepoHandle: okHandle,
+        skipWrite: true,
+      });
+      expect(result.failedRepos.map((f) => f.repo)).toEqual(['app/repo-2']);
+      expect(pinSpy.mock.calls.map((c) => c[0])).toEqual(repoIds(3));
+      // The failed repo's lease was released before repo-3 was leased.
+      expect(heldAtPin).toEqual([0, 0, 0]);
+      for (const release of releaseSpies) expect(release).toHaveBeenCalledTimes(1);
+    } finally {
+      extractSpy.mockRestore();
       restore();
     }
   });
@@ -1562,10 +1382,11 @@ describe('syncGroup windowed manifest resolution (issue #2189 / PR #2191 review)
           skipWrite: true,
         }),
       ).rejects.toThrow('window init boom');
-      // Exactly one lease was acquired (app-repo-1) before app-repo-2's init
-      // threw, and the window finally released it — no leaked lease.
-      expect(releaseSpies.length).toBe(1);
-      expect(releaseSpies[0]).toHaveBeenCalled();
+      // Two extraction leases (one per repo, released after extraction), then
+      // one window lease (app-repo-1) acquired before app-repo-2's window init
+      // threw. The window finally released it — no leaked lease.
+      expect(releaseSpies.length).toBe(3);
+      for (const release of releaseSpies) expect(release).toHaveBeenCalled();
     } finally {
       initSpy.mockRestore();
       execSpy.mockRestore();

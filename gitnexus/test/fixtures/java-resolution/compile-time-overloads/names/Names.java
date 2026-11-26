@@ -1,0 +1,1 @@
+package names; public class Names { public static class Long {} }

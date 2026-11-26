@@ -32,7 +32,7 @@ function cfgsOfSfc(sfc: string): FunctionCfg[] {
   return harness.cfgsOf(extraction.scriptContent);
 }
 
-const FIXTURE = path.join(__dirname, '../../integration/cfg/fixtures/vue-hazards.vue');
+const FIXTURE = path.join(__dirname, '../../fixtures/cfg/vue-hazards.vue');
 
 describe('Vue CfgVisitor reuse — SFC <script> → TypeScript CFG', () => {
   it('extracts the <script setup> block and builds one CFG per script function', () => {

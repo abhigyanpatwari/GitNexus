@@ -32,7 +32,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
-import type { ScopeResolver } from '../contract/scope-resolver.js';
+import type { ReceiverMemberResolution, ScopeResolver } from '../contract/scope-resolver.js';
 import {
   callSuppressionIdentities,
   providerCallOutcome,
@@ -126,6 +126,7 @@ export function emitFreeCallFallback(
     /** Mirrors `ScopeResolver.qualifiedFreeCallOutranksNameClaim`. */
     readonly qualifiedFreeCallOutranksNameClaim?: boolean;
     readonly resolveUnqualifiedCall?: ScopeResolver['resolveUnqualifiedCall'];
+    readonly resolveConstructorCall?: ScopeResolver['resolveConstructorCall'];
     readonly selectedCalls?: Map<string, SymbolDefinition | null>;
     readonly onSelectedCall?: (key: string, definition: SymbolDefinition | null) => void;
     readonly conversionRankFn?: ConversionRankFn;
@@ -341,41 +342,7 @@ export function emitFreeCallFallback(
       // Language visibility vetoes the constructed TYPE (Class/Struct), not a
       // Constructor child — Go refuses any `qualifiedName` containing `.`.
       let globalFallbackVetoTarget: SymbolDefinition | undefined;
-      if (site.callForm !== 'constructor' && site.rawQualifiedName === undefined) {
-        const resolution = options.resolveUnqualifiedCall?.(site, scopes, model);
-        if (resolution !== undefined && resolution.kind !== 'resolved') {
-          options.selectedCalls?.set(selectedCallKey(parsed.filePath, site.atRange), null);
-          options.onSelectedCall?.(selectedCallKey(parsed.filePath, site.atRange), null);
-          options.recordSourceBinding?.(site, {
-            status:
-              resolution.kind === 'ambiguous'
-                ? 'ambiguous'
-                : resolution.kind === 'inapplicable'
-                  ? 'blocked'
-                  : 'unresolved',
-            targetDefIds: resolution.candidateIds,
-            basis:
-              resolution.kind === 'ambiguous'
-                ? 'member-lookup-ambiguous'
-                : `overload-${resolution.kind}`,
-          });
-          options.recordResolutionOutcome?.(
-            providerCallOutcome(
-              resolution,
-              site,
-              parsed.filePath,
-              'free-call-fallback',
-              outcomeContext,
-            ),
-          );
-          handledSites.add(siteKey(parsed.filePath, site));
-          continue;
-        }
-        if (resolution?.kind === 'resolved') {
-          fnDef = resolution.definition;
-          fnDefFromProvider = true;
-        }
-      }
+      let resolution: ReceiverMemberResolution | undefined;
       if (site.callForm === 'constructor') {
         // `ns.Type{}` names its type through a namespace import: a type the
         // language will not let that qualifier reach is not found, rather than
@@ -427,11 +394,55 @@ export function emitFreeCallFallback(
           // when one exists (else the Class). Languages that model the call
           // as a reference to the type itself opt into
           // `constructorCallTargetsClass` and always link to the Class.
-          fnDef =
-            options.constructorCallTargetsClass === true
-              ? classDef
-              : pickConstructorOrClass(classDef, workspaceIndex, scopes, site.arity);
+          if (options.constructorCallTargetsClass) {
+            fnDef = classDef;
+          } else {
+            const constructors = explicitConstructors(classDef, workspaceIndex, scopes);
+            if (constructors.length > 0)
+              resolution = options.resolveConstructorCall?.(
+                classDef,
+                constructors,
+                site,
+                scopes,
+                model,
+              );
+            if (!resolution) fnDef = pickConstructorOrClass(classDef, constructors, site.arity);
+          }
         }
+      } else if (site.rawQualifiedName === undefined) {
+        resolution = options.resolveUnqualifiedCall?.(site, scopes, model);
+      }
+      if (resolution?.kind === 'resolved') {
+        fnDef = resolution.definition;
+        fnDefFromProvider = true;
+      } else if (resolution !== undefined) {
+        const key = selectedCallKey(parsed.filePath, site.atRange);
+        options.selectedCalls?.set(key, null);
+        options.onSelectedCall?.(key, null);
+        options.recordSourceBinding?.(site, {
+          status:
+            resolution.kind === 'ambiguous'
+              ? 'ambiguous'
+              : resolution.kind === 'inapplicable'
+                ? 'blocked'
+                : 'unresolved',
+          targetDefIds: resolution.candidateIds,
+          basis:
+            resolution.kind === 'ambiguous'
+              ? 'member-lookup-ambiguous'
+              : `overload-${resolution.kind}`,
+        });
+        options.recordResolutionOutcome?.(
+          providerCallOutcome(
+            resolution,
+            site,
+            parsed.filePath,
+            'free-call-fallback',
+            outcomeContext,
+          ),
+        );
+        handledSites.add(siteKey(parsed.filePath, site));
+        continue;
       }
       // Module-qualified free call (`mod::fn()`): the source named the module
       // explicitly, so that path outranks every lexical tier below — otherwise
@@ -791,7 +802,11 @@ export function emitFreeCallFallback(
           fnDef =
             options.constructorCallTargetsClass === true
               ? writtenDefinition
-              : pickConstructorOrClass(writtenDefinition, workspaceIndex, scopes, site.arity);
+              : pickConstructorOrClass(
+                  writtenDefinition,
+                  explicitConstructors(writtenDefinition, workspaceIndex, scopes),
+                  site.arity,
+                );
         }
       }
       // Name-guess tier: pickUniqueGlobalCallable consults no import context —
@@ -1430,32 +1445,32 @@ function logicalCallableKey(def: SymbolDefinition): string {
   ].join('\0');
 }
 
-/** For a constructor call `new X(...)`, return the X class's explicit
- *  Constructor def (by walking the class scope's ownedDefs) or the
- *  Class def itself when no explicit Constructor exists. Matches
- *  legacy behavior — tests assert targetLabel === 'Class' for implicit
- *  ctors and targetLabel === 'Constructor' for explicit ones. */
-function pickConstructorOrClass(
+function explicitConstructors(
   classDef: SymbolDefinition,
   workspaceIndex: WorkspaceResolutionIndex,
-  scopes?: ScopeResolutionIndexes,
-  callArity?: number,
-): SymbolDefinition {
+  scopes: ScopeResolutionIndexes,
+): SymbolDefinition[] {
   const classScope = workspaceIndex.classScopeByDefId.get(classDef.nodeId);
-  if (classScope === undefined) return classDef;
+  if (classScope === undefined) return [];
   const ctors: SymbolDefinition[] = [];
   for (const def of classScope.ownedDefs) {
     if (def.type === 'Constructor') ctors.push(def);
   }
-  if (scopes !== undefined) {
-    for (const childId of scopes.scopeTree.getChildren(classScope.id)) {
-      const childScope = scopes.scopeTree.getScope(childId);
-      if (childScope === undefined || childScope.kind === 'Class') continue;
-      for (const def of childScope.ownedDefs) {
-        if (def.type === 'Constructor') ctors.push(def);
-      }
+  for (const childId of scopes.scopeTree.getChildren(classScope.id)) {
+    const childScope = scopes.scopeTree.getScope(childId);
+    if (childScope === undefined || childScope.kind === 'Class') continue;
+    for (const def of childScope.ownedDefs) {
+      if (def.type === 'Constructor') ctors.push(def);
     }
   }
+  return ctors;
+}
+
+function pickConstructorOrClass(
+  classDef: SymbolDefinition,
+  ctors: readonly SymbolDefinition[],
+  callArity?: number,
+): SymbolDefinition {
   if (ctors.length === 0) return classDef;
   if (callArity !== undefined) {
     const narrowed = narrowByArity(ctors, callArity);

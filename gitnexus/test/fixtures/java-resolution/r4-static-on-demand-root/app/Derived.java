@@ -1,0 +1,1 @@
+package app; public class Derived extends lib.Base {}

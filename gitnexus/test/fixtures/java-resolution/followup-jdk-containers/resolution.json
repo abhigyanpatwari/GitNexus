@@ -1,0 +1,15 @@
+{
+  "diagnostics": {},
+  "calls": [
+    {"caller": "Method:app/Svc.java:Svc.list#1", "member": "save", "source": ["app/Svc.java#6:2"]},
+    {"caller": "Method:app/Svc.java:Svc.arrayList#1", "member": "save", "source": ["app/Svc.java#7:2"]},
+    {"caller": "Method:app/Svc.java:Svc.linkedList#1", "member": "save", "source": ["app/Svc.java#8:2"]},
+    {"caller": "Method:app/Svc.java:Svc.set#1", "member": "save", "source": ["app/Svc.java#9:2"]},
+    {"caller": "Method:app/Svc.java:Svc.hashMapValues#0", "member": "save", "source": ["app/Svc.java#10:2"]},
+    {"caller": "Method:app/Svc.java:Svc.mapValues#0", "member": "save", "source": ["app/Svc.java#11:2"]},
+    {"caller": "Method:app/Svc.java:Svc.deque#1", "member": "save", "source": ["app/Svc.java#12:2"]},
+    {"caller": "Method:app/Svc.java:Svc.iterable#1", "member": "save", "source": ["app/Svc.java#13:2"]},
+    {"caller": "Method:app/Single.java:Single.arrayList#1", "member": "save", "source": ["app/Single.java#5:2"]},
+    {"caller": "Method:app/Single.java:Single.hashMap#1", "member": "save", "source": ["app/Single.java#6:2"]}
+  ]
+}

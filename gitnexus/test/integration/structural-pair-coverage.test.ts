@@ -33,7 +33,7 @@
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import { NODE_TABLES } from 'gitnexus-shared';
-import { FIXTURES, runPipelineFromRepo } from './resolvers/helpers.js';
+import { FIXTURES, runPipelineFromRepo } from '../integration/resolvers/helpers.js';
 import { RELATION_SCHEMA } from '../../src/core/lbug/schema.js';
 import { parseRelationSchemaPairs, relPairKeyFor } from '../../src/core/lbug/rel-pair-routing.js';
 import { DIST_WORKER_URL, distWorkerExists } from '../helpers/worker-parse.js';
@@ -64,7 +64,7 @@ type CorpusEntry = {
  * Fixtures chosen to reach a structural emitter that no other suite drives.
  *
  * The sentinels are the anti-vacuity anchor: each names an emitter that must
- * still fire. Six of them (`Constructor|CodeElement`, `CodeElement|Property`,
+ * still fire. Five of them (`CodeElement|Property`,
  * `Module|Namespace`, `File|Impl`, `Impl|Function`, `File|Template`) are also
  * the only pairs here that no generated rule can reach; the others are
  * rule-derived, and stay because a rule DECLARING a pair says nothing about
@@ -72,13 +72,6 @@ type CorpusEntry = {
  * exists to catch.
  */
 const NON_BRIDGE_CORPUS = [
-  {
-    // Dynamic Spring lookup inside a constructor targets a synthetic @Bean
-    // CodeElement, not the bean's declared return-type Class/Interface (#3238).
-    fixture: 'spring-constructor-bean-lookup',
-    emitter: 'spring constructor INJECTS',
-    sentinels: ['Constructor|CodeElement'],
-  },
   {
     // `cobol-processor.ts`: CONTAINS/CALLS/ACCESSES over Module / Namespace /
     // Record / Property / CodeElement.
@@ -106,13 +99,6 @@ const NON_BRIDGE_CORPUS = [
     fixture: 'php-transitive-traits',
     emitter: 'inheritance-pass IMPLEMENTS',
     sentinels: ['Class|Trait', 'Trait|Trait'],
-  },
-  {
-    // `frameworks/spring/conditionals.ts`: @ConditionalOn* on a @Bean method,
-    // in both Java and Kotlin.
-    fixture: 'spring-conditional-app',
-    emitter: 'spring CONDITIONAL_ON',
-    sentinels: ['Method|Annotation'],
   },
   {
     // `pipeline-phases/tools.ts`: a class-based MCP tool handler.

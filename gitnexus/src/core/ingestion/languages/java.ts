@@ -9,8 +9,8 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { javaRenameProvider } from './java/rename.js';
-import { createClassExtractor } from '../class-extractors/generic.js';
-import { javaClassConfig } from '../class-extractors/configs/jvm.js';
+import { readJavaWorkspaceImports } from './java/import-decomposer.js';
+import { javaClassExtractor, resolveJavaCollisionOwner } from './java/class-identity.js';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
@@ -22,7 +22,7 @@ import {
   isJavaConstantFile,
   prepareJavaRouteConstants,
 } from '../route-extractors/java-const-resolver.js';
-import { javaExportChecker } from '../export-detection.js';
+import { javaExportChecker } from './java/export-visibility.js';
 import { JAVA_QUERIES } from '../tree-sitter-queries.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { javaCallConfig } from '../call-extractors/configs/jvm.js';
@@ -185,6 +185,7 @@ export const javaProvider = defineLanguage({
   rename: javaRenameProvider,
   id: SupportedLanguages.Java,
   extensions: ['.java'],
+  readWorkspaceImports: readJavaWorkspaceImports,
   // Wildcard IMPORTS edges cover spelled names only. Chained/inherited lookups
   // can depend on unmentioned types, including packages split across paths.
   // Until package membership is persisted, examine Java as one resolution
@@ -222,7 +223,8 @@ export const javaProvider = defineLanguage({
   methodExtractor: javaRecordMethodExtractor,
   shouldSkipDefinitionCapture: shouldSkipJavaRecordComponentDefinition,
   variableExtractor: createVariableExtractor(javaVariableConfig),
-  classExtractor: createClassExtractor(javaClassConfig),
+  classExtractor: javaClassExtractor,
+  resolveContainerTypeOwner: resolveJavaCollisionOwner,
   runtimeSymbolStrategy: javaRuntimeSymbolStrategy,
 
   // ── Javadoc → description (issue #2270) ──
