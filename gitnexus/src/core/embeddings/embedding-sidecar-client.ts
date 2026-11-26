@@ -179,9 +179,13 @@ const attachChild = (proc: ChildProcess): void => {
     logger.debug({ sidecar: true }, String(chunk).trimEnd());
   });
   proc.on('message', (msg: SidecarResponse) => {
-    if (msg.type !== 'progress' && physicalRequests.get(msg.id) === proc)
+    if (msg.type !== 'progress' && msg.type !== 'warning' && physicalRequests.get(msg.id) === proc)
       physicalRequests.delete(msg.id);
     if (child !== proc) return;
+    if (msg.type === 'warning') {
+      if (pending.has(msg.id)) logger.warn({ sidecar: true }, msg.message);
+      return;
+    }
     if (msg.type === 'progress') {
       progressSink?.({
         status: msg.status,
@@ -406,7 +410,13 @@ const spawnAndInit = async (options?: EnsureSidecarOptions): Promise<void> => {
 };
 
 const rejectConflictingForceDevice = (forceDevice?: EmbeddingSidecarDevice): void => {
-  if (forceDevice && forceDevice !== device) {
+  // A validated CPU fallback still fulfils the original GPU request. Repeating
+  // that request must not be mistaken for switching an already warm sidecar.
+  const isCpuFallback =
+    device === 'cpu' &&
+    (forceDevice === 'dml' || forceDevice === 'cuda') &&
+    forceDevice === lastInitOptions?.forceDevice;
+  if (forceDevice && forceDevice !== device && !isCpuFallback) {
     throw new Error(
       `Embedding sidecar already initialized on ${device}; cannot switch to ${forceDevice}`,
     );

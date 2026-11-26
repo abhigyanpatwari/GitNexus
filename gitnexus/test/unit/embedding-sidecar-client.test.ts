@@ -11,6 +11,7 @@ import type {
   SidecarResponse,
 } from '../../src/core/embeddings/embedding-sidecar-protocol.js';
 import { resolveEmbeddingConfig } from '../../src/core/embeddings/config.js';
+import { _captureLogger } from '../../src/core/logger.js';
 
 const embeddingsDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -143,6 +144,66 @@ describe('embedding sidecar client', () => {
     expect(first).toHaveLength(1);
     expect(second).toHaveLength(1);
     expect(forkMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['dml', 'cuda'] as const)(
+    'accepts CPU fallback for the original %s request without permitting a device switch',
+    async (requested) => {
+      const { ensureEmbeddingSidecar } =
+        await import('../../src/core/embeddings/embedding-sidecar-client.js');
+      await expect(ensureEmbeddingSidecar({ forceDevice: requested })).resolves.toEqual({
+        device: 'cpu',
+      });
+      await expect(ensureEmbeddingSidecar({ forceDevice: requested })).resolves.toEqual({
+        device: 'cpu',
+      });
+      const other = requested === 'dml' ? 'cuda' : 'dml';
+      await expect(ensureEmbeddingSidecar({ forceDevice: other })).rejects.toThrow('cannot switch');
+      expect(forkMock).toHaveBeenCalledOnce();
+    },
+  );
+
+  it('surfaces a sidecar validation warning without completing its pending init request', async () => {
+    const cap = _captureLogger();
+    try {
+      forkMock.mockImplementation(() => {
+        const child = new FakeChild();
+        children.push(child);
+        child.respond = (msg) => {
+          if (msg.type === 'init') {
+            child.emit('message', {
+              id: msg.id,
+              type: 'warning',
+              message: 'DirectML validation failed; falling back to CPU.',
+            });
+            return { id: msg.id, type: 'ready', device: 'cpu' };
+          }
+          return FakeChild.prototype.respond.call(child, msg);
+        };
+        return child as unknown as ChildProcess;
+      });
+      const { ensureEmbeddingSidecar, sidecarEmbedBatch } =
+        await import('../../src/core/embeddings/embedding-sidecar-client.js');
+      await expect(ensureEmbeddingSidecar({ forceDevice: 'dml' })).resolves.toEqual({
+        device: 'cpu',
+      });
+      await expect(sidecarEmbedBatch(['real code'])).resolves.toHaveLength(1);
+      expect(cap.records()).toContainEqual(
+        expect.objectContaining({
+          level: 40,
+          sidecar: true,
+          msg: 'DirectML validation failed; falling back to CPU.',
+        }),
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('does not accept an unexpected CPU device for a WASM-only request', async () => {
+    const { ensureEmbeddingSidecar } =
+      await import('../../src/core/embeddings/embedding-sidecar-client.js');
+    await expect(ensureEmbeddingSidecar({ forceDevice: 'wasm' })).rejects.toThrow('cannot switch');
   });
 
   it('reserves lazily, pins the admitted config, and reuses a compatible warm model', async () => {

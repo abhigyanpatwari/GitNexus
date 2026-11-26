@@ -31,11 +31,55 @@ import {
   isEffectiveCudaAvailable,
 } from './onnxruntime-node-resolver.js';
 import { logger } from '../logger.js';
+import { assertEmbeddingDeviceParity } from './embedding-device-parity.js';
 
 let embedderInstance: FeatureExtractionPipeline | null = null;
 let initPromise: Promise<FeatureExtractionPipeline> | null = null;
 let currentDevice: EmbeddingSidecarDevice | null = null;
 let activeDimensions = DEFAULT_EMBEDDING_CONFIG.dimensions;
+
+const DEVICE_PROBE_TEXTS = [
+  'function add(a, b) { return a + b; }',
+  'Read the configuration file and handle missing network credentials.',
+];
+
+const verifyDirectML = async (
+  candidate: FeatureExtractionPipeline,
+  createCpu: () => Promise<FeatureExtractionPipeline>,
+  warn: (reason: string) => void,
+): Promise<{ embedder: FeatureExtractionPipeline; device: 'dml' | 'cpu' }> => {
+  let cpu: FeatureExtractionPipeline | undefined;
+  let selected: FeatureExtractionPipeline | undefined;
+  try {
+    cpu = await createCpu();
+    const options = { pooling: 'mean', normalize: true };
+    const reference = await cpu(DEVICE_PROBE_TEXTS, options);
+    try {
+      const result = await candidate(DEVICE_PROBE_TEXTS, options);
+      assertEmbeddingDeviceParity(result, reference, DEVICE_PROBE_TEXTS.length);
+    } catch (error) {
+      warn(error instanceof Error ? error.message : String(error));
+      selected = cpu;
+      return { embedder: cpu, device: 'cpu' };
+    }
+    selected = candidate;
+    return { embedder: candidate, device: 'dml' };
+  } catch (error) {
+    warn('could not complete the CPU reference probe');
+    throw error;
+  } finally {
+    // Keep only the selected session; never expose the candidate before validation.
+    for (const unused of [candidate, cpu]) {
+      if (unused && unused !== selected) {
+        try {
+          await unused.dispose?.();
+        } catch (error) {
+          logger.warn({ err: error }, 'Failed to dispose an embedding validation session');
+        }
+      }
+    }
+  }
+};
 
 const formatDeviceLabel = (device: EmbeddingSidecarDevice): string => {
   switch (device) {
@@ -54,6 +98,7 @@ export const initLocalEmbedder = async (
   onProgress?: ModelProgressCallback,
   config: Partial<EmbeddingConfig> = {},
   forceDevice?: EmbeddingSidecarDevice,
+  onWarning?: (message: string) => void,
 ): Promise<FeatureExtractionPipeline> => {
   const runtimeBlocker = getLocalEmbeddingRuntimeBlocker();
   if (runtimeBlocker) {
@@ -129,38 +174,53 @@ export const initLocalEmbedder = async (
             logger.info('🔧 Using WASM backend (slower)...');
           }
 
-          embedderInstance = await withHfDownloadRetry(
-            () =>
-              pipeline('feature-extraction', finalConfig.modelId, {
-                device: device,
-                dtype: 'fp32',
-                progress_callback: progressCallback,
-                session_options: {
-                  logSeverityLevel: 3,
-                  intraOpNumThreads: finalConfig.threads,
-                  interOpNumThreads: 1,
-                  executionMode: 'sequential',
-                },
-              }),
-            {
-              onRetry: isDev
-                ? (attempt, max, err) =>
-                    logger.warn(
-                      { attempt, max, err: err.message },
-                      `⚠️  Model download network error (attempt ${attempt}/${max}), retrying…`,
-                    )
-                : undefined,
-            },
-          );
-          currentDevice = device;
+          const createEmbedder = (target: EmbeddingSidecarDevice) =>
+            withHfDownloadRetry(
+              () =>
+                pipeline('feature-extraction', finalConfig.modelId, {
+                  device: target,
+                  dtype: 'fp32',
+                  progress_callback: progressCallback,
+                  session_options: {
+                    logSeverityLevel: 3,
+                    intraOpNumThreads: finalConfig.threads,
+                    interOpNumThreads: 1,
+                    executionMode: 'sequential',
+                  },
+                }),
+              {
+                onRetry: isDev
+                  ? (attempt, max, err) =>
+                      logger.warn(
+                        { attempt, max, err: err.message },
+                        `⚠️  Model download network error (attempt ${attempt}/${max}), retrying…`,
+                      )
+                  : undefined,
+              },
+            );
+          const candidate = await createEmbedder(device);
+          const selected =
+            device === 'dml'
+              ? await verifyDirectML(
+                  candidate,
+                  () => createEmbedder('cpu'),
+                  (reason) => {
+                    const message = `DirectML embedding validation failed (${reason}); falling back to CPU.`;
+                    logger.warn(message);
+                    onWarning?.(message);
+                  },
+                )
+              : { embedder: candidate, device };
+          embedderInstance = selected.embedder;
+          currentDevice = selected.device;
           activeDimensions = finalConfig.dimensions;
 
           if (isDev) {
-            logger.info(`✅ Using ${formatDeviceLabel(device)} backend`);
+            logger.info(`✅ Using ${formatDeviceLabel(selected.device)} backend`);
             logger.info('✅ Embedding model loaded successfully');
           }
 
-          return embedderInstance!;
+          return selected.embedder;
         } catch (deviceError) {
           const errMsg = deviceError instanceof Error ? deviceError.message : String(deviceError);
           if (isHfDownloadFailure(errMsg)) {

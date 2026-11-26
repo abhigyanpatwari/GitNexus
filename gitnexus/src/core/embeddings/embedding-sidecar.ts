@@ -35,6 +35,7 @@ async function handle(msg: SidecarRequest): Promise<void> {
           },
           msg.embeddingConfig,
           msg.forceDevice,
+          (message) => send({ id: msg.id, type: 'warning', message }),
         );
         send({
           id: msg.id,
