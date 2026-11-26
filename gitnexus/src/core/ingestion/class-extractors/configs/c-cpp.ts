@@ -59,6 +59,9 @@ export const cppClassConfig: ClassExtractionConfig = {
   // #1978: key nested-type nodes by their fully-qualified path (Outer.Inner) so
   // same-tail nested types in one TU stay distinct instead of silently merging.
   qualifiedNodeId: true,
+  // #2874: members are keyed by the same qualified owner path, so `N::Box<T>::save`
+  // and a global `Box<T>::save` stay two nodes.
+  qualifiedMemberIds: true,
   // #1995: anonymous namespaces have no `name` child, so the generic scope walker
   // drops them (empty segment) and two `namespace { struct Inner {} }` blocks in one
   // TU collapse onto a single `Inner` node. Give each anonymous namespace_definition

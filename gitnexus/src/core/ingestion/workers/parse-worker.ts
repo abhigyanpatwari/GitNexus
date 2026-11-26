@@ -7,6 +7,7 @@ import { parentPort, threadId, workerData } from 'node:worker_threads';
 import {
   boundCallableStartPosition,
   localIdentity,
+  memberOwnerPrefix,
   nestedCallableQualifiedName,
   positionQualifiedCallableName,
 } from './callable-id.js';
@@ -913,6 +914,12 @@ const CALLABLE_PREFIX_BOUNDARY_TYPES: ReadonlySet<string> = new Set<string>([
 const shouldObjectOwnerQualifyCallable = (label: NodeLabel): boolean =>
   label === 'Function' || label === 'Method';
 
+/** The id prefix of a member owned by `owner`; see `memberOwnerPrefix` (#2874). */
+const ownerIdPrefix = (
+  owner: { readonly className: string; readonly qualifiedClassName?: string },
+  provider: LanguageProvider,
+): string => memberOwnerPrefix(owner, provider.classExtractor?.qualifiedMemberIds === true);
+
 const enclosingCallablePrefix = (
   node: SyntaxNode,
   filePath: string,
@@ -996,7 +1003,8 @@ const callableOwnQualifiedName = (
     prefix === undefined && classInfo === null && shouldObjectOwnerQualifyCallable(finalLabel)
       ? findObjectLiteralBindingInfo(fnNode, filePath, { includeOwnerName: true })?.ownerName
       : undefined;
-  const owner = prefix ?? classInfo?.className ?? objectOwner;
+  const owner =
+    prefix ?? (classInfo ? ownerIdPrefix(classInfo, provider) : undefined) ?? objectOwner;
   const needsArrayPosition =
     owner === undefined &&
     ownName !== null &&
@@ -1082,7 +1090,7 @@ const enclosingFunctionIdAt = (
           : undefined;
       const ownerName =
         nestedPrefix ??
-        classInfo?.className ??
+        (classInfo ? ownerIdPrefix(classInfo, provider) : undefined) ??
         standaloneMethodInfo?.receiverType ??
         objectOwnerName;
       const needsArrayPosition =
@@ -2086,7 +2094,7 @@ const processFileGroupFiles = (
             captureMap['call'].startPosition.column,
           );
           const propQualifiedName = propEnclosingInfo
-            ? `${propEnclosingInfo.className}.${item.propName}`
+            ? `${ownerIdPrefix(propEnclosingInfo, provider)}.${item.propName}`
             : item.propName;
           const nodeId = generateId('Property', `${file.path}:${propQualifiedName}`);
           result.nodes.push({
@@ -2579,7 +2587,7 @@ const processFileGroupFiles = (
               : nestedCallablePrefix !== undefined && definitionNode
                 ? nestedCallableQualifiedName(nestedCallablePrefix, definitionNode, nodeName)
                 : enclosingClassInfo
-                  ? `${enclosingClassInfo.className}.${nodeName}`
+                  ? `${ownerIdPrefix(enclosingClassInfo, provider)}.${nodeName}`
                   : // A member whose owner is named by the assignment rather than
                     // by an enclosing container (`Foo.prototype.bar = …`) qualifies
                     // by that owner, so two constructors in one file that both

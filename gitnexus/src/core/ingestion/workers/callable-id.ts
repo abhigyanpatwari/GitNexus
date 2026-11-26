@@ -201,6 +201,31 @@ export const localIdentity = (node: SyntaxNode, name: string): string =>
   positionQualifiedCallableName(name, node.startPosition);
 
 /**
+ * The owner prefix of a class member's id (`<prefix>.<member>`) — THE single
+ * definition of that rule, shared by every id-building phase (#2874).
+ *
+ * Default: the immediate owner name, which is what every language has always
+ * keyed on. A language that opts into `qualifiedMemberIds` (C++, Ruby) keys on
+ * the owner's fully-qualified path instead, so `N::Box<T>::save` and a global
+ * `Box<T>::save` stay two nodes. The qualified path is only present when the
+ * owner is actually nested (see `EnclosingClassInfo.qualifiedClassName`), so a
+ * top-level owner keeps its id unchanged.
+ *
+ * An anonymous namespace contributes `@anon<startByte>` to the owner's NODE id
+ * (#1995). The member id drops the byte offset: it would rename every member in
+ * the namespace whenever unrelated code above it is edited. The cost is that
+ * same-named members of same-named types in two anonymous namespaces of one
+ * file still share an id, exactly as they did before this rule.
+ */
+export const memberOwnerPrefix = (
+  owner: { readonly className: string; readonly qualifiedClassName?: string },
+  qualifiedMemberIds: boolean,
+): string =>
+  qualifiedMemberIds && owner.qualifiedClassName !== undefined
+    ? owner.qualifiedClassName.replace(/@anon\d+/g, '@anon')
+    : owner.className;
+
+/**
  * The qualified name of a callable nested inside another callable — THE single
  * definition of that rule, shared by all three id-building phases.
  *

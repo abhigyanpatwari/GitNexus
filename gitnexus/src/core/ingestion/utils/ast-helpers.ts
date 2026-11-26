@@ -677,6 +677,12 @@ export interface EnclosingClassInfo {
    * node id. When absent, `classId` (the simple-tail key) is unchanged.
    */
   qualifiedClassId?: string;
+  /**
+   * The enclosing type's fully-qualified name (e.g. `N.Box`, template arguments
+   * kept), under the same conditions as `qualifiedClassId`. Member ids use it as
+   * their prefix when the language opts into `qualifiedMemberIds` (#2874).
+   */
+  qualifiedClassName?: string;
 }
 
 /** Walk up AST to find enclosing class/struct/interface/impl, return its ID and name.
@@ -1271,6 +1277,9 @@ export const findEnclosingClassInfo = (
           classId: generateId(label, `${filePath}:${classIdName}`),
           className: nameNode.text,
           ...(qualifiedClassId !== undefined ? { qualifiedClassId } : {}),
+          ...(qualifiedClassId !== undefined && qualifiedOwnerName != null
+            ? { qualifiedClassName: qualifiedOwnerName }
+            : {}),
         };
       }
     }
