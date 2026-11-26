@@ -40,6 +40,7 @@ vi.mock('../../src/hooks/useAppState', async () => {
         setAvailableRepos: vi.fn(),
         switchRepo: vi.fn(async () => {}),
         setCurrentRepo: vi.fn(),
+        restoreChatHistory: vi.fn(),
       }).current;
 
       return (
