@@ -197,7 +197,6 @@ const LBUG_NATIVE = [
   'test/integration/legacy-vector-export.test.ts',
   'test/integration/dangling-owner-edges.test.ts',
   'test/integration/impact-private-type-file-seed.test.ts',
-  'test/integration/impact-private-type-source.test.ts',
   // Inline-handler findings must survive native persistence and cold explain
   // readers on each OS; passing the Ubuntu-only taint suite is insufficient.
   'test/integration/taint-explain.test.ts',

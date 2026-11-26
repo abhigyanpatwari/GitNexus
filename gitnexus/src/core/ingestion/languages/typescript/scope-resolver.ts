@@ -14,6 +14,7 @@
 
 import type { NodeLabel, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
+import { bindGlobalDeclarations, rememberDeclarationProjects } from './global-declarations.js';
 import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
@@ -95,7 +96,14 @@ async function loadResolutionConfig(repoPath: string, fresh = false) {
 
 const typescriptScopeResolver: ScopeResolver = {
   resolveUnqualifiedCall: resolveTsFunctionOverload,
-  populateWorkspaceReferences: indexTsCallArguments,
+  populateWorkspaceReferences(files, context) {
+    indexTsCallArguments(files);
+    rememberDeclarationProjects(
+      files,
+      context.resolutionConfig as TypescriptResolutionConfig | undefined,
+    );
+  },
+  populateImportNamespaces: bindGlobalDeclarations,
   resolveReceiverMember: resolveTsMemberArguments,
   receiverMemberLookupCoversAllCalls: true,
   receiverCallSite: tsReceiverCallSite,

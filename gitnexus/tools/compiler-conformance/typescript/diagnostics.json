@@ -1,4 +1,5 @@
 {
+  "compiler-conformance/typescript-private-type-imports": ["ambient-use.ts:1:34 TS2306"],
   "typescript-callable-flow/non-callable-result": ["main.ts:4:0 TS2349"],
   "compiler-conformance/typescript-shadowed-receiver": [
     "app.ts:10:17 TS7006",

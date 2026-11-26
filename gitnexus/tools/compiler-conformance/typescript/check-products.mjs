@@ -29,6 +29,7 @@ const selected = platform
       'product/git-working-tree.ts',
       'product/graphql-resolve-symbol.ts',
       'product/ignore-and-skip-e2e.ts',
+      'product/impact-private-type-source.ts',
       'product/incremental-dirty-recovery.ts',
       'product/incremental-index-extension-dml-gate.ts',
       'product/incremental-vector-extension-ordering.ts',

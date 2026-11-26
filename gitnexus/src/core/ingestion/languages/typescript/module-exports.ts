@@ -1,6 +1,7 @@
 import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { indexTopLevelExportsByName } from 'gitnexus-shared';
 import { canonicalModuleExportName, canonicalTypeScriptName } from './identifiers.js';
+import { declarationScope } from './module-kind.js';
 
 /** The export name ECMAScript gives a module's default export. */
 const DEFAULT_EXPORT_NAME = 'default';
@@ -12,6 +13,7 @@ export const ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES: ReadonlySet<string> = 
 
 /** Keep written graph identities while exposing canonical ECMAScript export names. */
 export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string, SymbolDefinition> {
+  if (declarationScope(parsed.captureSideChannel)?.script) return new Map();
   const erased = parsed.localDefs.filter(isErasedDeclaration);
   if (erased.length === 0) return publishedNames(parsed.localDefs);
   // A type and a value can share a spelling. Select the runtime declaration

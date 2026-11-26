@@ -411,7 +411,7 @@ export function emitTsScopeCaptures(
     recordCacheHit();
   }
 
-  recordCommonJsModuleKind(tree.rootNode, filePath);
+  recordCommonJsModuleKind(tree.rootNode, filePath, sourceText);
 
   const rawMatches = getTsScopeQuery(grammarPath).matches(tree.rootNode);
   // Export evidence, read once per file (see `ts-js-export-marker.ts`).
