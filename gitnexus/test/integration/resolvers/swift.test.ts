@@ -385,13 +385,18 @@ extension Handler {
 extension Container.Handler {
     static func makeValue(input: Int) -> Int { input + 10 }
     static func describeValue(input: Int) -> Int { input }
-    static func choose(input: Int) -> Int { input }
+    static func choose(input value: Int) -> Int { value }
+    static func chooseUnlabeled(_ value: Int) -> Int { value }
+    static func chooseByResult(input: Int) -> Int { input }
+    static func chooseOnlyInput(input: Int) -> Int { input }
 }
 `,
     'OtherNestedExtension.swift': `
 extension Container.Handler {
     func describeValue(instance: Int) -> Int { instance }
-    static func choose(other: Int) -> Int { other }
+    static func choose(other input: Int) -> Int { input }
+    static func chooseUnlabeled(value: Int) -> Int { value }
+    static func chooseByResult(input: Int) -> String { String(input) }
 }
 `,
     'ExtensionCallers.swift': `
@@ -400,6 +405,10 @@ extension Container.Handler {
     static func runTypeMethod() -> Int { describeValue(input: 5) }
     func runInstanceMethod() -> Int { describeValue(instance: 5) }
     static func runWithOverloads() -> Int { choose(input: 6) }
+    static func runWithOtherLabel() -> Int { choose(other: 6) }
+    static func runWithUnlabeledArgument() -> Int { chooseUnlabeled(7) }
+    static func runWithAmbiguousResult() { _ = chooseByResult(input: 6) }
+    static func runWithWrongLabel() -> Int { chooseOnlyInput(other: 6) }
 
     static func runWithLocalHelper() -> Int {
         func makeValue(input: Int) -> Int { input + 20 }
@@ -421,6 +430,9 @@ enum Unrelated {
     ['runTypeMethod', 'describeValue', 'NestedHandlerExtension.swift'],
     ['runInstanceMethod', 'describeValue', 'OtherNestedExtension.swift'],
     ['runWithLocalHelper', 'makeValue', 'ExtensionCallers.swift'],
+    ['runWithOverloads', 'choose', 'NestedHandlerExtension.swift'],
+    ['runWithOtherLabel', 'choose', 'OtherNestedExtension.swift'],
+    ['runWithUnlabeledArgument', 'chooseUnlabeled', 'NestedHandlerExtension.swift'],
   ])('resolves %s to %s in %s', (caller, callee, targetPath) => {
     const calls = getRelationships(result(), 'CALLS').filter(
       (call) => call.source === caller && call.target === callee,
@@ -428,9 +440,9 @@ enum Unrelated {
     expect(calls.map((call) => call.targetFilePath)).toEqual([targetPath]);
   });
 
-  it('records ambiguity when same-owner overloads cannot be distinguished', () => {
+  it('records ambiguity when overloads differ only by return type without a result context', () => {
     const calls = getRelationships(result(), 'CALLS').filter(
-      (call) => call.source === 'runWithOverloads' && call.target === 'choose',
+      (call) => call.source === 'runWithAmbiguousResult' && call.target === 'chooseByResult',
     );
     expect(calls).toEqual([]);
     expect(result().resolutionOutcomes).toEqual(
@@ -439,9 +451,24 @@ enum Unrelated {
           kind: 'suppressed',
           reason: 'member-lookup-ambiguous',
           filePath: 'ExtensionCallers.swift',
-          name: 'choose',
+          name: 'chooseByResult',
         }),
       ]),
+    );
+  });
+
+  it('keeps a label mismatch unresolved through the free-call fallback', () => {
+    const graph = result();
+    expect(
+      getRelationships(graph, 'CALLS').filter((call) => call.source === 'runWithWrongLabel'),
+    ).toEqual([]);
+    expect(graph.resolutionOutcomes).toContainEqual(
+      expect.objectContaining({
+        kind: 'suppressed',
+        reason: 'overload-inapplicable',
+        filePath: 'ExtensionCallers.swift',
+        name: 'chooseOnlyInput',
+      }),
     );
   });
 });

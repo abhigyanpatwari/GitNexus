@@ -24,12 +24,19 @@
 import type { BindingRef, ParsedFile, Scope, ScopeId, SymbolDefinition } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
-import { DEFAULT_SWIFT_MODULE, groupSwiftFilesByModule } from './target-grouping.js';
+import {
+  DEFAULT_SWIFT_MODULE,
+  groupSwiftFilesByModule,
+  swiftModuleKeysOf,
+} from './target-grouping.js';
 
 /** Namespace-channel key of a Swift module. */
 export function swiftModuleNamespace(moduleKey: string): string {
   return `swift-module:${moduleKey}`;
 }
+
+// A target with one source file has membership but needs no sibling namespace table.
+const workspaceConfigByIndex = new WeakMap<ScopeResolutionIndexes, unknown>();
 
 /** Module and import visibility for owner-scoped lookups. Unknown membership
  * leaves the decision to the ordinary resolver rules. */
@@ -39,20 +46,15 @@ export function swiftCanAccessFile(
   indexes: ScopeResolutionIndexes,
 ): boolean {
   if (callerFile === targetFile) return true;
+  const config = workspaceConfigByIndex.get(indexes);
+  const callerModules = swiftModuleKeysOf(callerFile, config);
+  const targetModules = swiftModuleKeysOf(targetFile, config);
   const callerScope = indexes.moduleScopes.byFilePath.get(callerFile);
-  const targetScope = indexes.moduleScopes.byFilePath.get(targetFile);
-  if (callerScope === undefined || targetScope === undefined) return true;
-
-  const callerModules = indexes.accessibleNamespacesByScope.get(callerScope);
-  const targetModules = indexes.accessibleNamespacesByScope.get(targetScope);
-  const unknownModule = swiftModuleNamespace(DEFAULT_SWIFT_MODULE);
   return (
-    callerModules === undefined ||
-    targetModules === undefined ||
-    callerModules.includes(unknownModule) ||
-    targetModules.includes(unknownModule) ||
+    callerModules.includes(DEFAULT_SWIFT_MODULE) ||
+    targetModules.includes(DEFAULT_SWIFT_MODULE) ||
     targetModules.some((module) => callerModules.includes(module)) ||
-    indexes.imports.reaches(callerScope, targetFile)
+    (callerScope !== undefined && indexes.imports.reaches(callerScope, targetFile))
   );
 }
 
@@ -83,6 +85,7 @@ export function populateSwiftTargetSiblings(
     readonly resolutionConfig?: unknown;
   },
 ): void {
+  workspaceConfigByIndex.set(indexes, ctx.resolutionConfig);
   const augmentations = indexes.bindingAugmentations as Map<ScopeId, Map<string, BindingRef[]>>;
   for (const group of groupSwiftFilesByModule(
     parsedFiles,

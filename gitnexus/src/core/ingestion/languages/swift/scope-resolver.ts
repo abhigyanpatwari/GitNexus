@@ -16,9 +16,8 @@
  *     `populateClassOwnedMembers` stamps them with `Foo`'s ownerId — the
  *     same mechanism C# uses for `partial class`. Cross-file extensions
  *     that mint no type def are reconciled by `populateWorkspaceOwners`.
- *   - **Labeled arguments** narrow by ARITY only (count-primary, labels
- *     soft) — see `arity.ts`. Label-precise dispatch is deferred to the
- *     type-binding layer.
+ *   - **Labeled arguments** use the shared arity/type rules. Bare calls in
+ *     extension bodies also use positional external labels when available.
  *   - **Same-module visibility**: every file in a module sees its
  *     siblings' top-level defs without an `import`. A module is a SwiftPM
  *     target (root or nested package) or an Xcode native target, found by
@@ -51,7 +50,11 @@ import type { ParsedFile, ReferenceSite, SymbolDefinition } from 'gitnexus-share
 import { makeScopeId, SupportedLanguages } from 'gitnexus-shared';
 import { loadSwiftWorkspaceConfig } from './workspace-config.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
-import { populateClassOwnedMembers, isClassLike } from '../../scope-resolution/scope/walkers.js';
+import {
+  isClassLike,
+  lookupBindingsAt,
+  populateClassOwnedMembers,
+} from '../../scope-resolution/scope/walkers.js';
 import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
@@ -83,6 +86,11 @@ import { groupSwiftFilesByModule } from './target-grouping.js';
 import { lineStartsOf, swiftCanAccessFile, swiftExtensionOwner } from './target-siblings.js';
 import { swiftIsGlobalNameFallbackPlausible } from './name-fallback-visibility.js';
 import { swiftIsCallableVisibleFromCaller } from './callable-visibility.js';
+import {
+  indexSwiftOverloadLabels,
+  swiftArgumentLabels,
+  swiftLabelsMatch,
+} from './overload-labels.js';
 
 const ZERO_RANGE = { startLine: 0, startCol: 0, endLine: 0, endCol: 0 } as const;
 
@@ -158,7 +166,10 @@ const swiftScopeResolver: ScopeResolver = {
   isSuperReceiver: (text) => text.trim() === 'super',
 
   // Whole-module same-target visibility without `import`.
-  populateNamespaceSiblings: populateSwiftTargetSiblings,
+  populateNamespaceSiblings(parsedFiles, indexes, context) {
+    populateSwiftTargetSiblings(parsedFiles, indexes, context);
+    indexSwiftOverloadLabels(parsedFiles, indexes);
+  },
 
   // Same-target File→File IMPORTS edges (no syntactic `import`). The
   // generic finalized-ImportEdge pipeline has nothing to emit here, so
@@ -364,7 +375,9 @@ function resolveSwiftExtensionCall(
       // A type method and an instance method can share a base name and arity.
       // The Swift capture pass binds `self` only in instance method bodies.
       const instanceCaller = scope.typeBindings.get('self')?.source === 'self';
+      const labels = swiftArgumentLabels(indexes, scope.filePath, site.atRange);
       const matchingReceiver: SymbolDefinition[] = [];
+      const rejectedLabels: string[] = [];
       for (const candidate of model.methods.lookupAllByOwner(member.ownerId, site.name)) {
         if (candidate.isExported === false && candidate.filePath !== scope.filePath) continue;
         if (!swiftCanAccessFile(scope.filePath, candidate.filePath, indexes)) continue;
@@ -375,7 +388,25 @@ function resolveSwiftExtensionCall(
         );
         if (targetScope === undefined) return undefined;
         const instanceTarget = targetScope.typeBindings.get('self')?.source === 'self';
-        if (instanceCaller === instanceTarget) matchingReceiver.push(candidate);
+        if (instanceCaller !== instanceTarget) continue;
+        if (labels !== undefined && !swiftLabelsMatch(indexes, candidate, labels)) {
+          rejectedLabels.push(candidate.nodeId);
+          continue;
+        }
+        matchingReceiver.push(candidate);
+      }
+      if (matchingReceiver.length === 0 && rejectedLabels.length > 0) {
+        // The ordinary namespace lookup can see these same members. Only
+        // defer to it when a file-level function could answer the call.
+        const moduleScope = indexes.moduleScopes.byFilePath.get(scope.filePath);
+        if (
+          moduleScope !== undefined &&
+          !lookupBindingsAt(moduleScope, site.name, indexes).some(
+            ({ def }) => def.type === 'Function' && def.ownerId === undefined,
+          )
+        ) {
+          return { kind: 'inapplicable', candidateIds: rejectedLabels };
+        }
       }
       const candidates = narrowOverloadCandidates(
         matchingReceiver,
