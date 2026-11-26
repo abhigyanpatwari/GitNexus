@@ -37,6 +37,7 @@ type DetectChangesResult = {
   changed_symbols?: ChangedSymbol[];
   affected_processes?: AffectedProcess[];
   unmapped_files?: string[];
+  unverified_line_files?: string[];
   incompatible_calls?: import('../core/ingestion/call-compatibility.js').BrokenKeywordCall[];
   incompatible_call_skips?: { filePath?: string; reason: string }[];
 };
@@ -79,6 +80,13 @@ export function formatDetectChangesResult(result: unknown): string {
     notes.push(
       t('tool.detectChanges.unmappedSource', {
         files: payload.unmapped_files.map(formatPathForTerminal).join(', '),
+      }),
+    );
+  }
+  if (payload.unverified_line_files?.length) {
+    notes.push(
+      t('tool.detectChanges.unverifiedLines', {
+        files: payload.unverified_line_files.map(formatPathForTerminal).join(', '),
       }),
     );
   }

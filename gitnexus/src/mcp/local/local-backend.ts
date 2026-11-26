@@ -77,12 +77,18 @@ import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/l
 // import { isGitRepo, getCurrentCommit, getGitRoot } from '../../storage/git.js';
 import {
   parseDiffHunksResult,
+  coalesceHunks,
   coalesceHunksByPath,
   hunksOverlapRange,
+  hunksStraddleGap,
+  insertionGapsOf,
+  type FileDiff,
+  type GraphLineRange,
   findGitRootByDotGit,
   getCanonicalRepoRoot,
   getGitRoot,
 } from '../../storage/git.js';
+import { matchIndexedDiffImages, type IndexedDiffImage } from '../../storage/diff-image-match.js';
 import { realpathSync } from 'fs';
 import { parseGrepQuery, GREP_TIME_BUDGET_MS } from '../../server/grep-params.js';
 import { runGrepScanInWorker } from '../../server/grep-scan.js';
@@ -1425,6 +1431,9 @@ export function buildDetectChangesDiffArgs(scope: string, baseRef?: string): str
     '--color=never',
     '--src-prefix=a/',
     '--dst-prefix=b/',
+    // Full blob ids on the `index` line, so the pre-image can be read back and
+    // hashed against the bytes `analyze` indexed (see diff-image-match.ts).
+    '--full-index',
   ];
   switch (scope) {
     case 'staged':
@@ -6976,6 +6985,46 @@ export class LocalBackend {
   }
 
   /**
+   * For `detect_changes`: which side of the diff the graph holds, per modified
+   * file (see `storage/diff-image-match.ts`).
+   *
+   * Reads `fileHashes` straight from the metadata file: `readToolMetadata`
+   * strips it so an opened snapshot does not retain the whole manifest, and
+   * this call needs it only for the diff in hand. Metadata that is missing,
+   * has no hashes (a legacy index) or belongs to a newer graph generation
+   * yields an empty map, which keeps the post-image mapping for every file.
+   */
+  private async matchIndexedImages(
+    repo: RepoHandle,
+    diffCwd: string,
+    scope: string,
+    fileDiffs: readonly FileDiff[],
+  ): Promise<Map<FileDiff, IndexedDiffImage>> {
+    const none = new Map<FileDiff, IndexedDiffImage>();
+    if (!fileDiffs.some((fileDiff) => fileDiff.hunks.length > 0)) return none;
+    const storagePath = path.dirname(repo.lbugPath);
+    const meta = await loadOptionalMeta(storagePath);
+    if (!meta?.fileHashes) return none;
+    if (
+      (meta.graphPath !== undefined || meta.graphGeneration) &&
+      !metadataMatchesGraph(storagePath, meta, repo.lbugPath)
+    ) {
+      return none;
+    }
+    try {
+      return await matchIndexedDiffImages({
+        cwd: diffCwd,
+        scope,
+        files: fileDiffs,
+        fileHashes: meta.fileHashes,
+      });
+    } catch (error) {
+      logQueryError('detect-changes:indexed-image', error);
+      return none;
+    }
+  }
+
+  /**
    * Detect changes — git-diff based impact analysis.
    * Maps changed lines to indexed symbols, then finds affected processes.
    */
@@ -7061,7 +7110,9 @@ export class LocalBackend {
       return { error: `Git diff failed: ${err.message}` };
     }
 
-    const { files: fileDiffs, unparsedGitHeaders } = parseDiffHunksResult(diffOutput);
+    const { files: fileDiffs, unparsedGitHeaders } = parseDiffHunksResult(diffOutput, {
+      withPreImage: true,
+    });
 
     if (fileDiffs.length === 0) {
       // Git printed a diff but none of it parsed: no `diff --git` / `+++`
@@ -7102,9 +7153,42 @@ export class LocalBackend {
     // the gate look complete.
     let queryDegraded = unparsedGitHeaders > 0;
 
+    // Graph line numbers come from the bytes `analyze` read, which in the
+    // analyze → edit → detect_changes flow are the PRE-image, while the hunks'
+    // default coordinates are the post-image. Pick the side per file by hash:
+    // the old-side ranges when the index holds the pre-image, and fail closed
+    // when it holds neither, since no side's lines can then be trusted. A
+    // legacy index without `fileHashes` keeps the post-image mapping.
+    const indexedImages = await this.matchIndexedImages(repo, diffCwd, scope, fileDiffs);
+    const unverifiedLineFiles = [
+      ...new Set(
+        fileDiffs
+          .filter((fileDiff) => indexedImages.get(fileDiff) === 'neither')
+          .map(({ filePath }) => filePath),
+      ),
+    ];
+    if (unverifiedLineFiles.length > 0) queryDegraded = true;
+
     // Hunks arrive grouped per path and already in the graph's 0-based line
     // space, so every comparison below is base-neutral (#2377).
-    const hunksByPath = coalesceHunksByPath(fileDiffs);
+    const hunksByPath = coalesceHunksByPath(
+      fileDiffs.map((fileDiff) =>
+        indexedImages.get(fileDiff) === 'pre' && fileDiff.preImage
+          ? { ...fileDiff, hunks: fileDiff.preImage.hunks }
+          : fileDiff,
+      ),
+    );
+    // A pre-image pure insertion changed no old line; it touches only a symbol
+    // that encloses the insertion point (see `insertionGapsOf`).
+    const gapsByPath = new Map<string, GraphLineRange[]>();
+    for (const fileDiff of fileDiffs) {
+      const { filePath, preImage } = fileDiff;
+      if (indexedImages.get(fileDiff) !== 'pre' || !preImage) continue;
+      const gaps = insertionGapsOf(preImage);
+      if (gaps.length > 0) {
+        gapsByPath.set(filePath, coalesceHunks([...(gapsByPath.get(filePath) ?? []), ...gaps]));
+      }
+    }
     // The graph may still use the pre-rename path, while the caller check
     // needs the destination in the selected post-image.
     const { getQueryProviderForFile, isIndexedSourceFile } = await loadQueryProviders();
@@ -7114,22 +7198,33 @@ export class LocalBackend {
       const provider = getQueryProviderForFile(filePath);
       if (provider?.callCompatibility) checkersByPath.set(filePath, provider.callCompatibility);
       const hunks = hunksByPath.get(filePath);
-      if (hunks && oldFilePath) {
+      const gaps = gapsByPath.get(filePath);
+      if ((hunks || gaps) && oldFilePath) {
         if (!provider || provider !== getQueryProviderForFile(oldFilePath)) continue;
         renamedSourcePaths.set(oldFilePath, filePath);
-        if (!hunksByPath.has(oldFilePath)) hunksByPath.set(oldFilePath, hunks);
+        if (hunks && !hunksByPath.has(oldFilePath)) hunksByPath.set(oldFilePath, hunks);
+        if (gaps && !gapsByPath.has(oldFilePath)) gapsByPath.set(oldFilePath, gaps);
       }
     }
 
     // One row per changed file: the anchored forms of its path, and the [lo, hi]
     // span of its whole touched region (coalesced ranges are sorted and
-    // disjoint, so the span is free).
-    const bounds = Array.from(hunksByPath, ([filePath, hunks]) => ({
-      path: filePath,
-      suffix: pathSuffixOf(filePath),
-      lo: hunks[0].startLine,
-      hi: hunks[hunks.length - 1].endLine,
-    }));
+    // disjoint, so the span is free). A gap `g` needs a symbol spanning `g` and
+    // `g + 1`, which any symbol meeting `[g, g]` under this bound can be.
+    const bounds = Array.from(
+      new Set([...hunksByPath.keys(), ...gapsByPath.keys()]),
+      (filePath) => {
+        const spans = [hunksByPath.get(filePath), gapsByPath.get(filePath)].filter(
+          (ranges): ranges is GraphLineRange[] => ranges !== undefined && ranges.length > 0,
+        );
+        return {
+          path: filePath,
+          suffix: pathSuffixOf(filePath),
+          lo: Math.min(...spans.map((ranges) => ranges[0].startLine)),
+          hi: Math.max(...spans.map((ranges) => ranges[ranges.length - 1].endLine)),
+        };
+      },
+    );
 
     // Exclude BasicBlock rows by id prefix: on a --pdg index every edited
     // function otherwise contributes N nameless BasicBlock pseudo-"symbols"
@@ -7309,7 +7404,11 @@ export class LocalBackend {
           indexedTargets.set(sym.id, target);
         }
       }
-      if (!hunksOverlapRange(hunksByPath.get(diffPath) ?? [], sym.startLine, sym.endLine)) continue;
+      if (
+        !hunksOverlapRange(hunksByPath.get(diffPath) ?? [], sym.startLine, sym.endLine) &&
+        !hunksStraddleGap(gapsByPath.get(diffPath) ?? [], sym.startLine, sym.endLine)
+      )
+        continue;
       if (sym.filePath === diffPath) mappedPaths.add(renamedTo ?? diffPath);
       if (changedSymbols.has(sym.id)) continue;
       changedSymbols.set(sym.id, {
@@ -7506,6 +7605,9 @@ export class LocalBackend {
       }),
       affected_processes: Array.from(affectedProcesses.values()),
       ...(unmappedFiles.length > 0 && { unmapped_files: unmappedFiles }),
+      // The indexed bytes match neither side of the diff, so the line mapping
+      // for these files is unverified (and the result `partial`).
+      ...(unverifiedLineFiles.length > 0 && { unverified_line_files: unverifiedLineFiles }),
       // Failed queries or unmapped source files leave counts/risk incomplete;
       // the safety gate must not treat that as a clean result (#2283).
       ...((queryDegraded || keywordCheck?.complete === false) && { partial: true }),

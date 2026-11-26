@@ -18,6 +18,7 @@ const GUARD_FLAGS = [
   '--color=never',
   '--src-prefix=a/',
   '--dst-prefix=b/',
+  '--full-index',
 ];
 
 describe('detect_changes EOL filtering', () => {

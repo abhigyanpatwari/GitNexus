@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseDiffHunks, parseDiffHunksResult } from '../../src/storage/git.js';
+import {
+  hunksStraddleGap,
+  insertionGapsOf,
+  parseDiffHunks,
+  parseDiffHunksResult,
+} from '../../src/storage/git.js';
 
 describe('parseDiffHunks', () => {
   it('parses a single file with one hunk', () => {
@@ -334,5 +339,112 @@ describe('parseDiffHunks', () => {
       files: [{ filePath: 'script.sh', hunks: [] }],
       unparsedGitHeaders: 1,
     });
+  });
+});
+
+/**
+ * The `-` side of each hunk, for an index that still holds the pre-image.
+ * `detect_changes` overlaps hunks with graph lines read from the bytes
+ * `analyze` indexed; after analyze → edit, those are the OLD file's lines.
+ */
+describe('parseDiffHunksResult withPreImage', () => {
+  const OLD = 'a'.repeat(40);
+  const NEW = 'b'.repeat(40);
+
+  it('leaves the default output unchanged', () => {
+    const diff = ['diff --git a/u.ts b/u.ts', `index ${OLD}..${NEW} 100644`, '@@ -2 +1,0 @@'].join(
+      '\n',
+    );
+    expect(parseDiffHunksResult(diff).files).toEqual([
+      { filePath: 'u.ts', hunks: [{ startLine: 1, endLine: 1 }] },
+    ]);
+  });
+
+  it('records old-side ranges, insertion points and full blob ids', () => {
+    // The issue's cases in one file: a head insertion, an edit below it, a
+    // one-line deletion, and an insertion between old lines 7 and 8.
+    const diff = [
+      'diff --git a/u.ts b/u.ts',
+      `index ${OLD}..${NEW} 100644`,
+      '--- a/u.ts',
+      '+++ b/u.ts',
+      '@@ -0,0 +1,3 @@',
+      '+// a',
+      '+// b',
+      '+// c',
+      '@@ -4 +7 @@',
+      '-old',
+      '+new',
+      '@@ -5 +7,0 @@',
+      '-gone',
+      '@@ -7,0 +10,2 @@',
+      '+x',
+      '+y',
+    ].join('\n');
+    const [file] = parseDiffHunksResult(diff, { withPreImage: true }).files;
+    // The default `+` side is untouched.
+    expect(file.hunks).toEqual([
+      { startLine: 1, endLine: 3 },
+      { startLine: 7, endLine: 7 },
+      { startLine: 7, endLine: 7 },
+      { startLine: 10, endLine: 11 },
+    ]);
+    expect(file.preImage).toEqual({
+      hunks: [
+        { startLine: 4, endLine: 4 },
+        { startLine: 5, endLine: 5 },
+      ],
+      insertionsAfter: [0, 7],
+      oldBlob: OLD,
+      newBlob: NEW,
+    });
+  });
+
+  it('keeps blob ids separate per file and after a rename', () => {
+    const diff = [
+      'diff --git a/one.ts b/one.ts',
+      `index ${OLD}..${NEW} 100644`,
+      '@@ -1 +1 @@',
+      'diff --git a/old.ts b/new.ts',
+      'similarity index 90%',
+      'rename from old.ts',
+      'rename to new.ts',
+      `index ${NEW}..${OLD}`,
+      '--- a/old.ts',
+      '+++ b/new.ts',
+      '@@ -3,2 +3 @@',
+    ].join('\n');
+    const files = parseDiffHunksResult(diff, { withPreImage: true }).files;
+    expect(files.map((f) => [f.filePath, f.preImage?.oldBlob, f.preImage?.newBlob])).toEqual([
+      ['one.ts', OLD, NEW],
+      ['new.ts', NEW, OLD],
+    ]);
+    expect(files[1].preImage?.hunks).toEqual([{ startLine: 3, endLine: 4 }]);
+  });
+
+  it('has no pre-image for a file without hunks', () => {
+    const diff = ['diff --git a/bin.png b/bin.png', `index ${OLD}..${NEW} 100644`].join('\n');
+    expect(parseDiffHunksResult(diff, { withPreImage: true }).files[0].preImage).toBeUndefined();
+  });
+});
+
+describe('insertionGapsOf / hunksStraddleGap', () => {
+  const gapsAfter = (...after: number[]) => insertionGapsOf({ hunks: [], insertionsAfter: after });
+
+  it('drops a head insertion and converts the rest to 0-based gaps', () => {
+    expect(gapsAfter(0, 7, 3, 3)).toEqual([
+      { startLine: 2, endLine: 2 },
+      { startLine: 6, endLine: 6 },
+    ]);
+  });
+
+  it('touches only a symbol that encloses the insertion point', () => {
+    // Inserted after old line 5 = gap between 0-based lines 4 and 5.
+    const gaps = gapsAfter(5);
+    expect(hunksStraddleGap(gaps, 2, 8)).toBe(true); // body insertion
+    expect(hunksStraddleGap(gaps, 4, 5)).toBe(true); // between its two lines
+    expect(hunksStraddleGap(gaps, 0, 4)).toBe(false); // appended after its last line
+    expect(hunksStraddleGap(gaps, 5, 9)).toBe(false); // inserted before its first line
+    expect(hunksStraddleGap(gaps, 4, 4)).toBe(false); // a one-line symbol has no inside
   });
 });

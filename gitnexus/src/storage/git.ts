@@ -865,6 +865,40 @@ export interface FileDiff {
   /** Decoded pre-rename path; either side can identify a source-file change. */
   oldFilePath?: string;
   hunks: DiffHunk[];
+  /**
+   * The same hunks in the OLD file's line space, set only when the caller asks
+   * for them ({@link ParseDiffHunksOptions.withPreImage}). See {@link DiffPreImage}.
+   */
+  preImage?: DiffPreImage;
+}
+
+/**
+ * A file's diff read from the `-` side of every `@@ -a,b +c,d @@` header.
+ *
+ * `detect_changes` maps hunks onto graph rows, and the graph holds whatever
+ * bytes `analyze` read. In the documented flow (analyze, edit, detect_changes)
+ * that is the PRE-image, so once an edit adds or removes lines the `+` side
+ * points at the wrong symbols. The caller decides per file which side the graph
+ * holds and picks these ranges when it is the pre-image.
+ */
+export interface DiffPreImage {
+  /** Old-side runs of removed or replaced lines (1-based, inclusive). */
+  hunks: DiffHunk[];
+  /**
+   * Pure insertions (`-a,0`): lines were added after old line `a` (`0` = before
+   * the first line). No old line changed, so an old symbol is touched only when
+   * it spans both `a` and `a + 1`.
+   */
+  insertionsAfter: number[];
+  /** Full pre-image blob id from the `index` line (needs `--full-index`). */
+  oldBlob?: string;
+  /** Full post-image blob id; all zeros when git did not hash a work-tree file. */
+  newBlob?: string;
+}
+
+export interface ParseDiffHunksOptions {
+  /** Also record each file's {@link DiffPreImage}. */
+  withPreImage?: boolean;
 }
 
 /** `parseDiffHunks` plus how many `diff --git` headers could not be decoded. */
@@ -1074,10 +1108,20 @@ export function parseDiffHunks(diffOutput: string): FileDiff[] {
  * (`partial` + `risk_level:'unknown'`) instead of attaching later hunks to a
  * previous file.
  */
-export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
+export function parseDiffHunksResult(
+  diffOutput: string,
+  options: ParseDiffHunksOptions = {},
+): DiffHunkParseResult {
   const files: FileDiff[] = [];
   let current: FileDiff | null = null;
   let unparsedGitHeaders = 0;
+  // `index <old>..<new>` precedes `+++`, which may open a fresh entry; carry
+  // the ids until the hunks start.
+  let pendingBlobs: { oldBlob: string; newBlob: string } | undefined;
+  const preImageOf = (file: FileDiff): DiffPreImage => {
+    if (!file.preImage) file.preImage = { hunks: [], insertionsAfter: [], ...pendingBlobs };
+    return file.preImage;
+  };
   // `+++` after the first `@@` of a file is hunk body (`+` plus source text
   // that itself starts `++ …`), not another file header.
   let inHunk = false;
@@ -1091,6 +1135,7 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
       current = null;
       inHunk = false;
       currentFileDeleted = false;
+      pendingBlobs = undefined;
       const filePath = filePathFromGitHeader(line);
       if (filePath) {
         current = { filePath, hunks: [] };
@@ -1098,6 +1143,9 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
       } else {
         unparsedGitHeaders++;
       }
+    } else if (!inHunk && options.withPreImage && line.startsWith('index ')) {
+      const ids = /^index ([0-9a-f]+)\.\.([0-9a-f]+)(?: |$)/.exec(line);
+      if (ids) pendingBlobs = { oldBlob: ids[1], newBlob: ids[2] };
     } else if (!inHunk && line.startsWith('rename from ')) {
       const oldFilePath = decodeGitPathToken(line.slice('rename from '.length));
       if (current && oldFilePath) current.oldFilePath = oldFilePath;
@@ -1133,6 +1181,16 @@ export function parseDiffHunksResult(diffOutput: string): DiffHunkParseResult {
           // 1 for a `+0,0` deletion at the head of the file (see above).
           const anchor = Math.max(start, 1);
           current.hunks.push({ startLine: anchor, endLine: anchor });
+        }
+        if (options.withPreImage) {
+          const preImage = preImageOf(current);
+          const oldStart = parseInt(match[1], 10);
+          const oldCount = match[2] !== undefined ? parseInt(match[2], 10) : 1;
+          if (oldCount > 0) {
+            preImage.hunks.push({ startLine: oldStart, endLine: oldStart + oldCount - 1 });
+          } else {
+            preImage.insertionsAfter.push(oldStart);
+          }
         }
       }
     }
@@ -1241,4 +1299,38 @@ export function hunksOverlapRange(
     else lo = mid + 1;
   }
   return lo < coalesced.length && coalesced[lo].startLine <= endLine;
+}
+
+/**
+ * A pre-image's pure insertions as graph "gaps", sorted and coalesced.
+ *
+ * Gap `g` sits between 0-based lines `g` and `g + 1`. An insertion before the
+ * first line (`-0,0`) has no line on its left, so no symbol can enclose it and
+ * it is dropped: prepending a header comment changes no indexed symbol.
+ * Test the result with {@link hunksStraddleGap}, never as an ordinary range —
+ * inserting lines right after a function's last line does not change it.
+ */
+export function insertionGapsOf(preImage: DiffPreImage): GraphLineRange[] {
+  return coalesceHunks(
+    preImage.insertionsAfter
+      .filter((after) => after >= 1)
+      .map((after) => {
+        const gap = toZeroBasedLine(after);
+        return { startLine: gap, endLine: gap };
+      }),
+  );
+}
+
+/**
+ * Does any gap from {@link insertionGapsOf} fall strictly inside the symbol
+ * spanning graph lines [startLine, endLine]? Gap `g` is inside exactly when
+ * `startLine <= g < endLine`, i.e. when the point `g` overlaps
+ * [startLine, endLine - 1]; a one-line symbol has no gap inside it.
+ */
+export function hunksStraddleGap(
+  gaps: GraphLineRange[],
+  startLine: number,
+  endLine: number,
+): boolean {
+  return endLine > startLine && hunksOverlapRange(gaps, startLine, endLine - 1);
 }

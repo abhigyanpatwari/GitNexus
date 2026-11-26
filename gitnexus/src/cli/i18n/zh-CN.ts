@@ -133,6 +133,8 @@ export const zhCN = {
   'tool.detectChanges.keywordCoverage': '调用兼容性检查不完整：{{examples}}',
   'tool.detectChanges.unmappedSource':
     '变更源码文件未映射到符号：{{files}}。请重建索引并检查 diff；仅重试可能无法解决符号缺失或源码范围不匹配。',
+  'tool.detectChanges.unverifiedLines':
+    '索引内容与 diff 的两侧都不匹配：{{files}}。这些文件的符号行范围不可信；请重新运行 analyze 后再运行 detect-changes。',
   'tool.detectChanges.truncated':
     '列表已截断：一个或多个结果列表未完整显示。计数涵盖全部已观测结果。',
   'tool.detectChanges.truncatedDegraded':
