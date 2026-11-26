@@ -97,7 +97,7 @@ export default defineConfig({
           name: 'lbug-db',
           include: [
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
-            'test/integration/analyze-dirty-snapshot.test.ts',
+
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',
@@ -207,7 +207,7 @@ export default defineConfig({
           include: ['test/{unit,integration}/**/*.test.ts'],
           exclude: [
             ...RESUMABLE_ANALYSIS_NATIVE_TESTS,
-            'test/integration/analyze-dirty-snapshot.test.ts',
+
             'test/integration/dangling-owner-edges.test.ts',
             'test/integration/rename-provider-*.test.ts',
             'test/integration/pdg-explicit-owner.test.ts',

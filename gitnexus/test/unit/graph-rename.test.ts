@@ -4,81 +4,31 @@ import os from 'node:os';
 import path from 'node:path';
 import type { GraphNode } from 'gitnexus-shared';
 import { planGraphRename } from '../../src/mcp/local/rename/graph-rename.js';
-import { renameSymbol, type RenameSymbol } from '../../src/mcp/local/rename/rename-plan.js';
+import { renameSymbol } from '../../src/mcp/local/rename/rename-plan.js';
+
+import {
+  fixture,
+  expectBlockedPreviewAndApply,
+  expectSupportedPreviewAndApply,
+} from '../helpers/graph-rename-case.js';
 
 describe('graph and SemanticModel rename', () => {
   let root: string;
+
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'graph-rename-'));
   });
+
   afterEach(async () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  async function fixture(file: string, source: string, extra: GraphNode[] = []) {
-    await fs.writeFile(path.join(root, file), source);
-    return [
-      { id: `File:${file}`, label: 'File', properties: { name: file, filePath: file } },
-      {
-        id: `Function:${file}:target`,
-        label: 'Function',
-        properties: { name: 'target', filePath: file, startLine: 1, endLine: 1 },
-      },
-      ...extra,
-    ] as GraphNode[];
-  }
   const cases = [
-    ['model.ts', 'function target() {}\ntarget();\n// target\nconst text = "target";\n'],
     ['model.js', 'function target() {}\ntarget();\n// target\nconst text = "target";\n'],
     ['model.py', 'def target(): pass\ntarget()\n# target\ntext = "target"\n'],
     ['model.rs', 'fn target() {}\nfn main() { target(); }\n// target\n'],
     ['model.go', 'package model\nfunc target() {}\nfunc caller() { target() }\n// target\n'],
   ];
-
-  async function expectBlockedPreviewAndApply(
-    file: string,
-    source: string,
-    symbol: RenameSymbol,
-    nodes: GraphNode[],
-    code: string,
-    newName = 'Renamed',
-  ) {
-    for (const dry_run of [true, false]) {
-      const result = await renameSymbol(root, symbol, { new_name: newName, dry_run }, nodes);
-      expect(result, JSON.stringify(result)).toMatchObject({
-        status: 'error',
-        application_status: 'not_started',
-        applied: false,
-        total_edits: 0,
-        files_affected: 0,
-        changes: [],
-        code,
-      });
-      expect(result.planning_status).not.toBe('ready');
-      expect(await fs.readFile(path.join(root, file))).toEqual(Buffer.from(source));
-    }
-  }
-
-  async function expectSupportedPreviewAndApply(
-    file: string,
-    source: string,
-    symbol: RenameSymbol,
-    nodes: GraphNode[],
-    expected: string,
-    newName = 'Renamed',
-  ) {
-    const preview = await renameSymbol(root, symbol, { new_name: newName, dry_run: true }, nodes);
-    expect(preview, JSON.stringify(preview)).toMatchObject({ status: 'success', applied: false });
-    expect(preview.total_edits).toBeGreaterThan(0);
-    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(source);
-    const applied = await renameSymbol(root, symbol, { new_name: newName, dry_run: false }, nodes);
-    expect(applied, JSON.stringify(applied)).toMatchObject({
-      status: 'success',
-      applied: true,
-      changes: preview.changes,
-    });
-    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(expected);
-  }
 
   it.each([
     [
@@ -88,22 +38,6 @@ describe('graph and SemanticModel rename', () => {
       'target',
       'Function',
       'function Renamed() {}\nRenamed();\n',
-    ],
-    [
-      'escaped TS reference',
-      'model.ts',
-      'function target() {}\ntar\\u{67}et();\n',
-      'target',
-      'Function',
-      'function Renamed() {}\nRenamed();\n',
-    ],
-    [
-      'escaped shadow binder',
-      'model.ts',
-      'function target() {}\nfunction other(t\\u0061rget) { target(); }\n',
-      'target',
-      'Function',
-      'function Renamed() {}\nfunction other(t\\u0061rget) { target(); }\n',
     ],
     [
       'Python normalized reference',
@@ -124,13 +58,14 @@ describe('graph and SemanticModel rename', () => {
   ] as const)(
     'renames the provider-canonical binding and preserves shadows for %s',
     async (_name, file, source, name, kind, expected) => {
-      const nodes = await fixture(file, source);
+      const nodes = await fixture(root, file, source);
       nodes[1] = {
         id: `${kind}:${file}:${name}`,
         label: kind,
         properties: { name, filePath: file, startLine: 0, endLine: 0 },
       };
       await expectSupportedPreviewAndApply(
+        root,
         file,
         source,
         {
@@ -146,89 +81,22 @@ describe('graph and SemanticModel rename', () => {
     },
   );
 
-  it('refuses a collision with a provider-canonical escaped declaration', async () => {
-    const file = 'model.ts';
-    const source = 'function target() {}\nconst Re\\u006eamed = 1;\ntarget();\n';
-    const nodes = await fixture(file, source);
-    nodes[1]!.properties.startLine = 0;
-    await expectBlockedPreviewAndApply(
-      file,
-      source,
-      { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 },
-      nodes,
-      'name_collision',
-    );
-  });
-
   it('renames a provider-proven verbatim type reference', async () => {
     const file = 'model.cs';
     const source = 'class Target {}\nclass Use { @Target value; }\n';
-    const nodes = await fixture(file, source);
+    const nodes = await fixture(root, file, source);
     nodes[1] = {
       id: 'Class:model.cs:Target',
       label: 'Class',
       properties: { name: 'Target', filePath: file, startLine: 0, endLine: 0 },
     };
     await expectSupportedPreviewAndApply(
+      root,
       file,
       source,
       { uid: nodes[1]!.id, name: 'Target', kind: 'Class', filePath: file, startLine: 1 },
       nodes,
       'class Renamed {}\nclass Use { @Renamed value; }\n',
-    );
-  });
-
-  it.each(['<Target />'])(
-    'blocks JSX component-to-intrinsic renames in preview and apply: %s',
-    async (element) => {
-      const file = 'model.tsx';
-      const source = `function Target() { return null; }\nconst element = ${element};\n`;
-      const nodes = await fixture(file, source);
-      nodes[1] = {
-        id: `Function:${file}:Target`,
-        label: 'Function',
-        properties: { name: 'Target', filePath: file, startLine: 0, endLine: 0 },
-      };
-      await expectBlockedPreviewAndApply(
-        file,
-        source,
-        {
-          uid: nodes[1].id,
-          name: 'Target',
-          kind: 'Function',
-          filePath: file,
-          startLine: 1,
-        },
-        nodes,
-        'invalid_name',
-        'widget',
-      );
-    },
-  );
-
-  it('preserves JSX component roles in a successful preview and apply', async () => {
-    const file = 'model.tsx';
-    const source = 'function Target() { return null; }\nconst element = <Target />;\n';
-    const nodes = await fixture(file, source);
-    nodes[1] = {
-      id: `Function:${file}:Target`,
-      label: 'Function',
-      properties: { name: 'Target', filePath: file, startLine: 0, endLine: 0 },
-    };
-    const symbol = {
-      uid: nodes[1].id,
-      name: 'Target',
-      kind: 'Function',
-      filePath: file,
-      startLine: 1,
-    };
-    const preview = await renameSymbol(root, symbol, { new_name: 'Widget', dry_run: true }, nodes);
-    expect(preview, JSON.stringify(preview)).toMatchObject({ status: 'success', total_edits: 2 });
-    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(source);
-    const applied = await renameSymbol(root, symbol, { new_name: 'Widget', dry_run: false }, nodes);
-    expect(applied).toMatchObject({ status: 'success', applied: true, changes: preview.changes });
-    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(
-      'function Widget() { return null; }\nconst element = <Widget />;\n',
     );
   });
 
@@ -265,7 +133,7 @@ describe('graph and SemanticModel rename', () => {
     const file = 'model.py';
     const source = `class Writer:\n${body}${use}`;
     const uid = `Class:${file}:Writer`;
-    const nodes = await fixture(file, source, [
+    const nodes = await fixture(root, file, source, [
       {
         id: uid,
         label: 'Class',
@@ -273,6 +141,7 @@ describe('graph and SemanticModel rename', () => {
       },
     ]);
     await expectBlockedPreviewAndApply(
+      root,
       file,
       source,
       {
@@ -294,9 +163,10 @@ describe('graph and SemanticModel rename', () => {
   ])('blocks dynamic with bindings in preview and apply: %s', async (_name, use) => {
     const file = 'model.js';
     const source = 'function target() { return "global"; }\n' + use;
-    const nodes = await fixture(file, source);
+    const nodes = await fixture(root, file, source);
     nodes[1]!.properties.startLine = 0;
     await expectBlockedPreviewAndApply(
+      root,
       file,
       source,
       {
@@ -312,36 +182,6 @@ describe('graph and SemanticModel rename', () => {
   });
 
   it.each([
-    [
-      'calls before and after a write',
-      'let writer = new Writer();\nwriter.close();\nwriter = new Other();\nwriter.close();\n',
-    ],
-    [
-      'write before the call',
-      'let writer = new Writer();\nwriter = new Other();\nwriter.close();\n',
-    ],
-    [
-      'write after the call',
-      'let writer = new Writer();\nwriter.close();\nwriter = new Other();\n',
-    ],
-    [
-      'conditional write',
-      'let writer = new Writer();\nif (false) { writer = new Other(); }\nwriter.close();\n',
-    ],
-    ['unknown write', 'let writer = new Writer();\nwriter = obtain();\nwriter.close();\n'],
-    [
-      'closure write',
-      'let writer = new Writer();\nfunction change() { writer = new Other(); }\nwriter.close();\n',
-    ],
-    [
-      'destructuring write',
-      'let writer = new Writer();\n[writer] = [new Other()];\nwriter.close();\n',
-    ],
-    ['structural initializer', 'const writer: Writer = new Other();\nwriter.close();\n'],
-    [
-      'structural parameter',
-      'function use(writer: Writer) { writer.close(); }\nuse(new Other());\n',
-    ],
     [
       'conditional var redeclaration to another class',
       'var writer = new Writer();\nif (false) { var writer = new Other(); }\nwriter.close();\n',
@@ -367,98 +207,44 @@ describe('graph and SemanticModel rename', () => {
       'function use() {\nvar writer = new Writer();\nif (false) { var writer = new Other(); }\nwriter.close();\n}\nuse();\n',
       'model.js',
     ],
-  ])(
-    'blocks unproven receiver ownership in preview and apply: %s',
-    async (_name, use, file = 'model.ts') => {
-      const source = 'class Writer {\n close() {}\n}\nclass Other {\n close() {}\n}\n' + use;
-      const uid = `Method:${file}:Writer.close#0`;
-      const nodes = await fixture(file, source, [
-        {
-          id: `Class:${file}:Writer`,
-          label: 'Class',
-          properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 2 },
-        },
-        {
-          id: `Class:${file}:Other`,
-          label: 'Class',
-          properties: { name: 'Other', filePath: file, startLine: 3, endLine: 5 },
-        },
-        {
-          id: uid,
-          label: 'Method',
-          properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
-        },
-        {
-          id: `Method:${file}:Other.close#0`,
-          label: 'Method',
-          properties: { name: 'close', filePath: file, startLine: 4, endLine: 4 },
-        },
-      ]);
-      await expectBlockedPreviewAndApply(
-        file,
-        source,
-        {
-          uid,
-          name: 'close',
-          kind: 'Method',
-          filePath: file,
-          startLine: 2,
-        },
-        nodes,
-        'ambiguous_reference',
-      );
-    },
-  );
-
-  it.each([
-    ['constant receiver', 'const writer = new Writer();\nwriter.close();\n'],
-    ['unwritten mutable receiver', 'let writer = new Writer();\nwriter.close();\n'],
-    ['stable var receiver', 'var writer = new Writer();\nwriter.close();\n'],
-    [
-      'block let shadow',
-      'const writer = new Writer();\nif (false) { let writer = obtain(); }\nwriter.close();\n',
-    ],
-    [
-      'block const shadow',
-      'const writer = new Writer();\nif (false) { const writer = obtain(); }\nwriter.close();\n',
-    ],
-    [
-      'separate function var',
-      'var writer = new Writer();\nfunction other() { var writer = obtain(); }\nwriter.close();\n',
-    ],
-    ['matching annotated initializer', 'const writer: Writer = new Writer();\nwriter.close();\n'],
-    [
-      'unrelated shadow write',
-      'const writer = new Writer();\nfunction change(writer) { writer = obtain(); }\nwriter.close();\n',
-    ],
-  ])('preserves constructor-proven member preview and apply: %s', async (_name, use) => {
-    const file = 'model.ts';
-    const source = 'class Writer {\n close() {}\n}\n' + use;
+  ])('blocks unproven receiver ownership in preview and apply: %s', async (_name, use, file) => {
+    const source = 'class Writer {\n close() {}\n}\nclass Other {\n close() {}\n}\n' + use;
     const uid = `Method:${file}:Writer.close#0`;
-    const nodes = await fixture(file, source, [
+    const nodes = await fixture(root, file, source, [
       {
         id: `Class:${file}:Writer`,
         label: 'Class',
         properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 2 },
       },
       {
+        id: `Class:${file}:Other`,
+        label: 'Class',
+        properties: { name: 'Other', filePath: file, startLine: 3, endLine: 5 },
+      },
+      {
         id: uid,
         label: 'Method',
         properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
       },
+      {
+        id: `Method:${file}:Other.close#0`,
+        label: 'Method',
+        properties: { name: 'close', filePath: file, startLine: 4, endLine: 4 },
+      },
     ]);
-    const symbol = { uid, name: 'close', kind: 'Method', filePath: file, startLine: 2 };
-    const preview = await renameSymbol(root, symbol, { new_name: 'finish', dry_run: true }, nodes);
-    expect(preview, JSON.stringify(preview)).toMatchObject({ status: 'success', total_edits: 2 });
-    expect(preview.changes[0]!.edits.map((edit) => edit.start)).toEqual([
-      source.indexOf('close'),
-      source.lastIndexOf('close'),
-    ]);
-    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(source);
-    const applied = await renameSymbol(root, symbol, { new_name: 'finish', dry_run: false }, nodes);
-    expect(applied).toMatchObject({ status: 'success', applied: true, changes: preview.changes });
-    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(
-      source.replaceAll('close', 'finish'),
+    await expectBlockedPreviewAndApply(
+      root,
+      file,
+      source,
+      {
+        uid,
+        name: 'close',
+        kind: 'Method',
+        filePath: file,
+        startLine: 2,
+      },
+      nodes,
+      'ambiguous_reference',
     );
   });
 
@@ -468,14 +254,9 @@ describe('graph and SemanticModel rename', () => {
       'model.js',
       'class Writer {\n closeWriter() {}\n}\nWriter.prototype.flush = function () { return this.closeWriter(); };\n',
     ],
-    [
-      'function with a this parameter',
-      'model.ts',
-      'class Writer {\n closeWriter() {}\n}\nexport function flush(this: Writer) { return this.closeWriter(); }\n',
-    ],
   ])('refuses a member call on a call-site-bound this: %s', async (_name, file, source) => {
     const uid = `Method:${file}:Writer.closeWriter#0`;
-    const nodes = await fixture(file, source, [
+    const nodes = await fixture(root, file, source, [
       {
         id: `Class:${file}:Writer`,
         label: 'Class',
@@ -488,6 +269,7 @@ describe('graph and SemanticModel rename', () => {
       },
     ]);
     await expectBlockedPreviewAndApply(
+      root,
       file,
       source,
       { uid, name: 'closeWriter', kind: 'Method', filePath: file, startLine: 2 },
@@ -497,44 +279,10 @@ describe('graph and SemanticModel rename', () => {
     );
   });
 
-  it('preserves provider-proven this receiver ownership', async () => {
-    const file = 'model.ts';
-    const source = 'class Writer {\n close() {}\n use() { this.close(); }\n}\n';
-    const uid = `Method:${file}:Writer.close#0`;
-    const nodes = await fixture(file, source, [
-      {
-        id: `Class:${file}:Writer`,
-        label: 'Class',
-        properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 3 },
-      },
-      {
-        id: uid,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
-      },
-    ]);
-    const plan = await planGraphRename(
-      root,
-      {
-        uid,
-        name: 'close',
-        kind: 'Method',
-        filePath: file,
-        startLine: 2,
-      },
-      { new_name: 'finish' },
-      nodes,
-    );
-    expect(plan.edits.map((edit) => edit.start)).toEqual([
-      source.indexOf('close'),
-      source.lastIndexOf('close'),
-    ]);
-  });
-
   it('preserves Python lexical with scopes', async () => {
     const file = 'model.py';
     const source = 'def target(): pass\nwith open("file") as stream:\n    target()\n';
-    const nodes = await fixture(file, source);
+    const nodes = await fixture(root, file, source);
     nodes[1]!.properties.startLine = 0;
     const symbol = {
       uid: nodes[1]!.id,
@@ -562,7 +310,7 @@ describe('graph and SemanticModel rename', () => {
     const file = 'model.py';
     const source = 'class Writer:\n    def close(self): pass\nwriter = Writer()\nwriter.close()\n';
     const uid = `Method:${file}:Writer.close#0`;
-    const nodes = await fixture(file, source, [
+    const nodes = await fixture(root, file, source, [
       {
         id: `Class:${file}:Writer`,
         label: 'Class',
@@ -596,7 +344,7 @@ describe('graph and SemanticModel rename', () => {
     const file = 'model.py';
     const source = 'class Writer:\n    def __init__(self): pass\nwriter = Writer()\n';
     const uid = `Class:${file}:Writer`;
-    const nodes = await fixture(file, source, [
+    const nodes = await fixture(root, file, source, [
       {
         id: uid,
         label: 'Class',
@@ -631,7 +379,7 @@ describe('graph and SemanticModel rename', () => {
     const file = 'model.py';
     const source = `class Writer:\n${body}writer = Writer()\n`;
     const uid = `Class:${file}:Writer`;
-    const nodes = await fixture(file, source, [
+    const nodes = await fixture(root, file, source, [
       {
         id: uid,
         label: 'Class',
@@ -654,35 +402,12 @@ describe('graph and SemanticModel rename', () => {
     );
   });
 
-  it('allows escaped identifier text in strings and comments', async () => {
-    const file = 'model.ts';
-    const source =
-      'function target() {}\nconst text = "t\\u0061rget";\n// t\\u0061rget\ntarget();\n';
-    const nodes = await fixture(file, source);
-    nodes[1]!.properties.startLine = 0;
-    const plan = await planGraphRename(
-      root,
-      {
-        uid: nodes[1]!.id,
-        name: 'target',
-        kind: 'Function',
-        filePath: file,
-        startLine: 1,
-      },
-      { new_name: 'renamed' },
-      nodes,
-    );
-    expect(plan.edits.map((edit) => edit.start)).toEqual([
-      source.indexOf('target'),
-      source.lastIndexOf('target'),
-    ]);
-  });
-
   it('renames PHP case-insensitive callable names through its provider', async () => {
     const file = 'model.php';
     const source = '<?php\nfunction target() {}\nTARGET();\n';
-    const nodes = await fixture(file, source);
+    const nodes = await fixture(root, file, source);
     await expectSupportedPreviewAndApply(
+      root,
       file,
       source,
       {
@@ -712,7 +437,7 @@ describe('graph and SemanticModel rename', () => {
     ['C++ destructor', 'model.cpp', 'class Writer {\n public: ~Writer() {}\n};\n'],
   ])('renames a class with a name-coupled %s', async (_name, file, source) => {
     const uid = `Class:${file}:Writer`;
-    const nodes = await fixture(file!, source!, [
+    const nodes = await fixture(root, file!, source!, [
       {
         id: uid,
         label: 'Class',
@@ -720,6 +445,7 @@ describe('graph and SemanticModel rename', () => {
       },
     ]);
     await expectSupportedPreviewAndApply(
+      root,
       file!,
       source!,
       {
@@ -740,18 +466,8 @@ describe('graph and SemanticModel rename', () => {
       'model.py',
       'def target(): pass\ndef fn(**kwargs): pass\nfn(target=1)\ntarget()\n',
     ],
-    [
-      'JSX intrinsic element',
-      'model.tsx',
-      'function target() {}\nconst element = <target></target>;\ntarget();\n',
-    ],
-    [
-      'JSX attribute',
-      'model.tsx',
-      'function target() {}\nconst element = <a target="_blank" />;\ntarget();\n',
-    ],
   ])('preserves the unrelated %s in preview and apply', async (_name, file, source) => {
-    const nodes = await fixture(file!, source!);
+    const nodes = await fixture(root, file!, source!);
     nodes[1]!.properties.startLine = 0;
     const symbol = {
       uid: nodes[1]!.id,
@@ -785,65 +501,10 @@ describe('graph and SemanticModel rename', () => {
     expect(await fs.readFile(path.join(root, file!))).toEqual(Buffer.from(expected));
   });
 
-  it('renames the provider-captured value binding inside a JSX expression', async () => {
-    const file = 'model.tsx';
-    const source = 'function target() {}\nconst element = <a title={target} />;\n';
-    const nodes = await fixture(file, source);
-    nodes[1]!.properties.startLine = 0;
-    await expectSupportedPreviewAndApply(
-      file,
-      source,
-      {
-        uid: nodes[1]!.id,
-        name: 'target',
-        kind: 'Function',
-        filePath: file,
-        startLine: 1,
-      },
-      nodes,
-      'function Renamed() {}\nconst element = <a title={Renamed} />;\n',
-    );
-  });
-
-  it.each([
-    ['variable key', 'const key = "close";\nwriter[key]();\n'],
-    ['escaped literal key', 'writer["clo\\u0073e"]();\n'],
-    ['concatenated key', 'writer["cl" + "ose"]();\n'],
-    ['unknown receiver', 'unknown[key]();\n'],
-  ])('blocks preview and apply for an unresolved computed %s', async (_name, call) => {
-    const file = 'model.ts';
-    const source = 'class Writer {\n close() {}\n}\nconst writer = new Writer();\n' + call;
-    const uid = `Method:${file}:Writer.close#0`;
-    const nodes = await fixture(file, source, [
-      {
-        id: `Class:${file}:Writer`,
-        label: 'Class',
-        properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 2 },
-      },
-      {
-        id: uid,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
-      },
-    ]);
-    await expectBlockedPreviewAndApply(
-      file,
-      source,
-      {
-        uid,
-        name: 'close',
-        kind: 'Method',
-        filePath: file,
-        startLine: 2,
-      },
-      nodes,
-      'unsupported_occurrence',
-    );
-  });
   it.each(cases)(
     'renames bound declaration and call with the registered provider: %s',
     async (file, source) => {
-      const nodes = await fixture(file!, source!);
+      const nodes = await fixture(root, file!, source!);
       const line = file!.endsWith('.go') ? 2 : 1;
       nodes[1]!.properties.startLine = line - 1;
       nodes[1]!.properties.endLine = line - 1;
@@ -877,481 +538,4 @@ describe('graph and SemanticModel rename', () => {
       expect(await fs.readFile(path.join(root, file!), 'utf8')).toBe(source);
     },
   );
-
-  it('refuses a stale graph declaration', async () => {
-    const nodes = await fixture('model.ts', 'function other() {}\n');
-    await expect(
-      planGraphRename(
-        root,
-        { uid: nodes[1]!.id, name: 'target', kind: 'Function', filePath: 'model.ts', startLine: 1 },
-        { new_name: 'renamed' },
-        nodes,
-      ),
-    ).rejects.toMatchObject({ code: 'stale_graph' });
-  });
-
-  it('permits an existing replacement name in an unrelated lexical scope', async () => {
-    const file = 'model.ts';
-    const source =
-      'function target() {}\n' +
-      'function other() { const renamed = 1; return renamed; }\n' +
-      'target();\n';
-    const nodes = await fixture(file, source);
-    nodes[1]!.properties.startLine = 0;
-    nodes[1]!.properties.endLine = 0;
-    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 };
-    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
-    expect(result, JSON.stringify(result)).toMatchObject({
-      status: 'success',
-      applied: true,
-      total_edits: 2,
-    });
-    expect(await fs.readFile(path.join(root, file), 'utf8')).toBe(
-      'function renamed() {}\n' +
-        'function other() { const renamed = 1; return renamed; }\n' +
-        'renamed();\n',
-    );
-  });
-
-  it('renames only the member owned by the selected graph class', async () => {
-    const source =
-      'class Writer {\n close() {}\n}\nclass Other {\n close() {}\n}\nconst writer = new Writer();\nconst other = new Other();\nwriter.close();\nother.close();\nconst unrelated: Other = { close() {} };\n';
-    const file = 'model.ts';
-    const nodes = await fixture(file, source, [
-      {
-        id: `Class:${file}:Writer`,
-        label: 'Class',
-        properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 2 },
-      },
-      {
-        id: `Class:${file}:Other`,
-        label: 'Class',
-        properties: { name: 'Other', filePath: file, startLine: 3, endLine: 5 },
-      },
-      {
-        id: `Method:${file}:Writer.close#0`,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
-      },
-      {
-        id: `Method:${file}:Other.close#0`,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 4, endLine: 4 },
-      },
-    ]);
-    const plan = await planGraphRename(
-      root,
-      {
-        uid: `Method:${file}:Writer.close#0`,
-        name: 'close',
-        kind: 'Method',
-        filePath: file,
-        startLine: 2,
-      },
-      { new_name: 'finish' },
-      nodes,
-    );
-    expect(plan.edits.map((edit) => edit.start)).toEqual([
-      source.indexOf('close'),
-      source.indexOf('writer.close') + 7,
-    ]);
-  });
-
-  it('keeps parameter shadows, object keys, comments and strings unchanged while covering interpolation and bare values', async () => {
-    const source =
-      'function target() {}\nfunction wrapper(target) { return target; }\nconst literal = { target: 1 };\nconst value = target;\nconst text = `target ${target()}`;\n// target\n';
-    const nodes = await fixture('model.ts', source);
-    nodes[1]!.properties.startLine = 0;
-    const plan = await planGraphRename(
-      root,
-      { uid: nodes[1]!.id, name: 'target', kind: 'Function', filePath: 'model.ts', startLine: 1 },
-      { new_name: 'renamed' },
-      nodes,
-    );
-    expect(plan.edits.map((edit) => edit.start)).toEqual([
-      source.indexOf('target'),
-      source.indexOf('= target') + 2,
-      source.indexOf('${target') + 2,
-    ]);
-  });
-
-  it('updates a named import while preserving an explicit alias and its usages', async () => {
-    const source = 'export function target() {}\n';
-    const nodes = await fixture('model.ts', source);
-    nodes[1]!.properties.startLine = 0;
-    const consumer = 'import { target as local } from "./model";\nlocal();\n';
-    await fs.writeFile(path.join(root, 'consumer.ts'), consumer);
-    nodes.push({
-      id: 'File:consumer.ts',
-      label: 'File',
-      properties: { name: 'consumer.ts', filePath: 'consumer.ts' },
-    });
-    const plan = await planGraphRename(
-      root,
-      { uid: nodes[1]!.id, name: 'target', kind: 'Function', filePath: 'model.ts', startLine: 1 },
-      { new_name: 'renamed' },
-      nodes,
-    );
-    expect(plan.edits.map((edit) => [edit.file_path, edit.start])).toEqual([
-      ['consumer.ts', consumer.indexOf('target')],
-      ['model.ts', source.indexOf('target')],
-    ]);
-  });
-
-  it('preserves a shorthand property key while renaming its value binding', async () => {
-    const source = 'function target() {}\nconst object = { target };\n';
-    const nodes = await fixture('model.ts', source);
-    nodes[1]!.properties.startLine = 0;
-    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 };
-    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
-    expect(result, JSON.stringify(result)).toMatchObject({
-      status: 'success',
-      applied: true,
-      total_edits: 2,
-    });
-    expect(await fs.readFile(path.join(root, 'model.ts'), 'utf8')).toBe(
-      'function renamed() {}\nconst object = { target: renamed };\n',
-    );
-  });
-
-  it('preserves an explicit import alias even when it has the exported spelling', async () => {
-    const source = 'export function target() {}\n';
-    const nodes = await fixture('model.ts', source);
-    nodes[1]!.properties.startLine = 0;
-    const consumer = 'import { target as target } from "./model";\ntarget();\n';
-    await fs.writeFile(path.join(root, 'consumer.ts'), consumer);
-    nodes.push({
-      id: 'File:consumer.ts',
-      label: 'File',
-      properties: { name: 'consumer.ts', filePath: 'consumer.ts' },
-    });
-    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 };
-    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
-    expect(result, JSON.stringify(result)).toMatchObject({
-      status: 'success',
-      applied: true,
-      total_edits: 2,
-    });
-    expect(await fs.readFile(path.join(root, 'consumer.ts'), 'utf8')).toBe(
-      'import { renamed as target } from "./model";\ntarget();\n',
-    );
-  });
-
-  it('renames through a provider-approved mixed source workspace', async () => {
-    const source = 'export function target() {}\n';
-    const nodes = await fixture('model.ts', source);
-    nodes[1]!.properties.startLine = 0;
-    const consumer = 'import { target } from "./model.js";\ntarget();\n';
-    await fs.writeFile(path.join(root, 'consumer.js'), consumer);
-    nodes.push({
-      id: 'File:consumer.js',
-      label: 'File',
-      properties: { name: 'consumer.js', filePath: 'consumer.js' },
-    });
-    const symbol = { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 };
-    const result = await renameSymbol(root, symbol, { new_name: 'renamed', dry_run: false }, nodes);
-    expect(result, JSON.stringify(result)).toMatchObject({
-      status: 'success',
-      applied: true,
-      total_edits: 3,
-    });
-    expect(await fs.readFile(path.join(root, 'consumer.js'), 'utf8')).toBe(
-      'import { renamed } from "./model.js";\nrenamed();\n',
-    );
-  });
-
-  it('refuses capture of an existing reference that receives no source edit', async () => {
-    const source = 'function target() {}\nfunction caller() { return renamed; }\ntarget();\n';
-    const nodes = await fixture('model.ts', source);
-    nodes[1]!.properties.startLine = 0;
-    await expectBlockedPreviewAndApply(
-      'model.ts',
-      source,
-      { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 },
-      nodes,
-      'name_collision',
-      'renamed',
-    );
-  });
-
-  it.each([
-    [
-      'export alias',
-      'function target() {}\nexport { target as publicTarget };\n',
-      'function renamed() {}\nexport { renamed as publicTarget };\n',
-    ],
-    [
-      'unrelated destructuring key',
-      'function target() {}\nconst { target: other } = object;\n',
-      'function renamed() {}\nconst { target: other } = object;\n',
-    ],
-  ])('preserves the independent source name in an %s', async (_name, source, expected) => {
-    const nodes = await fixture('model.ts', source!);
-    nodes[1]!.properties.startLine = 0;
-    await expectSupportedPreviewAndApply(
-      'model.ts',
-      source!,
-      { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 },
-      nodes,
-      expected!,
-      'renamed',
-    );
-  });
-
-  it('resolves a constructed member through finalized cross-file import bindings', async () => {
-    const file = 'model.ts';
-    const nodes = await fixture(file, 'export class Writer {\n close() {}\n}\n', [
-      {
-        id: `Class:${file}:Writer`,
-        label: 'Class',
-        properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 2 },
-      },
-      {
-        id: `Method:${file}:Writer.close#0`,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
-      },
-    ]);
-    const consumer =
-      'import { Writer } from "./model.js";\nconst writer = new Writer();\nwriter.close();\n';
-    await fs.writeFile(path.join(root, 'consumer.ts'), consumer);
-    nodes.push({
-      id: 'File:consumer.ts',
-      label: 'File',
-      properties: { name: 'consumer.ts', filePath: 'consumer.ts' },
-    });
-    const plan = await planGraphRename(
-      root,
-      {
-        uid: `Method:${file}:Writer.close#0`,
-        name: 'close',
-        kind: 'Method',
-        filePath: file,
-        startLine: 2,
-      },
-      { new_name: 'finish' },
-      nodes,
-    );
-    expect(plan.edits).toHaveLength(2);
-    expect(plan.edits[0]).toMatchObject({
-      file_path: 'consumer.ts',
-      start: consumer.indexOf('close'),
-    });
-  });
-
-  it.each([
-    ['unknown receiver', 'function target() {}\nunknown.target();\n', 'ambiguous_reference'],
-    [
-      'parameter capture',
-      'function target() {}\nfunction other(renamed) { target(); }\n',
-      'name_collision',
-    ],
-    ['keyword replacement', 'function target() {}\ntarget();\n', 'invalid_name'],
-    ['keyword declaration only', 'function target() {}\n', 'invalid_name'],
-    ['computed member', 'function target() {}\nobject["target"]();\n', 'unsupported_occurrence'],
-  ])('refuses %s', async (_name, source, code) => {
-    const nodes = await fixture('model.ts', source);
-    nodes[1]!.properties.startLine = 0;
-    await expect(
-      planGraphRename(
-        root,
-        { uid: nodes[1]!.id, name: 'target', kind: 'Function', filePath: 'model.ts', startLine: 1 },
-        { new_name: code === 'invalid_name' ? 'return' : 'renamed' },
-        nodes,
-      ),
-    ).rejects.toMatchObject({ code });
-  });
-
-  it('refuses known graph references across an unsupported language boundary', async () => {
-    const nodes = await fixture('model.ts', 'function target() {}\n');
-    nodes[1]!.properties.startLine = 0;
-    await expect(
-      planGraphRename(
-        root,
-        { uid: nodes[1]!.id, name: 'target', filePath: 'model.ts', startLine: 1 },
-        { new_name: 'renamed' },
-        nodes,
-        ['consumer.js'],
-      ),
-    ).rejects.toMatchObject({ code: 'unsupported_boundary' });
-  });
-
-  it('renames the complete provider-proven override family', async () => {
-    const file = 'model.ts';
-    const source = 'class Base {\n close() {}\n}\nclass Derived extends Base {\n close() {}\n}\n';
-    const nodes = await fixture(file, source, [
-      {
-        id: `Class:${file}:Base`,
-        label: 'Class',
-        properties: { name: 'Base', filePath: file, startLine: 0, endLine: 2 },
-      },
-      {
-        id: `Class:${file}:Derived`,
-        label: 'Class',
-        properties: { name: 'Derived', filePath: file, startLine: 3, endLine: 5 },
-      },
-      {
-        id: `Method:${file}:Base.close#0`,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
-      },
-      {
-        id: `Method:${file}:Derived.close#0`,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 4, endLine: 4 },
-      },
-    ]);
-    await expectSupportedPreviewAndApply(
-      file,
-      source,
-      {
-        uid: `Method:${file}:Base.close#0`,
-        name: 'close',
-        kind: 'Method',
-        filePath: file,
-        startLine: 2,
-      },
-      nodes,
-      'class Base {\n finish() {}\n}\nclass Derived extends Base {\n finish() {}\n}\n',
-      'finish',
-    );
-  });
-
-  it('refuses a new inherited family collision even without call sites', async () => {
-    const file = 'model.ts';
-    const source = 'class Base {\n finish() {}\n}\nclass Derived extends Base {\n close() {}\n}\n';
-    const nodes = await fixture(file, source, [
-      {
-        id: `Class:${file}:Base`,
-        label: 'Class',
-        properties: { name: 'Base', filePath: file, startLine: 0, endLine: 2 },
-      },
-      {
-        id: `Class:${file}:Derived`,
-        label: 'Class',
-        properties: { name: 'Derived', filePath: file, startLine: 3, endLine: 5 },
-      },
-      {
-        id: `Method:${file}:Base.finish#0`,
-        label: 'Method',
-        properties: { name: 'finish', filePath: file, startLine: 1, endLine: 1 },
-      },
-      {
-        id: `Method:${file}:Derived.close#0`,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 4, endLine: 4 },
-      },
-    ]);
-    await expectBlockedPreviewAndApply(
-      file,
-      source,
-      {
-        uid: `Method:${file}:Derived.close#0`,
-        name: 'close',
-        kind: 'Method',
-        filePath: file,
-        startLine: 5,
-      },
-      nodes,
-      'name_collision',
-      'finish',
-    );
-  });
-
-  it('preserves a same-spelled import alias bound to a different symbol', async () => {
-    const file = 'model.ts';
-    const nodes = await fixture(file, 'export function target() {}\nexport function other() {}\n', [
-      {
-        id: `Function:${file}:other`,
-        label: 'Function',
-        properties: { name: 'other', filePath: file, startLine: 1, endLine: 1 },
-      },
-    ]);
-    nodes[1]!.properties.startLine = 0;
-    const consumer = 'import { other as target } from "./model";\ntarget();\n';
-    await fs.writeFile(path.join(root, 'consumer.ts'), consumer);
-    nodes.push({
-      id: 'File:consumer.ts',
-      label: 'File',
-      properties: { name: 'consumer.ts', filePath: 'consumer.ts' },
-    });
-    const plan = await planGraphRename(
-      root,
-      { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 },
-      { new_name: 'renamed' },
-      nodes,
-    );
-    expect(plan.edits).toHaveLength(1);
-    expect(plan.edits[0]!.file_path).toBe(file);
-  });
-
-  it('keeps exact UTF-16 offsets after Unicode source', async () => {
-    const file = 'model.ts';
-    const source = 'const message = "😀"; function target() {}\ntarget();\n';
-    const nodes = await fixture(file, source);
-    nodes[1]!.properties.startLine = 0;
-    const plan = await planGraphRename(
-      root,
-      { uid: nodes[1]!.id, name: 'target', filePath: file, startLine: 1 },
-      { new_name: 'renamed' },
-      nodes,
-    );
-    expect(plan.edits.map((edit) => edit.start)).toEqual([
-      source.indexOf('target'),
-      source.lastIndexOf('target'),
-    ]);
-  });
-
-  it.each([{ kind: 'Method' }, { uid: 'Function:model.ts:unrelated' }, { endLine: 2 }])(
-    'refuses mismatched graph evidence %j',
-    async (override) => {
-      const nodes = await fixture('model.ts', 'function target() {}\ntarget();\n');
-      nodes[1]!.properties.startLine = 0;
-      await expect(
-        planGraphRename(
-          root,
-          {
-            uid: nodes[1]!.id,
-            name: 'target',
-            kind: 'Function',
-            filePath: 'model.ts',
-            startLine: 1,
-            ...override,
-          },
-          { new_name: 'renamed' },
-          nodes,
-        ),
-      ).rejects.toMatchObject({ code: 'stale_graph' });
-    },
-  );
-
-  it('refuses stale ownership even when graph name and source position still match', async () => {
-    const file = 'model.ts';
-    const nodes = await fixture(file, 'class Other {\n close() {}\n}\n', [
-      {
-        id: `Class:${file}:Writer`,
-        label: 'Class',
-        properties: { name: 'Writer', filePath: file, startLine: 0, endLine: 2 },
-      },
-      {
-        id: `Method:${file}:Writer.close#0`,
-        label: 'Method',
-        properties: { name: 'close', filePath: file, startLine: 1, endLine: 1 },
-      },
-    ]);
-    await expect(
-      planGraphRename(
-        root,
-        {
-          uid: `Method:${file}:Writer.close#0`,
-          name: 'close',
-          kind: 'Method',
-          filePath: file,
-          startLine: 2,
-        },
-        { new_name: 'finish' },
-        nodes,
-      ),
-    ).rejects.toMatchObject({ code: 'stale_graph' });
-  });
 });

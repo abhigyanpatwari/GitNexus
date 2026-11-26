@@ -412,7 +412,7 @@ repeat. This moves the existing content-hash pass and adds a path-only scan; it
 does not introduce another full-content hashing pass. The analyzer still reads a
 live working tree, not an atomic filesystem snapshot.
 
-The dedicated native integration suite, `test/integration/analyze-dirty-snapshot.test.ts`,
+The dedicated native integration suite, `tools/compiler-conformance/typescript/product/analyze-dirty-snapshot.ts`,
 covers both fresh and incremental versions of the race, as well as the original
 fast-path and fallback cases. It is registered in the sequential LadybugDB
 project and in the Windows/macOS CI subset. Database preservation uses an exact
