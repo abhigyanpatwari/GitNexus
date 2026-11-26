@@ -2,9 +2,35 @@ import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
 import { indexTopLevelExportsByName } from 'gitnexus-shared';
 import { canonicalModuleExportName, canonicalTypeScriptName } from './identifiers.js';
 import { declarationScope } from './module-kind.js';
+import { tsconfigFor, type TsconfigIndex } from './tsconfig.js';
+import { nodePackageIsEsm, type NodeWorkspacePackages } from './workspace-packages.js';
 
 /** The export name ECMAScript gives a module's default export. */
 const DEFAULT_EXPORT_NAME = 'default';
+
+const compiledDefaults = new WeakMap<ParsedFile, SymbolDefinition>();
+
+export function bindCompiledCommonJsDefaults(
+  files: readonly ParsedFile[],
+  configs: TsconfigIndex | null,
+  packages: NodeWorkspacePackages | null,
+): void {
+  for (const file of files) {
+    const positions = declarationScope(file.captureSideChannel)?.possibleCommonJsDefaults;
+    if (!positions?.length) continue;
+    compiledDefaults.delete(file);
+    const mode = tsconfigFor(configs, file.filePath)?.module;
+    const commonJs =
+      mode === 'commonjs' ||
+      (/^node(?:16|18|20|next)$/.test(mode ?? '') && !nodePackageIsEsm(file.filePath, packages));
+    if (!commonJs) continue;
+    const candidates = file.localDefs.filter((def) => {
+      const at = def.declarationRange;
+      return def.type === 'Function' && at && positions.includes(`${at.startLine}:${at.startCol}`);
+    });
+    if (candidates.length === 1) compiledDefaults.set(file, candidates[0]);
+  }
+}
 
 /** `export * from M` never re-exports `M`'s default export (ECMA-262 `GetExportedNames`). */
 export const ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES: ReadonlySet<string> = new Set([
@@ -13,16 +39,22 @@ export const ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES: ReadonlySet<string> = 
 
 /** Keep written graph identities while exposing canonical ECMAScript export names. */
 export function typescriptModuleExports(parsed: ParsedFile): ReadonlyMap<string, SymbolDefinition> {
+  const compiled = compiledDefaults.get(parsed);
+  const definitions = compiled
+    ? parsed.localDefs.map((def) =>
+        def === compiled ? { ...def, isExported: true, isDefaultExport: true } : def,
+      )
+    : parsed.localDefs;
   const scope = declarationScope(parsed.captureSideChannel);
   if (scope?.script) {
     if (!scope.commonJs) return new Map();
-    return publishedNames(parsed.localDefs.filter((def) => def.isExported === true));
+    return publishedNames(definitions.filter((def) => def.isExported === true));
   }
-  const erased = parsed.localDefs.filter(isErasedDeclaration);
-  if (erased.length === 0) return publishedNames(parsed.localDefs);
+  const erased = definitions.filter(isErasedDeclaration);
+  if (erased.length === 0) return publishedNames(definitions);
   // A type and a value can share a spelling. Select the runtime declaration
   // first, preserving the erased type when it is the only owner.
-  const exports = publishedNames(parsed.localDefs.filter((def) => !isErasedDeclaration(def)));
+  const exports = publishedNames(definitions.filter((def) => !isErasedDeclaration(def)));
   for (const [name, def] of publishedNames(erased)) {
     if (!exports.has(name)) exports.set(name, { ...def, typeOnlyExports: [name] });
   }

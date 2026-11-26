@@ -18,6 +18,7 @@ type DeclarationScope = {
   containsJsx?: boolean;
   referencePaths?: string[];
   callArguments?: CallEvidence;
+  possibleCommonJsDefaults?: string[];
 };
 
 export function declarationScope(channel: unknown): DeclarationScope | undefined {
@@ -32,6 +33,22 @@ export function declarationScope(channel: unknown): DeclarationScope | undefined
 }
 
 let pending: { filePath: string; value: boolean | DeclarationScope } | undefined;
+
+/** An import-bearing .ts file may emit a Node wrapper under its project's module setting. */
+export function recordPossibleCommonJsDefault(filePath: string, node: SyntaxNode): void {
+  if (pending?.filePath !== filePath) return;
+  if (typeof pending.value === 'boolean') {
+    pending.value = {
+      kind: 'typescript-declarations',
+      commonJs: pending.value,
+      script: false,
+      globalNames: [],
+    };
+  }
+  (pending.value.possibleCommonJsDefaults ??= []).push(
+    `${node.startPosition.row + 1}:${node.startPosition.column}`,
+  );
+}
 
 export function withCommonJsModuleKind(emit: CaptureEmitter): CaptureEmitter {
   return (...args) => {

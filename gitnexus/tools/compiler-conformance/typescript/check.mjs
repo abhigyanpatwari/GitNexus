@@ -136,10 +136,17 @@ function graphReport(
   for (const relation of graphRelations) {
     for (const edge of graph.iterRelationshipsByType(relation)) {
       if (edge.reason === 'interface-dispatch') continue;
-      if (relation === 'USES' && edge.reason !== 'scope-resolution: type-reference') continue;
+      const valueReference = relation === 'USES' && edge.reason === 'scope-resolution: value-ref';
+      if (
+        relation === 'USES' &&
+        !valueReference &&
+        edge.reason !== 'scope-resolution: type-reference'
+      )
+        continue;
       const from = graph.getNode(edge.sourceId);
       const to = graph.getNode(edge.targetId);
       assert.ok(from && to, 'Unpublished endpoint: ' + edge.id);
+      if (valueReference && to.label !== 'Function') continue;
       const located = relation === 'CALLS' || relation === 'USES';
       const prefix = 'rel:' + relation + ':' + edge.sourceId + '->' + edge.targetId + ':';
       const span =
@@ -147,7 +154,7 @@ function graphReport(
         edge.id.startsWith(prefix) &&
         /^(\d+:\d+):(\d+:\d+)$/.exec(edge.id.slice(prefix.length));
       const site = span && { file: from.properties.filePath, start: span[1], end: span[2] };
-      let kind = relation;
+      let kind = valueReference ? 'FUNCTION_VALUES' : relation;
       if (relation === 'CALLS' && to.label === 'Property') kind = 'CALLABLE_PROPERTIES';
       if (edge.reason === 'callable-value-flow' && site && parameterRanges.has(siteKey(site)))
         continue; // The checker binds this invocation to its parameter signature.

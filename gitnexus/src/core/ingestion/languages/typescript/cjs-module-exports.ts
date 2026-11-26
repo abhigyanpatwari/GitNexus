@@ -20,6 +20,7 @@ import type { CaptureMatch, NameClaim } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 import { deriveDefaultExportHocName } from '../../ts-js-hoc-utils.js';
 import { defaultExportNameCollides, isCommonJsModule } from './cjs-export-assignment.js';
+import { recordPossibleCommonJsDefault } from './module-kind.js';
 
 /**
  * Synthesize re-export markers for CJS forwarding assignments (#2723).
@@ -142,8 +143,7 @@ export function synthesizeCjsReExports(
   }
 }
 
-function usesCommonJsModuleBinding(root: SyntaxNode, filePath: string, captures: CaptureMatch[]) {
-  if (!isCommonJsModule(root, filePath)) return false;
+function usesCommonJsModuleBinding(root: SyntaxNode, captures: CaptureMatch[]) {
   const scope = captures.find((capture) => capture['@scope.module']);
   const names = scope?.['@scope.name-claims']?.text;
   if (!names) return true;
@@ -206,7 +206,10 @@ export function synthesizeCjsDefaultExport(
     // would bind a second callable under one name, merging two functions onto
     // one node and fabricating a self-recursive call edge (#2729 review F4).
     if (ownName === null && defaultExportNameCollides(assignment, root, name)) continue;
-    if (!usesCommonJsModuleBinding(root, filePath, out)) continue;
+    const wrapperBinding = usesCommonJsModuleBinding(root, out);
+    const exported = wrapperBinding && isCommonJsModule(root, filePath);
+    if (wrapperBinding && !exported && /\.tsx?$/.test(filePath))
+      recordPossibleCommonJsDefault(filePath, value);
 
     // Anchored on the INNER function so the declaration range matches the
     // `@scope.function` range — the same anchor discipline as every other
@@ -214,11 +217,15 @@ export function synthesizeCjsDefaultExport(
     out.push({
       '@declaration.function': nodeToCapture('@declaration.function', value),
       '@declaration.name': syntheticCapture('@declaration.name', ownName ?? value, name),
-      '@declaration.is-exported': syntheticCapture('@declaration.is-exported', value, 'true'),
+      '@declaration.is-exported': syntheticCapture(
+        '@declaration.is-exported',
+        value,
+        String(exported),
+      ),
       '@declaration.is-default-export': syntheticCapture(
         '@declaration.is-default-export',
         value,
-        'true',
+        String(exported),
       ),
       '@declaration.named-exports': syntheticCapture('@declaration.named-exports', value, '[]'),
     });

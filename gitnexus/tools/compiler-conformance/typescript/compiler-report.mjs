@@ -22,6 +22,7 @@ export const graphRelations = [
 export const relations = [
   ...graphRelations,
   'CALLABLE_PROPERTIES',
+  'FUNCTION_VALUES',
   'PROPERTY_READS',
   'PROPERTY_WRITES',
   'TYPE_PARAMETER_USES',
@@ -556,6 +557,33 @@ function reportProject(
     }
 
     function visit(node) {
+      const value =
+        node.kind === SyntaxKind.PropertyAssignment
+          ? node.initializer
+          : node.kind === SyntaxKind.ShorthandPropertyAssignment
+            ? node.name
+            : undefined;
+      if (value?.kind === SyntaxKind.Identifier) {
+        const symbol =
+          node.kind === SyntaxKind.ShorthandPropertyAssignment
+            ? checker.getShorthandAssignmentValueSymbol(node)
+            : checker.getSymbolAtLocation(value);
+        const target = symbolDeclaration(
+          symbol && (symbol.flags & SymbolFlags.Alias ? checker.getAliasedSymbol(symbol) : symbol),
+          project,
+        );
+        const callable =
+          target?.kind === SyntaxKind.VariableDeclaration ? target.initializer : target;
+        if (
+          callable &&
+          [
+            SyntaxKind.FunctionDeclaration,
+            SyntaxKind.FunctionExpression,
+            SyntaxKind.ArrowFunction,
+          ].includes(callable.kind)
+        )
+          edge('FUNCTION_VALUES', enclosingCaller(value), callable, value);
+      }
       if (node.kind === SyntaxKind.ClassDeclaration && node.typeParameters?.length) {
         result.CLASS_TYPE_PARAMETERS.edges.push({
           from: identity(root, node),

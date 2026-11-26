@@ -20,20 +20,19 @@ export async function checkCommonJsForwarding() {
     const source = load('./source.js');
     const forward = load('./forward.js');
     const names = new Map(Object.entries(source).map(([key, value]) => [value, key]));
-    const whole = load('./whole.js');
-    const shadow = load('./shadow.cjs');
-    const localModule = await import(pathToFileURL(path.join(emitted, 'local-module.mjs')).href);
+    const whole = load('./callers/whole.js');
+    const withImport = load('./callers/with-import.js');
+    const shadow = load('./callers/shadow.cjs');
+    const localModule = await import(
+      pathToFileURL(path.join(emitted, 'callers/local-module.mjs')).href
+    );
     const surfaces = new Map();
     const { graph } = await runPipelineFromRepo(project, () => {}, {
       onScopeResolved({ parsedFiles }) {
         for (const file of parsedFiles) {
-          if (
-            file.filePath === 'whole.ts' ||
-            file.filePath === 'local-module.mts' ||
-            file.filePath === 'shadow.cts'
-          ) {
+          if (file.filePath.startsWith('callers/')) {
             surfaces.set(
-              file.filePath,
+              file.filePath.slice('callers/'.length),
               [...typescriptModuleExports(file)].map(([key, definition]) => [
                 key,
                 definition.qualifiedName,
@@ -45,6 +44,7 @@ export async function checkCommonJsForwarding() {
     });
     assert.equal(typeof whole, 'function');
     assert.deepEqual(surfaces.get('whole.ts'), [['default', whole.name]]);
+    assert.deepEqual(surfaces.get('with-import.ts'), [['default', withImport.name]]);
     assert.deepEqual(surfaces.get('local-module.mts'), Object.entries(localModule));
     assert.deepEqual(surfaces.get('shadow.cts'), Object.entries(shadow));
     const observed = [];
@@ -70,6 +70,50 @@ export async function checkCommonJsForwarding() {
     assert.deepEqual(observed.sort(), expected.sort());
   } finally {
     rmSync(emitted, { recursive: true, force: true });
+  }
+}
+
+export async function checkNodeModuleFormat() {
+  const fixture = fileURLToPath(
+    new URL('../../../test/fixtures/typescript-commonjs-forwarding/', import.meta.url),
+  );
+  const root = mkdtempSync(path.join(tmpdir(), 'gitnexus-ts-node-format-'));
+  const cli = fileURLToPath(new URL('bin/tsc', import.meta.resolve('typescript/package.json')));
+  try {
+    for (const type of ['commonjs', 'module']) {
+      const project = path.join(root, type);
+      const out = path.join(root, type + '-output');
+      cpSync(path.join(fixture, 'callers'), project, { recursive: true });
+      cpSync(path.join(fixture, 'globals.d.ts'), path.join(project, 'globals.d.ts'));
+      writeFileSync(path.join(project, 'package.json'), JSON.stringify({ type }));
+      writeFileSync(
+        path.join(project, 'tsconfig.json'),
+        JSON.stringify({
+          compilerOptions: { module: 'nodenext', target: 'es2022', types: [] },
+          files: ['with-import.ts', 'helper.ts', 'globals.d.ts'],
+        }),
+      );
+      execFileSync(process.execPath, [cli, '--project', project, '--outDir', out]);
+      cpSync(path.join(project, 'package.json'), path.join(out, 'package.json'));
+      const loaded = import(pathToFileURL(path.join(out, 'with-import.js')).href);
+      let expected = [];
+      if (type === 'commonjs') expected = [['default', (await loaded).default.name]];
+      else await assert.rejects(loaded, /module is not defined/u);
+      let actual;
+      await runPipelineFromRepo(project, () => {}, {
+        onScopeResolved({ parsedFiles }) {
+          const file = parsedFiles.find((file) => file.filePath === 'with-import.ts');
+          if (file)
+            actual = [...typescriptModuleExports(file)].map(([name, def]) => [
+              name,
+              def.qualifiedName,
+            ]);
+        },
+      });
+      assert.deepEqual(actual, expected, type);
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 }
 

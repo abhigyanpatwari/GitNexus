@@ -17,7 +17,11 @@ import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolv
 import { declarationScope } from './module-kind.js';
 import { namespaceExportsForBindings } from '../../scope-resolution/scope/published-namespace-member.js';
 import { tsconfigFor, type TsconfigIndex, type TsconfigScope } from './tsconfig.js';
-import { owningPackage, type NodeWorkspacePackages } from './workspace-packages.js';
+import {
+  nodePackageIsEsm,
+  owningPackage,
+  type NodeWorkspacePackages,
+} from './workspace-packages.js';
 
 type Projects = {
   tsconfigs: TsconfigIndex | null;
@@ -142,14 +146,7 @@ function isProjectModule(
   const nodeResolution = config?.moduleResolution
     ? ['node16', 'nodenext'].includes(config.moduleResolution)
     : nodeModule;
-  if (!nodeResolution || !packages?.packageModules) return false;
-  let dir = file;
-  for (;;) {
-    const slash = dir.lastIndexOf('/');
-    dir = slash === -1 ? '' : dir.slice(0, slash);
-    const format = packages.packageModules.get(dir);
-    if (format !== undefined || !dir) return format === true;
-  }
+  return nodeResolution && nodePackageIsEsm(file, packages);
 }
 
 function fileSelection(scope: TsconfigScope) {

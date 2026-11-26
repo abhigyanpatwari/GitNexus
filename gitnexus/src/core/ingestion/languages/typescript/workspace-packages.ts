@@ -65,6 +65,18 @@ export interface NodeWorkspacePackages {
 const SCAN_MAX_DIRS = 20_000;
 const SCAN_MAX_DEPTH = 24;
 
+/** Node uses the nearest package.json, including unnamed packages. */
+export function nodePackageIsEsm(file: string, packages?: NodeWorkspacePackages | null): boolean {
+  if (!packages?.packageModules) return false;
+  let directory = file;
+  for (;;) {
+    const slash = directory.lastIndexOf('/');
+    directory = slash === -1 ? '' : directory.slice(0, slash);
+    const esm = packages.packageModules.get(directory);
+    if (esm !== undefined || !directory) return esm === true;
+  }
+}
+
 /**
  * The package name a bare specifier addresses, or `null` when the specifier
  * names a path rather than a package.

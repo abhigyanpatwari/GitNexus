@@ -40,6 +40,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { typescriptProvider } from '../typescript.js';
 import {
   ECMASCRIPT_WILDCARD_REEXPORT_EXCLUDED_NAMES,
+  bindCompiledCommonJsDefaults,
   typescriptModuleExports,
 } from './module-exports.js';
 import { isCommonJsExportAssignment } from './cjs-export-receiver.js';
@@ -108,10 +109,13 @@ const typescriptScopeResolver: ScopeResolver = {
   resolveUnqualifiedCall: resolveTsFunctionOverload,
   populateWorkspaceReferences(files, context) {
     canonicalizeEcmaWorkspaceBindings(files);
-    rememberDeclarationProjects(
+    const config = context.resolutionConfig as TypescriptResolutionConfig | undefined;
+    bindCompiledCommonJsDefaults(
       files,
-      context.resolutionConfig as TypescriptResolutionConfig | undefined,
+      config?.tsconfigs ?? null,
+      config?.nodeWorkspacePackages ?? null,
     );
+    rememberDeclarationProjects(files, config);
   },
   populateImportNamespaces(files, indexes) {
     bindGlobalDeclarations(files, indexes);

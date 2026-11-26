@@ -10,7 +10,11 @@ import { typescriptProvider } from '../../../dist/core/ingestion/languages/types
 import { extractParsedFile } from '../../../dist/core/ingestion/scope-extractor-bridge.js';
 import { runPipelineFromRepo } from '../../../dist/core/ingestion/pipeline.js';
 import { HeritageSubstitutions } from '../../../dist/core/ingestion/heritage-substitutions.js';
-import { checkCommonJsForwarding, checkModuleValues } from './module-values.mjs';
+import {
+  checkCommonJsForwarding,
+  checkModuleValues,
+  checkNodeModuleFormat,
+} from './module-values.mjs';
 import { compareReports } from '../compare.mjs';
 import { compilerReport } from './compiler-report.mjs';
 import { compareProject, comparePublishedCalls } from './check.mjs';
@@ -22,6 +26,10 @@ const root = fileURLToPath(
 const facts = compilerReport(root);
 
 test('CommonJS loader calls match the exports of the compiled modules', checkCommonJsForwarding);
+test(
+  'NodeNext package format determines whether an import-bearing file has a CommonJS default',
+  checkNodeModuleFormat,
+);
 
 test('an oversized inherited type leaves other signatures resolvable', () => {
   const substitutions = new HeritageSubstitutions();
