@@ -29,6 +29,7 @@ import {
   readlinkSync,
   realpathSync,
   renameSync,
+  rmSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -2042,10 +2043,189 @@ function ensurePrivateChild(parent: string, childName: string): string | null {
   return isOwnedPrivateDirectory(candidate) ? candidate : null;
 }
 
+const WINDOWS_CACHE_SUBDIRECTORY = path.join('.gitnexus', 'analyzer-identity');
+const WINDOWS_TOOL_TIMEOUT_MS = 5_000;
+// SYSTEM and BUILTIN\Administrators, in SDDL alias and SID form.
+const WINDOWS_ALWAYS_TRUSTED_SIDS = new Set(['SY', 'S-1-5-18', 'BA', 'S-1-5-32-544']);
+const WINDOWS_SID_PATTERN = /^S-1-\d+(?:-\d+)+$/;
+
+let windowsUserSid: string | null | undefined;
+const windowsPrivateDirectories = new Set<string>();
+
+/** Run a System32 tool by absolute path so PATH entries (e.g. Git's whoami) cannot stand in. */
+function runSystemWindowsTool(name: string, args: string[]): string | null {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot || !path.isAbsolute(systemRoot)) return null;
+  const result = spawnSync(path.join(systemRoot, 'System32', name), args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: WINDOWS_TOOL_TIMEOUT_MS,
+    windowsHide: true,
+  });
+  return result.status === 0 && !result.error ? result.stdout : null;
+}
+
+let runWindowsTool: (name: string, args: string[]) => string | null = runSystemWindowsTool;
+
+function currentWindowsUserSid(): string | null {
+  if (windowsUserSid === undefined) {
+    const output = runWindowsTool('whoami.exe', ['/user', '/fo', 'csv', '/nh']);
+    const sid = output?.trim().split(',').pop()?.replace(/"/g, '');
+    windowsUserSid = sid && WINDOWS_SID_PATTERN.test(sid) ? sid : null;
+  }
+  return windowsUserSid;
+}
+
+/**
+ * True when an `icacls /save` SDDL DACL is protected from inheritance and only
+ * allows the current user, SYSTEM and Administrators. Deny entries are harmless.
+ */
+function isPrivateWindowsDacl(sddl: string, userSid: string): boolean {
+  const dacl = /^D:([A-Z]*)((?:\([^)]*\))*)$/.exec(sddl.trim());
+  if (!dacl || !dacl[1].includes('P')) return false;
+  const entries = dacl[2].match(/\(([^)]*)\)/g) ?? [];
+  let userAllowed = false;
+  for (const entry of entries) {
+    const fields = entry.slice(1, -1).split(';');
+    if (fields.length < 6) return false;
+    const [type, , , , , sid] = fields;
+    if (type === 'D') continue;
+    if (type !== 'A') return false;
+    if (sid === userSid) userAllowed = true;
+    else if (!WINDOWS_ALWAYS_TRUSTED_SIDS.has(sid)) return false;
+  }
+  return userAllowed;
+}
+
+function readWindowsDacl(directory: string): string | null {
+  const saved = path.join(
+    os.tmpdir(),
+    `gitnexus-acl-${process.pid}-${randomBytes(6).toString('hex')}`,
+  );
+  try {
+    if (runWindowsTool('icacls.exe', [directory, '/save', saved]) === null) return null;
+    // icacls /save writes UTF-16LE: the object name line, then its SDDL line.
+    return (
+      readFileSync(saved, 'utf16le')
+        .replace(/^\uFEFF/, '')
+        .split(/\r?\n/)[1] ?? null
+    );
+  } catch {
+    return null;
+  } finally {
+    try {
+      unlinkSync(saved);
+    } catch {
+      /* never written */
+    }
+  }
+}
+
+function isPrivateWindowsDirectory(directory: string, userSid: string): boolean {
+  const sddl = readWindowsDacl(directory);
+  return sddl !== null && isPrivateWindowsDacl(sddl, userSid);
+}
+
+/** Remove inherited entries and allow only the user, SYSTEM and Administrators. */
+function restrictWindowsDirectory(directory: string, userSid: string): boolean {
+  return (
+    runWindowsTool('icacls.exe', [
+      directory,
+      '/inheritance:r',
+      '/grant:r',
+      `*${userSid}:(OI)(CI)F`,
+      '*S-1-5-18:(OI)(CI)F',
+      '*S-1-5-32-544:(OI)(CI)F',
+    ]) !== null
+  );
+}
+
+/**
+ * Windows has no POSIX owner/mode bits. The default cache lives in the user's
+ * profile (not GITNEXUS_HOME, which may be a shared volume, and not AppData,
+ * which packaged apps transparently redirect). GitNexus restricts the directory
+ * to the user, SYSTEM and Administrators with icacls and re-verifies that DACL
+ * before trusting it. Any failure leaves persistence disabled.
+ */
+function windowsProfileCacheDirectory(): string | null {
+  let profile: string;
+  try {
+    profile = realpathSync.native(os.homedir());
+  } catch {
+    return null;
+  }
+  const candidate = path.join(profile, WINDOWS_CACHE_SUBDIRECTORY);
+  if (isWindowsProfileCacheDirectory(candidate)) return candidate;
+  try {
+    mkdirSync(candidate, { recursive: true });
+  } catch {
+    return null;
+  }
+  if (!isRealWindowsDirectory(candidate)) return null;
+  const userSid = currentWindowsUserSid();
+  if (!userSid) return null;
+  if (!isPrivateWindowsDirectory(candidate, userSid)) {
+    // Nothing written while the directory was not private is trusted, and any
+    // extra access entries go with it: recreate the directory and restrict it.
+    try {
+      rmSync(candidate, { recursive: true, force: true });
+      mkdirSync(candidate);
+    } catch {
+      return null;
+    }
+    if (
+      !isRealWindowsDirectory(candidate) ||
+      !restrictWindowsDirectory(candidate, userSid) ||
+      !isPrivateWindowsDirectory(candidate, userSid)
+    ) {
+      return null;
+    }
+  }
+  windowsPrivateDirectories.add(candidate);
+  return candidate;
+}
+
+function isRealWindowsDirectory(candidate: string): boolean {
+  try {
+    const stat = lstatSync(candidate);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+    return pathsEqual(path.resolve(candidate), realpathSync.native(candidate));
+  } catch {
+    return false;
+  }
+}
+
+/** A directory this process already restricted and verified as the Windows default cache. */
+function isWindowsProfileCacheDirectory(candidate: string): boolean {
+  return (
+    process.platform === 'win32' &&
+    windowsPrivateDirectories.has(candidate) &&
+    isRealWindowsDirectory(candidate)
+  );
+}
+
+/** Test seams for the Windows default cache permission checks. */
+export const _isPrivateWindowsDaclForTests = isPrivateWindowsDacl;
+export function _clearWindowsCacheDirectoryStateForTests(): void {
+  windowsUserSid = undefined;
+  windowsPrivateDirectories.clear();
+}
+/** Replace the System32 tool runner (pass nothing to restore it). */
+export function _setWindowsToolRunnerForTests(
+  runner?: (name: string, args: string[]) => string | null,
+): void {
+  runWindowsTool = runner ?? runSystemWindowsTool;
+}
+
+function isPrivateCacheDirectory(candidate: string): boolean {
+  return isOwnedPrivateDirectory(candidate) || isWindowsProfileCacheDirectory(candidate);
+}
+
 function defaultCacheDirectory(): string | null {
-  // On platforms without POSIX ownership APIs we cannot prove that a default
-  // cache file is private to this process's user. Persistence is therefore
-  // disabled unless the operator supplied an explicit trusted override.
+  if (process.platform === 'win32') return windowsProfileCacheDirectory();
+  // On other platforms without POSIX ownership APIs we cannot prove that a
+  // default cache file is private to this process's user. Persistence is
+  // therefore disabled unless the operator supplied an explicit trusted override.
   const uid = currentUid();
   if (uid === null) return null;
 
@@ -2637,7 +2817,7 @@ function persistIdentityCache(
       mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
     } else if (
       !hasTrustedCacheOverride(options) &&
-      !isOwnedPrivateDirectory(path.dirname(target))
+      !isPrivateCacheDirectory(path.dirname(target))
     ) {
       return;
     }
