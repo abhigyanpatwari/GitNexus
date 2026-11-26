@@ -166,6 +166,8 @@ describe('pre-pipeline rebuild reasons (#3137)', () => {
   it.each([
     { flag: 'skills', options: { skills: true }, key: 'skills' },
     { flag: 'useParseCache: false', options: { useParseCache: false }, key: 'parse-cache-bypass' },
+    // #2800: no stored checkpoint, so only the up-front reason can force this.
+    { flag: 'dropEmbeddings', options: { dropEmbeddings: true }, key: 'drop-embeddings' },
   ] as const)(
     '$flag alone contributes only its own reason, once',
     async ({ options, key }) => {
@@ -215,7 +217,7 @@ describe('pre-pipeline rebuild reasons (#3137)', () => {
     const summaries = recordSummaries();
     const tmpRepo = await createTempDir('gitnexus-rebuild-reason-drop-embeddings-');
     try {
-      // The reason is collected only where a checkpoint is being discarded.
+      // The reason is collected up front; the checkpoint is still discarded.
       await writeMeta(tmpRepo.dbPath, {
         lastCommit: '',
         indexedAt: new Date(0).toISOString(),

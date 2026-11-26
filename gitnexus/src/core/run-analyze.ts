@@ -1898,8 +1898,8 @@ export async function runFullAnalysis(
             await import('../storage/analysis-artifact-cleanup.js');
           await reclaimAnalysisArtifacts(writeTarget.metaDir, prior, undefined, log, true);
         }
-        // Even an empty or pending vector job must lose its metadata references.
-        options = { ...options, force: true };
+        // The rebuild this implies is a collected `drop-embeddings` reason in
+        // runFullAnalysisInner, not a `force` rebind that reads as `--force`.
       }
       const result = await runFullAnalysisInner(
         repoPath,
@@ -2132,6 +2132,14 @@ async function runFullAnalysisInner(
     collector.add({
       key: 'parse-cache-bypass',
       text: 'parser cache bypass requested — unchanged files will be re-parsed.',
+    });
+  }
+  if (options.dropEmbeddings === true) {
+    // Even an empty or pending vector job must lose its metadata references,
+    // so the drop forces a rebuild with or without a stored checkpoint.
+    collector.add({
+      key: 'drop-embeddings',
+      text: 'embeddings are being dropped (--drop-embeddings).',
     });
   }
   /**
@@ -2610,14 +2618,6 @@ async function runFullAnalysisInner(
             `${decision.pendingNodeIds.size} pending node(s).`
         : decision.log,
     );
-    if (options.dropEmbeddings) {
-      // --drop-embeddings has always implied a rebuild here; the decision only
-      // covers the marker.
-      collector.add({
-        key: 'drop-embeddings',
-        text: 'embeddings are being dropped (--drop-embeddings) along with their resume checkpoint.',
-      });
-    }
     if (decision.action === 'resume') {
       resumeEmbeddingCheckpoint = true;
       pendingEmbeddingNodeIds = new Set(decision.pendingNodeIds);
