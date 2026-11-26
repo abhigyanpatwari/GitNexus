@@ -406,6 +406,24 @@ describe('Header', () => {
       expect(screen.queryByTestId('repo-status-ready')).not.toBeInTheDocument();
     });
 
+    it('retries the outcome lookup after a transient failure and still shows Ready', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus)
+        .mockRejectedValueOnce(new BackendError('Network down', 0, 'network'))
+        .mockResolvedValue({ ...runningJob(), status: 'complete' });
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+      expect(screen.queryByTestId('repo-status-ready')).not.toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('repo-status-ready')).toBeInTheDocument();
+    });
+
     it('names the running job when a re-analyze is rejected with 409', async () => {
       vi.mocked(fetchActiveAnalyzeJobs)
         .mockResolvedValueOnce([])

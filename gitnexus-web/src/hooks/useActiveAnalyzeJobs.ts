@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  BackendError,
   fetchActiveAnalyzeJobs,
   getAnalyzeStatus,
   type ActiveAnalyzeJob,
@@ -25,6 +26,8 @@ export function useActiveAnalyzeJobs(enabled: boolean, onJobComplete?: () => voi
     let cancelled = false;
     let inFlight = false;
     let previous: ActiveAnalyzeJob[] = [];
+    // Jobs that left the list but whose outcome lookup failed; retried next poll.
+    let unconfirmed: ActiveAnalyzeJob[] = [];
 
     const poll = async () => {
       if (inFlight) return;
@@ -32,14 +35,26 @@ export function useActiveAnalyzeJobs(enabled: boolean, onJobComplete?: () => voi
       try {
         const current = await fetchActiveAnalyzeJobs().catch(() => null);
         if (cancelled || !current) return;
-        const finished = previous.filter((job) => !current.some((c) => c.id === job.id));
+        const finished = [
+          ...unconfirmed,
+          ...previous.filter((job) => !current.some((c) => c.id === job.id)),
+        ];
         previous = current;
+        unconfirmed = [];
         setJobs(current);
         // A job that left the list either completed or failed; only a
         // completed one is "ready".
         for (const job of finished) {
-          const final = await getAnalyzeStatus(job.id).catch(() => null);
-          if (cancelled || final?.status !== 'complete') continue;
+          let final;
+          try {
+            final = await getAnalyzeStatus(job.id);
+          } catch (err) {
+            // A 404 means the job is gone (TTL sweep or server restart): drop it.
+            if (!(err instanceof BackendError && err.code === 'not_found')) unconfirmed.push(job);
+            continue;
+          }
+          if (cancelled) return;
+          if (final.status !== 'complete') continue;
           const repoId = job.repoId;
           if (repoId) setReadyRepoIds((ids) => (ids.includes(repoId) ? ids : [...ids, repoId]));
           onJobCompleteRef.current?.();
