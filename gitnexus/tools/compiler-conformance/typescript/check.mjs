@@ -305,6 +305,8 @@ export async function compareProject(root, options = {}, expectedDiagnostics = [
   const unbound = [];
   const pipeline = await runPipelineFromRepo(root, () => {}, {
     ...options,
+    // Keep local declarations observable when a property read could bind to a same-named variable.
+    ...(propertyAccess ? { keepLocalValueSymbols: true } : {}),
     onScopeResolved(observation) {
       for (const file of observation.parsedFiles)
         for (const def of file.localDefs) if (def.type === 'Class') classes.push(def);

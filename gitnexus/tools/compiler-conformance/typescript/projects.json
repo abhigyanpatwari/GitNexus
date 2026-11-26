@@ -5,6 +5,7 @@
     "lang-resolution/typescript-double-cast-inference"
   ],
   "propertyAccess": [
+    "compiler-conformance/typescript-block-shadowing",
     "compiler-conformance/typescript-property-access",
     "lang-resolution/ts-write-access"
   ],

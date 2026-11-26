@@ -229,3 +229,18 @@ test('same-line local classes retain distinct construction and method targets', 
     assert.throws(() => compareReports(calls, { ...calls, edges: swapped }), /Missing from actual/);
   }
 });
+
+test('a class property read and a same-named block local resolve to separate declarations', () => {
+  const project = path.resolve(root, '../typescript-block-shadowing');
+  const { PROPERTY_READS: fields, VARIABLE_READS: locals } = compilerReport(project, [], false, {
+    propertyAccess: true,
+  });
+  const field = fields.sites.find((site) => site.file === 'box.ts');
+  const local = locals.sites.find((site) => site.file === 'box.ts');
+  assert.ok(field && local);
+  assert.notEqual(field.target, local.target);
+  const wrong = fields.sites.map((site) =>
+    site === field ? { ...site, target: local.target } : site,
+  );
+  assert.throws(() => compareReports(fields, { ...fields, sites: wrong }), /Missing from actual/);
+});
