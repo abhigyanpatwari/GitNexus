@@ -100,9 +100,8 @@ function stripArraySugar(text: string): string {
  * `elementTypeOf` for Swift: `repos[0]` on `[User]` (or `[User]?` / `[User]!`,
  * indexed through `?[` / `![`) yields `User`. A dictionary (`[K: V]`) is keyed
  * and yields `V?`, so it declines, as does any other spelling. `Array<User>`
- * is not answered: parameter capture keeps only `Array`. The step carries no
- * argument, so a range subscript (`repos[0..<2]`) also reads as the element; a
- * member it names must still exist on `User` to resolve.
+ * is not answered: parameter capture keeps only `Array`. A range subscript
+ * (`repos[0..<2]`) never reaches here: the chain walker mints no index step for it.
  */
 export function swiftElementType(type: string, via: ElementAccessRoute): string | undefined {
   if (via.kind !== 'index') return undefined;

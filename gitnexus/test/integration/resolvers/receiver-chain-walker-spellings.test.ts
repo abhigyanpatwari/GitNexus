@@ -122,6 +122,7 @@ const SWIFT_MODELS = `class Address {
 
 class User {
     var address: Address = Address()
+    var first: Address = Address()
     func save() {}
 }
 
@@ -336,6 +337,10 @@ func dictionaryValue(byName: [String: User]) {
 func partialIndexElement(grid: [[User]]) {
     grid[0].save()
 }
+
+func rangeIndexElement(repos: [User]) {
+    repos[0..<2].first?.save()
+}
 `,
     },
     rows: [
@@ -419,6 +424,16 @@ func partialIndexElement(grid: [[User]]) {
         member: 'save',
         targets: [],
         drops: ['main.swift:38'],
+      },
+      {
+        // A range subscript yields an `ArraySlice`, whose `first` is a `User?`.
+        // `User` also declares `first: Address`, so reading the range as the
+        // element would emit a wrong `Address.save`; it mints no chain instead.
+        language: 'swift',
+        source: 'rangeIndexElement',
+        member: 'save',
+        targets: [],
+        drops: ['main.swift:42'],
       },
     ],
   },
