@@ -219,6 +219,20 @@ describe('parseDiffHunks', () => {
     expect(parseDiffHunks(diff)).toEqual([{ filePath: 'assets/中.png', hunks: [] }]);
   });
 
+  it('preserves raw non-BMP characters in a C-quoted path with core.quotePath=false', () => {
+    const diff = [
+      'diff --git "a/🚀/quoted\\"name.ts" "b/🚀/quoted\\"name.ts"',
+      '--- "a/🚀/quoted\\"name.ts"',
+      '+++ "b/🚀/quoted\\"name.ts"',
+      '@@ -2 +2 @@ export function quotedValue() {',
+      '-  return 1;',
+      '+  return 2;',
+    ].join('\n');
+    expect(parseDiffHunks(diff)).toEqual([
+      { filePath: '🚀/quoted"name.ts', hunks: [{ startLine: 2, endLine: 2 }] },
+    ]);
+  });
+
   it('does not attach a later C-quoted hunk to a previous metadata-only file', () => {
     const diff = [
       'diff --git a/script.sh b/script.sh',
