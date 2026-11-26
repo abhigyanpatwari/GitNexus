@@ -27,6 +27,7 @@ import {
   MAX_UNRESOLVED_RECEIVER_MEMBERS,
   summarizeUnresolvedReceivers,
 } from '../../src/core/ingestion/scope-resolution/unresolved-receivers.js';
+import { summarizeCompetingBindingDrops } from '../../src/core/ingestion/scope-resolution/competing-binding-drops.js';
 import type { ResolutionOutcome } from '../../src/core/ingestion/scope-resolution/resolution-outcome.js';
 import { summarizeUnresolvedOverloads } from '../../src/core/ingestion/scope-resolution/unresolved-overloads.js';
 import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
@@ -71,6 +72,8 @@ const SEED = [
   `CREATE (leaf:Function {id: 'Function:src/util.ts:formatDate', name: 'formatDate', filePath: 'src/util.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
   `CREATE (caller:Function {id: 'Function:src/page.ts:renderHeader', name: 'renderHeader', filePath: 'src/page.ts', startLine: 1, endLine: 10, isExported: true, content: '', description: ''})`,
   `MATCH (a:Function {id:'Function:src/page.ts:renderHeader'}), (b:Function {id:'Function:src/util.ts:formatDate'}) CREATE (a)-[:CodeRelation {type:'CALLS', confidence:0.9, reason:'direct', step:0}]->(b)`,
+  // The competing-binding barrier leaves the real `speedy` with no caller.
+  `CREATE (:Function {id: 'Function:pkg/fast.py:speedy', name: 'speedy', filePath: 'pkg/fast.py', startLine: 1, endLine: 2, isExported: true, content: '', description: ''})`,
   ...['noKnownCallers', 'constructor', 'toString', '__proto__'].map(
     (name) =>
       `CREATE (:Function {id: 'Function:src/util.ts:${name}', name: '${name}', filePath: 'src/util.ts', startLine: 5, endLine: 7, isExported: true, content: '', description: ''})`,
@@ -570,6 +573,81 @@ withTestLbugDB(
 
           expect(result.epistemic).toBe(epistemic);
           expect(result.causes).toMatchObject(causes);
+        } finally {
+          fs.rmSync(repoDir, { recursive: true, force: true });
+        }
+      },
+      60000,
+    );
+
+    // A competing-binding barrier withholds the edge on purpose, so the only
+    // trace of the lost caller is the recorded drop. Without it `impact` on the
+    // imported function reads exactly like an unused one.
+    it.each([
+      ['a `speedy = None` fallback', 'lower-bound', 'speedy = None'],
+      ['an import fallback', 'lower-bound', 'from pkg.slow import speedy'],
+      ['a local def fallback', 'lower-bound', 'def speedy():\n        return 0'],
+      ['no fallback', 'exact', undefined],
+    ] as const)(
+      'impact() on an import with %s is %s',
+      async (_label, epistemic, fallback) => {
+        const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-epistemic-barrier-'));
+        try {
+          fs.mkdirSync(path.join(repoDir, 'pkg'), { recursive: true });
+          fs.writeFileSync(path.join(repoDir, 'pkg', '__init__.py'), '', 'utf8');
+          fs.writeFileSync(path.join(repoDir, 'pkg', 'fast.py'), 'def speedy():\n    return 1\n');
+          fs.writeFileSync(path.join(repoDir, 'pkg', 'slow.py'), 'def speedy():\n    return 2\n');
+          const binding =
+            fallback === undefined
+              ? 'from pkg.fast import speedy\n'
+              : `try:\n    from pkg.fast import speedy\nexcept ImportError:\n    ${fallback}\n`;
+          fs.writeFileSync(
+            path.join(repoDir, 'app.py'),
+            `${binding}\ndef run():\n    return speedy()\n`,
+            'utf8',
+          );
+          const analysed = await runPipelineFromRepo(repoDir, () => {}, {});
+          const drops = summarizeCompetingBindingDrops(analysed.resolutionOutcomes);
+          vi.mocked(loadMeta).mockResolvedValue({
+            scopeExtractionReceipt: 1,
+            unresolvedOverloads: summarizeUnresolvedOverloads(analysed.resolutionOutcomes),
+            unresolvedReceiverMembers: summarizeUnresolvedReceivers(analysed.resolutionOutcomes),
+            // Round-tripped like the persisted metadata the backend reads.
+            competingBindingDrops: drops && JSON.parse(JSON.stringify(drops)),
+          } as Awaited<ReturnType<typeof loadMeta>>);
+
+          const result = await backend.callTool('impact', {
+            target: 'speedy',
+            file_path: 'pkg/fast.py',
+            direction: 'upstream',
+          });
+
+          expect(result).not.toHaveProperty('error');
+          expect(result.impactedCount).toBe(0);
+          expect(result.epistemic).toBe(epistemic);
+          if (epistemic === 'exact') {
+            expect(result.boundaries).toBeUndefined();
+          } else {
+            expect(result.causes).toMatchObject({ competingBindings: 1, receiverTyping: 0 });
+            expect(result.boundaries).toHaveLength(1);
+            expect(result.boundaries[0]).toContain(
+              '1 call site invoking `speedy` was dropped because the name has competing bindings',
+            );
+            expect(result.boundaries[0]).not.toContain("receiver's type");
+            // A lost caller says nothing about what `speedy` itself reaches.
+            const downstream = await backend.callTool('impact', {
+              target: 'speedy',
+              file_path: 'pkg/fast.py',
+              direction: 'downstream',
+            });
+            expect(downstream.epistemic).toBe('exact');
+          }
+          const context = await backend.callTool('context', {
+            name: 'speedy',
+            file_path: 'pkg/fast.py',
+          });
+          expect(context.epistemic).toBe(epistemic);
+          expect(context.causes?.competingBindings ?? 0).toBe(epistemic === 'exact' ? 0 : 1);
         } finally {
           fs.rmSync(repoDir, { recursive: true, force: true });
         }

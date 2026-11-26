@@ -29,6 +29,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import type { UnresolvedReceiverSummary } from '../core/ingestion/scope-resolution/unresolved-receivers.js';
+import type { CompetingBindingDropSummary } from '../core/ingestion/scope-resolution/competing-binding-drops.js';
 import type { UnresolvedOverloadSummary } from '../core/ingestion/scope-resolution/unresolved-overloads.js';
 import type { NameFallbackSummary } from '../core/ingestion/scope-resolution/name-fallback-summary.js';
 import type { UndecidedSatisfactionSummary } from '../core/ingestion/scope-resolution/undecided-satisfaction.js';
@@ -393,6 +394,18 @@ export interface RepoMeta {
    * this adds no runtime dependency from storage/ on core/.
    */
   unresolvedReceiverMembers?: UnresolvedReceiverSummary;
+  /**
+   * Names whose free calls were DROPPED because the name's bindings compete
+   * (e.g. an import with a `try/except ImportError` fallback) and the provider
+   * declined to pick one. The missing edge is intended; this record is what
+   * lets `impact()` / `context()` report `epistemic: 'lower-bound'` instead of
+   * an exact zero when the queried symbol's name appears here.
+   *
+   * Keyed by name for the same reason as `unresolvedReceiverMembers`, and kept
+   * separate from it because the cause, and so the note, differs. Absent when a
+   * run dropped nothing. Type-only import, as above.
+   */
+  competingBindingDrops?: CompetingBindingDropSummary;
   /**
    * Final unresolved overload/implementation call sites, attributed by public
    * candidate, caller and declaring-owner identity. A complete empty summary

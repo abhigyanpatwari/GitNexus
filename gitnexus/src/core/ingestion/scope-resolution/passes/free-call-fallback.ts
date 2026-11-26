@@ -323,6 +323,21 @@ export function emitFreeCallFallback(
           });
           handledSites.add(siteKey(parsed.filePath, site));
         }
+        // Competing bindings withhold the edge on purpose, but the site still
+        // called something real. Record it so `impact` reports a lower bound
+        // instead of a confident zero. Directive and class-scope blocks carry
+        // no `competing` marker and stay unrecorded.
+        if (nameClaim.claims.some((claim) => claim.competing === true))
+          options.recordResolutionOutcome?.({
+            kind: 'suppressed',
+            reason: 'competing-binding-barrier',
+            candidateIds: [],
+            phase: 'free-call-fallback',
+            filePath: parsed.filePath,
+            name: site.name,
+            range: site.atRange,
+            siteKind: 'call',
+          });
         continue;
       }
 

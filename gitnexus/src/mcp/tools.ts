@@ -363,6 +363,7 @@ COMPLETENESS: epistemic "lower-bound" means incoming is a floor (missed callers/
 INGESTION: graph_integrity reports repository-wide source-reference identity/span checks. "unverified" includes legacy, collapsed or incomplete provenance; DISTINCT output does not prove distinct source sites. "verified" covers ingestion only, not resolution accuracy or completeness.
 - scopeExtractionFiles: files missing scope edges; analyze --force, inspect warnings.
 - receiverTyping: sites with unknown receiver types; corroborate by text search.
+- competingBindings: calls dropped for competing bindings (try/except fallback); corroborate by text search.
 - overloadResolution: unique unresolved overload/implementation sites matched by symbol/declaring owner. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).
@@ -568,6 +569,7 @@ COMPLETENESS: epistemic "lower-bound" makes impactedCount a floor (missed caller
 INGESTION: graph_integrity is separate from completeness. "unverified" means source-site distinctness was not fully checked. "verified" covers source-reference identity/span checks at ingestion, not resolution accuracy or completeness.
 - scopeExtractionFiles: files missing scope edges; analyze --force, inspect warnings.
 - receiverTyping: sites with unknown receiver types; corroborate before deletion/rename.
+- competingBindings: calls dropped for competing bindings (try/except fallback); corroborate before deletion/rename.
 - overloadResolution: when traversing CALLS, unique unresolved overload/implementation sites in the expanded traversal before pagination. Missing/invalid/capped receipts imply lower-bound even at 0; analyze --force.
 - externalBoundary: calls outside indexed code; compatible with "exact", not a defect.
 - dispatchBoundary: DI/interface symbols, not sites. Runtime-proxy gaps may be uncountable (0 with lower-bound).

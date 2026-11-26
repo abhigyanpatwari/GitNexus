@@ -723,6 +723,10 @@ export interface NameClaim {
    * invokes: the language resolves callees in a namespace it is not part of.
    * A lookup made for a callee (`NameLookupOptions.callee`) does not see it. */
   readonly neverCallee?: boolean;
+  /** Set on a `blocked` claim when two or more bindings of the name compete
+   * and the provider declined to pick a winner. Marks a barrier, not a missing
+   * binding: a call it blocks had a real target the index cannot name. */
+  readonly competing?: boolean;
   readonly inactive?: 'blocked' | 'outer' | 'module';
   readonly redirect?: 'module' | 'enclosing-function';
 }

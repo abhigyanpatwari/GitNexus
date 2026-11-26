@@ -95,9 +95,9 @@ describe('Python import-claim reconciliation', () => {
       new Set([declaration]),
     );
     expect(result).toEqual([
-      { ...a, kind: 'blocked' },
+      { ...a, kind: 'blocked', competing: true },
       unrelated,
-      { ...b, kind: 'blocked' },
+      { ...b, kind: 'blocked', competing: true },
       declaration,
     ]);
     expect(result[1]).toBe(unrelated);
@@ -137,8 +137,8 @@ describe('Python import-claim reconciliation', () => {
       new Set(),
     );
     expect(result).toEqual([
-      { ...imported, kind: 'blocked' },
-      { ...store, kind: 'blocked' },
+      { ...imported, kind: 'blocked', competing: true },
+      { ...store, kind: 'blocked', competing: true },
     ]);
   });
 

@@ -41,7 +41,9 @@ export function reconcilePythonImportClaims(
       // sharing its name are uncertain.
       if (definiteDeclarations.has(item)) continue;
       result[position] =
-        !compatible || mixed ? { ...item, kind: 'blocked' } : { ...item, merge: true };
+        !compatible || mixed
+          ? { ...item, kind: 'blocked', competing: true }
+          : { ...item, merge: true };
     }
   }
   return result;
