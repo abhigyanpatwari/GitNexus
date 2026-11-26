@@ -591,10 +591,23 @@ export function computeTaintFlows(
   /**
    * Suppress a finding when the sink use of `bindingIdx` is control-dependent
    * on a validating predicate over that binding on the validated branch (#3913).
-   * Records a kill so SANITIZES evidence still surfaces.
+   * `taintDefPoint` refuses suppression when the reaching value was assigned
+   * after the check. Records a kill so SANITIZES evidence still surfaces.
+   *
+   * Full `KIND_ORDER` neutralization is intentional only for `isValid*` /
+   * `validate*` / proto-guard names (narrow heuristic) — not bare `checkX`.
    */
-  const suppressedByBarrier = (bindingIdx: number, sinkPoint: ProgramPoint): boolean => {
-    const controller = isBarrierGuarded(barrierIndex, bindingIdx, sinkPoint.blockIndex);
+  const suppressedByBarrier = (
+    bindingIdx: number,
+    sinkPoint: ProgramPoint,
+    taintDefPoint?: ProgramPoint,
+  ): boolean => {
+    const controller = isBarrierGuarded(
+      barrierIndex,
+      bindingIdx,
+      sinkPoint.blockIndex,
+      taintDefPoint,
+    );
     if (!controller) return false;
     recordKill(barrierControllerPoint(cfg, controller), sinkPoint, bindingIdx, KIND_ORDER);
     return true;
@@ -876,7 +889,8 @@ export function computeTaintFlows(
             continue;
           if (!sofar.kinds.has(kind)) {
             const localBinding = srcSite.object as number;
-            if (suppressedByBarrier(localBinding, ctx.point)) continue;
+            // Statement-local: the source occurrence point is the reaching def.
+            if (suppressedByBarrier(localBinding, ctx.point, sourceOcc.point)) continue;
             recordFinding(
               kind,
               sourceOcc,
@@ -983,7 +997,7 @@ export function computeTaintFlows(
               // Dedup BEFORE chainHops: already-recorded identities discard
               // their hop chain anyway (first write wins), so skip the walk.
               if (findingsByIdentity.has(findingKey(kind, t.source, sinkOcc))) continue;
-              if (suppressedByBarrier(b, ctx.point)) continue;
+              if (suppressedByBarrier(b, ctx.point, t.point)) continue;
               const chain = chainHops(key);
               chain.hops.push({
                 bindingIdx: b,

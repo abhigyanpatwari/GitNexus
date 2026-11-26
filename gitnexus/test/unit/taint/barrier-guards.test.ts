@@ -60,11 +60,14 @@ describe('barrier-guards name + polarity helpers', () => {
   it.each([
     ['isValidHostName', true],
     ['isValidKey', true],
-    ['isSafeHost', true], // isX shape
     ['validateInput', true],
-    ['checkToken', true],
+    ['validHost', true],
+    ['isSafeHost', false], // bare isX — not a value voucher
+    ['checkToken', false], // bare checkX — must not kill command-injection
+    ['isInvalid', false], // contains "valid" but means the opposite
+    ['isInvalidHost', false],
     ['safeKey', false],
-    ['validator.isEmail', true], // leaf isEmail matches isX
+    ['validator.isEmail', false], // leaf isEmail — no isValid*/validate*
     ['isNaN', false],
     ['isArray', false],
     ['hasOwnProperty', false],
@@ -76,6 +79,15 @@ describe('barrier-guards name + polarity helpers', () => {
   it('maps leading ! polarity to the validated CDG label', () => {
     expect(validatedLabelForCondition('(!isValidHostName(hostname))', 'isValidHostName')).toBe('F');
     expect(validatedLabelForCondition('(isValidHostName(hostname))', 'isValidHostName')).toBe('T');
+  });
+
+  it('refuses compound conditions (|| / &&)', () => {
+    expect(
+      validatedLabelForCondition('(isValidHostName(hostname) || debugMode)', 'isValidHostName'),
+    ).toBeUndefined();
+    expect(
+      validatedLabelForCondition('(isValidHostName(hostname) && ready)', 'isValidHostName'),
+    ).toBeUndefined();
   });
 });
 
@@ -150,6 +162,53 @@ describe('barrier-guards via computeTaintFlows (#3913)', () => {
       function f(req: any) {
         const hostname = req.body;
         if (!maybeOk(hostname)) return;
+        exec(hostname);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress for checkToken (name is not a value voucher)', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const cmd = req.body;
+        if (!checkToken(cmd)) return;
+        exec(cmd);
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress for isInvalid on the true branch', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const cmd = req.body;
+        if (isInvalid(cmd)) {
+          exec(cmd);
+        }
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress compound || conditions', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        const hostname = req.body;
+        if (isValidHostName(hostname) || debugMode) {
+          exec(hostname);
+        }
+      }
+    `);
+    expect(flows.findings.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does not suppress when the binding is reassigned after validation', () => {
+    const { flows } = analyze(`
+      function f(req: any) {
+        let hostname = req.body;
+        if (!isValidHostName(hostname)) return;
+        hostname = req.query.command;
         exec(hostname);
       }
     `);

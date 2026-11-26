@@ -48,33 +48,23 @@ export interface BarrierGuardOptions {
   readonly cdgEdges?: readonly ControlDepEdge[];
 }
 
-/** Builtins that match `isX`/`hasX` but are not security validators. */
-const BARRIER_NAME_DENYLIST = new Set([
-  'isNaN',
-  'isFinite',
-  'isArray',
-  'isInteger',
-  'isSafeInteger',
-  'isPrototypeOf',
-  'isView',
-  'hasOwnProperty',
-  'hasOwn',
-  'has',
-]);
-
 /**
- * Validator-name heuristic from #3913: `isX` / `validX` / `test`-shaped,
- * minus known non-security builtins.
+ * Validator-name heuristic (#3913), under-kill only.
+ *
+ * Accepts `isValid*` / `validate*` / `validX` shapes that vouch for the value.
+ * Rejects:
+ * - bare `isX` / `checkX` / `hasX` (e.g. `checkToken` must not kill command-injection)
+ * - names containing `invalid` (`isInvalid` must not barrier the true branch)
+ * - builtins like `isNaN` / `isArray`
  */
 export function isBarrierCalleeName(callee: string): boolean {
   const base = calleeLeaf(callee);
-  if (!base || BARRIER_NAME_DENYLIST.has(base)) return false;
-  if (/valid/i.test(base)) return true;
-  if (/^check[A-Z_]/.test(base)) return true;
+  if (!base) return false;
+  if (/invalid/i.test(base)) return false;
+  if (/^isValid/i.test(base)) return true;
   if (/^validate/i.test(base)) return true;
-  if (/^is[A-Z_]/.test(base)) return true;
-  if (/^has[A-Z_]/.test(base)) return true;
-  if (base === 'test') return true;
+  // `validHost` / `validKey` — but not substring matches inside unrelated words.
+  if (/^valid[A-Z_]/.test(base)) return true;
   return false;
 }
 
@@ -117,13 +107,35 @@ export function discoverProtoGuardCallees(cfgs: readonly FunctionCfg[]): Readonl
 }
 
 /**
+ * True when the condition is ONLY the validator call (optional parens / !).
+ * Rejects compounds like `isValid(x) || debugMode` that can take the true
+ * branch without the validator accepting.
+ */
+export function isSimpleValidatorCondition(blockText: string, callee: string): boolean {
+  const leaf = calleeLeaf(callee);
+  if (!leaf || !blockText.includes(leaf)) return false;
+  if (blockText.includes('||') || blockText.includes('&&') || blockText.includes('??'))
+    return false;
+  // Strip whitespace and outer parens; require [!]leaf(...) only.
+  let s = blockText.replace(/\s+/g, '');
+  while (s.startsWith('(') && s.endsWith(')')) s = s.slice(1, -1);
+  const escaped = leaf.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^!*${escaped}\\([^)]*\\)$`).test(s);
+}
+
+/**
  * Which CDG label means "predicate accepted / validated" for a condition
  * block whose text wraps `callee`. Odd leading `!` flips true→F.
+ * Returns undefined when the condition is not a simple validator expression.
  */
-export function validatedLabelForCondition(blockText: string, callee: string): CdgLabel {
+export function validatedLabelForCondition(
+  blockText: string,
+  callee: string,
+): CdgLabel | undefined {
+  if (!isSimpleValidatorCondition(blockText, callee)) return undefined;
   const leaf = calleeLeaf(callee);
   const idx = blockText.indexOf(leaf);
-  if (idx < 0) return 'T';
+  if (idx < 0) return undefined;
   let bangs = 0;
   for (let i = idx - 1; i >= 0; i--) {
     const c = blockText[i];
@@ -222,6 +234,7 @@ export function collectBarrierControllers(
         const subjects = directArgBindings(site);
         if (subjects.length === 0) continue;
         const validatedLabel = validatedLabelForCondition(block.text, site.callee);
+        if (validatedLabel === undefined) continue; // compound / non-simple condition
         for (const subjectBinding of subjects) {
           out.push({
             controllerBlock: block.index,
@@ -261,11 +274,15 @@ export function buildBarrierGuardIndex(
 /**
  * True when `sinkBlock` is control-dependent on a validating predicate over
  * `bindingIdx` on the validated branch sense.
+ *
+ * When `taintDefPoint` is provided, refuse the barrier if that def was itself
+ * assigned on the validated branch (value reassigned after the check).
  */
 export function isBarrierGuarded(
   index: BarrierGuardIndex,
   bindingIdx: number,
   sinkBlock: number,
+  taintDefPoint?: ProgramPoint,
 ): BarrierController | undefined {
   const controllers = index.bySubject.get(bindingIdx);
   if (!controllers || controllers.length === 0) return undefined;
@@ -274,6 +291,17 @@ export function isBarrierGuarded(
     for (const c of controllers) {
       if (c.controllerBlock !== edge.controllerBlock) continue;
       if (c.validatedLabel !== edge.label) continue;
+      // Reassignment after validation: the reaching def lives on the validated
+      // branch of the same controller → the checked value was overwritten.
+      if (taintDefPoint !== undefined) {
+        const defAfterCheck = index.cdg.some(
+          (e) =>
+            e.controllerBlock === c.controllerBlock &&
+            e.dependentBlock === taintDefPoint.blockIndex &&
+            e.label === c.validatedLabel,
+        );
+        if (defAfterCheck) continue;
+      }
       return c;
     }
   }
