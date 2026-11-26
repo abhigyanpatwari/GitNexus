@@ -105,6 +105,12 @@ const PLATFORM_LOGIC = [
   // mixed-prefix relativize hazard as is-inside, reached through a
   // caller-supplied path.
   'test/unit/windows-long-path-prefix.test.ts',
+  // The Windows access-control proof for the analyzer identity cache (#4128)
+  // asks the OS for the directory owner and its allowing principals through a
+  // real child process, so only a real Windows runner can answer it. The
+  // policy cases run everywhere; the two live-probe cases are skipped off
+  // Windows, which is why the file has to be on this matrix.
+  'test/unit/windows-directory-privacy.test.ts',
   // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
   // plus a live-probe test whose only real non-4K coverage is macos-arm64's
   // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).

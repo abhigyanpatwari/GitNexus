@@ -42,6 +42,8 @@ import path from 'node:path';
 import { parseTruthyEnv } from './ingestion/utils/env.js';
 import { fileURLToPath } from 'node:url';
 import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
+import { getUserGitNexusDir } from '../storage/global-dir.js';
+import { ensurePrivateWindowsDirectory } from '../utils/windows-directory-privacy.js';
 
 export const ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION = 4 as const;
 const BUILD_CANONICALIZATION = 'gitnexus-analyzer-build-v2' as const;
@@ -2042,7 +2044,131 @@ function ensurePrivateChild(parent: string, childName: string): string | null {
   return isOwnedPrivateDirectory(candidate) ? candidate : null;
 }
 
+/** The exact file names {@link identityCacheKey} produces. */
+const IDENTITY_CACHE_FILE_PATTERN = /^[0-9a-f]{64}\.json$/;
+
+/**
+ * Removes the persisted identity cache files of `directory`.
+ *
+ * A directory that other principals could write to may already hold files
+ * they planted, so they are discarded before the directory is trusted again.
+ * Only the exact cache file names are removed, so an unrelated file that
+ * happens to live in the same directory survives.
+ */
+function purgeIdentityCacheFiles(directory: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(directory);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!IDENTITY_CACHE_FILE_PATTERN.test(entry)) continue;
+    try {
+      unlinkSync(path.join(directory, entry));
+    } catch {
+      /* a file that cannot be removed is refused by the cache reader anyway */
+    }
+  }
+}
+
+/**
+ * How many cache files the default cache directory keeps.
+ *
+ * Every analyzer build gets its own cache file, and a file carries the
+ * analyzer's file inventory, so one file is megabytes. The directory would
+ * otherwise grow with every update.
+ */
+const MAX_PERSISTED_CACHE_FILES = 3;
+
+/**
+ * Removes the cache files the default directory accumulated over updates.
+ *
+ * Only the newest entries survive: they are the ones a current build can
+ * reuse. An operator-selected directory is never pruned, and the entry that
+ * was just written is always kept.
+ */
+function pruneIdentityCacheFiles(directory: string, keep: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(directory);
+  } catch {
+    return;
+  }
+  const files = entries.filter((entry) => IDENTITY_CACHE_FILE_PATTERN.test(entry));
+  if (files.length <= MAX_PERSISTED_CACHE_FILES) return;
+  const modified = new Map<string, number>();
+  for (const file of files) {
+    try {
+      modified.set(file, statSync(path.join(directory, file)).mtimeMs);
+    } catch {
+      // An entry that cannot be inspected is the oldest one, so it is pruned
+      // before the entries that are known to be usable.
+      modified.set(file, 0);
+    }
+  }
+  const newest = [...modified.entries()]
+    .sort(
+      ([leftFile, leftTime], [rightFile, rightTime]) =>
+        rightTime - leftTime || leftFile.localeCompare(rightFile),
+    )
+    .map(([file]) => file);
+  for (const file of newest.slice(MAX_PERSISTED_CACHE_FILES)) {
+    if (file === keep) continue;
+    try {
+      unlinkSync(path.join(directory, file));
+    } catch {
+      /* a file that cannot be removed is refused by the cache reader anyway */
+    }
+  }
+}
+
+/**
+ * Whether `directory` is private to this process's user.
+ *
+ * POSIX proves it with the owner UID and the mode bits. Windows proves it with
+ * the directory's access-control list, which
+ * {@link ensurePrivateWindowsDirectory} reads through the OS.
+ */
+function isPrivateCacheDirectory(directory: string): boolean {
+  return process.platform === 'win32'
+    ? ensurePrivateWindowsDirectory(directory, purgeIdentityCacheFiles)
+    : isOwnedPrivateDirectory(directory);
+}
+
+/**
+ * Windows default cache directory.
+ *
+ * The per-user GitNexus directory is the Windows counterpart of the runtime
+ * directory POSIX uses, and the access-control proof is what makes it usable —
+ * the location alone is not the guarantee. A directory that other principals
+ * can write to is locked, and its contents discarded, before it is used.
+ */
+function windowsDefaultCacheDirectory(): string | null {
+  const candidate = path.join(getUserGitNexusDir(), 'analyzer-identity');
+  try {
+    mkdirSync(candidate, { recursive: true });
+  } catch {
+    return null;
+  }
+  let resolved: string;
+  try {
+    // A junction or a symlink standing in for the directory would redirect
+    // every write somewhere else, so it is refused the way the POSIX path
+    // refuses a symlinked child.
+    const link = lstatSync(candidate);
+    if (!link.isDirectory() || link.isSymbolicLink()) return null;
+    // The canonical path is used from here on, so the directory the cache is
+    // verified against is the directory the cache is written to.
+    resolved = realpathSync.native(candidate);
+  } catch {
+    return null;
+  }
+  return ensurePrivateWindowsDirectory(resolved, purgeIdentityCacheFiles) ? resolved : null;
+}
+
 function defaultCacheDirectory(): string | null {
+  if (process.platform === 'win32') return windowsDefaultCacheDirectory();
   // On platforms without POSIX ownership APIs we cannot prove that a default
   // cache file is private to this process's user. Persistence is therefore
   // disabled unless the operator supplied an explicit trusted override.
@@ -2637,7 +2763,7 @@ function persistIdentityCache(
       mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
     } else if (
       !hasTrustedCacheOverride(options) &&
-      !isOwnedPrivateDirectory(path.dirname(target))
+      !isPrivateCacheDirectory(path.dirname(target))
     ) {
       return;
     }
@@ -2651,6 +2777,9 @@ function persistIdentityCache(
       mode: 0o600,
     });
     renameSync(temporary, target);
+    if (!hasTrustedCacheOverride(options)) {
+      pruneIdentityCacheFiles(path.dirname(target), path.basename(target));
+    }
   } catch {
     // The cache is optional (notably for read-only package/container setups).
     // A failed write only loses the optimization; identity remains fail-closed.
