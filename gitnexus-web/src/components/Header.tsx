@@ -12,6 +12,7 @@ import {
   Loader2,
 } from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
+import { useActiveAnalyzeJobs } from '../hooks/useActiveAnalyzeJobs';
 import {
   deleteRepo,
   fetchRepos,
@@ -28,7 +29,7 @@ import { EmbeddingStatus } from './EmbeddingStatus';
 import { RepoAnalyzer } from './RepoAnalyzer';
 import { LanguageSwitcher } from './LanguageSwitcher';
 import { translateProgressMessage } from '../i18n/progress';
-import { formatBackendError } from '../i18n/error-messages';
+import { formatAnalyzeStartError, formatBackendError } from '../i18n/error-messages';
 
 // Color mapping for node types in search results
 const NODE_TYPE_COLORS: Record<string, string> = {
@@ -78,6 +79,7 @@ export const Header = ({
   const [showAnalyzer, setShowAnalyzer] = useState(false);
   const [reanalyzing, setReanalyzing] = useState<string | null>(null); // repo identity being re-analyzed
   const [deleteError, setDeleteError] = useState<string | null>(null); // surfaced when a delete is rejected (e.g. origin-blocked 403)
+  const [analyzeError, setAnalyzeError] = useState<string | null>(null); // surfaced when a re-analyze cannot start (e.g. 409 busy)
   const [reanalyzeProgress, setReanalyzeProgress] = useState<JobProgress | null>(null);
   const reanalyzeSseRef = useRef<AbortController | null>(null);
   const repoDropdownRef = useRef<HTMLDivElement>(null);
@@ -107,6 +109,15 @@ export const Header = ({
   }, [availableRepos, repoSearchQuery]);
 
   const activeRepoIdentity = currentRepo ?? projectName;
+
+  // Server-side analyze jobs, polled while the switcher is open (#1584). The
+  // server runs one job at a time, so any running job blocks a new analyze.
+  const { jobs: runningJobs, readyRepoIds } = useActiveAnalyzeJobs(isRepoDropdownOpen, () => {
+    fetchRepos()
+      .then((repos) => onReposChanged?.(repos))
+      .catch(() => {});
+  });
+  const analyzeBlocked = !!reanalyzing || runningJobs.length > 0;
 
   // Handle clicking outside search or repo dropdown to close them
   useEffect(() => {
@@ -247,7 +258,7 @@ export const Header = ({
                             />
                           </div>
                         </div>
-                        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto pb-1">
+                        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto pb-1">
                           {filteredRepos.length === 0 ? (
                             <div className="px-4 py-3 text-sm text-text-muted">
                               {t('header:noRepositoriesFound', { query: repoSearchQuery })}
@@ -256,6 +267,10 @@ export const Header = ({
                             filteredRepos.map((repo) => {
                               const identity = repoIdentity(repo);
                               const isActive = identity === activeRepoIdentity;
+                              const runningJob = repo.id
+                                ? runningJobs.find((job) => job.repoId === repo.id)
+                                : undefined;
+                              const isReady = !!repo.id && readyRepoIds.includes(repo.id);
 
                               return (
                                 <div
@@ -280,6 +295,25 @@ export const Header = ({
                                     <span className="flex-1 truncate font-mono text-sm text-text-primary">
                                       {repo.name}
                                     </span>
+                                    {runningJob ? (
+                                      <span
+                                        data-testid="repo-status-analyzing"
+                                        className="shrink-0 rounded bg-accent/15 px-1.5 py-0.5 font-mono text-[10px] text-accent"
+                                      >
+                                        {t('header:analyzingPercent', {
+                                          percent: Math.round(runningJob.progress.percent),
+                                        })}
+                                      </span>
+                                    ) : (
+                                      isReady && (
+                                        <span
+                                          data-testid="repo-status-ready"
+                                          className="shrink-0 rounded bg-node-function/15 px-1.5 py-0.5 font-mono text-[10px] text-node-function"
+                                        >
+                                          {t('header:ready')}
+                                        </span>
+                                      )
+                                    )}
                                     {isActive && (
                                       <span className="shrink-0 font-mono text-[10px] text-accent">
                                         {t('header:active')}
@@ -291,7 +325,8 @@ export const Header = ({
                                     data-testid="repo-switcher-reanalyze"
                                     onClick={async (e) => {
                                       e.stopPropagation();
-                                      if (reanalyzing) return; // already running
+                                      if (analyzeBlocked) return; // a job is already running
+                                      setAnalyzeError(null);
                                       setReanalyzing(identity);
                                       setReanalyzeProgress({
                                         phase: 'queued',
@@ -323,9 +358,10 @@ export const Header = ({
                                         console.error('Failed to start re-analysis:', err);
                                         setReanalyzing(null);
                                         setReanalyzeProgress(null);
+                                        setAnalyzeError(await formatAnalyzeStartError(err, t));
                                       }
                                     }}
-                                    disabled={!!reanalyzing}
+                                    disabled={analyzeBlocked}
                                     className={`cursor-pointer rounded p-1 transition-all ${
                                       reanalyzing === identity
                                         ? 'text-accent'
@@ -409,6 +445,13 @@ export const Header = ({
                       </div>
                     )}
 
+                    {/* Surfaced re-analyze start failure (e.g. another job running) */}
+                    {analyzeError && (
+                      <div className="px-3 py-2 text-xs text-red-400" role="alert">
+                        {analyzeError}
+                      </div>
+                    )}
+
                     {/* Re-analyze progress bar */}
                     {reanalyzing && reanalyzeProgress && (
                       <div className="border-t border-border-subtle bg-accent/5 px-4 py-2.5">
@@ -449,7 +492,7 @@ export const Header = ({
                           setRepoSearchQuery('');
                           setShowAnalyzer(true);
                         }}
-                        disabled={!!reanalyzing}
+                        disabled={analyzeBlocked}
                         className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50"
                       >
                         <Sparkles className="h-3.5 w-3.5 shrink-0 text-accent" />

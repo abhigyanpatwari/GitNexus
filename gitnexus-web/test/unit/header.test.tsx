@@ -1,14 +1,18 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Header } from '../../src/components/Header';
 import {
+  BackendError,
   deleteRepo,
+  fetchActiveAnalyzeJobs,
   fetchRepos,
+  getAnalyzeStatus,
   startAnalyze,
   streamAnalyzeProgress,
 } from '../../src/services/backend-client';
-import type { BackendRepo } from '../../src/services/backend-client';
+import type { ActiveAnalyzeJob, BackendRepo } from '../../src/services/backend-client';
+import { ACTIVE_ANALYZE_POLL_MS } from '../../src/hooks/useActiveAnalyzeJobs';
 
 vi.mock('../../src/hooks/useAppState', () => ({
   useAppState: () => ({
@@ -41,7 +45,9 @@ vi.mock('../../src/services/backend-client', async (importOriginal) => {
   return {
     ...actual,
     deleteRepo: vi.fn(),
+    fetchActiveAnalyzeJobs: vi.fn(),
     fetchRepos: vi.fn(),
+    getAnalyzeStatus: vi.fn(),
     startAnalyze: vi.fn(),
     streamAnalyzeProgress: vi.fn(),
   };
@@ -52,6 +58,10 @@ vi.mock('react-i18next', () => ({
     t: (key: string, options?: Record<string, unknown>) => {
       if (key === 'header:repositories') return 'Repositories';
       if (key === 'header:active') return 'Active';
+      if (key === 'header:analyzingPercent') return `Analyzing ${options?.percent}%`;
+      if (key === 'header:ready') return 'Ready';
+      if (key === 'errors:analyzeBusy')
+        return `${options?.repoName} is still being analyzed (${options?.percent}%)`;
       if (key === 'header:reanalyzeRepo') return `Re-analyze ${options?.repoName ?? ''}`;
       if (key === 'header:reanalyzingRepo')
         return `Re-analyzing ${options?.repoName ?? ''}: ${options?.message ?? ''}`;
@@ -82,6 +92,7 @@ function makeRepo(index: number): BackendRepo {
 describe('Header', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -323,5 +334,94 @@ describe('Header', () => {
     const label = screen.getByText(/^Re-analyzing /);
     expect(label.textContent).toMatch(/^Re-analyzing reels:/);
     expect(label.textContent).not.toContain('/ws/b/reels');
+  });
+
+  describe('analyze status (#1584)', () => {
+    const runningJob = (overrides: Partial<ActiveAnalyzeJob> = {}): ActiveAnalyzeJob => ({
+      id: 'job-running',
+      status: 'analyzing',
+      repoName: 'repo-1',
+      repoId: 'id-1',
+      progress: { phase: 'parsing', percent: 42.4, message: 'Parsing' },
+      startedAt: 0,
+      ...overrides,
+    });
+    const repos = (): BackendRepo[] => [
+      { ...makeRepo(0), id: 'id-0' },
+      { ...makeRepo(1), id: 'id-1' },
+    ];
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('badges the repo being analyzed with its progress and blocks new analyses', async () => {
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValue([runningJob()]);
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+      const badge = await screen.findByTestId('repo-status-analyzing');
+      expect(badge).toHaveTextContent('Analyzing 42%');
+      expect(badge.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+      expect(screen.getAllByTestId('repo-status-analyzing')).toHaveLength(1);
+      expect(screen.getByRole('button', { name: 'Analyze new' })).toBeDisabled();
+      for (const button of screen.getAllByTestId('repo-switcher-reanalyze')) {
+        expect(button).toBeDisabled();
+      }
+    });
+
+    it('shows Ready once the running job completes and refreshes the repo list', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'complete' });
+      vi.mocked(fetchRepos).mockResolvedValue(repos());
+      const onReposChanged = vi.fn();
+      render(<Header availableRepos={repos()} onReposChanged={onReposChanged} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(0));
+      expect(screen.getByTestId('repo-status-analyzing')).toBeInTheDocument();
+
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(getAnalyzeStatus).toHaveBeenCalledWith('job-running');
+      expect(screen.queryByTestId('repo-status-analyzing')).not.toBeInTheDocument();
+      const ready = screen.getByTestId('repo-status-ready');
+      expect(ready.closest('[data-testid="repo-switcher-row"]')).toHaveTextContent('repo-1');
+      expect(screen.getByRole('button', { name: 'Analyze new' })).toBeEnabled();
+      expect(onReposChanged).toHaveBeenCalledWith(repos());
+    });
+
+    it('does not show Ready when the job that left the list failed', async () => {
+      vi.useFakeTimers();
+      vi.mocked(fetchActiveAnalyzeJobs).mockResolvedValueOnce([runningJob()]).mockResolvedValue([]);
+      vi.mocked(getAnalyzeStatus).mockResolvedValue({ ...runningJob(), status: 'failed' });
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await act(() => vi.advanceTimersByTimeAsync(ACTIVE_ANALYZE_POLL_MS));
+
+      expect(screen.queryByTestId('repo-status-analyzing')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('repo-status-ready')).not.toBeInTheDocument();
+    });
+
+    it('names the running job when a re-analyze is rejected with 409', async () => {
+      vi.mocked(fetchActiveAnalyzeJobs)
+        .mockResolvedValueOnce([])
+        .mockResolvedValue([runningJob({ repoName: 'other-repo', repoId: 'id-x' })]);
+      vi.mocked(startAnalyze).mockRejectedValue(
+        new BackendError('Analysis already in progress (job job-running)', 409, 'client'),
+      );
+      render(<Header availableRepos={repos()} />);
+
+      fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+      await waitFor(() => expect(fetchActiveAnalyzeJobs).toHaveBeenCalledTimes(1));
+      await userEvent.click(screen.getByTitle('Re-analyze repo-1'));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(
+        'other-repo is still being analyzed (42%)',
+      );
+    });
   });
 });

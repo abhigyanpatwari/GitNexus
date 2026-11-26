@@ -1169,6 +1169,20 @@ export const startAnalyze = async (request: {
   return response.json() as Promise<{ jobId: string; status: string }>;
 };
 
+/** A running analyze job from `GET /api/analyze`. */
+export interface ActiveAnalyzeJob extends JobStatus {
+  /** Matches `BackendRepo.id` when the job re-analyzes an indexed repo. */
+  repoId?: string;
+}
+
+/** List analyze jobs that are still running (the server runs one at a time). */
+export const fetchActiveAnalyzeJobs = async (): Promise<ActiveAnalyzeJob[]> => {
+  const response = await fetchWithTimeout(`${_backendUrl}/api/analyze`, {}, 5_000);
+  await assertOk(response);
+  const { jobs } = (await response.json()) as { jobs: ActiveAnalyzeJob[] };
+  return jobs;
+};
+
 /** Poll analysis job status. */
 export const getAnalyzeStatus = async (jobId: string): Promise<JobStatus> => {
   const response = await fetchWithTimeout(

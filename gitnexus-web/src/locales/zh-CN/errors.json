@@ -5,6 +5,7 @@
   "failedToConnect": "连接失败",
   "analysisFailed": "分析失败，请检查服务器日志。",
   "startAnalysisFailed": "启动分析失败",
+  "analyzeBusy": "{{repoName}} 仍在分析中（{{percent}}%），请在完成后重试。",
   "invalidGithubUrl": "请输入有效的 GitHub 仓库 URL。",
   "invalidAzureDevOpsUrl": "请输入有效的 Azure DevOps 仓库 URL。",
   "missingFolderPath": "请输入文件夹路径。",

@@ -109,6 +109,7 @@ import {
   createServeUpdateController,
 } from './update-controller.js';
 import { buildOpsSnapshot, isGitNexusVercelOrigin, serializeOpsJob } from './ops-snapshot.js';
+import { publicRepoId } from './public-repo-id.js';
 
 export {
   bindServeUpdateControllerLifecycle,
@@ -2083,6 +2084,22 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       failJob: (jobId, error) => jobManager.updateJob(jobId, { status: 'failed', error }),
     }),
   );
+
+  // GET /api/analyze — jobs still running, so the web UI can badge the repo
+  // being indexed and point a 409 at the job holding the slot (#1584).
+  // Same redacted view as the poll below (no repo URL, path or branch).
+  // `repoId` is set here before completion too: it is an opaque HMAC, and on a
+  // re-analyze it matches the existing `GET /api/repos` entry.
+  app.get('/api/analyze', createRouteLimiter({ limit: 60 }), (_req, res) => {
+    const jobs = jobManager
+      .listJobs()
+      .filter((job) => !isTerminalJobStatus(job.status))
+      .map((job) => ({
+        ...serializeOpsJob(job, 'analyze'),
+        repoId: job.repoPath ? publicRepoId(job.repoPath) : undefined,
+      }));
+    res.json({ jobs });
+  });
 
   // GET /api/analyze/:jobId — poll job status
   app.get('/api/analyze/:jobId', (req, res) => {

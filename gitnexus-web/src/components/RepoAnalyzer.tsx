@@ -38,7 +38,7 @@ import {
   type DropRejectionReason,
 } from '@/lib/folder-drop';
 import { useTranslation } from 'react-i18next';
-import { formatBackendError } from '../i18n/error-messages';
+import { formatAnalyzeStartError, formatBackendError } from '../i18n/error-messages';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -404,7 +404,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     } catch (err) {
       // Unmount aborts the controller, so this also covers the unmounted case.
       if (controller.signal.aborted) return;
-      setValidationError(formatBackendError(err, t));
+      const message = await formatAnalyzeStartError(err, t);
+      if (controller.signal.aborted) return;
+      setValidationError(message);
       setPhase('error');
     }
   };
@@ -507,8 +509,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       // already launched a job whose id we never learn; that orphan is bounded
       // by the server's job timeout and terminal-job TTL sweep.
       if (controller.signal.aborted) return;
+      const message = await formatAnalyzeStartError(err, t);
+      if (controller.signal.aborted) return;
       setUploading(false);
-      setValidationError(formatBackendError(err, t));
+      setValidationError(message);
       setPhase('error');
     }
   };

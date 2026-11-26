@@ -5,6 +5,7 @@
   "failedToConnect": "Failed to connect",
   "analysisFailed": "Analysis failed. Check server logs.",
   "startAnalysisFailed": "Failed to start analysis",
+  "analyzeBusy": "{{repoName}} is still being analyzed ({{percent}}%). Try again when it finishes.",
   "invalidGithubUrl": "Please enter a valid GitHub repository URL.",
   "invalidAzureDevOpsUrl": "Please enter a valid Azure DevOps repository URL.",
   "missingFolderPath": "Please enter a folder path.",
