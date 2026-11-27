@@ -9,7 +9,12 @@ duplicates in `test/unit/shared-type-extractors.test.ts`. The callbacks and suit
 were copied from commit `bd9586e008c6a2dbcd2f15598a3a20c3f2f44f03`; only the import's
 relative path changed. These cases have no hooks or mocks.
 
-The `.ts` suffix keeps this source fixture out of Vitest's `*.test.ts` discovery.
-`recall-audit.test.ts` explicitly parses it, keeping all 82 positive audit pairs
-while the ordinary test suite executes each of these 12 scenarios once.
-The seven other `stripNullable` cases remain in `type-env.test.ts`.
+`retired-shared-type-extractors.ts` preserves 16 `extractElementTypeFromString`
+callbacks removed from `test/unit/shared-type-extractors.test.ts` after the
+scenario-map detector (issue #3785) confirmed their duplicates in
+`test/unit/extract-element-type-from-string.test.ts`. The `stripNullable` tests
+remain in `shared-type-extractors.test.ts`.
+
+The `.ts` suffix keeps these source fixtures out of Vitest's `*.test.ts` discovery.
+`recall-audit.test.ts` explicitly parses them, keeping all positive audit pairs
+while the ordinary test suite executes each scenario once.

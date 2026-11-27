@@ -82,7 +82,7 @@
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > bare [] prefix with spaces only \u2192 undefined",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for just brackets: []",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns undefined for just brackets: []",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
@@ -94,13 +94,13 @@
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > empty array suffix \u2192 undefined",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for just brackets: []",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns undefined for just brackets: []",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > [] suffix with no base \u2192 undefined",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for just brackets: []",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns undefined for just brackets: []",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
@@ -220,67 +220,67 @@
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > array suffix (TypeScript / Java / C#) > User[] \u2192 User",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips array suffix: User[] \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > strips array suffix: User[] \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > array suffix (TypeScript / Java / C#) > string[] \u2192 string",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips array suffix for primitive: string[] \u2192 string",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > strips array suffix for primitive: string[] \u2192 string",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Go slice prefix > []User \u2192 User",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips Go slice prefix: []User \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > strips Go slice prefix: []User \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Go slice prefix > []string \u2192 string",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > strips Go slice prefix for primitive: []string \u2192 string",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > strips Go slice prefix for primitive: []string \u2192 string",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Swift array sugar > [User] \u2192 User",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps Swift array sugar: [User] \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > unwraps Swift array sugar: [User] \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > generic angle-bracket containers > Array<User> \u2192 User",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps single-arg generic angle: Array<User> \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > unwraps single-arg generic angle: Array<User> \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > generic angle-bracket containers > Vec<User> \u2192 User (Rust)",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps single-arg generic angle: Rust Vec<User> \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > unwraps single-arg generic angle: Rust Vec<User> \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > generic angle-bracket containers > vector<User> \u2192 User (C++)",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps single-arg generic angle: C++ vector<User> \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > unwraps single-arg generic angle: C++ vector<User> \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > Python subscript-style generics > List[User] \u2192 User",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > unwraps Python subscript: List[User] \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > unwraps Python subscript: List[User] \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > multi-argument generics \u2014 default returns last (value) arg > Map<String, User> \u2192 User (default: last/value arg)",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns last arg by default for Map<String, User>: \u2192 User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns last arg by default for Map<String, User>: \u2192 User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > multi-argument generics \u2014 default returns last (value) arg > Map<String, User> \u2192 String (pos=first: key arg)",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns first arg with pos=first for Map<String, User>: \u2192 String",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns first arg with pos=first for Map<String, User>: \u2192 String",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
@@ -298,13 +298,13 @@
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > empty string \u2192 undefined",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for empty string",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns undefined for empty string",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
     {
       "a": "test/unit/extract-element-type-from-string.test.ts#extractElementTypeFromString > edge cases \u2014 return undefined > plain type name (no container) \u2192 undefined",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined when no brackets are present: User",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns undefined when no brackets are present: User",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
@@ -339,8 +339,8 @@
       "basis": "local-backend.ts imports and directly re-exports the same isTestFilePath function. Both tests pass undefined, null and empty string and assert false three times."
     },
     {
-      "a": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined when base is not a simple word: user model[]",
-      "b": "test/unit/shared-type-extractors.test.ts#extractElementTypeFromString > returns undefined for complex non-word base before []: user model[]",
+      "a": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns undefined when base is not a simple word: user model[]",
+      "b": "test/fixtures/scenario-map-recall/retired-shared-type-extractors.ts#extractElementTypeFromString > returns undefined for complex non-word base before []: user model[]",
       "category": "pure-helper",
       "basis": "Same production function, literal inputs and expected values; source callbacks are identical. No enclosing hooks change the input."
     },
