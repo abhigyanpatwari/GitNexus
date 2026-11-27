@@ -2,7 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // Import the function we'll add in the next step
 import {
+  DEFAULT_CONTEXT_WINDOW,
   DEFAULT_MAX_COMPLETION_TOKENS,
+  LLM_CONTEXT_WINDOW_ENV,
   LLM_ALLOW_INSECURE_CONNECTION_ENV,
   LLM_MAX_COMPLETION_TOKENS_ENV,
   MINIMAX_MODEL_IDS,
@@ -180,6 +182,32 @@ describe('resolveLLMConfig max completion tokens', () => {
     const config = await resolveLLMConfig({ maxTokens: 131072 });
 
     expect(config.maxTokens).toBe(131072);
+  });
+
+  it('resolves the context window: override > env > config file > default', async () => {
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '');
+    await mockSavedConfig({});
+    expect((await resolveLLMConfig()).contextWindow).toBe(DEFAULT_CONTEXT_WINDOW);
+
+    await mockSavedConfig({ contextWindow: 32768 });
+    expect((await resolveLLMConfig()).contextWindow).toBe(32768);
+
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '65536');
+    expect((await resolveLLMConfig()).contextWindow).toBe(65536);
+
+    expect((await resolveLLMConfig({ contextWindow: 131072 })).contextWindow).toBe(131072);
+  });
+
+  it('rejects an invalid context window from the env var or config file', async () => {
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, 'abc');
+    await mockSavedConfig({});
+    await expect(resolveLLMConfig()).rejects.toThrow(
+      `${LLM_CONTEXT_WINDOW_ENV} must be a positive integer`,
+    );
+
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '');
+    await mockSavedConfig({ contextWindow: 0 });
+    await expect(resolveLLMConfig()).rejects.toThrow('contextWindow in ~/.gitnexus/config.json');
   });
 
   it('sends the env limit as max_completion_tokens', async () => {
@@ -835,5 +863,38 @@ describe('validateLLMBaseUrl', () => {
         temperature: 0,
       }),
     ).rejects.toThrow('must use http:// or https://');
+  });
+});
+
+describe('callLLM context-length errors', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('tells the user how to set the context window on a context-length 400', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              message:
+                "The input (370035 tokens) is longer than the model's context length (131072 tokens).",
+            },
+          }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    );
+
+    await expect(
+      callLLM('test', {
+        apiKey: 'k',
+        baseUrl: 'https://api.example.com/v1',
+        model: 'm',
+        maxTokens: 100,
+        temperature: 0,
+      }),
+    ).rejects.toThrow(/--context-window <tokens>/);
   });
 });

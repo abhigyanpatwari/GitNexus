@@ -65,6 +65,8 @@ export interface LLMConfig {
   baseUrl: string;
   model: string;
   maxTokens: number;
+  /** Model context window in tokens; wiki prompts are budgeted to fit it. */
+  contextWindow?: number;
   temperature: number;
   /** Provider type — controls auth header behaviour */
   provider?: LLMProvider;
@@ -169,6 +171,11 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       readEnvMaxCompletionTokens(process.env[LLM_MAX_COMPLETION_TOKENS_ENV]) ??
       readConfiguredMaxCompletionTokens(savedConfig.maxCompletionTokens) ??
       DEFAULT_MAX_COMPLETION_TOKENS,
+    contextWindow:
+      readOverrideContextWindow(overrides?.contextWindow) ??
+      readEnvContextWindow(process.env[LLM_CONTEXT_WINDOW_ENV]) ??
+      readConfiguredContextWindow(savedConfig.contextWindow) ??
+      DEFAULT_CONTEXT_WINDOW,
     temperature: overrides?.temperature ?? 0,
     provider: savedProvider,
     apiVersion:
@@ -207,6 +214,8 @@ function isTimeoutLikeError(err: unknown): boolean {
 export const LLM_ALLOW_INSECURE_CONNECTION_ENV = 'GITNEXUS_ALLOW_INSECURE_CONNECTION';
 export const LLM_MAX_COMPLETION_TOKENS_ENV = 'GITNEXUS_MAX_COMPLETION_TOKENS';
 export const DEFAULT_MAX_COMPLETION_TOKENS = 16_384;
+export const LLM_CONTEXT_WINDOW_ENV = 'GITNEXUS_CONTEXT_WINDOW';
+export const DEFAULT_CONTEXT_WINDOW = 128_000;
 
 function readOverrideMaxCompletionTokens(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
@@ -233,6 +242,35 @@ function readConfiguredMaxCompletionTokens(value: unknown): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
     throw new Error('maxCompletionTokens in ~/.gitnexus/config.json must be a positive integer');
+  }
+  return value;
+}
+
+function readOverrideContextWindow(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error('--context-window must be a positive integer');
+  }
+  return value;
+}
+
+function readEnvContextWindow(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new Error(`${LLM_CONTEXT_WINDOW_ENV} must be a positive integer`);
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isSafeInteger(parsed) || String(parsed) !== trimmed) {
+    throw new Error(`${LLM_CONTEXT_WINDOW_ENV} is too large`);
+  }
+  return parsed;
+}
+
+function readConfiguredContextWindow(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error('contextWindow in ~/.gitnexus/config.json must be a positive integer');
   }
   return value;
 }
@@ -454,6 +492,19 @@ export async function callLLM(
     ) {
       throw new Error(
         `Azure content filter blocked this request. The prompt triggered content policy. Details: ${errorText.slice(0, 300)}`,
+      );
+    }
+
+    // Context-length overflow: say how to fix it instead of only echoing the API text.
+    if (
+      response.status === 400 &&
+      /context.{0,10}(length|window)|too many tokens|maximum context/i.test(errorText)
+    ) {
+      throw new Error(
+        `LLM API error (400): ${errorText.slice(0, 500)}\n` +
+          `The prompt is larger than the model's context window. Set the real window with ` +
+          `--context-window <tokens> (or ${LLM_CONTEXT_WINDOW_ENV}, or "contextWindow" in ` +
+          `~/.gitnexus/config.json) so GitNexus can shrink wiki prompts to fit.`,
       );
     }
 

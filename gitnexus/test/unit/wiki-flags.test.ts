@@ -972,6 +972,25 @@ describe('wikiCommand --timeout mapping', () => {
     expect(harness.getCapturedConfig()?.maxTokens).toBe(131072);
   });
 
+  it('passes --context-window through to the LLM config', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { contextWindow: '131072' });
+
+    expect(harness.resolveLLMConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ contextWindow: 131072 }),
+    );
+  });
+
+  it('rejects a non-integer --context-window value before starting generation', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', { contextWindow: 'abc' });
+
+    expect(harness.generatorCtor).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
   it.each([false, true])(
     'reports incomplete generation as failure (review: %s)',
     async (review) => {

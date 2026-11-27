@@ -477,6 +477,10 @@ program
     'Max completion tokens for each LLM request (default: 16384)',
   )
   .option(
+    '--context-window <n>',
+    'Model context window in tokens; wiki prompts are trimmed to fit (default: 128000)',
+  )
+  .option(
     '--allow-insecure-connection <host>',
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   )

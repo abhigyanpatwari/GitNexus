@@ -1872,6 +1872,8 @@ export interface CLIConfig {
   isReasoningModel?: boolean;
   /** Completion-token limit for wiki LLM requests. Flag and GITNEXUS_MAX_COMPLETION_TOKENS win over this. */
   maxCompletionTokens?: number;
+  /** Model context window in tokens for wiki prompt budgeting. Flag and GITNEXUS_CONTEXT_WINDOW win over this. */
+  contextWindow?: number;
 }
 
 /**

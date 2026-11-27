@@ -35,6 +35,7 @@ import { sanitizeMermaidMarkdown } from './mermaid-sanitizer.js';
 import {
   callLLM,
   estimateTokens,
+  DEFAULT_CONTEXT_WINDOW,
   type LLMConfig,
   type CallLLMOptions,
   type LLMResponse,
@@ -65,6 +66,13 @@ import {
   formatProcesses,
 } from './prompts.js';
 
+import {
+  capLines,
+  clipToTokens,
+  estimateTokensSafe,
+  fitSectionsToBudget,
+  promptTokenBudget,
+} from './prompt-budget.js';
 import { splitModuleByDirectory } from './module-split.js';
 
 import { shouldIgnorePath } from '../../config/ignore-service.js';
@@ -186,6 +194,10 @@ const keyOrderFreeJson = (value: unknown): string =>
 
 const DEFAULT_MAX_TOKENS_PER_MODULE = 30_000;
 const GROUPING_TOKEN_BUDGET = 100_000;
+/** Strongest inter-module edges kept in the overview prompt. */
+const OVERVIEW_EDGE_LIMIT = 200;
+/** Share of the overview prompt reserved for README/package metadata. */
+const OVERVIEW_PROJECT_INFO_TOKENS = 4_000;
 const MAX_SLUG_LENGTH = 60;
 const WIKI_DIR = 'wiki';
 
@@ -293,6 +305,27 @@ export class WikiGenerator {
   /**
    * Append an output-language instruction to a system prompt when --lang is set.
    */
+  /** Tokens a user prompt may use for this system prompt, given the configured window. */
+  private promptBudget(systemPrompt: string): number {
+    return promptTokenBudget(
+      this.llmConfig.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      this.llmConfig.maxTokens,
+      systemPrompt,
+    );
+  }
+
+  /**
+   * Grouping prompt limit in `estimateTokens` units: the fixed cap, lowered
+   * when the model's window leaves less room (chars/4 undershoots, so the
+   * window-derived limit is scaled by 3/4 to match the safer 3 chars/token).
+   */
+  private groupingBudget(): number {
+    return Math.min(
+      GROUPING_TOKEN_BUDGET,
+      Math.floor(this.promptBudget(GROUPING_SYSTEM_PROMPT) * 0.75),
+    );
+  }
+
   private buildSystemPrompt(base: string): string {
     const lang = this.effectiveLang();
     if (!lang) return base;
@@ -607,10 +640,9 @@ export class WikiGenerator {
       DIRECTORY_TREE: dirTree,
     });
 
-    const promptTokens = estimateTokens(prompt);
     let grouping: Record<string, string[]>;
 
-    if (promptTokens <= GROUPING_TOKEN_BUDGET) {
+    if (estimateTokens(prompt) <= this.groupingBudget()) {
       // Grouping is a structured-data phase (JSON output), not documentation.
       // Do NOT apply buildSystemPrompt here — a language instruction would risk
       // translating module-name keys, breaking slug stability and JSON parsing.
@@ -670,7 +702,7 @@ export class WikiGenerator {
   }
 
   /**
-   * Run grouping in batches when the full file list exceeds GROUPING_TOKEN_BUDGET.
+   * Run grouping in batches when the full file list exceeds the grouping budget.
    */
   private async batchedGrouping(files: FileWithExports[]): Promise<Record<string, string[]>> {
     const batches = this.batchFilesForGrouping(files);
@@ -722,7 +754,7 @@ export class WikiGenerator {
   }
 
   /**
-   * Partition files into batches that fit within GROUPING_TOKEN_BUDGET.
+   * Partition files into batches that fit within the grouping budget.
    * Groups by top-level directory for semantic coherence.
    */
   private batchFilesForGrouping(files: FileWithExports[]): FileWithExports[][] {
@@ -746,7 +778,7 @@ export class WikiGenerator {
     for (const dirFiles of dirGroups.values()) {
       const dirPromptSize = this.estimateGroupingPromptTokens(dirFiles);
 
-      if (dirPromptSize > GROUPING_TOKEN_BUDGET) {
+      if (dirPromptSize > this.groupingBudget()) {
         if (currentBatch.length > 0) {
           batches.push(currentBatch);
           currentBatch = [];
@@ -758,7 +790,7 @@ export class WikiGenerator {
             subBatch.push(dirFiles[i]);
             i++;
             if (
-              this.estimateGroupingPromptTokens(subBatch) > GROUPING_TOKEN_BUDGET &&
+              this.estimateGroupingPromptTokens(subBatch) > this.groupingBudget() &&
               subBatch.length > 1
             ) {
               subBatch.pop();
@@ -768,7 +800,7 @@ export class WikiGenerator {
           }
           if (
             subBatch.length === 1 &&
-            this.estimateGroupingPromptTokens(subBatch) > GROUPING_TOKEN_BUDGET
+            this.estimateGroupingPromptTokens(subBatch) > this.groupingBudget()
           ) {
             subBatch[0] = this.trimSymbolsToFit(subBatch[0]);
           }
@@ -778,7 +810,7 @@ export class WikiGenerator {
       }
 
       const candidateBatch = [...currentBatch, ...dirFiles];
-      if (this.estimateGroupingPromptTokens(candidateBatch) > GROUPING_TOKEN_BUDGET) {
+      if (this.estimateGroupingPromptTokens(candidateBatch) > this.groupingBudget()) {
         if (currentBatch.length > 0) {
           batches.push(currentBatch);
         }
@@ -818,7 +850,7 @@ export class WikiGenerator {
           { name: `... and ${symbols.length - mid} more`, type: 'truncated' },
         ],
       };
-      if (this.estimateGroupingPromptTokens([candidate]) <= GROUPING_TOKEN_BUDGET) {
+      if (this.estimateGroupingPromptTokens([candidate]) <= this.groupingBudget()) {
         lo = mid;
       } else {
         hi = mid - 1;
@@ -954,6 +986,11 @@ export class WikiGenerator {
     if (totalTokens > this.maxTokensPerModule) {
       finalSourceCode = this.truncateSource(sourceCode, this.maxTokensPerModule);
     }
+    // Leave room in the window for the template, graph edges and completion.
+    finalSourceCode = clipToTokens(
+      finalSourceCode,
+      Math.floor(this.promptBudget(MODULE_SYSTEM_PROMPT) * 0.75),
+    );
 
     // Get graph data
     const [intraCalls, interCalls, processes] = await Promise.all([
@@ -1011,11 +1048,17 @@ export class WikiGenerator {
     const crossCalls = await getIntraModuleCallEdges(allChildFiles);
     const processes = await getProcessesForFiles(allChildFiles, 3);
 
-    const prompt = fillTemplate(PARENT_USER_PROMPT, {
+    const parentVars = {
       MODULE_NAME: node.name,
-      CHILDREN_DOCS: childDocs.join('\n\n'),
       CROSS_MODULE_CALLS: formatCallEdges(crossCalls),
       CROSS_PROCESSES: formatProcesses(processes),
+    };
+    const parentRoom =
+      this.promptBudget(PARENT_SYSTEM_PROMPT) -
+      estimateTokensSafe(fillTemplate(PARENT_USER_PROMPT, { ...parentVars, CHILDREN_DOCS: '' }));
+    const prompt = fillTemplate(PARENT_USER_PROMPT, {
+      ...parentVars,
+      CHILDREN_DOCS: fitSectionsToBudget(childDocs, parentRoom).join('\n\n'),
     });
 
     const response = await this.invokeLLM(
@@ -1056,16 +1099,28 @@ export class WikiGenerator {
     // Read project config
     const projectInfo = await this.readProjectInfo();
 
+    // Edges arrive sorted by call count, so the cap keeps the strongest ones.
     const edgesText =
       moduleEdges.length > 0
-        ? moduleEdges.map((e) => `${e.from} → ${e.to} (${e.count} calls)`).join('\n')
+        ? capLines(
+            moduleEdges.map((e) => `${e.from} → ${e.to} (${e.count} calls)`).join('\n'),
+            OVERVIEW_EDGE_LIMIT,
+          )
         : 'No inter-module call edges detected';
 
-    const prompt = fillTemplate(OVERVIEW_USER_PROMPT, {
-      PROJECT_INFO: projectInfo,
-      MODULE_SUMMARIES: moduleSummaries.join('\n\n'),
+    const overviewVars = {
+      PROJECT_INFO: clipToTokens(projectInfo, OVERVIEW_PROJECT_INFO_TOKENS),
       MODULE_EDGES: edgesText,
       TOP_PROCESSES: formatProcesses(topProcesses),
+    };
+    const overviewRoom =
+      this.promptBudget(OVERVIEW_SYSTEM_PROMPT) -
+      estimateTokensSafe(
+        fillTemplate(OVERVIEW_USER_PROMPT, { ...overviewVars, MODULE_SUMMARIES: '' }),
+      );
+    const prompt = fillTemplate(OVERVIEW_USER_PROMPT, {
+      ...overviewVars,
+      MODULE_SUMMARIES: fitSectionsToBudget(moduleSummaries, overviewRoom).join('\n\n'),
     });
 
     const response = await this.invokeLLM(
