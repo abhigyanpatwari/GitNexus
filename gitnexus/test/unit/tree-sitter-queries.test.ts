@@ -91,6 +91,92 @@ describe('tree-sitter queries', () => {
       expect(TYPESCRIPT_QUERIES).toContain('call_expression');
       expect(TYPESCRIPT_QUERIES).toContain('@call');
     });
+
+    // #4216: TypeScript enums were the only common language construct that
+    // produced no graph node — `gitnexus context Color` returned "Symbol not
+    // found" for `export enum Color { Red, Green }`.
+    it('captures enum declarations as @definition.enum (#4216)', () => {
+      expect(TYPESCRIPT_QUERIES).toContain('enum_declaration');
+      expect(TYPESCRIPT_QUERIES).toContain('@definition.enum');
+    });
+
+    it('captures bare enum members as @definition.property (#4216)', () => {
+      // enum Color { Red, Green } — bare members are property_identifier nodes
+      // directly inside enum_body.
+      expect(TYPESCRIPT_QUERIES).toContain('(enum_body');
+      expect(TYPESCRIPT_QUERIES).toContain('(property_identifier)');
+    });
+
+    it('captures initialised enum members as @definition.property (#4216)', () => {
+      // enum Color { Green = 1 } — members with values are enum_assignment nodes.
+      expect(TYPESCRIPT_QUERIES).toContain('enum_assignment');
+    });
+
+    it('actually matches enum declarations at parse time (#4216)', () => {
+      // Real parse check: the query must yield the enum name as a captured node.
+      function capturedDefinitionNames(
+        language: Parameters<Parser['setLanguage']>[0],
+        querySource: string,
+        src: string,
+        captureKey: string,
+      ): string[] {
+        const parser = new Parser();
+        parser.setLanguage(language);
+        const query = new Parser.Query(language, querySource);
+        const tree = parser.parse(src);
+        const names: string[] = [];
+        for (const match of query.matches(tree.rootNode)) {
+          let isTarget = false;
+          let name: string | undefined;
+          for (const capture of match.captures) {
+            if (capture.name === captureKey) isTarget = true;
+            if (capture.name === 'name') name = capture.node.text;
+          }
+          if (isTarget && name !== undefined) names.push(name);
+        }
+        return names;
+      }
+
+      const lang = TypeScript.typescript as Parameters<Parser['setLanguage']>[0];
+
+      // --- enum declaration ---
+      const enumNames = capturedDefinitionNames(
+        lang,
+        TYPESCRIPT_QUERIES,
+        `export enum Color { Red = 'red', Green = 'green' }`,
+        'definition.enum',
+      );
+      expect(enumNames).toContain('Color');
+
+      // --- const enum ---
+      const constEnumNames = capturedDefinitionNames(
+        lang,
+        TYPESCRIPT_QUERIES,
+        `const enum Direction { Up, Down, Left, Right }`,
+        'definition.enum',
+      );
+      expect(constEnumNames).toContain('Direction');
+
+      // --- enum members (bare) ---
+      const memberNames = capturedDefinitionNames(
+        lang,
+        TYPESCRIPT_QUERIES,
+        `enum Status { Active, Inactive }`,
+        'definition.property',
+      );
+      expect(memberNames).toContain('Active');
+      expect(memberNames).toContain('Inactive');
+
+      // --- enum members with initialisers ---
+      const initMemberNames = capturedDefinitionNames(
+        lang,
+        TYPESCRIPT_QUERIES,
+        `enum Priority { Low = 0, High = 1 }`,
+        'definition.property',
+      );
+      expect(initMemberNames).toContain('Low');
+      expect(initMemberNames).toContain('High');
+    });
   });
 
   describe('JavaScript queries', () => {

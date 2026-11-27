@@ -34,6 +34,43 @@ ${unboundCallableQuery('definition.function')}
 (interface_declaration
   name: (type_identifier) @name) @definition.interface
 
+; Enums (#4216). TypeScript was the only mainstream language in GitNexus whose
+; enum declarations minted no graph node: Java, C#, Rust, Swift, PHP, Dart and
+; Zig all have a @definition.enum rule, but the TypeScript query had none.
+; Without it 'gitnexus context Color' on 'enum Color { Red, Green }' answered
+; "Symbol not found" and no ACCESSES or USES edge was emitted.
+;
+; The TypeScript grammar spells the enum name as 'identifier' (not
+; 'type_identifier') — confirmed from the scope query in
+; languages/typescript/query.ts which uses 'name: (identifier) @declaration.name'.
+;
+; 'const enum', 'declare enum', non-exported enums, enums in a 'namespace', and
+; enums in a Vue <script lang="ts"> block all reuse this same grammar node, so
+; they are all covered automatically.
+(enum_declaration
+  name: (identifier) @name) @definition.enum
+
+; Enum members as Property nodes (#4216).
+; Bare members (Red, Blue) — a property_identifier directly inside the enum body.
+; Members with an initialiser (Green = 1) — an enum_assignment whose 'name'
+; field is a property_identifier.
+; Both shapes are anchored to enum_body so they cannot match outside an enum.
+;
+; Edge cases deliberately NOT matched here:
+;   - A value typed as the enum (op: FilterOp) is a string/number at runtime;
+;     'op.startsWith('not')' on 'op: FilterOp' calls String.prototype.startsWith,
+;     NOT the enum member. Receiver dispatch must consult the declared type, not
+;     the name fallback.
+;   - Untyped receivers (x.Off) in Vue use the unique-name property fallback;
+;     an ambiguous fallback match is dropped at ranking time, so no false edge
+;     to a same-named member in another file.
+(enum_body
+  (property_identifier) @name) @definition.property
+
+(enum_body
+  (enum_assignment
+    name: (property_identifier) @name) @definition.property)
+
 ; Type aliases (A4). TypeScript was the only language whose aliases minted no
 ; node: Rust (type_item), Kotlin (type_alias), Swift (typealias_declaration)
 ; and Dart all emit @definition.type. The alias was declared for scope
