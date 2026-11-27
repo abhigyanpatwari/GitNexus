@@ -19,6 +19,6 @@ if [[ "$WEB" == true ]]; then
   if [[ "$mode" == evidence ]]; then files+=(gitnexus-web/web-test-results.json); fi
 fi
 for file in "${files[@]}"; do
-  test -s "$src/$file"
+  [[ -s "$src/$file" ]]
   install -D -m 644 "$src/$file" "$dest/$file"
 done
