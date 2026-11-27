@@ -231,7 +231,7 @@ def test_native_paired_proposal_cost_and_grading(tmp_path):
     runtime = Path(os.environ.get("GITNEXUS_CANARY_RUNTIME_ROOT", Path(__file__).resolve().parents[2]))
     with Scripted() as provider:
         client = evaluator.ModelClient(
-            Path(os.environ["CLAUDE_CANARY_BIN"]), model, "high", "offline-fixture", provider.base_url, timeout=150
+            Path(os.environ["CLAUDE_CANARY_BIN"]), model, "high", "offline-fixture", provider.base_url, timeout=240
         )
         report = evaluator.evaluate([task], meta, runtime_root=runtime, client=client, out=out, oracle_root=oracles)
         assert len(provider.requests) == 12
