@@ -47,6 +47,8 @@ GITNEXUS_MAX_COMPLETION_TOKENS=131072 gitnexus wiki
 gitnexus wiki --context-window 32768
 GITNEXUS_CONTEXT_WINDOW=32768 gitnexus wiki
 # Or set "contextWindow": 32768 in ~/.gitnexus/config.json (same precedence as above).
+# The window must be at least the completion limit + 6000 tokens; smaller values are rejected.
+# If you raise only the completion limit, the default window grows by the same amount.
 
 # Allow a specific LAN/self-hosted HTTP LLM host (HTTPS is preferred for remote endpoints)
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local

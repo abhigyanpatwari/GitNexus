@@ -210,6 +210,36 @@ describe('resolveLLMConfig max completion tokens', () => {
     await expect(resolveLLMConfig()).rejects.toThrow('contextWindow in ~/.gitnexus/config.json');
   });
 
+  it('rejects a context window too small for the completion limit', async () => {
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '');
+    await mockSavedConfig({});
+    await expect(resolveLLMConfig({ contextWindow: 8192 })).rejects.toThrow(
+      'Context window (8192 tokens) must be at least',
+    );
+
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '8192');
+    await expect(resolveLLMConfig()).rejects.toThrow('must be at least');
+
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '');
+    await mockSavedConfig({ contextWindow: 8192 });
+    await expect(resolveLLMConfig()).rejects.toThrow('must be at least');
+
+    // Lowering the completion limit makes the same small window usable.
+    await expect(resolveLLMConfig({ maxTokens: 1024 })).resolves.toMatchObject({
+      contextWindow: 8192,
+      maxTokens: 1024,
+    });
+  });
+
+  it('grows the default window when only the completion limit is raised', async () => {
+    vi.stubEnv(LLM_CONTEXT_WINDOW_ENV, '');
+    await mockSavedConfig({});
+    const config = await resolveLLMConfig({ maxTokens: 131072 });
+    expect(config.contextWindow).toBe(
+      DEFAULT_CONTEXT_WINDOW + 131072 - DEFAULT_MAX_COMPLETION_TOKENS,
+    );
+  });
+
   it('sends the env limit as max_completion_tokens', async () => {
     vi.stubEnv(LLM_MAX_COMPLETION_TOKENS_ENV, '131072');
     await mockSavedConfig({});

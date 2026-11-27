@@ -11,7 +11,7 @@
 const SAFE_CHARS_PER_TOKEN = 3;
 /** Tokens held back for tokenizer variance and request framing. */
 const SAFETY_MARGIN_TOKENS = 2_000;
-/** A prompt never gets less than this, however small the configured window. */
+/** Smallest user-prompt budget wiki generation can work with. */
 const MIN_PROMPT_TOKENS = 4_000;
 
 export const TRUNCATION_NOTICE = '\n\n... (truncated to fit the model context window)';
@@ -21,8 +21,18 @@ export function estimateTokensSafe(text: string): number {
 }
 
 /**
+ * Smallest context window that leaves room for the completion, the safety
+ * margin and a minimal prompt. System prompts come on top of this, and
+ * `promptTokenBudget` rejects a window they push over the line.
+ */
+export function minContextWindow(maxCompletionTokens: number): number {
+  return maxCompletionTokens + SAFETY_MARGIN_TOKENS + MIN_PROMPT_TOKENS;
+}
+
+/**
  * Tokens available for the user prompt: the context window minus the
- * completion budget, the system prompt and a safety margin.
+ * completion budget, the system prompt and a safety margin. Throws when that
+ * leaves less than a minimal prompt, since any request would then overflow.
  */
 export function promptTokenBudget(
   contextWindow: number,
@@ -31,13 +41,23 @@ export function promptTokenBudget(
 ): number {
   const budget =
     contextWindow - maxCompletionTokens - estimateTokensSafe(systemPrompt) - SAFETY_MARGIN_TOKENS;
-  return Math.max(MIN_PROMPT_TOKENS, budget);
+  if (budget < MIN_PROMPT_TOKENS) {
+    throw new Error(
+      `Context window (${contextWindow} tokens) is too small: after ${maxCompletionTokens} ` +
+        `completion tokens, the system prompt and a ${SAFETY_MARGIN_TOKENS}-token margin, ` +
+        `less than ${MIN_PROMPT_TOKENS} tokens are left for the prompt. Raise --context-window ` +
+        `or lower --max-completion-tokens.`,
+    );
+  }
+  return budget;
 }
 
 /** Cut `text` to at most `maxTokens` (pessimistic estimate), marking the cut. */
 export function clipToTokens(text: string, maxTokens: number): string {
   const maxChars = Math.max(0, maxTokens) * SAFE_CHARS_PER_TOKEN;
   if (text.length <= maxChars) return text;
+  // No room for the notice: a plain cut is the only way to stay within budget.
+  if (maxChars <= TRUNCATION_NOTICE.length) return text.slice(0, maxChars);
   const keep = Math.max(0, maxChars - TRUNCATION_NOTICE.length);
   return text.slice(0, keep) + TRUNCATION_NOTICE;
 }

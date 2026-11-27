@@ -5,6 +5,7 @@ import {
   clipToTokens,
   estimateTokensSafe,
   fitSectionsToBudget,
+  minContextWindow,
   promptTokenBudget,
 } from '../../src/core/wiki/prompt-budget.js';
 
@@ -15,8 +16,15 @@ describe('promptTokenBudget', () => {
     expect(budget).toBeGreaterThan(100_000);
   });
 
-  it('never drops below a floor, even when the completion exceeds the window', () => {
-    expect(promptTokenBudget(8_000, 16_384)).toBeGreaterThan(0);
+  it('throws instead of returning a budget that cannot fit the window', () => {
+    expect(() => promptTokenBudget(8_000, 16_384)).toThrow(
+      'Context window (8000 tokens) is too small',
+    );
+    expect(() => promptTokenBudget(8_000, 2_000, 'x'.repeat(3_000))).toThrow('too small');
+  });
+
+  it('accepts the smallest window minContextWindow allows', () => {
+    expect(promptTokenBudget(minContextWindow(16_384), 16_384)).toBe(4_000);
   });
 });
 
@@ -29,6 +37,12 @@ describe('clipToTokens', () => {
     const clipped = clipToTokens('a'.repeat(10_000), 500);
     expect(estimateTokensSafe(clipped)).toBeLessThanOrEqual(500);
     expect(clipped.endsWith(TRUNCATION_NOTICE)).toBe(true);
+  });
+
+  it('stays within budgets too small for the notice', () => {
+    expect(clipToTokens('a'.repeat(1_000), 0)).toBe('');
+    const tiny = clipToTokens('a'.repeat(1_000), 5);
+    expect(estimateTokensSafe(tiny)).toBeLessThanOrEqual(5);
   });
 });
 
@@ -52,6 +66,12 @@ describe('fitSectionsToBudget', () => {
     const fitted = fitSectionsToBudget(sections, 20_000);
     expect(fitted).toHaveLength(500);
     expect(fitted.reduce((sum, s) => sum + estimateTokensSafe(s), 0)).toBeLessThanOrEqual(20_000);
+  });
+
+  it('bounds the total when each share is smaller than the truncation notice', () => {
+    const sections = Array.from({ length: 500 }, () => 'y'.repeat(300));
+    const fitted = fitSectionsToBudget(sections, 2_000);
+    expect(fitted.reduce((sum, s) => sum + estimateTokensSafe(s), 0)).toBeLessThanOrEqual(2_000);
   });
 });
 

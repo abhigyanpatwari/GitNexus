@@ -302,9 +302,6 @@ export class WikiGenerator {
     return /^[a-zA-Z -]+$/.test(lang) ? lang : '';
   }
 
-  /**
-   * Append an output-language instruction to a system prompt when --lang is set.
-   */
   /** Tokens a user prompt may use for this system prompt, given the configured window. */
   private promptBudget(systemPrompt: string): number {
     return promptTokenBudget(
@@ -326,6 +323,9 @@ export class WikiGenerator {
     );
   }
 
+  /**
+   * Append an output-language instruction to a system prompt when --lang is set.
+   */
   private buildSystemPrompt(base: string): string {
     const lang = this.effectiveLang();
     if (!lang) return base;
