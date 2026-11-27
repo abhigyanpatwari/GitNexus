@@ -2,12 +2,21 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      plan:
+        type: string
+        required: true
+    outputs:
+      package-counts:
+        description: Passed and skipped Linux package tests for the PR comment
+        value: ${{ jobs.coverage-merge.outputs.package-counts }}
 
 permissions:
   contents: read
 
 jobs:
   java-compiler-conformance:
+    if: fromJSON(inputs.plan).run.java
     name: Java compiler conformance
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -55,6 +64,7 @@ jobs:
           path: gitnexus/coverage/java/lcov.info
 
   java-platform-conformance:
+    if: fromJSON(inputs.plan).release
     name: Java platform conformance (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -80,7 +90,35 @@ jobs:
         working-directory: gitnexus
         run: node tools/compiler-conformance/java/check-products.mjs --platform
 
+  benchmark-baseline:
+    if: fromJSON(inputs.plan).release
+    name: Select benchmark baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.select.outputs.result }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Find last measured main release
+        id: select
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        with:
+          retries: 3
+          result-encoding: string
+          script: |
+            const { benchmarkBaseline } = require('./.github/scripts/benchmark-baseline.cjs')
+            return benchmarkBaseline({ github, repo: context.repo })
+
   file-result-reuse-benchmark:
+    if: fromJSON(inputs.plan).release
+    needs: benchmark-baseline
     name: parse cache / speed and memory (${{ matrix.corpus }})
     runs-on: ubuntu-latest
     # A noisy runner extends the comparison from 7 to at most 21 pairs. The
@@ -95,19 +133,12 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Pin comparison revision
-        id: baseline
-        shell: bash
-        # A queued PR can get a new test merge after the event recorded its base SHA.
-        run: |
-          comparison_sha="$(git rev-parse --verify HEAD^1)"
-          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.baseline.outputs.sha }}
+          ref: ${{ needs.benchmark-baseline.outputs.sha }}
           path: baseline
           persist-credentials: false
       - name: Build baseline runtime
@@ -144,6 +175,8 @@ jobs:
           retention-days: 30
 
   analyze-resume-benchmark:
+    if: fromJSON(inputs.plan).release
+    needs: benchmark-baseline
     name: analyze / resumable performance (${{ matrix.resources }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -156,18 +189,12 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Pin comparison revision
-        id: baseline
-        shell: bash
-        run: |
-          comparison_sha="$(git rev-parse --verify HEAD^1)"
-          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.baseline.outputs.sha }}
+          ref: ${{ needs.benchmark-baseline.outputs.sha }}
           path: baseline
           persist-credentials: false
       - name: Build baseline runtime
@@ -227,6 +254,8 @@ jobs:
           retention-days: 30
 
   lexical-lookup-benchmark:
+    if: fromJSON(inputs.plan).release
+    needs: benchmark-baseline
     name: indexing / lexical lookup and cache interning
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -241,18 +270,12 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Pin comparison revision
-        id: baseline
-        shell: bash
-        run: |
-          comparison_sha="$(git rev-parse --verify HEAD^1)"
-          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.baseline.outputs.sha }}
+          ref: ${{ needs.benchmark-baseline.outputs.sha }}
           path: baseline
           persist-credentials: false
       - name: Build baseline runtime and install search extensions
@@ -267,7 +290,7 @@ jobs:
       - name: Prepare identical source corpora
         shell: bash
         env:
-          BASE_SHA: ${{ steps.baseline.outputs.sha }}
+          BASE_SHA: ${{ needs.benchmark-baseline.outputs.sha }}
         run: |
           mkdir "$RUNNER_TEMP/lexical-lookup"
           for variant in baseline candidate; do
@@ -330,6 +353,8 @@ jobs:
           retention-days: 30
 
   mcp-query-benchmark:
+    if: fromJSON(inputs.plan).release
+    needs: benchmark-baseline
     name: MCP query performance
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -338,16 +363,12 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Pin comparison revision
-        id: baseline
-        shell: bash
-        run: printf 'sha=%s\n' "$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.baseline.outputs.sha }}
+          ref: ${{ needs.benchmark-baseline.outputs.sha }}
           path: baseline
           persist-credentials: false
       - name: Build baseline runtime
@@ -383,6 +404,7 @@ jobs:
           retention-days: 30
 
   tool-accuracy:
+    if: fromJSON(inputs.plan).release
     name: release / deterministic tool accuracy
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -419,6 +441,7 @@ jobs:
   # FTS self-installs per shard (test/helpers/fts-availability.ts), so sharding
   # the full suite across fresh runners is safe. Shard count: shard-plan.cov_total.
   tests:
+    if: fromJSON(inputs.plan).run.cli
     name: ubuntu / coverage ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
     needs: shard-plan
     runs-on: ubuntu-latest
@@ -503,8 +526,14 @@ jobs:
   # nothing, it just reduces the stored blobs. Also emits the merged
   # test-results.json and runs the (unsharded) web + docker suites.
   coverage-merge:
+    permissions:
+      contents: read
+      actions: read
     name: ubuntu / coverage merge
-    needs: [tests, java-compiler-conformance]
+    outputs:
+      package-counts: ${{ steps.counts.outputs.counts }}
+    needs: [tests, java-compiler-conformance, shard-plan]
+    if: ${{ !cancelled() && (fromJSON(inputs.plan).coverage || fromJSON(inputs.plan).run.docker) }}
     runs-on: ubuntu-latest
     # The optional LCOV upload has its own two-minute timeout after the tests.
     timeout-minutes: 17
@@ -514,22 +543,56 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Require selected CLI suites
+        env:
+          RUN_CLI: ${{ fromJSON(inputs.plan).run.cli }}
+          RUN_JAVA: ${{ fromJSON(inputs.plan).run.java }}
+          TESTS: ${{ needs.tests.result }}
+          JAVA: ${{ needs.java-compiler-conformance.result }}
+        run: |
+          if [[ "$RUN_CLI" == true && "$TESTS" != success ]]; then
+            echo "::error::CLI tests were selected and finished with $TESTS."
+            exit 1
+          fi
+          if [[ "$RUN_JAVA" == true && "$JAVA" != success ]]; then
+            echo "::error::Java conformance was selected and finished with $JAVA."
+            exit 1
+          fi
+      - name: Download verified PR package reports
+        if: contains(fromJSON(inputs.plan).reused, 'cli') || contains(fromJSON(inputs.plan).reused, 'web')
+        uses: ./.github/actions/download-test-artifact
+        with:
+          name: coverage-reports
+          path: ${{ runner.temp }}/pr-packages
+          run-id: ${{ fromJSON(inputs.plan).source }}
+      - name: Restore selected PR reports
+        if: contains(fromJSON(inputs.plan).reused, 'cli') || contains(fromJSON(inputs.plan).reused, 'web')
+        env:
+          CLI: ${{ contains(fromJSON(inputs.plan).reused, 'cli') }}
+          WEB: ${{ contains(fromJSON(inputs.plan).reused, 'web') }}
+        run: bash .github/scripts/copy-ci-reports.sh "$RUNNER_TEMP/pr-packages" . evidence
       - uses: ./.github/actions/setup-gitnexus
         id: setup
+        if: fromJSON(inputs.plan).run.cli || fromJSON(inputs.plan).run.web
         with:
-          build: 'true'
+          lifecycle-scripts: ${{ fromJSON(inputs.plan).run.cli && 'true' || 'false' }}
       - name: Download coverage blobs
+        if: fromJSON(inputs.plan).run.cli
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: coverage-blob-*
           path: gitnexus/.vitest/blob
           merge-multiple: true
       - name: Download frozen timing snapshot
+        # A release reusing CLI coverage carries forward its own trusted
+        # snapshot. Only a fresh CLI merge learns new coverage timings.
+        if: fromJSON(inputs.plan).run.cli || fromJSON(inputs.plan).release
         uses: ./.github/actions/download-test-artifact
         with:
           name: shard-timing-input
           path: gitnexus/.vitest/timings
       - name: Merge coverage + enforce thresholds
+        if: fromJSON(inputs.plan).run.cli
         run: >-
           npx vitest --mergeReports=.vitest/blob
           --reporter=default
@@ -542,7 +605,7 @@ jobs:
         working-directory: gitnexus
       - name: Download Java conformance LCOV
         id: java-lcov-download
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && fromJSON(inputs.plan).run.java && needs.java-compiler-conformance.result == 'success' }}
         uses: ./.github/actions/download-test-artifact
         with:
           name: java-conformance-coverage
@@ -555,6 +618,7 @@ jobs:
           test -s coverage/lcov.info
           cat "$RUNNER_TEMP/java-conformance-coverage/lcov.info" >> coverage/lcov.info
       - name: Upload learned coverage timings
+        if: fromJSON(inputs.plan).release
         uses: ./.github/actions/upload-test-artifact
         with:
           name: timings-coverage
@@ -563,7 +627,7 @@ jobs:
       # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies
         id: install-web
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && fromJSON(inputs.plan).run.web && steps.setup.outcome == 'success' }}
         run: npm ci
         working-directory: gitnexus-web
       - name: Run gitnexus-web unit tests
@@ -577,33 +641,63 @@ jobs:
           --coverage
           --coverage.reporter=lcovonly
         working-directory: gitnexus-web
+      - name: Require every web test to pass before merge
+        if: ${{ !fromJSON(inputs.plan).release && fromJSON(inputs.plan).run.web }}
+        working-directory: gitnexus
+        run: node --import tsx scripts/test-completeness.ts --web-only
+      - name: Set up the Docker image's Node version
+        if: fromJSON(inputs.plan).run.docker && !fromJSON(inputs.plan).run.cli && !fromJSON(inputs.plan).run.web
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
       - name: Run docker-server integration tests
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: fromJSON(inputs.plan).run.docker
         run: node --test docker-server.test.mjs
+      - name: Stage selected package evidence
+        if: success() && fromJSON(inputs.plan).coverage
+        env:
+          CLI: ${{ contains(fromJSON(inputs.plan).packages, 'cli') }}
+          WEB: ${{ contains(fromJSON(inputs.plan).packages, 'web') }}
+        run: bash .github/scripts/copy-ci-reports.sh . "$RUNNER_TEMP/package-evidence" evidence
       - name: Upload test reports
-        if: always()
+        if: success() && fromJSON(inputs.plan).coverage
         uses: ./.github/actions/upload-test-artifact
         with:
           name: coverage-reports
-          path: |
-            gitnexus/test-results.json
-            gitnexus-web/web-test-results.json
+          path: ${{ runner.temp }}/package-evidence/
+          include-hidden-files: true
           retention-days: 5
+      - name: Count PR package tests
+        id: counts
+        if: github.event_name == 'pull_request' && fromJSON(inputs.plan).coverage
+        run: |
+          counts=$(jq -sr '"\(map(.numPassedTests) | add) passed, \(map(.numPendingTests) | add) skipped"' \
+            "$RUNNER_TEMP"/package-evidence/*/*test-results.json)
+          echo "counts=$counts" >> "$GITHUB_OUTPUT"
       # Vitest writes LCOV before it reports a threshold failure. Preserve the
       # original test outcomes and let the scanner report any transfer failure.
+      - name: Stage LCOV for the scanner
+        if: >-
+          !cancelled() && fromJSON(inputs.plan).coverage &&
+          ((github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+        env:
+          CLI: ${{ contains(fromJSON(inputs.plan).packages, 'cli') }}
+          WEB: ${{ contains(fromJSON(inputs.plan).packages, 'web') }}
+        run: bash .github/scripts/copy-ci-reports.sh . "$RUNNER_TEMP/sonar-coverage" lcov
       - name: Upload SonarQube coverage
         if: >-
-          !cancelled() && steps.java-lcov.outcome == 'success' && ((github.event_name == 'pull_request' &&
+          !cancelled() && fromJSON(inputs.plan).coverage &&
+          (!fromJSON(inputs.plan).run.java || steps.java-lcov.outcome == 'success') && ((github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository) ||
-          (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+          (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
         continue-on-error: true
         timeout-minutes: 2
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sonar-coverage
-          path: |
-            gitnexus/coverage/lcov.info
-            gitnexus-web/coverage/lcov.info
+          path: ${{ runner.temp }}/sonar-coverage/
           if-no-files-found: error
           overwrite: true
           retention-days: 5
@@ -614,6 +708,10 @@ jobs:
   # TOTAL alone. Restore timing history once: independent restores in each shard
   # could select different histories while another run publishes an update.
   shard-plan:
+    permissions:
+      contents: read
+      actions: read
+    if: fromJSON(inputs.plan).release || fromJSON(inputs.plan).run.cli
     runs-on: ubuntu-latest
     outputs:
       shards: ${{ steps.gen.outputs.shards }}
@@ -701,6 +799,7 @@ jobs:
   # See gitnexus/scripts/cross-platform-tests.ts for the file list and
   # rationale for each included test.
   cross-platform:
+    if: fromJSON(inputs.plan).release
     name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
     needs: shard-plan
     strategy:
@@ -839,7 +938,7 @@ jobs:
   # the planner; they never replace the baseline used by other PRs.
   save-shard-timings:
     needs: [coverage-merge, native-timings, test-completeness]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -855,14 +954,12 @@ jobs:
           path: .vitest/timings
           key: test-timings-v1-node22-vitest5-${{ github.run_id }}-${{ github.run_attempt }}
 
-  # Branch protection still requires these six names from the three-shard
-  # matrix. Keep them as aggregate gates as the real matrix grows: every native
-  # shard, the complete execution audit, and the scope measurements must pass.
-  # These jobs only verify dependency results; tests run in cross-platform above.
+  # Legacy three-shard check names summarize the release's native matrix.
+  # PR branch protection uses CI Gate and the selected-suite execution check.
   protected-platform-checks:
     name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.check }}/3
     needs: [cross-platform, test-completeness, scope-resolution-benchmark]
-    if: always()
+    if: always() && fromJSON(inputs.plan).release
     permissions: {}
     strategy:
       fail-fast: false
@@ -879,7 +976,6 @@ jobs:
           EXECUTION_RESULT: ${{ needs.test-completeness.result }}
           SCOPE_BENCH_RESULT: ${{ needs.scope-resolution-benchmark.result }}
         run: |
-          echo "Compatibility gate for the former three-shard check name."
           echo "All native shards: $NATIVE_RESULT"
           echo "Complete execution audit: $EXECUTION_RESULT"
           echo "Scope-resolution measurements: $SCOPE_BENCH_RESULT"
@@ -896,6 +992,7 @@ jobs:
   #      check introspects source, not the shipped .node) fails on the platform
   #      it ships to.
   abi-assert:
+    if: fromJSON(inputs.plan).run.abi
     name: tree-sitter ABI (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -936,6 +1033,7 @@ jobs:
   # Native Linux ARM64 also verifies the corrected bundled prebuilds (#3599),
   # and both Linux runners install on an older libstdc++ without a toolchain (#4165).
   packaged-install-smoke:
+    if: fromJSON(inputs.plan).release
     name: packaged install smoke (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -1197,6 +1295,7 @@ jobs:
   # `engines: ^22.18.0 || >=24.11.0`) so a regression fails here instead of
   # shipping to users on the minimum supported Node.
   node-floor-compat:
+    if: fromJSON(inputs.plan).release
     name: node floor compat (22.18)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1247,6 +1346,8 @@ jobs:
         working-directory: gitnexus
 
   embedding-chunking-benchmark:
+    if: fromJSON(inputs.plan).release
+    needs: benchmark-baseline
     name: embedding chunking benchmark
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1257,18 +1358,12 @@ jobs:
         with:
           fetch-depth: 2
           persist-credentials: false
-      - name: Pin comparison revision
-        id: baseline
-        shell: bash
-        run: |
-          comparison_sha="$(git rev-parse --verify HEAD^1)"
-          printf 'sha=%s\n' "$comparison_sha" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ steps.baseline.outputs.sha }}
+          ref: ${{ needs.benchmark-baseline.outputs.sha }}
           path: baseline
           persist-credentials: false
       - name: Build baseline runtime
@@ -1305,6 +1400,7 @@ jobs:
   # Keep it outside the 25-minute language benchmark job: four trials at each
   # size take several minutes even on the development baseline machine.
   embedding-identity-benchmark:
+    if: fromJSON(inputs.plan).release
     name: embedding identity persistence benchmark
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -1333,6 +1429,7 @@ jobs:
   # Every opt-in suite is discovered by run-benchmarks.ts. A failing worker
   # benchmark is a failure to investigate, never a reason to omit that suite.
   benchmarks:
+    if: fromJSON(inputs.plan).release
     name: benchmarks (GITNEXUS_BENCH)
     runs-on: ubuntu-latest
     # The serial guards alone can take 27 minutes on a slower runner. Leave
@@ -1881,6 +1978,7 @@ jobs:
   # Fresh-process measurements have their own runner and time budget so they
   # neither contend with nor consume the existing benchmark gate's allowance.
   scope-resolution-benchmark:
+    if: fromJSON(inputs.plan).release
     name: scope resolution time / memory (all languages)
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -1951,6 +2049,7 @@ jobs:
   # Locked eval suite. setup-uv and uv itself are immutable so CI exercises
   # exactly the dependency graph developers run from eval/uv.lock.
   eval-tests:
+    if: fromJSON(inputs.plan).run.eval
     name: eval / locked pytest
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1996,11 +2095,15 @@ jobs:
           retention-days: 5
 
   test-completeness:
+    permissions:
+      contents: read
+      actions: read
     name: every test executed
     needs:
       [
         shard-plan,
         coverage-merge,
+        abi-assert,
         cross-platform,
         java-platform-conformance,
         benchmarks,
@@ -2012,22 +2115,66 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Require every selected PR suite to pass
+        if: github.event_name == 'pull_request'
+        env:
+          COVERAGE: ${{ needs.coverage-merge.result }}
+          RUN_COVERAGE: ${{ fromJSON(inputs.plan).coverage || fromJSON(inputs.plan).run.docker }}
+          EVAL: ${{ needs.eval-tests.result }}
+          ABI: ${{ needs.abi-assert.result }}
+          RUN_EVAL: ${{ fromJSON(inputs.plan).run.eval }}
+          RUN_ABI: ${{ fromJSON(inputs.plan).run.abi }}
+        run: |
+          check_result() {
+            local suite=$1 selected=$2 result=$3 expected=skipped
+            if [[ "$selected" == true ]]; then expected=success; fi
+            if [[ "$result" != "$expected" ]]; then
+              echo "::error::$suite finished with $result (expected $expected)."
+              return 1
+            fi
+          }
+          check_result "Coverage" "$RUN_COVERAGE" "$COVERAGE"
+          check_result "Locked pytest" "$RUN_EVAL" "$EVAL"
+          check_result "Tree-sitter ABI" "$RUN_ABI" "$ABI"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: fromJSON(inputs.plan).release
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
+        if: fromJSON(inputs.plan).release
       - name: Download CLI and web execution reports
+        if: fromJSON(inputs.plan).release
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: coverage-reports
       - name: Download all execution receipts
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && fromJSON(inputs.plan).release }}
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: execution-*
           path: execution-reports
           merge-multiple: true
+      - name: Download verified PR pytest receipt
+        if: contains(fromJSON(inputs.plan).reused, 'eval')
+        uses: ./.github/actions/download-test-artifact
+        with:
+          name: execution-pytest-locked
+          path: ${{ runner.temp }}/pr-pytest
+          run-id: ${{ fromJSON(inputs.plan).source }}
+      - name: Download verified PR preflight receipt
+        if: contains(fromJSON(inputs.plan).reused, 'eval')
+        uses: ./.github/actions/download-test-artifact
+        with:
+          name: execution-preflight
+          path: ${{ runner.temp }}/pr-preflight
+          run-id: ${{ fromJSON(inputs.plan).source }}
+      - name: Include PR receipts in release audit
+        if: contains(fromJSON(inputs.plan).reused, 'eval')
+        run: |
+          cp "$RUNNER_TEMP/pr-pytest/pytest-locked.xml" execution-reports/
+          cp "$RUNNER_TEMP/pr-preflight/preflight.json" execution-reports/
       - name: Require a real pass for every collected test
+        if: fromJSON(inputs.plan).release
         env:
           PLATFORM_SHARDS: ${{ needs.shard-plan.outputs.total }}
         run: |
@@ -2035,10 +2182,10 @@ jobs:
           cd gitnexus
           node --import tsx scripts/test-completeness.ts ../execution-reports test-results.json "$PLATFORM_SHARDS"
       - name: Require a real pass for every pytest case
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && fromJSON(inputs.plan).release }}
         run: python3 eval/check_test_execution.py execution-reports eval/pytest-results.json
       - name: Upload complete test reports
-        if: always()
+        if: always() && fromJSON(inputs.plan).release
         uses: ./.github/actions/upload-test-artifact
         with:
           name: test-reports
@@ -2051,6 +2198,7 @@ jobs:
   # All three native hosts run the paired proposal evaluator. Jammy also
   # exercises the historical nested Bash method on a compatible stock kernel.
   eval-containment-linux:
+    if: fromJSON(inputs.plan).release
     name: eval / containment (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -2181,6 +2329,7 @@ jobs:
   # Native Windows Job Object canary. POSIX-only tests skip by platform, while
   # the grandchild delayed-write test must execute and pass on this runner.
   eval-containment-windows:
+    if: fromJSON(inputs.plan).release
     name: eval / containment (windows)
     runs-on: windows-latest
     timeout-minutes: 15
