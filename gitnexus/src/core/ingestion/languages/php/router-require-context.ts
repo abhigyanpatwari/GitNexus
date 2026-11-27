@@ -14,6 +14,7 @@ export interface PhpRouteRequireContext {
   namespace: string | null;
   middleware: string[];
   namePrefix: string | null;
+  controller: string | null;
 }
 
 const IDENTITY_CONTEXT: PhpRouteRequireContext = Object.freeze({
@@ -21,6 +22,7 @@ const IDENTITY_CONTEXT: PhpRouteRequireContext = Object.freeze({
   namespace: null,
   middleware: Object.freeze([]) as unknown as string[],
   namePrefix: null,
+  controller: null,
 });
 
 /**
@@ -31,7 +33,7 @@ const IDENTITY_CONTEXT: PhpRouteRequireContext = Object.freeze({
 const MAX_CONTEXTS_PER_FILE = 256;
 
 const contextKey = (ctx: PhpRouteRequireContext): string =>
-  JSON.stringify([ctx.prefix, ctx.namespace, ctx.namePrefix, ctx.middleware]);
+  JSON.stringify([ctx.prefix, ctx.namespace, ctx.namePrefix, ctx.controller, ctx.middleware]);
 
 function composeContext(
   outer: PhpRouteRequireContext,
@@ -39,14 +41,14 @@ function composeContext(
 ): PhpRouteRequireContext {
   if (!binding.appliesContext) return outer;
   const composed = extendRouteGroupContext(
-    { ...outer, controller: null, namespaceResets: false },
+    { ...outer, controller: outer.controller, namespaceResets: false },
     {
       prefix: binding.prefix,
       namespace: binding.namespace,
       namespaceResets: binding.namespaceResets,
       middleware: binding.middleware,
       namePrefix: binding.namePrefix,
-      controller: null,
+      controller: binding.controller,
     },
     'lumen',
   );
@@ -55,6 +57,7 @@ function composeContext(
     namespace: composed.namespace,
     middleware: [...composed.middleware],
     namePrefix: composed.namePrefix,
+    controller: composed.controller,
   };
 }
 
@@ -204,6 +207,7 @@ function applyContext(route: ExtractedRoute, ctx: PhpRouteRequireContext): Extra
     prefix,
     middleware,
     routeName: mergedName,
+    controllerName: route.controllerName ?? ctx.controller,
     controllerQualifiedName,
   };
 }

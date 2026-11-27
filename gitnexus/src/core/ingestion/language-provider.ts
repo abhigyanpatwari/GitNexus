@@ -86,6 +86,8 @@ export interface ExtractedRouteRequireBinding {
   namespaceResets: boolean;
   middleware: string[];
   namePrefix: string | null;
+  /** Group `controller` class, when the require sits inside that group. */
+  controller: string | null;
   lineNumber: number;
   /** Orders requires that share a line. */
   column: number;

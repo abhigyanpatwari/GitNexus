@@ -272,8 +272,9 @@ export const createSymbolTable = (): InternalSymbolTable => {
   const callableByName = new Map<string, SymbolDefinition[]>();
 
   // 3. Lazily-built per-file index of Methods by ASCII-folded name, for the
-  // case-insensitive lookup. Built on first lookup for a file and dropped when
-  // that file gains a symbol, so each lookup is O(candidates), not O(file).
+  // case-insensitive lookup. The first lookup after creation or invalidation
+  // scans the file (O(file)); later lookups are O(candidates). The index is
+  // dropped when that file gains a symbol.
   const foldedMethodsByFile = new Map<string, Map<string, SymbolDefinition[]>>();
 
   const add = (

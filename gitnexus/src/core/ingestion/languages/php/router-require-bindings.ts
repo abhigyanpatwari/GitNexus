@@ -137,18 +137,70 @@ function catchTypeText(catchClause: SyntaxNode): string {
   return chunks.join('');
 }
 
-/** A throw is definitely caught only by `catch (Throwable)` (PHP's universal type). */
+function namespaceHasName(node: SyntaxNode): boolean {
+  return (node.children ?? []).some(
+    (child) => child.type === 'namespace_name' || child.type === 'name',
+  );
+}
+
+/**
+ * `\Throwable` is always the global type. Unqualified `Throwable` is global
+ * only when no named namespace is in effect at the catch.
+ */
+function inNamedNamespace(node: SyntaxNode): boolean {
+  let root: SyntaxNode = node;
+  while (root.parent) root = root.parent;
+  let named = false;
+  const visit = (current: SyntaxNode): boolean => {
+    if (current === node) return true;
+    if (current.type === 'namespace_definition') {
+      const hasName = namespaceHasName(current);
+      const braced = (current.children ?? []).some(
+        (child) => child.type === 'compound_statement' || child.type === 'declaration_list',
+      );
+      if (braced) {
+        const previous = named;
+        named = hasName;
+        for (const child of current.children ?? []) {
+          if (visit(child)) return true;
+        }
+        named = previous;
+        return false;
+      }
+      named = hasName;
+    }
+    for (const child of current.children ?? []) {
+      if (visit(child)) return true;
+    }
+    return false;
+  };
+  visit(root);
+  return named;
+}
+
+function catchIsUniversalThrowable(catchClause: SyntaxNode): boolean {
+  const raw = catchTypeText(catchClause);
+  if (raw.replace(/^\\+/, '') !== 'Throwable') return false;
+  if (raw.startsWith('\\')) return true;
+  return !inNamedNamespace(catchClause);
+}
+
+function tryCatchesAllThrows(tryNode: SyntaxNode): boolean {
+  return (tryNode.children ?? []).some(
+    (child) => child.type === 'catch_clause' && catchIsUniversalThrowable(child),
+  );
+}
+
+/** A throw is definitely caught only by an enclosing universal Throwable catch. */
 function throwIsDefinitelyCaught(node: SyntaxNode): boolean {
   let current: SyntaxNode | null = node.parent;
   while (current) {
-    if (current.type === 'catch_clause' || current.type === 'finally_clause') return false;
-    if (current.type === 'try_statement') {
-      return (current.children ?? []).some((child) => {
-        if (child.type !== 'catch_clause') return false;
-        const typeName = catchTypeText(child).replace(/^\\+/, '');
-        return typeName === 'Throwable';
-      });
+    if (current.type === 'catch_clause' || current.type === 'finally_clause') {
+      while (current && current.type !== 'try_statement') current = current.parent;
+      current = current?.parent ?? null;
+      continue;
     }
+    if (current.type === 'try_statement' && tryCatchesAllThrows(current)) return true;
     current = current.parent;
   }
   return false;
@@ -257,6 +309,7 @@ export function extractPhpRouterRequireBindings(
           namespaceResets: ctx.namespaceResets,
           middleware: [...ctx.middleware],
           namePrefix: ctx.namePrefix,
+          controller: ctx.controller,
           lineNumber: node.startPosition.row,
           column: node.startPosition.column,
           once: isOnceRequire(node),

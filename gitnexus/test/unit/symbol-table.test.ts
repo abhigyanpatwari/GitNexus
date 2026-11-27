@@ -88,6 +88,7 @@ describe('SymbolTable', () => {
     });
 
     it('sees a method added after an earlier lookup of the same file', () => {
+      table.add('app/Ctrl.php', 'existing', 'method:ctrl.existing', 'Method', owner);
       expect(
         table.lookupExactUniqueCaseInsensitive('app/Ctrl.php', 'show', 'class:Ctrl'),
       ).toBeUndefined();

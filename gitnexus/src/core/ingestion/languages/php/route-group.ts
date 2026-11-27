@@ -162,7 +162,9 @@ export function qualifyStringActionController(
     if (relative.includes('\\')) {
       const nsDots = normalizeQualifiedName(composedNamespace);
       const qualified = normalizeQualifiedName(relative);
-      if (qualified === nsDots || qualified.startsWith(`${nsDots}.`)) {
+      const foldedQualified = qualified.toLowerCase();
+      const foldedNs = nsDots.toLowerCase();
+      if (foldedQualified === foldedNs || foldedQualified.startsWith(`${foldedNs}.`)) {
         return qualified;
       }
     }

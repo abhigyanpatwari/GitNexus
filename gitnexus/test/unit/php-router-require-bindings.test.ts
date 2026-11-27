@@ -9,6 +9,7 @@ import {
   applyPhpRouterRequireContexts,
   resolvePhpRouterRequireBindings,
 } from '../../src/core/ingestion/languages/php/router-require-context.js';
+import { qualifyStringActionController } from '../../src/core/ingestion/languages/php/route-group.js';
 import {
   extractLaravelRoutes,
   type ExtractedRoute,
@@ -121,6 +122,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         namePrefix: 'orders',
         lineNumber: 1,
         column: 0,
+        controller: null,
         namespaceResets: false,
         once: false,
         appliesContext: true,
@@ -135,6 +137,7 @@ describe('resolvePhpRouterRequireBindings', () => {
         namePrefix: null,
         lineNumber: 2,
         column: 0,
+        controller: null,
         namespaceResets: false,
         once: false,
         appliesContext: true,
@@ -173,6 +176,7 @@ describe('applyPhpRouterRequireContexts', () => {
         namePrefix: 'order',
         lineNumber: 1,
         column: 0,
+        controller: null,
         namespaceResets: false,
         once: false,
         appliesContext: true,
@@ -232,6 +236,7 @@ describe('applyPhpRouterRequireContexts', () => {
         namePrefix: null,
         lineNumber: 1,
         column: 0,
+        controller: null,
         namespaceResets: false,
         once: false,
         appliesContext: true,
@@ -274,6 +279,7 @@ describe('applyPhpRouterRequireContexts', () => {
         namePrefix: null,
         lineNumber: 1,
         column: 0,
+        controller: null,
         namespaceResets: false,
         once: false,
         appliesContext: true,
@@ -703,6 +709,50 @@ $app->router->group(['prefix' => 'api'], function ($router) {
     expect(webContexts(source)).toEqual([null, 'api']);
   });
 
+  it('an unqualified Throwable inside a namespace does not count as caught', () => {
+    const source = `<?php
+namespace App;
+try { throw new \\RuntimeException(); } catch (Throwable $e) {}
+require __DIR__ . '/../routes/web.php';
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once)?.unguarded).toBe(false);
+  });
+
+  it('an outer Throwable catch covers a throw the inner catch misses', () => {
+    const source = `<?php
+try {
+  try { throw new Exception(); } catch (Error $e) {}
+} catch (Throwable $e) {}
+require __DIR__ . '/../routes/web.php';
+`;
+    const bindings = extractBindings(source, 'bootstrap/app.php');
+    expect(bindings.find((b) => !b.once)?.unguarded).toBe(true);
+  });
+
+  it('forwards a group controller onto the require binding', () => {
+    const bindings = extractBindings(
+      `<?php
+$app->router->group(['controller' => HomeController::class, 'prefix' => 'api'], function ($router) {
+  require __DIR__ . '/../routes/web.php';
+});
+`,
+      'bootstrap/app.php',
+    );
+    expect(bindings[0]?.controller).toBe('HomeController');
+  });
+
+  it('does not prepend a group namespace that already qualifies the action ignoring case', () => {
+    expect(
+      qualifyStringActionController(
+        'app\\http\\controllers\\UserController',
+        'App\\Http\\Controllers',
+        false,
+        null,
+      ),
+    ).toBe('app.http.controllers.UserController');
+  });
+
   it('a require after break in a do-body is not a definite load', () => {
     const source = `<?php
 do {
@@ -903,6 +953,7 @@ $router->group(['prefix' => 'v1', 'namespace' => 'Admin', 'middleware' => 'admin
         namespace: 'App\\Http\\Controllers\\Admin',
         middleware: ['jwt', 'admin'],
         namePrefix: 'api.v1',
+        controller: null,
       },
     ]);
   });
