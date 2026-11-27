@@ -22,6 +22,9 @@ export function isExtensionlessScriptPath(filePath: string): boolean {
   );
 }
 
+/** `env` options whose value is the next word (GNU and BSD spellings). */
+const ENV_OPTIONS_WITH_OPERAND = new Set(['-u', '--unset', '-C', '--chdir', '-P']);
+
 /**
  * The interpreter named by a `#!` first line, e.g. `python3` for
  * `#!/usr/bin/env -S python3 -u`; null when there is no shebang.
@@ -36,8 +39,16 @@ export function shebangInterpreter(sourceText: string): string | null {
   let program = words.shift();
   if (program === undefined || program === '') return null;
   if (program.slice(program.lastIndexOf('/') + 1) === 'env') {
-    // `env [-S] [-i] [NAME=value…] interpreter args`
-    program = words.find((w) => !w.startsWith('-') && !w.includes('='));
+    // `env [-S] [-i] [-u NAME] [-C DIR] [-P PATH] [NAME=value…] interpreter args`
+    program = undefined;
+    for (let i = 0; i < words.length; i++) {
+      const w = words[i];
+      if (ENV_OPTIONS_WITH_OPERAND.has(w)) i++;
+      else if (!w.startsWith('-') && !w.includes('=')) {
+        program = w;
+        break;
+      }
+    }
     if (program === undefined) return null;
   }
   return program.slice(program.lastIndexOf('/') + 1) || null;

@@ -80,6 +80,8 @@ describe('content language classification', () => {
       ['bin/release', '#!/usr/bin/env node\nconsole.log(1);\n', SupportedLanguages.JavaScript],
       ['bin/codegen', '#!/usr/bin/env tsx\n', SupportedLanguages.TypeScript],
       ['bin/migrate', '#!/usr/bin/env ruby\n', SupportedLanguages.Ruby],
+      ['bin/migrate31', '#!/usr/bin/ruby3.1\n', SupportedLanguages.Ruby],
+      ['scripts/unset', '#!/usr/bin/env -S -u FOO python3\n', SupportedLanguages.Python],
       ['bin/console', '#!/usr/bin/env php\n<?php echo 1;\n', SupportedLanguages.PHP],
       ['bin/report', '#!/usr/bin/env Rscript\n', SupportedLanguages.R],
     ];

@@ -182,7 +182,7 @@ export const rubyProvider = defineLanguage({
   id: SupportedLanguages.Ruby,
   extensions: ['.rb', '.rake', '.gemspec'],
   // Extensionless scripts run by this interpreter (#2707).
-  ...shebangClassifier(/^(ruby|jruby)$/),
+  ...shebangClassifier(/^(ruby(\d+(\.\d+)*)?|jruby)$/),
   entryPointPatterns: [/^call$/, /^perform$/, /^execute$/],
   astFrameworkPatterns: [
     {
