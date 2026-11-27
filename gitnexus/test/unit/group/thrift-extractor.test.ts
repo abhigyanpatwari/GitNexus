@@ -273,6 +273,11 @@ service LeakedService {
       expect(result).toBeNull();
     });
 
+    it('returns null for negating annotations (@NonThriftClient)', () => {
+      const result = serviceFromAnnotatedClient('OrderClient', 'NonThriftClient');
+      expect(result).toBeNull();
+    });
+
     it('returns null for non-Client type patterns', () => {
       const result = serviceFromAnnotatedClient('OrderService', 'OrderThriftClient');
       expect(result).toBeNull();
