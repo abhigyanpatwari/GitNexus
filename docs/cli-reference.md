@@ -83,14 +83,8 @@ The token may be set in the shell, `.env.local`, or `.env` in the working direct
 
 ## All analyze flags
 
-Use `gitnexus analyze --all --index-only` to refresh all registered checkouts
-without generating agent files. The batch skips missing directories, continues
-after individual failures, and exits nonzero if any checkout fails. Options
-such as `--force` and `--embeddings [limit]` apply to every checkout.
-Run a single-repository analysis when specifying a path, branch, alias, shared
-store selection, or external storage override. Watch mode runs separately.
-
 ```bash
+gitnexus analyze --all --index-only  # Refresh all registered checkouts without generating agent files
 gitnexus analyze --force         # Full graph + FTS rebuild (reuses unchanged parser output)
 gitnexus analyze --no-parse-cache # Full rebuild that re-parses every source file
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
