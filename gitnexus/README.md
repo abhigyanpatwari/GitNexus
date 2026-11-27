@@ -521,14 +521,17 @@ entirely (logged as `skipping package with N files`) and every file in them is
 marked visibility-incomplete. `GITNEXUS_MAX_INJECTED_SIBLINGS` does not lift
 that skip — including at `0`.
 
-## Wildcard Import Storage
+## Import Storage
 
-For Java, an on-demand import (`import pkg.*;`) is stored once per statement
-and once per package, not once per importing file and package file. This
-changes memory use only; the graph is the same. Set
+Imports that name no single file are stored once per statement and once per
+imported file list, not once per importing file and imported file: a Java
+on-demand import (`import pkg.*;`) and a Swift module import (`import X`).
+This changes memory use only; the graph is the same. Set
 `GITNEXUS_DISABLE_IMPORT_GROUPS=1` to store one import edge per imported file
 again, for example to compare memory or to rule the grouped form out while
-investigating a result.
+investigating a result. The flag changes in-memory storage only: the persisted
+`IMPORTS` edges of a Swift `import X`, which keep only the module files the
+importer reaches, are the same with and without it.
 
 ```bash
 export GITNEXUS_DISABLE_IMPORT_GROUPS=1

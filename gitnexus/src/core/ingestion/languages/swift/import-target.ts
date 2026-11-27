@@ -182,17 +182,18 @@ function narrowContext(workspaceIndex: WorkspaceIndex): SwiftResolveContext | nu
   return ctx;
 }
 
-/** Module files only — no @_exported closure. Null means external / unknown. */
-function resolveSwiftModuleFiles(moduleName: string, ctx: SwiftResolveContext): string[] | null {
+/** Every file of the module, importer included: the memoized index bucket
+ * itself, shared by every importer. Null means external / unknown. */
+function swiftModuleFilesOf(
+  moduleName: string,
+  ctx: SwiftResolveContext,
+): readonly string[] | null {
   if (moduleName === '') return null;
 
   const workspace = workspaceModulesConfig(ctx.resolutionConfig);
   if (workspace !== null) {
     const files = getModuleFilesByName(ctx.allFilePaths, workspace).get(moduleName);
-    if (files !== undefined) {
-      const out = excludeImporter(files, ctx.fromFile);
-      return out.length > 0 ? out : null;
-    }
+    if (files !== undefined) return files;
     // Known but non-importable (a plugin), or every manifest was read: external.
     if (workspace.moduleNamesComplete === true || isKnownModuleName(workspace, moduleName)) {
       return null;
@@ -203,24 +204,34 @@ function resolveSwiftModuleFiles(moduleName: string, ctx: SwiftResolveContext): 
   if (declared !== null) {
     if (!declared.has(moduleName)) return null;
     const files = getDeclaredFilesByName(ctx.allFilePaths, declared).get(moduleName);
-    if (files === undefined) return null;
-    const out = excludeImporter(files, ctx.fromFile);
-    return out.length > 0 ? out : null;
+    // A declared target with no Swift file (C sources only) is external.
+    return files === undefined || files.length === 0 ? null : files;
   }
 
   if (isSwiftSdkModule(moduleName)) return null;
 
-  const index = getSwiftModuleIndex(ctx.allFilePaths);
-  const files = index.byModule.get(moduleName);
-  if (files === undefined || files.length === 0) return null;
+  const files = getSwiftModuleIndex(ctx.allFilePaths).byModule.get(moduleName);
+  return files === undefined || files.length === 0 ? null : files;
+}
+
+/** Module files only — no @_exported closure, importer excluded. Null means
+ * external / unknown. */
+function resolveSwiftModuleFiles(moduleName: string, ctx: SwiftResolveContext): string[] | null {
+  const files = swiftModuleFilesOf(moduleName, ctx);
+  if (files === null) return null;
   const out = excludeImporter(files, ctx.fromFile);
   return out.length > 0 ? out : null;
 }
 
-function expandSwiftReexportFiles(seed: readonly string[], ctx: SwiftResolveContext): string[] {
+/** `seed` closed over `@_exported import`s, each module's files from `resolve`. */
+function expandSwiftReexportFiles(
+  seed: readonly string[],
+  ctx: SwiftResolveContext,
+  resolve: (moduleName: string, ctx: SwiftResolveContext) => readonly string[] | null,
+): readonly string[] {
   const parsedFiles = ctx.parsedFiles;
-  if (parsedFiles === undefined || parsedFiles.length === 0) return [...seed];
-  if (!getSwiftReexportFlag(parsedFiles).hasReexport) return [...seed];
+  if (parsedFiles === undefined || parsedFiles.length === 0) return seed;
+  if (!getSwiftReexportFlag(parsedFiles).hasReexport) return seed;
   const byPath = getSwiftParsedByPath(parsedFiles);
 
   const seenModules = new Set<string>();
@@ -243,7 +254,7 @@ function expandSwiftReexportFiles(seed: readonly string[], ctx: SwiftResolveCont
       // the whole-module enqueue rather than painting every Models file.
       if (imp.importedName !== moduleName) continue;
       seenModules.add(moduleName);
-      const more = resolveSwiftModuleFiles(moduleName, ctx);
+      const more = resolve(moduleName, ctx);
       if (more === null) continue;
       for (const next of more) {
         if (out.has(next)) continue;
@@ -268,8 +279,39 @@ export function resolveSwiftImportTarget(
   const moduleName = firstSwiftModuleSegment(targetRaw);
   if (moduleName === null) return null;
 
+  // Answer every importer of a module with the same array, so finalize can
+  // store the module once (`ScopeResolver.groupsImportTargetKinds`). The
+  // closure is computed without excluding the importer; when the importer is
+  // not in it, excluding it changes nothing along the way and the answer is
+  // the same. An importer inside its own answer takes the per-importer path.
+  const shared = sharedSwiftModuleTargets(moduleName, ctx);
+  if (shared !== null && !shared.members.has(ctx.fromFile)) return shared.targets;
+
   const files = resolveSwiftModuleFiles(moduleName, ctx);
   if (files === null) return null;
-  const expanded = expandSwiftReexportFiles(files, ctx);
+  const expanded = expandSwiftReexportFiles(files, ctx, resolveSwiftModuleFiles);
   return expanded.length > 0 ? expanded : null;
+}
+
+/** The re-export closure of a module's shared bucket, memoized per bucket. */
+interface SharedTargets {
+  readonly parsedFiles: readonly ParsedFile[] | undefined;
+  readonly targets: readonly string[];
+  /** `targets` as a set: every importer asks whether it is one of them. */
+  readonly members: ReadonlySet<string>;
+}
+const SWIFT_SHARED_TARGETS = new WeakMap<readonly string[], SharedTargets>();
+
+function sharedSwiftModuleTargets(
+  moduleName: string,
+  ctx: SwiftResolveContext,
+): SharedTargets | null {
+  const files = swiftModuleFilesOf(moduleName, ctx);
+  if (files === null) return null;
+  const hit = SWIFT_SHARED_TARGETS.get(files);
+  if (hit !== undefined && hit.parsedFiles === ctx.parsedFiles) return hit;
+  const targets = expandSwiftReexportFiles(files, ctx, swiftModuleFilesOf);
+  const shared = { parsedFiles: ctx.parsedFiles, targets, members: new Set(targets) };
+  SWIFT_SHARED_TARGETS.set(files, shared);
+  return shared;
 }
