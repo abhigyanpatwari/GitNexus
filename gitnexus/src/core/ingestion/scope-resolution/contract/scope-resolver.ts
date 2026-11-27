@@ -459,6 +459,26 @@ export interface ScopeResolver {
    * before opting in. Default: one edge per file. */
   readonly groupsWildcardImportTargets?: boolean;
 
+  /** `ParsedImport` kinds besides `wildcard` whose statements finalize may
+   * store as groups, under the rules of `FinalizeHooks.groupsWildcardTargets`.
+   * A file through which a `namespace` statement binds a definition (one
+   * named after the import) keeps its own per-file edge; the runs of files
+   * between such files are stored as groups. A group is left out of
+   * `ImportVisibility.edgesAt`; readers that select imports by name or kind
+   * read `statementsAt`, which lists each group as one statement edge, and
+   * `importEdgeFiles` / `groupTargets` for its files. A provider hook that
+   * reads namespace targets from `edgesAt` must move to those first. Return
+   * the same array for every importer of the same module.
+   *
+   * Comparing the two forms through the pipeline
+   * (`GITNEXUS_DISABLE_IMPORT_GROUPS=1`) is not enough before opting in: a
+   * reader's answer can differ without changing the graph (a claim's status,
+   * for example). Run the reader-parity harness
+   * (`test/integration/resolvers/import-reader-parity.test.ts`) and the rename
+   * parity test (`test/unit/rename-swift-module-import.test.ts`) over the
+   * provider's shapes. Default: none. */
+  readonly groupsImportTargetKinds?: readonly ParsedImport['kind'][];
+
   // ─── Pipeline hooks ────────────────────────────────────────────────────────
 
   /**
