@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import { isAbsolute } from 'node:path';
 import type { Command } from 'commander';
@@ -46,62 +46,100 @@ export async function analyzeAllCommand(
     return;
   }
 
-  let succeeded = 0;
-  let skipped = 0;
-  let failed = 0;
+  const aliases = new Map<string, number>();
   for (const repo of repos) {
-    if (!isAbsolute(repo.path)) {
-      process.stderr.write(`  Invalid registered repository path: ${repo.path}\n`);
-      failed++;
-      continue;
-    }
-    try {
-      if (!(await stat(repo.path)).isDirectory()) {
-        process.stderr.write(`  Skipping ${repo.path} (not a directory).\n`);
-        skipped++;
-        continue;
-      }
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        process.stderr.write(`  Skipping ${repo.path} (directory missing).\n`);
-        skipped++;
-      } else {
-        process.stderr.write(`  Failed to access ${repo.path}: ${(error as Error).message}\n`);
-        failed++;
-      }
-      continue;
-    }
-
-    console.log(`\n  Analyzing ${repo.name} (${repo.path})`);
-    // Each analyze can re-exec for heap sizing and exits after publishing the
-    // graph. A separate process also isolates each repo's native DB handles.
-    // Legacy registry entries can omit lastCommit. An empty commit is also
-    // used by non-Git folders and checkouts without a HEAD.
-    // --skip-git still detects Git at an explicit path when it is present.
-    const repoArgs = (repo.lastCommit ?? '') === '' && !options.skipGit ? ['--skip-git'] : [];
-    const child = spawnSync(
-      process.execPath,
-      [...process.execArgv, process.argv[1], 'analyze', ...args, ...repoArgs, '--', repo.path],
-      { stdio: 'inherit', windowsHide: true },
-    );
-    if (child.signal === 'SIGINT' || child.status === 130) {
-      process.exitCode = 130;
-      return;
-    }
-    if (child.signal === 'SIGTERM' || child.status === 143) {
-      process.exitCode = 143;
-      return;
-    }
-    if (child.status === 0) {
-      succeeded++;
-    } else {
-      process.stderr.write(
-        `  Analysis failed for ${repo.path} (${child.error?.message ?? child.signal ?? child.status}).\n`,
-      );
-      failed++;
-    }
+    const alias = repo.name.toLowerCase();
+    aliases.set(alias, (aliases.get(alias) ?? 0) + 1);
   }
 
-  console.log(`\n  Batch analysis: ${succeeded} succeeded, ${skipped} skipped, ${failed} failed.`);
-  if (failed > 0) process.exitCode = 1;
+  let activeChild: ChildProcess | undefined;
+  let cancellation: NodeJS.Signals | undefined;
+  const cancel = (signal: NodeJS.Signals) => {
+    if (cancellation) return;
+    cancellation = signal;
+    activeChild?.kill(signal);
+  };
+  process.on('SIGINT', cancel);
+  process.on('SIGTERM', cancel);
+  try {
+    let succeeded = 0;
+    let skipped = 0;
+    let failed = 0;
+    for (const repo of repos) {
+      if (cancellation) break;
+      if (!isAbsolute(repo.path)) {
+        process.stderr.write(`  Invalid registered repository path: ${repo.path}\n`);
+        failed++;
+        continue;
+      }
+      try {
+        if (!(await stat(repo.path)).isDirectory()) {
+          process.stderr.write(`  Skipping ${repo.path} (not a directory).\n`);
+          skipped++;
+          continue;
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          process.stderr.write(`  Skipping ${repo.path} (directory missing).\n`);
+          skipped++;
+        } else {
+          process.stderr.write(`  Failed to access ${repo.path}: ${(error as Error).message}\n`);
+          failed++;
+        }
+        continue;
+      }
+
+      if (cancellation) break;
+      console.log(`\n  Analyzing ${repo.name} (${repo.path})`);
+      // Each analyze can re-exec for heap sizing and exits after publishing the
+      // graph. A separate process also isolates each repo's native DB handles.
+      // Legacy registry entries can omit lastCommit. An empty commit is also
+      // used by non-Git folders and checkouts without a HEAD.
+      // --skip-git still detects Git at an explicit path when it is present.
+      const repoArgs = (repo.lastCommit ?? '') === '' && !options.skipGit ? ['--skip-git'] : [];
+      if (!options.allowDuplicateName && (aliases.get(repo.name.toLowerCase()) ?? 0) > 1) {
+        repoArgs.push('--allow-duplicate-name');
+      }
+      const child = spawn(
+        process.execPath,
+        [...process.execArgv, process.argv[1], 'analyze', ...args, ...repoArgs, '--', repo.path],
+        { stdio: 'inherit', windowsHide: true },
+      );
+      activeChild = child;
+      let spawnError: Error | undefined;
+      const { status, signal } = await new Promise<{
+        status: number | null;
+        signal: NodeJS.Signals | null;
+      }>((resolve) => {
+        child.on('error', (error) => {
+          spawnError = error;
+        });
+        child.once('close', (status, signal) => resolve({ status, signal }));
+      });
+      activeChild = undefined;
+      if (signal === 'SIGINT' || status === 130) cancellation ??= 'SIGINT';
+      if (signal === 'SIGTERM' || status === 143) cancellation ??= 'SIGTERM';
+      if (cancellation) break;
+      if (status === 0) {
+        succeeded++;
+      } else {
+        process.stderr.write(
+          `  Analysis failed for ${repo.path} (${spawnError?.message ?? signal ?? status}).\n`,
+        );
+        failed++;
+      }
+    }
+
+    if (cancellation) {
+      process.exitCode = cancellation === 'SIGINT' ? 130 : 143;
+      return;
+    }
+    console.log(
+      `\n  Batch analysis: ${succeeded} succeeded, ${skipped} skipped, ${failed} failed.`,
+    );
+    if (failed > 0) process.exitCode = 1;
+  } finally {
+    process.off('SIGINT', cancel);
+    process.off('SIGTERM', cancel);
+  }
 }
