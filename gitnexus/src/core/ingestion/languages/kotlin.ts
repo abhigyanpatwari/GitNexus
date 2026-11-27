@@ -9,7 +9,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { kotlinRenameProvider } from './kotlin/rename.js';
-import { createClassExtractor } from '../class-extractors/generic.js';
+import { createCollisionQualifiedClassExtractor } from '../class-extractors/collision-qualified.js';
 import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
 import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
@@ -144,6 +144,8 @@ const EXTERNAL_RECEIVER_NAMES: ReadonlySet<string> = new Set(['System', 'java', 
 const isKotlinPlatformModule = (specifier: string): boolean =>
   /^(?:java|kotlin)(?:\.|$)/.test(specifier);
 
+const kotlinClassIdentity = createCollisionQualifiedClassExtractor(kotlinClassConfig);
+
 export const kotlinProvider = defineLanguage({
   rename: kotlinRenameProvider,
   id: SupportedLanguages.Kotlin,
@@ -203,7 +205,8 @@ export const kotlinProvider = defineLanguage({
   fieldExtractor: createFieldExtractor(kotlinConfig),
   methodExtractor: createMethodExtractor(kotlinMethodConfig),
   variableExtractor: createVariableExtractor(kotlinVariableConfig),
-  classExtractor: createClassExtractor(kotlinClassConfig),
+  classExtractor: kotlinClassIdentity.classExtractor,
+  resolveContainerTypeOwner: kotlinClassIdentity.resolveContainerTypeOwner,
   builtInNames: BUILT_INS,
   externalReceiverNames: EXTERNAL_RECEIVER_NAMES,
   isExternalModuleSpecifier: isKotlinPlatformModule,
